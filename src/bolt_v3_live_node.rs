@@ -695,6 +695,7 @@ fn iv_runtime_data_commands_for_plan(
                 ts_init,
             )])
         }
+        (IvRuntimeOperation::RemoveSource, _) => Ok(Vec::new()),
         _ => Err(binding_error(
             plan,
             "IV subscription plan operation does not match selector kind".to_string(),
@@ -4905,6 +4906,29 @@ configured_source_param = "configured-value"
             }
             other => panic!("expected option-greeks subscribe command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn iv_remove_source_plan_translates_to_no_runtime_data_commands() {
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-greeks-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::SourceRemoval,
+            operation: IvRuntimeOperation::RemoveSource,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionGreeks,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceOptionGreeks {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                nt_params: toml::Value::Table(toml::map::Map::new()),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+
+        let commands = iv_runtime_data_commands_for_plan(&plan)
+            .expect("source removal should not require NT data commands");
+
+        assert!(commands.is_empty());
     }
 
     #[test]

@@ -285,6 +285,71 @@ fn maker_requote_replacement_submit_failure_clears_local_pending_state() {
 }
 
 #[test]
+fn maker_requote_replacement_submit_respects_followup_budget() {
+    let mut harness = ready_static_maker_harness();
+    let strategy = &mut harness.strategy;
+    strategy
+        .config
+        .maker_quote
+        .as_mut()
+        .expect("maker quote config should exist")
+        .requote_action_cost = 33;
+
+    let (risk_handler, risk_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::risk_engine_queue_execute(),
+        risk_handler,
+    );
+    let (exec_handler, exec_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::exec_engine_queue_execute(),
+        exec_handler,
+    );
+
+    strategy
+        .drive_maker_quotes_at(1_200)
+        .expect("initial maker quote dispatch should succeed");
+    let submitted = submitted_orders(risk_messages.get_messages());
+    assert_eq!(submitted.len(), 2);
+    for order in submitted {
+        strategy.on_order_accepted(order_accepted_event(
+            order.client_order_id,
+            order.instrument_id,
+        ));
+    }
+
+    strategy.pricing.last_reference_current_price = Some(0.70);
+    strategy.pricing.last_reference_current_price_ts_ms = Some(1_900);
+    strategy
+        .drive_maker_quotes_at(1_900)
+        .expect("moved quote should dispatch the one budgeted cancel");
+
+    let canceled = canceled_orders(exec_messages.get_messages());
+    assert_eq!(canceled.len(), 1);
+    let yes_cancel = canceled[0];
+    assert_eq!(
+        Some(yes_cancel.instrument_id),
+        strategy.active.books.up.instrument_id
+    );
+
+    strategy
+        .on_order_canceled(&maker_order_canceled_event(
+            yes_cancel.client_order_id,
+            yes_cancel.instrument_id,
+            1_900,
+        ))
+        .expect("cancel confirmation should be handled");
+
+    assert_eq!(submitted_orders(risk_messages.get_messages()).len(), 2);
+    let maker = strategy.maker.as_ref().expect("maker state should exist");
+    assert_eq!(maker.market.leg_state(Leg::Yes), LegState::Idle);
+    assert!(maker.yes_expected.expected().is_none());
+    assert_eq!(maker.budget.cost_in_window(), 99);
+}
+
+#[test]
 fn maker_submit_failure_does_not_advance_lifecycle_or_budget() {
     let mut harness = ready_static_maker_harness_with_submit_cap(0);
     let strategy = &mut harness.strategy;

@@ -306,8 +306,10 @@ mod tests {
     // conversion in shared numeric helpers.
     // Re-derived after merging the #606 reference provider review follow-ups
     // with the executable-cost split on main.
+    // Re-derived after maker follow-up dispatch began charging the shared
+    // requote budget and maker runtime coverage was added to the split tests.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "cf64f8d181be5a4755cfbb48662f03ce1f637f00bb1e99de702bb2a3e20f2471";
+        "ef0aea318b2cd5795b5f2fd05199d996e5278cb4edafcbc4505b34c75c1eaa65";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -318,8 +320,10 @@ mod tests {
     // Re-derived again after adding checked fee-inclusive admission arithmetic.
     // Re-derived after moving entry limit-notional guarding into shared submit
     // admission.
+    // Re-derived after splitting maker quote admission evidence from entry
+    // admission counters and decisions.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "765681e898d3e6ab3c957031b30d2aefe82722ff2dccabfe6bdd85b3ee0b9131";
+        "6125510f8216b8237915c0fd4eecea790c295711692c70e9bdc463f0ae6d03ad";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

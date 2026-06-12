@@ -3110,6 +3110,12 @@ impl BinaryOracleEdgeTaker {
         let mut no_next_order = None;
         let intent = match action {
             LifecycleAction::Submit => {
+                self.acquire_maker_followup_action_budget(
+                    &config,
+                    supports_modify,
+                    max_window_cost,
+                    now_ms,
+                )?;
                 let order_identity = {
                     let client_order_id = self.core.order_factory().generate_client_order_id();
                     let state = self.ensure_maker_state(&config, supports_modify, max_window_cost);
@@ -3138,6 +3144,12 @@ impl BinaryOracleEdgeTaker {
                 else {
                     return Ok(Vec::new());
                 };
+                self.acquire_maker_followup_action_budget(
+                    &config,
+                    supports_modify,
+                    max_window_cost,
+                    now_ms,
+                )?;
                 MakerOrderIntent::Cancel {
                     leg,
                     instrument_id,
@@ -3154,6 +3166,12 @@ impl BinaryOracleEdgeTaker {
                     return Ok(Vec::new());
                 };
                 let quote_plan = quote_plan.expect("modify action should require quote plan");
+                self.acquire_maker_followup_action_budget(
+                    &config,
+                    supports_modify,
+                    max_window_cost,
+                    now_ms,
+                )?;
                 MakerOrderIntent::Modify {
                     leg,
                     instrument_id,
@@ -3190,6 +3208,21 @@ impl BinaryOracleEdgeTaker {
             no_next_order.as_ref(),
         );
         Ok(vec![outcome])
+    }
+
+    fn acquire_maker_followup_action_budget(
+        &mut self,
+        config: &BinaryOracleEdgeTakerMakerQuoteConfig,
+        supports_modify: bool,
+        max_window_cost: u64,
+        now_ms: u64,
+    ) -> Result<()> {
+        let state = self.ensure_maker_state(config, supports_modify, max_window_cost);
+        anyhow::ensure!(
+            state.budget.try_acquire(now_ms, config.requote_action_cost),
+            "maker quote budget exhausted before follow-up action dispatch"
+        );
+        Ok(())
     }
 
     fn current_maker_quote_plan_at(

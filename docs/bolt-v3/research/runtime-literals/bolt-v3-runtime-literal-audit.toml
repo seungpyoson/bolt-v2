@@ -11588,6 +11588,14 @@ reason = "Fail-closed diagnostic for an impossible maker quote lifecycle desynch
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"maker quote budget exhausted before follow-up action dispatch"'''
+context = '''"maker quote budget exhausted before follow-up action dispatch"'''
+classification = "strategy_runtime_invariant_diagnostic"
+reason = "Fail-closed diagnostic for a maker follow-up lifecycle action denied by the shared REST-call requote budget."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "number"
 literal = '''0.0'''
 context = '''let remaining_quantity = (working_quantity - fill_quantity).max(0.0);'''

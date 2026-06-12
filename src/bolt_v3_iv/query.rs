@@ -1276,6 +1276,7 @@ impl IvQueryHandle {
                     .cloned()
                     .map(IvQueryProduct::IvPoint)
                     .collect::<Vec<_>>();
+                let products = deduplicate_projection_products(products, *as_of_ns);
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
                 } else {
@@ -1305,6 +1306,7 @@ impl IvQueryHandle {
                     .cloned()
                     .map(IvQueryProduct::IvGreeksPoint)
                     .collect::<Vec<_>>();
+                let products = deduplicate_projection_products(products, *as_of_ns);
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
                 } else {
@@ -1329,6 +1331,7 @@ impl IvQueryHandle {
                     *as_of_ns,
                     tolerance_ns,
                 );
+                let products = deduplicate_projection_products(products, *as_of_ns);
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
                 } else {
@@ -1378,6 +1381,7 @@ impl IvQueryHandle {
                     .cloned()
                     .map(IvQueryProduct::CustomIvEvidence)
                     .collect::<Vec<_>>();
+                let products = deduplicate_projection_products(products, *as_of_ns);
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
                 } else {
@@ -1405,6 +1409,7 @@ impl IvQueryHandle {
                     .cloned()
                     .map(IvQueryProduct::AggregateGreeks)
                     .collect::<Vec<_>>();
+                let products = deduplicate_projection_products(products, *as_of_ns);
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
                 } else {
@@ -1726,8 +1731,7 @@ fn matching_surface_products_with_tolerance(
     as_of_ns: UnixNanos,
     tolerance_ns: Option<u64>,
 ) -> Vec<IvQueryProduct> {
-    let mut seen = BTreeSet::new();
-    state
+    let products = state
         .store
         .smiles()
         .iter()
@@ -1738,10 +1742,6 @@ fn matching_surface_products_with_tolerance(
                 && timestamp_matches(smile.ts_event_ns, as_of_ns, tolerance_ns)
         })
         .filter_map(|smile| {
-            let key = (smile.surface_selector.clone(), smile.source_id.clone());
-            if !seen.insert(key) {
-                return None;
-            }
             state
                 .store
                 .surface(
@@ -1752,7 +1752,153 @@ fn matching_surface_products_with_tolerance(
                 )
                 .map(IvQueryProduct::Surface)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    deduplicate_projection_products(products, as_of_ns)
+}
+
+fn deduplicate_projection_products(
+    products: Vec<IvQueryProduct>,
+    as_of_ns: UnixNanos,
+) -> Vec<IvQueryProduct> {
+    let mut selected = BTreeMap::<ProjectionProductDedupKey, IvQueryProduct>::new();
+    for product in products {
+        let Some(key) = projection_product_dedup_key(&product) else {
+            continue;
+        };
+        match selected.entry(key) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(product);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                if projection_product_is_closer(&product, entry.get(), as_of_ns) {
+                    entry.insert(product);
+                }
+            }
+        }
+    }
+    selected.into_values().collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ProjectionProductDedupKey {
+    IvPoint {
+        instrument_id: String,
+        basis: IvBasis,
+        source_id: String,
+    },
+    IvGreeksPoint {
+        instrument_id: String,
+        basis: IvBasis,
+        source_id: String,
+    },
+    Smile {
+        series_id: String,
+        side: String,
+        basis: IvBasis,
+        source_id: String,
+    },
+    Surface {
+        surface_selector: String,
+        basis: IvBasis,
+        source_id: String,
+    },
+    AggregateGreeks {
+        aggregate_key: String,
+        underlying_selectors: Vec<String>,
+        source_id: String,
+    },
+    CustomIvEvidence {
+        iv_evidence_kind: String,
+        source_id: String,
+    },
+    ProjectedScalarIv {
+        projection_policy_id: String,
+        source_id: String,
+    },
+    DerivedIv {
+        instrument_id: String,
+        helper_policy_id: String,
+        basis: IvBasis,
+        source_id: String,
+    },
+}
+
+fn projection_product_dedup_key(product: &IvQueryProduct) -> Option<ProjectionProductDedupKey> {
+    match product {
+        IvQueryProduct::IvPoint(point) => Some(ProjectionProductDedupKey::IvPoint {
+            instrument_id: point.instrument_id.clone(),
+            basis: point.basis,
+            source_id: point.source_id.clone(),
+        }),
+        IvQueryProduct::IvGreeksPoint(point) => Some(ProjectionProductDedupKey::IvGreeksPoint {
+            instrument_id: point.point.instrument_id.clone(),
+            basis: point.point.basis,
+            source_id: point.point.source_id.clone(),
+        }),
+        IvQueryProduct::Smile(smile) => Some(ProjectionProductDedupKey::Smile {
+            series_id: smile.series_id.clone(),
+            side: smile.side.clone(),
+            basis: smile.basis,
+            source_id: smile.source_id.clone(),
+        }),
+        IvQueryProduct::Surface(surface) => Some(ProjectionProductDedupKey::Surface {
+            surface_selector: surface.surface_selector.clone(),
+            basis: surface.basis,
+            source_id: surface.source_id.clone(),
+        }),
+        IvQueryProduct::AggregateGreeks(aggregate) => {
+            Some(ProjectionProductDedupKey::AggregateGreeks {
+                aggregate_key: aggregate.aggregate_key.clone(),
+                underlying_selectors: aggregate.underlying_selectors.clone(),
+                source_id: aggregate.source_id.clone(),
+            })
+        }
+        IvQueryProduct::CustomIvEvidence(evidence) => {
+            Some(ProjectionProductDedupKey::CustomIvEvidence {
+                iv_evidence_kind: evidence.iv_evidence_kind.clone(),
+                source_id: evidence.source_id.clone(),
+            })
+        }
+        IvQueryProduct::ProjectedScalarIv(projected) => {
+            Some(ProjectionProductDedupKey::ProjectedScalarIv {
+                projection_policy_id: projected.projection_policy_id.clone(),
+                source_id: projected.source_id.clone(),
+            })
+        }
+        IvQueryProduct::DerivedIv(derived) => Some(ProjectionProductDedupKey::DerivedIv {
+            instrument_id: derived.point.instrument_id.clone(),
+            helper_policy_id: derived.helper_identity.helper_policy_id.clone(),
+            basis: derived.point.basis,
+            source_id: derived.point.source_id.clone(),
+        }),
+        IvQueryProduct::SourceHealth(_) => None,
+    }
+}
+
+fn projection_product_is_closer(
+    candidate: &IvQueryProduct,
+    selected: &IvQueryProduct,
+    as_of_ns: UnixNanos,
+) -> bool {
+    let Some(candidate_ts) = projection_product_ts_event_ns(candidate) else {
+        return false;
+    };
+    let Some(selected_ts) = projection_product_ts_event_ns(selected) else {
+        return true;
+    };
+    let candidate_distance = candidate_ts.get().abs_diff(as_of_ns.get());
+    let selected_distance = selected_ts.get().abs_diff(as_of_ns.get());
+    candidate_distance < selected_distance
+        || (candidate_distance == selected_distance && candidate_ts.get() > selected_ts.get())
+}
+
+fn projection_product_ts_event_ns(product: &IvQueryProduct) -> Option<UnixNanos> {
+    match product {
+        IvQueryProduct::Surface(surface) => Some(surface.as_of_ns),
+        _ => product
+            .provenance()
+            .map(|provenance| provenance.ts_event_ns),
+    }
 }
 
 fn timestamp_matches(

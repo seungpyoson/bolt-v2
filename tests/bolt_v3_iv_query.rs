@@ -1991,6 +1991,124 @@ fn projected_scalar_point_query_aggregates_matching_sources_for_quorum() {
 }
 
 #[test]
+fn projected_scalar_point_query_deduplicates_tolerance_inputs_by_source() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            1_995,
+            test_implied_volatility(30),
+        ))
+        .unwrap();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            2_000,
+            test_implied_volatility(40),
+        ))
+        .unwrap();
+    store
+        .ingest_event(greeks_event(
+            "configured-backup-source",
+            "configured-backup-selector-fingerprint",
+            2_000,
+            test_implied_volatility(42),
+        ))
+        .unwrap();
+    let mut projection_policy =
+        projection_policy_with_refs(2, None, None, Some("configured-quorum-policy"));
+    projection_policy.source_eligibility = vec![
+        "configured-source".to_string(),
+        "configured-backup-source".to_string(),
+    ];
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy])
+        .with_quorum_policies(vec![IvQuorumPolicy {
+            policy_id: "configured-quorum-policy".to_string(),
+            minimum_sources: 2,
+            eligible_sources: vec![
+                "configured-source".to_string(),
+                "configured-backup-source".to_string(),
+            ],
+            agreement_band: 0.20,
+            tie_break: IvQuorumTieBreak::Mean,
+        }]);
+
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(match point_query(None, 2_000) {
+                    IvQuery::Product(query) => query.selector,
+                    IvQuery::RawPayload(_) => panic!("expected product query"),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::ProjectedScalarIv(projected) = product else {
+        panic!("expected projected scalar IV product");
+    };
+    assert!((projected.value - test_implied_volatility(41)).abs() < f64::EPSILON);
+}
+
+#[test]
+fn projected_scalar_point_query_does_not_count_same_source_duplicates_for_quorum() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            1_995,
+            test_implied_volatility(40),
+        ))
+        .unwrap();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            2_000,
+            test_implied_volatility(41),
+        ))
+        .unwrap();
+    let mut projection_policy =
+        projection_policy_with_refs(2, None, None, Some("configured-quorum-policy"));
+    projection_policy.source_eligibility = vec!["configured-source".to_string()];
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy])
+        .with_quorum_policies(vec![IvQuorumPolicy {
+            policy_id: "configured-quorum-policy".to_string(),
+            minimum_sources: 2,
+            eligible_sources: vec!["configured-source".to_string()],
+            agreement_band: 0.20,
+            tie_break: IvQuorumTieBreak::Mean,
+        }]);
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(match point_query(None, 2_000) {
+                    IvQuery::Product(query) => query.selector,
+                    IvQuery::RawPayload(_) => panic!("expected product query"),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        })),
+        Err(IvQueryError::ProjectionRejected)
+    );
+}
+
+#[test]
 fn projected_scalar_point_query_skips_non_current_matching_product_for_current_generation() {
     let mut store = IvStore::empty();
     store

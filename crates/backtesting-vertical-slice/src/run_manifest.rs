@@ -1806,14 +1806,16 @@ fn catalog_input_requires_unfiltered_nt_query_for_encoded_directory(
 /// layer percent-encodes at write time corrupt through every encode/decode
 /// layer, including the fallback, so they fail loud here instead of producing
 /// an empty data feed downstream. The safe set (alphanumeric, '.', '_', '-')
-/// is the subset of ASCII that object_store stores verbatim; its INVALID
-/// encode set covers controls plus backslash, braces, caret, percent,
-/// backtick, brackets, quote, angle brackets, tilde, hash, pipe, asterisk,
-/// and question mark — note '~' IS encoded, so it is rejected here despite
-/// being RFC 3986 unreserved.
-/// Everything else outside the safe set is rejected conservatively: an
-/// over-strict early failure is recoverable, an admitted-but-encoded id is a
-/// guaranteed late NT node-load failure.
+/// is a conservative strict subset of the ASCII object_store stores verbatim;
+/// its INVALID encode set covers controls plus backslash, braces, caret,
+/// percent, backtick, brackets, quote, angle brackets, tilde, hash, pipe,
+/// asterisk, and question mark — note '~' IS encoded, so it is rejected here
+/// despite being RFC 3986 unreserved.
+/// Everything else outside the safe set is rejected conservatively even
+/// though object_store stores other ASCII punctuation verbatim — admission
+/// must not depend on per-character encode-set knowledge: an over-strict
+/// early failure is recoverable, an admitted-but-encoded id is a guaranteed
+/// late NT node-load failure.
 fn validate_catalog_instrument_id_charset(instrument_id: &str) -> Result<(), ManifestError> {
     let urisafe = instrument_id.replace('/', "").replace('^', "_");
     let unsupported_ascii = urisafe

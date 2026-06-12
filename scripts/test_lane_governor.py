@@ -123,6 +123,35 @@ handle = lane_governor.acquire(
 print("acquired", time.time())
 """
 
+# Parent: acquire, then spawn a child runner WITH A SCRUBBED ENV that attempts
+# acquire on the same lock dir. The child must pass through (ancestor holds).
+PARENT_CHILD_RUNNER = """
+import os, subprocess, sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+scripts_dir, lock_dir = sys.argv[1], sys.argv[2]
+handle = lane_governor.acquire(
+    "parent-runner", lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=30, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+child_code = (
+    "import sys, time; sys.path.insert(0, sys.argv[1]); import lane_governor; "
+    "t0 = time.monotonic(); "
+    "lane_governor.acquire('child-runner', lock_dir=sys.argv[2], honor_ci_env=False, "
+    "acquire_timeout_seconds=20, heartbeat_seconds=1, poll_interval_seconds=0.1); "
+    "print('child-done', time.monotonic() - t0)"
+)
+scrubbed = {"PATH": "/usr/bin:/bin"}
+completed = subprocess.run(
+    [sys.executable, "-c", child_code, scripts_dir, lock_dir],
+    env=scrubbed, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+)
+print("child-rc", completed.returncode)
+print(completed.stdout, end="")
+sys.stderr.write(completed.stderr)
+"""
+
 
 def _spawn(snippet: str, *args: str, env: dict | None = None) -> subprocess.Popen:
     return subprocess.Popen(
@@ -192,6 +221,17 @@ def test_timeout_fails_loud_with_holder_info() -> None:
         assert str(holder.pid) in err, "timeout message must name the holding pid"
 
 
+def test_scrubbed_env_child_reenters_while_parent_holds() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        proc = _spawn(PARENT_CHILD_RUNNER, tmp)
+        out, err = proc.communicate(timeout=40)
+        assert proc.returncode == 0, err
+        assert "child-rc 0" in out, f"child must succeed, got: {out}\n{err}"
+        line = [l for l in out.splitlines() if l.startswith("child-done")][0]
+        elapsed = float(line.split()[1])
+        assert elapsed < 5.0, f"child must pass through re-entrantly, took {elapsed:.1f}s"
+
+
 def main() -> int:
     tests = [
         test_valid_lane_policy_passes,
@@ -206,6 +246,7 @@ def main() -> int:
         test_second_acquire_queues_until_release,
         test_holder_metadata_written,
         test_timeout_fails_loud_with_holder_info,
+        test_scrubbed_env_child_reenters_while_parent_holds,
     ]
     for test in tests:
         test()

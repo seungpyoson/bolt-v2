@@ -65,7 +65,7 @@ def holder_is_ancestor(holder_pid: int) -> bool:
         if pid == holder_pid:
             return True
         seen.add(pid)
-        pid = _parent_pid(pid)
+        pid = os.getppid() if pid == os.getpid() else _parent_pid(pid)
     return False
 
 

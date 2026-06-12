@@ -16,8 +16,8 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use sha2::{Digest, Sha256};
 
+use backtesting_vertical_slice::hashing::sha256_hex;
 use backtesting_vertical_slice::{
     artifact_store_secrets::{ArtifactStoreSecretResolver, ArtifactStoreSsmResolver},
     backfill_execution_plan::{
@@ -334,11 +334,6 @@ fn validate_execution_plan_for_run_spec(
     );
     Ok(())
 }
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-
 fn ensure_object_read_within_raw_payload_limit(spec: &RunSpec) -> Result<()> {
     ensure!(
         spec.accepted_object.bytes <= spec.converter.raw_payload.max_object_bytes,

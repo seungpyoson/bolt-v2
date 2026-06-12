@@ -12,8 +12,8 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use crate::hashing::sha256_hex;
 use crate::{
     artifact_index::ArtifactKind,
     artifact_index_commit_proof::ArtifactIndexCommitProofReport,
@@ -744,7 +744,7 @@ fn read_accepted_tranche_manifest(
             error: error.to_string(),
         }
     })?;
-    let hash = sha256_bytes(&bytes);
+    let hash = sha256_hex(&bytes);
     let manifest = serde_json::from_slice(&bytes).map_err(|error| {
         BackfillExecutionReadinessError::ParseAcceptedTrancheManifestJson {
             path: path.display().to_string(),
@@ -762,7 +762,7 @@ fn read_execution_plan(
             path: path.display().to_string(),
             error: error.to_string(),
         })?;
-    let hash = sha256_bytes(&bytes);
+    let hash = sha256_hex(&bytes);
     let plan = serde_json::from_slice(&bytes).map_err(|error| {
         BackfillExecutionReadinessError::ParseExecutionPlanJson {
             path: path.display().to_string(),
@@ -781,7 +781,7 @@ fn read_artifact_index_commit_proof_report(
             error: error.to_string(),
         }
     })?;
-    let hash = sha256_bytes(&bytes);
+    let hash = sha256_hex(&bytes);
     let report = serde_json::from_slice(&bytes).map_err(|error| {
         BackfillExecutionReadinessError::ParseArtifactIndexCommitProofReportJson {
             path: path.display().to_string(),
@@ -800,7 +800,7 @@ fn read_source_selection_readiness_report(
             error: error.to_string(),
         }
     })?;
-    let hash = sha256_bytes(&bytes);
+    let hash = sha256_hex(&bytes);
     let report = serde_json::from_slice(&bytes).map_err(|error| {
         BackfillExecutionReadinessError::ParseSourceSelectionReadinessReportJson {
             path: path.display().to_string(),
@@ -819,7 +819,7 @@ fn read_source_catalog_mapping_readiness_report(
             error: error.to_string(),
         }
     })?;
-    let hash = sha256_bytes(&bytes);
+    let hash = sha256_hex(&bytes);
     let report = serde_json::from_slice(&bytes).map_err(|error| {
         BackfillExecutionReadinessError::ParseSourceCatalogMappingReadinessReportJson {
             path: path.display().to_string(),
@@ -903,9 +903,5 @@ fn content_hash(
 ) -> Result<String, BackfillExecutionReadinessError> {
     let bytes = serde_json::to_vec(report)
         .map_err(|error| BackfillExecutionReadinessError::Serialize(error.to_string()))?;
-    Ok(sha256_bytes(&bytes))
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    Ok(sha256_hex(&bytes))
 }

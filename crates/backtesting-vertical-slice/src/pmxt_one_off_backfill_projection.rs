@@ -44,9 +44,9 @@ use nautilus_polymarket::{
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::{Deserialize, de::DeserializeOwned};
-use sha2::{Digest, Sha256};
 use ustr::Ustr;
 
+use crate::hashing::sha256_hex;
 use crate::{
     catalog_projection::logical_catalog_hash,
     conversion_boundary::{
@@ -454,7 +454,7 @@ pub fn project_pmxt_selected_source_parquet_to_nt(
             spec.selected_source_report_path.display()
         )
     })?;
-    let selected_source_report_hash = sha256_bytes(&report_bytes);
+    let selected_source_report_hash = sha256_hex(&report_bytes);
     let report: SelectedSourceSliceReport =
         serde_json::from_slice(&report_bytes).with_context(|| {
             format!(
@@ -540,7 +540,7 @@ fn read_selected_source_selector_report(
     let selector_path = Path::new(&report.selector_report_path);
     let selector_bytes = fs::read(selector_path)
         .with_context(|| format!("read selector report {}", selector_path.display()))?;
-    let selector_sha256 = sha256_bytes(&selector_bytes);
+    let selector_sha256 = sha256_hex(&selector_bytes);
     ensure!(
         selector_sha256 == report.selector_report_sha256,
         "selected-source selector report sha256 mismatch: report {:?}, actual {:?}",
@@ -1885,13 +1885,8 @@ fn required_column<'a>(batch: &'a RecordBatch, column: &str) -> Result<&'a dyn A
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes =
         fs::read(path).with_context(|| format!("read file for sha256 {}", path.display()))?;
-    Ok(sha256_bytes(&bytes))
+    Ok(sha256_hex(&bytes))
 }
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
 fn push_surface_once(surfaces: &mut Vec<String>, surface: &str) {
     if !surfaces.iter().any(|existing| existing == surface) {
         surfaces.push(surface.to_string());

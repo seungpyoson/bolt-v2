@@ -11,8 +11,8 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use crate::hashing::sha256_hex;
 use crate::{
     backfill_accepted_tranche::{
         BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheObject,
@@ -483,7 +483,7 @@ fn read_accepted_tranche_manifest(
             error: error.to_string(),
         }
     })?;
-    let hash = sha256_bytes(&bytes);
+    let hash = sha256_hex(&bytes);
     let manifest = serde_json::from_slice(&bytes).map_err(|error| {
         BackfillExecutionPlanError::ParseAcceptedTrancheManifestJson {
             path: path.display().to_string(),
@@ -498,7 +498,7 @@ fn read_run_spec(path: &Path) -> Result<(RunSpec, String), BackfillExecutionPlan
         path: path.display().to_string(),
         error: error.to_string(),
     })?;
-    let hash = sha256_bytes(&bytes);
+    let hash = sha256_hex(&bytes);
     let text = std::str::from_utf8(&bytes).map_err(|error| {
         BackfillExecutionPlanError::ParseRunSpecToml {
             path: path.display().to_string(),
@@ -512,11 +512,6 @@ fn read_run_spec(path: &Path) -> Result<(RunSpec, String), BackfillExecutionPlan
         })?;
     Ok((run_spec, hash))
 }
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -532,5 +527,5 @@ fn is_canonical_backfill_input(value: &SourceProofUsageScope) -> bool {
 fn content_hash(plan: &BackfillExecutionPlan) -> Result<String, BackfillExecutionPlanError> {
     let bytes = serde_json::to_vec(plan)
         .map_err(|error| BackfillExecutionPlanError::Serialize(error.to_string()))?;
-    Ok(sha256_bytes(&bytes))
+    Ok(sha256_hex(&bytes))
 }

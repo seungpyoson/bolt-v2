@@ -15,6 +15,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::path_resolution::resolve_existing_path;
 use crate::{
     operator::{RunSpec, run_from_run_spec},
     source_universe_execution_pack::{
@@ -435,27 +436,6 @@ fn failure_record(
         error: format!("{error:#}"),
     }
 }
-
-fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() && path.exists() {
-        return path.to_path_buf();
-    }
-    if path.exists() {
-        return path.to_path_buf();
-    }
-    let base_relative = base_dir.join(path);
-    if base_relative.exists() {
-        return base_relative;
-    }
-    let repo_relative = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(path);
-    if repo_relative.exists() {
-        return repo_relative;
-    }
-    path.to_path_buf()
-}
-
 fn validated_http_source_url(source_url: &str) -> Result<reqwest::Url> {
     let parsed_url = reqwest::Url::parse(source_url)
         .with_context(|| format!("parse source_url for batch execution: {source_url}"))?;

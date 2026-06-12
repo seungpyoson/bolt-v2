@@ -1198,6 +1198,8 @@ fn artifact_relative_path(root: &Path, file: &Path) -> Result<String> {
 mod tests {
     use std::io::{Cursor, Write};
 
+    use crate::hashing::sha256_hex;
+
     use flate2::{Compression, write::GzEncoder};
 
     use super::*;
@@ -1259,13 +1261,6 @@ mod tests {
         writer.write_all(text.as_bytes()).expect("write zip member");
         writer.finish().expect("finish zip").into_inner()
     }
-
-    fn sha256_hex(bytes: &[u8]) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        hex::encode(hasher.finalize())
-    }
-
     /// The committed run-spec, with the accepted-object hash rebound to a locally
     /// reproducible synthetic object (the real staged object is not committed).
     fn run_spec_for(gz_bytes: &[u8]) -> RunSpec {

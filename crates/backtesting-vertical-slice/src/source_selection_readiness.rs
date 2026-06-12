@@ -12,8 +12,8 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use crate::hashing::sha256_hex;
 use crate::source_proof::{
     FixtureType, NtMappingStatus, SourceBindingRegistry, SourceProofFidelityClass,
     SourceProofReport, SourceProofStatus, SourceProofUsageScope, SourceSelectionStatus,
@@ -364,7 +364,7 @@ pub fn write_source_selection_readiness_report_from_spec_file(
                 error: error.to_string(),
             }
         })?;
-    let source_proof_hash = sha256_bytes(&source_proof_bytes);
+    let source_proof_hash = sha256_hex(&source_proof_bytes);
 
     let report = evaluate_source_selection_readiness(SourceSelectionReadinessInput {
         selection_id: &spec.selection_id,
@@ -420,11 +420,5 @@ fn content_hash(
 ) -> Result<String, SourceSelectionReadinessError> {
     let bytes = serde_json::to_vec(report)
         .map_err(|error| SourceSelectionReadinessError::Serialize(error.to_string()))?;
-    Ok(sha256_bytes(&bytes))
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
+    Ok(sha256_hex(&bytes))
 }

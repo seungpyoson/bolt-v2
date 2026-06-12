@@ -12,9 +12,9 @@ use std::{
 };
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use toml::Value;
 
+use crate::hashing::sha256_hex;
 use crate::{
     backfill_accepted_tranche::{
         BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheObject,
@@ -414,11 +414,7 @@ fn write_materialized_run_spec(
     }
     Ok(BackfillRunSpecMaterializationArtifact {
         path,
-        content_hash: sha256_bytes(bytes),
+        content_hash: sha256_hex(bytes),
         bytes: bytes.len() as u64,
     })
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
 }

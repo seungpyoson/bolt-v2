@@ -8,14 +8,15 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
+use crate::hashing::sha256_hex;
+use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
 use crate::{
     canonical_trades::{CsvTradeMappingConfig, RawPayloadContainer},
     catalog_projection::{
@@ -241,7 +242,7 @@ pub fn write_source_universe_operator_inputs(
 
     Ok(SourceUniverseOperatorInputsArtifact {
         path,
-        content_hash: sha256_bytes(&bytes),
+        content_hash: sha256_hex(&bytes),
         bytes: bytes.len() as u64,
         record_count: inputs.records.len() as u64,
     })
@@ -394,7 +395,7 @@ pub fn evaluate_source_universe_operator_inputs(
         }
 
         if let Some(metadata_record) = metadata_record {
-            match venue_instrument_spec(metadata_record, &spec.nt_venue, spec) {
+            match bybit_v5_instrument_spec(metadata_record, &spec.nt_venue, spec) {
                 Ok(instrument_spec) => {
                     if let Err(error) = instrument_spec.build_instrument_any() {
                         blocking_reasons.push(format!("invalid_nt_instrument_spec:{error}"));
@@ -527,7 +528,17 @@ pub fn evaluate_source_universe_operator_inputs(
     })
 }
 
-fn venue_instrument_spec(
+/// Map one venue instrument-info record to a typed NT instrument spec.
+///
+/// This parser implements exactly ONE venue REST schema family - Bybit v5
+/// `/v5/market/instruments-info` (`baseCoin`/`quoteCoin`/`priceFilter`/
+/// `lotSizeFilter` field shape plus the `category` taxonomy). The field-name
+/// literals below are that schema's deserialization contract, the same role
+/// `#[serde(rename)]` attributes would play in a typed struct. A record from
+/// any other venue schema fails loud at the `required_*` lookups and surfaces
+/// as an `invalid_instrument_metadata` blocking reason; supporting a second
+/// venue means adding a sibling parser for its schema, not loosening this one.
+fn bybit_v5_instrument_spec(
     record: &VenueInstrumentMetadataRecord,
     nt_venue: &str,
     spec: &SourceUniverseOperatorInputsSpec,
@@ -793,31 +804,6 @@ fn artifact_ref(
         sha256,
     }
 }
-
-fn portable_artifact_path(path: &Path) -> PathBuf {
-    if !path.is_absolute() {
-        return path.to_path_buf();
-    }
-
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            if let Ok(candidate) = path.strip_prefix(ancestor)
-                && looks_repo_relative(candidate)
-            {
-                return candidate.to_path_buf();
-            }
-        }
-    }
-
-    path.to_path_buf()
-}
-
 fn read_json_artifact<T>(base_dir: &Path, path: &Path, role: &str) -> Result<(PathBuf, String, T)>
 where
     T: for<'de> Deserialize<'de>,
@@ -825,70 +811,11 @@ where
     let resolved = resolve_existing_path(base_dir, path);
     let bytes =
         fs::read(&resolved).with_context(|| format!("read {role} {}", resolved.display()))?;
-    let hash = sha256_bytes(&bytes);
+    let hash = sha256_hex(&bytes);
     let parsed = serde_json::from_slice(&bytes)
         .with_context(|| format!("parse {role} {}", path.display()))?;
     Ok((resolved, hash, parsed))
 }
-
-fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    if looks_repo_relative(path)
-        && let Some(candidate) = resolve_from_known_anchors(path)
-    {
-        return candidate;
-    }
-    let base_candidate = base_dir.join(path);
-    if base_candidate
-        .parent()
-        .is_some_and(|parent| parent.exists())
-    {
-        return base_candidate;
-    }
-    resolve_from_known_anchors(path).unwrap_or(base_candidate)
-}
-
-fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() || path.exists() {
-        return path.to_path_buf();
-    }
-    let base_candidate = base_dir.join(path);
-    if base_candidate.exists() {
-        return base_candidate;
-    }
-    resolve_from_known_anchors(path).unwrap_or_else(|| path.to_path_buf())
-}
-
-fn resolve_from_known_anchors(path: &Path) -> Option<PathBuf> {
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            let candidate = ancestor.join(path);
-            if candidate.exists() || candidate.parent().is_some_and(Path::exists) {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-fn looks_repo_relative(path: &Path) -> bool {
-    path.components()
-        .next()
-        .is_some_and(|component| matches!(component, Component::Normal(first) if first == "specs"))
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-
 #[derive(Debug, Deserialize)]
 struct SourceUniverseConversionPlan {
     category_batches: Vec<SourceUniverseConversionPlanCategoryBatch>,

@@ -1,11 +1,9 @@
 //! Generate a source-universe object manifest from a verified archive index.
 
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::PathBuf};
 
 use anyhow::Result;
+use backtesting_vertical_slice::path_resolution::resolve_existing_input_path;
 use backtesting_vertical_slice::source_archive_index_source_universe::{
     SourceArchiveIndexSourceUniverseManifest,
     write_source_archive_index_source_universe_manifest_from_spec_file,
@@ -21,7 +19,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let spec_path = resolve_existing_path(&cli.spec);
+    let spec_path = resolve_existing_input_path(&cli.spec);
     let artifact = write_source_archive_index_source_universe_manifest_from_spec_file(&spec_path)?;
     let manifest: SourceArchiveIndexSourceUniverseManifest =
         serde_json::from_slice(&fs::read(&artifact.path)?)?;
@@ -40,27 +38,4 @@ fn main() -> Result<()> {
     println!("object_count = {}", artifact.object_count);
     println!("accepted_bytes = {}", artifact.accepted_bytes);
     Ok(())
-}
-
-fn resolve_existing_path(path: &Path) -> PathBuf {
-    if path.is_absolute() || path.exists() {
-        return path.to_path_buf();
-    }
-
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            let candidate = ancestor.join(path);
-            if candidate.exists() {
-                return candidate;
-            }
-        }
-    }
-
-    path.to_path_buf()
 }

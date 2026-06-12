@@ -13,8 +13,8 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use crate::hashing::sha256_hex;
 use crate::source_proof::SourceProofUsageScope;
 
 pub const SOURCE_CATALOG_MAPPING_READINESS_SCHEMA_VERSION: &str =
@@ -413,7 +413,7 @@ pub fn write_source_catalog_mapping_readiness_report_from_spec_file(
                 error: error.to_string(),
             },
         )?;
-    let evaluation_hash = sha256_bytes(&evaluation_bytes);
+    let evaluation_hash = sha256_hex(&evaluation_bytes);
 
     let report = evaluate_source_catalog_mapping_readiness(SourceCatalogMappingReadinessInput {
         readiness_id: &spec.readiness_id,
@@ -480,9 +480,5 @@ fn content_hash(
 ) -> Result<String, SourceCatalogMappingReadinessError> {
     let bytes = serde_json::to_vec(report)
         .map_err(|error| SourceCatalogMappingReadinessError::Serialize(error.to_string()))?;
-    Ok(sha256_bytes(&bytes))
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    Ok(sha256_hex(&bytes))
 }

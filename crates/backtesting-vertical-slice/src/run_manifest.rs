@@ -592,7 +592,7 @@ pub enum ManifestError {
         start: i64,
         end: i64,
     },
-    RawArtifactStoreCredential {
+    RawCredentialOption {
         field: &'static str,
         key: String,
     },
@@ -732,9 +732,9 @@ impl std::fmt::Display for ManifestError {
             Self::InvertedTimeWindow { start, end } => {
                 write!(f, "start_time {start} must not be after end_time {end}")
             }
-            Self::RawArtifactStoreCredential { field, key } => write!(
+            Self::RawCredentialOption { field, key } => write!(
                 f,
-                "{field}.{key} contains artifact_store credential material; configure artifact_store.ssm_parameters and resolve through SSM"
+                "{field}.{key} contains raw credential material; credentials resolve from SSM at runtime and must never appear in a manifest"
             ),
             Self::ArtifactStoreS3CredentialsNotResolved => write!(
                 f,
@@ -1426,6 +1426,17 @@ impl BacktestingRunManifest {
             validate_catalog_storage_options(
                 catalog_fs_protocol.as_deref(),
                 &input.catalog_fs_storage_options,
+                &input.catalog_fs_rust_storage_options,
+            )?;
+            // Admission boundary: operator-authored manifests must never carry raw
+            // credentials; the runtime-resolved published-catalog manifest bypasses
+            // validate() (to_nt_run_config only), so SSM-resolved options stay legal.
+            reject_raw_credential_options(
+                "catalog_inputs.catalog_fs_storage_options",
+                &input.catalog_fs_storage_options,
+            )?;
+            reject_raw_credential_options(
+                "catalog_inputs.catalog_fs_rust_storage_options",
                 &input.catalog_fs_rust_storage_options,
             )?;
             parse_and_validate_catalog_input_instrument_ids(input)?;
@@ -2145,11 +2156,11 @@ fn ensure_artifact_store_conditional_put_enabled(
 fn validate_artifact_store_secrets(
     artifact_store: &ManifestArtifactStore,
 ) -> Result<(), ManifestError> {
-    reject_raw_artifact_store_credentials(
+    reject_raw_credential_options(
         "artifact_store.storage_options",
         &artifact_store.storage_options,
     )?;
-    reject_raw_artifact_store_credentials(
+    reject_raw_credential_options(
         "artifact_store.rust_storage_options",
         &artifact_store.rust_storage_options,
     )?;
@@ -2176,13 +2187,13 @@ fn ensure_artifact_store_s3_credentials_resolved(
     }
 }
 
-fn reject_raw_artifact_store_credentials(
+fn reject_raw_credential_options(
     field: &'static str,
     options: &BTreeMap<String, String>,
 ) -> Result<(), ManifestError> {
     for key in options.keys() {
         if is_s3_credential_option(key) {
-            return Err(ManifestError::RawArtifactStoreCredential {
+            return Err(ManifestError::RawCredentialOption {
                 field,
                 key: key.clone(),
             });
@@ -2771,6 +2782,66 @@ mod tests {
                 .get("conditional_put"),
             Some(&"etag".to_string())
         );
+    }
+
+    #[test]
+    fn validate_rejects_raw_credentials_in_catalog_storage_options() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_inputs[0].catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_inputs[0].catalog_fs_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("access_key_id".to_string(), "AKIATEST".to_string()),
+        ]);
+
+        let error = manifest
+            .validate(&accepted_dataset())
+            .expect_err("raw catalog credentials must fail admission");
+        assert!(matches!(
+            error,
+            ManifestError::RawCredentialOption { field, .. }
+                if field == "catalog_inputs.catalog_fs_storage_options"
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_raw_credentials_in_catalog_rust_storage_options() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_inputs[0].catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_inputs[0].catalog_fs_rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("secret_access_key".to_string(), "not-from-ssm".to_string()),
+        ]);
+
+        let error = manifest
+            .validate(&accepted_dataset())
+            .expect_err("raw catalog credentials must fail admission");
+        assert!(matches!(
+            error,
+            ManifestError::RawCredentialOption { field, .. }
+                if field == "catalog_inputs.catalog_fs_rust_storage_options"
+        ));
+    }
+
+    #[test]
+    fn runtime_resolved_catalog_credentials_still_map_to_nt_config() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_inputs[0].catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_inputs[0].catalog_fs_rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("access_key_id".to_string(), "AKIATEST".to_string()),
+            ("secret_access_key".to_string(), "secret-value".to_string()),
+        ]);
+
+        let data = manifest
+            .to_nt_data_config()
+            .expect("SSM-resolved runtime credentials must stay valid for the NT config build");
+        assert_eq!(data.catalog_fs_protocol(), Some("s3"));
     }
 
     #[test]

@@ -212,7 +212,7 @@ def acquire(
             time.sleep(poll)
             continue
         handle.seek(0)
-        handle.truncate()
+        handle.truncate(0)
         json.dump({"pid": os.getpid(), "lane": label, "started_at": time.time()}, handle)
         handle.write("\n")
         handle.flush()

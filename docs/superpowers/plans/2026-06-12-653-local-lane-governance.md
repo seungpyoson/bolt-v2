@@ -196,7 +196,7 @@ def validate_local_lane_policy(data: dict[str, Any]) -> None:
     if policy.get("allowed_ci_env") != "GITHUB_ACTIONS":
         raise PolicyError("local_lane_policy.allowed_ci_env must be 'GITHUB_ACTIONS'")
     lock_dir = policy.get("lock_dir")
-    if not isinstance(lock_dir, str) or not lock_dir.startswith("/"):
+    if not isinstance(lock_dir, str) or not os.path.isabs(lock_dir):
         raise PolicyError("local_lane_policy.lock_dir must be an absolute path")
     if "$" in lock_dir or "~" in lock_dir:
         raise PolicyError("local_lane_policy.lock_dir must not contain env or home expansions")
@@ -531,7 +531,7 @@ def acquire(
             time.sleep(poll)
             continue
         handle.seek(0)
-        handle.truncate()
+        handle.truncate(0)
         json.dump({"pid": os.getpid(), "lane": label, "started_at": time.time()}, handle)
         handle.write("\n")
         handle.flush()

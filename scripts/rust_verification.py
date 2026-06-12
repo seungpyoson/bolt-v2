@@ -280,7 +280,7 @@ def validate_local_lane_policy(data: dict[str, Any]) -> None:
         raise PolicyError("local_lane_policy.lock_dir must be an absolute path")
     if "$" in lock_dir or "~" in lock_dir:
         raise PolicyError("local_lane_policy.lock_dir must not contain env or home expansions")
-    if not lock_dir.startswith("/"):
+    if not os.path.isabs(lock_dir):
         raise PolicyError("local_lane_policy.lock_dir must be an absolute path")
     values: dict[str, int] = {}
     for key in ("acquire_timeout_seconds", "heartbeat_seconds"):

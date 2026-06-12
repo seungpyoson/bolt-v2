@@ -241,6 +241,12 @@ impl CatalogInstrumentSpecSource for SpotInstrumentSpec {
     }
 }
 
+impl CatalogInstrumentSpecSource for BinaryOptionInstrumentSpec {
+    fn build_instrument_any(&self) -> Result<InstrumentAny> {
+        Ok(InstrumentAny::BinaryOption(build_binary_option(self)?))
+    }
+}
+
 impl CatalogInstrumentSpecSource for CatalogInstrumentSpec {
     fn build_instrument_any(&self) -> Result<InstrumentAny> {
         match self {

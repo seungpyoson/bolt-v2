@@ -160,7 +160,7 @@ enum IvQuerySideEffect {
         reject_reason: IvRejectReason,
     },
     QueryRejection {
-        provenance: IvProvenance,
+        provenance: Box<IvProvenance>,
         reject_reason: IvRejectReason,
     },
     SourceRejection {
@@ -200,7 +200,7 @@ impl IvQuerySideEffects {
 
     fn record_query_rejection(&mut self, provenance: &IvProvenance, reject_reason: IvRejectReason) {
         self.effects.push(IvQuerySideEffect::QueryRejection {
-            provenance: provenance.clone(),
+            provenance: Box::new(provenance.clone()),
             reject_reason,
         });
     }
@@ -250,7 +250,7 @@ impl IvQuerySideEffects {
                 } => {
                     handle
                         .state
-                        .record_query_rejection(&provenance, reject_reason);
+                        .record_query_rejection(provenance.as_ref(), reject_reason);
                 }
                 IvQuerySideEffect::SourceRejection {
                     profile_id,

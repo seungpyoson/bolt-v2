@@ -44,7 +44,7 @@ scripts/test_verify_lane_governance.py         CREATE  meta-check self-tests aga
 scripts/verify_*.py, scripts/test_*.py (34)    MODIFY  insert acquire() as first executable stmt of __main__
 justfile                                       MODIFY  add meta-check pair + test_lane_governor to source-fence-static
 AGENTS.md                                      MODIFY  document lane governance in Rust-verification section
-CLAUDE.md                                      MODIFY  extend single-source-of-truth pointer to [local_lane_policy]
+CLAUDE.md                                      NO-OP   corrected 2026-06-12: target section belongs to the unmerged #645 docs series (Task 8 Step 3)
 docs/superpowers/plans/2026-06-12-653-*.md     CREATE  this plan (2 parts)
 ```
 

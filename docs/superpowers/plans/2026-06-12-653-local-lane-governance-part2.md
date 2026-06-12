@@ -302,8 +302,8 @@ git commit -m "feat: acquire lane lock in every verifier and test entry point (#
 
 **Files:**
 - Modify: `justfile` (`source-fence-static` recipe)
-- Modify: `AGENTS.md` (Rust verification section, after the enforcement-boundary bullet, currently line 38)
-- Modify: `CLAUDE.md` (Rust Verification section)
+- Modify: `AGENTS.md` (Rust verification section, after the bullet beginning `- Enforcement boundary:`)
+- `CLAUDE.md`: NO change on this branch (see Step 3 — corrected 2026-06-12)
 
 - [ ] **Step 1: Add the new checks to `source-fence-static`**
 
@@ -325,19 +325,19 @@ Insert a new bullet immediately after the "Enforcement boundary:" bullet:
 - CPU-heavy local verifier lanes self-serialize: every `scripts/verify_*.py` / `scripts/test_*.py` entry point acquires the per-repo machine-level lane lock declared in `ci/rust-verification.toml` `[local_lane_policy]` before doing work. Concurrent local runs queue with stderr heartbeats and fail loud at the policy timeout; CI (`allowed_ci_env`) bypasses the lock; a holder that is a process ancestor passes through. Coverage drift is a CI failure via `scripts/verify_lane_governance.py` in `source-fence-static`.
 ```
 
-- [ ] **Step 3: Document in `CLAUDE.md`**
+- [ ] **Step 3: CLAUDE.md — intentionally NO edit on this branch (corrected 2026-06-12)**
 
-Replace the Rust Verification bullet:
+The original step targeted a "Rust Verification" CLAUDE.md bullet that does not
+exist at this branch's HEAD: that section belongs to the unmerged #645
+cargo-shim docs series (local commits `6bf14f3c7..0277dcd36`, not on
+`origin/main`). Adding it here would duplicate another branch's unmerged scope
+(one-branch-one-scope) and guarantee a merge conflict. On this branch,
+`AGENTS.md` (Step 2) is the single documentation home for lane governance.
 
-```markdown
-- `ci/rust-verification.toml` `[local_compile_policy]` is the single source of truth for local compile policy; do not duplicate refused cargo command lists here.
-```
-
-with:
-
-```markdown
-- `ci/rust-verification.toml` `[local_compile_policy]` and `[local_lane_policy]` are the single source of truth for local compile policy and local verifier-lane governance; do not duplicate refused cargo command lists or lane rules here.
-```
+Residual, to be stated in the PR body (partial-scope disclosure): once the #645
+docs series lands on main, its CLAUDE.md Rust Verification single-source-of-truth
+bullet should gain a `[local_lane_policy]` mention (one line) — tracked there,
+not here.
 
 - [ ] **Step 4: Sanity-check the justfile still parses**
 
@@ -347,7 +347,7 @@ Expected: both recipe names print.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add justfile AGENTS.md CLAUDE.md
+git add justfile AGENTS.md
 git commit -m "docs: wire lane governance into source-fence-static and agent docs (#653)"
 ```
 
@@ -430,6 +430,7 @@ PR body bullets:
 - Env-independent lock path (F1), ancestry-based re-entrancy (F2), AST meta-check CI-enforced via `source-fence-static` (F3)
 - CI bypassed via `allowed_ci_env`; `cargo fmt --check`, compile-lane policy (#645), and `just verify-remote` untouched
 - Scope: full #653; verifier *performance* (review finding F4) tracked separately in the follow-up issue (link after Task 10)
+- Docs: `AGENTS.md` is the single documentation home on this branch; the one-line CLAUDE.md SSOT-bullet extension rides with the unmerged #645 docs series (plan Task 8 Step 3 records why)
 - `Closes #653`
 
 Then run `just verify-remote` for exact-head CI evidence and report the result — do not declare merge-readiness; that is the user's call.

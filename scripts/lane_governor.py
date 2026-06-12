@@ -13,6 +13,7 @@ serializes the repo. Coverage is enforced by scripts/verify_lane_governance.py.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -31,6 +32,7 @@ REPO_ROOT = _SCRIPTS_DIR.parent
 
 # Handles held for the lifetime of the process; flock releases on exit/kill.
 _HELD_HANDLES: list[object] = []
+_LOCK_BUSY_ERRNOS = {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}
 
 
 class LaneLockTimeout(SystemExit):
@@ -146,16 +148,16 @@ def acquire(
 ):
     """Acquire the per-repo lane lock; return the held handle, or None.
 
-    None is returned when governance does not apply: CI environment, or the
-    current holder is an ancestor process (re-entrant call).
+    None is returned when governance does not apply: help invocation, CI
+    environment, or the current holder is an ancestor process (re-entrant call).
     """
+    if {"-h", "--help"}.intersection(sys.argv[1:]):
+        # A help invocation does no heavy work and must never queue behind a
+        # multi-minute holder or fail on an otherwise broken policy file (A4).
+        return None
     policy = rust_verification.load_policy(REPO_ROOT)
     lane_policy = policy["local_lane_policy"]
     if honor_ci_env and os.environ.get(lane_policy["allowed_ci_env"]):
-        return None
-    if {"-h", "--help"}.intersection(sys.argv[1:]):
-        # A help invocation does no heavy work and must never queue behind a
-        # multi-minute holder (A4).
         return None
     label = lane or Path(sys.argv[0]).name or "unknown-lane"
     directory = Path(lock_dir) if lock_dir is not None else Path(lane_policy["lock_dir"])
@@ -175,7 +177,14 @@ def acquire(
     while True:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except OSError as exc:
+            if exc.errno not in _LOCK_BUSY_ERRNOS:
+                handle.close()
+                raise OSError(
+                    exc.errno,
+                    f"lane-governor: failed to lock {lock_path}: {exc.strerror or exc}",
+                    exc.filename,
+                ) from exc
             holder = _read_holder(lock_path)
             holder_pid = holder.get("pid")
             if (

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import json
 import os
@@ -223,6 +224,19 @@ result = lane_governor.acquire(
 print("help-result", result is None, time.monotonic() - t0)
 """
 
+HELP_BROKEN_REPO_RUNNER = """
+import sys, time
+from pathlib import Path
+scripts_dir, repo_root = sys.argv[1], sys.argv[2]
+sys.path.insert(0, scripts_dir)
+import lane_governor
+lane_governor.REPO_ROOT = Path(repo_root)
+sys.argv = ["verify_sample.py", "--help"]
+t0 = time.monotonic()
+result = lane_governor.acquire("help-runner", honor_ci_env=False)
+print("help-result", result is None, time.monotonic() - t0)
+"""
+
 
 def _spawn(snippet: str, *args: str, env: dict | None = None) -> subprocess.Popen:
     return subprocess.Popen(
@@ -292,6 +306,33 @@ def test_timeout_fails_loud_with_holder_info() -> None:
         assert str(holder.pid) in err, "timeout message must name the holding pid"
 
 
+def test_unexpected_flock_error_fails_immediately() -> None:
+    lane_governor = _load("lane_governor")
+    with tempfile.TemporaryDirectory() as tmp:
+        original_flock = lane_governor.fcntl.flock
+
+        def broken_flock(*_args) -> None:
+            raise OSError(errno.EINVAL, "bad file descriptor")
+
+        lane_governor.fcntl.flock = broken_flock
+        try:
+            try:
+                lane_governor.acquire(
+                    "broken-flock",
+                    lock_dir=tmp,
+                    honor_ci_env=False,
+                    acquire_timeout_seconds=30,
+                    heartbeat_seconds=1,
+                    poll_interval_seconds=0.1,
+                )
+            except OSError as exc:
+                assert exc.errno == errno.EINVAL
+                return
+            raise AssertionError("unexpected flock errors must not be treated as contention")
+        finally:
+            lane_governor.fcntl.flock = original_flock
+
+
 def test_scrubbed_env_child_reenters_while_parent_holds() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         proc = _spawn(PARENT_CHILD_RUNNER, tmp)
@@ -347,6 +388,18 @@ def test_help_invocation_bypasses_lock() -> None:
         assert elapsed < 5.0, "--help fast-path must not wait"
 
 
+def test_help_invocation_bypasses_policy_load() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        broken_repo = Path(tmp) / "missing-policy-repo"
+        broken_repo.mkdir()
+        helper = _spawn(HELP_BROKEN_REPO_RUNNER, str(broken_repo))
+        out, err = helper.communicate(timeout=20)
+        assert helper.returncode == 0, err
+        flag, elapsed = out.split()[1], float(out.split()[2])
+        assert flag == "True", "--help must return None without loading policy"
+        assert elapsed < 5.0, "--help fast-path must not wait"
+
+
 def main() -> int:
     tests = [
         test_valid_lane_policy_passes,
@@ -361,10 +414,12 @@ def main() -> int:
         test_second_acquire_queues_until_release,
         test_holder_metadata_written,
         test_timeout_fails_loud_with_holder_info,
+        test_unexpected_flock_error_fails_immediately,
         test_scrubbed_env_child_reenters_while_parent_holds,
         test_scrubbed_env_grandchild_reenters_while_grandparent_holds,
         test_ci_env_bypasses_lock,
         test_help_invocation_bypasses_lock,
+        test_help_invocation_bypasses_policy_load,
     ]
     for test in tests:
         test()

@@ -6410,15 +6410,25 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
 
 
 def load_github_actions_runners_config(
-    path: pathlib.Path = DEFAULT_RUNNERS_CONFIG,
+    path: pathlib.Path | None = None,
 ) -> dict[str, object]:
+    if path is None:
+        path = DEFAULT_RUNNERS_CONFIG
     if not path.exists():
         raise FileNotFoundError(f"managed runner config missing: {path}")
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     runners = data.get("runners")
     workflows = data.get("workflows")
+    meter = data.get("meter")
     if not isinstance(runners, dict) or not isinstance(workflows, dict):
         raise ValueError("ci/github-actions-runners.toml must define [runners] and [workflows]")
+    if not isinstance(meter, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [meter]")
+    meter_workflows = meter.get("included_workflows")
+    if not isinstance(meter_workflows, list) or not all(
+        isinstance(workflow, str) and workflow for workflow in meter_workflows
+    ):
+        raise ValueError("meter.included_workflows must be a non-empty string list")
     tier_to_var: dict[str, str] = {}
     managed_labels: list[str] = []
     for tier, entry in runners.items():
@@ -6442,6 +6452,7 @@ def load_github_actions_runners_config(
     return {
         "tier_to_var": tier_to_var,
         "managed_labels": sorted(set(managed_labels)),
+        "meter_included_workflows": sorted(set(meter_workflows)),
         "variables": sorted(tier_to_var.values()),
         "workflows": workflows,
     }
@@ -6543,6 +6554,7 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
         return [f"github-actions runner config invalid: {exc}"]
 
     tier_to_var = config["tier_to_var"]
+    meter_included_workflows = set(config["meter_included_workflows"])
     workflow_tables = config["workflows"]
     errors: list[str] = []
     known_workflow_keys = set(WORKFLOW_RUNNER_CONFIG_KEYS.values())
@@ -6551,6 +6563,17 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
             errors.append(
                 f"workflows.{workflow_key} in ci/github-actions-runners.toml has no workflow contract"
             )
+    managed_workflows = {
+        workflow_key
+        for workflow_key, job_table in workflow_tables.items()
+        if isinstance(job_table, dict)
+        and any(isinstance(tier, str) and tier != "github_hosted" for tier in job_table.values())
+    }
+    if meter_included_workflows != managed_workflows:
+        errors.append(
+            "meter.included_workflows must match workflows with managed runner tiers: "
+            f"expected {sorted(managed_workflows)!r}, got {sorted(meter_included_workflows)!r}"
+        )
 
     for workflow_name, workflow_text in sorted(workflows.items()):
         jobs = parse_jobs(workflow_text)

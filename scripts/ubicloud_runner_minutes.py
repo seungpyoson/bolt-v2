@@ -261,6 +261,8 @@ def base_classifications(
 
     if pr_state and pr_state.get("draft_at_run") is True:
         classifications.append("draft-stage")
+    if pr_state and pr_state.get("draft_timeline_truncated") is True:
+        classifications.append("draft-timeline-truncated")
     if fingerprint and fingerprint in prior_green_fingerprints:
         classifications.append("fingerprint-identical")
     if workflow_key_for_path(run.get("path")) == fingerprint_workflow_key and fingerprint_ambiguous:
@@ -421,7 +423,11 @@ class GhClient:
             raise MeterError(f"gh api returned invalid JSON for {path}: {exc}") from exc
         if paginate and isinstance(payload, list):
             merged: dict[str, object] = {}
+            merged_items: list[object] = []
             for page in payload:
+                if isinstance(page, list):
+                    merged_items.extend(page)
+                    continue
                 if not isinstance(page, dict):
                     continue
                 for key, value in page.items():
@@ -431,6 +437,8 @@ class GhClient:
                         merged[key].extend(value)
                     else:
                         merged[key] = value
+            if merged_items and not merged:
+                return merged_items
             return merged
         return payload
 
@@ -503,6 +511,7 @@ def fetch_runs(
     if not isinstance(runs, list):
         raise MeterError("workflow runs payload is malformed")
     filtered = [run for run in runs if isinstance(run, dict) and as_text(run.get("path")) in workflow_paths]
+    filtered = sorted(filtered, key=run_sort_key, reverse=True)
     if limit is not None:
         filtered = filtered[:limit]
     return {"workflow_runs": filtered}
@@ -622,11 +631,13 @@ def resolve_pr_states(
     pr_cache: dict[int, dict[str, object] | None] = {}
     branch_pull_cache: dict[str, list[dict[str, object]]] = {}
     timeline_cache: dict[int, list[dict[str, object]]] = {}
+    timeline_truncated_cache: dict[int, bool] = {}
     query = """
 query($owner:String!,$repo:String!,$number:Int!,$timelineLimit:Int!){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$number){
       timelineItems(first:$timelineLimit,itemTypes:[READY_FOR_REVIEW_EVENT,CONVERT_TO_DRAFT_EVENT]){
+        pageInfo{hasNextPage}
         nodes{
           __typename
           ... on ReadyForReviewEvent{createdAt}
@@ -667,6 +678,7 @@ query($owner:String!,$repo:String!,$number:Int!,$timelineLimit:Int!){
                         "state": "all",
                         "per_page": str(config.api_limits.branch_pull_requests_per_page),
                     },
+                    paginate=True,
                 )
                 if isinstance(pulls, list):
                     pull_list = pulls
@@ -691,14 +703,17 @@ query($owner:String!,$repo:String!,$number:Int!,$timelineLimit:Int!){
                     "timelineLimit": config.api_limits.draft_timeline_items,
                 },
             )
-            nodes = (
+            timeline_items = (
                 payload.get("data", {})
                 .get("repository", {})
                 .get("pullRequest", {})
                 .get("timelineItems", {})
-                .get("nodes", [])
             )
+            nodes = timeline_items.get("nodes", []) if isinstance(timeline_items, dict) else []
             timeline_cache[number] = nodes if isinstance(nodes, list) else []
+            page_info = timeline_items.get("pageInfo", {}) if isinstance(timeline_items, dict) else {}
+            timeline_truncated_cache[number] = bool(page_info.get("hasNextPage")) if isinstance(page_info, dict) else False
+        timeline_truncated = timeline_truncated_cache.get(number, False)
         run_time = parse_time(run.get("created_at"))
         draft_at_run = draft_state_at_run(run_time, pull, timeline_cache[number]) if run_time else None
         ready_events = [
@@ -711,6 +726,7 @@ query($owner:String!,$repo:String!,$number:Int!,$timelineLimit:Int!){
             "draft_at_run": draft_at_run,
             "ready_at": sorted(ready_events)[0] if ready_events else None,
             "state": as_text(pull.get("state")),
+            "draft_timeline_truncated": timeline_truncated,
         }
     return states
 
@@ -747,14 +763,16 @@ def render_text(report: dict[str, object]) -> str:
 
     lever_b_bounds = report.get("lever_b_bounds", {})
     if isinstance(lever_b_bounds, dict):
-        lines.extend(["", "Lever B bounds:"])
+        lever_b_lines: list[str] = []
         for bound_name in ("draft_stage", "draft_stage_cancelled_superseded"):
             bound = lever_b_bounds.get(bound_name)
             if not isinstance(bound, dict):
                 continue
             for tier, entry in sorted(bound.items()):
                 if isinstance(entry, dict):
-                    lines.append(f"{bound_name} {tier}: {entry['minutes']:.3f} minutes")
+                    lever_b_lines.append(f"{bound_name} {tier}: {entry['minutes']:.3f} minutes")
+        if lever_b_lines:
+            lines.extend(["", "Lever B bounds:", *lever_b_lines])
 
     debug_sessions = report.get("debug_sessions", [])
     if debug_sessions:

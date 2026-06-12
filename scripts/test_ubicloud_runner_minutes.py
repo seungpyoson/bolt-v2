@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 
@@ -211,7 +213,7 @@ def assert_meter_api_limits_come_from_config() -> None:
     assert ("actions/runs", {"per_page": "37", "created": client.api_calls[0][1]["created"]}, True) in client.api_calls
     assert ("actions/runs/81/jobs", {"per_page": "38"}, True) in client.api_calls
     assert ("actions/runs/81/artifacts", {"per_page": "39"}, True) in client.api_calls
-    assert ("pulls", {"head": "example:feature/cost", "state": "all", "per_page": "7"}, False) in client.api_calls
+    assert ("pulls", {"head": "example:feature/cost", "state": "all", "per_page": "7"}, True) in client.api_calls
     assert "timelineItems(first:$timelineLimit" in client.graphql_queries[0], client.graphql_queries
     assert client.graphql_fields[0]["timelineLimit"] == 11, client.graphql_fields
 
@@ -244,6 +246,48 @@ def assert_configured_workflow_paths_paginates_workflow_list() -> None:
         ".github/workflows/backtester-ci.yml",
         ".github/workflows/ci-runner-debug.yml",
     }, paths
+
+
+def assert_gh_client_flattens_paginated_list_pages() -> None:
+    module = load_script()
+    original_run = subprocess.run
+
+    def fake_run(cmd, text, capture_output, check):
+        assert "--paginate" in cmd, cmd
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps([[{"number": 1}], [{"number": 2}]]),
+            stderr="",
+        )
+
+    subprocess.run = fake_run
+    try:
+        payload = module.GhClient("example/repo").api("pulls", paginate=True)
+    finally:
+        subprocess.run = original_run
+    assert payload == [{"number": 1}, {"number": 2}], payload
+
+
+def assert_fetch_runs_sorts_before_limit() -> None:
+    module = load_script()
+    config = load_test_config(module)
+
+    class FakeClient:
+        def api(self, path: str, *, params=None, paginate: bool = False):
+            if path == "actions/runs":
+                return {
+                    "workflow_runs": [
+                        run_payload(90, created_at="2026-06-12T00:00:00Z"),
+                        run_payload(91, created_at="2026-06-12T01:00:00Z"),
+                    ]
+                }
+            if path == "actions/workflows":
+                return {"workflows": [{"path": ".github/workflows/ci.yml"}]}
+            raise AssertionError(f"unexpected API path: {path}")
+
+    runs_payload = module.fetch_runs(FakeClient(), config, [], 1, 1)
+    assert [run["id"] for run in runs_payload["workflow_runs"]] == [91], runs_payload
 
 
 def assert_resolve_pr_states_uses_workflow_run_pr_number() -> None:
@@ -307,7 +351,7 @@ def assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs() -> None:
             self.api_calls.append((path, params, paginate))
             assert path == "pulls", path
             assert params == {"head": "example:feature/cost", "state": "all", "per_page": "20"}, params
-            assert not paginate, paginate
+            assert paginate, paginate
             return [
                 {
                     "number": 654,
@@ -351,7 +395,7 @@ def assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs() -> None:
         config,
     )
     assert client.api_calls == [
-        ("pulls", {"head": "example:feature/cost", "state": "all", "per_page": "20"}, False)
+        ("pulls", {"head": "example:feature/cost", "state": "all", "per_page": "20"}, True)
     ], client.api_calls
     assert client.graphql_fields == [{"owner": "example", "repo": "repo", "number": 654, "timelineLimit": 100}], client.graphql_fields
     assert states["31"]["number"] == 654, states
@@ -391,7 +435,7 @@ def assert_resolve_pr_states_fallback_uses_head_repository_owner() -> None:
             self.api_calls.append((path, params, paginate))
             assert path == "pulls", path
             assert params == {"head": "forker:feature/cost", "state": "all", "per_page": "20"}, params
-            assert not paginate, paginate
+            assert paginate, paginate
             return [
                 {
                     "number": 655,
@@ -448,7 +492,7 @@ def assert_resolve_pr_states_fallback_selects_by_run_time() -> None:
             self.api_calls.append((path, params, paginate))
             assert path == "pulls", path
             assert params == {"head": "example:feature/cost", "state": "all", "per_page": "20"}, params
-            assert not paginate, paginate
+            assert paginate, paginate
             return [
                 {
                     "number": 700,
@@ -503,7 +547,7 @@ def assert_resolve_pr_states_fallback_selects_by_run_time() -> None:
         config,
     )
     assert client.api_calls == [
-        ("pulls", {"head": "example:feature/cost", "state": "all", "per_page": "20"}, False)
+        ("pulls", {"head": "example:feature/cost", "state": "all", "per_page": "20"}, True)
     ], client.api_calls
     assert states["32"]["number"] == 700, states
     assert states["33"]["number"] == 701, states
@@ -521,7 +565,7 @@ def assert_resolve_pr_states_fallback_abstains_when_no_pr_lifetime_matches() -> 
             self.api_calls.append((path, params, paginate))
             assert path == "pulls", path
             assert params == {"head": "example:feature/cost", "state": "all", "per_page": "20"}, params
-            assert not paginate, paginate
+            assert paginate, paginate
             return [
                 {
                     "number": 710,
@@ -560,6 +604,51 @@ def assert_resolve_pr_states_fallback_abstains_when_no_pr_lifetime_matches() -> 
         config,
     )
     assert states == {}, states
+
+
+def assert_timeline_truncation_is_visible_in_report() -> None:
+    module = load_script()
+    config = load_test_config(module)
+
+    class FakeClient:
+        def api(self, path: str, *, params=None, paginate: bool = False):
+            assert path == "pulls/321", path
+            return {"number": 321, "draft": True, "state": "open"}
+
+        def graphql(self, query: str, fields: dict[str, str | int]):
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "timelineItems": {
+                                "nodes": [],
+                                "pageInfo": {"hasNextPage": True},
+                            }
+                        }
+                    }
+                }
+            }
+
+    runs_payload = {"workflow_runs": [run_payload(37, pull_requests=[{"number": 321}])]}
+    states = module.resolve_pr_states(FakeClient(), "example/repo", runs_payload, config)
+    assert states["37"]["draft_timeline_truncated"] is True, states
+
+    report = module.build_report(
+        repo="example/repo",
+        runs_payload=runs_payload,
+        jobs_payload_by_run_id={
+            37: {
+                "jobs": [
+                    job_payload("nextest shard 1 of 4", "ubicloud-standard-4", "2026-06-12T00:00:00Z", "2026-06-12T00:01:00Z")
+                ]
+            }
+        },
+        artifacts_payload_by_run_id={37: {"artifacts": []}},
+        pr_state_by_run_id=states,
+        runner_config=config,
+        generated_at="2026-06-12T02:00:00Z",
+    )
+    assert "draft-timeline-truncated" in report["runs"][0]["classifications"], report["runs"][0]
 
 
 def assert_cancelled_superseded_requires_pull_request_pr_match_and_overlap() -> None:
@@ -696,6 +785,11 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
             created_at="2026-06-12T01:45:00Z",
             updated_at="2026-06-12T01:46:00Z",
         ),
+        run_payload(
+            17,
+            created_at="2026-06-12T01:50:00Z",
+            updated_at="2026-06-12T01:54:00Z",
+        ),
     ]
     jobs_by_run_id = {
         10: {
@@ -733,6 +827,11 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
         },
         15: {"jobs": []},
         16: {"jobs": []},
+        17: {
+            "jobs": [
+                job_payload("nextest shard 1 of 4", "ubicloud-standard-4", "2026-06-12T01:50:00Z", "2026-06-12T01:53:00Z"),
+            ]
+        },
     }
     artifacts_by_run_id = {
         10: {"artifacts": []},
@@ -747,11 +846,13 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
                 artifact_payload("nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-inputs-c"),
             ]
         },
+        17: {"artifacts": []},
     }
     pr_state_by_run_id = {
         10: {"number": 648, "draft_at_run": True, "ready_at": "2026-06-12T00:04:00Z"},
         11: {"number": 648, "draft_at_run": False, "ready_at": "2026-06-12T00:04:00Z"},
         12: {"number": 648, "draft_at_run": False, "ready_at": "2026-06-12T00:04:00Z"},
+        17: {"number": 649, "draft_at_run": True, "ready_at": None},
     }
 
     report = module.build_report(
@@ -773,14 +874,16 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
     assert "failed" in runs_by_id[15]["classifications"], runs_by_id[15]
     assert "fingerprint-ambiguous" in runs_by_id[16]["classifications"], runs_by_id[16]
     assert "fingerprint-unknown" not in runs_by_id[16]["classifications"], runs_by_id[16]
+    assert "draft-stage" in runs_by_id[17]["classifications"], runs_by_id[17]
+    assert "cancelled-superseded" not in runs_by_id[17]["classifications"], runs_by_id[17]
     assert runs_by_id[11]["fingerprint"] == "v1-Linux-X64-test-profile-shards-4-inputs-a", runs_by_id[11]
     assert runs_by_id[13]["workflow_key"] == "ci_runner_debug", runs_by_id[13]
     assert runs_by_id[14]["workflow_key"] == "backtester_ci", runs_by_id[14]
 
     totals = report["totals_by_tier"]
-    assert totals["managed_heavy"]["minutes"] == 51.0, totals
+    assert totals["managed_heavy"]["minutes"] == 54.0, totals
     assert totals["managed_light"]["minutes"] == 3.0, totals
-    assert report["lever_b_bounds"]["draft_stage"]["managed_heavy"]["minutes"] == 2.0, report["lever_b_bounds"]
+    assert report["lever_b_bounds"]["draft_stage"]["managed_heavy"]["minutes"] == 5.0, report["lever_b_bounds"]
     assert report["lever_b_bounds"]["draft_stage_cancelled_superseded"]["managed_heavy"]["minutes"] == 2.0, report["lever_b_bounds"]
     assert report["debug_sessions"][0]["id"] == 13, report["debug_sessions"]
 
@@ -809,18 +912,22 @@ def assert_unknown_labels_are_reported_without_crashing() -> None:
     run = report["runs"][0]
     assert run["jobs"][0]["tier"] == "unknown", run
     assert run["jobs"][0]["runner_label"] == "custom-runner", run
+    assert "Lever B bounds:" not in module.render_text(report), module.render_text(report)
 
 
 def main() -> int:
     assert_extract_fingerprint_ignores_empty_suffix()
     assert_meter_api_limits_come_from_config()
     assert_configured_workflow_paths_paginates_workflow_list()
+    assert_gh_client_flattens_paginated_list_pages()
+    assert_fetch_runs_sorts_before_limit()
     assert_resolve_pr_states_uses_workflow_run_pr_number()
     assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs()
     assert_resolve_pr_states_abstains_without_pr_refs_or_head_owner()
     assert_resolve_pr_states_fallback_uses_head_repository_owner()
     assert_resolve_pr_states_fallback_selects_by_run_time()
     assert_resolve_pr_states_fallback_abstains_when_no_pr_lifetime_matches()
+    assert_timeline_truncation_is_visible_in_report()
     assert_cancelled_superseded_requires_pull_request_pr_match_and_overlap()
     assert_build_report_classifies_runs_and_totals_minutes()
     assert_unknown_labels_are_reported_without_crashing()

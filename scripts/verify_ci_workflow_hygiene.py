@@ -6430,6 +6430,19 @@ def load_github_actions_runners_config(
         isinstance(workflow, str) and workflow for workflow in meter_workflows
     ):
         raise ValueError("meter.included_workflows must be a non-empty string list")
+    meter_api_limits = meter.get("api_limits")
+    if not isinstance(meter_api_limits, dict):
+        raise ValueError("meter.api_limits must be a table")
+    for key in (
+        "workflow_runs_per_page",
+        "run_jobs_per_page",
+        "run_artifacts_per_page",
+        "branch_pull_requests_per_page",
+        "draft_timeline_items",
+    ):
+        value = meter_api_limits.get(key)
+        if not isinstance(value, int) or value <= 0:
+            raise ValueError(f"meter.api_limits.{key} must be a positive integer")
     tier_to_var: dict[str, str] = {}
     managed_labels: list[str] = []
     for tier, entry in runners.items():

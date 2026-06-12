@@ -812,6 +812,37 @@ def assert_runner_contract_requires_meter_workflows_for_managed_workflows() -> N
         raise AssertionError(f"runner contract must reject unmanaged meter workflow drift, got: {errors}")
 
 
+def assert_runner_contract_requires_meter_api_limits() -> None:
+    verifier = load_verifier()
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
+        config_text = original_config.read_text()
+        config_path.write_text(
+            config_text.replace(
+                """
+[meter.api_limits]
+workflow_runs_per_page = 100
+run_jobs_per_page = 100
+run_artifacts_per_page = 100
+branch_pull_requests_per_page = 20
+draft_timeline_items = 100
+""",
+                "",
+            ),
+            encoding="utf-8",
+        )
+        verifier.DEFAULT_RUNNERS_CONFIG = config_path
+        try:
+            errors = verifier.verify_github_actions_runner_contract(
+                {".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml")}
+            )
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    if not any("meter.api_limits" in error for error in errors):
+        raise AssertionError(f"runner contract must reject missing meter api limits, got: {errors}")
+
+
 def assert_debug_workflow_rejects_non_manual_trigger() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(DEBUG_WORKFLOW_PATH)
@@ -5584,6 +5615,7 @@ def main() -> int:
     assert_runner_contract_rejects_missing_and_extra_jobs()
     assert_runner_contract_rejects_unmapped_workflow_jobs()
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()
+    assert_runner_contract_requires_meter_api_limits()
     assert_debug_workflow_rejects_non_manual_trigger()
     assert_debug_workflow_checks_each_ssh_runner_step()
     assert_bootstrap_uses_onepassword_key_generation()

@@ -1852,7 +1852,7 @@ fn decimal_to_string(value: i128, scale: i8) -> Result<String> {
         return Ok(value.to_string());
     }
     let sign = if value < 0 { "-" } else { "" };
-    let absolute = value.abs().to_string();
+    let absolute = value.unsigned_abs().to_string();
     if absolute.len() <= scale {
         let padded = format!("{:0>width$}", absolute, width = scale + 1);
         let split = padded.len() - scale;
@@ -1908,5 +1908,23 @@ impl From<PmxtOneOffTickSide> for PolymarketOrderSide {
             PmxtOneOffTickSide::Buy => Self::Buy,
             PmxtOneOffTickSide::Sell => Self::Sell,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decimal_to_string;
+
+    #[test]
+    fn decimal_to_string_handles_i128_min_without_overflow() {
+        // i128::MIN has no positive i128 counterpart; abs() would panic in
+        // debug and wrap in release. unsigned_abs() must render it exactly.
+        let rendered = decimal_to_string(i128::MIN, 2).expect("render i128::MIN");
+        assert_eq!(rendered, "-1701411834604692317316873037158841057.28");
+        let rendered_scale_zero = decimal_to_string(i128::MIN, 0).expect("render scale 0");
+        assert_eq!(
+            rendered_scale_zero,
+            "-170141183460469231731687303715884105728"
+        );
     }
 }

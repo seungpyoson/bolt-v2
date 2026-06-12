@@ -177,6 +177,21 @@ def test_holder_metadata_written() -> None:
         assert payload["lane"] == "hold-runner"
 
 
+def test_timeout_fails_loud_with_holder_info() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(HOLD_RUNNER, tmp, str(sentinel), "15")
+        _wait_for(sentinel)
+        waiter = _spawn(ONCE_RUNNER, tmp, "2")
+        out, err = waiter.communicate(timeout=30)
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert waiter.returncode == 1, f"expected exit 1, got {waiter.returncode}"
+        assert "FAILED to acquire" in err
+        assert "hold-runner" in err, "timeout message must name the holding lane"
+        assert str(holder.pid) in err, "timeout message must name the holding pid"
+
+
 def main() -> int:
     tests = [
         test_valid_lane_policy_passes,
@@ -190,6 +205,7 @@ def main() -> int:
         test_uncontended_acquire_is_fast,
         test_second_acquire_queues_until_release,
         test_holder_metadata_written,
+        test_timeout_fails_loud_with_holder_info,
     ]
     for test in tests:
         test()

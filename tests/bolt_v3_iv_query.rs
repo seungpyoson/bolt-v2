@@ -3227,7 +3227,9 @@ fn derived_iv_query_keeps_unmapped_inputs_when_generation_overrides_are_partial(
         2,
     )]))
     .with_helper_policies(vec![helper_policy()])
-    .with_derived_input_policies(vec![profile_resolving_derived_input_policy()])
+    .with_derived_input_policies(vec![query_supplied_derived_input_policy(
+        "configured-derived-input-policy",
+    )])
     .with_derived_inputs(vec![complete_inputs()]);
 
     let product = handle

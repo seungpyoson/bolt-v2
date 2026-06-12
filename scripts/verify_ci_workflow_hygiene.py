@@ -272,7 +272,6 @@ TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"
 TEST_ARCHIVE_EXTRACT_ROOT_COMMAND = 'archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"'
 TEST_ARCHIVE_EXTRACT_ROOT_OUTPUT = 'echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"'
 TEST_ARCHIVE_KEY_INPUTS = (
-    "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
     "'Cargo.lock'",
     "'Cargo.toml'",
     "'rust-toolchain.toml'",
@@ -290,6 +289,9 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'crates/**'",
     "'specs/**/*.md'",
 )
+TEST_ARCHIVE_KEY_PREFIX = "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
+TEST_ARCHIVE_FINGERPRINT_PREFIX = "nextest-archive-fingerprint-${{ hashFiles("
+TEST_ARCHIVE_FINGERPRINT_PATH = ".nextest-archive-fingerprint/cache-key.txt"
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
     "'.github/actions/setup-environment/action.yml'",
@@ -301,7 +303,6 @@ TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae"
-TEST_ARCHIVE_UPLOAD_ACTION = "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
 SHARED_REGISTRY_CACHE_KEY = "cargo-registry-git-v1"
@@ -743,6 +744,13 @@ def block_has_input(block: list[str], name: str, value: str | None = None) -> bo
     return False
 
 
+def block_input_value(block: list[str], name: str) -> str | None:
+    for item_name, item_value in block_input_items(block):
+        if item_name == name:
+            return unquote_yaml_scalar(item_value)
+    return None
+
+
 def job_has_setup_input(job_lines: list[str], name: str, value: str | None = None) -> bool:
     return any(block_has_input(block, name, value) for block in setup_action_blocks(job_lines))
 
@@ -826,6 +834,42 @@ def block_key_value_has_prefix(block: list[str], prefix: str) -> bool:
         if name == "key" and prefix in value:
             return True
     return False
+
+
+def block_key_value_contains_all(block: list[str], fragments: tuple[str, ...]) -> bool:
+    value = block_input_value(block, "key")
+    if value is None:
+        return False
+    return all(fragment in value for fragment in fragments)
+
+
+def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
+    blocks = step_blocks(job_lines)
+    run_blocks = [
+        block
+        for block in blocks
+        if TEST_ARCHIVE_FINGERPRINT_PATH in uncommented_text(block)
+        and TEST_ARCHIVE_KEY_PREFIX in uncommented_text(block)
+    ]
+    upload_blocks = [
+        block
+        for block in action_blocks(job_lines, "actions/upload-artifact@")
+        if block_has_input(block, "path", TEST_ARCHIVE_FINGERPRINT_PATH)
+    ]
+    upload_names = [block_input_value(block, "name") or "" for block in upload_blocks]
+
+    if not run_blocks or not upload_blocks:
+        return ["test-archive must publish nextest archive fingerprint"]
+    if not any(TEST_ARCHIVE_FINGERPRINT_PREFIX in name for name in upload_names):
+        return ["test-archive must publish nextest archive fingerprint"]
+
+    run_text = "\n".join(uncommented_text(block) for block in run_blocks)
+    names_text = "\n".join(upload_names)
+    if not all(fragment in run_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
+        return ["test-archive fingerprint must include Rust and test graph inputs"]
+    if not all(fragment in names_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
+        return ["test-archive fingerprint must include Rust and test graph inputs"]
+    return []
 
 
 def block_declares_restore_keys_prefix(block: list[str], prefix: str) -> bool:
@@ -5790,9 +5834,29 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "test-archive" in jobs:
         archive_lines = jobs["test-archive"]
         archive_text = uncommented_text(archive_lines)
+        archive_cache_blocks = [
+            block
+            for block in (
+                action_blocks(archive_lines, "actions/cache/restore@")
+                + action_blocks(archive_lines, "actions/cache/save@")
+            )
+            if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
+        ]
+        archive_upload_blocks = [
+            block
+            for block in action_blocks(archive_lines, "actions/upload-artifact@")
+            if block_has_input(block, "name", "nextest-archive")
+            and block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
+        ]
         if TEST_ARCHIVE_PATH not in archive_text:
             errors.append("test-archive must declare nextest archive path")
-        if not all(input_fragment in archive_text for input_fragment in TEST_ARCHIVE_KEY_INPUTS):
+        if not archive_cache_blocks or not all(
+            block_key_value_contains_all(
+                block,
+                (TEST_ARCHIVE_KEY_PREFIX, *TEST_ARCHIVE_KEY_INPUTS),
+            )
+            for block in archive_cache_blocks
+        ):
             errors.append("test-archive cache key must include Rust and test graph inputs")
         if "include-managed-target-dir:" in archive_text:
             errors.append("test-archive must not opt into managed target dir")
@@ -5802,7 +5866,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must restore nextest archive cache")
         if TEST_ARCHIVE_SAVE_ACTION not in archive_text:
             errors.append("test-archive must save nextest archive cache")
-        if TEST_ARCHIVE_UPLOAD_ACTION not in archive_text:
+        if not archive_upload_blocks:
             errors.append("test-archive must upload nextest archive artifact")
         if "restore-keys:" in archive_text:
             errors.append("test-archive cache must not use restore-keys")
@@ -5812,6 +5876,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive build must be skipped on archive cache hit")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
+        errors.extend(test_archive_fingerprint_errors(archive_lines))
 
     if "test-shards" in jobs:
         test_lines = jobs["test-shards"]

@@ -260,8 +260,10 @@ def validate_local_compile_policy(data: dict[str, Any]) -> None:
     if refused_managed != {"test", "clippy", "build"}:
         raise PolicyError("local_compile_policy.refused_managed_commands must be test/clippy/build")
     refused_cargo = set(string_array_policy_value(policy, "refused_cargo_subcommands"))
-    if refused_cargo != CARGO_DISK_PREFLIGHT_SUBCOMMANDS:
-        raise PolicyError("local_compile_policy.refused_cargo_subcommands must match disk-preflight subcommands")
+    if refused_cargo != CARGO_DISK_PREFLIGHT_SUBCOMMANDS | CARGO_ALIAS_SUBCOMMANDS:
+        raise PolicyError(
+            "local_compile_policy.refused_cargo_subcommands must match disk-preflight and alias subcommands"
+        )
 
 
 def validate_remote_verification_policy(data: dict[str, Any]) -> None:

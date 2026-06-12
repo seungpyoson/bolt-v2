@@ -366,6 +366,7 @@ def assert_shared_cargo_scanner_helpers_match_current_verifiers() -> None:
     cargo_subcommand_cases = [
         (["--manifest-path", "Cargo.toml", "test", "--", "--target-dir", "/tmp/raw"], (2, "test")),
         (["--manifest-path=Cargo.toml", "test"], (1, "test")),
+        (["-j", "4", "test"], (2, "test")),
         (["--locked", "nextest", "run"], (1, "nextest")),
         (["--unknown-cargo-flag", "build"], (1, "build")),
         (["--version", "build"], (1, "build")),

@@ -83,6 +83,16 @@ def test_heartbeat_must_be_below_timeout() -> None:
     _expect_policy_error({"local_lane_policy": policy}, "less than acquire_timeout_seconds")
 
 
+def test_poll_interval_must_not_exceed_heartbeat() -> None:
+    policy = _valid_lane_policy()
+    policy["heartbeat_seconds"] = 5
+    policy["poll_interval_seconds"] = 6
+    _expect_policy_error(
+        {"local_lane_policy": policy},
+        "poll_interval_seconds must be less than or equal to heartbeat_seconds",
+    )
+
+
 def test_non_positive_intervals_rejected() -> None:
     for key in ("acquire_timeout_seconds", "heartbeat_seconds", "poll_interval_seconds"):
         policy = _valid_lane_policy()
@@ -93,6 +103,12 @@ def test_non_positive_intervals_rejected() -> None:
 def test_repo_policy_file_declares_lane_policy() -> None:
     data = RV.load_policy(REPO_ROOT)
     assert "local_lane_policy" in data, "ci/rust-verification.toml must declare [local_lane_policy]"
+
+
+def test_subcrate_lane_policy_matches_repo_policy() -> None:
+    data = RV.load_policy(REPO_ROOT)
+    subcrate = RV.load_policy(REPO_ROOT / "crates/backtesting-vertical-slice")
+    assert subcrate["local_lane_policy"] == data["local_lane_policy"]
 
 
 # Subprocess runner: acquire, write a sentinel, hold for --hold seconds, exit.
@@ -210,6 +226,18 @@ result = lane_governor.acquire(
 print("ci-result", result is None, time.monotonic() - t0)
 """
 
+CI_FALSE_RUNNER = """
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+t0 = time.monotonic()
+result = lane_governor.acquire(
+    "ci-false-runner", lock_dir=sys.argv[2],
+    acquire_timeout_seconds=1, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+print("ci-false-result", result is None, time.monotonic() - t0)
+"""
+
 HELP_RUNNER = """
 import sys, time
 scripts_dir, lock_dir = sys.argv[1], sys.argv[2]
@@ -275,6 +303,7 @@ def test_second_acquire_queues_until_release() -> None:
         waited = time.monotonic() - t0
         holder.communicate(timeout=10)
         assert waiter.returncode == 0, err
+        assert "acquired" in out
         assert waited >= 2.0, f"waiter should queue behind holder, waited only {waited:.2f}s"
 
 
@@ -373,6 +402,21 @@ def test_ci_env_bypasses_lock() -> None:
         assert elapsed < 5.0, "CI bypass must not wait"
 
 
+def test_ci_false_env_does_not_bypass_lock() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(HOLD_RUNNER, tmp, str(sentinel), "10")
+        _wait_for(sentinel)
+        env = dict(os.environ)
+        env["GITHUB_ACTIONS"] = "false"
+        ci = _spawn(CI_FALSE_RUNNER, tmp, env=env)
+        out, err = ci.communicate(timeout=10)
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert ci.returncode == 1, f"GITHUB_ACTIONS=false must not bypass the lane lock: {out}"
+        assert "FAILED to acquire" in err
+
+
 def test_help_invocation_bypasses_lock() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         sentinel = Path(tmp) / "held"
@@ -408,8 +452,10 @@ def main() -> int:
         test_relative_lock_dir_rejected,
         test_env_expansion_lock_dir_rejected,
         test_heartbeat_must_be_below_timeout,
+        test_poll_interval_must_not_exceed_heartbeat,
         test_non_positive_intervals_rejected,
         test_repo_policy_file_declares_lane_policy,
+        test_subcrate_lane_policy_matches_repo_policy,
         test_uncontended_acquire_is_fast,
         test_second_acquire_queues_until_release,
         test_holder_metadata_written,
@@ -418,6 +464,7 @@ def main() -> int:
         test_scrubbed_env_child_reenters_while_parent_holds,
         test_scrubbed_env_grandchild_reenters_while_grandparent_holds,
         test_ci_env_bypasses_lock,
+        test_ci_false_env_does_not_bypass_lock,
         test_help_invocation_bypasses_lock,
         test_help_invocation_bypasses_policy_load,
     ]

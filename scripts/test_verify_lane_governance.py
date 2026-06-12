@@ -92,12 +92,56 @@ if __name__ == "__main__":
     raise SystemExit(main())
 '''
 
+ACQUIRE_WITH_POSITIONAL_ARG = '''
+def main():
+    return 0
+
+if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire("custom-lane")
+    raise SystemExit(main())
+'''
+
 MISSING_LANE_GOVERNOR_IMPORT = '''
 def main():
     return 0
 
 if __name__ == "__main__":
     lane_governor.acquire()
+    raise SystemExit(main())
+'''
+
+ALIASED_LANE_GOVERNOR_IMPORT = '''
+def main():
+    return 0
+
+if __name__ == "__main__":
+    import lane_governor as lg
+
+    lg.acquire()
+    raise SystemExit(main())
+'''
+
+MULTI_NAME_LANE_GOVERNOR_IMPORT = '''
+def main():
+    return 0
+
+if __name__ == "__main__":
+    import lane_governor, os
+
+    lane_governor.acquire()
+    raise SystemExit(main())
+'''
+
+FROM_IMPORT_ACQUIRE = '''
+def main():
+    return 0
+
+if __name__ == "__main__":
+    from lane_governor import acquire
+
+    acquire()
     raise SystemExit(main())
 '''
 
@@ -196,6 +240,26 @@ def test_acquire_with_policy_override_flagged() -> None:
     assert len(violations) == 1 and "lane_governor.acquire()" in violations[0]
 
 
+def test_acquire_with_positional_arg_flagged() -> None:
+    violations = _violations({"verify_sample.py": ACQUIRE_WITH_POSITIONAL_ARG})
+    assert len(violations) == 1 and "lane_governor.acquire()" in violations[0]
+
+
+def test_aliased_lane_governor_import_flagged() -> None:
+    violations = _violations({"verify_sample.py": ALIASED_LANE_GOVERNOR_IMPORT})
+    assert len(violations) == 1 and "import lane_governor" in violations[0]
+
+
+def test_multi_name_lane_governor_import_flagged() -> None:
+    violations = _violations({"verify_sample.py": MULTI_NAME_LANE_GOVERNOR_IMPORT})
+    assert len(violations) == 1 and "import lane_governor" in violations[0]
+
+
+def test_from_import_acquire_flagged() -> None:
+    violations = _violations({"verify_sample.py": FROM_IMPORT_ACQUIRE})
+    assert len(violations) == 1 and "import lane_governor" in violations[0]
+
+
 def test_module_without_main_is_flagged() -> None:
     violations = _violations({"verify_sample.py": NO_MAIN_BLOCK})
     assert len(violations) == 1 and "__main__" in violations[0]
@@ -216,7 +280,10 @@ def test_non_matching_names_ignored() -> None:
 
 
 def test_real_scripts_dir_is_clean() -> None:
-    assert CHECKER.lane_governance_violations(Path(__file__).resolve().parent) == []
+    scripts_dir = Path(__file__).resolve().parent
+    governed = sorted(list(scripts_dir.glob("verify_*.py")) + list(scripts_dir.glob("test_*.py")))
+    assert governed, "real scripts dir must contain governed verify_*.py/test_*.py files"
+    assert CHECKER.lane_governance_violations(scripts_dir) == []
 
 
 def main() -> int:
@@ -230,6 +297,10 @@ def main() -> int:
         test_lane_governor_import_after_other_statement_flagged,
         test_acquire_after_other_statement_flagged,
         test_acquire_with_policy_override_flagged,
+        test_acquire_with_positional_arg_flagged,
+        test_aliased_lane_governor_import_flagged,
+        test_multi_name_lane_governor_import_flagged,
+        test_from_import_acquire_flagged,
         test_module_without_main_is_flagged,
         test_top_level_work_without_main_is_flagged,
         test_fake_constant_main_guard_is_flagged,

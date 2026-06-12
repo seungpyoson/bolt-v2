@@ -157,7 +157,7 @@ def acquire(
         return None
     policy = rust_verification.load_policy(REPO_ROOT)
     lane_policy = policy["local_lane_policy"]
-    if honor_ci_env and os.environ.get(lane_policy["allowed_ci_env"]):
+    if honor_ci_env and os.environ.get(lane_policy["allowed_ci_env"]) == "true":
         return None
     label = lane or Path(sys.argv[0]).name or "unknown-lane"
     directory = Path(lock_dir) if lock_dir is not None else Path(lane_policy["lock_dir"])

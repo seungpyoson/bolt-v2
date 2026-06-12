@@ -5,6 +5,11 @@ Rule: every scripts/verify_*.py and scripts/test_*.py file must have a
 module-level ``if __name__ == "__main__":`` block whose first two statements are
 ``import lane_governor`` and a bare ``lane_governor.acquire()`` call. This makes
 lane-coverage drift a CI failure instead of a convention.
+
+This is an entrypoint-governance check, not a general module side-effect
+analyzer. Governed files must keep CPU-heavy work behind ``main()``; the checker
+does not attempt to classify import-time setup such as fixture constants or
+dynamic test-module loading.
 """
 
 from __future__ import annotations

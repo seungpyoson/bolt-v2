@@ -291,6 +291,10 @@ def validate_local_lane_policy(data: dict[str, Any]) -> None:
     poll = policy.get("poll_interval_seconds")
     if not isinstance(poll, (int, float)) or isinstance(poll, bool) or poll <= 0:
         raise PolicyError("local_lane_policy.poll_interval_seconds must be a positive number")
+    if poll > values["heartbeat_seconds"]:
+        raise PolicyError(
+            "local_lane_policy.poll_interval_seconds must be less than or equal to heartbeat_seconds"
+        )
     if values["heartbeat_seconds"] >= values["acquire_timeout_seconds"]:
         raise PolicyError("local_lane_policy.heartbeat_seconds must be less than acquire_timeout_seconds")
 

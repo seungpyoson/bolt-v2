@@ -4131,6 +4131,13 @@ def main() -> int:
         ),
     )
     assert_error(
+        "test-archive cache and fingerprint keys must match",
+        BASE_WORKFLOW.replace(
+            "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock'",
+            "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('extra-input.txt', 'Cargo.lock'",
+        ),
+    )
+    assert_error(
         "test-shards must download nextest archive artifact",
         replace_once(
             BASE_WORKFLOW,

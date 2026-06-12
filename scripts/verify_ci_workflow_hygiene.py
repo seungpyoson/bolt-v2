@@ -843,8 +843,48 @@ def block_key_value_contains_all(block: list[str], fragments: tuple[str, ...]) -
     return all(fragment in value for fragment in fragments)
 
 
+def normalized_hash_files_args(text: str) -> str | None:
+    marker = "hashFiles("
+    start = text.find(marker)
+    if start == -1:
+        return None
+    args_start = start + len(marker)
+    args_end = text.find(")", args_start)
+    if args_end == -1:
+        return None
+    args = text[args_start:args_end]
+    return ",".join(part.strip() for part in args.split(",") if part.strip())
+
+
+def nextest_archive_key_identity(text: str) -> str | None:
+    key_start = text.find("nextest-archive-v")
+    if key_start == -1:
+        key_start = text.find("nextest-archive-fingerprint-v")
+    if key_start == -1:
+        return None
+    marker = "hashFiles("
+    hash_start = text.find(marker, key_start)
+    if hash_start == -1:
+        return None
+    prefix = text[key_start:hash_start]
+    if prefix.startswith("nextest-archive-fingerprint-"):
+        prefix = "nextest-archive-" + prefix[len("nextest-archive-fingerprint-") :]
+    args = normalized_hash_files_args(text[hash_start:])
+    if args is None:
+        return None
+    return f"{prefix}{marker}{args})"
+
+
 def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
     blocks = step_blocks(job_lines)
+    cache_blocks = [
+        block
+        for block in (
+            action_blocks(job_lines, "actions/cache/restore@")
+            + action_blocks(job_lines, "actions/cache/save@")
+        )
+        if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
+    ]
     run_blocks = [
         block
         for block in blocks
@@ -869,6 +909,19 @@ def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
         return ["test-archive fingerprint must include Rust and test graph inputs"]
     if not all(fragment in names_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
         return ["test-archive fingerprint must include Rust and test graph inputs"]
+
+    key_identities = [
+        identity
+        for identity in (
+            [nextest_archive_key_identity(block_input_value(block, "key") or "") for block in cache_blocks]
+            + [nextest_archive_key_identity(uncommented_text(block)) for block in run_blocks]
+            + [nextest_archive_key_identity(name) for name in upload_names]
+        )
+        if identity is not None
+    ]
+    expected_key_count = len(cache_blocks) + len(run_blocks) + len(upload_names)
+    if len(key_identities) != expected_key_count or len(set(key_identities)) != 1:
+        return ["test-archive cache and fingerprint keys must match"]
     return []
 
 

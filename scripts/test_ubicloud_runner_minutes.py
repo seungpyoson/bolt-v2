@@ -234,6 +234,60 @@ def assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs() -> None:
     assert states["31"]["ready_at"] == "2026-06-12T00:05:00Z", states
 
 
+def assert_resolve_pr_states_fallback_uses_head_repository_owner() -> None:
+    module = load_script()
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.api_calls = []
+
+        def api(self, path: str, *, params=None, paginate: bool = False):
+            self.api_calls.append((path, params, paginate))
+            assert path == "pulls", path
+            assert params == {"head": "forker:feature/cost", "state": "all", "per_page": "20"}, params
+            assert not paginate, paginate
+            return [
+                {
+                    "number": 655,
+                    "draft": False,
+                    "state": "open",
+                    "created_at": "2026-06-11T00:00:00Z",
+                    "closed_at": None,
+                    "updated_at": "2026-06-12T00:10:00Z",
+                }
+            ]
+
+        def graphql(self, query: str, fields: dict[str, str | int]):
+            assert fields["number"] == 655, fields
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "timelineItems": {
+                                "nodes": [],
+                            }
+                        }
+                    }
+                }
+            }
+
+    client = FakeClient()
+    states = module.resolve_pr_states(
+        client,
+        "example/repo",
+        {
+            "workflow_runs": [
+                run_payload(
+                    34,
+                    pull_requests=[],
+                    head_repository={"owner": {"login": "forker"}, "full_name": "forker/repo"},
+                )
+            ]
+        },
+    )
+    assert states["34"]["number"] == 655, states
+
+
 def assert_resolve_pr_states_fallback_selects_by_run_time() -> None:
     module = load_script()
 
@@ -296,6 +350,96 @@ def assert_resolve_pr_states_fallback_selects_by_run_time() -> None:
     assert states["33"]["number"] == 701, states
 
 
+def assert_cancelled_superseded_requires_pull_request_pr_match_and_overlap() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_path = pathlib.Path(tmpdir) / "github-actions-runners.toml"
+        config_path.write_text(runner_config_text(), encoding="utf-8")
+        config = module.load_runner_config(config_path)
+
+    def report_for(runs, pr_states):
+        jobs_by_run_id = {
+            run["id"]: {
+                "jobs": [
+                    job_payload("nextest shard 1 of 4", "ubicloud-standard-4", "2026-06-12T00:00:00Z", "2026-06-12T00:01:00Z")
+                ]
+            }
+            for run in runs
+        }
+        artifacts_by_run_id = {run["id"]: {"artifacts": []} for run in runs}
+        return module.build_report(
+            repo="example/repo",
+            runs_payload={"workflow_runs": runs},
+            jobs_payload_by_run_id=jobs_by_run_id,
+            artifacts_payload_by_run_id=artifacts_by_run_id,
+            pr_state_by_run_id=pr_states,
+            runner_config=config,
+            generated_at="2026-06-12T02:00:00Z",
+        )
+
+    push_report = report_for(
+        [
+            run_payload(
+                40,
+                event="push",
+                head_branch="main",
+                conclusion="cancelled",
+                created_at="2026-06-12T00:00:00Z",
+                updated_at="2026-06-12T00:05:00Z",
+            ),
+            run_payload(
+                41,
+                event="push",
+                head_branch="main",
+                created_at="2026-06-12T00:02:00Z",
+                updated_at="2026-06-12T00:06:00Z",
+            ),
+        ],
+        {},
+    )
+    push_run = {run["id"]: run for run in push_report["runs"]}[40]
+    assert "cancelled" in push_run["classifications"], push_run
+    assert "cancelled-superseded" not in push_run["classifications"], push_run
+
+    different_pr_report = report_for(
+        [
+            run_payload(
+                50,
+                conclusion="cancelled",
+                created_at="2026-06-12T00:00:00Z",
+                updated_at="2026-06-12T00:05:00Z",
+            ),
+            run_payload(51, created_at="2026-06-12T00:02:00Z", updated_at="2026-06-12T00:06:00Z"),
+        ],
+        {
+            50: {"number": 100, "draft_at_run": False, "ready_at": None},
+            51: {"number": 101, "draft_at_run": False, "ready_at": None},
+        },
+    )
+    old_run = {run["id"]: run for run in different_pr_report["runs"]}[50]
+    assert "cancelled" in old_run["classifications"], old_run
+    assert "cancelled-superseded" not in old_run["classifications"], old_run
+
+    stale_successor_report = report_for(
+        [
+            run_payload(
+                60,
+                conclusion="cancelled",
+                created_at="2026-06-12T00:00:00Z",
+                updated_at="2026-06-12T00:05:00Z",
+            ),
+            run_payload(61, created_at="2026-06-12T00:06:00Z", updated_at="2026-06-12T00:10:00Z"),
+        ],
+        {
+            60: {"number": 200, "draft_at_run": False, "ready_at": None},
+            61: {"number": 200, "draft_at_run": False, "ready_at": None},
+        },
+    )
+    stale_run = {run["id"]: run for run in stale_successor_report["runs"]}[60]
+    assert "cancelled" in stale_run["classifications"], stale_run
+    assert "cancelled-superseded" not in stale_run["classifications"], stale_run
+
+
 def assert_build_report_classifies_runs_and_totals_minutes() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -309,7 +453,7 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
             10,
             conclusion="cancelled",
             created_at="2026-06-12T00:00:00Z",
-            updated_at="2026-06-12T00:03:00Z",
+            updated_at="2026-06-12T00:06:00Z",
         ),
         run_payload(11, created_at="2026-06-12T00:05:00Z", updated_at="2026-06-12T00:17:00Z"),
         run_payload(12, created_at="2026-06-12T00:20:00Z", updated_at="2026-06-12T00:27:00Z"),
@@ -420,7 +564,9 @@ def main() -> int:
     assert_configured_workflow_paths_paginates_workflow_list()
     assert_resolve_pr_states_uses_workflow_run_pr_number()
     assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs()
+    assert_resolve_pr_states_fallback_uses_head_repository_owner()
     assert_resolve_pr_states_fallback_selects_by_run_time()
+    assert_cancelled_superseded_requires_pull_request_pr_match_and_overlap()
     assert_build_report_classifies_runs_and_totals_minutes()
     assert_unknown_labels_are_reported_without_crashing()
     print("OK: Ubicloud runner-minute meter self-tests passed.")

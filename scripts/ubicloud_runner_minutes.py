@@ -158,24 +158,43 @@ def run_sort_key(run: dict[str, object]) -> tuple[dt.datetime, int]:
     return (created, run_id)
 
 
-def run_is_newer_same_pr_workflow(candidate: dict[str, object], run: dict[str, object]) -> bool:
+def lookup_by_run_id(mapping: dict[int | str, dict[str, object]], run_id: object) -> dict[str, object] | None:
+    run_id_text = as_text(run_id)
+    entry = mapping.get(run_id_text)
+    if entry is not None:
+        return entry
+    if run_id_text.isdecimal():
+        return mapping.get(int(run_id_text))
+    return None
+
+
+def run_is_newer_same_pr_workflow(
+    candidate: dict[str, object],
+    run: dict[str, object],
+    candidate_pr_state: dict[str, object] | None,
+    run_pr_state: dict[str, object] | None,
+) -> bool:
+    if as_text(run.get("event")) != "pull_request" or as_text(candidate.get("event")) != "pull_request":
+        return False
     if workflow_key_for_path(candidate.get("path")) != workflow_key_for_path(run.get("path")):
         return False
-    if as_text(candidate.get("event")) != as_text(run.get("event")):
+    if not candidate_pr_state or not run_pr_state:
         return False
-    if as_text(candidate.get("head_branch")) != as_text(run.get("head_branch")):
+    if candidate_pr_state.get("number") != run_pr_state.get("number"):
         return False
     candidate_created = parse_time(candidate.get("created_at"))
     run_created = parse_time(run.get("created_at"))
-    if candidate_created is None or run_created is None:
+    run_updated = parse_time(run.get("updated_at"))
+    if candidate_created is None or run_created is None or run_updated is None:
         return False
-    return candidate_created > run_created
+    return run_created < candidate_created <= run_updated
 
 
 def base_classifications(
     run: dict[str, object],
     all_runs: list[dict[str, object]],
     pr_state: dict[str, object] | None,
+    pr_state_by_run_id: dict[int | str, dict[str, object]],
     fingerprint: str | None,
     prior_green_fingerprints: set[str],
     fingerprint_workflow_key: str,
@@ -184,7 +203,15 @@ def base_classifications(
     classifications: list[str] = []
     if conclusion == "success":
         classifications.append("completed-green")
-    elif conclusion == "cancelled" and any(run_is_newer_same_pr_workflow(candidate, run) for candidate in all_runs):
+    elif conclusion == "cancelled" and any(
+        run_is_newer_same_pr_workflow(
+            candidate,
+            run,
+            lookup_by_run_id(pr_state_by_run_id, candidate.get("id")),
+            pr_state,
+        )
+        for candidate in all_runs
+    ):
         classifications.append("cancelled-superseded")
     elif conclusion == "cancelled":
         classifications.append("cancelled")
@@ -231,8 +258,8 @@ def build_report(
     for run in sorted_runs:
         run_id = as_text(run.get("id"))
         workflow_key = workflow_key_for_path(run.get("path"))
-        jobs_payload = jobs_payload_by_run_id.get(run_id) or jobs_payload_by_run_id.get(int(run_id))
-        artifacts_payload = artifacts_payload_by_run_id.get(run_id) or artifacts_payload_by_run_id.get(int(run_id))
+        jobs_payload = lookup_by_run_id(jobs_payload_by_run_id, run_id)
+        artifacts_payload = lookup_by_run_id(artifacts_payload_by_run_id, run_id)
         if jobs_payload is None:
             raise MeterError(f"run {run_id} jobs payload is missing")
         if artifacts_payload is None:
@@ -242,11 +269,12 @@ def build_report(
         if not isinstance(jobs, list):
             raise MeterError(f"run {run_id} jobs payload is malformed")
         fingerprint = extract_fingerprint(artifacts_payload, runner_config.fingerprint_artifact_prefix)
-        pr_state = pr_state_by_run_id.get(run_id) or pr_state_by_run_id.get(int(run_id))
+        pr_state = lookup_by_run_id(pr_state_by_run_id, run_id)
         classifications = base_classifications(
             run,
             all_runs,
             pr_state if isinstance(pr_state, dict) else None,
+            pr_state_by_run_id,
             fingerprint,
             prior_green_fingerprints,
             runner_config.fingerprint_workflow_key,
@@ -450,6 +478,21 @@ def pull_number_from_run(run: dict[str, object]) -> int | None:
     return None
 
 
+def head_owner_for_run(run: dict[str, object], default_owner: str) -> str:
+    head_repository = run.get("head_repository")
+    if not isinstance(head_repository, dict):
+        return default_owner
+    owner = head_repository.get("owner")
+    if isinstance(owner, dict):
+        login = as_text(owner.get("login"))
+        if login:
+            return login
+    full_name = as_text(head_repository.get("full_name"))
+    if "/" in full_name:
+        return full_name.split("/", 1)[0]
+    return default_owner
+
+
 def select_pull_request_for_run(run: dict[str, object], pulls_payload: list[dict[str, object]]) -> dict[str, object] | None:
     run_created = parse_time(run.get("created_at"))
     if run_created is None:
@@ -537,17 +580,18 @@ query($owner:String!,$repo:String!,$number:Int!){
             branch = as_text(run.get("head_branch"))
             if not branch:
                 continue
-            if branch not in branch_pull_cache:
+            head = f"{head_owner_for_run(run, owner)}:{branch}"
+            if head not in branch_pull_cache:
                 pulls = client.api(
                     "pulls",
-                    params={"head": f"{owner}:{branch}", "state": "all", "per_page": "20"},
+                    params={"head": head, "state": "all", "per_page": "20"},
                 )
                 if isinstance(pulls, list):
                     pull_list = pulls
                 else:
                     pull_list = pulls.get("pulls", []) if isinstance(pulls, dict) else []
-                branch_pull_cache[branch] = [pull for pull in pull_list if isinstance(pull, dict)]
-            pull = select_pull_request_for_run(run, branch_pull_cache[branch])
+                branch_pull_cache[head] = [pull for pull in pull_list if isinstance(pull, dict)]
+            pull = select_pull_request_for_run(run, branch_pull_cache[head])
             if pull is None:
                 continue
             number = pull.get("number")

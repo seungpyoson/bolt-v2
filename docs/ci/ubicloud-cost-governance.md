@@ -27,6 +27,13 @@ The meter reads workflow runs, jobs, artifacts, and PR draft events through `gh`
 
 Fingerprint evidence is provenance-based. Runs before this instrumentation have no `nextest-archive-fingerprint-*` artifact, so the meter reports them as `fingerprint-unknown` instead of reconstructing cache keys from logs or historical checkouts.
 
+### Meter Limitations
+
+- `cancelled-superseded` is an inference, not a GitHub API field. The meter only emits it for fetched pull-request runs with the same resolved PR number and workflow when the newer run was created before the cancelled run finished. A single `--run-id` without the replacing run cannot establish supersession.
+- Draft-stage classification depends on GitHub PR timeline data. The fallback lookup uses the run's `head_repository` owner when GitHub does not include `workflow_run.pull_requests`; if GitHub omits both the PR list and head repository owner for a fork, draft state is unknown instead of guessed.
+- Lookback reports issue one or more GitHub API requests per included run for jobs, artifacts, PR metadata, and draft events. Keep lookback windows bounded when using the meter interactively.
+- Runner-minutes for labels absent from `ci/github-actions-runners.toml` are reported under `unknown` so reconciliation gaps stay visible.
+
 ## Baseline Evidence
 
 Representative successful PR CI run: `27400354248`

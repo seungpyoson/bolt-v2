@@ -2,10 +2,10 @@
 """Meta-check: every governed lane entry point acquires the lane lock (#653).
 
 Rule: in every scripts/verify_*.py and scripts/test_*.py that has a module-level
-``if __name__ == "__main__":`` block, the first non-import statement of that
-block must be a bare ``lane_governor.acquire(...)`` call. Files without a
-``__main__`` block cannot run as lanes and are exempt. This makes lane-coverage
-drift a CI failure instead of a convention.
+``if __name__ == "__main__":`` block, the first two statements of that block
+must be ``import lane_governor`` and a bare ``lane_governor.acquire(...)`` call.
+Files without a ``__main__`` block cannot run as lanes and are exempt. This
+makes lane-coverage drift a CI failure instead of a convention.
 """
 
 from __future__ import annotations
@@ -46,6 +46,15 @@ def _is_acquire_call(node: ast.stmt) -> bool:
     )
 
 
+def _is_lane_governor_import(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.Import)
+        and len(node.names) == 1
+        and node.names[0].name == "lane_governor"
+        and node.names[0].asname is None
+    )
+
+
 def lane_governance_violations(scripts_dir: Path) -> list[str]:
     violations: list[str] = []
     governed = sorted(
@@ -57,14 +66,15 @@ def lane_governance_violations(scripts_dir: Path) -> list[str]:
         if not main_guards:
             continue
         for guard in main_guards:
-            executable = [
-                node
-                for node in guard.body
-                if not isinstance(node, (ast.Import, ast.ImportFrom))
-            ]
-            if not executable or not _is_acquire_call(executable[0]):
+            if not guard.body or not _is_lane_governor_import(guard.body[0]):
                 violations.append(
-                    f"{path.name}: first executable statement in the __main__ block "
+                    f"{path.name}: first statement in the __main__ block "
+                    "must be import lane_governor"
+                )
+                continue
+            if len(guard.body) < 2 or not _is_acquire_call(guard.body[1]):
+                violations.append(
+                    f"{path.name}: second statement in the __main__ block "
                     "must be lane_governor.acquire()"
                 )
     return violations

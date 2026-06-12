@@ -27,6 +27,29 @@ if __name__ == "__main__":
     raise SystemExit(main())
 '''
 
+COMPLIANT_SYS_EXIT = '''
+import sys
+
+def main():
+    return 0
+
+if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
+    sys.exit(main())
+'''
+
+COMPLIANT_UNITTEST = '''
+import unittest
+
+if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
+    unittest.main()
+'''
+
 MISSING_ACQUIRE = '''
 def main():
     return 0
@@ -43,6 +66,39 @@ if __name__ == "__main__":
     import lane_governor
 
     print("starting")
+    lane_governor.acquire()
+    raise SystemExit(main())
+'''
+
+MISSING_LANE_GOVERNOR_IMPORT = '''
+def main():
+    return 0
+
+if __name__ == "__main__":
+    lane_governor.acquire()
+    raise SystemExit(main())
+'''
+
+EXECUTABLE_IMPORT_BEFORE_LANE_GOVERNOR = '''
+def main():
+    return 0
+
+if __name__ == "__main__":
+    import expensive_side_effect
+    import lane_governor
+
+    lane_governor.acquire()
+    raise SystemExit(main())
+'''
+
+LANE_GOVERNOR_IMPORT_TOO_LATE = '''
+def main():
+    return 0
+
+if __name__ == "__main__":
+    print("starting")
+    import lane_governor
+
     lane_governor.acquire()
     raise SystemExit(main())
 '''
@@ -65,14 +121,37 @@ def test_compliant_file_passes() -> None:
     assert _violations({"verify_sample.py": COMPLIANT}) == []
 
 
+def test_all_existing_entry_tail_shapes_pass() -> None:
+    assert _violations({
+        "verify_raise.py": COMPLIANT,
+        "test_sys_exit.py": COMPLIANT_SYS_EXIT,
+        "test_unittest.py": COMPLIANT_UNITTEST,
+    }) == []
+
+
 def test_missing_acquire_flagged() -> None:
     violations = _violations({"verify_sample.py": MISSING_ACQUIRE})
     assert len(violations) == 1 and "verify_sample.py" in violations[0]
 
 
+def test_missing_lane_governor_import_flagged() -> None:
+    violations = _violations({"verify_sample.py": MISSING_LANE_GOVERNOR_IMPORT})
+    assert len(violations) == 1 and "import lane_governor" in violations[0]
+
+
+def test_import_before_lane_governor_is_flagged() -> None:
+    violations = _violations({"verify_sample.py": EXECUTABLE_IMPORT_BEFORE_LANE_GOVERNOR})
+    assert len(violations) == 1 and "import lane_governor" in violations[0]
+
+
+def test_lane_governor_import_after_other_statement_flagged() -> None:
+    violations = _violations({"verify_sample.py": LANE_GOVERNOR_IMPORT_TOO_LATE})
+    assert len(violations) == 1 and "import lane_governor" in violations[0]
+
+
 def test_acquire_after_other_statement_flagged() -> None:
     violations = _violations({"test_sample.py": ACQUIRE_TOO_LATE})
-    assert len(violations) == 1 and "first executable statement" in violations[0]
+    assert len(violations) == 1 and "lane_governor.acquire()" in violations[0]
 
 
 def test_module_without_main_is_exempt() -> None:
@@ -90,7 +169,11 @@ def test_real_scripts_dir_is_clean() -> None:
 def main() -> int:
     tests = [
         test_compliant_file_passes,
+        test_all_existing_entry_tail_shapes_pass,
         test_missing_acquire_flagged,
+        test_missing_lane_governor_import_flagged,
+        test_import_before_lane_governor_is_flagged,
+        test_lane_governor_import_after_other_statement_flagged,
         test_acquire_after_other_statement_flagged,
         test_module_without_main_is_exempt,
         test_non_matching_names_ignored,

@@ -6,9 +6,14 @@
 //! single-object operator path, and summarize the completed records.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, ensure};
@@ -50,11 +55,34 @@ pub struct SourceUniverseBatchExecutionRunOutput {
     pub catalog_hash: String,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Tuning for a source-universe batch execution run.
+///
+/// Every field beyond the original three is opt-in: the defaults
+/// (`max_concurrent_records: None`, `resume_report: None`) reproduce the
+/// original serial, non-resuming behavior byte-for-byte. Object caching is
+/// deliberately NOT a config field: the one way to enable it is wrapping the
+/// fetcher in [`CachingSourceUniverseObjectFetcher`] (the CLI does this for
+/// `--object-cache-dir`), so a cache can never be requested without taking
+/// effect.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourceUniverseBatchExecutionConfig {
+    /// Lowest pack sequence to execute (inclusive). `None` starts at the first.
     pub start_sequence: Option<u64>,
+    /// Maximum number of selected records to execute. `None` means unbounded.
     pub record_limit: Option<u64>,
+    /// Collect per-record failures instead of returning on the first one.
     pub continue_on_error: bool,
+    /// Bound on records processed concurrently. `None` or `Some(1)` is serial.
+    pub max_concurrent_records: Option<u64>,
+    /// Prior batch report to resume from. `None` reprocesses every record.
+    ///
+    /// Carried records keep their prior run's `output_dir` verbatim, so a
+    /// resumed report can span two output roots: consumers must follow
+    /// `records[].output_dir` per record, never glob the new run's root.
+    /// Resumed runs must write to a fresh output dir; resuming into the dir
+    /// that holds the resume report itself is rejected up front because the
+    /// clean-write report guard preserves the prior report as evidence.
+    pub resume_report: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +204,124 @@ impl SourceUniverseObjectFetcher for HttpSourceUniverseObjectFetcher {
     }
 }
 
+/// Content-addressed object cache wrapping an inner fetcher.
+///
+/// The cache key is the execution-pack-pinned `selected_object_sha256`, so a
+/// cached entry is only ever served after re-verifying its byte length and
+/// hash against the record. A corrupt entry is deleted and refetched (explicit
+/// invalidation + repair); unverified inner bytes never enter the cache.
+pub struct CachingSourceUniverseObjectFetcher<F: SourceUniverseObjectFetcher> {
+    inner: F,
+    cache_dir: PathBuf,
+}
+
+impl<F: SourceUniverseObjectFetcher> CachingSourceUniverseObjectFetcher<F> {
+    /// Wrap `inner`, caching verified objects under `cache_dir`.
+    pub fn new(inner: F, cache_dir: &Path) -> Self {
+        Self {
+            inner,
+            cache_dir: cache_dir.to_path_buf(),
+        }
+    }
+
+    fn cache_entry_path(&self, record: &SourceUniverseExecutionPackRecord) -> PathBuf {
+        self.cache_dir.join(&record.selected_object_sha256)
+    }
+
+    /// Read a cached entry and return it only if it still verifies. A corrupt
+    /// entry is deleted so it never survives a single cache lookup.
+    ///
+    /// Workers can share one entry path (records are not deduplicated by sha),
+    /// so "already gone" is a cache miss at every step: a read that finds no
+    /// file falls through to the inner fetch, and losing the corrupt-entry
+    /// delete race to a concurrent worker is a completed repair, not an error.
+    fn read_verified_cache_entry(
+        &self,
+        record: &SourceUniverseExecutionPackRecord,
+        cache_path: &Path,
+    ) -> Result<Option<Vec<u8>>> {
+        let cached = match fs::read(cache_path) {
+            Ok(cached) => cached,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("read object cache entry {}", cache_path.display())
+                });
+            }
+        };
+        if verify_object(record, &cached).is_ok() {
+            return Ok(Some(cached));
+        }
+        Self::remove_corrupt_cache_entry(cache_path)?;
+        Ok(None)
+    }
+
+    /// Remove a corrupt cache entry, treating an already-missing file as a
+    /// completed removal (a concurrent worker repairing the same shared entry
+    /// may win the delete race). Every other failure stays loud: a corrupt
+    /// entry that cannot be removed must never be silently retried around.
+    fn remove_corrupt_cache_entry(cache_path: &Path) -> Result<()> {
+        match fs::remove_file(cache_path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "delete corrupt object cache entry {}",
+                    cache_path.display()
+                )
+            }),
+        }
+    }
+
+    /// Atomically write verified bytes to the content-addressed cache entry.
+    /// Uses a unique temp file in the same directory then `fs::rename`, so
+    /// concurrent writers of the same object converge on identical bytes.
+    fn store_verified(&self, cache_path: &Path, object_bytes: &[u8]) -> Result<()> {
+        fs::create_dir_all(&self.cache_dir).with_context(|| {
+            format!("create object cache dir {}", self.cache_dir.display())
+        })?;
+        let temp_path = self.cache_dir.join(format!(
+            "{}.{}.{}.tmp",
+            cache_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("object"),
+            std::process::id(),
+            unique_temp_token()
+        ));
+        fs::write(&temp_path, object_bytes).with_context(|| {
+            format!("write object cache temp file {}", temp_path.display())
+        })?;
+        fs::rename(&temp_path, cache_path).with_context(|| {
+            format!(
+                "atomically install object cache entry {}",
+                cache_path.display()
+            )
+        })?;
+        Ok(())
+    }
+}
+
+impl<F: SourceUniverseObjectFetcher> SourceUniverseObjectFetcher
+    for CachingSourceUniverseObjectFetcher<F>
+{
+    fn fetch(&mut self, record: &SourceUniverseExecutionPackRecord) -> Result<Vec<u8>> {
+        let cache_path = self.cache_entry_path(record);
+        if let Some(cached) = self.read_verified_cache_entry(record, &cache_path)? {
+            return Ok(cached);
+        }
+        let object_bytes = self.inner.fetch(record)?;
+        verify_object(record, &object_bytes).with_context(|| {
+            format!(
+                "verify fetched object before caching {}",
+                record.operator_run_id
+            )
+        })?;
+        self.store_verified(&cache_path, &object_bytes)?;
+        Ok(object_bytes)
+    }
+}
+
 #[derive(Default)]
 pub struct LocalSourceUniverseOperatorRunner;
 
@@ -240,9 +386,175 @@ where
     F: SourceUniverseObjectFetcher,
     R: SourceUniverseOperatorRunner,
 {
+    let owned_plan = prepare_batch(batch_id, execution_pack_path, output_dir, &config)?;
+    let plan = owned_plan.plan();
+    // The borrowed-fetcher/runner entry point is inherently serial: it owns a
+    // single mutable fetcher and runner, so it processes work items one at a
+    // time. Slot assembly is shared with the parallel path, so the resulting
+    // report is identical for the same outcomes.
+    let mut slots: Vec<Option<RecordSlot>> = (0..plan.work_items.len()).map(|_| None).collect();
+    for (slot_index, work_item) in plan.work_items.iter().enumerate() {
+        let slot = process_work_item(
+            work_item,
+            &plan.pack_base_dir,
+            output_dir,
+            &config,
+            fetcher,
+            runner,
+        );
+        let stop = !config.continue_on_error && matches!(slot, RecordSlot::Stopped(_));
+        slots[slot_index] = Some(slot);
+        if stop {
+            // Serial stop-on-error: the first error reached is also the lowest
+            // sequence, matching the parallel lowest-sequence rule.
+            return Err(lowest_sequence_error(slots));
+        }
+    }
+    assemble_report(batch_id, &owned_plan, slots, &config)
+}
+
+/// Parallel-capable entry point.
+///
+/// Each worker constructs its own fetcher and runner from the supplied
+/// factories (the live fetcher owns a Tokio runtime and is not `Clone`), so
+/// bounded record-level parallelism is possible without sharing mutable state.
+/// `max_concurrent_records` of `None` or `Some(1)` runs serially.
+///
+/// For all-success and continue-on-error runs the assembled report is
+/// byte-identical to a serial run with the same per-record outcomes (slots are
+/// kept in original sequence order). Under stop-on-error the surfaced error is
+/// the lowest sequence among records workers actually OBSERVED erroring; a
+/// serial run could stop on an even lower sequence that a parallel worker
+/// never claimed before the stop flag rose. The run still fails loud either
+/// way — only which record's error is reported can differ.
+pub fn execute_source_universe_batch_with_factories<F, R>(
+    batch_id: &str,
+    execution_pack_path: &Path,
+    output_dir: &Path,
+    config: SourceUniverseBatchExecutionConfig,
+    fetcher_factory: impl Fn() -> Result<F> + Sync,
+    runner_factory: impl Fn() -> Result<R> + Sync,
+) -> Result<SourceUniverseBatchExecutionReport>
+where
+    F: SourceUniverseObjectFetcher,
+    R: SourceUniverseOperatorRunner,
+{
+    let owned_plan = prepare_batch(batch_id, execution_pack_path, output_dir, &config)?;
+    let plan = owned_plan.plan();
+    let work_item_count = plan.work_items.len();
+    let worker_count = config
+        .max_concurrent_records
+        .and_then(|workers| usize::try_from(workers).ok())
+        .unwrap_or(1)
+        .max(1)
+        .min(work_item_count.max(1));
+
+    let slots: Vec<Mutex<Option<RecordSlot>>> =
+        (0..work_item_count).map(|_| Mutex::new(None)).collect();
+    let next_index = AtomicUsize::new(0);
+    let stop_flag = AtomicBool::new(false);
+
+    let work_items = plan.work_items.as_slice();
+    let pack_base_dir = plan.pack_base_dir.as_path();
+    std::thread::scope(|scope| -> Result<()> {
+        let mut handles = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let next_index = &next_index;
+            let stop_flag = &stop_flag;
+            let slots = &slots;
+            let config = &config;
+            let fetcher_factory = &fetcher_factory;
+            let runner_factory = &runner_factory;
+            handles.push(scope.spawn(move || -> Result<()> {
+                let mut fetcher = fetcher_factory().context("construct batch worker fetcher")?;
+                let mut runner = runner_factory().context("construct batch worker runner")?;
+                loop {
+                    if !config.continue_on_error && stop_flag.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let index = next_index.fetch_add(1, Ordering::SeqCst);
+                    if index >= work_items.len() {
+                        break;
+                    }
+                    let work_item = &work_items[index];
+                    let slot = process_work_item(
+                        work_item,
+                        pack_base_dir,
+                        output_dir,
+                        config,
+                        &mut fetcher,
+                        &mut runner,
+                    );
+                    if !config.continue_on_error && matches!(slot, RecordSlot::Stopped(_)) {
+                        stop_flag.store(true, Ordering::SeqCst);
+                    }
+                    *slots[index].lock().expect("batch slot mutex") = Some(slot);
+                }
+                Ok(())
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("batch worker thread panicked")?;
+        }
+        Ok(())
+    })?;
+
+    let slots: Vec<Option<RecordSlot>> = slots
+        .into_iter()
+        .map(|slot| slot.into_inner().expect("batch slot mutex"))
+        .collect();
+    if !config.continue_on_error
+        && slots
+            .iter()
+            .any(|slot| matches!(slot, Some(RecordSlot::Stopped(_))))
+    {
+        return Err(lowest_sequence_error(slots));
+    }
+    assemble_report(batch_id, &owned_plan, slots, &config)
+}
+
+/// A single unit of batch work after selection and resume filtering: either a
+/// record carried forward verbatim from a prior report, or a pack record that
+/// still needs fetch + verify + run. The carried record is boxed to keep the
+/// two variants similarly sized.
+enum BatchWorkItem<'pack> {
+    Carried(Box<SourceUniverseBatchExecutionRecord>),
+    NeedsWork(&'pack SourceUniverseExecutionPackRecord),
+}
+
+/// Outcome for one work item, kept in original-sequence slot order so the
+/// assembled report is independent of completion order.
+enum RecordSlot {
+    Completed(SourceUniverseBatchExecutionRecord),
+    Failed(SourceUniverseBatchExecutionFailureRecord),
+    Stopped(StoppedRecord),
+}
+
+struct StoppedRecord {
+    sequence: u64,
+    error: anyhow::Error,
+}
+
+struct BatchPlan<'pack> {
+    pack_base_dir: PathBuf,
+    work_items: Vec<BatchWorkItem<'pack>>,
+}
+
+fn prepare_batch(
+    batch_id: &str,
+    execution_pack_path: &Path,
+    output_dir: &Path,
+    config: &SourceUniverseBatchExecutionConfig,
+) -> Result<OwnedBatchPlan> {
     ensure!(!batch_id.trim().is_empty(), "batch_id must not be empty");
     if let Some(limit) = config.record_limit {
         ensure!(limit > 0, "record_limit must be positive when set");
+    }
+    if let Some(workers) = config.max_concurrent_records {
+        ensure!(
+            workers > 0,
+            "max_concurrent_records must be positive when set"
+        );
     }
 
     let pack_bytes = fs::read(execution_pack_path)
@@ -259,91 +571,253 @@ where
         pack.pack_id
     );
 
-    let pack_base_dir = execution_pack_path.parent().unwrap_or_else(|| Path::new("."));
+    let pack_base_dir = execution_pack_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create batch output dir {}", output_dir.display()))?;
+
+    // Resuming into the dir holding the resume report itself would only fail
+    // later, at the clean-write report guard (which refuses to overwrite the
+    // prior report). Reject the contract violation up front, before any fetch.
+    if let Some(resume_report) = config.resume_report.as_deref() {
+        let output_report_path = output_dir.join(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE);
+        let same_target = match (resume_report.canonicalize(), output_report_path.canonicalize()) {
+            (Ok(resume), Ok(output)) => resume == output,
+            _ => resume_report == output_report_path.as_path(),
+        };
+        ensure!(
+            !same_target,
+            "resume requires a fresh output dir: resume report {} is the report path of output dir {}; \
+             the clean-write report guard preserves the prior report as evidence, so a resumed run \
+             must write into a new output dir",
+            resume_report.display(),
+            output_dir.display()
+        );
+    }
+
+    let resume_records = load_resume_records(config.resume_report.as_deref(), &pack)?;
 
     let record_limit = config
         .record_limit
         .and_then(|limit| usize::try_from(limit).ok())
         .unwrap_or(usize::MAX);
-    let selected_records = pack
-        .records
-        .iter()
-        .filter(|record| {
-            config
-                .start_sequence
-                .is_none_or(|start_sequence| record.sequence >= start_sequence)
+
+    Ok(OwnedBatchPlan {
+        pack,
+        pack_base_dir,
+        resume_records,
+        start_sequence: config.start_sequence,
+        record_limit,
+    })
+}
+
+/// Owns the parsed pack and resume map so the `'pack`-lifetime [`BatchPlan`]
+/// work items can borrow from it without an extra clone of every pack record.
+struct OwnedBatchPlan {
+    pack: SourceUniverseExecutionPack,
+    pack_base_dir: PathBuf,
+    resume_records: BTreeMap<u64, SourceUniverseBatchExecutionRecord>,
+    start_sequence: Option<u64>,
+    record_limit: usize,
+}
+
+impl OwnedBatchPlan {
+    fn plan(&self) -> BatchPlan<'_> {
+        let work_items = self
+            .pack
+            .records
+            .iter()
+            .filter(|record| {
+                self.start_sequence
+                    .is_none_or(|start_sequence| record.sequence >= start_sequence)
+            })
+            .take(self.record_limit)
+            .map(|record| match self.resume_records.get(&record.sequence) {
+                // Pack-regeneration guard: carry forward only when the prior
+                // record's pinned sha still matches the current pack record.
+                Some(prior) if prior.selected_object_sha256 == record.selected_object_sha256 => {
+                    BatchWorkItem::Carried(Box::new(prior.clone()))
+                }
+                _ => BatchWorkItem::NeedsWork(record),
+            })
+            .collect();
+        BatchPlan {
+            pack_base_dir: self.pack_base_dir.clone(),
+            work_items,
+        }
+    }
+}
+
+fn load_resume_records(
+    resume_report: Option<&Path>,
+    pack: &SourceUniverseExecutionPack,
+) -> Result<BTreeMap<u64, SourceUniverseBatchExecutionRecord>> {
+    let Some(resume_report) = resume_report else {
+        return Ok(BTreeMap::new());
+    };
+    let prior_bytes = fs::read(resume_report)
+        .with_context(|| format!("read resume report {}", resume_report.display()))?;
+    let prior: SourceUniverseBatchExecutionReport = serde_json::from_slice(&prior_bytes)
+        .with_context(|| format!("parse resume report {}", resume_report.display()))?;
+    ensure!(
+        prior.schema_version == SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION,
+        "resume report {} schema_version mismatch: expected {}, got {}",
+        resume_report.display(),
+        SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION,
+        prior.schema_version
+    );
+    ensure!(
+        prior.pack_id == pack.pack_id,
+        "resume report {} pack_id mismatch: expected {}, got {}",
+        resume_report.display(),
+        pack.pack_id,
+        prior.pack_id
+    );
+    // Only prior successful records (entries of `records`) carry forward; prior
+    // failures are reprocessed.
+    let mut resume_records = BTreeMap::new();
+    for record in prior.records {
+        resume_records.insert(record.sequence, record);
+    }
+    Ok(resume_records)
+}
+
+fn process_work_item<F, R>(
+    work_item: &BatchWorkItem<'_>,
+    pack_base_dir: &Path,
+    output_dir: &Path,
+    config: &SourceUniverseBatchExecutionConfig,
+    fetcher: &mut F,
+    runner: &mut R,
+) -> RecordSlot
+where
+    F: SourceUniverseObjectFetcher,
+    R: SourceUniverseOperatorRunner,
+{
+    let record = match work_item {
+        // Carried records are pushed verbatim, skipping fetch + verify + run.
+        // Verbatim includes the prior run's output_dir (provenance is kept,
+        // not rewritten), so a resumed report can reference artifacts outside
+        // this run's output root — consumers must follow records[].output_dir.
+        BatchWorkItem::Carried(record) => {
+            return RecordSlot::Completed((**record).clone());
+        }
+        BatchWorkItem::NeedsWork(record) => *record,
+    };
+
+    let object_bytes = match fetcher
+        .fetch(record)
+        .with_context(|| format!("fetch source object for {}", record.operator_run_id))
+    {
+        Ok(object_bytes) => object_bytes,
+        Err(error) => return record_error_slot(record, "fetch", error, config),
+    };
+    if let Err(error) = verify_object(record, &object_bytes).with_context(|| {
+        format!("verify source object for {}", record.operator_run_id)
+    }) {
+        return record_error_slot(record, "verify_object", error, config);
+    }
+
+    let run_spec_path = resolve_existing_path(pack_base_dir, &record.run_spec_path);
+    let execution_plan_path = resolve_existing_path(pack_base_dir, &record.execution_plan_path);
+    let record_output_dir = output_dir.join(&record.operator_run_id);
+    let run_output = match runner
+        .run(
+            record,
+            &object_bytes,
+            &run_spec_path,
+            &execution_plan_path,
+            &record_output_dir,
+        )
+        .with_context(|| format!("run operator {}", record.operator_run_id))
+    {
+        Ok(run_output) => run_output,
+        Err(error) => return record_error_slot(record, "run_operator", error, config),
+    };
+
+    RecordSlot::Completed(SourceUniverseBatchExecutionRecord {
+        sequence: record.sequence,
+        operator_run_id: record.operator_run_id.clone(),
+        source_binding: record.source_binding.clone(),
+        category: record.category.clone(),
+        symbol: record.symbol.clone(),
+        archive_date: record.archive_date.clone(),
+        selected_object_sha256: record.selected_object_sha256.clone(),
+        selected_object_bytes: record.selected_object_bytes,
+        canonical_rows: run_output.canonical_rows,
+        nt_catalog_rows: run_output.nt_catalog_rows,
+        catalog_hash: run_output.catalog_hash,
+        output_dir: record_output_dir,
+    })
+}
+
+fn record_error_slot(
+    record: &SourceUniverseExecutionPackRecord,
+    failure_stage: &str,
+    error: anyhow::Error,
+    config: &SourceUniverseBatchExecutionConfig,
+) -> RecordSlot {
+    if config.continue_on_error {
+        RecordSlot::Failed(failure_record(record, failure_stage, &error))
+    } else {
+        RecordSlot::Stopped(StoppedRecord {
+            sequence: record.sequence,
+            error,
         })
-        .take(record_limit)
-        .collect::<Vec<_>>();
-    let mut records = Vec::with_capacity(selected_records.len());
+    }
+}
+
+fn lowest_sequence_error(slots: Vec<Option<RecordSlot>>) -> anyhow::Error {
+    slots
+        .into_iter()
+        .flatten()
+        .filter_map(|slot| match slot {
+            RecordSlot::Stopped(stopped) => Some(stopped),
+            _ => None,
+        })
+        .min_by_key(|stopped| stopped.sequence)
+        .map(|stopped| stopped.error)
+        .unwrap_or_else(|| {
+            anyhow::anyhow!("stop-on-error requested but no errored record was recorded")
+        })
+}
+
+fn assemble_report(
+    batch_id: &str,
+    owned_plan: &OwnedBatchPlan,
+    slots: Vec<Option<RecordSlot>>,
+    config: &SourceUniverseBatchExecutionConfig,
+) -> Result<SourceUniverseBatchExecutionReport> {
+    let mut records = Vec::new();
     let mut failures = Vec::new();
     let mut total_canonical_rows = 0_u64;
     let mut total_nt_catalog_rows = 0_u64;
 
-    for record in selected_records {
-        let object_bytes = match fetcher
-            .fetch(record)
-            .with_context(|| format!("fetch source object for {}", record.operator_run_id))
-        {
-            Ok(object_bytes) => object_bytes,
-            Err(error) if config.continue_on_error => {
-                failures.push(failure_record(record, "fetch", &error));
-                continue;
+    for slot in slots {
+        match slot {
+            Some(RecordSlot::Completed(record)) => {
+                total_canonical_rows = total_canonical_rows.saturating_add(record.canonical_rows);
+                total_nt_catalog_rows =
+                    total_nt_catalog_rows.saturating_add(record.nt_catalog_rows);
+                records.push(record);
             }
-            Err(error) => return Err(error),
-        };
-        if let Err(error) = verify_object(record, &object_bytes) {
-            let error = error.context(format!(
-                "verify source object for {}",
-                record.operator_run_id
-            ));
-            if config.continue_on_error {
-                failures.push(failure_record(record, "verify_object", &error));
-                continue;
+            Some(RecordSlot::Failed(failure)) => failures.push(failure),
+            Some(RecordSlot::Stopped(stopped)) => return Err(stopped.error),
+            None => {
+                // A `None` slot only happens under stop-on-error when a worker
+                // stopped before claiming this index. The caller returns the
+                // lowest-sequence error before reaching assembly, so any
+                // surviving `None` here is a logic error worth failing loud on.
+                ensure!(
+                    config.continue_on_error,
+                    "batch work item left unprocessed without an error"
+                );
             }
-            return Err(error);
         }
-
-        let run_spec_path = resolve_existing_path(pack_base_dir, &record.run_spec_path);
-        let execution_plan_path = resolve_existing_path(pack_base_dir, &record.execution_plan_path);
-        let record_output_dir = output_dir.join(&record.operator_run_id);
-        let run_output = match runner
-            .run(
-                record,
-                &object_bytes,
-                &run_spec_path,
-                &execution_plan_path,
-                &record_output_dir,
-            )
-            .with_context(|| format!("run operator {}", record.operator_run_id))
-        {
-            Ok(run_output) => run_output,
-            Err(error) if config.continue_on_error => {
-                failures.push(failure_record(record, "run_operator", &error));
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-
-        total_canonical_rows = total_canonical_rows.saturating_add(run_output.canonical_rows);
-        total_nt_catalog_rows = total_nt_catalog_rows.saturating_add(run_output.nt_catalog_rows);
-        records.push(SourceUniverseBatchExecutionRecord {
-            sequence: record.sequence,
-            operator_run_id: record.operator_run_id.clone(),
-            source_binding: record.source_binding.clone(),
-            category: record.category.clone(),
-            symbol: record.symbol.clone(),
-            archive_date: record.archive_date.clone(),
-            selected_object_sha256: record.selected_object_sha256.clone(),
-            selected_object_bytes: record.selected_object_bytes,
-            canonical_rows: run_output.canonical_rows,
-            nt_catalog_rows: run_output.nt_catalog_rows,
-            catalog_hash: run_output.catalog_hash,
-            output_dir: record_output_dir,
-        });
     }
+
     let status = if failures.is_empty() {
         SourceUniverseBatchExecutionReportStatus::Completed
     } else if records.is_empty() {
@@ -352,13 +826,14 @@ where
         SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
     };
 
+    let pack = &owned_plan.pack;
     Ok(SourceUniverseBatchExecutionReport {
         schema_version: SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION.to_string(),
         batch_id: batch_id.to_string(),
         status,
-        pack_id: pack.pack_id,
-        universe_id: pack.universe_id,
-        venue: pack.venue,
+        pack_id: pack.pack_id.clone(),
+        universe_id: pack.universe_id.clone(),
+        venue: pack.venue.clone(),
         selected_record_count: records.len().saturating_add(failures.len()) as u64,
         completed_record_count: records.len() as u64,
         failed_record_count: failures.len() as u64,
@@ -395,6 +870,20 @@ pub fn write_source_universe_batch_execution_report(
         bytes: bytes.len() as u64,
         completed_record_count: report.completed_record_count,
     })
+}
+
+/// Process-unique token for naming object-cache temp files. The monotonic
+/// counter guarantees uniqueness within the process; the wall-clock nanos
+/// component reduces collision risk across re-runs that reuse the same cache
+/// dir. The atomic rename — not the temp name — is the correctness guarantee.
+fn unique_temp_token() -> u128 {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    nanos.wrapping_mul(1_000_003).wrapping_add(counter)
 }
 
 fn verify_object(record: &SourceUniverseExecutionPackRecord, object_bytes: &[u8]) -> Result<()> {
@@ -451,6 +940,52 @@ fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
         return repo_relative;
     }
     path.to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Inner fetcher double for cache-repair unit tests; must never be called.
+    struct PanicFetcher;
+
+    impl SourceUniverseObjectFetcher for PanicFetcher {
+        fn fetch(&mut self, _record: &SourceUniverseExecutionPackRecord) -> Result<Vec<u8>> {
+            panic!("inner fetcher must not be called")
+        }
+    }
+
+    type TestCachingFetcher = CachingSourceUniverseObjectFetcher<PanicFetcher>;
+
+    #[test]
+    fn remove_corrupt_cache_entry_removes_existing_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let path = temp_dir.path().join("entry");
+        fs::write(&path, b"corrupt").expect("plant entry");
+        TestCachingFetcher::remove_corrupt_cache_entry(&path).expect("removes existing entry");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn remove_corrupt_cache_entry_tolerates_already_missing_entry() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let path = temp_dir.path().join("already-gone");
+        TestCachingFetcher::remove_corrupt_cache_entry(&path)
+            .expect("missing entry counts as a completed removal");
+    }
+
+    #[test]
+    fn remove_corrupt_cache_entry_stays_loud_on_unremovable_entry() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let path = temp_dir.path().join("entry-dir");
+        fs::create_dir_all(path.join("child")).expect("create blocking dir");
+        let error = TestCachingFetcher::remove_corrupt_cache_entry(&path)
+            .expect_err("a directory in the entry path cannot be removed silently");
+        assert!(
+            format!("{error:#}").contains("delete corrupt object cache entry"),
+            "loud removal failure expected, got: {error:#}"
+        );
+    }
 }
 
 fn validated_http_source_url(source_url: &str) -> Result<reqwest::Url> {

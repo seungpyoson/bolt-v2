@@ -246,8 +246,10 @@ mod tests {
     // and moving entry limit-notional guarding into shared submit admission.
     // Re-derived after review cleanup single-sourced the cents-per-share unit
     // conversion in shared numeric helpers.
+    // Re-derived after adding position-sizer submit admission fixture coverage
+    // under the binary oracle edge taker strategy test source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "3cea08f65a9051d70c86dcbc4379f8ae0410b00e4f8c0bb9f9b307e54a46f11b";
+        "078eeef3a5948fef94430c1ae6399efbd0e957048441b3c43f592d521a0db985";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

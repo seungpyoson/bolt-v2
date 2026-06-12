@@ -94,6 +94,7 @@ Fields:
 - `source_kind`
 - `accepted_conventions`
 - `selector`
+- `nt_provenance`
 - `nt_params`
 
 Validation:
@@ -102,6 +103,7 @@ Validation:
 - Selector fingerprints are unique within a profile and non-empty.
 - Source kind is a known enum from the capability ledger.
 - Selector is a typed `IvSelector` variant compatible with the source kind.
+- NT provenance records the operator evidence path, pinned NT revision, and NT symbol used to justify the configured source mapping; runtime provenance still resolves the authoritative NT revision from Cargo.lock.
 - NT option-greeks and nested option-chain greeks whose convention is not in `accepted_conventions` reject with typed source health.
 - Option-greeks events with no mark, bid, or ask IV basis preserve raw evidence but reject indexed IV products with `MissingIvBasis`.
 - Numeric bounds are positive where required.
@@ -545,12 +547,14 @@ Typed policy for converting available products into the requested product shape.
 
 Fields:
 
+- `policy_id`
 - `projection_kind`
 - `basis_selection`
 - `source_eligibility`
 - `strike_selection`
 - `tenor_selection`
 - `evidence_mapping`
+- `minimum_points`
 - `max_projection_input_skew_ns`
 - `fallback_policy_ref`
 - `interpolation_policy_ref`
@@ -560,6 +564,7 @@ Validation:
 
 - Scalar IV from a smile, surface, aggregate product with configured aggregate IV, or evidence product requires explicit projection policy.
 - Projection cannot silently change basis, convention, source eligibility, timestamp, product kind, or evidence semantics.
+- Projection rejects when fewer than `minimum_points` eligible inputs are available.
 - Projection rejects when input products exceed `max_projection_input_skew_ns`.
 - Unknown projection kinds reject at startup.
 - Every projection records input products and policy decisions in provenance.

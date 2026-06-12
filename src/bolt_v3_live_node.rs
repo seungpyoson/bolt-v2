@@ -72,13 +72,18 @@ use nautilus_live::{
     config::LiveNodeConfig,
     node::{LiveNode, LiveNodeHandle, NodeState},
 };
-#[cfg(test)]
-use nautilus_model::data::{OrderBookDeltas, QuoteTick};
 use nautilus_model::{
     data::{CustomData, DataType, OptionChainSlice, OptionGreeks, option_chain::StrikeRange},
     enums::BarIntervalType,
     identifiers::{ClientId, InstrumentId, OptionSeriesId, StrategyId},
     types::Price,
+};
+#[cfg(test)]
+use nautilus_model::{
+    data::{OrderBookDeltas, QuoteTick, TradeTick},
+    enums::AggressorSide,
+    identifiers::TradeId,
+    types::Quantity,
 };
 use ustr::Ustr;
 use zeroize::Zeroizing;
@@ -1335,6 +1340,10 @@ mod strategy_free_probe {
         /// Set once the walk has finished, whether by reaching `m` (pass) or by
         /// exhausting the universe (fail closed).
         complete: Cell<bool>,
+        /// Distinct markets that fired at least one trade across subscribed
+        /// chunks. Instrument IDs are enough here because the chunk-count probe is
+        /// scoped to one data client.
+        fired_instrument_ids: RefCell<BTreeSet<String>>,
     }
 
     #[derive(Debug, Clone)]
@@ -1445,6 +1454,7 @@ mod strategy_free_probe {
                     cursor: Cell::new(0),
                     started: Cell::new(false),
                     complete: Cell::new(false),
+                    fired_instrument_ids: RefCell::new(BTreeSet::new()),
                 })),
             }
         }
@@ -1468,6 +1478,8 @@ mod strategy_free_probe {
             instrument_ids.dedup();
             *walk.chunks.borrow_mut() = chunk_universe(&instrument_ids, walk.chunk_size);
             walk.cursor.set(0);
+            walk.complete.set(false);
+            walk.fired_instrument_ids.borrow_mut().clear();
             walk.started.set(true);
             self.quote_notify.notify_one();
         }
@@ -1480,7 +1492,21 @@ mod strategy_free_probe {
         ) -> Option<Vec<StrategyFreeReferenceQuoteSubscription>> {
             let walk = self.chunk_walk.as_ref()?;
             let cursor = walk.cursor.get();
-            let chunk = walk.chunks.borrow().get(cursor).cloned()?;
+            let chunk = match walk.chunks.borrow().get(cursor).cloned() {
+                Some(chunk) => chunk,
+                None => {
+                    walk.complete.set(true);
+                    if !self.chunk_count_passed() {
+                        self.fail_metadata_response_probe(format!(
+                            "trade chunk-count readiness probe exhausted {} chunk(s) with {} distinct fired market(s), below required min_observed_targets={}",
+                            walk.chunks.borrow().len(),
+                            walk.fired_instrument_ids.borrow().len(),
+                            walk.required_live_markets,
+                        ));
+                    }
+                    return None;
+                }
+            };
             walk.cursor.set(cursor + 1);
             let subscriptions: Vec<StrategyFreeReferenceQuoteSubscription> = chunk
                 .into_iter()
@@ -1503,7 +1529,10 @@ mod strategy_free_probe {
 
         pub(super) fn chunk_count_passed(&self) -> bool {
             match &self.chunk_walk {
-                Some(walk) => trade_chunk_count_probe_passed(0, walk.required_live_markets),
+                Some(walk) => trade_chunk_count_probe_passed(
+                    walk.fired_instrument_ids.borrow().len(),
+                    walk.required_live_markets,
+                ),
                 None => false,
             }
         }
@@ -1739,6 +1768,32 @@ mod strategy_free_probe {
             drop(book_deltas);
             if matched_required && self.has_all_required_market_data() {
                 self.quote_notify.notify_one();
+            }
+        }
+
+        pub(super) fn record_trade(&self, trade: &TradeTick) {
+            if self.market_data_kind != DataClientReadinessProbeMarketDataKind::Trade {
+                return;
+            }
+            let Some(walk) = &self.chunk_walk else {
+                return;
+            };
+            if walk.complete.get() {
+                return;
+            }
+            if self
+                .required
+                .borrow()
+                .iter()
+                .any(|required| trade.instrument_id == required.instrument_id)
+            {
+                walk.fired_instrument_ids
+                    .borrow_mut()
+                    .insert(trade.instrument_id.to_string());
+                if self.chunk_count_passed() {
+                    walk.complete.set(true);
+                    self.quote_notify.notify_one();
+                }
             }
         }
 
@@ -4379,6 +4434,18 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         assert!(trade_chunk_count_probe_passed(11, 10), "above m must pass");
     }
 
+    fn readiness_trade_tick(instrument_id: &str, trade_id: &str) -> TradeTick {
+        TradeTick::new(
+            InstrumentId::from(instrument_id),
+            Price::from("1.00"),
+            Quantity::from("1.00"),
+            AggressorSide::Buyer,
+            TradeId::from(trade_id),
+            1.into(),
+            1.into(),
+        )
+    }
+
     #[test]
     fn chunk_count_handle_chunks_universe_and_walks_in_sorted_order() {
         let handle =
@@ -4430,6 +4497,85 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         assert!(
             !handle.chunk_count_passed(),
             "with no trades recorded the pass rule fails closed"
+        );
+    }
+
+    #[test]
+    fn chunk_count_handle_passes_after_distinct_trade_markets_reach_m() {
+        let handle =
+            BoltV3StrategyFreeReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
+                ClientId::from("okx_data"),
+                3,
+                45,
+                2,
+                DataClientReadinessProbeMarketDataKind::Trade,
+            );
+        handle.chunk_count_capture_universe(vec![
+            InstrumentId::from("A-1.OKX"),
+            InstrumentId::from("B-2.OKX"),
+            InstrumentId::from("C-3.OKX"),
+        ]);
+        let chunk = handle.chunk_count_next_chunk().expect("first chunk");
+
+        handle.record_trade(&readiness_trade_tick(
+            chunk[0].instrument_id.as_str(),
+            "T-A1",
+        ));
+        assert!(
+            !handle.has_all_required_market_data(),
+            "one distinct firing market is below m=2"
+        );
+
+        handle.record_trade(&readiness_trade_tick(
+            chunk[0].instrument_id.as_str(),
+            "T-A2",
+        ));
+        assert!(
+            !handle.has_all_required_market_data(),
+            "duplicate trades from the same market must not double-count"
+        );
+
+        handle.record_trade(&readiness_trade_tick(
+            chunk[1].instrument_id.as_str(),
+            "T-B1",
+        ));
+        assert!(
+            handle.has_all_required_market_data(),
+            "the trade chunk-count probe should pass once m distinct markets fire"
+        );
+    }
+
+    #[test]
+    fn chunk_count_handle_fails_closed_when_universe_exhausts_below_m() {
+        let handle =
+            BoltV3StrategyFreeReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
+                ClientId::from("okx_data"),
+                1,
+                45,
+                2,
+                DataClientReadinessProbeMarketDataKind::Trade,
+            );
+        handle.chunk_count_capture_universe(vec![InstrumentId::from("A-1.OKX")]);
+        let chunk = handle.chunk_count_next_chunk().expect("first chunk");
+        handle.record_trade(&readiness_trade_tick(
+            chunk[0].instrument_id.as_str(),
+            "T-A1",
+        ));
+
+        assert!(
+            handle.chunk_count_next_chunk().is_none(),
+            "the single-market universe is exhausted after one chunk"
+        );
+        let failure = handle
+            .failure_error()
+            .expect("exhausting below m must set a fail-closed reason");
+        assert!(
+            failure.contains("below required min_observed_targets=2"),
+            "failure should explain the unmet m threshold: {failure}"
+        );
+        assert!(
+            !handle.has_all_required_market_data(),
+            "exhaustion below m must never satisfy readiness"
         );
     }
 

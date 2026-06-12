@@ -36,7 +36,7 @@ These repo-level rules are in addition to any higher-level agent instructions.
 - `just verify-remote` waits for all reported PR checks on the exact head SHA, not a local subset of workflow jobs.
 - Human operator break-glass exists for exceptional local repro and live/operator lanes only. Agents must not use it as a normal verification path.
 - Enforcement boundary: repo tooling gates cooperative paths through `just`, `scripts/rust_verification.py`, and `.no-mistakes.yaml`; standard PATH `cargo ...` is guarded by the machine-level cargo shim, which reads this repo's `ci/rust-verification.toml` `[local_compile_policy]`.
-- Residual local bypasses remain outside the accidental-use guard: absolute-path cargo invocation, `rustup run <toolchain> cargo ...`, cross-repo invocations issued outside this repo such as `cargo --manifest-path <repo>/Cargo.toml ...` or `cargo -C <repo> ...`, already-running daemons with a pre-install `PATH`, processes that never load shell startup files, and direct `rustc` execution.
+- Residual local bypasses remain outside the accidental-use guard: absolute-path cargo invocation, `rustup run <toolchain> cargo ...`, cross-repo invocations issued outside this repo such as `cargo --manifest-path <repo>/Cargo.toml ...` or `cargo -C <repo> ...`, already-running or daemon-managed processes whose `PATH` does not include the shim directory, processes that never load shell startup files, and direct `rustc` execution.
 
 ## Review Bar
 

@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use crate::bolt_v3_executable_edge::ExecutableEdgeBlockReason;
+use crate::bolt_v3_binary_outcome_edge::BinaryOutcomeEdgeBlockReason;
 
 const TEST_PRICING_SNAPSHOT_REFERENCE_STEP_MS: u64 = 100;
 const TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP: f64 = 2.0;
@@ -731,11 +731,11 @@ fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap
         vec![
             EntryPricingBlockReason::ExecutableEdgeUnavailable(
                 OutcomeSide::Up,
-                ExecutableEdgeBlockReason::InsufficientDepth
+                BinaryOutcomeEdgeBlockReason::InsufficientDepth
             ),
             EntryPricingBlockReason::ExecutableEdgeUnavailable(
                 OutcomeSide::Down,
-                ExecutableEdgeBlockReason::InsufficientDepth
+                BinaryOutcomeEdgeBlockReason::InsufficientDepth
             ),
         ]
     );
@@ -744,14 +744,14 @@ fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap
             .up_executable_edge
             .as_ref()
             .and_then(|result| result.block_reason),
-        Some(ExecutableEdgeBlockReason::InsufficientDepth)
+        Some(BinaryOutcomeEdgeBlockReason::InsufficientDepth)
     );
     assert_eq!(
         evaluation
             .down_executable_edge
             .as_ref()
             .and_then(|result| result.block_reason),
-        Some(ExecutableEdgeBlockReason::InsufficientDepth)
+        Some(BinaryOutcomeEdgeBlockReason::InsufficientDepth)
     );
     assert_eq!(evaluation.up_worst_case_ev_bps, None);
     assert_eq!(evaluation.down_worst_case_ev_bps, None);
@@ -808,7 +808,7 @@ fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
     assert!(!down_edge.trade_allowed);
     assert_eq!(
         down_edge.block_reason,
-        Some(ExecutableEdgeBlockReason::InsufficientDepth)
+        Some(BinaryOutcomeEdgeBlockReason::InsufficientDepth)
     );
     assert!(evaluation.up_worst_case_ev_bps.is_some());
     assert_eq!(evaluation.down_worst_case_ev_bps, None);
@@ -884,13 +884,13 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
             .sized_executable_edge
             .as_ref()
             .and_then(|edge| edge.block_reason),
-        Some(ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge)
+        Some(BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge)
     );
     assert_eq!(
         evaluation.pricing_blocked_by,
         vec![EntryPricingBlockReason::ExecutableEdgeUnavailable(
             OutcomeSide::Up,
-            ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge
+            BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge
         )],
         "sized selected-side threshold failure should surface as a pricing block"
     );
@@ -1157,11 +1157,11 @@ fn executable_edge_blocks_unsupported_post_only_entry_shape() {
         vec![
             EntryPricingBlockReason::ExecutableEdgeUnavailable(
                 OutcomeSide::Up,
-                ExecutableEdgeBlockReason::UnsupportedOrderShape
+                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
             ),
             EntryPricingBlockReason::ExecutableEdgeUnavailable(
                 OutcomeSide::Down,
-                ExecutableEdgeBlockReason::UnsupportedOrderShape
+                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
             ),
         ]
     );
@@ -1355,7 +1355,7 @@ fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
         near_expiry.pricing_blocked_by.contains(
             &EntryPricingBlockReason::ExecutableEdgeUnavailable(
                 OutcomeSide::Up,
-                ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge
+                BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge
             )
         ),
         "theta-scaled threshold miss should surface as an executable-edge pricing block: {near_expiry:#?}"

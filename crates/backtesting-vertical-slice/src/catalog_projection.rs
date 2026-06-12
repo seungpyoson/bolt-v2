@@ -8,6 +8,10 @@
 //! The NautilusTrader instrument is built from accepted instrument-universe
 //! metadata ([`CatalogInstrumentSpec`]); price/size precision and increments
 //! are derived from the source tick size and size precision, never hardcoded.
+//! When the accepted archive carries finer prints than the venue's current
+//! instrument metadata, the instrument precision is widened to the data's
+//! actual scale (trailing-zero increment rescale; tick value unchanged) so
+//! the projection represents the accepted data exactly.
 
 use std::{
     fs,
@@ -516,6 +520,115 @@ fn rescaled(value: &str, precision: u8) -> Result<String> {
     Ok(decimal.to_string())
 }
 
+/// Maximum decimal scale across one canonical column, after normalization so
+/// trailing zeros do not count (mirrors `rescaled`'s normalize-before-check).
+fn max_normalized_scale<'a>(
+    values: impl Iterator<Item = &'a str>,
+    label: &str,
+) -> Result<u32> {
+    let mut max = 0u32;
+    for value in values {
+        let mut decimal =
+            Decimal::from_str(value).with_context(|| format!("{label} decimal {value:?}"))?;
+        decimal.normalize_assign();
+        max = max.max(decimal.scale());
+    }
+    Ok(max)
+}
+
+/// Rescale a price increment to a wider decimal scale with trailing zeros.
+/// The tick VALUE is unchanged; only its precision widens.
+fn widened_price_increment(increment: Price, scale: u32) -> Result<Price> {
+    let mut decimal = increment.as_decimal();
+    decimal.rescale(scale);
+    let widened = Price::from_str(&decimal.to_string()).map_err(|error| {
+        anyhow::anyhow!("widen price_increment {increment} to scale {scale}: {error}")
+    })?;
+    ensure!(
+        u32::from(widened.precision) == scale,
+        "widened price_increment {widened} precision {} does not match requested scale {scale}",
+        widened.precision
+    );
+    Ok(widened)
+}
+
+/// Rescale a size increment to a wider decimal scale with trailing zeros.
+/// The step VALUE is unchanged; only its precision widens.
+fn widened_size_increment(increment: Quantity, scale: u32) -> Result<Quantity> {
+    let mut decimal = increment.as_decimal();
+    decimal.rescale(scale);
+    let widened = Quantity::from_str(&decimal.to_string()).map_err(|error| {
+        anyhow::anyhow!("widen size_increment {increment} to scale {scale}: {error}")
+    })?;
+    ensure!(
+        u32::from(widened.precision) == scale,
+        "widened size_increment {widened} precision {} does not match requested scale {scale}",
+        widened.precision
+    );
+    Ok(widened)
+}
+
+/// Widen the catalog instrument's price/size precision to the accepted
+/// data's actual maximum decimal scale.
+///
+/// Venue instrument endpoints describe the CURRENT trading rules, but
+/// historical archives can carry finer prints than today's tick size (the
+/// accepted object is the authority on its own scale). The projected
+/// instrument must represent the accepted data exactly, so the increments
+/// are rescaled with trailing zeros (tick VALUE unchanged) and precision is
+/// re-derived from the widened increments — preserving this module's
+/// single-source-of-precision rule. Precision is never narrowed: data
+/// coarser than the venue tick keeps the venue precision.
+///
+/// # Errors
+///
+/// Returns an error if a canonical value fails to parse, a widened increment
+/// cannot be represented by NautilusTrader, or the instrument kind does not
+/// support widening.
+fn widen_instrument_precision_for_data(
+    mut instrument: InstrumentAny,
+    table: &CanonicalTradesTable,
+) -> Result<InstrumentAny> {
+    let data_price_scale =
+        max_normalized_scale(table.rows.iter().map(|row| row.price.as_str()), "price")?;
+    let data_size_scale =
+        max_normalized_scale(table.rows.iter().map(|row| row.size.as_str()), "size")?;
+    let price_scale = data_price_scale.max(u32::from(instrument.price_precision()));
+    let size_scale = data_size_scale.max(u32::from(instrument.size_precision()));
+    if price_scale == u32::from(instrument.price_precision())
+        && size_scale == u32::from(instrument.size_precision())
+    {
+        return Ok(instrument);
+    }
+    let price_increment = widened_price_increment(instrument.price_increment(), price_scale)?;
+    let size_increment = widened_size_increment(instrument.size_increment(), size_scale)?;
+    match &mut instrument {
+        InstrumentAny::CurrencyPair(inner) => {
+            inner.price_increment = price_increment;
+            inner.size_increment = size_increment;
+            inner.price_precision = price_increment.precision;
+            inner.size_precision = size_increment.precision;
+        }
+        InstrumentAny::CryptoPerpetual(inner) => {
+            inner.price_increment = price_increment;
+            inner.size_increment = size_increment;
+            inner.price_precision = price_increment.precision;
+            inner.size_precision = size_increment.precision;
+        }
+        InstrumentAny::CryptoFuture(inner) => {
+            inner.price_increment = price_increment;
+            inner.size_increment = size_increment;
+            inner.price_precision = price_increment.precision;
+            inner.size_precision = size_increment.precision;
+        }
+        other => anyhow::bail!(
+            "instrument kind for {} does not support data-derived precision widening",
+            other.id()
+        ),
+    }
+    Ok(instrument)
+}
+
 /// Convert canonical trade rows into NautilusTrader `TradeTick`s at the
 /// instrument's price/size precision.
 ///
@@ -580,6 +693,9 @@ pub fn project_canonical_trades_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
 ) -> Result<CatalogProjection> {
     table.validate()?;
     let instrument = spec.build_instrument_any()?;
+    // Venue instrument metadata can be coarser than the accepted archive's
+    // actual prints; widen precision to the data before binding and writing.
+    let instrument = widen_instrument_precision_for_data(instrument, table)?;
     let instrument_id = instrument.id();
     let row_instrument_id = table.rows[0]
         .nt_instrument_id
@@ -1782,6 +1898,141 @@ max_notional = "200000"
         assert_eq!(loaded[0].instrument_id.to_string(), "BNBUSDC.BYBIT");
         // 617 rescaled to price precision 1 -> 617.0
         assert_eq!(loaded[2].price, Price::from("617.0"));
+    }
+
+    // Synthetic, token-agnostic fixtures for the precision-widening tests.
+    // The behaviour under test is data-driven and must not be tied to any
+    // real token, venue, or incident value (same precedent as the
+    // `YES.TESTVENUE` binary-option fixture below).
+    fn synthetic_spot_spec() -> SpotInstrumentSpec {
+        let mut spec = spec();
+        spec.nt_instrument_id = "BASEQUOTE.TESTVENUE".to_string();
+        spec.raw_symbol = "BASEQUOTE".to_string();
+        spec.base_currency = "BASE".to_string();
+        spec.quote_currency = "QUOTE".to_string();
+        spec
+    }
+
+    fn synthetic_perpetual_spec() -> CatalogInstrumentSpec {
+        let CatalogInstrumentSpec::CryptoPerpetual(mut spec) = linear_perpetual_spec() else {
+            panic!("expected CryptoPerpetual fixture");
+        };
+        spec.nt_instrument_id = "BASEQUOTE-PERP.TESTVENUE".to_string();
+        spec.raw_symbol = "BASEQUOTE-PERP".to_string();
+        spec.base_currency = "BASE".to_string();
+        spec.quote_currency = "QUOTE".to_string();
+        spec.settlement_currency = "QUOTE".to_string();
+        CatalogInstrumentSpec::CryptoPerpetual(spec)
+    }
+
+    fn synthetic_identity(instrument_id: &str, nt_instrument_id: &str) -> CanonicalInstrumentIdentity {
+        CanonicalInstrumentIdentity {
+            instrument_id: instrument_id.to_string(),
+            venue_symbol: instrument_id.to_string(),
+            nt_instrument_id: nt_instrument_id.to_string(),
+        }
+    }
+
+    fn synthetic_table(csv: &str, instrument_id: &str, nt_instrument_id: &str) -> CanonicalTradesTable {
+        normalize_sample_spot_tick_trades(
+            &accepted_dataset(),
+            &synthetic_identity(instrument_id, nt_instrument_id),
+            csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize")
+    }
+
+    #[test]
+    fn projection_widens_precision_when_archive_prints_are_finer_than_tick() {
+        // Regression class: a venue's live instrument endpoint describes the
+        // CURRENT tick (0.1 here), but the historical archive carries finer
+        // prints (price scale 2, size scale 5 vs size precision 4). The
+        // projection must widen the instrument to the accepted data's actual
+        // scale instead of rejecting the accepted object.
+        let csv = "id,timestamp,price,volume,side,rpi\n\
+            1,1772323201665,12.34,0.30001,buy,0\n\
+            2,1772323312219,12.3,0.1456,sell,0\n";
+        let table = synthetic_table(csv, "BASEQUOTE", "BASEQUOTE.TESTVENUE");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let projection =
+            project_canonical_trades_to_catalog(&table, &synthetic_spot_spec(), dir.path())
+                .expect("projection widens precision instead of rejecting accepted data");
+        assert_eq!(projection.trade_count, 2);
+
+        // Read-back preserves the exact archived values.
+        let loaded = read_back_trade_ticks(dir.path(), "BASEQUOTE.TESTVENUE").expect("read back");
+        assert_eq!(loaded[0].price, Price::from("12.34"));
+        assert_eq!(loaded[0].size, Quantity::from("0.30001"));
+
+        // The catalog instrument carries the widened precision, with the tick
+        // VALUE unchanged (0.1 -> 0.10, 0.0001 -> 0.00010).
+        let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        let instruments = catalog
+            .query_instruments(Some(&vec!["BASEQUOTE.TESTVENUE".to_string()]))
+            .expect("query instruments");
+        assert_eq!(instruments.len(), 1);
+        assert_eq!(instruments[0].price_precision(), 2);
+        assert_eq!(instruments[0].size_precision(), 5);
+        assert_eq!(instruments[0].price_increment(), Price::from("0.10"));
+        assert_eq!(instruments[0].size_increment(), Quantity::from("0.00010"));
+    }
+
+    #[test]
+    fn projection_keeps_venue_precision_for_coarser_data() {
+        // Coarse prints must NOT narrow the venue precision: a day of
+        // whole-number trades keeps tick 0.1 / size precision 4 unchanged.
+        let csv = "id,timestamp,price,volume,side,rpi\n\
+            1,1772323201665,12,0.3,buy,0\n";
+        let table = synthetic_table(csv, "BASEQUOTE", "BASEQUOTE.TESTVENUE");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        project_canonical_trades_to_catalog(&table, &synthetic_spot_spec(), dir.path())
+            .expect("project");
+        let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        let instruments = catalog
+            .query_instruments(Some(&vec!["BASEQUOTE.TESTVENUE".to_string()]))
+            .expect("query instruments");
+        assert_eq!(instruments[0].price_precision(), 1);
+        assert_eq!(instruments[0].size_precision(), 4);
+        assert_eq!(instruments[0].price_increment(), Price::from("0.1"));
+        assert_eq!(instruments[0].size_increment(), Quantity::from("0.0001"));
+    }
+
+    #[test]
+    fn widening_ignores_trailing_zeros_in_source_values() {
+        // A source value like "12.30" normalizes to scale 1 — trailing zeros
+        // must not force a widening (mirrors `rescaled`'s
+        // normalize-before-check behaviour).
+        let csv = "id,timestamp,price,volume,side,rpi\n\
+            1,1772323201665,12.30,0.3000,buy,0\n";
+        let table = synthetic_table(csv, "BASEQUOTE", "BASEQUOTE.TESTVENUE");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        project_canonical_trades_to_catalog(&table, &synthetic_spot_spec(), dir.path())
+            .expect("project");
+        let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        let instruments = catalog
+            .query_instruments(Some(&vec!["BASEQUOTE.TESTVENUE".to_string()]))
+            .expect("query instruments");
+        assert_eq!(instruments[0].price_precision(), 1);
+        let loaded = read_back_trade_ticks(dir.path(), "BASEQUOTE.TESTVENUE").expect("read back");
+        assert_eq!(loaded[0].price, Price::from("12.3"));
+    }
+
+    #[test]
+    fn projection_widens_derivative_precision_when_data_is_finer() {
+        // The widening is instrument-kind-agnostic: a CryptoPerpetual spec at
+        // tick 0.1 / size precision 3 must also accept finer archived prints.
+        let csv = "id,timestamp,price,volume,side,rpi\n\
+            1,1772323201665,12.34,0.3001,buy,0\n";
+        let table = synthetic_table(csv, "BASEQUOTE-PERP", "BASEQUOTE-PERP.TESTVENUE");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        project_canonical_trades_to_catalog(&table, &synthetic_perpetual_spec(), dir.path())
+            .expect("derivative projection widens precision");
+        let loaded =
+            read_back_trade_ticks(dir.path(), "BASEQUOTE-PERP.TESTVENUE").expect("read back");
+        assert_eq!(loaded[0].price, Price::from("12.34"));
+        assert_eq!(loaded[0].size, Quantity::from("0.3001"));
     }
 
     #[test]

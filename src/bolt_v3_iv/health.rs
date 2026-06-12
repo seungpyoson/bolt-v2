@@ -29,6 +29,8 @@ impl IvSourceHealthState {
             (self, next),
             (Configured, Subscribing)
                 | (Subscribing, Active)
+                | (Subscribing, Unsubscribing)
+                | (Subscribing, Removed)
                 | (Subscribing, SubscriptionFailed)
                 | (Active, Stale)
                 | (Active, Unsubscribing)

@@ -902,22 +902,23 @@ impl IvRuntimeEngine {
         outcomes: &[IvRuntimePlanOutcome],
     ) -> Result<(), IvRuntimeEngineError> {
         for outcome in outcomes {
-            let (state, retention_policy) = {
+            let Some((state, retention_policy)) = ({
                 let inner = self.read_inner();
-                let state = inner
+                inner
                     .profile_states
                     .get(&outcome.plan.profile_id)
                     .cloned()
-                    .ok_or_else(|| IvRuntimeEngineError::UnknownProfileId {
-                        profile_id: outcome.plan.profile_id.clone(),
-                    })?;
-                (
-                    state,
-                    inner
-                        .retention_policies
-                        .get(&outcome.plan.profile_id)
-                        .copied(),
-                )
+                    .map(|state| {
+                        (
+                            state,
+                            inner
+                                .retention_policies
+                                .get(&outcome.plan.profile_id)
+                                .copied(),
+                        )
+                    })
+            }) else {
+                continue;
             };
             state.upsert_source_health(outcome.source_health.clone());
             if let Some(policy) = retention_policy {

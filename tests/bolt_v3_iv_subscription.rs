@@ -1153,6 +1153,36 @@ fn runtime_engine_reload_invalidates_existing_handles_for_removed_profiles() {
 }
 
 #[test]
+fn runtime_engine_apply_plan_outcomes_skips_removed_profiles_and_applies_survivors() {
+    let mut current = configured_runtime_config();
+    let mut retained_profile = current.profiles[0].clone();
+    retained_profile.profile_id = "retained-profile".to_string();
+    current.profiles.push(retained_profile.clone());
+    let mut next = current.clone();
+    next.profiles
+        .retain(|profile| profile.profile_id == "retained-profile");
+    let mut engine = IvRuntimeEngine::from_iv_root(&current).unwrap();
+
+    engine.apply_iv_root_reload(&next).unwrap();
+
+    let removed_plan =
+        plan_profile_start(&current.profiles[0].subscription_config()).unwrap()[0].clone();
+    let retained_plan =
+        plan_profile_start(&retained_profile.subscription_config()).unwrap()[0].clone();
+    let mut adapter = RecordingRuntimeAdapter::default();
+    let outcomes = apply_subscription_plans(&mut adapter, &[removed_plan, retained_plan]);
+
+    engine.apply_plan_outcomes(&outcomes).unwrap();
+
+    assert!(engine.state_for_profile("iv-profile").is_none());
+    let health = engine
+        .source_health("retained-profile", "greeks-source")
+        .expect("retained profile outcome should still apply");
+    assert_eq!(health.subscription_state, IvSourceHealthState::Subscribing);
+    assert_eq!(health.subscription_generation, 7);
+}
+
+#[test]
 fn reload_unsubscribes_old_generation_subscribes_new_generation_and_removes_deleted_sources() {
     let current_greeks = source(
         "greeks-source",

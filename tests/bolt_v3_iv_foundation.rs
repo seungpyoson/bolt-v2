@@ -73,6 +73,8 @@ fn selector_authorization_models_profile_wide_and_selector_scoped_access() {
 fn source_health_transitions_follow_the_data_model() {
     assert!(IvSourceHealthState::Configured.can_transition_to(IvSourceHealthState::Subscribing));
     assert!(IvSourceHealthState::Subscribing.can_transition_to(IvSourceHealthState::Active));
+    assert!(IvSourceHealthState::Subscribing.can_transition_to(IvSourceHealthState::Unsubscribing));
+    assert!(IvSourceHealthState::Subscribing.can_transition_to(IvSourceHealthState::Removed));
     assert!(IvSourceHealthState::Active.can_transition_to(IvSourceHealthState::Stale));
     assert!(IvSourceHealthState::Stale.can_transition_to(IvSourceHealthState::Active));
     assert!(IvSourceHealthState::Unsubscribing.can_transition_to(IvSourceHealthState::Removed));

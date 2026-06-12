@@ -290,8 +290,7 @@ fn source_universe_operator_inputs_overwrites_existing_artifact_only_when_enable
 }"#,
     )
     .expect("write run plan");
-    fs::write(&conversion_plan_path, r#"{"category_batches":[]}"#)
-        .expect("write conversion plan");
+    fs::write(&conversion_plan_path, r#"{"category_batches":[]}"#).expect("write conversion plan");
     fs::write(&metadata_path, r#"{"records":[]}"#).expect("write metadata");
     fs::create_dir_all(&output_dir).expect("create output dir");
     fs::write(
@@ -335,7 +334,10 @@ default_taker_fee = "0"
 
     let err = write_source_universe_operator_inputs_from_spec_file(&spec_path)
         .expect_err("dirty output is protected by default");
-    assert!(err.to_string().contains("dirty source-universe operator-inputs"));
+    assert!(
+        err.to_string()
+            .contains("dirty source-universe operator-inputs")
+    );
 
     fs::write(
         &spec_path,

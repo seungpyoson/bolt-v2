@@ -272,9 +272,11 @@ pub fn evaluate_source_archive_index_manifest(
         total_content_length_bytes,
         first_archive_hour_utc: first_archive_hour_utc.unwrap_or_default(),
         last_archive_hour_utc: last_archive_hour_utc.unwrap_or_default(),
+        // Committed manifests must be reproducible from any checkout: echo the
+        // spec-authored path verbatim; resolution stays a read-time concern.
         artifact_refs: vec![SourceArchiveIndexManifestArtifactRef {
             role: "source_archive_index_snapshot".to_string(),
-            path: snapshot_path,
+            path: spec.index_snapshot_path.clone(),
             sha256: snapshot_hash,
         }],
         records: snapshot.records,

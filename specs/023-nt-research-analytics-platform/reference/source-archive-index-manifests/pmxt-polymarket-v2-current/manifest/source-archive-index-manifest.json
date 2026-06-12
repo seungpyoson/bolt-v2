@@ -18,7 +18,7 @@
   "artifact_refs": [
     {
       "role": "source_archive_index_snapshot",
-      "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/pmxt-polymarket-v2-current/source-archive-index-snapshot.json",
+      "path": "specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/pmxt-polymarket-v2-current/source-archive-index-snapshot.json",
       "sha256": "26c6ba1243acaaabe40a0eeec196f61b52c587c3d5dd30b3a2cc34819f7a4cf3"
     }
   ],

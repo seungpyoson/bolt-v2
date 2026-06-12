@@ -306,9 +306,11 @@ pub fn evaluate_source_archive_index_source_universe_manifest(
             first_archive_date: index.first_archive_hour_utc,
             last_archive_date: index.last_archive_hour_utc,
         }],
+        // Committed manifests must be reproducible from any checkout: echo the
+        // spec-authored path verbatim; resolution stays a read-time concern.
         artifact_refs: vec![SourceArchiveIndexSourceUniverseArtifactRef {
             role: "source_archive_index_manifest".to_string(),
-            path: index_path,
+            path: spec.source_archive_index_manifest_path.clone(),
             sha256: index_hash,
         }],
         payload_records,

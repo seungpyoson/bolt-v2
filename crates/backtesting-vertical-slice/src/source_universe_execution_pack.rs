@@ -26,8 +26,8 @@ use crate::{
         BackfillExecutionPlanStatus, BackfillExecutionRunBinding, BackfillExecutionWorkBudget,
         evaluate_backfill_execution_plan, write_backfill_execution_plan_with_overwrite,
     },
-    catalog_projection::CatalogInstrumentSpec,
     canonical_trades::{CanonicalInstrumentIdentity, ConverterConfig, RawPayloadConfig},
+    catalog_projection::CatalogInstrumentSpec,
     operator::RunSpec,
     source_proof::{AcceptanceScope, SourceProofReport, SourceProofStatus},
     source_universe_conversion_work_order::{
@@ -321,7 +321,11 @@ pub fn write_source_universe_execution_pack(
         let run_spec_bytes = run_spec_text.as_bytes();
         let run_spec_hash = sha256_bytes(run_spec_bytes);
         let run_spec_path = run_dir.join(SOURCE_UNIVERSE_EXECUTION_PACK_RUN_SPEC_FILE);
-        write_bytes_if_clean(&run_spec_path, run_spec_bytes, spec.overwrite_existing_artifacts)?;
+        write_bytes_if_clean(
+            &run_spec_path,
+            run_spec_bytes,
+            spec.overwrite_existing_artifacts,
+        )?;
         let run_spec: RunSpec = toml::from_str(&run_spec_text).with_context(|| {
             format!(
                 "materialized run spec does not deserialize {}",

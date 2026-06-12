@@ -3,8 +3,7 @@ use std::{fs, path::Path};
 use backtesting_vertical_slice::source_universe_batch_execution::{
     HttpSourceUniverseObjectFetcher, SourceUniverseBatchExecutionConfig,
     SourceUniverseBatchExecutionReportStatus, SourceUniverseBatchExecutionRunOutput,
-    SourceUniverseObjectFetcher,
-    SourceUniverseOperatorRunner, execute_source_universe_batch,
+    SourceUniverseObjectFetcher, SourceUniverseOperatorRunner, execute_source_universe_batch,
     execute_source_universe_batch_with_config, write_source_universe_batch_execution_report,
 };
 use backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPackRecord;
@@ -98,7 +97,10 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     )
     .expect("batch executes");
 
-    assert_eq!(report.status, SourceUniverseBatchExecutionReportStatus::Completed);
+    assert_eq!(
+        report.status,
+        SourceUniverseBatchExecutionReportStatus::Completed
+    );
     assert_eq!(report.pack_id, "source-universe-execution-pack-synthetic");
     assert_eq!(report.selected_record_count, 1);
     assert_eq!(report.completed_record_count, 1);
@@ -107,7 +109,10 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     assert_eq!(report.total_nt_catalog_rows, 7);
     assert_eq!(fetcher.calls, 1);
     assert_eq!(runner.calls.len(), 1);
-    assert_eq!(runner.calls[0].operator_run_id, "source-universe-operator-run-synthetic-00000");
+    assert_eq!(
+        runner.calls[0].operator_run_id,
+        "source-universe-operator-run-synthetic-00000"
+    );
     assert_eq!(runner.calls[0].object_bytes, object_bytes);
     assert_eq!(runner.calls[0].run_spec_path, run_spec_path);
     assert_eq!(runner.calls[0].execution_plan_path, execution_plan_path);
@@ -121,10 +126,7 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     let written: serde_json::Value =
         serde_json::from_slice(&fs::read(&artifact.path).expect("read report"))
             .expect("parse report");
-    assert_eq!(
-        written["batch_id"],
-        "source-universe-batch-synthetic"
-    );
+    assert_eq!(written["batch_id"], "source-universe-batch-synthetic");
     assert_eq!(written["completed_record_count"], 1);
     assert_eq!(artifact.completed_record_count, 1);
 }
@@ -171,14 +173,20 @@ fn source_universe_batch_execution_respects_start_sequence() {
     )
     .expect("batch executes selected sequence");
 
-    assert_eq!(report.status, SourceUniverseBatchExecutionReportStatus::Completed);
+    assert_eq!(
+        report.status,
+        SourceUniverseBatchExecutionReportStatus::Completed
+    );
     assert_eq!(report.selected_record_count, 1);
     assert_eq!(report.completed_record_count, 1);
     assert_eq!(report.failed_record_count, 0);
     assert_eq!(report.records[0].sequence, 1);
     assert_eq!(report.records[0].symbol, "ETHUSDT");
     assert_eq!(runner.calls.len(), 1);
-    assert_eq!(runner.calls[0].operator_run_id, "source-universe-operator-run-synthetic-00001");
+    assert_eq!(
+        runner.calls[0].operator_run_id,
+        "source-universe-operator-run-synthetic-00001"
+    );
 }
 
 #[test]
@@ -234,7 +242,10 @@ fn source_universe_batch_execution_can_continue_after_record_failure() {
     assert_eq!(report.failures[0].sequence, 0);
     assert_eq!(report.failures[0].failure_stage, "verify_object");
     assert_eq!(runner.calls.len(), 1);
-    assert_eq!(runner.calls[0].operator_run_id, "source-universe-operator-run-synthetic-00001");
+    assert_eq!(
+        runner.calls[0].operator_run_id,
+        "source-universe-operator-run-synthetic-00001"
+    );
 }
 
 #[test]

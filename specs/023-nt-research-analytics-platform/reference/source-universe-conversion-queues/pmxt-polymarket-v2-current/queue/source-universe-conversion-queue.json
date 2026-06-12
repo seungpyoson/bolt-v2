@@ -8,8 +8,8 @@
   "source": "polymarket-v2-archive",
   "family": "orderbook",
   "table_family": "order_book_snapshot_deltas",
-  "source_manifest_path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
-  "source_manifest_hash": "d020be8d337b404f1b7cea7b5962bccd5873ca1532e7cc9d6b0be09c33528299",
+  "source_manifest_path": "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
+  "source_manifest_hash": "1fc294c059bf0c13dfab528b80a8bc19a2fb1534fbe6bac2301197211e2239a6",
   "output_prefix_template": "source-universe={universe_id}/category={category}/symbol={symbol}/dt={archive_date}/object={source_hash}",
   "work_item_count": 1351,
   "pending_conversion_items": 1351,
@@ -28,8 +28,8 @@
   "artifact_refs": [
     {
       "role": "source_universe_manifest",
-      "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
-      "sha256": "d020be8d337b404f1b7cea7b5962bccd5873ca1532e7cc9d6b0be09c33528299"
+      "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
+      "sha256": "1fc294c059bf0c13dfab528b80a8bc19a2fb1534fbe6bac2301197211e2239a6"
     }
   ],
   "work_items": [

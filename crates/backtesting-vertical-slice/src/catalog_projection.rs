@@ -14,15 +14,16 @@
 //! the projection represents the accepted data exactly.
 
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
 use anyhow::{Context, Result, ensure};
-use nautilus_core::{Params, UnixNanos};
+use nautilus_core::{Params, UnixNanos, string::urlencoding};
 use nautilus_model::{
-    data::{OrderBookDelta, TradeTick},
+    data::{CatalogPathPrefix, OrderBookDelta, TradeTick},
     enums::AggressorSide,
     identifiers::{InstrumentId, Symbol, TradeId},
     instruments::{
@@ -30,7 +31,7 @@ use nautilus_model::{
     },
     types::{Currency, Money, Price, Quantity},
 };
-use nautilus_persistence::backend::catalog::ParquetDataCatalog;
+use nautilus_persistence::backend::catalog::{ParquetDataCatalog, urisafe_instrument_id};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -522,10 +523,7 @@ fn rescaled(value: &str, precision: u8) -> Result<String> {
 
 /// Maximum decimal scale across one canonical column, after normalization so
 /// trailing zeros do not count (mirrors `rescaled`'s normalize-before-check).
-fn max_normalized_scale<'a>(
-    values: impl Iterator<Item = &'a str>,
-    label: &str,
-) -> Result<u32> {
+fn max_normalized_scale<'a>(values: impl Iterator<Item = &'a str>, label: &str) -> Result<u32> {
     let mut max = 0u32;
     for value in values {
         let mut decimal =
@@ -754,15 +752,14 @@ pub fn read_back_trade_ticks(
     nt_instrument_id: &str,
 ) -> Result<Vec<TradeTick>> {
     let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    let instrument_ids = vec![nt_instrument_id.to_string()];
+    let files =
+        catalog_files_for_instruments::<TradeTick>(&catalog, catalog_root, &instrument_ids)?;
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
     catalog
-        .query_typed_data::<TradeTick>(
-            Some(vec![nt_instrument_id.to_string()]),
-            None,
-            None,
-            None,
-            None,
-            true,
-        )
+        .query_typed_data::<TradeTick>(None, None, None, None, Some(files), false)
         .context("query trade ticks from catalog")
 }
 
@@ -777,9 +774,18 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         .query_instruments(None)
         .context("query instruments from catalog for logical hash")?;
     instruments.sort_by_key(|instrument| instrument.id().to_string());
-    let mut ticks = catalog
-        .query_typed_data::<TradeTick>(None, None, None, None, None, true)
-        .context("query trade ticks from catalog for logical hash")?;
+    let instrument_ids: Vec<String> = instruments
+        .iter()
+        .map(|instrument| instrument.id().to_string())
+        .collect();
+    let trade_files = catalog_files_for_instruments::<TradeTick>(&catalog, root, &instrument_ids)?;
+    let mut ticks = if trade_files.is_empty() {
+        Vec::new()
+    } else {
+        catalog
+            .query_typed_data::<TradeTick>(None, None, None, None, Some(trade_files), false)
+            .context("query trade ticks from catalog for logical hash")?
+    };
     ticks.sort_by_key(|tick| {
         (
             tick.ts_event.as_u64(),
@@ -787,9 +793,15 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
             tick.instrument_id.to_string(),
         )
     });
-    let mut deltas = catalog
-        .query_typed_data::<OrderBookDelta>(None, None, None, None, None, true)
-        .context("query order book deltas from catalog for logical hash")?;
+    let delta_files =
+        catalog_files_for_instruments::<OrderBookDelta>(&catalog, root, &instrument_ids)?;
+    let mut deltas = if delta_files.is_empty() {
+        Vec::new()
+    } else {
+        catalog
+            .query_typed_data::<OrderBookDelta>(None, None, None, None, Some(delta_files), false)
+            .context("query order book deltas from catalog for logical hash")?
+    };
     deltas.sort_by_key(|delta| {
         (
             delta.ts_event.as_u64(),
@@ -848,6 +860,47 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(delta.ts_init.as_u64().to_string().as_bytes());
     }
     Ok(hex::encode(hasher.finalize()))
+}
+
+fn catalog_files_for_instruments<T: CatalogPathPrefix>(
+    catalog: &ParquetDataCatalog,
+    catalog_root: &Path,
+    instrument_ids: &[String],
+) -> Result<Vec<String>> {
+    if instrument_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let safe_instrument_ids: HashSet<String> = instrument_ids
+        .iter()
+        .map(|id| urisafe_instrument_id(id))
+        .collect();
+    let files = catalog
+        .query_files(T::path_prefix(), None, None, None)
+        .with_context(|| format!("query {} files from catalog", T::path_prefix()))?;
+    Ok(files
+        .into_iter()
+        .filter(|file| {
+            file.rsplit('/').nth(1).is_some_and(|directory| {
+                let decoded = urlencoding::decode(directory)
+                    .map(|value| value.into_owned())
+                    .unwrap_or_else(|_| directory.to_string());
+                let safe_directory = urisafe_instrument_id(&decoded);
+                safe_instrument_ids.contains(&safe_directory)
+            })
+        })
+        .map(|file| datafusion_catalog_file_path(catalog_root, &file))
+        .collect())
+}
+
+fn datafusion_catalog_file_path(catalog_root: &Path, catalog_file: &str) -> String {
+    if catalog_file.contains("://") || Path::new(catalog_file).is_absolute() {
+        catalog_file.to_string()
+    } else {
+        catalog_root
+            .join(catalog_file)
+            .to_string_lossy()
+            .to_string()
+    }
 }
 
 fn update_hash_field(hasher: &mut Sha256, label: &str, value: &str) {
@@ -1925,7 +1978,10 @@ max_notional = "200000"
         CatalogInstrumentSpec::CryptoPerpetual(spec)
     }
 
-    fn synthetic_identity(instrument_id: &str, nt_instrument_id: &str) -> CanonicalInstrumentIdentity {
+    fn synthetic_identity(
+        instrument_id: &str,
+        nt_instrument_id: &str,
+    ) -> CanonicalInstrumentIdentity {
         CanonicalInstrumentIdentity {
             instrument_id: instrument_id.to_string(),
             venue_symbol: instrument_id.to_string(),
@@ -1933,7 +1989,11 @@ max_notional = "200000"
         }
     }
 
-    fn synthetic_table(csv: &str, instrument_id: &str, nt_instrument_id: &str) -> CanonicalTradesTable {
+    fn synthetic_table(
+        csv: &str,
+        instrument_id: &str,
+        nt_instrument_id: &str,
+    ) -> CanonicalTradesTable {
         normalize_sample_spot_tick_trades(
             &accepted_dataset(),
             &synthetic_identity(instrument_id, nt_instrument_id),
@@ -1970,7 +2030,7 @@ max_notional = "200000"
         // VALUE unchanged (0.1 -> 0.10, 0.0001 -> 0.00010).
         let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
         let instruments = catalog
-            .query_instruments(Some(&vec!["BASEQUOTE.TESTVENUE".to_string()]))
+            .query_instruments(Some(&["BASEQUOTE.TESTVENUE".to_string()]))
             .expect("query instruments");
         assert_eq!(instruments.len(), 1);
         assert_eq!(instruments[0].price_precision(), 2);
@@ -1991,7 +2051,7 @@ max_notional = "200000"
             .expect("project");
         let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
         let instruments = catalog
-            .query_instruments(Some(&vec!["BASEQUOTE.TESTVENUE".to_string()]))
+            .query_instruments(Some(&["BASEQUOTE.TESTVENUE".to_string()]))
             .expect("query instruments");
         assert_eq!(instruments[0].price_precision(), 1);
         assert_eq!(instruments[0].size_precision(), 4);
@@ -2012,7 +2072,7 @@ max_notional = "200000"
             .expect("project");
         let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
         let instruments = catalog
-            .query_instruments(Some(&vec!["BASEQUOTE.TESTVENUE".to_string()]))
+            .query_instruments(Some(&["BASEQUOTE.TESTVENUE".to_string()]))
             .expect("query instruments");
         assert_eq!(instruments[0].price_precision(), 1);
         let loaded = read_back_trade_ticks(dir.path(), "BASEQUOTE.TESTVENUE").expect("read back");
@@ -2033,6 +2093,52 @@ max_notional = "200000"
             read_back_trade_ticks(dir.path(), "BASEQUOTE-PERP.TESTVENUE").expect("read back");
         assert_eq!(loaded[0].price, Price::from("12.34"));
         assert_eq!(loaded[0].size, Quantity::from("0.3001"));
+    }
+
+    #[test]
+    fn projection_hashes_url_encoded_non_ascii_instrument_catalog() {
+        let mut spec = synthetic_spot_spec();
+        spec.nt_instrument_id = "币安人生USDC.BINANCE".to_string();
+        spec.raw_symbol = "币安人生USDC".to_string();
+        spec.base_currency = "币安人生".to_string();
+        spec.quote_currency = "USDC".to_string();
+        let csv = "id,timestamp,price,volume,side,rpi\n\
+            1,1772323201665,12.34,0.3001,buy,0\n";
+        let table = synthetic_table(csv, "币安人生USDC", "币安人生USDC.BINANCE");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+
+        let projection = project_canonical_trades_to_catalog(&table, &spec, dir.path())
+            .expect("project non-ASCII catalog path");
+        let loaded = read_back_trade_ticks(dir.path(), "币安人生USDC.BINANCE").expect("read back");
+
+        assert_eq!(projection.trade_count, 1);
+        assert_eq!(projection.nt_instrument_id, "币安人生USDC.BINANCE");
+        assert!(!projection.catalog_hash.is_empty());
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].instrument_id.to_string(), "币安人生USDC.BINANCE");
+    }
+
+    #[test]
+    fn datafusion_catalog_file_path_resolves_all_path_shapes() {
+        // NT's resolve_path_for_datafusion passes absolute native paths and
+        // full URIs through verbatim but URL-joins anything relative, which
+        // percent-decodes encoded instrument directories into nonexistent
+        // paths. Pin all three input shapes so the passthrough/join split
+        // cannot silently regress.
+        let root = Path::new("/catalog/root");
+
+        assert_eq!(
+            datafusion_catalog_file_path(root, "s3://bucket/data/trades/X.V/part-0.parquet"),
+            "s3://bucket/data/trades/X.V/part-0.parquet"
+        );
+        assert_eq!(
+            datafusion_catalog_file_path(root, "/elsewhere/data/trades/X.V/part-0.parquet"),
+            "/elsewhere/data/trades/X.V/part-0.parquet"
+        );
+        assert_eq!(
+            datafusion_catalog_file_path(root, "data/trades/X.V/part-0.parquet"),
+            "/catalog/root/data/trades/X.V/part-0.parquet"
+        );
     }
 
     #[test]
@@ -2354,6 +2460,49 @@ max_notional = "200000"
             hasher.update(tick.ts_init.as_u64().to_string().as_bytes());
         }
         hex::encode(hasher.finalize())
+    }
+
+    #[test]
+    fn projection_rejects_empty_canonical_table() {
+        // Reproduction pin for the zero-row vacuous-pass concern: an empty
+        // canonical table must fail loud at validate() before any catalog
+        // write, so read-back can never compare 0 == 0 against an accepted
+        // record.
+        let mut table = canonical_table();
+        table.rows.clear();
+        let error = table.validate().expect_err("empty table rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("canonical trades table is empty")
+        );
+    }
+
+    #[test]
+    fn logical_catalog_hash_reproduces_committed_pmxt_reference_catalog_hash() {
+        // Hash-invariance regression pin: the committed PMXT reference catalog
+        // hash was recorded under the pre-explicit-file-list query mechanics.
+        // Recomputing over the committed bytes must keep producing the
+        // recorded value, or committed ledger records silently stop
+        // verifying against their catalogs.
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("repo root");
+        let run_dir = repo_root.join(
+            "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run",
+        );
+        let metadata: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(run_dir.join("catalog-metadata.json"))
+                .expect("read committed catalog metadata"),
+        )
+        .expect("parse committed catalog metadata");
+        let recorded = metadata["catalog_hash"]
+            .as_str()
+            .expect("catalog_hash present in committed metadata");
+        let recomputed =
+            logical_catalog_hash(&run_dir.join("nt-catalog")).expect("recompute logical hash");
+        assert_eq!(recomputed, recorded);
     }
 
     #[test]

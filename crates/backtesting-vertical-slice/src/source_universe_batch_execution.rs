@@ -136,8 +136,7 @@ impl HttpSourceUniverseObjectFetcher {
                 fetch_timeout_seconds > 0,
                 "fetch_timeout_seconds must be positive"
             );
-            client_builder =
-                client_builder.timeout(Duration::from_secs(fetch_timeout_seconds));
+            client_builder = client_builder.timeout(Duration::from_secs(fetch_timeout_seconds));
         }
         if let Some(http_user_agent) = http_user_agent {
             ensure!(
@@ -259,7 +258,9 @@ where
         pack.pack_id
     );
 
-    let pack_base_dir = execution_pack_path.parent().unwrap_or_else(|| Path::new("."));
+    let pack_base_dir = execution_pack_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create batch output dir {}", output_dir.display()))?;
 
@@ -446,7 +447,9 @@ fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
     if base_relative.exists() {
         return base_relative;
     }
-    let repo_relative = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path);
+    let repo_relative = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(path);
     if repo_relative.exists() {
         return repo_relative;
     }

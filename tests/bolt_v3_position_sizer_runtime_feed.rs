@@ -79,7 +79,7 @@ fn runtime_feed_uses_verified_nt_msgbus_symbols() {
 }
 
 #[test]
-fn subscribed_account_and_portfolio_events_wait_for_spendability() {
+fn subscribed_account_and_portfolio_events_publish_account_spendability() {
     let admission = Arc::new(position_sized_admission());
     let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
         runtime_feed_config(),
@@ -97,8 +97,19 @@ fn subscribed_account_and_portfolio_events_wait_for_spendability() {
     );
     subscription.unsubscribe_all();
 
-    assert_eq!(admission.position_sizer_state_snapshot(), None);
-    assert_eq!(admission.position_sizer_state_observed_at_ns(), None);
+    let snapshot = admission
+        .position_sizer_state_snapshot()
+        .expect("account and portfolio events should publish account-derived spendability");
+    assert_eq!(snapshot.observed_at_ns, 1_100);
+    assert_eq!(
+        snapshot.venue_spendability.source,
+        "nt_account_free_collateral"
+    );
+    assert_eq!(
+        snapshot.venue_spendability.spendable_collateral,
+        Decimal::new(4500, 2)
+    );
+    assert_eq!(admission.position_sizer_state_observed_at_ns(), Some(1_100));
 }
 
 #[test]

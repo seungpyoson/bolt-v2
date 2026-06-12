@@ -414,7 +414,7 @@ write.**
 
 > **Scope boundary — pre-existing vertical-slice run projection (external review, 2026-06-12).** The
 > NT-writer prohibition above (and every restatement of it: the v3-changes R-4 bullet, the §2 tier
-> table, §2.1, §3.1, §3.5, §4.3, §9.4, §11, §15 R-4, §16.1 D-2)
+> table, §2.1, §3.1, §3.5, §4.3, §4.5, §9.4, §11, §15 R-4, §16.1 D-2)
 > is an invariant over THIS plan's catalog roots — the platform's staging and canonical
 > (`nt-catalog/sets/<id>/`) prefixes. It is NOT a repo-wide claim: `main` already carries an
 > NT-writer write path in the backtesting-vertical-slice run projection
@@ -980,7 +980,7 @@ no-overwrite concurrency proof.
 
 **Instruments-lane writer (resolves R-4).** The instruments lane needs its own thin writer because NT's
 only instrument-write entry point (`write_instruments`, `catalog.rs:701`) is non-atomic (§2.1 hazard)
-and is therefore never called:
+and is therefore never called for platform-root writes (§4.1 scope-boundary note):
 
 1. **Encode.** Build the same `InstrumentAny` `RecordBatch`es NT would (via NT's
    `data_to_record_batches` path used inside `write_instruments`, `catalog.rs:731`, reused read-only),

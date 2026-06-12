@@ -196,6 +196,10 @@ source-fence: source-fence-static
     # nextest ownership, `test` intentionally still duplicates them under `gate`.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_controlled_connect --test bolt_v3_production_entrypoint -- --nocapture
 
+# Cargo shim guard tests (pytest-based, unlike the self-running script tests)
+cargo-shim-tests:
+    python3 -m pytest scripts/test_cargo_shim.py -q
+
 require-live-root: check-workspace
     #!/usr/bin/env bash
     if [ ! -f "{{live_root}}" ]; then

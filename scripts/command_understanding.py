@@ -15,6 +15,7 @@ CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {
     "--target",
     "--target-dir",
     "-C",
+    "-j",
     "-Z",
 }
 CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {

@@ -2455,10 +2455,9 @@ fn product_satisfies_current_state(product: &IvQueryProduct, state: &IvQueryStat
     if let Some(current_generation) = state
         .current_subscription_generations
         .get(&provenance.source_id)
+        && *current_generation != provenance.subscription_generation
     {
-        if *current_generation != provenance.subscription_generation {
-            return false;
-        }
+        return false;
     }
     if let Some(current_health) =
         select_source_health(state, &provenance.profile_id, &provenance.source_id)
@@ -2476,10 +2475,9 @@ fn derived_input_satisfies_current_state(inputs: &IvDerivedInputSet, state: &IvQ
     if let Some(current_generation) = state
         .current_subscription_generations
         .get(&inputs.source_id)
+        && *current_generation != inputs.subscription_generation
     {
-        if *current_generation != inputs.subscription_generation {
-            return false;
-        }
+        return false;
     }
     if let Some(current_health) = select_source_health(state, &inputs.profile_id, &inputs.source_id)
     {

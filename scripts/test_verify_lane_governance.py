@@ -50,6 +50,17 @@ if __name__ == "__main__":
     unittest.main()
 '''
 
+COMPLIANT_REVERSED_MAIN_GUARD = '''
+def main():
+    return 0
+
+if "__main__" == __name__:
+    import lane_governor
+
+    lane_governor.acquire()
+    raise SystemExit(main())
+'''
+
 MISSING_ACQUIRE = '''
 def main():
     return 0
@@ -67,6 +78,17 @@ if __name__ == "__main__":
 
     print("starting")
     lane_governor.acquire()
+    raise SystemExit(main())
+'''
+
+ACQUIRE_WITH_POLICY_OVERRIDE = '''
+def main():
+    return 0
+
+if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire(lock_dir="/tmp/unshared")
     raise SystemExit(main())
 '''
 
@@ -108,6 +130,17 @@ def helper():
     return 0
 '''
 
+TOP_LEVEL_WORK_WITHOUT_MAIN = '''
+print("running expensive verifier work")
+'''
+
+FAKE_CONSTANT_MAIN_GUARD = '''
+if "__main__" == "__name__":
+    import lane_governor
+
+    lane_governor.acquire()
+'''
+
 
 def _violations(named_sources: dict[str, str]) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
@@ -127,6 +160,10 @@ def test_all_existing_entry_tail_shapes_pass() -> None:
         "test_sys_exit.py": COMPLIANT_SYS_EXIT,
         "test_unittest.py": COMPLIANT_UNITTEST,
     }) == []
+
+
+def test_reversed_main_guard_passes() -> None:
+    assert _violations({"verify_sample.py": COMPLIANT_REVERSED_MAIN_GUARD}) == []
 
 
 def test_missing_acquire_flagged() -> None:
@@ -154,8 +191,24 @@ def test_acquire_after_other_statement_flagged() -> None:
     assert len(violations) == 1 and "lane_governor.acquire()" in violations[0]
 
 
-def test_module_without_main_is_exempt() -> None:
-    assert _violations({"verify_sample.py": NO_MAIN_BLOCK}) == []
+def test_acquire_with_policy_override_flagged() -> None:
+    violations = _violations({"verify_sample.py": ACQUIRE_WITH_POLICY_OVERRIDE})
+    assert len(violations) == 1 and "lane_governor.acquire()" in violations[0]
+
+
+def test_module_without_main_is_flagged() -> None:
+    violations = _violations({"verify_sample.py": NO_MAIN_BLOCK})
+    assert len(violations) == 1 and "__main__" in violations[0]
+
+
+def test_top_level_work_without_main_is_flagged() -> None:
+    violations = _violations({"test_sample.py": TOP_LEVEL_WORK_WITHOUT_MAIN})
+    assert len(violations) == 1 and "__main__" in violations[0]
+
+
+def test_fake_constant_main_guard_is_flagged() -> None:
+    violations = _violations({"verify_sample.py": FAKE_CONSTANT_MAIN_GUARD})
+    assert len(violations) == 1 and "__main__" in violations[0]
 
 
 def test_non_matching_names_ignored() -> None:
@@ -170,12 +223,16 @@ def main() -> int:
     tests = [
         test_compliant_file_passes,
         test_all_existing_entry_tail_shapes_pass,
+        test_reversed_main_guard_passes,
         test_missing_acquire_flagged,
         test_missing_lane_governor_import_flagged,
         test_import_before_lane_governor_is_flagged,
         test_lane_governor_import_after_other_statement_flagged,
         test_acquire_after_other_statement_flagged,
-        test_module_without_main_is_exempt,
+        test_acquire_with_policy_override_flagged,
+        test_module_without_main_is_flagged,
+        test_top_level_work_without_main_is_flagged,
+        test_fake_constant_main_guard_is_flagged,
         test_non_matching_names_ignored,
         test_real_scripts_dir_is_clean,
     ]

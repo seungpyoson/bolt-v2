@@ -92,8 +92,9 @@ def test_acquire_after_other_statement_flagged() -> None:
     assert len(violations) == 1 and "lane_governor.acquire()" in violations[0]
 
 
-def test_module_without_main_is_exempt() -> None:
-    assert _violations({"verify_sample.py": NO_MAIN_BLOCK}) == []
+def test_module_without_main_is_flagged() -> None:
+    violations = _violations({"verify_sample.py": NO_MAIN_BLOCK})
+    assert len(violations) == 1 and "__main__" in violations[0]
 
 
 def test_non_matching_names_ignored() -> None:
@@ -109,7 +110,7 @@ def main() -> int:
         test_compliant_file_passes,
         test_missing_acquire_flagged,
         test_acquire_after_other_statement_flagged,
-        test_module_without_main_is_exempt,
+        test_module_without_main_is_flagged,
         test_non_matching_names_ignored,
         test_real_scripts_dir_is_clean,
     ]
@@ -134,11 +135,10 @@ Expected: FAIL — `verify_lane_governance.py` does not exist yet; `spec_from_fi
 #!/usr/bin/env python3
 """Meta-check: every governed lane entry point acquires the lane lock (#653).
 
-Rule: in every scripts/verify_*.py and scripts/test_*.py that has a module-level
-``if __name__ == "__main__":`` block, the first two statements of that block
-must be ``import lane_governor`` and a bare ``lane_governor.acquire(...)`` call.
-Files without a ``__main__`` block cannot run as lanes and are exempt. This
-makes lane-coverage drift a CI failure instead of a convention.
+Rule: every scripts/verify_*.py and scripts/test_*.py file must have a
+module-level ``if __name__ == "__main__":`` block whose first two statements are
+``import lane_governor`` and a bare ``lane_governor.acquire()`` call. This makes
+lane-coverage drift a CI failure instead of a convention.
 """
 
 from __future__ import annotations
@@ -159,13 +159,17 @@ def _is_main_guard(node: ast.stmt) -> bool:
     if not isinstance(test.ops[0], ast.Eq):
         return False
     left, right = test.left, test.comparators[0]
-    names = set()
-    for side in (left, right):
-        if isinstance(side, ast.Name):
-            names.add(side.id)
-        elif isinstance(side, ast.Constant):
-            names.add(side.value)
-    return "__name__" in names and "__main__" in names
+    return (
+        isinstance(left, ast.Name)
+        and left.id == "__name__"
+        and isinstance(right, ast.Constant)
+        and right.value == "__main__"
+    ) or (
+        isinstance(right, ast.Name)
+        and right.id == "__name__"
+        and isinstance(left, ast.Constant)
+        and left.value == "__main__"
+    )
 
 
 def _is_acquire_call(node: ast.stmt) -> bool:
@@ -176,6 +180,8 @@ def _is_acquire_call(node: ast.stmt) -> bool:
         and node.value.func.attr == "acquire"
         and isinstance(node.value.func.value, ast.Name)
         and node.value.func.value.id == "lane_governor"
+        and not node.value.args
+        and not node.value.keywords
     )
 
 
@@ -197,6 +203,9 @@ def lane_governance_violations(scripts_dir: Path) -> list[str]:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         main_guards = [node for node in tree.body if _is_main_guard(node)]
         if not main_guards:
+            violations.append(
+                f"{path.name}: governed files must define a module-level __main__ block"
+            )
             continue
         for guard in main_guards:
             if not guard.body or not _is_lane_governor_import(guard.body[0]):

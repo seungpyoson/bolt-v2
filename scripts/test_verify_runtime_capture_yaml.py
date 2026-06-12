@@ -912,4 +912,7 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
         self.assertFalse(VERIFIER.has_risk_jsonl_path(source))
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     unittest.main()

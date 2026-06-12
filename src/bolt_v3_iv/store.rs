@@ -261,30 +261,37 @@ impl IvStore {
     }
 
     pub fn enforce_retention(&mut self, policy: &IvRetentionPolicy) {
-        retain_with_logical_start(
+        let raw_events_start = self.raw_events_start;
+        self.raw_events_start = retain_with_logical_start(
             &mut self.raw_events,
-            &mut self.raw_events_start,
+            raw_events_start,
             policy.max_raw_events,
         );
-        retain_with_logical_start(
+        let iv_points_start = self.iv_points_start;
+        self.iv_points_start = retain_with_logical_start(
             &mut self.iv_points,
-            &mut self.iv_points_start,
+            iv_points_start,
             policy.max_indexed_points,
         );
-        retain_with_logical_start(
+        let greeks_points_start = self.greeks_points_start;
+        self.greeks_points_start = retain_with_logical_start(
             &mut self.greeks_points,
-            &mut self.greeks_points_start,
+            greeks_points_start,
             policy.max_indexed_points,
         );
-        retain_with_logical_start(&mut self.smiles, &mut self.smiles_start, policy.max_smiles);
-        retain_with_logical_start(
+        let smiles_start = self.smiles_start;
+        self.smiles_start =
+            retain_with_logical_start(&mut self.smiles, smiles_start, policy.max_smiles);
+        let aggregate_greeks_start = self.aggregate_greeks_start;
+        self.aggregate_greeks_start = retain_with_logical_start(
             &mut self.aggregate_greeks,
-            &mut self.aggregate_greeks_start,
+            aggregate_greeks_start,
             policy.max_indexed_points,
         );
-        retain_with_logical_start(
+        let iv_evidence_start = self.iv_evidence_start;
+        self.iv_evidence_start = retain_with_logical_start(
             &mut self.iv_evidence,
-            &mut self.iv_evidence_start,
+            iv_evidence_start,
             policy.max_indexed_points,
         );
     }
@@ -513,16 +520,17 @@ fn active_slice<T>(items: &[T], start: usize) -> &[T] {
     &items[start.min(items.len())..]
 }
 
-fn retain_with_logical_start<T>(items: &mut Vec<T>, start: &mut usize, max_len: usize) {
-    *start = (*start).min(items.len());
-    let active_len = items.len().saturating_sub(*start);
+fn retain_with_logical_start<T>(items: &mut Vec<T>, start: usize, max_len: usize) -> usize {
+    let mut retained_start = start.min(items.len());
+    let active_len = items.len().saturating_sub(retained_start);
     if active_len > max_len {
-        *start += active_len - max_len;
+        retained_start += active_len - max_len;
     }
-    if *start > 0 && (max_len == 0 || *start > max_len) {
-        items.drain(..*start);
-        *start = EMPTY_RETENTION_START;
+    if retained_start > 0 && (max_len == 0 || retained_start > max_len) {
+        items.drain(..retained_start);
+        retained_start = EMPTY_RETENTION_START;
     }
+    retained_start
 }
 
 impl From<IvRejectReason> for IvStoreError {

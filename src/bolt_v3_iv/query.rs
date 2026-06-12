@@ -414,14 +414,16 @@ impl IvQueryStateHandle {
         record_retention_misses(&mut state, policy);
         retain_retention_misses(&mut state, policy);
         state.store.enforce_retention(policy);
-        retain_with_logical_start(
+        let derived_outputs_start = state.derived_outputs_start;
+        state.derived_outputs_start = retain_with_logical_start(
             &mut state.derived_outputs,
-            &mut state.derived_outputs_start,
+            derived_outputs_start,
             policy.max_derived_points,
         );
-        retain_with_logical_start(
+        let query_rejections_start = state.query_rejections_start;
+        state.query_rejections_start = retain_with_logical_start(
             &mut state.query_rejections,
-            &mut state.query_rejections_start,
+            query_rejections_start,
             policy.max_source_health_events,
         );
         let current_subscription_generations = state.current_subscription_generations.clone();
@@ -2368,16 +2370,17 @@ fn active_slice<T>(values: &[T], start: usize) -> &[T] {
     &values[start.min(values.len())..]
 }
 
-fn retain_with_logical_start<T>(values: &mut Vec<T>, start: &mut usize, max_len: usize) {
-    *start = (*start).min(values.len());
-    let active_len = values.len().saturating_sub(*start);
+fn retain_with_logical_start<T>(values: &mut Vec<T>, start: usize, max_len: usize) -> usize {
+    let mut retained_start = start.min(values.len());
+    let active_len = values.len().saturating_sub(retained_start);
     if active_len > max_len {
-        *start += active_len - max_len;
+        retained_start += active_len - max_len;
     }
-    if *start > 0 && (max_len == 0 || *start > max_len) {
-        values.drain(..*start);
-        *start = EMPTY_RETENTION_START;
+    if retained_start > 0 && (max_len == 0 || retained_start > max_len) {
+        values.drain(..retained_start);
+        retained_start = EMPTY_RETENTION_START;
     }
+    retained_start
 }
 
 fn select_source_health<'a>(

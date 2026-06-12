@@ -148,7 +148,9 @@ do NOT go through `dispatch_query`.
 > data write, instrument-snapshot objects are written through the `ConditionalCatalogWriter`
 > encode-then-conditional-create path (§4.3) and committed only via an accepted PromotionPackage
 > (§4.4). NT's `write_instruments` is **never** called for any staged or canonical write — it is used
-> only via the read side (`query_instruments`) when re-opening a catalog for a backtest. See §4.5 for
+> only via the read side (`query_instruments`) when re-opening a catalog for a backtest (scope:
+> platform roots; the pre-existing vertical-slice run projection on `main` is the run-scoped
+> exception — see the §4.1 scope-boundary note). See §4.5 for
 > the instruments-lane writer specialization.
 >
 > **`event_time_source` guard EXEMPTION (resolves R-4, class-correct).** The `event_time_source`
@@ -402,6 +404,18 @@ behavior, and no-overwrite behavior" gate or `ingest_manifest.no_overwrite_proof
 `write_to_parquet`/`write_custom_data_batch`/`write_instruments` directly for any staged-or-canonical
 write.**
 
+> **Scope boundary — pre-existing vertical-slice run projection (external review, 2026-06-12).** The
+> NT-writer prohibition above (and everywhere it is restated: §2.1, §4.3, §9.4, §15 R-4, §16.1 D-2)
+> is an invariant over THIS plan's catalog roots — the platform's staging and canonical
+> (`nt-catalog/sets/<id>/`) prefixes. It is NOT a repo-wide claim: `main` already carries an
+> NT-writer write path in the backtesting-vertical-slice run projection
+> (`crates/backtesting-vertical-slice/src/catalog_projection.rs`, `write_instruments` +
+> `write_to_parquet`), which writes per-run scratch catalog roots that the runner hash-reconciles
+> against canonical rows and never promotes into any platform staging/canonical prefix. That path
+> is outside this invariant today. If BTE run catalogs are later absorbed into the platform root
+> family, migrating that projection onto `ConditionalCatalogWriter` becomes a tracked
+> implementation task at that point.
+
 ### 4.2 Why prefix re-pointing canonicalizes orphan bytes (F15) and why a pointer alone does not keep bytes out of a read (B-1(a))
 
 The v1 Phase 6 step "re-point staging into artifact_root, flip write_mode→canonical_s3" treats every
@@ -426,8 +440,9 @@ A research-only crate (in the separate cloud-enabled workspace, §12) that **enc
 itself and conditionally creates the object**. It NEVER delegates the object write to any NT catalog
 write method (`write_to_parquet`, `write_custom_data_batch`, `write_instruments`). It is the **single
 write path for every catalog and Parquet object in this system** — staging and canonical, market-data
-and instruments alike. NT's `ParquetDataCatalog` is used **only** for read-back/query (`query_files`,
-`query_instruments`).
+and instruments alike (scope: the platform's roots — see the §4.1 scope-boundary note for the
+pre-existing vertical-slice run projection on `main`). NT's `ParquetDataCatalog` is used **only**
+for read-back/query (`query_files`, `query_instruments`).
 
 > **Path note.** The write/encoder/store-builder code is in `crates/persistence/src/parquet.rs` (NOT
 > `crates/persistence/src/backend/parquet.rs`, which does not exist at this rev). The catalog write
@@ -695,6 +710,19 @@ wholesale. Promotion is the commit of an explicit promotion package, never a pre
    interval (§4.3.4 canonical). Materialization uses **backend-native server-side copy** (§4.4a), never
    download+reupload. The new root is **immutable**: once a snapshot-set id is committed, its root is
    never appended to or mutated.
+
+   > **Instrument-directory charset constraint (campaign-branch finding, 2026-06).** `object_store`'s
+   > path layer percent-encodes, at write time, every non-ASCII character and every ASCII character
+   > outside alphanumeric / `.` / `_` / `-` in each path segment (its INVALID encode set — including
+   > `~`, which is RFC 3986 unreserved). NT's identifier-filtered catalog queries cannot match a
+   > percent-encoded `<safe_instrument_id>` directory (upstream nautechsystems/nautilus_trader#4259);
+   > the backtesting-vertical-slice read path on the campaign branch works around this with explicit
+   > file-list queries plus a manifest-level instrument-id charset validator. The
+   > `ConditionalCatalogWriter` and canonical-root naming MUST therefore fix the charset policy at
+   > design time: canonical `<safe_instrument_id>` directory names are restricted to the
+   > object_store-verbatim ASCII subset (alphanumeric, `.`, `_`, `-`), and ids outside it are
+   > rejected fail-loud at admission — a canonical root must never depend on NT's filtered-query
+   > path matching a percent-encoded directory name.
 
 6. **Commit the whole package as ONE snapshot SET, advanced by a single CAS (R-2).** Promotion becomes
    "live" only after every object in step 5 is materialized, by atomically advancing exactly ONE hot
@@ -1669,7 +1697,8 @@ server-side copy with zero egress, §9.x / §4.4a.)
 - **Parallelize** across instrument partitions (disjoint directories → no LIST contention, and the
   `ConditionalCatalogWriter` makes concurrent writers safe). Do NOT parallelize multiple writers into
   the SAME interval directory under NT's native writer (the head()-then-put race, §4.1) — but NT's
-  native writer is never called for writes anyway (§4.1).
+  native writer is never called for platform writes anyway (§4.1; see the §4.1 scope-boundary note
+  for the pre-existing vertical-slice run-scoped exception on `main`).
 - **Bulk path** uses one-pass-per-directory + the external conditional-PUT layer.
 
 ### 9.x Cost-model note — object counts assume logical-digest idempotency + server-side copy (resolves R-3, R-7)
@@ -2158,7 +2187,7 @@ the built store (`aws/precondition.rs:117-160`, `aws/client.rs:209`).
 | **B-1** Catalog read-path incompatibility (3 defects: hash-suffixed names over-included; pointer never consulted so pre-CAS canonical bytes are NT-readable orphans; interim-staging NT catalog guarded only socially) | RESOLVED. §4.3.4: canonical roots use NT-native `timestamps_to_filename` names only, interval-disjoint, one live file per interval; content+transform-hash names are staging-only (NT over-includes unparseable names — `query_intersects_filename` `true` on `None`, `catalog.rs:4600`; NOT a crash). §4.4: canonical NT catalog is materialized into a FRESH IMMUTABLE per-set root via server-side copy AFTER the pointer CAS; the pointer names the active root and NT is pointed at THAT root, so a lost CAS leaves an unreferenced root NT never lists (`catalog.rs:305-320,1998-2021`). §5.3: staging is Tier-C-only under `staged-research/…` (never `data/<type>/`), so NT's `make_path`/`query_files`/`list_parquet_files` cannot enumerate it; a fail-loud validator rejects pending-proof objects under any Tier A/B prefix and non-NT-native names under any canonical root. |
 | **R-2** Cross-kind promotion atomicity | RESOLVED. §4.4 step 6: one PromotionPackage commits as a single immutable `SnapshotSet` advanced by ONE CAS on `pointers/set/latest.json`; per-kind pointers are derived. §4.5: the backtest pins the committed set ONCE at run start and derives every `catalog_path` from one immutable per-set root, so NT's independent per-config LISTs (`node.rs:156-178`/`374-382`/`488-501`) all enumerate the same frozen byte set; a run sees the old set or the new set, never a mix. §13.6 resolved. BLOCKER Phase-0 acceptance proof 0.R. |
 | **R-3** Idempotency digest over non-deterministic parquet bytes | RESOLVED. §4.3b: one canonical LOGICAL-content digest via `arrow_row::RowConverter` (`parquet.rs:211-249`, in-tree dep `Cargo.toml:69`) over a fixed schema image + total row order + decimal-preserved values; every staging key, PromotionPackage entry, and `ArtifactIndex.content_hash` resolves to it. Determinism contract test. §9.x cost note. |
-| **R-4** Instruments lane contradiction (non-atomic `write_instruments`) | RESOLVED. §2.1 + §4.5: instruments go through `ConditionalCatalogWriter`; NT `write_instruments` (`catalog.rs:701`, NOT node.rs:165 = read) never called for writes; `event_time_source` exemption via table-level `time_series=false`. |
+| **R-4** Instruments lane contradiction (non-atomic `write_instruments`) | RESOLVED. §2.1 + §4.5: instruments go through `ConditionalCatalogWriter`; NT `write_instruments` (`catalog.rs:701`, NOT node.rs:165 = read) never called for platform writes (scope: see §4.1 scope-boundary note for the pre-existing vertical-slice run projection on `main`); `event_time_source` exemption via table-level `time_series=false`. |
 | **R-5** NT encoder reuse / buffer seam | RESOLVED. §4.3.0: `write_batches_to_object_store` is `pub` (`parquet.rs:170`) but encode+put share one function (`:178-197`); Phase-0 0.E mandates vendor-encode vs arrow-rs decision + round-trip proof + encoder identity in `NtCapabilityProof`. |
 | **R-6** Conditional-put unprovable + multipart | RESOLVED. §4.3.2: resolved mode not introspectable (`aws/precondition.rs:117-160`, `aws/client.rs:209`) and NT can't even set it (`parquet.rs:712-714`); writer builds its own `AmazonS3Builder` + runtime probe at construction (Phase-0 prereq 0.6). §4.3.3: public multipart carries no `PutMode`; per-object size bounded under single-PUT, fail loud. |
 | **R-7** Promotion egress / no atomic cross-prefix copy | RESOLVED. §4.4a: server-side `copy_opts(CopyMode::Create)` → S3 `CopyObject` (`aws/mod.rs:312`, `aws/client.rs:596-597,702`), zero egress; size-keyed single vs multipart `UploadPartCopy` (one path); `copy_if_not_exists` capability probed Phase-0 (0.6). §9.x cost addendum. |
@@ -2186,15 +2215,18 @@ the line explicitly and converts every pending edit into an atomic, file:line-ta
 task. **This plan does not itself perform these edits — implementation does — but this plan OWNS the
 list and the atomicity constraints so nothing is lost and nothing ships half-migrated.**
 
-Verification basis (every pre-edit line below was re-read at the worktree HEAD of this branch; the
-producer/ledger scripts and the reference TOMLs the plan targets are the worktree copies): the eleven
-producer `write_mode` lines, the Deribit `write_policy` block, the coverage-ledger acceptance heuristic,
-and the binding/matrix lines all still show the **pre-edit** value. Citations are to those re-read
-lines. Scope note for the owner: the Deribit producer and the coverage-ledger script resolve against the
-WORKTREE copies of `scripts/` (the coverage-ledger and the larger Deribit producer exist at the worktree
-line numbers); v3's §16 line numbers are authored against the branch that carries these scripts. If
-those scripts have not yet merged to `main`, that is itself a precondition the G-A ledger tasks depend
-on. A hard "no other `s3_staging` string exists anywhere" guarantee was NOT independently grep-verified
+Verification basis (every pre-edit line below was re-read at the worktree HEAD of the branch that
+carries the targeted artifact — NOT this docs branch, whose tree does not carry the producer/ledger
+scripts): the eleven producer `write_mode` lines, the Deribit `write_policy` block, the coverage-ledger
+acceptance heuristic, and the binding/matrix lines all still show the **pre-edit** value. Citations are
+to those re-read lines. Scope note for the owner: the producer scripts and
+`scripts/backfill_coverage_ledger.py` live on `feat/023-venue-data-backfill` (re-verified 2026-06-12:
+present at that branch's tip, absent from `main` and from this docs branch; the cited
+`backfill_coverage_ledger.py` line numbers match that copy exactly), and the reference TOMLs
+(`backfill-source-bindings.v1.toml`, `backfill-evidence-matrix.v1.toml`) now exist on `main`
+(re-verified 2026-06-12). v3's §16 line numbers are authored against the branch that carries these
+scripts. Because those scripts have not merged to `main`, that merge is itself a precondition the G-A
+ledger tasks depend on. A hard "no other `s3_staging` string exists anywhere" guarantee was NOT independently grep-verified
 in this pass (the grep-before-read / enforce-dedicated-tools hooks blocked raw grep); each of the 11
 producer + Deribit + ledger lines the plan enumerates was verified individually by direct Read and is
 pre-edit. Implementation MUST run one repo-wide `s3_staging`/`s3_staging_only` grep and record it as the
@@ -2208,7 +2240,7 @@ They are listed so reviewers do not mistake a design decision for an un-applied 
 | # | Decision | Where decided | Why no repo edit |
 | --- | --- | --- | --- |
 | D-1 | Three-tier NT-class matrix + `nt_target` column scoping the replay claim | §2 | The `nt_target` column is added to the **expanded evidence matrix produced at S10** (a Phase-6 deliverable), not to a checked-in file today. |
-| D-2 | `ConditionalCatalogWriter` create-only write layer (encode-then-`PutMode::Create`); NT's writer (Rust + Python) used only for read-back; instruments lane via the same writer | §4.1, §4.3, §4.5, §3 | New code built in Phase 0; no existing file is mutated to decide this. |
+| D-2 | `ConditionalCatalogWriter` create-only write layer (encode-then-`PutMode::Create`); NT's writer (Rust + Python) used only for read-back **within the platform's staging/canonical roots** (the pre-existing vertical-slice run projection on `main` calls NT's writer for run-scoped scratch roots and is outside this invariant — §4.1 scope-boundary note); instruments lane via the same writer | §4.1, §4.3, §4.5, §3 | New code built in Phase 0; no existing file is mutated to *decide* this (the decision record needs no repo edit — this row is not a claim that no existing code calls NT's writer; see the §4.1 scope-boundary note). |
 | D-3 | Immutable per-commit/per-set NT-native catalog roots + single-`SnapshotSet` CAS + run-pinned reader + Tier-C-only physically-isolated staging + server-side-copy promotion (B-1 / R-2 / R-7 / R-13 / R-14 class fix) | §4.3, §4.3b, §4.4, §4.4a, §4.4b, §4.5, §5.3 | New build behavior; no checked-in artifact carries the old prefix-flip / per-kind-pointer / parquet-byte-hash design as data. |
 | D-4 | Proof-acceptance precedence (synthetic-only early smoke; provider-derived backtest gate) and the reordered S1–S10 / Phases 0–6 | §5.2, §10 | Sequencing decision; no file edit. |
 | D-5 | Deterministic provisional `source_proof_id` scheme (never bare `pending`) and the `v0-pending` row-id-vs-`source_proof_version` decoupling (R-9) | §6.3 | The literal `pending` lived only in the **superseded** v1 plan (`normalization-catalog-plan.v1.md:70,227`, re-read — confirmed still literal `pending` there); v1 is superseded by this doc, so no live artifact carries it. The scheme is consumed by new Phase-1 library code, not by editing a checked-in data file. |

@@ -5,8 +5,8 @@ Empirical proof that the panel's "load-bearing wall" (plan v3 §4.3 ConditionalC
 ## What it proves
 - **PROOF 1 (R-5):** arrow→parquet encode + read-back roundtrip using ONLY public `arrow`/`parquet` — confirms NT's `write_batches_to_object_store` (parquet.rs:170, put baked in at :197) does NOT need to be reused; the ~20-line encode is replicable.
 - **PROOF 2 (R-3):** logical-content digest over canonical-sorted arrow `RowConverter` rows is deterministic — the idempotency key is logical rows, not non-deterministic parquet bytes.
-- **PROOF 3 (THE BLOCKER, B-1/F2):** 24 concurrent `put_opts(PutMode::Create)` on one path → exactly 1 wins, 23 `AlreadyExists`, stored bytes are the single winner's. `LocalFileSystem` Create == `std::fs::hard_link` (object_store local.rs:372, atomically exclusive) == the same create-only contract as S3 If-None-Match (aws/mod.rs:189). No TOCTOU, no torn write.
-- **PROOF 4 (B-1):** canonical roots use NT-native `<start>_<end>.parquet`; content/transform-hash keying is staging-only (NT never reads staging).
+- **PROOF 3 (local primitive underlying the BLOCKER, B-1/F2):** 24 concurrent `put_opts(PutMode::Create)` on one path → exactly 1 wins, 23 `AlreadyExists`, stored bytes are the single winner's. `LocalFileSystem` Create == `std::fs::hard_link` (object_store local.rs:372, atomically exclusive) — this proves the `object_store` API-level create-only semantics (exactly one winner, losers observe `AlreadyExists`, no TOCTOU, no torn write). It does NOT exercise S3's `If-None-Match` path: v3 §4.3.5 states LocalFileSystem's Create semantics differ and excludes it from the concurrency-proof acceptance criterion. This run therefore does NOT discharge the §4.3.5 BLOCKER acceptance, does NOT produce a `no_overwrite_proof`, and leaves Phase-0 prerequisite 0.6 (conditional-put + copy-if-not-exists probe against the configured or a conformance store — MinIO/R2 with `ETagMatch`) open.
+- **PROOF 4 (B-1, naming convention only):** canonical roots use NT-native `<start>_<end>.parquet`; content/transform-hash keying is staging-only (NT never reads staging). This is a string-shape assertion on two literals pinning the naming convention; it does not exercise NT's runtime filename parse (`parse_filename_timestamps` / `query_files`), which the Phase-0 0.W round-trip proof must cover.
 
 ## Verified run output
 ```
@@ -17,6 +17,20 @@ PROOF 4 PASS: canonical roots use NT-native '<start>_<end>.parquet'; content/tra
 
 ALL PROOFS PASSED — ConditionalCatalogWriter load-bearing primitive verified locally against the live pins.
 ```
+
+> **Scope correction (external review, 2026-06-12).** The transcript above and the `src/main.rs`
+> listing below are the verbatim record of the throwaway run and are preserved unedited. Two phrases
+> in that record overstate scope and must be read as corrected here: "LocalFileSystem hard_link ==
+> S3 If-None-Match contract" asserts only that the two backends present the same create-only
+> API-level contract shape (`PutMode::Create` → exactly one winner + `AlreadyExists` for the rest);
+> the S3 `If-None-Match` path itself is NOT exercised by a LocalFileSystem run (v3 §4.3.5, which
+> excludes LocalFileSystem from the BLOCKER concurrency-proof acceptance). "Verified locally" means
+> the local primitive only. Phase-0 gates that remain OPEN and are NOT discharged by this file:
+> 0.6 (conditional-put + copy-if-not-exists probe against the configured or a conformance store),
+> 0.E (encoder strategy locked and recorded in `NtCapabilityProof` — PROOF 1 is input evidence for
+> that decision, not the decision), 0.W (`ConditionalCatalogWriter` build with the §4.3.5
+> concurrency proof against a qualifying store, producing `no_overwrite_proof`), and 0.R
+> (run-pinned-set / competing-promotion proof).
 
 ## Cargo.toml
 ```toml

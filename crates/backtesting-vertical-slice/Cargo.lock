@@ -1653,6 +1653,7 @@ dependencies = [
  "futures",
  "hex",
  "nautilus-backtest",
+ "nautilus-common",
  "nautilus-core",
  "nautilus-model",
  "nautilus-persistence",

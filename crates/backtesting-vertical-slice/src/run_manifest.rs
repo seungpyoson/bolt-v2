@@ -34,10 +34,18 @@ use super::source_proof::{AcceptedDataset, SourceProofFidelityClass};
 
 /// Registry key for the compiled Rust trade-driven example strategy.
 pub const STRATEGY_HURST_VPIN_DIRECTIONAL: &str = "hurst_vpin_directional";
+/// Registry key for the bolt-owned mechanical trade-replay order-producing probe.
+pub const STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE: &str = "mechanical_trade_replay_probe";
 /// Strategy parameter key for the bar type.
 pub const STRATEGY_PARAM_BAR_TYPE: &str = "bar_type";
 /// Strategy parameter key for the trade size.
 pub const STRATEGY_PARAM_TRADE_SIZE: &str = "trade_size";
+/// Strategy parameter key for the number of delivered trades before the entry order.
+pub const STRATEGY_PARAM_ENTRY_AFTER_TRADES: &str = "entry_after_trades";
+/// Strategy parameter key for the number of further delivered trades before the close.
+pub const STRATEGY_PARAM_EXIT_AFTER_TRADES: &str = "exit_after_trades";
+/// Strategy parameter key for the entry order side.
+pub const STRATEGY_PARAM_SIDE: &str = "side";
 /// Explicit manifest value for no catalog filesystem protocol.
 pub const CATALOG_FS_PROTOCOL_NONE: &str = "NONE";
 /// NT venue-model surfaces declared in TOML but rejected until typed mappings exist.
@@ -90,7 +98,10 @@ const S3_CONDITIONAL_PUT_DISABLED: &str = "disabled";
 /// and strategy instantiation (gate 5 runner).
 #[must_use]
 pub fn registered_strategies() -> &'static [&'static str] {
-    &[STRATEGY_HURST_VPIN_DIRECTIONAL]
+    &[
+        STRATEGY_HURST_VPIN_DIRECTIONAL,
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
+    ]
 }
 
 #[must_use]
@@ -99,6 +110,12 @@ pub fn registered_strategy_parameters(registry_key: &str) -> Option<&'static [&'
         STRATEGY_HURST_VPIN_DIRECTIONAL => {
             Some(&[STRATEGY_PARAM_BAR_TYPE, STRATEGY_PARAM_TRADE_SIZE])
         }
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => Some(&[
+            STRATEGY_PARAM_TRADE_SIZE,
+            STRATEGY_PARAM_ENTRY_AFTER_TRADES,
+            STRATEGY_PARAM_EXIT_AFTER_TRADES,
+            STRATEGY_PARAM_SIDE,
+        ]),
         _ => None,
     }
 }
@@ -835,6 +852,64 @@ fn validate_strategy_source(
             bar_type
                 .parse::<BarType>()
                 .map_err(|_| ManifestError::MissingField("strategy.parameters.bar_type"))?;
+        }
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => {
+            for parameter in [
+                STRATEGY_PARAM_TRADE_SIZE,
+                STRATEGY_PARAM_ENTRY_AFTER_TRADES,
+                STRATEGY_PARAM_EXIT_AFTER_TRADES,
+                STRATEGY_PARAM_SIDE,
+            ] {
+                if !strategy.parameters.contains_key(parameter) {
+                    return Err(ManifestError::MissingField(match parameter {
+                        STRATEGY_PARAM_TRADE_SIZE => "strategy.parameters.trade_size",
+                        STRATEGY_PARAM_ENTRY_AFTER_TRADES => {
+                            "strategy.parameters.entry_after_trades"
+                        }
+                        STRATEGY_PARAM_EXIT_AFTER_TRADES => "strategy.parameters.exit_after_trades",
+                        STRATEGY_PARAM_SIDE => "strategy.parameters.side",
+                        _ => unreachable!(),
+                    }));
+                }
+            }
+            let trade_size = strategy
+                .parameters
+                .get(STRATEGY_PARAM_TRADE_SIZE)
+                .expect("presence checked above");
+            Quantity::from_str(trade_size)
+                .map_err(|_| ManifestError::MissingField("strategy.parameters.trade_size"))?;
+            let entry_after_trades = strategy
+                .parameters
+                .get(STRATEGY_PARAM_ENTRY_AFTER_TRADES)
+                .expect("presence checked above")
+                .parse::<u64>()
+                .map_err(|_| {
+                    ManifestError::MissingField("strategy.parameters.entry_after_trades")
+                })?;
+            if entry_after_trades == 0 {
+                return Err(ManifestError::UnsupportedEnum {
+                    field: "strategy.parameters.entry_after_trades",
+                    value: entry_after_trades.to_string(),
+                });
+            }
+            strategy
+                .parameters
+                .get(STRATEGY_PARAM_EXIT_AFTER_TRADES)
+                .expect("presence checked above")
+                .parse::<u64>()
+                .map_err(|_| {
+                    ManifestError::MissingField("strategy.parameters.exit_after_trades")
+                })?;
+            let side = strategy
+                .parameters
+                .get(STRATEGY_PARAM_SIDE)
+                .expect("presence checked above");
+            if !matches!(side.as_str(), "buy" | "sell") {
+                return Err(ManifestError::UnsupportedEnum {
+                    field: "strategy.parameters.side",
+                    value: side.clone(),
+                });
+            }
         }
         _ => unreachable!("registered strategy was already matched"),
     }
@@ -3681,6 +3756,103 @@ mod tests {
             manifest.validate(&accepted_dataset()).unwrap_err(),
             ManifestError::MissingField("strategy.parameters.bar_type")
         );
+    }
+
+    fn probe_manifest() -> BacktestingRunManifest {
+        let mut manifest = valid_manifest();
+        manifest.strategy.registry_key = STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE.to_string();
+        manifest.strategy.parameters = BTreeMap::from([
+            (STRATEGY_PARAM_TRADE_SIZE.to_string(), "0.01".to_string()),
+            (
+                STRATEGY_PARAM_ENTRY_AFTER_TRADES.to_string(),
+                "1".to_string(),
+            ),
+            (
+                STRATEGY_PARAM_EXIT_AFTER_TRADES.to_string(),
+                "1".to_string(),
+            ),
+            (STRATEGY_PARAM_SIDE.to_string(), "buy".to_string()),
+        ]);
+        manifest
+    }
+
+    #[test]
+    fn mechanical_trade_replay_probe_accepts_valid_params() {
+        let manifest = probe_manifest();
+        manifest
+            .validate(&accepted_dataset())
+            .expect("probe manifest with valid params must validate");
+    }
+
+    #[test]
+    fn mechanical_trade_replay_probe_rejects_missing_threshold() {
+        let mut manifest = probe_manifest();
+        manifest
+            .strategy
+            .parameters
+            .remove(STRATEGY_PARAM_EXIT_AFTER_TRADES);
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::MissingField("strategy.parameters.exit_after_trades")
+        );
+    }
+
+    #[test]
+    fn mechanical_trade_replay_probe_rejects_non_integer_threshold() {
+        let mut manifest = probe_manifest();
+        manifest.strategy.parameters.insert(
+            STRATEGY_PARAM_ENTRY_AFTER_TRADES.to_string(),
+            "not-an-integer".to_string(),
+        );
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::MissingField("strategy.parameters.entry_after_trades")
+        );
+    }
+
+    #[test]
+    fn mechanical_trade_replay_probe_rejects_zero_entry_after_trades() {
+        let mut manifest = probe_manifest();
+        manifest.strategy.parameters.insert(
+            STRATEGY_PARAM_ENTRY_AFTER_TRADES.to_string(),
+            "0".to_string(),
+        );
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "strategy.parameters.entry_after_trades",
+                value: "0".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn mechanical_trade_replay_probe_rejects_invalid_side() {
+        let mut manifest = probe_manifest();
+        manifest
+            .strategy
+            .parameters
+            .insert(STRATEGY_PARAM_SIDE.to_string(), "sideways".to_string());
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "strategy.parameters.side",
+                value: "sideways".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn mechanical_trade_replay_probe_rejects_stray_bar_type_param() {
+        let mut manifest = probe_manifest();
+        manifest.strategy.parameters.insert(
+            STRATEGY_PARAM_BAR_TYPE.to_string(),
+            TEST_BAR_TYPE.to_string(),
+        );
+        assert!(matches!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnknownStrategyParameter { .. }
+        ));
     }
 
     #[test]

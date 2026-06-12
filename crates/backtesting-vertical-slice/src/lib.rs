@@ -40,6 +40,7 @@ pub mod catalog_projection;
 pub mod conversion_boundary;
 pub mod first_proof_selector;
 pub mod hashing;
+pub mod mechanical_probe_strategy;
 pub mod nt_catalog_proof;
 pub mod nt_dependency_proof;
 pub mod operator;

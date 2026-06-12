@@ -15,7 +15,10 @@ use std::{path::Path, str::FromStr};
 use anyhow::{Context, Result, bail, ensure};
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
 use nautilus_model::{
-    data::TradeTick, enums::AggressorSide, identifiers::InstrumentId, types::Quantity,
+    data::TradeTick,
+    enums::{AggressorSide, OrderSide},
+    identifiers::InstrumentId,
+    types::Quantity,
 };
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
 use rust_decimal::Decimal;
@@ -32,11 +35,13 @@ use super::{
     conversion_boundary::{
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
     },
+    mechanical_probe_strategy::{MechanicalTradeReplayProbe, MechanicalTradeReplayProbeConfig},
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
     run_manifest::{
         BacktestingRunManifest, NtSurfaceClassification, STRATEGY_HURST_VPIN_DIRECTIONAL,
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
     },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
 };
@@ -45,6 +50,12 @@ use super::{
 const PARAM_BAR_TYPE: &str = "bar_type";
 /// Strategy parameter key for the trade size.
 const PARAM_TRADE_SIZE: &str = "trade_size";
+/// Strategy parameter key for the number of delivered trades before the entry order.
+const PARAM_ENTRY_AFTER_TRADES: &str = "entry_after_trades";
+/// Strategy parameter key for the number of further delivered trades before the close.
+const PARAM_EXIT_AFTER_TRADES: &str = "exit_after_trades";
+/// Strategy parameter key for the entry order side.
+const PARAM_SIDE: &str = "side";
 
 fn nt_surface_classification_label(classification: NtSurfaceClassification) -> &'static str {
     match classification {
@@ -179,6 +190,57 @@ fn add_manifest_strategy(
             engine
                 .add_strategy(HurstVpinDirectional::new(config))
                 .context("add HurstVpinDirectional strategy")
+        }
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => {
+            let catalog_input = manifest.primary_catalog_input().map_err(|error| {
+                anyhow::anyhow!("strategy instrument requires catalog input: {error}")
+            })?;
+            let instrument_id: InstrumentId =
+                catalog_input.nt_instrument_id.parse().with_context(|| {
+                    format!("invalid instrument id {:?}", catalog_input.nt_instrument_id)
+                })?;
+            let trade_size_raw = strategy
+                .parameters
+                .get(PARAM_TRADE_SIZE)
+                .with_context(|| format!("strategy parameter {PARAM_TRADE_SIZE} is required"))?;
+            let trade_size = Quantity::from_str(trade_size_raw).map_err(|error| {
+                anyhow::anyhow!("invalid {PARAM_TRADE_SIZE} {trade_size_raw:?}: {error}")
+            })?;
+            let entry_after_trades = strategy
+                .parameters
+                .get(PARAM_ENTRY_AFTER_TRADES)
+                .with_context(|| {
+                    format!("strategy parameter {PARAM_ENTRY_AFTER_TRADES} is required")
+                })?
+                .parse::<u64>()
+                .with_context(|| format!("invalid {PARAM_ENTRY_AFTER_TRADES}"))?;
+            let exit_after_trades = strategy
+                .parameters
+                .get(PARAM_EXIT_AFTER_TRADES)
+                .with_context(|| {
+                    format!("strategy parameter {PARAM_EXIT_AFTER_TRADES} is required")
+                })?
+                .parse::<u64>()
+                .with_context(|| format!("invalid {PARAM_EXIT_AFTER_TRADES}"))?;
+            let side_raw = strategy
+                .parameters
+                .get(PARAM_SIDE)
+                .with_context(|| format!("strategy parameter {PARAM_SIDE} is required"))?;
+            let side = match side_raw.as_str() {
+                "buy" => OrderSide::Buy,
+                "sell" => OrderSide::Sell,
+                other => bail!("invalid {PARAM_SIDE} {other:?}"),
+            };
+            let config = MechanicalTradeReplayProbeConfig::new(
+                instrument_id,
+                trade_size,
+                entry_after_trades,
+                exit_after_trades,
+                side,
+            );
+            engine
+                .add_strategy(MechanicalTradeReplayProbe::new(config))
+                .context("add MechanicalTradeReplayProbe strategy")
         }
         other => bail!("strategy {other:?} is not a registered compiled Rust strategy"),
     }

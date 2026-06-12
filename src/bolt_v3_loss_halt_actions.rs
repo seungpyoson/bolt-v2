@@ -86,6 +86,12 @@ impl LossGovernorMarketExitLatch {
     }
 }
 
+impl Default for LossGovernorMarketExitLatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LossGovernorManualRecoveryEvidence {
     operator_id: String,

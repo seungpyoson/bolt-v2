@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, fmt, sync::Arc};
+use std::{cell::RefCell, collections::VecDeque, fmt, rc::Rc, sync::Arc};
 
 use nautilus_common::msgbus::{
     TypedHandler, subscribe_portfolio_snapshot, subscribe_position_events,
@@ -82,14 +82,12 @@ enum PerTradePnlSource {
 
 #[must_use]
 pub fn subscribe_loss_governor_runtime_feed(
-    feed: Arc<std::sync::Mutex<LossGovernorRuntimeFeed>>,
+    feed: Rc<RefCell<LossGovernorRuntimeFeed>>,
 ) -> LossGovernorRuntimeFeedSubscription {
-    let position_feed = Arc::clone(&feed);
+    let position_feed = Rc::clone(&feed);
     let position_events = TypedHandler::from(move |event: &PositionEvent| {
         let (snapshot, handler) = {
-            let mut feed = position_feed
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut feed = position_feed.borrow_mut();
             (
                 feed.on_position_event_without_halt_action(event),
                 feed.halt_action_handler.clone(),
@@ -99,12 +97,10 @@ pub fn subscribe_loss_governor_runtime_feed(
     });
     subscribe_position_events(position_events_pattern(), position_events.clone(), None);
 
-    let portfolio_feed = Arc::clone(&feed);
+    let portfolio_feed = Rc::clone(&feed);
     let portfolio_snapshots = TypedHandler::from(move |snapshot: &PortfolioSnapshot| {
         let (loss_snapshot, handler) = {
-            let mut feed = portfolio_feed
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut feed = portfolio_feed.borrow_mut();
             (
                 feed.on_portfolio_snapshot_without_halt_action(snapshot),
                 feed.halt_action_handler.clone(),

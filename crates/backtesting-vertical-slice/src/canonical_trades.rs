@@ -52,6 +52,31 @@ pub const BAR_TRANSFORM_VERSION: &str = "1";
 /// Source-proof table family accepted by the native bar converter.
 pub const BAR_TABLE_FAMILY: &str = "bars";
 
+/// Stable identity of the config-driven paged-JSON kline normalization transform.
+///
+/// Distinct from [`BAR_TRANSFORM_IDENTITY`] because the wire shape differs (OHLCV
+/// rows nested in a paged REST JSON envelope vs flat CSV); the table family,
+/// normalized schema, and NT data type match the CSV bar adapter because both
+/// produce the same `bars` rows.
+pub const PAGED_JSON_BARS_TRANSFORM_IDENTITY: &str = "paged-json-bars-to-canonical-bars.v1";
+
+/// Version of the registered compiled paged-JSON bar converter implementation.
+pub const PAGED_JSON_BARS_TRANSFORM_VERSION: &str = "1";
+
+/// Stable identity of the config-driven line-delimited multi-interval kline
+/// normalization transform.
+///
+/// Distinct from the other bar identities because each line carries its own
+/// interval token and one object emits one stream per `(instrument, interval)`
+/// group; the table family, normalized schema, and NT data type still match the
+/// other bar adapters because every group produces the same `bars` rows.
+pub const JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY: &str =
+    "jsonl-multi-interval-bars-to-canonical-bars.v1";
+
+/// Version of the registered compiled JSONL multi-interval bar converter
+/// implementation.
+pub const JSONL_MULTI_INTERVAL_BARS_TRANSFORM_VERSION: &str = "1";
+
 /// Stable identity of the config-driven JSONL periodic-full-snapshot
 /// order-book-delta normalization transform.
 pub const DELTAS_TRANSFORM_IDENTITY: &str =
@@ -109,6 +134,8 @@ const NANOS_PER_MILLISECOND: i64 = 1_000_000;
 pub enum SourceAdapterKind {
     CsvNativeTrades,
     CsvNativeBars,
+    PagedJsonBars,
+    JsonlMultiIntervalBars,
     JsonlSnapshotDeltas,
     TarJsonlSnapshotDeltas,
     ParquetEventStreamDeltas,
@@ -157,6 +184,18 @@ pub struct ConverterConfig {
     pub csv: CsvTradeMappingConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bars: Option<super::canonical_bars::BarMappingConfig>,
+    /// Paged-JSON kline mapping, present only when the registered adapter kind is
+    /// [`SourceAdapterKind::PagedJsonBars`]; the paged-JSON bar dispatch in
+    /// [`normalize_registered_paged_json_bar_converter`] fail-closes when a
+    /// paged-JSON-bar-kind config omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paged_json_bars: Option<super::canonical_bars::PagedJsonBarMappingConfig>,
+    /// Line-delimited multi-interval kline mapping, present only when the
+    /// registered adapter kind is [`SourceAdapterKind::JsonlMultiIntervalBars`];
+    /// the dispatch in [`normalize_registered_jsonl_multi_interval_bar_converter`]
+    /// fail-closes when a JSONL-bar-kind config omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jsonl_bars: Option<super::canonical_bars::JsonlBarMappingConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deltas: Option<super::canonical_order_book_deltas::DeltaMappingConfig>,
 }
@@ -234,6 +273,24 @@ pub const CSV_NATIVE_BARS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefini
     nt_data_type: crate::catalog_projection::NT_DATA_TYPE_BAR,
 };
 
+pub const PAGED_JSON_BARS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
+    identity: PAGED_JSON_BARS_TRANSFORM_IDENTITY,
+    version: PAGED_JSON_BARS_TRANSFORM_VERSION,
+    kind: SourceAdapterKind::PagedJsonBars,
+    table_family: BAR_TABLE_FAMILY,
+    normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
+    nt_data_type: crate::catalog_projection::NT_DATA_TYPE_BAR,
+};
+
+pub const JSONL_MULTI_INTERVAL_BARS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
+    identity: JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY,
+    version: JSONL_MULTI_INTERVAL_BARS_TRANSFORM_VERSION,
+    kind: SourceAdapterKind::JsonlMultiIntervalBars,
+    table_family: BAR_TABLE_FAMILY,
+    normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
+    nt_data_type: crate::catalog_projection::NT_DATA_TYPE_BAR,
+};
+
 pub const JSONL_SNAPSHOT_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
     identity: DELTAS_TRANSFORM_IDENTITY,
     version: DELTAS_TRANSFORM_VERSION,
@@ -281,6 +338,8 @@ pub const SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER: SourceAdapterDefinition = SourceA
 pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     CSV_NATIVE_TRADES_ADAPTER,
     CSV_NATIVE_BARS_ADAPTER,
+    PAGED_JSON_BARS_ADAPTER,
+    JSONL_MULTI_INTERVAL_BARS_ADAPTER,
     JSONL_SNAPSHOT_DELTAS_ADAPTER,
     TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
     PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
@@ -290,6 +349,8 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
 pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     CSV_NATIVE_TRADES_ADAPTER,
     CSV_NATIVE_BARS_ADAPTER,
+    PAGED_JSON_BARS_ADAPTER,
+    JSONL_MULTI_INTERVAL_BARS_ADAPTER,
     JSONL_SNAPSHOT_DELTAS_ADAPTER,
     TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
     PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
@@ -396,6 +457,58 @@ pub fn require_registered_bar_converter_for_table_family(
     ensure!(
         adapter.kind == SourceAdapterKind::CsvNativeBars,
         "adapter {:?} version {:?} is {:?}, not a CSV native-bars converter",
+        adapter.identity,
+        adapter.version,
+        adapter.kind
+    );
+    Ok(adapter)
+}
+
+#[must_use]
+pub fn registered_paged_json_bar_converter(
+    identity: &str,
+    version: &str,
+) -> Option<&'static SourceAdapterDefinition> {
+    registered_source_adapter(identity, version)
+        .filter(|adapter| adapter.kind == SourceAdapterKind::PagedJsonBars)
+}
+
+pub fn require_registered_paged_json_bar_converter_for_table_family(
+    identity: &str,
+    version: &str,
+    table_family: &str,
+) -> Result<&'static SourceAdapterDefinition> {
+    let adapter =
+        require_registered_source_adapter_for_table_family(identity, version, table_family)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::PagedJsonBars,
+        "adapter {:?} version {:?} is {:?}, not a paged-JSON bar converter",
+        adapter.identity,
+        adapter.version,
+        adapter.kind
+    );
+    Ok(adapter)
+}
+
+#[must_use]
+pub fn registered_jsonl_multi_interval_bar_converter(
+    identity: &str,
+    version: &str,
+) -> Option<&'static SourceAdapterDefinition> {
+    registered_source_adapter(identity, version)
+        .filter(|adapter| adapter.kind == SourceAdapterKind::JsonlMultiIntervalBars)
+}
+
+pub fn require_registered_jsonl_multi_interval_bar_converter_for_table_family(
+    identity: &str,
+    version: &str,
+    table_family: &str,
+) -> Result<&'static SourceAdapterDefinition> {
+    let adapter =
+        require_registered_source_adapter_for_table_family(identity, version, table_family)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::JsonlMultiIntervalBars,
+        "adapter {:?} version {:?} is {:?}, not a JSONL multi-interval bar converter",
         adapter.identity,
         adapter.version,
         adapter.kind
@@ -1014,6 +1127,12 @@ pub fn normalize_registered_trade_converter(
         SourceAdapterKind::CsvNativeBars => {
             bail!("CSV native-bars adapter cannot normalize native trades")
         }
+        SourceAdapterKind::PagedJsonBars => {
+            bail!("paged-JSON bar adapter cannot normalize native trades")
+        }
+        SourceAdapterKind::JsonlMultiIntervalBars => {
+            bail!("JSONL multi-interval bar adapter cannot normalize native trades")
+        }
         SourceAdapterKind::JsonlSnapshotDeltas => {
             bail!("JSONL snapshot-delta adapter cannot normalize native trades")
         }
@@ -1078,6 +1197,20 @@ pub fn normalize_registered_bar_converter(
         SourceAdapterKind::CsvNativeTrades => {
             bail!("CSV native-trades adapter cannot normalize native bars")
         }
+        SourceAdapterKind::PagedJsonBars => {
+            bail!(
+                "paged-JSON bar adapter requires the JSON entry point; call \
+                 normalize_registered_paged_json_bar_converter with the JSON text, not \
+                 the CSV native-bars path"
+            )
+        }
+        SourceAdapterKind::JsonlMultiIntervalBars => {
+            bail!(
+                "JSONL multi-interval bar adapter requires the JSONL entry point; call \
+                 normalize_registered_jsonl_multi_interval_bar_converter with the JSONL text, \
+                 not the CSV native-bars path"
+            )
+        }
         SourceAdapterKind::JsonlSnapshotDeltas => {
             bail!("JSONL snapshot-delta adapter cannot normalize native bars")
         }
@@ -1090,6 +1223,158 @@ pub fn normalize_registered_bar_converter(
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize native bars")
+        }
+    }
+}
+
+/// Normalize an accepted paged-JSON kline object through the registered
+/// paged-JSON bar converter selected by the run-spec, fail-closing when the
+/// kind/config do not match.
+///
+/// Mirrors [`normalize_registered_bar_converter`]: the adapter kind must be
+/// [`SourceAdapterKind::PagedJsonBars`] for the accepted object's table family,
+/// and the run-spec must carry the `paged_json_bars` mapping that kind requires.
+/// Paged REST is per-instrument, so the caller binds the single identity.
+///
+/// # Errors
+///
+/// Returns an error if the converter is not a registered paged-JSON bar converter
+/// for the table family, the `paged_json_bars` mapping is absent, or
+/// normalization fails.
+pub fn normalize_registered_paged_json_bar_converter(
+    converter_config: &ConverterConfig,
+    accepted: &AcceptedDataset,
+    identity: &CanonicalInstrumentIdentity,
+    json_text: &str,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+) -> Result<Vec<super::canonical_market_data::CanonicalBarsTable>> {
+    let converter = require_registered_paged_json_bar_converter_for_table_family(
+        &converter_config.identity,
+        &converter_config.version,
+        &accepted.table_family,
+    )?;
+    match converter.kind {
+        SourceAdapterKind::PagedJsonBars => {
+            let mapping = converter_config.paged_json_bars.as_ref().with_context(|| {
+                format!(
+                    "converter {:?} is a paged-JSON bar adapter but carries no [converter.paged_json_bars] mapping",
+                    converter.identity
+                )
+            })?;
+            super::canonical_bars::normalize_paged_json_bars(
+                accepted,
+                identity,
+                mapping,
+                json_text,
+                capture_time_nanos,
+                ingest_run_id,
+            )
+        }
+        SourceAdapterKind::CsvNativeBars => {
+            bail!(
+                "CSV native-bars adapter requires the CSV entry point; call \
+                 normalize_registered_bar_converter with the CSV text, not the paged-JSON path"
+            )
+        }
+        SourceAdapterKind::JsonlMultiIntervalBars => {
+            bail!(
+                "JSONL multi-interval bar adapter requires the JSONL entry point; call \
+                 normalize_registered_jsonl_multi_interval_bar_converter, not the paged-JSON path"
+            )
+        }
+        SourceAdapterKind::CsvNativeTrades => {
+            bail!("CSV native-trades adapter cannot normalize paged-JSON bars")
+        }
+        SourceAdapterKind::JsonlSnapshotDeltas => {
+            bail!("JSONL snapshot-delta adapter cannot normalize paged-JSON bars")
+        }
+        SourceAdapterKind::TarJsonlSnapshotDeltas => {
+            bail!("tar JSONL snapshot-delta adapter cannot normalize paged-JSON bars")
+        }
+        SourceAdapterKind::ParquetEventStreamDeltas => {
+            bail!("Parquet event-stream delta adapter cannot normalize paged-JSON bars")
+        }
+        #[cfg(test)]
+        SourceAdapterKind::SyntheticOrderBookDeltas => {
+            bail!("test fixture adapter cannot normalize paged-JSON bars")
+        }
+    }
+}
+
+/// Normalize an accepted line-delimited multi-interval kline object through the
+/// registered JSONL multi-interval bar converter selected by the run-spec,
+/// fail-closing when the kind/config do not match.
+///
+/// Mirrors [`normalize_registered_bar_converter`]: the adapter kind must be
+/// [`SourceAdapterKind::JsonlMultiIntervalBars`] for the accepted object's table
+/// family, and the run-spec must carry the `jsonl_bars` mapping that kind
+/// requires. One object emits one table per `(instrument, interval)` group, so a
+/// multi-instrument object binds keyed identities.
+///
+/// # Errors
+///
+/// Returns an error if the converter is not a registered JSONL multi-interval bar
+/// converter for the table family, the `jsonl_bars` mapping is absent, or
+/// normalization fails.
+pub fn normalize_registered_jsonl_multi_interval_bar_converter(
+    converter_config: &ConverterConfig,
+    accepted: &AcceptedDataset,
+    identities: &super::canonical_bars::BarInstrumentIdentities,
+    jsonl_text: &str,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+) -> Result<Vec<super::canonical_market_data::CanonicalBarsTable>> {
+    let converter = require_registered_jsonl_multi_interval_bar_converter_for_table_family(
+        &converter_config.identity,
+        &converter_config.version,
+        &accepted.table_family,
+    )?;
+    match converter.kind {
+        SourceAdapterKind::JsonlMultiIntervalBars => {
+            let mapping = converter_config.jsonl_bars.as_ref().with_context(|| {
+                format!(
+                    "converter {:?} is a JSONL multi-interval bar adapter but carries no [converter.jsonl_bars] mapping",
+                    converter.identity
+                )
+            })?;
+            super::canonical_bars::normalize_jsonl_multi_interval_bars(
+                accepted,
+                identities,
+                mapping,
+                jsonl_text,
+                capture_time_nanos,
+                ingest_run_id,
+            )
+        }
+        SourceAdapterKind::CsvNativeBars => {
+            bail!(
+                "CSV native-bars adapter requires the CSV entry point; call \
+                 normalize_registered_bar_converter with the CSV text, not the JSONL \
+                 multi-interval path"
+            )
+        }
+        SourceAdapterKind::PagedJsonBars => {
+            bail!(
+                "paged-JSON bar adapter requires the JSON entry point; call \
+                 normalize_registered_paged_json_bar_converter, not the JSONL multi-interval path"
+            )
+        }
+        SourceAdapterKind::CsvNativeTrades => {
+            bail!("CSV native-trades adapter cannot normalize JSONL multi-interval bars")
+        }
+        SourceAdapterKind::JsonlSnapshotDeltas => {
+            bail!("JSONL snapshot-delta adapter cannot normalize JSONL multi-interval bars")
+        }
+        SourceAdapterKind::TarJsonlSnapshotDeltas => {
+            bail!("tar JSONL snapshot-delta adapter cannot normalize JSONL multi-interval bars")
+        }
+        SourceAdapterKind::ParquetEventStreamDeltas => {
+            bail!("Parquet event-stream delta adapter cannot normalize JSONL multi-interval bars")
+        }
+        #[cfg(test)]
+        SourceAdapterKind::SyntheticOrderBookDeltas => {
+            bail!("test fixture adapter cannot normalize JSONL multi-interval bars")
         }
     }
 }
@@ -1156,6 +1441,12 @@ pub fn normalize_registered_order_book_delta_converter(
         }
         SourceAdapterKind::CsvNativeBars => {
             bail!("CSV native-bars adapter cannot normalize order-book deltas")
+        }
+        SourceAdapterKind::PagedJsonBars => {
+            bail!("paged-JSON bar adapter cannot normalize order-book deltas")
+        }
+        SourceAdapterKind::JsonlMultiIntervalBars => {
+            bail!("JSONL multi-interval bar adapter cannot normalize order-book deltas")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1234,6 +1525,12 @@ pub fn normalize_registered_tar_order_book_delta_converter(
         SourceAdapterKind::CsvNativeBars => {
             bail!("CSV native-bars adapter cannot normalize tar order-book deltas")
         }
+        SourceAdapterKind::PagedJsonBars => {
+            bail!("paged-JSON bar adapter cannot normalize tar order-book deltas")
+        }
+        SourceAdapterKind::JsonlMultiIntervalBars => {
+            bail!("JSONL multi-interval bar adapter cannot normalize tar order-book deltas")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize tar order-book deltas")
@@ -1310,6 +1607,12 @@ pub fn normalize_registered_event_stream_delta_converter(
         }
         SourceAdapterKind::CsvNativeBars => {
             bail!("CSV native-bars adapter cannot normalize event-stream deltas")
+        }
+        SourceAdapterKind::PagedJsonBars => {
+            bail!("paged-JSON bar adapter cannot normalize event-stream deltas")
+        }
+        SourceAdapterKind::JsonlMultiIntervalBars => {
+            bail!("JSONL multi-interval bar adapter cannot normalize event-stream deltas")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1829,6 +2132,167 @@ mod tests {
                 .to_string()
                 .contains("not a CSV native-bars converter"),
             "{bar_guard_on_trades}"
+        );
+    }
+
+    #[test]
+    fn paged_json_bar_source_adapter_registry_exposes_data_family_metadata() {
+        let adapter = require_registered_source_adapter(
+            PAGED_JSON_BARS_TRANSFORM_IDENTITY,
+            PAGED_JSON_BARS_TRANSFORM_VERSION,
+        )
+        .expect("registered paged-JSON bar source adapter");
+
+        assert_eq!(adapter.kind, SourceAdapterKind::PagedJsonBars);
+        assert_eq!(adapter.table_family, BAR_TABLE_FAMILY);
+        assert_eq!(adapter.normalized_schema_version, NORMALIZED_SCHEMA_VERSION);
+        assert_eq!(adapter.nt_data_type, NT_DATA_TYPE_BAR);
+        assert!(REGISTERED_SOURCE_ADAPTERS.contains(&PAGED_JSON_BARS_ADAPTER));
+        assert_eq!(
+            registered_paged_json_bar_converter(
+                PAGED_JSON_BARS_TRANSFORM_IDENTITY,
+                PAGED_JSON_BARS_TRANSFORM_VERSION
+            ),
+            Some(&PAGED_JSON_BARS_ADAPTER)
+        );
+        // Distinct identity from the CSV bar adapter: same `bars` family, a
+        // different wire shape, so the registry must not collapse the two onto
+        // one entry.
+        assert_ne!(PAGED_JSON_BARS_TRANSFORM_IDENTITY, BAR_TRANSFORM_IDENTITY);
+    }
+
+    #[test]
+    fn paged_json_bar_source_adapter_registry_rejects_table_family_mismatch() {
+        let mismatch = format!("{BAR_TABLE_FAMILY}_mismatch");
+        let err = require_registered_paged_json_bar_converter_for_table_family(
+            PAGED_JSON_BARS_TRANSFORM_IDENTITY,
+            PAGED_JSON_BARS_TRANSFORM_VERSION,
+            &mismatch,
+        )
+        .expect_err("paged-JSON bar adapter table-family mismatch must fail closed");
+
+        assert!(err.to_string().contains("adapter"), "{err}");
+        assert!(err.to_string().contains("table_family"), "{err}");
+    }
+
+    #[test]
+    fn jsonl_multi_interval_bar_source_adapter_registry_exposes_data_family_metadata() {
+        let adapter = require_registered_source_adapter(
+            JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY,
+            JSONL_MULTI_INTERVAL_BARS_TRANSFORM_VERSION,
+        )
+        .expect("registered JSONL multi-interval bar source adapter");
+
+        assert_eq!(adapter.kind, SourceAdapterKind::JsonlMultiIntervalBars);
+        assert_eq!(adapter.table_family, BAR_TABLE_FAMILY);
+        assert_eq!(adapter.normalized_schema_version, NORMALIZED_SCHEMA_VERSION);
+        assert_eq!(adapter.nt_data_type, NT_DATA_TYPE_BAR);
+        assert!(REGISTERED_SOURCE_ADAPTERS.contains(&JSONL_MULTI_INTERVAL_BARS_ADAPTER));
+        assert_eq!(
+            registered_jsonl_multi_interval_bar_converter(
+                JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY,
+                JSONL_MULTI_INTERVAL_BARS_TRANSFORM_VERSION
+            ),
+            Some(&JSONL_MULTI_INTERVAL_BARS_ADAPTER)
+        );
+        // Distinct identity from the other bar adapters: each line carries its
+        // own interval, so the registry must not collapse it onto a single-
+        // interval bar row.
+        assert_ne!(
+            JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY,
+            BAR_TRANSFORM_IDENTITY
+        );
+        assert_ne!(
+            JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY,
+            PAGED_JSON_BARS_TRANSFORM_IDENTITY
+        );
+    }
+
+    #[test]
+    fn jsonl_multi_interval_bar_source_adapter_registry_rejects_table_family_mismatch() {
+        let mismatch = format!("{BAR_TABLE_FAMILY}_mismatch");
+        let err = require_registered_jsonl_multi_interval_bar_converter_for_table_family(
+            JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY,
+            JSONL_MULTI_INTERVAL_BARS_TRANSFORM_VERSION,
+            &mismatch,
+        )
+        .expect_err("JSONL multi-interval bar adapter table-family mismatch must fail closed");
+
+        assert!(err.to_string().contains("adapter"), "{err}");
+        assert!(err.to_string().contains("table_family"), "{err}");
+    }
+
+    #[test]
+    fn paged_json_and_jsonl_bar_converter_guards_reject_other_kinds() {
+        // The paged-JSON bar guard rejects the CSV-bar and JSONL-bar adapter
+        // ids, and vice versa, so a run-spec cannot cross-wire the three bar
+        // wire shapes onto each other.
+        let paged_guard_on_csv = require_registered_paged_json_bar_converter_for_table_family(
+            BAR_TRANSFORM_IDENTITY,
+            BAR_TRANSFORM_VERSION,
+            BAR_TABLE_FAMILY,
+        )
+        .expect_err("paged-JSON guard must reject the CSV bar adapter kind");
+        assert!(
+            paged_guard_on_csv
+                .to_string()
+                .contains("not a paged-JSON bar converter"),
+            "{paged_guard_on_csv}"
+        );
+
+        let paged_guard_on_jsonl = require_registered_paged_json_bar_converter_for_table_family(
+            JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY,
+            JSONL_MULTI_INTERVAL_BARS_TRANSFORM_VERSION,
+            BAR_TABLE_FAMILY,
+        )
+        .expect_err("paged-JSON guard must reject the JSONL bar adapter kind");
+        assert!(
+            paged_guard_on_jsonl
+                .to_string()
+                .contains("not a paged-JSON bar converter"),
+            "{paged_guard_on_jsonl}"
+        );
+
+        let jsonl_guard_on_csv =
+            require_registered_jsonl_multi_interval_bar_converter_for_table_family(
+                BAR_TRANSFORM_IDENTITY,
+                BAR_TRANSFORM_VERSION,
+                BAR_TABLE_FAMILY,
+            )
+            .expect_err("JSONL guard must reject the CSV bar adapter kind");
+        assert!(
+            jsonl_guard_on_csv
+                .to_string()
+                .contains("not a JSONL multi-interval bar converter"),
+            "{jsonl_guard_on_csv}"
+        );
+
+        let jsonl_guard_on_paged =
+            require_registered_jsonl_multi_interval_bar_converter_for_table_family(
+                PAGED_JSON_BARS_TRANSFORM_IDENTITY,
+                PAGED_JSON_BARS_TRANSFORM_VERSION,
+                BAR_TABLE_FAMILY,
+            )
+            .expect_err("JSONL guard must reject the paged-JSON bar adapter kind");
+        assert!(
+            jsonl_guard_on_paged
+                .to_string()
+                .contains("not a JSONL multi-interval bar converter"),
+            "{jsonl_guard_on_paged}"
+        );
+
+        // And the CSV bar guard rejects both new bar adapter ids.
+        let bar_guard_on_paged = require_registered_bar_converter_for_table_family(
+            PAGED_JSON_BARS_TRANSFORM_IDENTITY,
+            PAGED_JSON_BARS_TRANSFORM_VERSION,
+            BAR_TABLE_FAMILY,
+        )
+        .expect_err("CSV bar guard must reject the paged-JSON bar adapter kind");
+        assert!(
+            bar_guard_on_paged
+                .to_string()
+                .contains("not a CSV native-bars converter"),
+            "{bar_guard_on_paged}"
         );
     }
 

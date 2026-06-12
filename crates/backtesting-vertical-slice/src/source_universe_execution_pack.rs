@@ -612,6 +612,8 @@ fn materialize_run_spec(
             },
             csv: converter_csv,
             bars: None,
+            paged_json_bars: None,
+            jsonl_bars: None,
             deltas: None,
         })
         .context("serialize converter config to TOML")?,

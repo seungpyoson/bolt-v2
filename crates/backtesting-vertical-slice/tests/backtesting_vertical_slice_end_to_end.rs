@@ -65,6 +65,8 @@ fn converter_config() -> ConverterConfig {
         },
         csv: csv_mapping(),
         bars: None,
+        paged_json_bars: None,
+        jsonl_bars: None,
         deltas: None,
     }
 }

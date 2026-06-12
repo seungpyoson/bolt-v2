@@ -1,24 +1,34 @@
-//! Gate 2 — config-driven CSV bar source adapter (format family F1).
+//! Gate 2 — config-driven bar source adapters (format families F1, F2, F3).
 //!
-//! Normalizes an accepted CSV object of externally-aggregated OHLCV bars into
-//! the `bars` table family of the `backfill-table-contract.v1` contract,
-//! emitting one [`CanonicalBarsTable`] per instrument carried in the object.
+//! Normalizes an accepted object of externally-aggregated OHLCV bars into the
+//! `bars` table family of the `backfill-table-contract.v1` contract, emitting one
+//! [`CanonicalBarsTable`] per `(instrument, interval)` series carried in the
+//! object. Three wire shapes share this module:
 //!
-//! This is the bar-family sibling of [`super::canonical_trades`]: it reuses the
-//! same column-mapping discipline (header reconcile against the accepted
-//! object schema, headerless objects carry their schema in `schema_columns`,
-//! `column_index` resolution, [`super::canonical_trades::CsvTimestampUnit`]
-//! parsing) and the same identity/provenance header shape, and it preserves the
-//! exact source OHLCV strings so the catalog projection in
+//! - **F1** — headerless-or-headed OHLCV CSV ([`normalize_csv_native_bars`]). The
+//!   period is a per-object property recovered from the data (or declared and
+//!   reconciled against it); one table per instrument.
+//! - **F2** — paged REST JSON klines ([`normalize_paged_json_bars`]). Rows live
+//!   inside a JSON envelope at a configured `rows_path`, arrive newest-first, and
+//!   adjacent pages overlap in time; the declared period is reconciled against
+//!   the deduped data; one table per (single) instrument.
+//! - **F3** — line-delimited multi-interval klines
+//!   ([`normalize_jsonl_multi_interval_bars`]). Each line carries its own interval
+//!   token mapped through a config-side `interval_token_map`; rows group by
+//!   `(instrument_key, interval token)` into one table per group, each with its
+//!   own bar spec.
+//!
+//! All three reuse the same column/identity discipline, preserve the exact source
+//! OHLCV strings, and assemble + validate through the shared
+//! [`assemble_bar_table`] helper so the catalog projection in
 //! [`super::catalog_projection`] is the single bridge from accepted evidence to
 //! the NautilusTrader catalog.
 //!
-//! The bar period is a per-object property of the source granularity. Objects
-//! that stage no interval in the row or filename (format family F1) recover the
-//! period from the data: the interval is the smallest positive gap between
-//! consecutive distinct bar-open timestamps across every instrument in the
-//! object, and every gap must be an exact positive multiple of it. A single-bar
-//! instrument cannot prove a period on its own but inherits the object's.
+//! For F1, the bar period is recovered from the data: the interval is the
+//! smallest positive gap between consecutive distinct bar-open timestamps across
+//! every instrument in the object, and every gap must be an exact positive
+//! multiple of it. A single-bar instrument cannot prove a period on its own but
+//! inherits the object's.
 //!
 //! Input is only ever an [`AcceptedDataset`] from gate 1 — raw staged data never
 //! reaches this module without first passing source-proof acceptance.
@@ -196,6 +206,36 @@ fn bar_interval_ms(spec: CanonicalBarSpec) -> Result<u64> {
     let step = u64::try_from(spec.step).context("bar step overflow")?;
     step.checked_mul(unit_ms)
         .context("bar interval overflows milliseconds")
+}
+
+/// Fixed nanosecond length of one `(step, aggregation)` bar period, or `None`
+/// when the period is calendar-variable (month/year) and has no fixed nanosecond
+/// length.
+///
+/// Used by [`assemble_bar_table`] to derive a missing `close_time`: a
+/// fixed-duration period yields `Some(nanos)`, a calendar-variable period yields
+/// `None`, which forces every row of such a series to carry its own `close_time`
+/// rather than inventing a length.
+///
+/// # Errors
+///
+/// Returns an error only on overflow of a fixed-duration period; a
+/// calendar-variable aggregation is `Ok(None)`, not an error.
+fn bar_interval_nanos_for_spec(spec: CanonicalBarSpec) -> Result<Option<i64>> {
+    let is_fixed_duration = BAR_UNITS_MS
+        .iter()
+        .any(|(aggregation, _)| *aggregation == spec.aggregation);
+    if !is_fixed_duration {
+        return Ok(None);
+    }
+    let interval_ms = bar_interval_ms(spec)?;
+    let interval_nanos = i64::try_from(
+        interval_ms
+            .checked_mul(NANOS_PER_MILLISECOND)
+            .context("bar interval overflows nanoseconds")?,
+    )
+    .context("bar interval overflows i64")?;
+    Ok(Some(interval_nanos))
 }
 
 /// Derive the [`CanonicalBarSpec`] (step + aggregation) from a set of bar
@@ -436,7 +476,14 @@ pub fn normalize_csv_native_bars(
         ] {
             ensure!(!value.trim().is_empty(), "row {index}: empty {label}");
         }
-        apply_price_sign_policy(index, mapping.price_sign_policy, &open, &high, &low, &close)?;
+        apply_price_sign_policy_at(
+            &format!("row {index}"),
+            mapping.price_sign_policy,
+            &open,
+            &high,
+            &low,
+            &close,
+        )?;
 
         let instrument_key = match instrument_index {
             Some(instrument_index) => {
@@ -490,81 +537,762 @@ pub fn normalize_csv_native_bars(
     )
     .context("bar interval overflows i64")?;
 
-    let canonical_instrument_key_prefix = format!("{}/{}", accepted.venue, accepted.product_family);
-    let transform_hash = bar_transform_hash();
-
     let mut tables = Vec::with_capacity(group_order.len());
     for instrument_key in &group_order {
         let identity = identities.resolve(instrument_key.as_deref())?;
-        let canonical_instrument_key = format!(
-            "{canonical_instrument_key_prefix}/{}",
-            identity.instrument_id
-        );
         let parsed_rows = groups
             .remove(instrument_key)
             .expect("group order entry has a populated group");
-        let parsed_rows = dedup_sorted_bar_rows(parsed_rows)?;
-
-        let mut rows = Vec::with_capacity(parsed_rows.len());
-        for parsed in parsed_rows {
-            let close_time = match parsed.close_time {
-                Some(close_time) => close_time,
-                None => parsed
-                    .open_time
-                    .checked_add(interval_nanos)
-                    .context("bar close_time overflows nanoseconds")?,
-            };
-            rows.push(CanonicalBarRow {
-                schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
-                ingest_run_id: ingest_run_id.to_string(),
-                source_binding: accepted.source_binding.clone(),
-                venue: accepted.venue.clone(),
-                product_family: accepted.product_family.clone(),
-                product_category: accepted.product_category.clone(),
-                instrument_id: identity.instrument_id.clone(),
-                canonical_instrument_key: canonical_instrument_key.clone(),
-                venue_symbol: identity.venue_symbol.clone(),
-                nt_instrument_id: Some(identity.nt_instrument_id.clone()),
-                open_time: parsed.open_time,
-                close_time,
-                capture_time: capture_time_nanos,
-                availability_time: None,
-                source_sequence: Some(parsed.open_time.to_string()),
-                raw_payload_id: accepted.object.sha256.clone(),
-                source_proof_id: accepted.source_proof_id.clone(),
-                payload_hash: accepted.object.sha256.clone(),
-                transform_hash: transform_hash.clone(),
-                open: parsed.open,
-                high: parsed.high,
-                low: parsed.low,
-                close: parsed.close,
-                volume: parsed.volume,
-            });
-        }
-
-        let table = CanonicalBarsTable {
-            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
-            partition: TradesPartition {
-                venue: accepted.venue.clone(),
-                product_family: accepted.product_family.clone(),
-                product_category: accepted.product_category.clone(),
-                instrument_id: identity.instrument_id.clone(),
-                dt: accepted.object.archive_date.clone(),
-            },
-            source_proof_id: accepted.source_proof_id.clone(),
-            source_proof_version: accepted.source_proof_version,
-            fidelity_class: accepted.fidelity_class,
-            forbidden_claims: accepted.forbidden_claims.clone(),
-            transform_hash: transform_hash.clone(),
-            payload_hash: accepted.object.sha256.clone(),
+        let table = assemble_bar_table(
+            accepted,
+            identity,
             bar_spec,
-            rows,
-        };
-        table.validate()?;
+            Some(interval_nanos),
+            parsed_rows,
+            capture_time_nanos,
+            ingest_run_id,
+        )?;
         tables.push(table);
     }
 
     Ok(tables)
+}
+
+/// Shape of one bar row inside a paged JSON envelope (F2).
+///
+/// A row is either a positional JSON array (field order fixed by index) or a JSON
+/// object keyed by field name. `close_time` is optional in both: absent, it is
+/// derived from the declared interval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PagedJsonRowShape {
+    /// Each row is a JSON array; fields are read by zero-based index.
+    PositionalArray {
+        open_time_index: usize,
+        open_index: usize,
+        high_index: usize,
+        low_index: usize,
+        close_index: usize,
+        volume_index: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        close_time_index: Option<usize>,
+    },
+    /// Each row is a JSON object; fields are read by key.
+    FieldKeyed {
+        open_time_field: String,
+        open_field: String,
+        high_field: String,
+        low_field: String,
+        close_field: String,
+        volume_field: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        close_time_field: Option<String>,
+    },
+}
+
+/// Declared bar period for the paged-JSON adapter (F2).
+///
+/// Paged REST kline pages carry no interval of their own, so the period is always
+/// run-spec declared and then reconciled against the period derived from the
+/// deduped open times — exactly as [`BarIntervalSource::Declared`] is reconciled
+/// for the CSV path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeclaredBarInterval {
+    pub step: usize,
+    pub aggregation: BarAggregation,
+}
+
+/// Run-spec owned paged-JSON bar column mapping for the F2 source adapter.
+///
+/// A source that serves OHLCV klines inside a JSON REST envelope (rows nested at
+/// `rows_path`, pages arriving newest-first and overlapping in time) selects the
+/// paged-JSON converter from TOML and supplies this mapping. Paged REST is
+/// per-instrument, so there is no instrument column: the caller binds the single
+/// identity. The period is always declared (pages carry none) and reconciled
+/// against the data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagedJsonBarMappingConfig {
+    /// Dot-separated path to the row array inside each envelope object, for
+    /// example `result.list`. Generic config string; never a venue literal.
+    pub rows_path: String,
+    pub row_shape: PagedJsonRowShape,
+    pub timestamp_unit: CsvTimestampUnit,
+    /// Declared period; pages carry no interval. Reconciled against the period
+    /// derived from the deduped open times.
+    pub interval: DeclaredBarInterval,
+    pub price_sign_policy: BarPriceSignPolicy,
+}
+
+/// Normalize an accepted paged-JSON bar object into one [`CanonicalBarsTable`]
+/// for the single bound instrument (format family F2).
+///
+/// `json_text` is the decoded text of the accepted object whose hash already
+/// matched the manifest. The payload is EITHER one JSON envelope object OR several
+/// newline-separated envelope objects (one per fetched page concatenated by the
+/// backfill); both forms are accepted, and every page's rows at `rows_path` are
+/// collected. Adjacent pages overlap in time, so rows are sorted ascending by
+/// open time and deduped via [`dedup_sorted_bar_rows`] (byte-identical overlaps
+/// collapse, disagreeing overlaps fail loud). The declared period is reconciled
+/// against the period derived from the deduped open times, and each missing
+/// `close_time` is derived from that period.
+///
+/// Each scalar (timestamp + OHLCV) is read as a JSON string or integer; a JSON
+/// float is rejected ([`json_scalar_to_string`]) because it cannot preserve the
+/// source precision through `f64`. Sources that publish fractional prices serve
+/// them as strings.
+///
+/// `capture_time_nanos` is the ingest capture timestamp recorded for the run.
+/// `ingest_run_id` is the stable identifier of the ingest/run, recorded for
+/// lineage; it is not the source object URL.
+///
+/// # Errors
+///
+/// Returns an error if the envelope is not valid JSON, `rows_path` does not
+/// resolve to an array, a row is malformed, a field fails to parse, an OHLC price
+/// is non-positive, the declared period disagrees with the data-derived period,
+/// or the produced table fails its contract.
+pub fn normalize_paged_json_bars(
+    accepted: &AcceptedDataset,
+    identity: &CanonicalInstrumentIdentity,
+    mapping: &PagedJsonBarMappingConfig,
+    json_text: &str,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+) -> Result<Vec<CanonicalBarsTable>> {
+    ensure!(
+        !ingest_run_id.trim().is_empty(),
+        "ingest_run_id must not be empty"
+    );
+    ensure!(
+        !mapping.rows_path.trim().is_empty(),
+        "converter paged_json_bars.rows_path must not be empty"
+    );
+    let path_segments: Vec<&str> = mapping.rows_path.split('.').collect();
+    ensure!(
+        path_segments.iter().all(|segment| !segment.is_empty()),
+        "converter paged_json_bars.rows_path {:?} has an empty path segment",
+        mapping.rows_path
+    );
+    let declared_spec = CanonicalBarSpec {
+        step: mapping.interval.step,
+        aggregation: mapping.interval.aggregation,
+    };
+
+    let mut parsed_rows: Vec<ParsedBarRow> = Vec::new();
+    let mut object_open_times: Vec<i64> = Vec::new();
+    // Accept either one envelope object or newline-separated envelope objects
+    // (the backfill may concatenate page bodies). Each non-blank line is one
+    // envelope; a single un-split body is the one-line case.
+    let mut saw_envelope = false;
+    for (page_index, line) in json_text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        saw_envelope = true;
+        let envelope: serde_json::Value = serde_json::from_str(line)
+            .with_context(|| format!("page {page_index}: invalid JSON envelope"))?;
+        let rows_value = walk_json_path(&envelope, &path_segments).with_context(|| {
+            format!(
+                "page {page_index}: rows_path {:?} does not resolve in envelope",
+                mapping.rows_path
+            )
+        })?;
+        let rows = rows_value.as_array().with_context(|| {
+            format!(
+                "page {page_index}: rows_path {:?} is not a JSON array",
+                mapping.rows_path
+            )
+        })?;
+        for (row_index, row_value) in rows.iter().enumerate() {
+            let parsed = parse_paged_json_row(
+                page_index,
+                row_index,
+                row_value,
+                &mapping.row_shape,
+                mapping.timestamp_unit,
+                mapping.price_sign_policy,
+            )?;
+            object_open_times.push(parsed.open_time);
+            parsed_rows.push(parsed);
+        }
+    }
+    ensure!(
+        saw_envelope,
+        "paged-JSON bar object carried no envelope content"
+    );
+    ensure!(
+        !parsed_rows.is_empty(),
+        "paged-JSON bar object yielded no rows"
+    );
+
+    // Reconcile the declared period against the data, exactly as the CSV path
+    // reconciles a declared interval, so a mis-declared step fails loud.
+    let derived_spec = bar_spec_from_open_times(&object_open_times)?;
+    ensure!(
+        declared_spec == derived_spec,
+        "declared bar interval {declared_spec:?} does not match interval derived from open times {derived_spec:?}"
+    );
+    let interval_nanos = bar_interval_nanos_for_spec(declared_spec)?;
+
+    let table = assemble_bar_table(
+        accepted,
+        identity,
+        declared_spec,
+        interval_nanos,
+        parsed_rows,
+        capture_time_nanos,
+        ingest_run_id,
+    )?;
+    Ok(vec![table])
+}
+
+/// Resolve a dot-separated path of object keys to a value inside `root`.
+///
+/// Every segment must address an object key; an array index segment or a missing
+/// key is an error (the caller validates the final value is an array).
+fn walk_json_path<'value>(
+    root: &'value serde_json::Value,
+    segments: &[&str],
+) -> Result<&'value serde_json::Value> {
+    let mut current = root;
+    for segment in segments {
+        current = current
+            .get(*segment)
+            .with_context(|| format!("path segment {segment:?} not found"))?;
+    }
+    Ok(current)
+}
+
+/// Parse one paged-JSON row (array or object shape) into a [`ParsedBarRow`].
+fn parse_paged_json_row(
+    page_index: usize,
+    row_index: usize,
+    row_value: &serde_json::Value,
+    row_shape: &PagedJsonRowShape,
+    timestamp_unit: CsvTimestampUnit,
+    price_sign_policy: BarPriceSignPolicy,
+) -> Result<ParsedBarRow> {
+    let location = format!("page {page_index} row {row_index}");
+    let (open_time_raw, open, high, low, close, volume, close_time_raw) = match row_shape {
+        PagedJsonRowShape::PositionalArray {
+            open_time_index,
+            open_index,
+            high_index,
+            low_index,
+            close_index,
+            volume_index,
+            close_time_index,
+        } => {
+            let array = row_value
+                .as_array()
+                .with_context(|| format!("{location}: positional row is not a JSON array"))?;
+            let at = |index: usize, label: &str| -> Result<String> {
+                json_scalar_to_string(
+                    array
+                        .get(index)
+                        .with_context(|| format!("{location}: missing {label} at index {index}"))?,
+                    &location,
+                    label,
+                )
+            };
+            let open_time_raw = at(*open_time_index, "open_time")?;
+            let open = at(*open_index, "open")?;
+            let high = at(*high_index, "high")?;
+            let low = at(*low_index, "low")?;
+            let close = at(*close_index, "close")?;
+            let volume = at(*volume_index, "volume")?;
+            let close_time_raw = match close_time_index {
+                Some(close_time_index) => Some(at(*close_time_index, "close_time")?),
+                None => None,
+            };
+            (
+                open_time_raw,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                close_time_raw,
+            )
+        }
+        PagedJsonRowShape::FieldKeyed {
+            open_time_field,
+            open_field,
+            high_field,
+            low_field,
+            close_field,
+            volume_field,
+            close_time_field,
+        } => {
+            let at = |field: &str, label: &str| -> Result<String> {
+                json_scalar_to_string(
+                    row_value
+                        .get(field)
+                        .with_context(|| format!("{location}: missing {label} field {field:?}"))?,
+                    &location,
+                    label,
+                )
+            };
+            let open_time_raw = at(open_time_field, "open_time")?;
+            let open = at(open_field, "open")?;
+            let high = at(high_field, "high")?;
+            let low = at(low_field, "low")?;
+            let close = at(close_field, "close")?;
+            let volume = at(volume_field, "volume")?;
+            let close_time_raw = match close_time_field {
+                Some(close_time_field) => Some(at(close_time_field, "close_time")?),
+                None => None,
+            };
+            (
+                open_time_raw,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                close_time_raw,
+            )
+        }
+    };
+
+    let open_time = timestamp_unit
+        .parse_to_nanos(&open_time_raw)
+        .with_context(|| format!("{location}: invalid open_time {open_time_raw:?}"))?;
+    ensure!(open_time > 0, "{location}: non-positive open_time");
+    let close_time = match close_time_raw {
+        Some(close_time_raw) => Some(
+            timestamp_unit
+                .parse_to_nanos(&close_time_raw)
+                .with_context(|| format!("{location}: invalid close_time {close_time_raw:?}"))?,
+        ),
+        None => None,
+    };
+    for (label, value) in [
+        ("open", &open),
+        ("high", &high),
+        ("low", &low),
+        ("close", &close),
+        ("volume", &volume),
+    ] {
+        ensure!(!value.trim().is_empty(), "{location}: empty {label}");
+    }
+    apply_price_sign_policy_at(&location, price_sign_policy, &open, &high, &low, &close)?;
+
+    Ok(ParsedBarRow {
+        instrument_key: None,
+        open_time,
+        close_time,
+        open,
+        high,
+        low,
+        close,
+        volume,
+    })
+}
+
+/// Render a JSON scalar as its exact source token, preserving precision.
+///
+/// Klines carry OHLCV and timestamps as JSON strings or integers; both preserve
+/// the source token exactly (a string is verbatim, an integer round-trips
+/// losslessly). A JSON FLOAT is rejected: without serde_json's
+/// `arbitrary_precision` feature a float is parsed through `f64`, which drops
+/// trailing zeros and other significant digits (`0.50` -> `0.5`), so accepting it
+/// would silently corrupt the source precision. Sources that publish fractional
+/// prices serve them as strings; a float here is a config/source mismatch and
+/// fails loud rather than rounding. Booleans, nulls, arrays, and objects are not
+/// scalar values and fail loud.
+fn json_scalar_to_string(value: &serde_json::Value, location: &str, label: &str) -> Result<String> {
+    match value {
+        serde_json::Value::String(text) => Ok(text.clone()),
+        serde_json::Value::Number(number) if number.is_f64() => bail!(
+            "{location}: {label} {number} is a JSON float; serve fractional values as JSON \
+             strings to preserve exact precision (a float loses trailing zeros through f64)"
+        ),
+        serde_json::Value::Number(number) => Ok(number.to_string()),
+        other => bail!("{location}: {label} {other} is not a string or integer scalar"),
+    }
+}
+
+/// One bar period mapped from a source interval token (F3).
+///
+/// The serde-friendly value of the [`JsonlBarMappingConfig::interval_token_map`]:
+/// a config-side token (for example `1m`, `1h`, `1w`, `1M`) maps to a
+/// NautilusTrader `(step, aggregation)` pair. Tokens are matched case-SENSITIVELY
+/// so a lowercase week token (`1w` -> [`BarAggregation::Week`]) and an uppercase
+/// month token (`1M` -> [`BarAggregation::Month`]) map to different periods.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BarIntervalToken {
+    pub step: usize,
+    pub aggregation: BarAggregation,
+}
+
+/// Run-spec owned line-delimited multi-interval bar mapping for the F3 source
+/// adapter.
+///
+/// A source that serves OHLCV klines as line-delimited JSON objects, where each
+/// line carries its own interval token (the family's defining trait), selects the
+/// JSONL multi-interval converter from TOML and supplies this mapping. The
+/// instrument-key field is optional (a single-instrument object omits it); the
+/// interval-token field is REQUIRED. `interval_token_map` maps every source token
+/// to a `(step, aggregation)` pair and an unmapped token fails loud — tokens are
+/// matched case-sensitively (`w` vs `M`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JsonlBarMappingConfig {
+    /// Field keying the per-line instrument in a multi-instrument object. `None`
+    /// selects the single-instrument object shape (the caller binds one identity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrument_field: Option<String>,
+    /// Field carrying the per-line interval token. Required: the interval is this
+    /// family's defining per-row trait.
+    pub interval_field: String,
+    pub timestamp_unit: CsvTimestampUnit,
+    pub open_time_field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_time_field: Option<String>,
+    pub open_field: String,
+    pub high_field: String,
+    pub low_field: String,
+    pub close_field: String,
+    pub volume_field: String,
+    /// Source interval token -> `(step, aggregation)`. An unmapped token fails
+    /// loud; tokens match case-sensitively.
+    pub interval_token_map: BTreeMap<String, BarIntervalToken>,
+    pub price_sign_policy: BarPriceSignPolicy,
+}
+
+/// Normalize an accepted line-delimited multi-interval bar object into one
+/// [`CanonicalBarsTable`] per `(instrument_key, interval token)` group (format
+/// family F3).
+///
+/// `jsonl_text` is the decoded text of the accepted object whose hash already
+/// matched the manifest. Each non-blank line is one JSON object carrying its own
+/// interval token (mapped through `interval_token_map`, fail-loud on an unmapped
+/// token). Rows group by `(instrument_key, interval token)` so a staged object
+/// that interleaves several intervals for one or several instruments emits one
+/// table per group, each with its own `bar_spec`. Per group, rows are sorted
+/// ascending and deduped via [`dedup_sorted_bar_rows`], and each missing
+/// `close_time` is derived from the group's mapped period (a calendar-variable
+/// period such as a month has no fixed length, so a row of such a group missing
+/// `close_time` fails loud).
+///
+/// `capture_time_nanos` is the ingest capture timestamp recorded for the run.
+/// `ingest_run_id` is the stable identifier of the ingest/run, recorded for
+/// lineage; it is not the source object URL.
+///
+/// # Errors
+///
+/// Returns an error if `ingest_run_id`/`interval_field` is empty, a line is not
+/// valid JSON, a required field is missing or fails to parse, an interval token
+/// is not in `interval_token_map`, an OHLC price is non-positive, an instrument
+/// key resolves to no identity, or a produced table fails its contract.
+pub fn normalize_jsonl_multi_interval_bars(
+    accepted: &AcceptedDataset,
+    identities: &BarInstrumentIdentities,
+    mapping: &JsonlBarMappingConfig,
+    jsonl_text: &str,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+) -> Result<Vec<CanonicalBarsTable>> {
+    ensure!(
+        !ingest_run_id.trim().is_empty(),
+        "ingest_run_id must not be empty"
+    );
+    ensure!(
+        !mapping.interval_field.trim().is_empty(),
+        "converter jsonl_bars.interval_field must not be empty"
+    );
+    for (label, field) in [
+        ("open_time_field", &mapping.open_time_field),
+        ("open_field", &mapping.open_field),
+        ("high_field", &mapping.high_field),
+        ("low_field", &mapping.low_field),
+        ("close_field", &mapping.close_field),
+        ("volume_field", &mapping.volume_field),
+    ] {
+        ensure!(
+            !field.trim().is_empty(),
+            "converter jsonl_bars.{label} must not be empty"
+        );
+    }
+    if let Some(instrument_field) = &mapping.instrument_field {
+        ensure!(
+            !instrument_field.trim().is_empty(),
+            "converter jsonl_bars.instrument_field must not be empty when set"
+        );
+    }
+    ensure!(
+        !mapping.interval_token_map.is_empty(),
+        "converter jsonl_bars.interval_token_map must not be empty"
+    );
+    for (token, interval) in &mapping.interval_token_map {
+        ensure!(
+            !token.trim().is_empty(),
+            "converter jsonl_bars.interval_token_map carries an empty token"
+        );
+        ensure!(
+            interval.step > 0,
+            "converter jsonl_bars.interval_token_map token {token:?} has a non-positive step"
+        );
+    }
+
+    // Group rows by (instrument_key, interval token), preserving first-seen group
+    // order so the produced tables are deterministically ordered by first
+    // appearance. A BTreeMap keys the groups for grouping; group_order keeps the
+    // emission order stable.
+    type GroupKey = (Option<String>, String);
+    let mut group_order: Vec<GroupKey> = Vec::new();
+    let mut groups: BTreeMap<GroupKey, Vec<ParsedBarRow>> = BTreeMap::new();
+
+    for (line_index, line) in jsonl_text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let location = format!("line {}", line_index + 1);
+        let record: serde_json::Value = serde_json::from_str(line)
+            .with_context(|| format!("{location}: invalid JSON object"))?;
+
+        let interval_token = json_scalar_to_string(
+            record.get(&mapping.interval_field).with_context(|| {
+                format!(
+                    "{location}: missing interval field {:?}",
+                    mapping.interval_field
+                )
+            })?,
+            &location,
+            "interval",
+        )?;
+        ensure!(
+            mapping.interval_token_map.contains_key(&interval_token),
+            "{location}: interval token {interval_token:?} is not in interval_token_map"
+        );
+
+        let instrument_key = match &mapping.instrument_field {
+            Some(instrument_field) => {
+                let raw = json_scalar_to_string(
+                    record.get(instrument_field).with_context(|| {
+                        format!("{location}: missing instrument field {instrument_field:?}")
+                    })?,
+                    &location,
+                    "instrument",
+                )?;
+                ensure!(!raw.is_empty(), "{location}: empty instrument field");
+                Some(raw)
+            }
+            None => None,
+        };
+
+        let at = |field: &str, label: &str| -> Result<String> {
+            json_scalar_to_string(
+                record
+                    .get(field)
+                    .with_context(|| format!("{location}: missing {label} field {field:?}"))?,
+                &location,
+                label,
+            )
+        };
+        let open_time_raw = at(&mapping.open_time_field, "open_time")?;
+        let open = at(&mapping.open_field, "open")?;
+        let high = at(&mapping.high_field, "high")?;
+        let low = at(&mapping.low_field, "low")?;
+        let close = at(&mapping.close_field, "close")?;
+        let volume = at(&mapping.volume_field, "volume")?;
+        let close_time_raw = match &mapping.close_time_field {
+            Some(close_time_field) => Some(at(close_time_field, "close_time")?),
+            None => None,
+        };
+
+        let open_time = mapping
+            .timestamp_unit
+            .parse_to_nanos(&open_time_raw)
+            .with_context(|| format!("{location}: invalid open_time {open_time_raw:?}"))?;
+        ensure!(open_time > 0, "{location}: non-positive open_time");
+        let close_time = match close_time_raw {
+            Some(close_time_raw) => Some(
+                mapping
+                    .timestamp_unit
+                    .parse_to_nanos(&close_time_raw)
+                    .with_context(|| {
+                        format!("{location}: invalid close_time {close_time_raw:?}")
+                    })?,
+            ),
+            None => None,
+        };
+        for (label, value) in [
+            ("open", &open),
+            ("high", &high),
+            ("low", &low),
+            ("close", &close),
+            ("volume", &volume),
+        ] {
+            ensure!(!value.trim().is_empty(), "{location}: empty {label}");
+        }
+        apply_price_sign_policy_at(
+            &location,
+            mapping.price_sign_policy,
+            &open,
+            &high,
+            &low,
+            &close,
+        )?;
+
+        let key: GroupKey = (instrument_key.clone(), interval_token);
+        let group = groups.entry(key.clone()).or_insert_with(|| {
+            group_order.push(key.clone());
+            Vec::new()
+        });
+        group.push(ParsedBarRow {
+            instrument_key,
+            open_time,
+            close_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+        });
+    }
+
+    ensure!(
+        !group_order.is_empty(),
+        "JSONL multi-interval bar object yielded no rows"
+    );
+
+    let mut tables = Vec::with_capacity(group_order.len());
+    for key in &group_order {
+        let (instrument_key, interval_token) = key;
+        let identity = identities.resolve(instrument_key.as_deref())?;
+        let interval = mapping
+            .interval_token_map
+            .get(interval_token)
+            .expect("grouped interval token is in the map");
+        let bar_spec = CanonicalBarSpec {
+            step: interval.step,
+            aggregation: interval.aggregation,
+        };
+        let interval_nanos = bar_interval_nanos_for_spec(bar_spec)?;
+        let parsed_rows = groups
+            .remove(key)
+            .expect("group order entry has a populated group");
+        let table = assemble_bar_table(
+            accepted,
+            identity,
+            bar_spec,
+            interval_nanos,
+            parsed_rows,
+            capture_time_nanos,
+            ingest_run_id,
+        )?;
+        tables.push(table);
+    }
+    Ok(tables)
+}
+
+/// Assemble one validated [`CanonicalBarsTable`] from parsed rows of a single
+/// `(instrument, interval)` series.
+///
+/// The single source of truth for bar-table assembly across every format family:
+/// it sorts + dedups the rows ([`dedup_sorted_bar_rows`]), derives each missing
+/// `close_time` from `interval_nanos`, stamps the identity/provenance header from
+/// `accepted`, builds the [`CanonicalBarsTable`] with the supplied `bar_spec`, and
+/// validates it through the table contract.
+///
+/// `interval_nanos` is the fixed nanosecond length of one bar period when known.
+/// It is `None` for a calendar-variable period (for example a month) whose length
+/// is not a fixed multiple of nanoseconds; in that case every row must already
+/// carry its own `close_time`, and a row missing one fails loud rather than
+/// inventing a period length.
+///
+/// # Errors
+///
+/// Returns an error if a duplicate row disagrees, a derived `close_time`
+/// overflows, a row needs a derived `close_time` but `interval_nanos` is `None`,
+/// or the assembled table fails its contract.
+fn assemble_bar_table(
+    accepted: &AcceptedDataset,
+    identity: &CanonicalInstrumentIdentity,
+    bar_spec: CanonicalBarSpec,
+    interval_nanos: Option<i64>,
+    parsed_rows: Vec<ParsedBarRow>,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+) -> Result<CanonicalBarsTable> {
+    let canonical_instrument_key = format!(
+        "{}/{}/{}",
+        accepted.venue, accepted.product_family, identity.instrument_id
+    );
+    let transform_hash = bar_transform_hash();
+    let parsed_rows = dedup_sorted_bar_rows(parsed_rows)?;
+
+    let mut rows = Vec::with_capacity(parsed_rows.len());
+    for parsed in parsed_rows {
+        let close_time = match parsed.close_time {
+            Some(close_time) => close_time,
+            None => {
+                let interval_nanos = interval_nanos.with_context(|| {
+                    format!(
+                        "bar at open_time {} for instrument {:?} carries no close_time and the \
+                         {:?} period has no fixed nanosecond length to derive one",
+                        parsed.open_time, identity.instrument_id, bar_spec.aggregation
+                    )
+                })?;
+                parsed
+                    .open_time
+                    .checked_add(interval_nanos)
+                    .context("bar close_time overflows nanoseconds")?
+            }
+        };
+        rows.push(CanonicalBarRow {
+            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+            ingest_run_id: ingest_run_id.to_string(),
+            source_binding: accepted.source_binding.clone(),
+            venue: accepted.venue.clone(),
+            product_family: accepted.product_family.clone(),
+            product_category: accepted.product_category.clone(),
+            instrument_id: identity.instrument_id.clone(),
+            canonical_instrument_key: canonical_instrument_key.clone(),
+            venue_symbol: identity.venue_symbol.clone(),
+            nt_instrument_id: Some(identity.nt_instrument_id.clone()),
+            open_time: parsed.open_time,
+            close_time,
+            capture_time: capture_time_nanos,
+            availability_time: None,
+            source_sequence: Some(parsed.open_time.to_string()),
+            raw_payload_id: accepted.object.sha256.clone(),
+            source_proof_id: accepted.source_proof_id.clone(),
+            payload_hash: accepted.object.sha256.clone(),
+            transform_hash: transform_hash.clone(),
+            open: parsed.open,
+            high: parsed.high,
+            low: parsed.low,
+            close: parsed.close,
+            volume: parsed.volume,
+        });
+    }
+
+    let table = CanonicalBarsTable {
+        schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+        partition: TradesPartition {
+            venue: accepted.venue.clone(),
+            product_family: accepted.product_family.clone(),
+            product_category: accepted.product_category.clone(),
+            instrument_id: identity.instrument_id.clone(),
+            dt: accepted.object.archive_date.clone(),
+        },
+        source_proof_id: accepted.source_proof_id.clone(),
+        source_proof_version: accepted.source_proof_version,
+        fidelity_class: accepted.fidelity_class,
+        forbidden_claims: accepted.forbidden_claims.clone(),
+        transform_hash,
+        payload_hash: accepted.object.sha256.clone(),
+        bar_spec,
+        rows,
+    };
+    table.validate()?;
+    Ok(table)
 }
 
 /// Collapse exact-duplicate `open_time` rows (always on) and sort ascending by
@@ -601,9 +1329,11 @@ fn dedup_sorted_bar_rows(mut rows: Vec<ParsedBarRow>) -> Result<Vec<ParsedBarRow
 /// Enforce the OHLC sign policy for one parsed row.
 ///
 /// `StrictlyPositive` rejects any non-positive open/high/low/close; non-negative
-/// volume is left to [`CanonicalBarsTable::validate`].
-fn apply_price_sign_policy(
-    index: usize,
+/// volume is left to [`CanonicalBarsTable::validate`]. `location` is a
+/// human-readable position label (for example `row 3` or `page 1 row 0`) so every
+/// format family reports the same sign violation through one helper.
+fn apply_price_sign_policy_at(
+    location: &str,
     policy: BarPriceSignPolicy,
     open: &str,
     high: &str,
@@ -620,10 +1350,10 @@ fn apply_price_sign_policy(
             ] {
                 let parsed: Decimal = value
                     .parse()
-                    .with_context(|| format!("row {index}: invalid {label} {value:?}"))?;
+                    .with_context(|| format!("{location}: invalid {label} {value:?}"))?;
                 ensure!(
                     parsed > Decimal::ZERO,
-                    "row {index}: non-positive {label} {value:?}"
+                    "{location}: non-positive {label} {value:?}"
                 );
             }
             Ok(())
@@ -1116,5 +1846,465 @@ table_families = ["bars"]
             normalize_csv_native_bars(&accepted, &identities, &mapping, csv, 42, "ingest-run-test")
                 .expect_err("unregistered instrument key must be rejected");
         assert!(err.to_string().contains("no instrument identity"), "{err}");
+    }
+
+    // ---------- F2: paged REST JSON klines ----------
+
+    fn single_identity_value() -> CanonicalInstrumentIdentity {
+        identity("BASEQUOTE")
+    }
+
+    fn positional_paged_mapping() -> PagedJsonBarMappingConfig {
+        // Rows are positional arrays: [open_time, open, high, low, close, volume].
+        PagedJsonBarMappingConfig {
+            rows_path: "result.list".to_string(),
+            row_shape: PagedJsonRowShape::PositionalArray {
+                open_time_index: 0,
+                open_index: 1,
+                high_index: 2,
+                low_index: 3,
+                close_index: 4,
+                volume_index: 5,
+                close_time_index: None,
+            },
+            timestamp_unit: CsvTimestampUnit::Milliseconds,
+            interval: DeclaredBarInterval {
+                step: 1,
+                aggregation: BarAggregation::Minute,
+            },
+            price_sign_policy: BarPriceSignPolicy::StrictlyPositive,
+        }
+    }
+
+    #[test]
+    fn paged_json_positional_rows_sort_newest_first_input_ascending() {
+        // One envelope, rows newest-first (the venue's natural order). The
+        // adapter walks result.list, then sorts ascending by open time.
+        let accepted = accepted_dataset(&["start", "open", "high", "low", "close", "volume"]);
+        let json = r#"{"result":{"list":[["1700000060000","0.52","0.58","0.51","0.57","120"],["1700000000000","0.50","0.55","0.49","0.52","100"]]}}"#;
+        let tables = normalize_paged_json_bars(
+            &accepted,
+            &single_identity_value(),
+            &positional_paged_mapping(),
+            json,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize paged json positional bars");
+        assert_eq!(tables.len(), 1);
+        let table = &tables[0];
+        assert_eq!(table.rows.len(), 2);
+        assert!(table.rows[0].open_time < table.rows[1].open_time);
+        assert_eq!(table.rows[0].open_time, 1_700_000_000_000_000_000);
+        assert_eq!(table.bar_spec.aggregation, BarAggregation::Minute);
+        // No close_time column: derived as open_time + one minute.
+        assert_eq!(table.rows[0].close_time, 1_700_000_060_000_000_000);
+        assert_eq!(table.rows[0].open, "0.50");
+        assert_eq!(
+            table.rows[0].canonical_instrument_key,
+            "testvenue/prediction-market/BASEQUOTE"
+        );
+    }
+
+    #[test]
+    fn paged_json_field_keyed_rows_with_close_time() {
+        // Rows are objects keyed by field name and carry an explicit close time.
+        let accepted = accepted_dataset(&["t", "o", "h", "l", "c", "v", "ct"]);
+        let mapping = PagedJsonBarMappingConfig {
+            row_shape: PagedJsonRowShape::FieldKeyed {
+                open_time_field: "t".to_string(),
+                open_field: "o".to_string(),
+                high_field: "h".to_string(),
+                low_field: "l".to_string(),
+                close_field: "c".to_string(),
+                volume_field: "v".to_string(),
+                close_time_field: Some("ct".to_string()),
+            },
+            ..positional_paged_mapping()
+        };
+        let json = r#"{"result":{"list":[
+            {"t":"1700000000000","o":"0.50","h":"0.55","l":"0.49","c":"0.52","v":"100","ct":"1700000060000"},
+            {"t":"1700000060000","o":"0.52","h":"0.58","l":"0.51","c":"0.57","v":"120","ct":"1700000120000"}
+        ]}}"#;
+        let tables = normalize_paged_json_bars(
+            &accepted,
+            &single_identity_value(),
+            &mapping,
+            json,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize paged json field-keyed bars");
+        let table = &tables[0];
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[0].close_time, 1_700_000_060_000_000_000);
+        assert_eq!(table.rows[1].close_time, 1_700_000_120_000_000_000);
+    }
+
+    #[test]
+    fn paged_json_integer_timestamps_round_trip_exactly() {
+        // Timestamps are JSON integers (the common REST shape); integers
+        // round-trip losslessly. OHLCV stay strings to preserve exact precision.
+        let accepted = accepted_dataset(&["start", "open", "high", "low", "close", "volume"]);
+        let json = r#"{"result":{"list":[[1700000000000,"0.50","0.55","0.49","0.52","100"],[1700000060000,"0.52","0.58","0.51","0.57","120"]]}}"#;
+        let tables = normalize_paged_json_bars(
+            &accepted,
+            &single_identity_value(),
+            &positional_paged_mapping(),
+            json,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize paged json with integer timestamps");
+        assert_eq!(tables[0].rows[0].open, "0.50");
+        assert_eq!(tables[0].rows[0].open_time, 1_700_000_000_000_000_000);
+    }
+
+    #[test]
+    fn paged_json_rejects_float_price_to_protect_precision() {
+        // A JSON float price cannot preserve trailing zeros through f64, so the
+        // adapter fails loud rather than silently rounding `0.50` to `0.5`.
+        let accepted = accepted_dataset(&["start", "open", "high", "low", "close", "volume"]);
+        let json = r#"{"result":{"list":[[1700000000000,0.50,0.55,0.49,0.52,"100"],[1700000060000,"0.52","0.58","0.51","0.57","120"]]}}"#;
+        let err = normalize_paged_json_bars(
+            &accepted,
+            &single_identity_value(),
+            &positional_paged_mapping(),
+            json,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("JSON float price must be rejected to protect precision");
+        assert!(err.to_string().contains("JSON float"), "{err}");
+    }
+
+    #[test]
+    fn paged_json_overlapping_pages_collapse_byte_identical_duplicates() {
+        // Two newline-separated envelopes (pages) overlap on the boundary minute;
+        // the byte-identical duplicate collapses to one row.
+        let accepted = accepted_dataset(&["start", "open", "high", "low", "close", "volume"]);
+        let page_one = r#"{"result":{"list":[["1700000000000","0.50","0.55","0.49","0.52","100"],["1700000060000","0.52","0.58","0.51","0.57","120"]]}}"#;
+        let page_two = r#"{"result":{"list":[["1700000060000","0.52","0.58","0.51","0.57","120"],["1700000120000","0.57","0.60","0.56","0.59","90"]]}}"#;
+        let json = format!("{page_one}\n{page_two}");
+        let tables = normalize_paged_json_bars(
+            &accepted,
+            &single_identity_value(),
+            &positional_paged_mapping(),
+            &json,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize overlapping paged json pages");
+        assert_eq!(tables[0].rows.len(), 3, "boundary minute collapses to one");
+    }
+
+    #[test]
+    fn paged_json_overlapping_pages_reject_disagreeing_duplicate() {
+        // The boundary minute disagrees across pages (different close): corrupt.
+        let accepted = accepted_dataset(&["start", "open", "high", "low", "close", "volume"]);
+        let page_one = r#"{"result":{"list":[["1700000000000","0.50","0.55","0.49","0.52","100"],["1700000060000","0.52","0.58","0.51","0.57","120"]]}}"#;
+        let page_two = r#"{"result":{"list":[["1700000060000","0.52","0.58","0.51","0.99","120"],["1700000120000","0.57","0.60","0.56","0.59","90"]]}}"#;
+        let json = format!("{page_one}\n{page_two}");
+        let err = normalize_paged_json_bars(
+            &accepted,
+            &single_identity_value(),
+            &positional_paged_mapping(),
+            &json,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("disagreeing duplicate across pages must be rejected");
+        assert!(err.to_string().contains("disagreeing"), "{err}");
+    }
+
+    #[test]
+    fn paged_json_rejects_declared_interval_disagreeing_with_derived() {
+        // The data is a one-minute period but the run-spec declares one hour.
+        let accepted = accepted_dataset(&["start", "open", "high", "low", "close", "volume"]);
+        let mapping = PagedJsonBarMappingConfig {
+            interval: DeclaredBarInterval {
+                step: 1,
+                aggregation: BarAggregation::Hour,
+            },
+            ..positional_paged_mapping()
+        };
+        let json = r#"{"result":{"list":[["1700000000000","0.50","0.55","0.49","0.52","100"],["1700000060000","0.52","0.58","0.51","0.57","120"]]}}"#;
+        let err = normalize_paged_json_bars(
+            &accepted,
+            &single_identity_value(),
+            &mapping,
+            json,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("declared/derived interval mismatch must be rejected");
+        assert!(err.to_string().contains("does not match"), "{err}");
+    }
+
+    #[test]
+    fn paged_json_rejects_non_positive_price_under_strictly_positive_policy() {
+        let accepted = accepted_dataset(&["start", "open", "high", "low", "close", "volume"]);
+        let json = r#"{"result":{"list":[["1700000000000","0.50","0.55","0","0.52","100"],["1700000060000","0.52","0.58","0.51","0.57","120"]]}}"#;
+        let err = normalize_paged_json_bars(
+            &accepted,
+            &single_identity_value(),
+            &positional_paged_mapping(),
+            json,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("non-positive low must be rejected");
+        assert!(err.to_string().contains("non-positive"), "{err}");
+    }
+
+    #[test]
+    fn paged_json_rejects_rows_path_not_resolving() {
+        let accepted = accepted_dataset(&["start", "open", "high", "low", "close", "volume"]);
+        // The configured rows_path addresses a missing key.
+        let json = r#"{"data":{"rows":[["1700000000000","0.50","0.55","0.49","0.52","100"]]}}"#;
+        let err = normalize_paged_json_bars(
+            &accepted,
+            &single_identity_value(),
+            &positional_paged_mapping(),
+            json,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("unresolvable rows_path must be rejected");
+        assert!(err.to_string().contains("rows_path"), "{err}");
+    }
+
+    // ---------- F3: line-delimited multi-interval klines ----------
+
+    fn interval_token_map() -> BTreeMap<String, BarIntervalToken> {
+        // Case-sensitive: lowercase week vs uppercase month map to different
+        // periods.
+        BTreeMap::from([
+            (
+                "1m".to_string(),
+                BarIntervalToken {
+                    step: 1,
+                    aggregation: BarAggregation::Minute,
+                },
+            ),
+            (
+                "1h".to_string(),
+                BarIntervalToken {
+                    step: 1,
+                    aggregation: BarAggregation::Hour,
+                },
+            ),
+            (
+                "1w".to_string(),
+                BarIntervalToken {
+                    step: 1,
+                    aggregation: BarAggregation::Week,
+                },
+            ),
+            (
+                "1M".to_string(),
+                BarIntervalToken {
+                    step: 1,
+                    aggregation: BarAggregation::Month,
+                },
+            ),
+        ])
+    }
+
+    fn single_jsonl_mapping() -> JsonlBarMappingConfig {
+        JsonlBarMappingConfig {
+            instrument_field: None,
+            interval_field: "interval".to_string(),
+            timestamp_unit: CsvTimestampUnit::Milliseconds,
+            open_time_field: "t".to_string(),
+            close_time_field: Some("ct".to_string()),
+            open_field: "o".to_string(),
+            high_field: "h".to_string(),
+            low_field: "l".to_string(),
+            close_field: "c".to_string(),
+            volume_field: "v".to_string(),
+            interval_token_map: interval_token_map(),
+            price_sign_policy: BarPriceSignPolicy::StrictlyPositive,
+        }
+    }
+
+    #[test]
+    fn jsonl_multi_interval_single_instrument_splits_by_interval() {
+        // One instrument, two intervals interleaved -> two tables, each with its
+        // own bar_spec, in first-seen order.
+        let accepted = accepted_dataset(&["interval", "t", "ct", "o", "h", "l", "c", "v"]);
+        let jsonl = concat!(
+            r#"{"interval":"1m","t":"1700000000000","ct":"1700000060000","o":"0.50","h":"0.55","l":"0.49","c":"0.52","v":"100"}"#,
+            "\n",
+            r#"{"interval":"1h","t":"1700000000000","ct":"1700003600000","o":"0.50","h":"0.60","l":"0.48","c":"0.59","v":"500"}"#,
+            "\n",
+            r#"{"interval":"1m","t":"1700000060000","ct":"1700000120000","o":"0.52","h":"0.58","l":"0.51","c":"0.57","v":"120"}"#,
+            "\n",
+            r#"{"interval":"1h","t":"1700003600000","ct":"1700007200000","o":"0.59","h":"0.65","l":"0.55","c":"0.62","v":"450"}"#,
+        );
+        let tables = normalize_jsonl_multi_interval_bars(
+            &accepted,
+            &single_identity(),
+            &single_jsonl_mapping(),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize jsonl multi-interval bars");
+        assert_eq!(tables.len(), 2);
+        // First-seen order: 1m group first, 1h group second.
+        assert_eq!(tables[0].bar_spec.aggregation, BarAggregation::Minute);
+        assert_eq!(tables[0].rows.len(), 2);
+        assert_eq!(tables[1].bar_spec.aggregation, BarAggregation::Hour);
+        assert_eq!(tables[1].rows.len(), 2);
+        // Each table is sorted ascending by open_time.
+        assert!(tables[0].rows[0].open_time < tables[0].rows[1].open_time);
+        assert!(tables[1].rows[0].open_time < tables[1].rows[1].open_time);
+    }
+
+    #[test]
+    fn jsonl_multi_interval_token_map_is_case_sensitive() {
+        // A lowercase week token and an uppercase month token map to different
+        // aggregations, proving the map keys case-sensitively.
+        let accepted = accepted_dataset(&["interval", "t", "ct", "o", "h", "l", "c", "v"]);
+        let jsonl = concat!(
+            r#"{"interval":"1w","t":"1700000000000","ct":"1700604800000","o":"0.50","h":"0.70","l":"0.40","c":"0.65","v":"9000"}"#,
+            "\n",
+            r#"{"interval":"1M","t":"1700000000000","ct":"1702592000000","o":"0.50","h":"0.90","l":"0.30","c":"0.80","v":"40000"}"#,
+        );
+        let mut tables = normalize_jsonl_multi_interval_bars(
+            &accepted,
+            &single_identity(),
+            &single_jsonl_mapping(),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize week/month tokens");
+        assert_eq!(tables.len(), 2);
+        tables.sort_by_key(|table| table.bar_spec.aggregation as u8);
+        let aggregations: Vec<BarAggregation> = tables
+            .iter()
+            .map(|table| table.bar_spec.aggregation)
+            .collect();
+        assert!(aggregations.contains(&BarAggregation::Week));
+        assert!(aggregations.contains(&BarAggregation::Month));
+    }
+
+    #[test]
+    fn jsonl_multi_interval_month_requires_close_time() {
+        // A month period has no fixed nanosecond length, so a month row missing
+        // its close_time fails loud rather than inventing one.
+        let accepted = accepted_dataset(&["interval", "t", "o", "h", "l", "c", "v"]);
+        let mapping = JsonlBarMappingConfig {
+            close_time_field: None,
+            ..single_jsonl_mapping()
+        };
+        let jsonl = r#"{"interval":"1M","t":"1700000000000","o":"0.50","h":"0.90","l":"0.30","c":"0.80","v":"40000"}"#;
+        let err = normalize_jsonl_multi_interval_bars(
+            &accepted,
+            &single_identity(),
+            &mapping,
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("month row without close_time must fail loud");
+        assert!(err.to_string().contains("no close_time"), "{err}");
+    }
+
+    #[test]
+    fn jsonl_multi_interval_rejects_unmapped_token() {
+        let accepted = accepted_dataset(&["interval", "t", "ct", "o", "h", "l", "c", "v"]);
+        let jsonl = r#"{"interval":"5s","t":"1700000000000","ct":"1700000005000","o":"0.50","h":"0.55","l":"0.49","c":"0.52","v":"100"}"#;
+        let err = normalize_jsonl_multi_interval_bars(
+            &accepted,
+            &single_identity(),
+            &single_jsonl_mapping(),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("unmapped interval token must be rejected");
+        assert!(err.to_string().contains("interval_token_map"), "{err}");
+    }
+
+    #[test]
+    fn jsonl_multi_interval_splits_by_instrument_and_interval() {
+        // Two instruments x two intervals -> four tables.
+        let accepted = accepted_dataset(&["sym", "interval", "t", "ct", "o", "h", "l", "c", "v"]);
+        let mapping = JsonlBarMappingConfig {
+            instrument_field: Some("sym".to_string()),
+            ..single_jsonl_mapping()
+        };
+        let identities = BarInstrumentIdentities::Keyed(BTreeMap::from([
+            ("AAA".to_string(), identity("BASEONE")),
+            ("BBB".to_string(), identity("BASETWO")),
+        ]));
+        let jsonl = concat!(
+            r#"{"sym":"AAA","interval":"1m","t":"1700000000000","ct":"1700000060000","o":"0.50","h":"0.55","l":"0.49","c":"0.52","v":"100"}"#,
+            "\n",
+            r#"{"sym":"AAA","interval":"1h","t":"1700000000000","ct":"1700003600000","o":"0.50","h":"0.60","l":"0.48","c":"0.59","v":"500"}"#,
+            "\n",
+            r#"{"sym":"AAA","interval":"1m","t":"1700000060000","ct":"1700000120000","o":"0.52","h":"0.58","l":"0.51","c":"0.57","v":"120"}"#,
+            "\n",
+            r#"{"sym":"AAA","interval":"1h","t":"1700003600000","ct":"1700007200000","o":"0.59","h":"0.65","l":"0.55","c":"0.62","v":"450"}"#,
+            "\n",
+            r#"{"sym":"BBB","interval":"1m","t":"1700000000000","ct":"1700000060000","o":"0.30","h":"0.33","l":"0.29","c":"0.31","v":"40"}"#,
+            "\n",
+            r#"{"sym":"BBB","interval":"1m","t":"1700000060000","ct":"1700000120000","o":"0.31","h":"0.34","l":"0.30","c":"0.33","v":"45"}"#,
+            "\n",
+            r#"{"sym":"BBB","interval":"1h","t":"1700000000000","ct":"1700003600000","o":"0.30","h":"0.38","l":"0.28","c":"0.36","v":"200"}"#,
+            "\n",
+            r#"{"sym":"BBB","interval":"1h","t":"1700003600000","ct":"1700007200000","o":"0.36","h":"0.40","l":"0.34","c":"0.38","v":"210"}"#,
+        );
+        let tables = normalize_jsonl_multi_interval_bars(
+            &accepted,
+            &identities,
+            &mapping,
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize multi-instrument multi-interval bars");
+        assert_eq!(tables.len(), 4);
+        // Each table carries exactly one instrument and one interval.
+        for table in &tables {
+            let instrument = &table.partition.instrument_id;
+            assert!(
+                instrument == "BASEONE" || instrument == "BASETWO",
+                "unexpected instrument {instrument}"
+            );
+            assert!(
+                table
+                    .rows
+                    .iter()
+                    .all(|row| &row.instrument_id == instrument)
+            );
+        }
+    }
+
+    #[test]
+    fn jsonl_multi_interval_single_instrument_identity_path() {
+        // A single-instrument object omits the instrument field and binds one
+        // identity to every group.
+        let accepted = accepted_dataset(&["interval", "t", "ct", "o", "h", "l", "c", "v"]);
+        let jsonl = concat!(
+            r#"{"interval":"1m","t":"1700000000000","ct":"1700000060000","o":"0.50","h":"0.55","l":"0.49","c":"0.52","v":"100"}"#,
+            "\n",
+            r#"{"interval":"1m","t":"1700000060000","ct":"1700000120000","o":"0.52","h":"0.58","l":"0.51","c":"0.57","v":"120"}"#,
+        );
+        let tables = normalize_jsonl_multi_interval_bars(
+            &accepted,
+            &single_identity(),
+            &single_jsonl_mapping(),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize single-instrument jsonl bars");
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].partition.instrument_id, "BASEQUOTE");
+        assert_eq!(tables[0].rows.len(), 2);
     }
 }

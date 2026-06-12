@@ -963,6 +963,47 @@ fn strategy_query_skips_non_current_matching_product_for_current_generation() {
 }
 
 #[test]
+fn strategy_query_keeps_unmapped_source_products_when_generation_overrides_are_partial() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event_with_source_state(
+            "configured-source-a",
+            "configured-selector-a",
+            2_000,
+            test_implied_volatility(41),
+            IvSourceHealthState::Active,
+            2,
+        ))
+        .unwrap();
+    store
+        .ingest_event(greeks_event_with_source_state(
+            "configured-source-b",
+            "configured-selector-b",
+            2_000,
+            test_implied_volatility(43),
+            IvSourceHealthState::Active,
+            1,
+        ))
+        .unwrap();
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_current_subscription_generations(BTreeMap::from([(
+            "configured-source-a".to_string(),
+            2,
+        )]));
+
+    let product = handle
+        .query(&point_query(Some("configured-source-b"), 2_000))
+        .unwrap();
+
+    let IvQueryProduct::IvPoint(point) = product else {
+        panic!("expected unmapped source IV point");
+    };
+    assert_eq!(point.source_id, "configured-source-b");
+    assert_eq!(point.iv, test_implied_volatility(43));
+    assert_eq!(point.provenance.subscription_generation, 1);
+}
+
+#[test]
 fn strategy_query_rejects_products_when_current_source_health_is_stale() {
     let mut store = IvStore::empty();
     store
@@ -3172,6 +3213,42 @@ fn derived_iv_query_rejects_old_generation_profile_owned_input_candidate() {
         })),
         Err(IvQueryError::DerivationRejected)
     );
+}
+
+#[test]
+fn derived_iv_query_keeps_unmapped_inputs_when_generation_overrides_are_partial() {
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_current_subscription_generations(BTreeMap::from([(
+        "configured-other-source".to_string(),
+        2,
+    )]))
+    .with_helper_policies(vec![helper_policy()])
+    .with_derived_input_policies(vec![profile_resolving_derived_input_policy()])
+    .with_derived_inputs(vec![complete_inputs()]);
+
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::DerivedIv,
+            selector: IvSelector::DerivedIvQuery {
+                instrument_id: "configured-option-instrument".to_string(),
+                helper_policy_id: "configured-helper-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+                inputs: None,
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::DerivedIv(derived) = product else {
+        panic!("expected derived IV from unmapped input source");
+    };
+    assert_eq!(derived.point.source_id, "configured-source");
+    assert_eq!(derived.provenance.subscription_generation, 1);
 }
 
 #[test]

@@ -2452,13 +2452,10 @@ fn product_satisfies_current_state(product: &IvQueryProduct, state: &IvQueryStat
     if !provenance.source_health_state.can_satisfy_current_query() {
         return false;
     }
-    if !state.current_subscription_generations.is_empty() {
-        let Some(current_generation) = state
-            .current_subscription_generations
-            .get(&provenance.source_id)
-        else {
-            return false;
-        };
+    if let Some(current_generation) = state
+        .current_subscription_generations
+        .get(&provenance.source_id)
+    {
         if *current_generation != provenance.subscription_generation {
             return false;
         }
@@ -2476,13 +2473,10 @@ fn derived_input_satisfies_current_state(inputs: &IvDerivedInputSet, state: &IvQ
     if !inputs.source_health_state.can_satisfy_current_query() {
         return false;
     }
-    if !state.current_subscription_generations.is_empty() {
-        let Some(current_generation) = state
-            .current_subscription_generations
-            .get(&inputs.source_id)
-        else {
-            return false;
-        };
+    if let Some(current_generation) = state
+        .current_subscription_generations
+        .get(&inputs.source_id)
+    {
         if *current_generation != inputs.subscription_generation {
             return false;
         }

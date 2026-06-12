@@ -506,7 +506,10 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         canonical_table.rows.len()
     );
 
-    let nt_result = run_nt_backtest_node(&inputs.manifest)?;
+    let crate::runner::NtBacktestNodeRun {
+        result: nt_result,
+        order_terminals,
+    } = run_nt_backtest_node(&inputs.manifest)?;
     let expected = expected_iterations(
         &canonical_table.rows,
         inputs.manifest.start_time,
@@ -567,6 +570,7 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         conversion_manifest_hash: inputs.conversion_manifest_hash,
         read_back_count,
         nt_result,
+        order_terminals,
         contract,
     };
     redact_operator_contract(&mut output, &inputs.catalog_root);
@@ -1031,7 +1035,7 @@ fn prove_published_catalog_consumption(
     storage_options: Option<&BTreeMap<String, String>>,
 ) -> Result<PublishedCatalogProof> {
     let (manifest, catalog_uri) = published_catalog_manifest(spec, storage_options)?;
-    let nt_result = run_nt_backtest_node(&manifest)?;
+    let nt_result = run_nt_backtest_node(&manifest)?.result;
     let expected_iterations = local_output.nt_result.iterations;
     ensure!(
         nt_result.iterations == expected_iterations,

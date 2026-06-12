@@ -1750,6 +1750,15 @@ impl BacktestingRunManifest {
             .data(data)
             .maybe_start(start)
             .maybe_end(end)
+            // Retain post-run engine state (orders, positions, account) so the
+            // runner can build the result contract and the order-terminal proof
+            // from the cache after `BacktestNode::run`. With the NautilusTrader
+            // default (`true`), `run` disposes the engine and wipes the cache,
+            // leaving no order terminal states to inspect. The `BacktestResult`
+            // summary is computed before this branch either way, so the only
+            // effect is that `clear_data` (free the data stream) runs instead of
+            // `dispose` (free all state).
+            .dispose_on_completion(false)
             .build())
     }
 }

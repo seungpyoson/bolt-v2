@@ -16,8 +16,9 @@ use anyhow::{Context, Result, bail, ensure};
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
 use nautilus_model::{
     data::TradeTick,
-    enums::{AggressorSide, OrderSide},
+    enums::{AggressorSide, OrderSide, OrderStatus},
     identifiers::InstrumentId,
+    orders::Order,
     types::Quantity,
 };
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
@@ -152,6 +153,11 @@ pub struct BacktestRunOutput {
     pub conversion_manifest_hash: String,
     pub read_back_count: usize,
     pub nt_result: BacktestResult,
+    /// Terminal state of every order the engine produced, captured from the
+    /// post-run cache. Lets callers assert order-level outcomes (e.g. every
+    /// submitted order reached `Filled`) with the per-order event trail that
+    /// explains any non-fill terminal state.
+    pub order_terminals: Vec<OrderTerminalRecord>,
     pub contract: BacktestResultContract,
 }
 
@@ -246,7 +252,29 @@ fn add_manifest_strategy(
     }
 }
 
-pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<BacktestResult> {
+/// Terminal state of one order the engine produced, captured from the post-run
+/// cache. Owned (not borrowed from the cache) so it survives the node lifetime,
+/// and carries each order event's `Debug` rendering so a non-`Filled` terminal
+/// state self-documents its denial/rejection/cancel reason in the failure output.
+#[derive(Debug, Clone)]
+pub struct OrderTerminalRecord {
+    pub client_order_id: String,
+    pub order_side: String,
+    pub order_type: String,
+    pub status: OrderStatus,
+    pub quantity: String,
+    pub filled_qty: String,
+    pub events_debug: Vec<String>,
+}
+
+/// Result of one `BacktestNode` run: the NautilusTrader summary plus the
+/// terminal state of every order in the post-run cache.
+pub struct NtBacktestNodeRun {
+    pub result: BacktestResult,
+    pub order_terminals: Vec<OrderTerminalRecord>,
+}
+
+pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<NtBacktestNodeRun> {
     let run_config = manifest
         .to_nt_run_config()
         .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
@@ -264,7 +292,42 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
         "expected exactly one backtest result, got {}",
         results.len()
     );
-    Ok(results.remove(0))
+    // The run config sets `dispose_on_completion(false)`, so the engine still
+    // holds its post-run cache here; capture each order's terminal state before
+    // the node is dropped. A run that disposed (NautilusTrader default) would
+    // leave this empty and the order-terminal proof would have nothing to check.
+    let order_terminals = {
+        let engine = node
+            .get_engine(&manifest.run_id)
+            .with_context(|| format!("no engine for run id {} after run", manifest.run_id))?;
+        capture_order_terminals(engine)
+    };
+    Ok(NtBacktestNodeRun {
+        result: results.remove(0),
+        order_terminals,
+    })
+}
+
+/// Capture the terminal state of every order in the engine's post-run cache.
+fn capture_order_terminals(engine: &BacktestEngine) -> Vec<OrderTerminalRecord> {
+    let cache = engine.kernel().cache.borrow();
+    cache
+        .orders(None, None, None, None, None)
+        .into_iter()
+        .map(|order| OrderTerminalRecord {
+            client_order_id: order.client_order_id().to_string(),
+            order_side: order.order_side().to_string(),
+            order_type: order.order_type().to_string(),
+            status: order.status(),
+            quantity: order.quantity().to_string(),
+            filled_qty: order.filled_qty().to_string(),
+            events_debug: order
+                .events()
+                .iter()
+                .map(|event| format!("{event:?}"))
+                .collect(),
+        })
+        .collect()
 }
 
 /// Run one minimal NautilusTrader `BacktestNode` backtest over accepted data and
@@ -355,7 +418,10 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     assert_time_window_overlaps_data(inputs.manifest, &canonical_table)?;
 
     // Gate 5: BacktestNode execution.
-    let nt_result = run_nt_backtest_node(inputs.manifest)?;
+    let NtBacktestNodeRun {
+        result: nt_result,
+        order_terminals,
+    } = run_nt_backtest_node(inputs.manifest)?;
     // The read-back proof above loads the catalog through one NautilusTrader code
     // path; the engine consumed it through another. Bind the two by asserting the
     // engine's own iteration count equals the number of accepted trades inside the
@@ -469,6 +535,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         conversion_manifest_hash,
         read_back_count: read_back.len(),
         nt_result,
+        order_terminals,
         contract,
     })
 }

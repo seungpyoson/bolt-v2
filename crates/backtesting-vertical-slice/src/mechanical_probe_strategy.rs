@@ -37,6 +37,7 @@ use nautilus_model::{
     data::TradeTick,
     enums::OrderSide,
     identifiers::{InstrumentId, StrategyId},
+    instruments::Instrument,
     types::Quantity,
 };
 use nautilus_trading::{
@@ -168,6 +169,29 @@ impl Debug for MechanicalTradeReplayProbe {
 
 impl DataActor for MechanicalTradeReplayProbe {
     fn on_start(&mut self) -> anyhow::Result<()> {
+        // Re-quantize the configured order size to the instrument's own size
+        // precision. NautilusTrader's matching engine rejects any order whose
+        // quantity precision is not *exactly* the instrument's `size_precision`
+        // (`OrderMatchingEngine::process_order`: "Invalid order quantity
+        // precision"). The manifest carries `trade_size` as a free-form decimal
+        // string whose parsed precision (e.g. `0.01` -> 2) need not match the
+        // catalog instrument's `size_increment`-derived precision (e.g.
+        // `0.0001` -> 4), so the raw config quantity is not admissible. Binding
+        // the order quantity to `instrument.make_qty` makes the probe correct
+        // for any (config size, instrument precision) pair rather than only the
+        // one fixture, and fails loud if the instrument is missing.
+        let trade_size = {
+            let cache = self.cache();
+            let instrument = cache.instrument(&self.instrument_id).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "instrument {} not found in cache for mechanical probe",
+                    self.instrument_id
+                )
+            })?;
+            instrument.make_qty(self.trade_size.as_f64(), None)
+        };
+        self.trade_size = trade_size;
+
         self.subscribe_trades(self.instrument_id, None, None);
         Ok(())
     }

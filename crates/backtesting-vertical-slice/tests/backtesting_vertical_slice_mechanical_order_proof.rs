@@ -29,7 +29,7 @@ use backtesting_vertical_slice::{
         ManifestVenueConfig, MarketStructureFixture, RunPurpose,
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, StrategySource, StrategySourceKind,
     },
-    runner::{BacktestRunInputs, run_backtest},
+    runner::{BacktestRunInputs, OrderTerminalRecord, run_backtest},
     source_proof::{
         AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
         IngestManifestObjectRecord, L2ReplayEvidence, LicenseScope, NtMappingStatus, RequiredCheck,
@@ -38,6 +38,7 @@ use backtesting_vertical_slice::{
         TimeRange, select_accepted_dataset,
     },
 };
+use nautilus_model::enums::OrderStatus;
 
 const SAMPLE_CSV: &str = "id,timestamp,price,volume,side,rpi\n\
     1,1772323201665,617.2,0.3,buy,0\n\
@@ -366,6 +367,50 @@ fn mechanical_probe_produces_orders_and_positions_through_result_contract() {
         "probe must produce orders: {}",
         output.nt_result.total_orders
     );
+
+    // Self-evidencing order-terminal proof: pull the post-run cache's view of
+    // every order and require each to be FILLED. The summary `total_orders`
+    // counts denied/rejected/canceled orders too, so a non-zero order count is
+    // necessary but not sufficient — a denial at the risk or matching engine
+    // would still register an order while producing zero positions. On any
+    // non-fill terminal state, the panic dumps each order's full event trail so
+    // the CI log carries the exact denial/rejection/cancel reason instead of an
+    // opaque "0 positions".
+    assert!(
+        !output.order_terminals.is_empty(),
+        "probe must record order terminal states in the post-run cache"
+    );
+    let unfilled: Vec<&OrderTerminalRecord> = output
+        .order_terminals
+        .iter()
+        .filter(|order| order.status != OrderStatus::Filled)
+        .collect();
+    assert!(
+        unfilled.is_empty(),
+        "every submitted order must reach FILLED; unfilled orders (with full event trail):\n{}",
+        unfilled
+            .iter()
+            .map(|order| format!(
+                "  {} {} {} status={:?} qty={} filled_qty={} events={:#?}",
+                order.client_order_id,
+                order.order_side,
+                order.order_type,
+                order.status,
+                order.quantity,
+                order.filled_qty,
+                order.events_debug,
+            ))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    // Both legs filled (entry + reduce-only close), so both orders are FILLED.
+    assert_eq!(
+        output.order_terminals.len(),
+        2,
+        "probe submits exactly two orders (entry + reduce-only close): {:#?}",
+        output.order_terminals
+    );
+
     assert!(
         output.nt_result.total_positions > 0,
         "probe must produce positions: {}",

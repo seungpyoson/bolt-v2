@@ -1451,8 +1451,9 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
         "PMXT one-off manifest source_proof_version does not match conversion fingerprint"
     );
 
-    let nt_result =
-        run_nt_backtest_node(spec.manifest).context("run PMXT one-off L2 BacktestNode")?;
+    let nt_result = run_nt_backtest_node(spec.manifest)
+        .context("run PMXT one-off L2 BacktestNode")?
+        .result;
     let expected_iterations = expected_pmxt_backtest_iterations(spec.manifest, completed)?;
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected_iterations) {
         bail!("PMXT one-off BacktestNode did not consume verified L2 catalog: {reason}");

@@ -1550,7 +1550,7 @@ fn test_currency(currency_code: &str) -> Currency {
 }
 
 fn position_sized_admission() -> BoltV3SubmitAdmissionState {
-    BoltV3SubmitAdmissionState::new_unarmed_with_position_sizer(
+    BoltV3SubmitAdmissionState::new_with_position_sizer(
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         BoltV3SubmitPositionSizerConfig {
             venue_id: "VENUE-A".to_string(),

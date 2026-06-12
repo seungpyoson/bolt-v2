@@ -288,7 +288,9 @@ impl BoltV3SubmitAdmissionState {
         Self::new_with_live_submit_limits(decision_evidence, BTreeMap::new())
     }
 
-    pub fn new_unarmed(decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>) -> Self {
+    pub fn new_without_live_submit_limits(
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    ) -> Self {
         Self::new(decision_evidence)
     }
 
@@ -313,7 +315,7 @@ impl BoltV3SubmitAdmissionState {
         )
     }
 
-    pub fn new_unarmed_with_loss_governor(
+    pub fn new_with_loss_governor(
         decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
         loss_policy: LossGovernorPolicy,
     ) -> Self {
@@ -325,7 +327,7 @@ impl BoltV3SubmitAdmissionState {
         )
     }
 
-    pub fn new_unarmed_with_position_sizer(
+    pub fn new_with_position_sizer(
         decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
         position_sizer: BoltV3SubmitPositionSizerConfig,
     ) -> Self {
@@ -337,7 +339,7 @@ impl BoltV3SubmitAdmissionState {
         )
     }
 
-    pub fn new_unarmed_with_loss_governor_and_position_sizer(
+    pub fn new_with_loss_governor_and_position_sizer(
         decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
         loss_policy: LossGovernorPolicy,
         position_sizer: BoltV3SubmitPositionSizerConfig,

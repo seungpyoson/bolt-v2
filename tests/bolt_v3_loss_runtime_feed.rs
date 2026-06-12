@@ -22,7 +22,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 #[test]
 fn nt_runtime_feed_publishes_fresh_portfolio_loss_snapshot_to_submit_admission() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
         writer.clone(),
         loss_policy(),
     ));
@@ -57,7 +57,7 @@ fn nt_runtime_feed_publishes_fresh_portfolio_loss_snapshot_to_submit_admission()
 #[test]
 fn subscribed_nt_events_update_submit_admission_loss_snapshot() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
         writer,
         loss_policy(),
     ));
@@ -91,7 +91,7 @@ fn subscribed_nt_events_update_submit_admission_loss_snapshot() {
 #[test]
 fn rolling_window_advances_from_portfolio_pnl_deltas_and_evicts_on_heartbeat() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
         writer,
         LossGovernorPolicy {
             max_snapshot_age_ns: 1_000,
@@ -132,7 +132,7 @@ fn rolling_window_advances_from_portfolio_pnl_deltas_and_evicts_on_heartbeat() {
 #[test]
 fn position_adjustment_does_not_mask_larger_per_trade_loss() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
         writer,
         loss_policy(),
     ));
@@ -164,7 +164,7 @@ fn position_adjustment_does_not_mask_larger_per_trade_loss() {
 #[test]
 fn stale_peak_timestamp_does_not_make_fresh_portfolio_snapshot_stale() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
         writer,
         LossGovernorPolicy {
             max_snapshot_age_ns: 100,

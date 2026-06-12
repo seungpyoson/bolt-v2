@@ -145,7 +145,8 @@ def extract_fingerprint(artifacts_payload: dict[str, object], prefix: str) -> st
         for artifact in artifacts
         if isinstance(artifact, dict) and as_text(artifact.get("name")).startswith(prefix)
     ]
-    return sorted(match for match in matches if match)[0] if matches else None
+    valid_matches = sorted(match for match in matches if match)
+    return valid_matches[0] if valid_matches else None
 
 
 def run_sort_key(run: dict[str, object]) -> tuple[dt.datetime, int]:
@@ -380,7 +381,7 @@ def infer_repo() -> str:
 
 
 def configured_workflow_paths(client: GhClient, config: RunnerConfig) -> set[str]:
-    payload = client.api("actions/workflows")
+    payload = client.api("actions/workflows", paginate=True)
     workflows = payload.get("workflows")
     if not isinstance(workflows, list):
         raise MeterError("workflow list payload is malformed")
@@ -436,6 +437,19 @@ def fetch_jobs_and_artifacts(client: GhClient, runs_payload: dict[str, object]) 
     return jobs, artifacts
 
 
+def pull_number_from_run(run: dict[str, object]) -> int | None:
+    pull_refs = run.get("pull_requests")
+    if not isinstance(pull_refs, list):
+        return None
+    for pull_ref in pull_refs:
+        if not isinstance(pull_ref, dict):
+            continue
+        number = pull_ref.get("number")
+        if isinstance(number, int):
+            return number
+    return None
+
+
 def select_pull_request_for_run(run: dict[str, object], pulls_payload: list[dict[str, object]]) -> dict[str, object] | None:
     run_created = parse_time(run.get("created_at"))
     if run_created is None:
@@ -487,7 +501,8 @@ def resolve_pr_states(client: GhClient, repo: str, runs_payload: dict[str, objec
     if not isinstance(runs, list):
         raise MeterError("workflow runs payload is malformed")
     states: dict[str, dict[str, object]] = {}
-    pr_cache: dict[str, dict[str, object] | None] = {}
+    pr_cache: dict[int, dict[str, object] | None] = {}
+    branch_pull_cache: dict[str, list[dict[str, object]]] = {}
     timeline_cache: dict[int, list[dict[str, object]]] = {}
     query = """
 query($owner:String!,$repo:String!,$number:Int!){
@@ -508,27 +523,37 @@ query($owner:String!,$repo:String!,$number:Int!){
         if not isinstance(run, dict) or as_text(run.get("event")) != "pull_request":
             continue
         run_id = as_text(run.get("id"))
-        branch = as_text(run.get("head_branch"))
-        if not branch:
-            continue
-        cache_key = branch
-        if cache_key not in pr_cache:
-            head = f"{owner}:{branch}"
-            pulls = client.api(
-                "pulls",
-                params={"head": head, "state": "all", "per_page": "20"},
-            )
-            if isinstance(pulls, list):
-                pull_list = pulls
-            else:
-                # gh api returns arrays as lists; this branch is defensive for old clients.
-                pull_list = pulls.get("pulls", []) if isinstance(pulls, dict) else []
-            pr_cache[cache_key] = select_pull_request_for_run(run, [pull for pull in pull_list if isinstance(pull, dict)])
-        pull = pr_cache[cache_key]
+        number = pull_number_from_run(run)
+        if number is not None:
+            if number not in pr_cache:
+                try:
+                    pull_payload = client.api(f"pulls/{number}")
+                except MeterError:
+                    pr_cache[number] = None
+                else:
+                    pr_cache[number] = pull_payload if isinstance(pull_payload, dict) else None
+            pull = pr_cache[number]
+        else:
+            branch = as_text(run.get("head_branch"))
+            if not branch:
+                continue
+            if branch not in branch_pull_cache:
+                pulls = client.api(
+                    "pulls",
+                    params={"head": f"{owner}:{branch}", "state": "all", "per_page": "20"},
+                )
+                if isinstance(pulls, list):
+                    pull_list = pulls
+                else:
+                    pull_list = pulls.get("pulls", []) if isinstance(pulls, dict) else []
+                branch_pull_cache[branch] = [pull for pull in pull_list if isinstance(pull, dict)]
+            pull = select_pull_request_for_run(run, branch_pull_cache[branch])
+            if pull is None:
+                continue
+            number = pull.get("number")
+            if not isinstance(number, int):
+                continue
         if pull is None:
-            continue
-        number = pull.get("number")
-        if not isinstance(number, int):
             continue
         if number not in timeline_cache:
             payload = client.graphql(query, {"owner": owner, "repo": repo_name, "number": number})

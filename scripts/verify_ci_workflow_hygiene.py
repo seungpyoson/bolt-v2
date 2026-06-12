@@ -290,7 +290,7 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'specs/**/*.md'",
 )
 TEST_ARCHIVE_KEY_PREFIX = "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
-TEST_ARCHIVE_FINGERPRINT_PREFIX = "nextest-archive-fingerprint-${{ hashFiles("
+TEST_ARCHIVE_FINGERPRINT_PREFIX = "nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
 TEST_ARCHIVE_FINGERPRINT_PATH = ".nextest-archive-fingerprint/cache-key.txt"
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",

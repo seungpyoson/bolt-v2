@@ -272,7 +272,6 @@ TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"
 TEST_ARCHIVE_EXTRACT_ROOT_COMMAND = 'archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"'
 TEST_ARCHIVE_EXTRACT_ROOT_OUTPUT = 'echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"'
 TEST_ARCHIVE_KEY_INPUTS = (
-    "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
     "'Cargo.lock'",
     "'Cargo.toml'",
     "'rust-toolchain.toml'",
@@ -290,6 +289,9 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'crates/**'",
     "'specs/**/*.md'",
 )
+TEST_ARCHIVE_KEY_PREFIX = "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
+TEST_ARCHIVE_FINGERPRINT_PREFIX = "nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
+TEST_ARCHIVE_FINGERPRINT_PATH = ".nextest-archive-fingerprint/cache-key.txt"
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
     "'.github/actions/setup-environment/action.yml'",
@@ -301,8 +303,8 @@ TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae"
-TEST_ARCHIVE_UPLOAD_ACTION = "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+UPLOAD_ARTIFACT_SHA_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*([\"']?)actions/upload-artifact@[0-9a-fA-F]{40}\1\s*$")
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
 SHARED_REGISTRY_CACHE_KEY = "cargo-registry-git-v1"
 SHARED_REGISTRY_SAVE_IF = "${{ github.job == 'test-archive' }}"
@@ -665,6 +667,13 @@ def action_blocks(job_lines: list[str], action: str) -> list[list[str]]:
     return [block for block in step_blocks(job_lines) if any(action in strip_comment(line) for line in block)]
 
 
+def upload_artifact_pin_errors(job_lines: list[str]) -> list[str]:
+    for block in action_blocks(job_lines, "actions/upload-artifact@"):
+        if not any(UPLOAD_ARTIFACT_SHA_RE.match(strip_comment(line)) for line in block):
+            return ["actions/upload-artifact must be pinned to a 40-character SHA"]
+    return []
+
+
 def rust_cache_blocks(job_lines: list[str]) -> list[list[str]]:
     return action_blocks(job_lines, "Swatinem/rust-cache@")
 
@@ -741,6 +750,13 @@ def block_has_input(block: list[str], name: str, value: str | None = None) -> bo
         if expected is None or unquote_yaml_scalar(item_value) == expected:
             return True
     return False
+
+
+def block_input_value(block: list[str], name: str) -> str | None:
+    for item_name, item_value in block_input_items(block):
+        if item_name == name:
+            return unquote_yaml_scalar(item_value)
+    return None
 
 
 def job_has_setup_input(job_lines: list[str], name: str, value: str | None = None) -> bool:
@@ -826,6 +842,95 @@ def block_key_value_has_prefix(block: list[str], prefix: str) -> bool:
         if name == "key" and prefix in value:
             return True
     return False
+
+
+def block_key_value_contains_all(block: list[str], fragments: tuple[str, ...]) -> bool:
+    value = block_input_value(block, "key")
+    if value is None:
+        return False
+    return all(fragment in value for fragment in fragments)
+
+
+def normalized_hash_files_args(text: str) -> str | None:
+    marker = "hashFiles("
+    start = text.find(marker)
+    if start == -1:
+        return None
+    args_start = start + len(marker)
+    args_end = text.find(")", args_start)
+    if args_end == -1:
+        return None
+    args = text[args_start:args_end]
+    return ",".join(part.strip() for part in args.split(",") if part.strip())
+
+
+def nextest_archive_key_identity(text: str) -> str | None:
+    key_start = text.find("nextest-archive-v")
+    if key_start == -1:
+        key_start = text.find("nextest-archive-fingerprint-v")
+    if key_start == -1:
+        return None
+    marker = "hashFiles("
+    hash_start = text.find(marker, key_start)
+    if hash_start == -1:
+        return None
+    prefix = text[key_start:hash_start]
+    if prefix.startswith("nextest-archive-fingerprint-"):
+        prefix = "nextest-archive-" + prefix[len("nextest-archive-fingerprint-") :]
+    args = normalized_hash_files_args(text[hash_start:])
+    if args is None:
+        return None
+    return f"{prefix}{marker}{args})"
+
+
+def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
+    blocks = step_blocks(job_lines)
+    cache_blocks = [
+        block
+        for block in (
+            action_blocks(job_lines, "actions/cache/restore@")
+            + action_blocks(job_lines, "actions/cache/save@")
+        )
+        if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
+    ]
+    run_blocks = [
+        block
+        for block in blocks
+        if TEST_ARCHIVE_FINGERPRINT_PATH in uncommented_text(block)
+        and TEST_ARCHIVE_KEY_PREFIX in uncommented_text(block)
+    ]
+    upload_blocks = [
+        block
+        for block in action_blocks(job_lines, "actions/upload-artifact@")
+        if block_has_input(block, "path", TEST_ARCHIVE_FINGERPRINT_PATH)
+    ]
+    upload_names = [block_input_value(block, "name") or "" for block in upload_blocks]
+
+    if not run_blocks or not upload_blocks:
+        return ["test-archive must publish nextest archive fingerprint"]
+    if not any(TEST_ARCHIVE_FINGERPRINT_PREFIX in name for name in upload_names):
+        return ["test-archive must publish nextest archive fingerprint"]
+
+    run_text = "\n".join(uncommented_text(block) for block in run_blocks)
+    names_text = "\n".join(upload_names)
+    if not all(fragment in run_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
+        return ["test-archive fingerprint must include Rust and test graph inputs"]
+    if not all(fragment in names_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
+        return ["test-archive fingerprint must include Rust and test graph inputs"]
+
+    key_identities = [
+        identity
+        for identity in (
+            [nextest_archive_key_identity(block_input_value(block, "key") or "") for block in cache_blocks]
+            + [nextest_archive_key_identity(uncommented_text(block)) for block in run_blocks]
+            + [nextest_archive_key_identity(name) for name in upload_names]
+        )
+        if identity is not None
+    ]
+    expected_key_count = len(cache_blocks) + len(run_blocks) + len(upload_names)
+    if len(key_identities) != expected_key_count or len(set(key_identities)) != 1:
+        return ["test-archive cache and fingerprint keys must match"]
+    return []
 
 
 def block_declares_restore_keys_prefix(block: list[str], prefix: str) -> bool:
@@ -5719,6 +5824,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
     jobs = parse_jobs(workflow_text)
     errors.extend(raw_rust_storage_errors(workflow_text))
     errors.extend(exact_head_governance_cache_errors(workflow_text))
+    for job_lines in jobs.values():
+        errors.extend(upload_artifact_pin_errors(job_lines))
 
     actual_pr_paths_ignore = extract_paths_ignore_for_trigger(workflow_text, "pull_request")
     if actual_pr_paths_ignore is None or tuple(sorted(actual_pr_paths_ignore)) != CI_PR_PATHS_IGNORE_BASELINE:
@@ -5790,9 +5897,29 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "test-archive" in jobs:
         archive_lines = jobs["test-archive"]
         archive_text = uncommented_text(archive_lines)
+        archive_cache_blocks = [
+            block
+            for block in (
+                action_blocks(archive_lines, "actions/cache/restore@")
+                + action_blocks(archive_lines, "actions/cache/save@")
+            )
+            if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
+        ]
+        archive_upload_blocks = [
+            block
+            for block in action_blocks(archive_lines, "actions/upload-artifact@")
+            if block_has_input(block, "name", "nextest-archive")
+            and block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
+        ]
         if TEST_ARCHIVE_PATH not in archive_text:
             errors.append("test-archive must declare nextest archive path")
-        if not all(input_fragment in archive_text for input_fragment in TEST_ARCHIVE_KEY_INPUTS):
+        if not archive_cache_blocks or not all(
+            block_key_value_contains_all(
+                block,
+                (TEST_ARCHIVE_KEY_PREFIX, *TEST_ARCHIVE_KEY_INPUTS),
+            )
+            for block in archive_cache_blocks
+        ):
             errors.append("test-archive cache key must include Rust and test graph inputs")
         if "include-managed-target-dir:" in archive_text:
             errors.append("test-archive must not opt into managed target dir")
@@ -5802,7 +5929,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must restore nextest archive cache")
         if TEST_ARCHIVE_SAVE_ACTION not in archive_text:
             errors.append("test-archive must save nextest archive cache")
-        if TEST_ARCHIVE_UPLOAD_ACTION not in archive_text:
+        if not archive_upload_blocks:
             errors.append("test-archive must upload nextest archive artifact")
         if "restore-keys:" in archive_text:
             errors.append("test-archive cache must not use restore-keys")
@@ -5812,6 +5939,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive build must be skipped on archive cache hit")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
+        errors.extend(test_archive_fingerprint_errors(archive_lines))
 
     if "test-shards" in jobs:
         test_lines = jobs["test-shards"]
@@ -6283,15 +6411,38 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
 
 
 def load_github_actions_runners_config(
-    path: pathlib.Path = DEFAULT_RUNNERS_CONFIG,
+    path: pathlib.Path | None = None,
 ) -> dict[str, object]:
+    if path is None:
+        path = DEFAULT_RUNNERS_CONFIG
     if not path.exists():
         raise FileNotFoundError(f"managed runner config missing: {path}")
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     runners = data.get("runners")
     workflows = data.get("workflows")
+    meter = data.get("meter")
     if not isinstance(runners, dict) or not isinstance(workflows, dict):
         raise ValueError("ci/github-actions-runners.toml must define [runners] and [workflows]")
+    if not isinstance(meter, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [meter]")
+    meter_workflows = meter.get("included_workflows")
+    if not isinstance(meter_workflows, list) or not all(
+        isinstance(workflow, str) and workflow for workflow in meter_workflows
+    ):
+        raise ValueError("meter.included_workflows must be a non-empty string list")
+    meter_api_limits = meter.get("api_limits")
+    if not isinstance(meter_api_limits, dict):
+        raise ValueError("meter.api_limits must be a table")
+    for key in (
+        "workflow_runs_per_page",
+        "run_jobs_per_page",
+        "run_artifacts_per_page",
+        "branch_pull_requests_per_page",
+        "draft_timeline_items",
+    ):
+        value = meter_api_limits.get(key)
+        if not isinstance(value, int) or value <= 0:
+            raise ValueError(f"meter.api_limits.{key} must be a positive integer")
     tier_to_var: dict[str, str] = {}
     managed_labels: list[str] = []
     for tier, entry in runners.items():
@@ -6315,6 +6466,7 @@ def load_github_actions_runners_config(
     return {
         "tier_to_var": tier_to_var,
         "managed_labels": sorted(set(managed_labels)),
+        "meter_included_workflows": sorted(set(meter_workflows)),
         "variables": sorted(tier_to_var.values()),
         "workflows": workflows,
     }
@@ -6416,6 +6568,7 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
         return [f"github-actions runner config invalid: {exc}"]
 
     tier_to_var = config["tier_to_var"]
+    meter_included_workflows = set(config["meter_included_workflows"])
     workflow_tables = config["workflows"]
     errors: list[str] = []
     known_workflow_keys = set(WORKFLOW_RUNNER_CONFIG_KEYS.values())
@@ -6424,6 +6577,17 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
             errors.append(
                 f"workflows.{workflow_key} in ci/github-actions-runners.toml has no workflow contract"
             )
+    managed_workflows = {
+        workflow_key
+        for workflow_key, job_table in workflow_tables.items()
+        if isinstance(job_table, dict)
+        and any(isinstance(tier, str) and tier != "github_hosted" for tier in job_table.values())
+    }
+    if meter_included_workflows != managed_workflows:
+        errors.append(
+            "meter.included_workflows must match workflows with managed runner tiers: "
+            f"expected {sorted(managed_workflows)!r}, got {sorted(meter_included_workflows)!r}"
+        )
 
     for workflow_name, workflow_text in sorted(workflows.items()):
         jobs = parse_jobs(workflow_text)

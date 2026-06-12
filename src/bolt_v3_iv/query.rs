@@ -2801,7 +2801,7 @@ mod tests {
             reject_reason,
             failed_field: None,
             policy_id: None,
-            source_health_state: IvSourceHealthState::Active,
+            source_health_state: rejection_health_state(reject_reason),
             subscription_generation,
         }
     }

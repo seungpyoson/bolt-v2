@@ -97,6 +97,70 @@ output_dir = "{output_dir}"
 }
 
 #[test]
+fn source_archive_index_manifest_artifact_ref_stores_spec_authored_path() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let snapshot_path = temp_dir.path().join("archive-index-snapshot.json");
+    let output_dir = temp_dir.path().join("manifest");
+    let spec_path = temp_dir.path().join("source-archive-index-manifest.toml");
+
+    fs::write(
+        &snapshot_path,
+        r#"{
+  "schema_version": "source-archive-index-snapshot.v1",
+  "snapshot_id": "synthetic-archive-index-snapshot",
+  "fetched_at_utc": "2026-06-10T16:40:00Z",
+  "venue": "synthetic",
+  "source": "archive",
+  "family": "objects",
+  "table_family": "events",
+  "index_url": "https://archive.example.test",
+  "page_count": 1,
+  "records": [
+    {
+      "page_number": 1,
+      "object_label": "a",
+      "archive_hour_utc": "2026-06-10T15:00:00Z",
+      "source_url": "https://r2.example.test/a.parquet",
+      "listed_size_label": "1.0 MB",
+      "http_status": 200,
+      "content_length_bytes": 1
+    }
+  ]
+}"#,
+    )
+    .expect("write snapshot");
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+manifest_id = "source-archive-index-manifest-synthetic"
+index_snapshot_path = "archive-index-snapshot.json"
+output_dir = "{output_dir}"
+"#,
+            output_dir = output_dir.display(),
+        ),
+    )
+    .expect("write spec");
+
+    let artifact = write_source_archive_index_manifest_from_spec_file(&spec_path)
+        .expect("manifest from spec-relative snapshot path");
+    let manifest: SourceArchiveIndexManifest =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read manifest"))
+            .expect("manifest parses");
+
+    // The committed manifest must be reproducible from any checkout: artifact
+    // refs carry the spec-authored path verbatim, never a machine-resolved
+    // absolute path.
+    assert_eq!(manifest.artifact_refs.len(), 1);
+    assert_eq!(
+        manifest.artifact_refs[0].path,
+        Path::new("archive-index-snapshot.json"),
+        "artifact ref must echo the spec-authored path, not a resolved absolute path"
+    );
+    assert!(manifest.artifact_refs[0].path.is_relative());
+}
+
+#[test]
 fn pmxt_source_archive_index_reference_manifest_matches_snapshot() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");

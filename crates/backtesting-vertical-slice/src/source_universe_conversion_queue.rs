@@ -285,8 +285,10 @@ pub fn evaluate_source_universe_conversion_queue(
         source: manifest.source,
         family: manifest.family,
         table_family,
-        source_manifest_path: source_manifest_path.clone(),
-        source_manifest_hash,
+        // Committed queues must be reproducible from any checkout: echo the
+        // spec-authored manifest path verbatim; resolution stays read-time.
+        source_manifest_path: spec.source_universe_manifest_path.clone(),
+        source_manifest_hash: source_manifest_hash.clone(),
         output_prefix_template: spec.output_prefix_template.clone(),
         work_item_count: work_items.len() as u64,
         pending_conversion_items: work_items.len() as u64,
@@ -294,11 +296,8 @@ pub fn evaluate_source_universe_conversion_queue(
         category_summaries,
         artifact_refs: vec![SourceUniverseConversionQueueArtifactRef {
             role: "source_universe_manifest".to_string(),
-            path: source_manifest_path,
-            sha256: sha256_file(&resolve_existing_path(
-                base_dir,
-                &spec.source_universe_manifest_path,
-            ))?,
+            path: spec.source_universe_manifest_path.clone(),
+            sha256: source_manifest_hash.clone(),
         }],
         work_items,
     })

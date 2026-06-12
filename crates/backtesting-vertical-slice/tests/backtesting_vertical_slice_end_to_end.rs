@@ -65,6 +65,7 @@ fn converter_config() -> ConverterConfig {
         },
         csv: csv_mapping(),
         bars: None,
+        deltas: None,
     }
 }
 

@@ -603,6 +603,7 @@ fn materialize_run_spec(
             },
             csv: converter_csv,
             bars: None,
+            deltas: None,
         })
         .context("serialize converter config to TOML")?,
     )?;

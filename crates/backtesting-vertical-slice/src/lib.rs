@@ -37,6 +37,7 @@ pub mod backfill_run_spec_materialization;
 pub mod backfill_source_proof_scope;
 pub mod canonical_bars;
 pub mod canonical_market_data;
+pub mod canonical_order_book_deltas;
 pub mod canonical_trades;
 pub mod catalog_projection;
 pub mod conversion_boundary;

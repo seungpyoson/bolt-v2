@@ -52,6 +52,17 @@ pub const BAR_TRANSFORM_VERSION: &str = "1";
 /// Source-proof table family accepted by the native bar converter.
 pub const BAR_TABLE_FAMILY: &str = "bars";
 
+/// Stable identity of the config-driven JSONL periodic-full-snapshot
+/// order-book-delta normalization transform.
+pub const DELTAS_TRANSFORM_IDENTITY: &str =
+    "jsonl-snapshot-deltas-to-canonical-order-book-deltas.v1";
+
+/// Version of the registered compiled order-book-delta converter implementation.
+pub const DELTAS_TRANSFORM_VERSION: &str = "1";
+
+/// Source-proof table family accepted by the JSONL snapshot-delta converter.
+pub const DELTAS_TABLE_FAMILY: &str = "order_book_snapshot_deltas";
+
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
 /// Expected sample raw header, in order.
@@ -67,6 +78,7 @@ const NANOS_PER_MILLISECOND: i64 = 1_000_000;
 pub enum SourceAdapterKind {
     CsvNativeTrades,
     CsvNativeBars,
+    JsonlSnapshotDeltas,
     #[cfg(test)]
     SyntheticOrderBookDeltas,
 }
@@ -97,8 +109,12 @@ pub type TradeConverterDefinition = SourceAdapterDefinition;
 /// trade run-spec). `bars` is the optional native-bars column mapping, present
 /// only when the registered adapter kind is [`SourceAdapterKind::CsvNativeBars`];
 /// the bar dispatch in [`normalize_registered_bar_converter`] fail-closes when a
-/// bar-kind config omits it. Existing trade run-specs carry no `bars` key and
-/// deserialize unchanged.
+/// bar-kind config omits it. `deltas` is the optional JSONL snapshot-delta field
+/// mapping, present only when the registered adapter kind is
+/// [`SourceAdapterKind::JsonlSnapshotDeltas`]; the delta dispatch in
+/// [`normalize_registered_order_book_delta_converter`] fail-closes when a
+/// delta-kind config omits it. Existing trade run-specs carry no `bars`/`deltas`
+/// key and deserialize unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConverterConfig {
@@ -108,6 +124,8 @@ pub struct ConverterConfig {
     pub csv: CsvTradeMappingConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bars: Option<super::canonical_bars::BarMappingConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deltas: Option<super::canonical_order_book_deltas::DeltaMappingConfig>,
 }
 
 impl ConverterConfig {
@@ -183,6 +201,15 @@ pub const CSV_NATIVE_BARS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefini
     nt_data_type: crate::catalog_projection::NT_DATA_TYPE_BAR,
 };
 
+pub const JSONL_SNAPSHOT_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
+    identity: DELTAS_TRANSFORM_IDENTITY,
+    version: DELTAS_TRANSFORM_VERSION,
+    kind: SourceAdapterKind::JsonlSnapshotDeltas,
+    table_family: DELTAS_TABLE_FAMILY,
+    normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
+    nt_data_type: crate::catalog_projection::NT_DATA_TYPE_ORDER_BOOK_DELTA,
+};
+
 #[cfg(test)]
 pub const SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
     identity: "synthetic-order-book-deltas-fixture.v1",
@@ -194,13 +221,17 @@ pub const SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER: SourceAdapterDefinition = SourceA
 };
 
 #[cfg(not(test))]
-pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] =
-    &[CSV_NATIVE_TRADES_ADAPTER, CSV_NATIVE_BARS_ADAPTER];
+pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
+    CSV_NATIVE_TRADES_ADAPTER,
+    CSV_NATIVE_BARS_ADAPTER,
+    JSONL_SNAPSHOT_DELTAS_ADAPTER,
+];
 
 #[cfg(test)]
 pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     CSV_NATIVE_TRADES_ADAPTER,
     CSV_NATIVE_BARS_ADAPTER,
+    JSONL_SNAPSHOT_DELTAS_ADAPTER,
     SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER,
 ];
 
@@ -304,6 +335,32 @@ pub fn require_registered_bar_converter_for_table_family(
     ensure!(
         adapter.kind == SourceAdapterKind::CsvNativeBars,
         "adapter {:?} version {:?} is {:?}, not a CSV native-bars converter",
+        adapter.identity,
+        adapter.version,
+        adapter.kind
+    );
+    Ok(adapter)
+}
+
+#[must_use]
+pub fn registered_order_book_delta_converter(
+    identity: &str,
+    version: &str,
+) -> Option<&'static SourceAdapterDefinition> {
+    registered_source_adapter(identity, version)
+        .filter(|adapter| adapter.kind == SourceAdapterKind::JsonlSnapshotDeltas)
+}
+
+pub fn require_registered_order_book_delta_converter_for_table_family(
+    identity: &str,
+    version: &str,
+    table_family: &str,
+) -> Result<&'static SourceAdapterDefinition> {
+    let adapter =
+        require_registered_source_adapter_for_table_family(identity, version, table_family)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::JsonlSnapshotDeltas,
+        "adapter {:?} version {:?} is {:?}, not a JSONL snapshot-delta converter",
         adapter.identity,
         adapter.version,
         adapter.kind
@@ -844,6 +901,9 @@ pub fn normalize_registered_trade_converter(
         SourceAdapterKind::CsvNativeBars => {
             bail!("CSV native-bars adapter cannot normalize native trades")
         }
+        SourceAdapterKind::JsonlSnapshotDeltas => {
+            bail!("JSONL snapshot-delta adapter cannot normalize native trades")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize native trades")
@@ -895,9 +955,68 @@ pub fn normalize_registered_bar_converter(
         SourceAdapterKind::CsvNativeTrades => {
             bail!("CSV native-trades adapter cannot normalize native bars")
         }
+        SourceAdapterKind::JsonlSnapshotDeltas => {
+            bail!("JSONL snapshot-delta adapter cannot normalize native bars")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize native bars")
+        }
+    }
+}
+
+/// Normalize an accepted JSONL periodic-full-snapshot object through the
+/// registered order-book-delta converter selected by the run-spec, fail-closing
+/// when the kind/config do not match.
+///
+/// Mirrors [`normalize_registered_bar_converter`]: the adapter kind must be
+/// [`SourceAdapterKind::JsonlSnapshotDeltas`] for the accepted object's table
+/// family, and the run-spec must carry the `deltas` mapping that kind requires.
+///
+/// # Errors
+///
+/// Returns an error if the converter is not a registered order-book-delta
+/// converter for the table family, the `deltas` mapping is absent, or
+/// normalization fails.
+pub fn normalize_registered_order_book_delta_converter(
+    converter_config: &ConverterConfig,
+    accepted: &AcceptedDataset,
+    identities: &super::canonical_order_book_deltas::DeltaInstrumentIdentities,
+    jsonl_text: &str,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+) -> Result<Vec<super::canonical_market_data::CanonicalOrderBookDeltasTable>> {
+    let converter = require_registered_order_book_delta_converter_for_table_family(
+        &converter_config.identity,
+        &converter_config.version,
+        &accepted.table_family,
+    )?;
+    match converter.kind {
+        SourceAdapterKind::JsonlSnapshotDeltas => {
+            let mapping = converter_config.deltas.as_ref().with_context(|| {
+                format!(
+                    "converter {:?} is a JSONL snapshot-delta adapter but carries no [converter.deltas] mapping",
+                    converter.identity
+                )
+            })?;
+            super::canonical_order_book_deltas::normalize_jsonl_snapshot_deltas(
+                accepted,
+                identities,
+                mapping,
+                jsonl_text,
+                capture_time_nanos,
+                ingest_run_id,
+            )
+        }
+        SourceAdapterKind::CsvNativeTrades => {
+            bail!("CSV native-trades adapter cannot normalize order-book deltas")
+        }
+        SourceAdapterKind::CsvNativeBars => {
+            bail!("CSV native-bars adapter cannot normalize order-book deltas")
+        }
+        #[cfg(test)]
+        SourceAdapterKind::SyntheticOrderBookDeltas => {
+            bail!("test fixture adapter cannot normalize order-book deltas")
         }
     }
 }
@@ -1317,7 +1436,9 @@ fn optional_i64(column: &Int64Array, row: usize) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog_projection::{NT_DATA_TYPE_BAR, NT_DATA_TYPE_TRADE_TICK};
+    use crate::catalog_projection::{
+        NT_DATA_TYPE_BAR, NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_TRADE_TICK,
+    };
     use crate::source_proof::{
         AcceptanceMode, AcceptanceScope, EvidenceState, FixtureType, IngestManifestObjectRecord,
         L2ReplayEvidence, LicenseScope, NtMappingStatus, RequiredCheck, RequiredChecks,
@@ -1411,6 +1532,71 @@ mod tests {
                 .to_string()
                 .contains("not a CSV native-bars converter"),
             "{bar_guard_on_trades}"
+        );
+    }
+
+    #[test]
+    fn order_book_delta_source_adapter_registry_exposes_data_family_metadata() {
+        let adapter =
+            require_registered_source_adapter(DELTAS_TRANSFORM_IDENTITY, DELTAS_TRANSFORM_VERSION)
+                .expect("registered order-book-delta source adapter");
+
+        assert_eq!(adapter.kind, SourceAdapterKind::JsonlSnapshotDeltas);
+        assert_eq!(adapter.table_family, DELTAS_TABLE_FAMILY);
+        assert_eq!(adapter.normalized_schema_version, NORMALIZED_SCHEMA_VERSION);
+        assert_eq!(adapter.nt_data_type, NT_DATA_TYPE_ORDER_BOOK_DELTA);
+        assert!(REGISTERED_SOURCE_ADAPTERS.contains(&JSONL_SNAPSHOT_DELTAS_ADAPTER));
+        assert_eq!(
+            registered_order_book_delta_converter(
+                DELTAS_TRANSFORM_IDENTITY,
+                DELTAS_TRANSFORM_VERSION
+            ),
+            Some(&JSONL_SNAPSHOT_DELTAS_ADAPTER)
+        );
+    }
+
+    #[test]
+    fn order_book_delta_source_adapter_registry_rejects_table_family_mismatch() {
+        let mismatch = format!("{DELTAS_TABLE_FAMILY}_mismatch");
+        let err = require_registered_order_book_delta_converter_for_table_family(
+            DELTAS_TRANSFORM_IDENTITY,
+            DELTAS_TRANSFORM_VERSION,
+            &mismatch,
+        )
+        .expect_err("delta adapter table-family mismatch must fail closed");
+
+        assert!(err.to_string().contains("adapter"), "{err}");
+        assert!(err.to_string().contains("table_family"), "{err}");
+    }
+
+    #[test]
+    fn order_book_delta_converter_guard_rejects_other_kinds() {
+        // The delta guard rejects the trade and bar adapter ids, so a run-spec
+        // cannot cross-wire the delta family onto another adapter.
+        let delta_guard_on_trades = require_registered_order_book_delta_converter_for_table_family(
+            TRANSFORM_IDENTITY,
+            TRANSFORM_VERSION,
+            TRADE_TABLE_FAMILY,
+        )
+        .expect_err("delta guard must reject the trade adapter kind");
+        assert!(
+            delta_guard_on_trades
+                .to_string()
+                .contains("not a JSONL snapshot-delta converter"),
+            "{delta_guard_on_trades}"
+        );
+
+        let delta_guard_on_bars = require_registered_order_book_delta_converter_for_table_family(
+            BAR_TRANSFORM_IDENTITY,
+            BAR_TRANSFORM_VERSION,
+            BAR_TABLE_FAMILY,
+        )
+        .expect_err("delta guard must reject the bar adapter kind");
+        assert!(
+            delta_guard_on_bars
+                .to_string()
+                .contains("not a JSONL snapshot-delta converter"),
+            "{delta_guard_on_bars}"
         );
     }
 

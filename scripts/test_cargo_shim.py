@@ -339,7 +339,7 @@ def test_policy_parse_error_fails_closed(tmp_path):
     result = _run_cargo(repo, real, "fmt")
 
     assert result.returncode != 0
-    assert "cannot parse ci/rust-verification.toml [local_compile_policy]" in result.stderr
+    assert "cannot load or parse ci/rust-verification.toml [local_compile_policy]" in result.stderr
     assert "real-cargo fmt" not in result.stdout + result.stderr
 
 
@@ -435,6 +435,43 @@ refused_cargo_subcommands = ["test"]
     policy = shim.load_policy(policy_path)
 
     assert policy["break_glass_env"] == "BOLT#RUST"
+
+
+def test_resolve_real_cargo_falls_back_to_path_when_home_unavailable(tmp_path, monkeypatch):
+    shim = _load_shim_module()
+    real_dir = tmp_path / "bin"
+    real_dir.mkdir()
+    real = real_dir / "cargo"
+    _write_executable(real, "#!/usr/bin/env sh\n")
+
+    def fail_home():
+        raise RuntimeError("home unavailable")
+
+    monkeypatch.delenv("BOLT_CARGO_SHIM_REAL_CARGO", raising=False)
+    monkeypatch.setenv("PATH", str(real_dir))
+    monkeypatch.setattr(shim.Path, "home", staticmethod(fail_home))
+
+    assert shim.resolve_real_cargo() == real
+
+
+def test_policy_read_error_fails_closed_without_traceback(tmp_path, monkeypatch, capsys):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    shim = _load_shim_module()
+
+    def fail_load_policy(_policy_path):
+        raise OSError("permission denied")
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(shim, "load_policy", fail_load_policy)
+
+    result = shim.main(["fmt"])
+
+    captured = capsys.readouterr()
+    assert result == 101
+    assert "cannot load or parse ci/rust-verification.toml [local_compile_policy]" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_shim_runs_under_system_python_without_tomllib(tmp_path):
@@ -651,6 +688,21 @@ def test_installer_creates_zshenv_when_missing(tmp_path):
     assert f'export BOLT_CARGO_SHIM_DIR="{install_dir}"' in text
 
 
+def test_zshenv_path_falls_back_when_home_unavailable(tmp_path, monkeypatch):
+    installer = _load_installer_module()
+    home = tmp_path / "home"
+    home.mkdir()
+
+    def fail_home():
+        raise RuntimeError("home unavailable")
+
+    monkeypatch.delenv("ZDOTDIR", raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(installer.Path, "home", staticmethod(fail_home))
+
+    assert installer.zshenv_path() == home / ".zshenv"
+
+
 def test_installer_updates_symlink_target_without_replacing_symlink(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
@@ -680,6 +732,101 @@ def test_installer_updates_symlink_target_without_replacing_symlink(tmp_path):
     text = target.read_text(encoding="utf-8")
     assert "export STILL_PRESENT=1" in text
     assert text.count("# BEGIN bolt cargo guard") == 1
+
+
+def test_atomic_write_uses_default_mode_if_target_disappears_before_stat(tmp_path, monkeypatch):
+    installer = _load_installer_module()
+    target = tmp_path / "target"
+    target.write_bytes(b"old")
+    real_exists = installer.Path.exists
+    real_stat = installer.Path.stat
+
+    def racing_exists(path):
+        if path == target:
+            return True
+        return real_exists(path)
+
+    def racing_stat(path):
+        if path == target:
+            raise FileNotFoundError(str(path))
+        return real_stat(path)
+
+    monkeypatch.setattr(installer.Path, "exists", racing_exists)
+    monkeypatch.setattr(installer.Path, "stat", racing_stat)
+
+    installer.atomic_write_bytes(target, b"new")
+
+    assert target.read_bytes() == b"new"
+
+
+def test_atomic_write_preserves_original_error_when_cleanup_fails(tmp_path, monkeypatch):
+    installer = _load_installer_module()
+    target = tmp_path / "target"
+    target.write_bytes(b"old")
+
+    def fail_replace(_src, _dst):
+        raise OSError("replace failed")
+
+    def fail_unlink(_path):
+        raise PermissionError("cleanup denied")
+
+    monkeypatch.setattr(installer.os, "replace", fail_replace)
+    monkeypatch.setattr(installer.Path, "unlink", fail_unlink)
+
+    with pytest.raises(OSError, match="replace failed"):
+        installer.atomic_write_bytes(target, b"new")
+
+    assert target.read_bytes() == b"old"
+
+
+def test_update_zshenv_treats_disappearing_file_as_missing(tmp_path, monkeypatch):
+    installer = _load_installer_module()
+    zshenv = tmp_path / ".zshenv"
+    zshenv.write_text("export OLD=1\n", encoding="utf-8")
+    install_dir = tmp_path / "shim-bin"
+    real_exists = installer.Path.exists
+    real_read_text = installer.Path.read_text
+
+    def racing_exists(path):
+        if path == zshenv:
+            return True
+        return real_exists(path)
+
+    def racing_read_text(path, *args, **kwargs):
+        if path == zshenv:
+            raise FileNotFoundError(str(path))
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(installer.Path, "exists", racing_exists)
+    monkeypatch.setattr(installer.Path, "read_text", racing_read_text)
+
+    installer.update_zshenv(zshenv, install_dir)
+
+    text = real_read_text(zshenv, encoding="utf-8")
+    assert text.count("# BEGIN bolt cargo guard") == 1
+    assert "export OLD=1" not in text
+
+
+def test_update_zshenv_preserves_original_error_when_cleanup_fails(tmp_path, monkeypatch):
+    installer = _load_installer_module()
+    zshenv = tmp_path / ".zshenv"
+    original = "export STILL_PRESENT=1\n"
+    zshenv.write_text(original, encoding="utf-8")
+    install_dir = tmp_path / "shim-bin"
+
+    def fail_replace(_src, _dst):
+        raise OSError("replace failed")
+
+    def fail_unlink(_path):
+        raise PermissionError("cleanup denied")
+
+    monkeypatch.setattr(installer.os, "replace", fail_replace)
+    monkeypatch.setattr(installer.Path, "unlink", fail_unlink)
+
+    with pytest.raises(OSError, match="replace failed"):
+        installer.update_zshenv(zshenv, install_dir)
+
+    assert zshenv.read_text(encoding="utf-8") == original
 
 
 def test_update_zshenv_preserves_original_when_replace_fails(tmp_path, monkeypatch):
@@ -730,6 +877,23 @@ def test_no_mistakes_launch_agent_preserves_original_when_replace_fails(tmp_path
 
     assert plist_path.read_bytes() == original
     assert list(launch_agents.glob(f".{plist_path.name}.tmp-*")) == []
+
+
+def test_installer_reports_unavailable_home_without_traceback(tmp_path, monkeypatch, capsys):
+    installer = _load_installer_module()
+
+    def fail_home():
+        raise RuntimeError("home unavailable")
+
+    monkeypatch.setenv("BOLT_CARGO_SHIM_DIR", str(tmp_path / "shim-bin"))
+    monkeypatch.setattr(installer.Path, "home", staticmethod(fail_home))
+
+    result = installer.main()
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "Failed to resolve home directory: home unavailable" in captured.err
+    assert "Traceback" not in captured.err
 
 
 @pytest.mark.parametrize(

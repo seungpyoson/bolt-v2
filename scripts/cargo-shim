@@ -214,13 +214,16 @@ def resolve_real_cargo() -> Path | None:
         return Path(override)
 
     shim_dir = Path(__file__).resolve().parent
-    default = Path.home() / ".cargo" / "bin" / "cargo"
-    if default.exists():
-        try:
-            if default.resolve() != Path(__file__).resolve():
+    try:
+        default = Path.home() / ".cargo" / "bin" / "cargo"
+        if default.exists():
+            try:
+                if default.resolve() != Path(__file__).resolve():
+                    return default
+            except OSError:
                 return default
-        except OSError:
-            return default
+    except (RuntimeError, KeyError):
+        pass
 
     path = os.environ.get("PATH", "")
     filtered = []
@@ -260,8 +263,11 @@ def main(argv: list[str]) -> int:
     policy_path = root / "ci" / "rust-verification.toml"
     try:
         policy = load_policy(policy_path)
-    except ValueError as exc:
-        print(f"cargo shim: cannot parse ci/rust-verification.toml [local_compile_policy]: {exc}", file=sys.stderr)
+    except (ValueError, OSError) as exc:
+        print(
+            f"cargo shim: cannot load or parse ci/rust-verification.toml [local_compile_policy]: {exc}",
+            file=sys.stderr,
+        )
         return 101
     if policy is None:
         return exec_real_cargo(argv)

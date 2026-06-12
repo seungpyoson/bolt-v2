@@ -424,8 +424,10 @@ class GhClient:
         if paginate and isinstance(payload, list):
             merged: dict[str, object] = {}
             merged_items: list[object] = []
+            saw_list_page = False
             for page in payload:
                 if isinstance(page, list):
+                    saw_list_page = True
                     merged_items.extend(page)
                     continue
                 if not isinstance(page, dict):
@@ -437,7 +439,7 @@ class GhClient:
                         merged[key].extend(value)
                     else:
                         merged[key] = value
-            if merged_items and not merged:
+            if saw_list_page and not merged:
                 return merged_items
             return merged
         return payload
@@ -456,6 +458,8 @@ class GhClient:
             raise MeterError(f"gh graphql returned invalid JSON: {exc}") from exc
         if not isinstance(payload, dict):
             raise MeterError("gh graphql payload is not an object")
+        if payload.get("errors"):
+            raise MeterError(f"gh graphql returned errors: {json.dumps(payload['errors'], sort_keys=True)}")
         return payload
 
 
@@ -703,19 +707,20 @@ query($owner:String!,$repo:String!,$number:Int!,$timelineLimit:Int!){
                     "timelineLimit": config.api_limits.draft_timeline_items,
                 },
             )
-            timeline_items = (
-                payload.get("data", {})
-                .get("repository", {})
-                .get("pullRequest", {})
-                .get("timelineItems", {})
-            )
+            data = payload.get("data") or {}
+            repository = data.get("repository") if isinstance(data, dict) else {}
+            pull_request = repository.get("pullRequest") if isinstance(repository, dict) else {}
+            timeline_items = pull_request.get("timelineItems") if isinstance(pull_request, dict) else {}
             nodes = timeline_items.get("nodes", []) if isinstance(timeline_items, dict) else []
             timeline_cache[number] = nodes if isinstance(nodes, list) else []
             page_info = timeline_items.get("pageInfo", {}) if isinstance(timeline_items, dict) else {}
             timeline_truncated_cache[number] = bool(page_info.get("hasNextPage")) if isinstance(page_info, dict) else False
         timeline_truncated = timeline_truncated_cache.get(number, False)
         run_time = parse_time(run.get("created_at"))
-        draft_at_run = draft_state_at_run(run_time, pull, timeline_cache[number]) if run_time else None
+        if timeline_truncated or run_time is None:
+            draft_at_run = None
+        else:
+            draft_at_run = draft_state_at_run(run_time, pull, timeline_cache[number])
         ready_events = [
             as_text(node.get("createdAt"))
             for node in timeline_cache[number]

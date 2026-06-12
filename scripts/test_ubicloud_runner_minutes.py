@@ -268,6 +268,42 @@ def assert_gh_client_flattens_paginated_list_pages() -> None:
         subprocess.run = original_run
     assert payload == [{"number": 1}, {"number": 2}], payload
 
+    def fake_empty_run(cmd, text, capture_output, check):
+        assert "--paginate" in cmd, cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps([[], []]), stderr="")
+
+    subprocess.run = fake_empty_run
+    try:
+        empty_payload = module.GhClient("example/repo").api("pulls", paginate=True)
+    finally:
+        subprocess.run = original_run
+    assert empty_payload == [], empty_payload
+
+
+def assert_gh_client_rejects_graphql_errors() -> None:
+    module = load_script()
+    original_run = subprocess.run
+
+    def fake_error_run(cmd, text, capture_output, check):
+        assert cmd[:3] == ["gh", "api", "graphql"], cmd
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps({"errors": [{"message": "Resource not accessible"}]}),
+            stderr="",
+        )
+
+    subprocess.run = fake_error_run
+    try:
+        try:
+            module.GhClient("example/repo").graphql("query{}", {})
+        except module.MeterError as exc:
+            assert "gh graphql returned errors" in str(exc), exc
+        else:
+            raise AssertionError("GraphQL errors must raise MeterError")
+    finally:
+        subprocess.run = original_run
+
 
 def assert_fetch_runs_sorts_before_limit() -> None:
     module = load_script()
@@ -632,6 +668,7 @@ def assert_timeline_truncation_is_visible_in_report() -> None:
     runs_payload = {"workflow_runs": [run_payload(37, pull_requests=[{"number": 321}])]}
     states = module.resolve_pr_states(FakeClient(), "example/repo", runs_payload, config)
     assert states["37"]["draft_timeline_truncated"] is True, states
+    assert states["37"]["draft_at_run"] is None, states
 
     report = module.build_report(
         repo="example/repo",
@@ -649,6 +686,30 @@ def assert_timeline_truncation_is_visible_in_report() -> None:
         generated_at="2026-06-12T02:00:00Z",
     )
     assert "draft-timeline-truncated" in report["runs"][0]["classifications"], report["runs"][0]
+    assert "draft-stage" not in report["runs"][0]["classifications"], report["runs"][0]
+    assert report["lever_b_bounds"]["draft_stage"] == {}, report["lever_b_bounds"]
+
+
+def assert_resolve_pr_states_handles_null_graphql_payloads() -> None:
+    module = load_script()
+    config = load_test_config(module)
+
+    class FakeClient:
+        def api(self, path: str, *, params=None, paginate: bool = False):
+            assert path == "pulls/321", path
+            return {"number": 321, "draft": True, "state": "open"}
+
+        def graphql(self, query: str, fields: dict[str, str | int]):
+            return {"data": None}
+
+    states = module.resolve_pr_states(
+        FakeClient(),
+        "example/repo",
+        {"workflow_runs": [run_payload(38, pull_requests=[{"number": 321}])]},
+        config,
+    )
+    assert states["38"]["draft_at_run"] is True, states
+    assert states["38"]["draft_timeline_truncated"] is False, states
 
 
 def assert_cancelled_superseded_requires_pull_request_pr_match_and_overlap() -> None:
@@ -920,6 +981,7 @@ def main() -> int:
     assert_meter_api_limits_come_from_config()
     assert_configured_workflow_paths_paginates_workflow_list()
     assert_gh_client_flattens_paginated_list_pages()
+    assert_gh_client_rejects_graphql_errors()
     assert_fetch_runs_sorts_before_limit()
     assert_resolve_pr_states_uses_workflow_run_pr_number()
     assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs()
@@ -928,6 +990,7 @@ def main() -> int:
     assert_resolve_pr_states_fallback_selects_by_run_time()
     assert_resolve_pr_states_fallback_abstains_when_no_pr_lifetime_matches()
     assert_timeline_truncation_is_visible_in_report()
+    assert_resolve_pr_states_handles_null_graphql_payloads()
     assert_cancelled_superseded_requires_pull_request_pr_match_and_overlap()
     assert_build_report_classifies_runs_and_totals_minutes()
     assert_unknown_labels_are_reported_without_crashing()

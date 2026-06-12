@@ -395,7 +395,7 @@ pub fn evaluate_source_universe_operator_inputs(
         }
 
         if let Some(metadata_record) = metadata_record {
-            match bybit_v5_instrument_spec(metadata_record, &spec.nt_venue, spec) {
+            match v5_market_instruments_info_spec(metadata_record, &spec.nt_venue, spec) {
                 Ok(instrument_spec) => {
                     if let Err(error) = instrument_spec.build_instrument_any() {
                         blocking_reasons.push(format!("invalid_nt_instrument_spec:{error}"));
@@ -530,15 +530,17 @@ pub fn evaluate_source_universe_operator_inputs(
 
 /// Map one venue instrument-info record to a typed NT instrument spec.
 ///
-/// This parser implements exactly ONE venue REST schema family - Bybit v5
-/// `/v5/market/instruments-info` (`baseCoin`/`quoteCoin`/`priceFilter`/
-/// `lotSizeFilter` field shape plus the `category` taxonomy). The field-name
-/// literals below are that schema's deserialization contract, the same role
-/// `#[serde(rename)]` attributes would play in a typed struct. A record from
-/// any other venue schema fails loud at the `required_*` lookups and surfaces
-/// as an `invalid_instrument_metadata` blocking reason; supporting a second
-/// venue means adding a sibling parser for its schema, not loosening this one.
-fn bybit_v5_instrument_spec(
+/// This parser implements exactly ONE venue REST schema family - the
+/// `/v5/market/instruments-info` endpoint shape (`baseCoin`/`quoteCoin`/
+/// `priceFilter`/`lotSizeFilter` fields plus the `category` taxonomy) of the
+/// venue declared by the operator-input source bindings; venue identity stays
+/// in that TOML, never in this code. The field-name literals below are that
+/// schema's deserialization contract, the same role `#[serde(rename)]`
+/// attributes would play in a typed struct. A record from any other venue
+/// schema fails loud at the `required_*` lookups and surfaces as an
+/// `invalid_instrument_metadata` blocking reason; supporting a second venue
+/// means adding a sibling parser for its schema, not loosening this one.
+fn v5_market_instruments_info_spec(
     record: &VenueInstrumentMetadataRecord,
     nt_venue: &str,
     spec: &SourceUniverseOperatorInputsSpec,

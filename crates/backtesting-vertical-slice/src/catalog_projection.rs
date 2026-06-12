@@ -2119,6 +2119,29 @@ max_notional = "200000"
     }
 
     #[test]
+    fn datafusion_catalog_file_path_resolves_all_path_shapes() {
+        // NT's resolve_path_for_datafusion passes absolute native paths and
+        // full URIs through verbatim but URL-joins anything relative, which
+        // percent-decodes encoded instrument directories into nonexistent
+        // paths. Pin all three input shapes so the passthrough/join split
+        // cannot silently regress.
+        let root = Path::new("/catalog/root");
+
+        assert_eq!(
+            datafusion_catalog_file_path(root, "s3://bucket/data/trades/X.V/part-0.parquet"),
+            "s3://bucket/data/trades/X.V/part-0.parquet"
+        );
+        assert_eq!(
+            datafusion_catalog_file_path(root, "/elsewhere/data/trades/X.V/part-0.parquet"),
+            "/elsewhere/data/trades/X.V/part-0.parquet"
+        );
+        assert_eq!(
+            datafusion_catalog_file_path(root, "data/trades/X.V/part-0.parquet"),
+            "/catalog/root/data/trades/X.V/part-0.parquet"
+        );
+    }
+
+    #[test]
     fn binary_option_l2_catalog_records_round_trip_through_nt_catalog() {
         use nautilus_model::{
             data::{OrderBookDelta, order::BookOrder},

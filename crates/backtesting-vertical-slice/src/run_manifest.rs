@@ -684,7 +684,7 @@ impl std::fmt::Display for ManifestError {
                 write!(
                     f,
                     "instrument id {instrument_id:?} contains ASCII characters outside the \
-                     catalog-directory-safe set (alphanumeric, '.', '_', '-', '~'); such ids \
+                     catalog-directory-safe set (alphanumeric, '.', '_', '-'); such ids \
                      corrupt through the object-store percent-encoding layer and cannot be \
                      queried reliably from an NT catalog"
                 )
@@ -1786,15 +1786,23 @@ fn catalog_input_requires_unfiltered_nt_query_for_encoded_directory(
 ///
 /// The catalog directory name is the urisafe form of the id ('/' stripped,
 /// '^' mapped to '_'). Non-ASCII characters in that form are handled by the
-/// unfiltered-query fallback, but ASCII characters outside the RFC 3986
-/// unreserved set (alphanumeric, '.', '_', '-', '~') — e.g. '%' or ' ' —
-/// corrupt through every percent-encode/decode layer, including the fallback,
-/// so they fail loud here instead of producing an empty data feed downstream.
+/// unfiltered-query fallback, but ASCII characters that object_store's path
+/// layer percent-encodes at write time corrupt through every encode/decode
+/// layer, including the fallback, so they fail loud here instead of producing
+/// an empty data feed downstream. The safe set (alphanumeric, '.', '_', '-')
+/// is the subset of ASCII that object_store stores verbatim; its INVALID
+/// encode set covers controls plus backslash, braces, caret, percent,
+/// backtick, brackets, quote, angle brackets, tilde, hash, pipe, asterisk,
+/// and question mark — note '~' IS encoded, so it is rejected here despite
+/// being RFC 3986 unreserved.
+/// Everything else outside the safe set is rejected conservatively: an
+/// over-strict early failure is recoverable, an admitted-but-encoded id is a
+/// guaranteed late NT node-load failure.
 fn validate_catalog_instrument_id_charset(instrument_id: &str) -> Result<(), ManifestError> {
     let urisafe = instrument_id.replace('/', "").replace('^', "_");
     let unsupported_ascii = urisafe
         .chars()
-        .any(|c| c.is_ascii() && !c.is_ascii_alphanumeric() && !matches!(c, '.' | '_' | '-' | '~'));
+        .any(|c| c.is_ascii() && !c.is_ascii_alphanumeric() && !matches!(c, '.' | '_' | '-'));
     if unsupported_ascii {
         return Err(ManifestError::UnsupportedInstrumentIdCharset {
             instrument_id: instrument_id.to_string(),
@@ -2540,6 +2548,25 @@ mod tests {
             error,
             ManifestError::UnsupportedInstrumentIdCharset { instrument_id }
                 if instrument_id == "BASE%QUOTE.TESTVENUE"
+        ));
+    }
+
+    #[test]
+    fn tilde_catalog_instrument_id_fails_loud() {
+        // '~' is RFC 3986 unreserved but object_store's INVALID encode set
+        // percent-encodes it, so the on-disk directory becomes '%7E'-encoded
+        // while the all-ASCII id keeps NT's filtered query path — the filter
+        // can never match the encoded directory. Reject at manifest build
+        // instead of failing late inside the NT node load.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].nt_instrument_id = "BASE~QUOTE.TESTVENUE".to_string();
+
+        let error = manifest.to_nt_data_config().expect_err("charset rejected");
+
+        assert!(matches!(
+            error,
+            ManifestError::UnsupportedInstrumentIdCharset { instrument_id }
+                if instrument_id == "BASE~QUOTE.TESTVENUE"
         ));
     }
 

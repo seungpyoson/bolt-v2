@@ -1148,15 +1148,18 @@ impl IvQueryHandle {
         if input_products.is_empty() {
             return Err(IvQueryError::ProductNotFound);
         }
-        let mut inputs = projection_inputs_from_products(&input_products)?;
+        let all_inputs = projection_inputs_from_products(&input_products)?;
         if !projection_inputs_authorized(
             &self.authorization,
             &query.strategy_id,
             query.product_kind,
-            &inputs,
+            &all_inputs,
         ) {
             return Err(IvQueryError::StrategyNotAuthorized);
         }
+        let projection_products = deduplicate_projection_products(input_products.clone(), as_of_ns);
+        let mut inputs = projection_inputs_from_products(&projection_products)?;
+        let mut fallback_inputs = all_inputs.clone();
         let mut policy_decisions = Vec::new();
 
         let mut interpolation_rejected = false;
@@ -1165,10 +1168,11 @@ impl IvQueryHandle {
                 policy,
                 state,
                 interpolation_policy_ref,
-                &input_products,
+                &projection_products,
             )? {
                 ProjectedInputInterpolation::Interpolated(interpolated) => {
                     inputs = interpolated.inputs;
+                    fallback_inputs = inputs.clone();
                     policy_decisions.extend(interpolated.policy_decisions);
                 }
                 ProjectedInputInterpolation::Rejected => {
@@ -1179,7 +1183,7 @@ impl IvQueryHandle {
         }
 
         if interpolation_rejected {
-            let output = fallback_only(policy, state, &input_products, &inputs)?;
+            let output = fallback_only(policy, state, &input_products, &fallback_inputs)?;
             let mut provenance = projected_output_provenance(&input_products, &output)?;
             provenance.policy_decisions.extend(policy_decisions);
             provenance.policy_decisions.extend(output.policy_decisions);
@@ -1209,8 +1213,14 @@ impl IvQueryHandle {
             policy_decisions.extend(quorum_output.policy_decisions);
         }
 
-        let output = project_or_fallback(policy, state, &input_products, &inputs)?;
-        let mut provenance = projected_output_provenance(&input_products, &output)?;
+        let output =
+            project_or_fallback(policy, state, &input_products, &inputs, &fallback_inputs)?;
+        let provenance_products = if output.selected_input.is_some() {
+            &input_products
+        } else {
+            &projection_products
+        };
+        let mut provenance = projected_output_provenance(provenance_products, &output)?;
         provenance.policy_decisions.extend(policy_decisions);
         provenance.policy_decisions.extend(output.policy_decisions);
         provenance.ts_event_ns = as_of_ns;
@@ -1276,7 +1286,6 @@ impl IvQueryHandle {
                     .cloned()
                     .map(IvQueryProduct::IvPoint)
                     .collect::<Vec<_>>();
-                let products = deduplicate_projection_products(products, *as_of_ns);
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
                 } else {
@@ -1306,7 +1315,6 @@ impl IvQueryHandle {
                     .cloned()
                     .map(IvQueryProduct::IvGreeksPoint)
                     .collect::<Vec<_>>();
-                let products = deduplicate_projection_products(products, *as_of_ns);
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
                 } else {
@@ -1331,7 +1339,6 @@ impl IvQueryHandle {
                     *as_of_ns,
                     tolerance_ns,
                 );
-                let products = deduplicate_projection_products(products, *as_of_ns);
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
                 } else {
@@ -1381,7 +1388,6 @@ impl IvQueryHandle {
                     .cloned()
                     .map(IvQueryProduct::CustomIvEvidence)
                     .collect::<Vec<_>>();
-                let products = deduplicate_projection_products(products, *as_of_ns);
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
                 } else {
@@ -1409,7 +1415,6 @@ impl IvQueryHandle {
                     .cloned()
                     .map(IvQueryProduct::AggregateGreeks)
                     .collect::<Vec<_>>();
-                let products = deduplicate_projection_products(products, *as_of_ns);
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
                 } else {
@@ -1731,7 +1736,8 @@ fn matching_surface_products_with_tolerance(
     as_of_ns: UnixNanos,
     tolerance_ns: Option<u64>,
 ) -> Vec<IvQueryProduct> {
-    let products = state
+    let mut seen = BTreeSet::new();
+    state
         .store
         .smiles()
         .iter()
@@ -1742,6 +1748,14 @@ fn matching_surface_products_with_tolerance(
                 && timestamp_matches(smile.ts_event_ns, as_of_ns, tolerance_ns)
         })
         .filter_map(|smile| {
+            let key = (
+                smile.surface_selector.clone(),
+                smile.source_id.clone(),
+                smile.ts_event_ns,
+            );
+            if !seen.insert(key) {
+                return None;
+            }
             state
                 .store
                 .surface(
@@ -1752,8 +1766,7 @@ fn matching_surface_products_with_tolerance(
                 )
                 .map(IvQueryProduct::Surface)
         })
-        .collect::<Vec<_>>();
-    deduplicate_projection_products(products, as_of_ns)
+        .collect()
 }
 
 fn deduplicate_projection_products(
@@ -2120,10 +2133,11 @@ fn project_or_fallback(
     state: &IvQueryState,
     input_products: &[IvQueryProduct],
     inputs: &[IvPolicyInput],
+    fallback_inputs: &[IvPolicyInput],
 ) -> Result<QueryPolicyOutput, IvQueryError> {
     match project_scalar(policy, inputs) {
         Ok(output) => Ok(QueryPolicyOutput::from_policy_output(output)),
-        Err(_) => fallback_only(policy, state, input_products, inputs),
+        Err(_) => fallback_only(policy, state, input_products, fallback_inputs),
     }
 }
 

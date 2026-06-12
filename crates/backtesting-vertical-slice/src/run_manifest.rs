@@ -557,6 +557,9 @@ pub enum ManifestError {
     InvalidInstrumentId {
         instrument_id: String,
     },
+    UnsupportedInstrumentIdCharset {
+        instrument_id: String,
+    },
     UnacceptedData {
         manifest_proof: String,
         accepted_proof: String,
@@ -589,7 +592,7 @@ pub enum ManifestError {
         start: i64,
         end: i64,
     },
-    RawArtifactStoreCredential {
+    RawCredentialOption {
         field: &'static str,
         key: String,
     },
@@ -677,6 +680,15 @@ impl std::fmt::Display for ManifestError {
             Self::InvalidInstrumentId { instrument_id } => {
                 write!(f, "invalid instrument id: {instrument_id:?}")
             }
+            Self::UnsupportedInstrumentIdCharset { instrument_id } => {
+                write!(
+                    f,
+                    "instrument id {instrument_id:?} contains ASCII characters outside the \
+                     catalog-directory-safe set (alphanumeric, '.', '_', '-'); such ids \
+                     corrupt through the object-store percent-encoding layer and cannot be \
+                     queried reliably from an NT catalog"
+                )
+            }
             Self::UnacceptedData {
                 manifest_proof,
                 accepted_proof,
@@ -720,9 +732,9 @@ impl std::fmt::Display for ManifestError {
             Self::InvertedTimeWindow { start, end } => {
                 write!(f, "start_time {start} must not be after end_time {end}")
             }
-            Self::RawArtifactStoreCredential { field, key } => write!(
+            Self::RawCredentialOption { field, key } => write!(
                 f,
-                "{field}.{key} contains artifact_store credential material; configure artifact_store.ssm_parameters and resolve through SSM"
+                "{field}.{key} contains raw credential material; credentials resolve from SSM at runtime and must never appear in a manifest"
             ),
             Self::ArtifactStoreS3CredentialsNotResolved => write!(
                 f,
@@ -1416,6 +1428,18 @@ impl BacktestingRunManifest {
                 &input.catalog_fs_storage_options,
                 &input.catalog_fs_rust_storage_options,
             )?;
+            // Admission boundary: operator-authored manifests must never carry raw
+            // credentials; the runtime-resolved published-catalog manifest bypasses
+            // validate() (to_nt_run_config only), so SSM-resolved options stay legal.
+            reject_raw_credential_options(
+                "catalog_inputs.catalog_fs_storage_options",
+                &input.catalog_fs_storage_options,
+            )?;
+            reject_raw_credential_options(
+                "catalog_inputs.catalog_fs_rust_storage_options",
+                &input.catalog_fs_rust_storage_options,
+            )?;
+            parse_and_validate_catalog_input_instrument_ids(input)?;
         }
         validate_catalog_storage_options(
             output_prefix_protocol(&self.output_prefix),
@@ -1678,31 +1702,19 @@ fn catalog_input_to_nt_data_config(
             });
         }
     };
-    let instrument_ids = input
-        .instrument_ids
-        .as_ref()
-        .map(|ids| {
-            ids.iter()
-                .map(|id| {
-                    id.parse::<InstrumentId>()
-                        .map_err(|_| ManifestError::InvalidInstrumentId {
-                            instrument_id: id.clone(),
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
-    let instrument_id = if instrument_ids.is_some() {
+    let (nt_instrument_id, instrument_ids) =
+        parse_and_validate_catalog_input_instrument_ids(input)?;
+    let requires_unfiltered_catalog_query =
+        catalog_input_requires_unfiltered_nt_query_for_encoded_directory(input);
+    let instrument_ids = if requires_unfiltered_catalog_query {
         None
     } else {
-        Some(
-            input
-                .nt_instrument_id
-                .parse::<InstrumentId>()
-                .map_err(|_| ManifestError::InvalidInstrumentId {
-                    instrument_id: input.nt_instrument_id.clone(),
-                })?,
-        )
+        instrument_ids
+    };
+    let instrument_id = if instrument_ids.is_some() || requires_unfiltered_catalog_query {
+        None
+    } else {
+        Some(nt_instrument_id)
     };
     let catalog_fs_protocol = parse_catalog_fs_protocol(&input.catalog_fs_protocol)?;
     validate_catalog_storage_options(
@@ -1745,6 +1757,87 @@ fn catalog_input_to_nt_data_config(
         .maybe_filter_expr(input.filter_expr.clone())
         .maybe_optimize_file_loading(input.optimize_file_loading)
         .build())
+}
+
+/// Parse and charset-validate every instrument-id surface of a catalog input.
+///
+/// Shared by [`BacktestingRunManifest::validate`] (the Gate 4 preflight) and
+/// [`catalog_input_to_nt_data_config`] so the preflight rejects exactly the
+/// ids the NT config build would reject: an id defect must fail before any
+/// derived canonical or catalog artifact is produced, not at NT-config
+/// construction mid-run.
+fn parse_and_validate_catalog_input_instrument_ids(
+    input: &ManifestCatalogInput,
+) -> Result<(InstrumentId, Option<Vec<InstrumentId>>), ManifestError> {
+    let nt_instrument_id = input
+        .nt_instrument_id
+        .parse::<InstrumentId>()
+        .map_err(|_| ManifestError::InvalidInstrumentId {
+            instrument_id: input.nt_instrument_id.clone(),
+        })?;
+    let instrument_ids = input
+        .instrument_ids
+        .as_ref()
+        .map(|ids| {
+            ids.iter()
+                .map(|id| {
+                    id.parse::<InstrumentId>()
+                        .map_err(|_| ManifestError::InvalidInstrumentId {
+                            instrument_id: id.clone(),
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    validate_catalog_instrument_id_charset(&input.nt_instrument_id)?;
+    if let Some(ids) = input.instrument_ids.as_ref() {
+        for id in ids {
+            validate_catalog_instrument_id_charset(id)?;
+        }
+    }
+    Ok((nt_instrument_id, instrument_ids))
+}
+
+fn catalog_input_requires_unfiltered_nt_query_for_encoded_directory(
+    input: &ManifestCatalogInput,
+) -> bool {
+    !input.nt_instrument_id.is_ascii()
+        || input
+            .instrument_ids
+            .as_ref()
+            .is_some_and(|ids| ids.iter().any(|id| !id.is_ascii()))
+}
+
+/// Reject instrument ids whose catalog directory name would be altered by the
+/// object-store percent-encoding layer in a way no query path can survive.
+///
+/// The catalog directory name is the urisafe form of the id ('/' stripped,
+/// '^' mapped to '_'). Non-ASCII characters in that form are handled by the
+/// unfiltered-query fallback, but ASCII characters that object_store's path
+/// layer percent-encodes at write time corrupt through every encode/decode
+/// layer, including the fallback, so they fail loud here instead of producing
+/// an empty data feed downstream. The safe set (alphanumeric, '.', '_', '-')
+/// is a conservative strict subset of the ASCII object_store stores verbatim;
+/// its INVALID encode set covers controls plus backslash, braces, caret,
+/// percent, backtick, brackets, quote, angle brackets, tilde, hash, pipe,
+/// asterisk, and question mark — note '~' IS encoded, so it is rejected here
+/// despite being RFC 3986 unreserved.
+/// Everything else outside the safe set is rejected conservatively even
+/// though object_store stores other ASCII punctuation verbatim — admission
+/// must not depend on per-character encode-set knowledge: an over-strict
+/// early failure is recoverable, an admitted-but-encoded id is a guaranteed
+/// late NT node-load failure.
+fn validate_catalog_instrument_id_charset(instrument_id: &str) -> Result<(), ManifestError> {
+    let urisafe = instrument_id.replace('/', "").replace('^', "_");
+    let unsupported_ascii = urisafe
+        .chars()
+        .any(|c| c.is_ascii() && !c.is_ascii_alphanumeric() && !matches!(c, '.' | '_' | '-'));
+    if unsupported_ascii {
+        return Err(ManifestError::UnsupportedInstrumentIdCharset {
+            instrument_id: instrument_id.to_string(),
+        });
+    }
+    Ok(())
 }
 
 impl BacktestingRunManifest {
@@ -2063,11 +2156,11 @@ fn ensure_artifact_store_conditional_put_enabled(
 fn validate_artifact_store_secrets(
     artifact_store: &ManifestArtifactStore,
 ) -> Result<(), ManifestError> {
-    reject_raw_artifact_store_credentials(
+    reject_raw_credential_options(
         "artifact_store.storage_options",
         &artifact_store.storage_options,
     )?;
-    reject_raw_artifact_store_credentials(
+    reject_raw_credential_options(
         "artifact_store.rust_storage_options",
         &artifact_store.rust_storage_options,
     )?;
@@ -2094,13 +2187,13 @@ fn ensure_artifact_store_s3_credentials_resolved(
     }
 }
 
-fn reject_raw_artifact_store_credentials(
+fn reject_raw_credential_options(
     field: &'static str,
     options: &BTreeMap<String, String>,
 ) -> Result<(), ManifestError> {
     for key in options.keys() {
         if is_s3_credential_option(key) {
-            return Err(ManifestError::RawArtifactStoreCredential {
+            return Err(ManifestError::RawCredentialOption {
                 field,
                 key: key.clone(),
             });
@@ -2439,6 +2532,126 @@ mod tests {
     }
 
     #[test]
+    fn non_ascii_catalog_input_omits_nt_instrument_filter() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].nt_instrument_id = "币安人生USDC.BINANCE".to_string();
+
+        let data = manifest.to_nt_data_config().expect("data config");
+
+        assert_eq!(
+            manifest.catalog_inputs[0].nt_instrument_id,
+            "币安人生USDC.BINANCE"
+        );
+        assert!(data.instrument_id().is_none());
+        assert!(data.instrument_ids().is_none());
+        assert!(data.query_identifiers().is_none());
+    }
+
+    #[test]
+    fn slash_catalog_instrument_id_keeps_nt_instrument_filter() {
+        // urisafe strips '/' before naming the catalog directory, so the
+        // directory is plain ASCII and NT's filtered query path works; the
+        // unfiltered fallback must NOT trigger for slash ids.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].nt_instrument_id = "BASE/QUOTE.TESTVENUE".to_string();
+
+        let data = manifest.to_nt_data_config().expect("data config");
+
+        assert_eq!(
+            data.instrument_id().map(|id| id.to_string()),
+            Some("BASE/QUOTE.TESTVENUE".to_string())
+        );
+    }
+
+    #[test]
+    fn percent_catalog_instrument_id_fails_loud() {
+        // A literal '%' survives urisafe unchanged and corrupts through every
+        // percent-encode/decode layer (filtered, unfiltered, and node paths),
+        // so the manifest must reject it instead of producing an empty feed.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].nt_instrument_id = "BASE%QUOTE.TESTVENUE".to_string();
+
+        let error = manifest.to_nt_data_config().expect_err("charset rejected");
+
+        assert!(matches!(
+            error,
+            ManifestError::UnsupportedInstrumentIdCharset { instrument_id }
+                if instrument_id == "BASE%QUOTE.TESTVENUE"
+        ));
+    }
+
+    #[test]
+    fn tilde_catalog_instrument_id_fails_loud() {
+        // '~' is RFC 3986 unreserved but object_store's INVALID encode set
+        // percent-encodes it, so the on-disk directory becomes '%7E'-encoded
+        // while the all-ASCII id keeps NT's filtered query path — the filter
+        // can never match the encoded directory. Reject at manifest build
+        // instead of failing late inside the NT node load.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].nt_instrument_id = "BASE~QUOTE.TESTVENUE".to_string();
+
+        let error = manifest.to_nt_data_config().expect_err("charset rejected");
+
+        assert!(matches!(
+            error,
+            ManifestError::UnsupportedInstrumentIdCharset { instrument_id }
+                if instrument_id == "BASE~QUOTE.TESTVENUE"
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_unsupported_charset_instrument_id_at_preflight() {
+        // The Gate 4 preflight (validate + validate_run_spec_manifest_for_
+        // object_hash) must reject the same ids the NT config build rejects;
+        // otherwise the manifest is admitted, conversion and projection run,
+        // and the id defect only surfaces at NT-config construction mid-run.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].nt_instrument_id = "BASE~QUOTE.TESTVENUE".to_string();
+
+        let error = manifest
+            .validate(&accepted_dataset())
+            .expect_err("charset rejected at preflight");
+
+        assert!(matches!(
+            error,
+            ManifestError::UnsupportedInstrumentIdCharset { instrument_id }
+                if instrument_id == "BASE~QUOTE.TESTVENUE"
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_unparseable_instrument_id_at_preflight() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].nt_instrument_id = "NOVENUESEPARATOR".to_string();
+
+        let error = manifest
+            .validate(&accepted_dataset())
+            .expect_err("unparseable id rejected at preflight");
+
+        assert!(matches!(
+            error,
+            ManifestError::InvalidInstrumentId { instrument_id }
+                if instrument_id == "NOVENUESEPARATOR"
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_unsupported_charset_in_instrument_ids_list_at_preflight() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].instrument_ids = Some(vec!["BASE~QUOTE.TESTVENUE".to_string()]);
+
+        let error = manifest
+            .validate(&accepted_dataset())
+            .expect_err("charset rejected at preflight");
+
+        assert!(matches!(
+            error,
+            ManifestError::UnsupportedInstrumentIdCharset { instrument_id }
+                if instrument_id == "BASE~QUOTE.TESTVENUE"
+        ));
+    }
+
+    #[test]
     fn venue_config_maps_explicit_nt_venue_controls() {
         let mut manifest = valid_manifest();
         manifest.venue.routing = true;
@@ -2569,6 +2782,66 @@ mod tests {
                 .get("conditional_put"),
             Some(&"etag".to_string())
         );
+    }
+
+    #[test]
+    fn validate_rejects_raw_credentials_in_catalog_storage_options() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_inputs[0].catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_inputs[0].catalog_fs_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("access_key_id".to_string(), "AKIATEST".to_string()),
+        ]);
+
+        let error = manifest
+            .validate(&accepted_dataset())
+            .expect_err("raw catalog credentials must fail admission");
+        assert!(matches!(
+            error,
+            ManifestError::RawCredentialOption { field, .. }
+                if field == "catalog_inputs.catalog_fs_storage_options"
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_raw_credentials_in_catalog_rust_storage_options() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_inputs[0].catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_inputs[0].catalog_fs_rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("secret_access_key".to_string(), "not-from-ssm".to_string()),
+        ]);
+
+        let error = manifest
+            .validate(&accepted_dataset())
+            .expect_err("raw catalog credentials must fail admission");
+        assert!(matches!(
+            error,
+            ManifestError::RawCredentialOption { field, .. }
+                if field == "catalog_inputs.catalog_fs_rust_storage_options"
+        ));
+    }
+
+    #[test]
+    fn runtime_resolved_catalog_credentials_still_map_to_nt_config() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_inputs[0].catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_inputs[0].catalog_fs_rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("access_key_id".to_string(), "AKIATEST".to_string()),
+            ("secret_access_key".to_string(), "secret-value".to_string()),
+        ]);
+
+        let data = manifest
+            .to_nt_data_config()
+            .expect("SSM-resolved runtime credentials must stay valid for the NT config build");
+        assert_eq!(data.catalog_fs_protocol(), Some("s3"));
     }
 
     #[test]

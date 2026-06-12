@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::backfill_coverage::{BackfillCoverageLedger, BackfillCoverageStatus};
+use crate::source_proof::SourceBindingRegistry;
 
 pub const BACKFILL_BINDING_COVERAGE_SCHEMA_VERSION: &str = "backfill-binding-coverage-report.v1";
 pub const BACKFILL_BINDING_COVERAGE_REPORT_FILE: &str = "backfill-binding-coverage-report.json";
@@ -424,37 +425,38 @@ fn parse_source_bindings(
     source_bindings_toml: &str,
     path: &str,
 ) -> Result<Vec<SourceBinding>, BackfillBindingCoverageError> {
-    let parsed: toml::Value = toml::from_str(source_bindings_toml).map_err(|error| {
+    // One typed parse owns the registry schema (source_proof.rs); a malformed
+    // entry is a loud parse error here, never a silently dropped binding.
+    let registry = SourceBindingRegistry::from_toml_str(source_bindings_toml).map_err(|error| {
         BackfillBindingCoverageError::ParseSourceBindingsToml {
             path: path.to_string(),
             error: error.to_string(),
         }
     })?;
-    Ok(parsed
-        .get("source_binding")
-        .and_then(toml::Value::as_array)
+    registry
+        .all_binding_metadata()
         .into_iter()
-        .flatten()
-        .filter_map(|value| {
-            let key = value.get("key")?.as_str()?.trim();
+        .enumerate()
+        .map(|(index, metadata)| {
+            let key = metadata.key.trim().to_string();
             if key.is_empty() {
-                return None;
+                return Err(BackfillBindingCoverageError::ParseSourceBindingsToml {
+                    path: path.to_string(),
+                    error: format!("source_binding entry {index} has an empty key"),
+                });
             }
-            let table_families = value
-                .get("table_families")
-                .and_then(toml::Value::as_array)?
-                .iter()
-                .filter_map(toml::Value::as_str)
-                .map(str::trim)
-                .filter(|family| !family.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>();
-            Some(SourceBinding {
-                key: key.to_string(),
-                table_families,
+            Ok(SourceBinding {
+                key,
+                table_families: metadata
+                    .table_families
+                    .iter()
+                    .map(|family| family.trim())
+                    .filter(|family| !family.is_empty())
+                    .map(str::to_string)
+                    .collect(),
             })
         })
-        .collect())
+        .collect()
 }
 
 fn content_hash(

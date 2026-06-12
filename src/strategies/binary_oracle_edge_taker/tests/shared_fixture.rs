@@ -52,13 +52,12 @@ pub(super) fn valid_raw_config() -> Value {
         order_notional_target = 1000.0
         maximum_position_notional = 1000.0
         book_impact_cap_bps = 15
+        vwap_depth_limit_bps = 15
+        slippage_buffer_bps = 15
         risk_lambda = 0.5
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
-        vol_window_secs = 60
-        vol_gap_reset_secs = 10
-        vol_min_observations = 20
-        vol_bridge_valid_secs = 10
+        realized_volatility_surface_id = "<surface_id>"
         trade_flow_window_secs = 30
         trade_flow_max_samples = 100
         spike_guard_return_threshold = 0.05
@@ -333,6 +332,24 @@ pub(super) fn register_test_strategy_with_active_instruments(strategy: &mut Bina
     add_active_instruments_to_cache(strategy, &cache);
 }
 
+pub(super) fn register_test_strategy_with_instrument(
+    strategy: &mut BinaryOracleEdgeTaker,
+    instrument_id: &InstrumentId,
+) {
+    let cache = register_test_strategy(strategy);
+    cache
+        .borrow_mut()
+        .add_instrument(updown_binary_option(
+            &instrument_id.to_string(),
+            "test-market-entry",
+            "test-market",
+            "Up",
+            1_000,
+            1_300,
+        ))
+        .expect("test cache should accept selected instrument");
+}
+
 pub(super) fn add_active_instruments_to_cache(
     strategy: &BinaryOracleEdgeTaker,
     cache: &Rc<RefCell<Cache>>,
@@ -429,6 +446,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             signal_instrument_id: Some("SIGNAL.SOURCE".to_string()),
             resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
             resolution_instrument_id: Some("RESOLUTION.SOURCE".to_string()),
+            realized_volatility_surface_id: "<surface_id>".to_string(),
             use_uuid_client_order_ids: true,
             use_hyphens_in_client_order_ids: false,
             external_order_claims: vec!["AUXILIARY.SOURCE".to_string()],
@@ -493,13 +511,11 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             order_notional_target: 1000.0,
             maximum_position_notional: 1000.0,
             book_impact_cap_bps: 15,
+            vwap_depth_limit_bps: 15,
+            slippage_buffer_bps: 15,
             risk_lambda: 0.5,
             edge_threshold_basis_points: -20,
             exit_hysteresis_bps: 5,
-            vol_window_secs: 60,
-            vol_gap_reset_secs: 10,
-            vol_min_observations: 20,
-            vol_bridge_valid_secs: 10,
             trade_flow_window_secs: 30,
             trade_flow_max_samples: 100,
             spike_guard_return_threshold: 0.05,
@@ -630,16 +646,16 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
         .books
         .up
         .bid_levels
-        .insert(Price::new(0.43, 2), 500.0);
+        .insert(Price::new(0.43, 2), 5_000.0);
     strategy
         .active
         .books
         .up
         .ask_levels
-        .insert(Price::new(0.45, 2), 500.0);
+        .insert(Price::new(0.45, 2), 5_000.0);
     strategy.active.books.up.best_bid = Some(0.43);
     strategy.active.books.up.best_ask = Some(0.45);
-    strategy.active.books.up.liquidity_available = Some(500.0);
+    strategy.active.books.up.liquidity_available = Some(5_000.0);
     strategy.active.books.down.last_observed_instrument_id =
         strategy.active.books.down.instrument_id;
     strategy
@@ -647,20 +663,21 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
         .books
         .down
         .bid_levels
-        .insert(Price::new(0.43, 2), 500.0);
+        .insert(Price::new(0.43, 2), 5_000.0);
     strategy
         .active
         .books
         .down
         .ask_levels
-        .insert(Price::new(0.45, 2), 500.0);
+        .insert(Price::new(0.45, 2), 5_000.0);
     strategy.active.books.down.best_bid = Some(0.43);
     strategy.active.books.down.best_ask = Some(0.45);
-    strategy.active.books.down.liquidity_available = Some(500.0);
+    strategy.active.books.down.liquidity_available = Some(5_000.0);
     strategy.active.fast_venue_incoherent = false;
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(0.0);
     strategy.pricing.last_jitter_penalty_probability = Some(0.0);
     strategy
@@ -695,16 +712,16 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
         .books
         .up
         .bid_levels
-        .insert(Price::new(0.50, 2), 500.0);
+        .insert(Price::new(0.50, 2), 5_000.0);
     strategy
         .active
         .books
         .up
         .ask_levels
-        .insert(Price::new(0.50, 2), 500.0);
+        .insert(Price::new(0.50, 2), 5_000.0);
     strategy.active.books.up.best_bid = Some(0.50);
     strategy.active.books.up.best_ask = Some(0.50);
-    strategy.active.books.up.liquidity_available = Some(500.0);
+    strategy.active.books.up.liquidity_available = Some(5_000.0);
     strategy.active.books.down.last_observed_instrument_id =
         strategy.active.books.down.instrument_id;
     strategy
@@ -712,20 +729,21 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
         .books
         .down
         .bid_levels
-        .insert(Price::new(0.48, 2), 500.0);
+        .insert(Price::new(0.48, 2), 5_000.0);
     strategy
         .active
         .books
         .down
         .ask_levels
-        .insert(Price::new(0.49, 2), 500.0);
+        .insert(Price::new(0.49, 2), 5_000.0);
     strategy.active.books.down.best_bid = Some(0.48);
     strategy.active.books.down.best_ask = Some(0.49);
-    strategy.active.books.down.liquidity_available = Some(500.0);
+    strategy.active.books.down.liquidity_available = Some(5_000.0);
     strategy.active.fast_venue_incoherent = false;
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(0.0);
     strategy.pricing.last_jitter_penalty_probability = Some(0.0);
     (strategy, fee_provider)
@@ -746,13 +764,6 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
     strategy.config.edge_threshold_basis_points = 1;
     strategy.active.price_to_beat = Some(3_100.0);
     strategy
-}
-
-pub(super) fn selected_entry_side(strategy: &BinaryOracleEdgeTaker) -> OutcomeSide {
-    let evaluation = strategy.entry_evaluation_at(1_200);
-    evaluation
-        .selected_side
-        .expect("ready-to-trade fixture should select a configured outcome side")
 }
 
 pub(super) fn selected_entry_instrument(strategy: &BinaryOracleEdgeTaker) -> InstrumentId {
@@ -783,15 +794,6 @@ pub(super) fn configured_position_probe(
     strategy.exposure = original_exposure;
     strategy.refresh_book_subscriptions_for_current_state();
     position
-}
-
-pub(super) fn configured_side_for_instrument(
-    strategy: &mut BinaryOracleEdgeTaker,
-    instrument_id: InstrumentId,
-) -> OutcomeSide {
-    configured_position_probe(strategy, instrument_id)
-        .outcome_side
-        .expect("configured instrument should materialize with an outcome side")
 }
 
 pub(super) fn configured_book_for_instrument(
@@ -868,7 +870,12 @@ pub(super) fn pending_entry_state(
         instrument_id,
         outcome_side: Some(outcome_side),
         outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: strategy.entry_fee_bps(outcome_side).or(Some(0.0)),
+        historical_entry_fee_bps: strategy
+            .context
+            .fee_provider()
+            .fee_bps(instrument_id)
+            .and_then(|value| value.to_f64())
+            .or(Some(0.0)),
         interval_open: Some(3_100.0),
         selection_published_at_ms: Some(1_000),
         seconds_to_expiry_at_selection: Some(300),

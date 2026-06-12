@@ -1,11 +1,9 @@
 //! Generate source-universe object-gate materialization from a TOML spec.
 
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::PathBuf};
 
 use anyhow::Result;
+use backtesting_vertical_slice::path_resolution::resolve_existing_input_path;
 use backtesting_vertical_slice::source_universe_object_gates::{
     SourceUniverseObjectGateMaterialization,
     write_source_universe_object_gate_materialization_from_spec_file,
@@ -21,7 +19,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let spec_path = resolve_existing_path(&cli.spec);
+    let spec_path = resolve_existing_input_path(&cli.spec);
     let artifact = write_source_universe_object_gate_materialization_from_spec_file(&spec_path)?;
     let gates: SourceUniverseObjectGateMaterialization =
         serde_json::from_slice(&fs::read(&artifact.path)?)?;
@@ -36,27 +34,4 @@ fn main() -> Result<()> {
     println!("source_bindings = {}", gates.source_binding_count);
     println!("total_accepted_bytes = {}", gates.total_accepted_bytes);
     Ok(())
-}
-
-fn resolve_existing_path(path: &Path) -> PathBuf {
-    if path.is_absolute() || path.exists() {
-        return path.to_path_buf();
-    }
-
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            let candidate = ancestor.join(path);
-            if candidate.exists() {
-                return candidate;
-            }
-        }
-    }
-
-    path.to_path_buf()
 }

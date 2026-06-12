@@ -7,13 +7,13 @@
 
 use std::{fs, path::PathBuf};
 
+use crate::hashing::sha256_hex;
 use anyhow::{Context, Result};
 use nautilus_polymarket::http::{
     models::GammaMarket,
     parse::{PolymarketInstrumentDef, parse_gamma_market},
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 pub const POLYMARKET_METADATA_GATE_REPORT_SCHEMA_VERSION: &str =
     "polymarket-nt-metadata-gate-report.v1";
@@ -62,7 +62,7 @@ pub fn evaluate_polymarket_metadata_gate(
             spec.gamma_markets_path.display()
         )
     })?;
-    let gamma_markets_sha256 = sha256_bytes(&gamma_bytes);
+    let gamma_markets_sha256 = sha256_hex(&gamma_bytes);
     let markets: Vec<GammaMarket> = serde_json::from_slice(&gamma_bytes).with_context(|| {
         format!(
             "parse Gamma markets JSON {}",
@@ -80,7 +80,7 @@ pub fn evaluate_polymarket_metadata_gate(
             market,
             &spec.selected_condition_id,
             &spec.selected_token_id,
-        ) {
+        )? {
             continue;
         }
         matching_gamma_market_count += 1;
@@ -133,21 +133,24 @@ fn gamma_market_matches_selection(
     market: &GammaMarket,
     selected_condition_id: &str,
     selected_token_id: &str,
-) -> bool {
+) -> Result<bool> {
     if market.condition_id != selected_condition_id {
-        return false;
+        return Ok(false);
     }
-    serde_json::from_str::<Vec<String>>(&market.clob_token_ids)
-        .map(|tokens| tokens.iter().any(|token| token == selected_token_id))
-        .unwrap_or(false)
+    // The parse only runs on condition-matched markets, so a malformed
+    // clob_token_ids field is corrupt source metadata for the very market
+    // under selection: surface it instead of reporting a token mismatch.
+    let tokens: Vec<String> = serde_json::from_str(&market.clob_token_ids).with_context(|| {
+        format!(
+            "Gamma market {} matched condition {selected_condition_id} but its clob_token_ids field failed to parse",
+            market.condition_id
+        )
+    })?;
+    Ok(tokens.iter().any(|token| token == selected_token_id))
 }
 
 fn selected_token_def_count(defs: &[PolymarketInstrumentDef], selected_token_id: &str) -> u64 {
     defs.iter()
         .filter(|def| def.token_id.as_str() == selected_token_id)
         .count() as u64
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }

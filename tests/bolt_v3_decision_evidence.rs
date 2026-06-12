@@ -1,6 +1,6 @@
 mod support;
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::Result;
 use bolt_v2::{
@@ -10,8 +10,13 @@ use bolt_v2::{
         BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
         BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
-        decision_evidence_path, read_latest_entry_decision_evidence_chain,
+        BoltV3OrderIntentOrderFields, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
+        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind, decision_evidence_path,
+        read_latest_entry_decision_evidence_chain,
+    },
+    bolt_v3_realized_volatility::{
+        RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
+        RealizedVolSourceDiagnostic, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
     },
     strategies::registry::FeeProvider,
     strategies::registry::StrategyBuildContext,
@@ -30,6 +35,115 @@ impl FeeProvider for NoopFeeProvider {
 
     fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
         async { Ok(()) }.boxed()
+    }
+}
+
+#[test]
+fn strategy_input_evidence_records_realized_volatility_snapshot_provenance() {
+    let snapshot = strategy_input_snapshot_with_realized_volatility_snapshot();
+
+    assert_eq!(snapshot.realized_volatility_surface_id, "<surface_id>");
+    assert_eq!(snapshot.realized_volatility_annualized_decimal, "2.5");
+    assert_eq!(snapshot.realized_volatility_aggregation, "upper_quantile");
+    assert_eq!(
+        snapshot.realized_volatility_sources_used,
+        vec!["<SOURCE_ID_A>".to_string()]
+    );
+    assert!(snapshot.realized_volatility_blockers.is_empty());
+}
+
+#[test]
+fn realized_volatility_source_diagnostic_evidence_exports_config_participation() {
+    let diagnostic = RealizedVolSourceDiagnostic {
+        source_id: "<SOURCE_ID_B>".to_string(),
+        source_class: RealizedVolSourceClass::SpotQuote,
+        sample_kind: RealizedVolSampleKind::Midpoint,
+        enabled: false,
+        counts_toward_quorum: false,
+        status: RealizedVolSourceStatus::DiagnosticOnly,
+        annualized_realized_vol_decimal: None,
+        measured_annualized_realized_vol_decimal: None,
+        noise_robust_annualized_realized_vol_decimal: None,
+        continuous_annualized_realized_vol_decimal: None,
+        jump_annualized_realized_vol_decimal: None,
+        first_sample_ts_ms: None,
+        last_sample_ts_ms: None,
+        raw_sample_count: 0,
+        grid_sample_count: 0,
+        coverage_ratio: 0.0,
+        max_inter_sample_gap_ms: None,
+        last_rejected_reason: Some(RealizedVolSourceRejectReason::DisabledSource),
+        rejection_counters: BTreeMap::from([(RealizedVolSourceRejectReason::DisabledSource, 2)]),
+        block_reason: Some(RealizedVolBlockReason::NotWarm),
+    };
+
+    let evidence =
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic(&diagnostic);
+
+    assert_eq!(evidence.source_id, "<SOURCE_ID_B>");
+    assert!(!evidence.enabled);
+    assert!(!evidence.counts_toward_quorum);
+    assert_eq!(evidence.status, "diagnostic_only");
+    assert_eq!(
+        evidence.rejection_counters.get("disabled_source").copied(),
+        Some(2)
+    );
+}
+
+fn strategy_input_snapshot_with_realized_volatility_snapshot() -> BoltV3StrategyInputEvidenceSnapshot
+{
+    BoltV3StrategyInputEvidenceSnapshot {
+        strategy_id: "strategy-one".to_string(),
+        configured_target_id: "target-one".to_string(),
+        market_selection_ruleset_id: "target-one".to_string(),
+        market_selection_outcome: "current".to_string(),
+        market_id: Some("market-one".to_string()),
+        polymarket_condition_id: Some("condition-one".to_string()),
+        polymarket_market_slug: Some("market-slug-one".to_string()),
+        polymarket_question_id: Some("question-one".to_string()),
+        up_instrument_id: Some("instrument-up".to_string()),
+        down_instrument_id: Some("instrument-down".to_string()),
+        market_selection_timestamp_ms: Some(1000),
+        selected_market_observed_timestamp_ms: Some(1000),
+        polymarket_market_start_timestamp_ms: Some(1000),
+        polymarket_market_end_timestamp_ms: Some(301000),
+        price_to_beat_source: "source-one".to_string(),
+        price_to_beat_value: "3100".to_string(),
+        reference_quote_ts_event: 1200,
+        spot_price: "3100.5".to_string(),
+        reference_fair_value: Some("3100.5".to_string()),
+        realized_volatility: "2.5".to_string(),
+        realized_volatility_surface_id: "<surface_id>".to_string(),
+        realized_volatility_as_of_ms: Some(1200),
+        realized_volatility_annualized_decimal: "2.5".to_string(),
+        realized_volatility_measured_annualized_decimal: "2.5".to_string(),
+        realized_volatility_noise_robust_annualized_decimal: "2.4".to_string(),
+        realized_volatility_continuous_annualized_decimal: "2.3".to_string(),
+        realized_volatility_jump_annualized_decimal: "0.1".to_string(),
+        realized_volatility_forecast_annualized_decimal: String::new(),
+        realized_volatility_pricing_component: "noise_robust".to_string(),
+        realized_volatility_seconds_per_annum: "31536000".to_string(),
+        realized_volatility_aggregation: "upper_quantile".to_string(),
+        realized_volatility_sources_used: vec!["<SOURCE_ID_A>".to_string()],
+        realized_volatility_source_diagnostics: Vec::new(),
+        realized_volatility_unknown_source_rejections: BTreeMap::new(),
+        realized_volatility_blockers: Vec::new(),
+        realized_volatility_config_fingerprint: "<config_fingerprint>".to_string(),
+        seconds_to_market_end: 300,
+        pricing_kurtosis: "0".to_string(),
+        theta_decay_factor: "0".to_string(),
+        theta_scaled_min_edge_bps: "10".to_string(),
+        fair_probability_up: "0.6".to_string(),
+        uncertainty_band_probability: "0.01".to_string(),
+        expected_edge_basis_points: "10".to_string(),
+        worst_case_edge_basis_points: "10".to_string(),
+        fee_rate_basis_points: "0".to_string(),
+        selected_side: Some("up".to_string()),
+        submission_instrument_id: "instrument-up".to_string(),
+        submission_order_side: OrderSide::Buy.to_string(),
+        submission_price: "0.50".to_string(),
+        submission_quantity: "1".to_string(),
+        client_order_id: "client-order-one".to_string(),
     }
 }
 
@@ -226,7 +340,7 @@ fn latest_entry_decision_evidence_chain_rejects_stale_v5_before_admission_payloa
     );
     assert!(
         !rendered.contains("execution_client_id"),
-        "stale v5 should not reach v6 admission payload parsing, got: {rendered}"
+        "stale v5 should not reach current admission payload parsing, got: {rendered}"
     );
 }
 
@@ -252,6 +366,22 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         spot_price: "3100.5".to_string(),
         reference_fair_value: Some("3100.5".to_string()),
         realized_volatility: "1.5".to_string(),
+        realized_volatility_surface_id: String::new(),
+        realized_volatility_as_of_ms: None,
+        realized_volatility_annualized_decimal: "1.5".to_string(),
+        realized_volatility_measured_annualized_decimal: String::new(),
+        realized_volatility_noise_robust_annualized_decimal: String::new(),
+        realized_volatility_continuous_annualized_decimal: String::new(),
+        realized_volatility_jump_annualized_decimal: String::new(),
+        realized_volatility_forecast_annualized_decimal: String::new(),
+        realized_volatility_pricing_component: String::new(),
+        realized_volatility_seconds_per_annum: String::new(),
+        realized_volatility_aggregation: String::new(),
+        realized_volatility_sources_used: Vec::new(),
+        realized_volatility_source_diagnostics: Vec::new(),
+        realized_volatility_unknown_source_rejections: BTreeMap::new(),
+        realized_volatility_blockers: Vec::new(),
+        realized_volatility_config_fingerprint: String::new(),
         seconds_to_market_end: 300,
         pricing_kurtosis: "0".to_string(),
         theta_decay_factor: "0".to_string(),

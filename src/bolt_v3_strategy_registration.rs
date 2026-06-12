@@ -10,7 +10,9 @@ use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::StrategyId;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime;
 
 #[derive(Clone, Copy)]
 pub struct StrategyRuntimeBinding {
@@ -30,6 +32,7 @@ pub struct StrategyRegistrationContext<'a> {
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    pub realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,6 +68,9 @@ pub enum BoltV3StrategyRegistrationError {
     Evidence {
         message: String,
     },
+    RealizedVolatilityRuntime {
+        message: String,
+    },
 }
 
 impl std::fmt::Display for BoltV3StrategyRegistrationError {
@@ -87,6 +93,12 @@ impl std::fmt::Display for BoltV3StrategyRegistrationError {
             Self::Evidence { message } => {
                 write!(f, "bolt-v3 decision evidence setup failed: {message}")
             }
+            Self::RealizedVolatilityRuntime { message } => {
+                write!(
+                    f,
+                    "bolt-v3 realized-volatility runtime setup failed: {message}"
+                )
+            }
         }
     }
 }
@@ -105,6 +117,11 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     if loaded.strategies.is_empty() {
         return Ok(summary);
     }
+    let realized_volatility_runtime = Arc::new(Mutex::new(
+        RealizedVolSurfaceRuntime::from_loaded_config(loaded).map_err(|error| {
+            BoltV3StrategyRegistrationError::RealizedVolatilityRuntime { message: error }
+        })?,
+    ));
 
     for strategy in &loaded.strategies {
         let binding = bindings
@@ -122,6 +139,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
                 resolved,
                 decision_evidence: decision_evidence.clone(),
                 submit_admission: submit_admission.clone(),
+                realized_volatility_runtime: realized_volatility_runtime.clone(),
             },
         )?;
         summary.registered.push(BoltV3RegisteredStrategy {

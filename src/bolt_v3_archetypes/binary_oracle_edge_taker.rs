@@ -68,6 +68,14 @@ use crate::{
 };
 
 pub const KEY: &str = STRATEGY_KIND;
+pub const BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE: &str =
+    "binary_oracle_entry_order_unsupported_shape";
+pub const BINARY_ORACLE_ENTRY_ORDER_REDUCE_ONLY_CODE: &str =
+    "binary_oracle_entry_order_reduce_only";
+pub const BINARY_ORACLE_ENTRY_ORDER_MARKET_QUOTE_QUANTITY_CODE: &str =
+    "binary_oracle_entry_order_market_quote_quantity";
+pub const BINARY_ORACLE_ENTRY_ORDER_QUOTE_QUANTITY_CODE: &str =
+    "binary_oracle_entry_order_quote_quantity";
 
 pub fn validation_binding() -> ArchetypeValidationBinding {
     ArchetypeValidationBinding {
@@ -109,12 +117,10 @@ pub struct RuntimeParametersBlock {
     pub warmup_tick_count: u64,
     pub reentry_cooldown_secs: u64,
     pub book_impact_cap_bps: u64,
+    pub vwap_depth_limit_bps: u64,
+    pub slippage_buffer_bps: u64,
     pub risk_lambda: f64,
     pub exit_hysteresis_bps: i64,
-    pub vol_window_secs: u64,
-    pub vol_gap_reset_secs: u64,
-    pub vol_min_observations: u64,
-    pub vol_bridge_valid_secs: u64,
     pub trade_flow_window_secs: u64,
     pub trade_flow_max_samples: u64,
     pub spike_guard_return_threshold: f64,
@@ -138,12 +144,10 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             warmup_tick_count: u64,
             reentry_cooldown_secs: u64,
             book_impact_cap_bps: u64,
+            vwap_depth_limit_bps: u64,
+            slippage_buffer_bps: u64,
             risk_lambda: f64,
             exit_hysteresis_bps: i64,
-            vol_window_secs: u64,
-            vol_gap_reset_secs: u64,
-            vol_min_observations: u64,
-            vol_bridge_valid_secs: u64,
             trade_flow_window_secs: u64,
             trade_flow_max_samples: u64,
             spike_guard_return_threshold: f64,
@@ -198,12 +202,10 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             warmup_tick_count: wire.warmup_tick_count,
             reentry_cooldown_secs: wire.reentry_cooldown_secs,
             book_impact_cap_bps: wire.book_impact_cap_bps,
+            vwap_depth_limit_bps: wire.vwap_depth_limit_bps,
+            slippage_buffer_bps: wire.slippage_buffer_bps,
             risk_lambda: wire.risk_lambda,
             exit_hysteresis_bps: wire.exit_hysteresis_bps,
-            vol_window_secs: wire.vol_window_secs,
-            vol_gap_reset_secs: wire.vol_gap_reset_secs,
-            vol_min_observations: wire.vol_min_observations,
-            vol_bridge_valid_secs: wire.vol_bridge_valid_secs,
             trade_flow_window_secs: wire.trade_flow_window_secs,
             trade_flow_max_samples: wire.trade_flow_max_samples,
             spike_guard_return_threshold: wire.spike_guard_return_threshold,
@@ -423,7 +425,8 @@ pub fn register_runtime_strategy(
         context.decision_evidence.clone(),
         context.submit_admission.clone(),
         execution_venue,
-    );
+    )
+    .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
@@ -466,6 +469,14 @@ pub fn raw_taker_config(
             ),
         })?;
     let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
+    let realized_volatility_surface_id = strategy
+        .config
+        .realized_volatility_surface_id
+        .as_deref()
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: "config.realized_volatility_surface_id is required".to_string(),
+        })?;
     let reference_data = configured_reference_data(strategy)?;
     let signal_data = configured_signal_data(strategy)?;
     validate_configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
@@ -656,6 +667,11 @@ pub fn raw_taker_config(
         "signal_instrument_id",
         signal_data.instrument_id.to_string(),
     );
+    insert_string(
+        &mut table,
+        "realized_volatility_surface_id",
+        realized_volatility_surface_id.to_string(),
+    );
     if let Some(resolution_data) = resolution_data {
         insert_string(
             &mut table,
@@ -710,6 +726,18 @@ pub fn raw_taker_config(
         "book_impact_cap_bps",
         parameters.runtime.book_impact_cap_bps,
     )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "vwap_depth_limit_bps",
+        parameters.runtime.vwap_depth_limit_bps,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "slippage_buffer_bps",
+        parameters.runtime.slippage_buffer_bps,
+    )?;
     insert_float(&mut table, "risk_lambda", parameters.runtime.risk_lambda);
     insert_i64(
         &mut table,
@@ -721,30 +749,6 @@ pub fn raw_taker_config(
         "exit_hysteresis_bps",
         parameters.runtime.exit_hysteresis_bps,
     );
-    insert_u64(
-        &mut table,
-        strategy_instance_id,
-        "vol_window_secs",
-        parameters.runtime.vol_window_secs,
-    )?;
-    insert_u64(
-        &mut table,
-        strategy_instance_id,
-        "vol_gap_reset_secs",
-        parameters.runtime.vol_gap_reset_secs,
-    )?;
-    insert_u64(
-        &mut table,
-        strategy_instance_id,
-        "vol_min_observations",
-        parameters.runtime.vol_min_observations,
-    )?;
-    insert_u64(
-        &mut table,
-        strategy_instance_id,
-        "vol_bridge_valid_secs",
-        parameters.runtime.vol_bridge_valid_secs,
-    )?;
     insert_u64(
         &mut table,
         strategy_instance_id,
@@ -1465,9 +1469,18 @@ fn validate_parameter_bounds(
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
     let mut errors = check_enabled_order_template(context, "entry_order", entry);
+    if !executable_entry_order_shape_supported(entry) {
+        errors.push(archetype_validation_error(
+            context,
+            BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE,
+            "parameters.entry_order unsupported executable entry shape: must be buy/long limit FOK without post-only, trigger, or trailing fields",
+        ));
+    }
     if entry.is_reduce_only {
-        errors.push(format!(
-            "{context}: parameters.entry_order.is_reduce_only must be false because `binary_oracle_edge_taker` entry orders open the managed position"
+        errors.push(archetype_validation_error(
+            context,
+            BINARY_ORACLE_ENTRY_ORDER_REDUCE_ONLY_CODE,
+            "parameters.entry_order.is_reduce_only must be false because `binary_oracle_edge_taker` entry orders open the managed position",
         ));
     }
     // A market + quote-quantity entry is a BUY sized in pUSD, which makes the pinned NT
@@ -1479,8 +1492,10 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
     // cap. Forbid the combination so the modeled fanout stays the provable worst-case. (Exits
     // already reject is_quote_quantity; they are SELLs and never take the collateral path.)
     if entry.order_type == OrderType::Market && entry.is_quote_quantity {
-        errors.push(format!(
-            "{context}: parameters.entry_order combination order_type=market with is_quote_quantity=true is not supported because a market quote-quantity BUY issues an extra venue collateral-balance REST request (3 per command), over-driving the modeled egress fanout of 2"
+        errors.push(archetype_validation_error(
+            context,
+            BINARY_ORACLE_ENTRY_ORDER_MARKET_QUOTE_QUANTITY_CODE,
+            "parameters.entry_order combination order_type=market with is_quote_quantity=true is not supported because a market quote-quantity BUY issues an extra venue collateral-balance REST request (3 per command), over-driving the modeled egress fanout of 2",
         ));
     } else if entry.is_quote_quantity {
         // A non-market (limit) quote-quantity entry skips the extra collateral REST fetch, but
@@ -1491,11 +1506,33 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
         // quantity (exits and forced exits already reject is_quote_quantity), so forbid quote-quantity
         // entries entirely. Re-enabling the mode requires BOTH the order-template-aware egress fanout
         // model and a submit-time cache-tick freshness guard (tracked in #506).
-        errors.push(format!(
-            "{context}: parameters.entry_order with is_quote_quantity=true is not supported because quote-quantity sizing converts quote->base off an unguarded top-of-book cache tick with no submit-time freshness bound, which can understate the per-order cash commitment; size entries from base quantity (is_quote_quantity=false)"
+        errors.push(archetype_validation_error(
+            context,
+            BINARY_ORACLE_ENTRY_ORDER_QUOTE_QUANTITY_CODE,
+            "parameters.entry_order with is_quote_quantity=true is not supported because quote-quantity sizing converts quote->base off an unguarded top-of-book cache tick with no submit-time freshness bound, which can understate the per-order cash commitment; size entries from base quantity (is_quote_quantity=false)",
         ));
     }
     errors
+}
+
+fn archetype_validation_error(context: &str, code: &str, message: &str) -> String {
+    format!("{context}: error_code={code} {message}")
+}
+
+fn executable_entry_order_shape_supported(entry: &OrderParams) -> bool {
+    // Fields with dedicated entry diagnostics stay out of this broad shape predicate
+    // so operators see one specific error for those cases.
+    entry.side == OrderSide::Buy
+        && entry.position_side == PositionSide::Long
+        && entry.order_type == OrderType::Limit
+        && entry.time_in_force == TimeInForce::Fok
+        && !entry.is_post_only
+        && entry.trigger_price.is_none()
+        && entry.activation_price.is_none()
+        && entry.trigger_type.is_none()
+        && entry.trigger_instrument_id.is_none()
+        && entry.trailing_offset.is_none()
+        && entry.trailing_offset_type.is_none()
 }
 
 fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {

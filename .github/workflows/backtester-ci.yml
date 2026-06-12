@@ -24,6 +24,10 @@ name: Backtester CI
 # and `backtester-gate` concludes success as an explicit no-op on non-crate PRs.
 
 on:
+  # Manual lane: GitHub Actions does not deliver pull_request events for PRs
+  # whose diff exceeds its internal size limit (observed at ~28k files on #610),
+  # so oversized PRs need a manually dispatched run against the branch ref.
+  workflow_dispatch:
   pull_request:
     branches: [main]
   push:
@@ -42,7 +46,6 @@ env:
   # Same single base as ci.yml — one base, two namespaces. The crate's namespace
   # (backtesting-vertical-slice) is selected by --repo, not by a second base.
   RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
-
 permissions:
   contents: read
 
@@ -52,7 +55,7 @@ jobs:
   # PRs that never touch the crate while `backtester-gate` still reports a verdict.
   detect:
     name: bvs-detect
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     outputs:
       bvs_changed: ${{ steps.detect.outputs.bvs_changed }}
     steps:
@@ -64,8 +67,8 @@ jobs:
         id: detect
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            echo "push event; treating crate as changed"
+          if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "push or manual dispatch event; treating crate as changed"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -77,6 +80,7 @@ jobs:
             scripts/rust_verification.py \
             scripts/command_understanding.py \
             rust-toolchain.toml \
+            ci/github-actions-runners.toml \
             '.github/actions/setup-environment/**' \
             .github/workflows/backtester-ci.yml)"
           if [[ -n "$changed" ]]; then
@@ -95,7 +99,7 @@ jobs:
     name: bvs-fmt
     needs: detect
     if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -113,7 +117,7 @@ jobs:
     name: bvs-clippy
     needs: [detect, fmt]
     if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -158,7 +162,7 @@ jobs:
     name: bvs-test
     needs: [detect, fmt]
     if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -205,7 +209,7 @@ jobs:
     name: backtester-gate
     needs: [detect, fmt, clippy, test]
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - name: Check required lanes
         shell: bash

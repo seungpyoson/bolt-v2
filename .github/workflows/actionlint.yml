@@ -6,6 +6,10 @@ name: actionlint
 # and silently never ran.
 
 on:
+  # Manual lane: GitHub Actions does not deliver pull_request events for PRs
+  # whose diff exceeds its internal size limit (observed at ~28k files on #610),
+  # so oversized PRs need a manually dispatched run against the branch ref.
+  workflow_dispatch:
   pull_request:
     branches: [main]
   push:
@@ -24,7 +28,7 @@ permissions:
 jobs:
   actionlint:
     name: actionlint
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: reviewdog/action-actionlint@6fb7acc99f4a1008869fa8a0f09cfca740837d9d # v1.72.0

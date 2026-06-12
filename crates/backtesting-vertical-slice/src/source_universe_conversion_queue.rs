@@ -6,12 +6,13 @@
 use std::{
     collections::BTreeMap,
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
+use crate::hashing::sha256_hex;
+use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 pub const SOURCE_UNIVERSE_CONVERSION_QUEUE_SCHEMA_VERSION: &str =
     "source-universe-conversion-queue.v1";
@@ -219,7 +220,7 @@ pub fn write_source_universe_conversion_queue(
 
     Ok(SourceUniverseConversionQueueArtifact {
         path,
-        content_hash: sha256_bytes(&bytes),
+        content_hash: sha256_hex(&bytes),
         bytes: bytes.len() as u64,
         work_item_count: queue.work_item_count,
     })
@@ -495,78 +496,7 @@ where
     serde_json::from_slice(&bytes)
         .with_context(|| format!("parse JSON artifact {}", path.display()))
 }
-
-fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    if looks_repo_relative(path)
-        && let Some(candidate) = resolve_from_known_anchors(path)
-    {
-        return candidate;
-    }
-    let base_candidate = base_dir.join(path);
-    if base_candidate
-        .parent()
-        .is_some_and(|parent| parent.exists())
-    {
-        return base_candidate;
-    }
-    resolve_from_known_anchors(path).unwrap_or(base_candidate)
-}
-
-fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    if looks_repo_relative(path)
-        && let Some(candidate) = resolve_from_known_anchors(path)
-    {
-        return candidate;
-    }
-    if path.exists() {
-        return path.to_path_buf();
-    }
-    let base_candidate = base_dir.join(path);
-    if base_candidate.exists() {
-        return base_candidate;
-    }
-    resolve_from_known_anchors(path).unwrap_or_else(|| path.to_path_buf())
-}
-
-fn resolve_from_known_anchors(path: &Path) -> Option<PathBuf> {
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            let candidate = ancestor.join(path);
-            if candidate.parent().is_some_and(|parent| parent.exists()) {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-fn looks_repo_relative(path: &Path) -> bool {
-    matches!(
-        path.components().next(),
-        Some(Component::Normal(component))
-            if component == "specs" || component == "crates" || component == "docs" || component == "scripts"
-    )
-}
-
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).with_context(|| format!("read artifact {}", path.display()))?;
-    Ok(sha256_bytes(&bytes))
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
+    Ok(sha256_hex(&bytes))
 }

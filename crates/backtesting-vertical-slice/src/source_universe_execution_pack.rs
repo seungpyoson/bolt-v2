@@ -8,14 +8,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use nautilus_model::{data::BarType, identifiers::InstrumentId};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use toml::Value;
 
+use crate::hashing::sha256_hex;
+use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
 use crate::{
     backfill_accepted_tranche::{
         BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE, BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
@@ -26,8 +28,8 @@ use crate::{
         BackfillExecutionPlanStatus, BackfillExecutionRunBinding, BackfillExecutionWorkBudget,
         evaluate_backfill_execution_plan, write_backfill_execution_plan_with_overwrite,
     },
-    catalog_projection::CatalogInstrumentSpec,
     canonical_trades::{CanonicalInstrumentIdentity, ConverterConfig, RawPayloadConfig},
+    catalog_projection::CatalogInstrumentSpec,
     operator::RunSpec,
     source_proof::{AcceptanceScope, SourceProofReport, SourceProofStatus},
     source_universe_conversion_work_order::{
@@ -231,7 +233,7 @@ pub fn write_source_universe_execution_pack(
     let template_path = resolve_existing_path(base_dir, &spec.run_spec_template_path);
     let template_text = fs::read_to_string(&template_path)
         .with_context(|| format!("read run-spec template {}", template_path.display()))?;
-    let template_hash = sha256_bytes(template_text.as_bytes());
+    let template_hash = sha256_hex(template_text.as_bytes());
     let template: Value = toml::from_str(&template_text)
         .with_context(|| format!("parse run-spec template TOML {}", template_path.display()))?;
     let _: RunSpec = toml::from_str(&template_text).with_context(|| {
@@ -319,9 +321,13 @@ pub fn write_source_universe_execution_pack(
             &spec.venue_account_types,
         )?;
         let run_spec_bytes = run_spec_text.as_bytes();
-        let run_spec_hash = sha256_bytes(run_spec_bytes);
+        let run_spec_hash = sha256_hex(run_spec_bytes);
         let run_spec_path = run_dir.join(SOURCE_UNIVERSE_EXECUTION_PACK_RUN_SPEC_FILE);
-        write_bytes_if_clean(&run_spec_path, run_spec_bytes, spec.overwrite_existing_artifacts)?;
+        write_bytes_if_clean(
+            &run_spec_path,
+            run_spec_bytes,
+            spec.overwrite_existing_artifacts,
+        )?;
         let run_spec: RunSpec = toml::from_str(&run_spec_text).with_context(|| {
             format!(
                 "materialized run spec does not deserialize {}",
@@ -334,7 +340,7 @@ pub fn write_source_universe_execution_pack(
             accepted_tranche_for_record(record, proof, &operator_inputs.table_family, gate);
         let accepted_tranche_bytes = serde_json::to_vec_pretty(&accepted_tranche)
             .context("serialize source-universe accepted tranche")?;
-        let accepted_tranche_hash = sha256_bytes(&accepted_tranche_bytes);
+        let accepted_tranche_hash = sha256_hex(&accepted_tranche_bytes);
         let accepted_tranche_path = run_dir.join(BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE);
         write_bytes_if_clean(
             &accepted_tranche_path,
@@ -490,7 +496,7 @@ pub fn write_source_universe_execution_pack(
     write_bytes_if_clean(&pack_path, &pack_bytes, spec.overwrite_existing_artifacts)?;
     Ok(SourceUniverseExecutionPackArtifact {
         path: pack_path,
-        content_hash: sha256_bytes(&pack_bytes),
+        content_hash: sha256_hex(&pack_bytes),
         bytes: pack_bytes.len() as u64,
         materialized_record_count,
     })
@@ -688,14 +694,47 @@ fn patch_strategy_bar_type(manifest: &mut toml::Table, nt_instrument_id: &str) -
     let Some(existing) = parameters.get("bar_type").and_then(Value::as_str) else {
         return Ok(());
     };
-    let suffix = existing
-        .split_once('-')
-        .map(|(_, suffix)| suffix)
-        .unwrap_or("1-MINUTE-LAST-INTERNAL");
-    parameters.insert(
-        "bar_type".to_string(),
-        Value::String(format!("{nt_instrument_id}-{suffix}")),
-    );
+    // NT owns bar-type syntax: parse the template value loud (NT splits from
+    // the right, so hyphenated instrument ids stay intact), rebind only the
+    // instrument id, and let NT render the result. A malformed template is an
+    // error, never a substituted default cadence.
+    let template: BarType = existing.parse().map_err(|error| {
+        anyhow::anyhow!(
+            "run-spec template strategy.parameters.bar_type {existing:?} is not a valid NT bar type: {error}"
+        )
+    })?;
+    let instrument_id: InstrumentId = nt_instrument_id.parse().map_err(|error| {
+        anyhow::anyhow!(
+            "nt_instrument_id {nt_instrument_id:?} is not a valid NT instrument id: {error}"
+        )
+    })?;
+    let rebound = match template {
+        BarType::Standard {
+            spec,
+            aggregation_source,
+            ..
+        } => BarType::Standard {
+            instrument_id,
+            spec,
+            aggregation_source,
+        },
+        BarType::Composite {
+            spec,
+            aggregation_source,
+            composite_step,
+            composite_aggregation,
+            composite_aggregation_source,
+            ..
+        } => BarType::Composite {
+            instrument_id,
+            spec,
+            aggregation_source,
+            composite_step,
+            composite_aggregation,
+            composite_aggregation_source,
+        },
+    };
+    parameters.insert("bar_type".to_string(), Value::String(rebound.to_string()));
     Ok(())
 }
 
@@ -926,7 +965,7 @@ where
     let resolved = resolve_existing_path(base_dir, path);
     let bytes = fs::read(&resolved)
         .with_context(|| format!("read {role} artifact {}", resolved.display()))?;
-    let actual_sha256 = sha256_bytes(&bytes);
+    let actual_sha256 = sha256_hex(&bytes);
     if let Some(expected_sha256) = expected_sha256 {
         ensure!(
             actual_sha256 == expected_sha256,
@@ -991,82 +1030,6 @@ fn write_bytes_if_clean(path: &Path, bytes: &[u8], overwrite_existing: bool) -> 
     }
     Ok(())
 }
-
-fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    if looks_repo_relative(path)
-        && let Some(candidate) = resolve_from_known_anchors(path)
-    {
-        return candidate;
-    }
-    let base_candidate = base_dir.join(path);
-    if base_candidate.parent().is_some_and(Path::exists) {
-        return base_candidate;
-    }
-    resolve_from_known_anchors(path).unwrap_or(base_candidate)
-}
-
-fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() || path.exists() {
-        return path.to_path_buf();
-    }
-    let base_candidate = base_dir.join(path);
-    if base_candidate.exists() {
-        return base_candidate;
-    }
-    resolve_from_known_anchors(path).unwrap_or_else(|| path.to_path_buf())
-}
-
-fn resolve_from_known_anchors(path: &Path) -> Option<PathBuf> {
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            let candidate = ancestor.join(path);
-            if candidate.exists() || candidate.parent().is_some_and(Path::exists) {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-fn portable_artifact_path(path: &Path) -> PathBuf {
-    if !path.is_absolute() {
-        return path.to_path_buf();
-    }
-
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            if let Ok(candidate) = path.strip_prefix(ancestor)
-                && looks_repo_relative(candidate)
-            {
-                return candidate.to_path_buf();
-            }
-        }
-    }
-
-    path.to_path_buf()
-}
-
-fn looks_repo_relative(path: &Path) -> bool {
-    path.components()
-        .next()
-        .is_some_and(|component| matches!(component, Component::Normal(first) if first == "specs"))
-}
-
 fn slug(value: &str) -> String {
     let mut slug = String::with_capacity(value.len());
     for character in value.chars() {
@@ -1081,8 +1044,4 @@ fn slug(value: &str) -> String {
     } else {
         slug
     }
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
 }

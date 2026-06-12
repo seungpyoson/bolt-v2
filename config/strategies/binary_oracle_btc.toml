@@ -15,6 +15,7 @@ log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
+realized_volatility_surface_id = "okx_btc_usdt_midpoint_rv"
 
 [target]
 configured_target_id = "binary_oracle_btc_target"
@@ -72,12 +73,10 @@ reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-0
 warmup_tick_count = 20
 reentry_cooldown_secs = 30
 book_impact_cap_bps = 50
+vwap_depth_limit_bps = 50
+slippage_buffer_bps = 50
 risk_lambda = 0.5
 exit_hysteresis_bps = 25
-vol_window_secs = 600
-vol_gap_reset_secs = 60
-vol_min_observations = 5
-vol_bridge_valid_secs = 30
 trade_flow_window_secs = 60
 trade_flow_max_samples = 2000
 spike_guard_return_threshold = 0.02

@@ -19,8 +19,8 @@ use object_store::{
     path::Path as ObjectPath,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use sha2::{Digest, Sha256};
 
+use crate::hashing::sha256_hex;
 use crate::{
     artifact_index::{
         ArtifactIndexEventObject, ArtifactIndexLatestPointer, ArtifactIndexLatestPointerUpdatePlan,
@@ -127,10 +127,18 @@ struct ArtifactIndexIamProbeObject {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum ArtifactIndexIamProbePathKind {
+pub(crate) enum ArtifactIndexIamProbePathKind {
     Event,
     Snapshot,
     LatestPointer,
+}
+
+impl ArtifactIndexIamProbePathKind {
+    /// Every probe path kind, in emission order. `denied_probe_uris` emits
+    /// exactly one URI per kind via an exhaustive match, and the IAM plan's
+    /// `expected_denied_write_attempts` derives from this slice's length, so
+    /// adding a kind updates both sides or fails to compile.
+    pub(crate) const ALL: [Self; 3] = [Self::Event, Self::Snapshot, Self::LatestPointer];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -549,26 +557,25 @@ fn denied_probe_uris(
     let root = spec.artifact_root.trim_end_matches('/');
     let kind = denied_kind.as_str();
     let hash = sha256_hex(format!("{}:{kind}:iam-scope-probe", spec.proof_id).as_bytes());
-    vec![
-        (
-            ArtifactIndexIamProbePathKind::Event,
-            format!(
-                "{root}/artifact-index/v1/events/kind={kind}/artifact_id={}-denied-{kind}/hash={hash}.json",
-                spec.proof_id
-            ),
-        ),
-        (
-            ArtifactIndexIamProbePathKind::Snapshot,
-            format!(
-                "{root}/artifact-index/v1/snapshots/kind={kind}/snapshot_id={}-denied-{kind}/manifest.json",
-                spec.proof_id
-            ),
-        ),
-        (
-            ArtifactIndexIamProbePathKind::LatestPointer,
-            format!("{root}/artifact-index/v1/pointers/kind={kind}/latest.json"),
-        ),
-    ]
+    ArtifactIndexIamProbePathKind::ALL
+        .into_iter()
+        .map(|path_kind| {
+            let uri = match path_kind {
+                ArtifactIndexIamProbePathKind::Event => format!(
+                    "{root}/artifact-index/v1/events/kind={kind}/artifact_id={}-denied-{kind}/hash={hash}.json",
+                    spec.proof_id
+                ),
+                ArtifactIndexIamProbePathKind::Snapshot => format!(
+                    "{root}/artifact-index/v1/snapshots/kind={kind}/snapshot_id={}-denied-{kind}/manifest.json",
+                    spec.proof_id
+                ),
+                ArtifactIndexIamProbePathKind::LatestPointer => {
+                    format!("{root}/artifact-index/v1/pointers/kind={kind}/latest.json")
+                }
+            };
+            (path_kind, uri)
+        })
+        .collect()
 }
 
 fn staged_record(spec: &ArtifactIndexCommitProofSpec, suffix: &str) -> Result<ArtifactIndexRecord> {
@@ -858,8 +865,4 @@ fn content_hash(report: &ArtifactIndexCommitProofReport) -> Result<String> {
     let bytes = serde_json::to_vec(report)
         .context("serialize Artifact Index commit proof report for hash")?;
     Ok(sha256_hex(&bytes))
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
 }

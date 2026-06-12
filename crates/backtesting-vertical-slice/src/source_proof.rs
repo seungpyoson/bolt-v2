@@ -81,15 +81,19 @@ impl SourceBindingRegistry {
         venue: &str,
     ) -> Option<SourceBindingMetadata> {
         self.source_binding_config(source_binding, venue)
-            .map(|config| SourceBindingMetadata {
-                key: config.key,
-                venue: config.venue,
-                product_family: config.product_family,
-                market_structure_fixture: config.market_structure_fixture,
-                evidence_state: config.evidence_state,
-                table_families: config.table_families,
-                required_cross_market_component_roles: config.required_cross_market_component_roles,
-            })
+            .map(SourceBindingConfig::into_metadata)
+    }
+
+    /// Every configured binding as metadata, in registry order. Gates that
+    /// evaluate the whole registry consume this instead of re-parsing the
+    /// TOML themselves, so one typed parse owns the binding schema.
+    #[must_use]
+    pub fn all_binding_metadata(&self) -> Vec<SourceBindingMetadata> {
+        self.source_bindings
+            .iter()
+            .cloned()
+            .map(SourceBindingConfig::into_metadata)
+            .collect()
     }
 }
 
@@ -108,6 +112,20 @@ pub fn resolve_source_bindings_path(path: &Path) -> PathBuf {
         repo_relative
     } else {
         path.to_path_buf()
+    }
+}
+
+impl SourceBindingConfig {
+    fn into_metadata(self) -> SourceBindingMetadata {
+        SourceBindingMetadata {
+            key: self.key,
+            venue: self.venue,
+            product_family: self.product_family,
+            market_structure_fixture: self.market_structure_fixture,
+            evidence_state: self.evidence_state,
+            table_families: self.table_families,
+            required_cross_market_component_roles: self.required_cross_market_component_roles,
+        }
     }
 }
 

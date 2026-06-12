@@ -107,7 +107,10 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     )
     .expect("batch executes");
 
-    assert_eq!(report.status, SourceUniverseBatchExecutionReportStatus::Completed);
+    assert_eq!(
+        report.status,
+        SourceUniverseBatchExecutionReportStatus::Completed
+    );
     assert_eq!(report.pack_id, "source-universe-execution-pack-synthetic");
     assert_eq!(report.selected_record_count, 1);
     assert_eq!(report.completed_record_count, 1);
@@ -116,7 +119,10 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     assert_eq!(report.total_nt_catalog_rows, 7);
     assert_eq!(fetcher.calls, 1);
     assert_eq!(runner.calls.len(), 1);
-    assert_eq!(runner.calls[0].operator_run_id, "source-universe-operator-run-synthetic-00000");
+    assert_eq!(
+        runner.calls[0].operator_run_id,
+        "source-universe-operator-run-synthetic-00000"
+    );
     assert_eq!(runner.calls[0].object_bytes, object_bytes);
     assert_eq!(runner.calls[0].run_spec_path, run_spec_path);
     assert_eq!(runner.calls[0].execution_plan_path, execution_plan_path);
@@ -130,10 +136,7 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     let written: serde_json::Value =
         serde_json::from_slice(&fs::read(&artifact.path).expect("read report"))
             .expect("parse report");
-    assert_eq!(
-        written["batch_id"],
-        "source-universe-batch-synthetic"
-    );
+    assert_eq!(written["batch_id"], "source-universe-batch-synthetic");
     assert_eq!(written["completed_record_count"], 1);
     assert_eq!(artifact.completed_record_count, 1);
 }
@@ -177,14 +180,20 @@ fn source_universe_batch_execution_respects_start_sequence() {
     )
     .expect("batch executes selected sequence");
 
-    assert_eq!(report.status, SourceUniverseBatchExecutionReportStatus::Completed);
+    assert_eq!(
+        report.status,
+        SourceUniverseBatchExecutionReportStatus::Completed
+    );
     assert_eq!(report.selected_record_count, 1);
     assert_eq!(report.completed_record_count, 1);
     assert_eq!(report.failed_record_count, 0);
     assert_eq!(report.records[0].sequence, 1);
     assert_eq!(report.records[0].symbol, "SYNTHETIC-BBB");
     assert_eq!(runner.calls.len(), 1);
-    assert_eq!(runner.calls[0].operator_run_id, "source-universe-operator-run-synthetic-00001");
+    assert_eq!(
+        runner.calls[0].operator_run_id,
+        "source-universe-operator-run-synthetic-00001"
+    );
 }
 
 #[test]
@@ -240,7 +249,10 @@ fn source_universe_batch_execution_can_continue_after_record_failure() {
     assert_eq!(report.failures[0].sequence, 0);
     assert_eq!(report.failures[0].failure_stage, "verify_object");
     assert_eq!(runner.calls.len(), 1);
-    assert_eq!(runner.calls[0].operator_run_id, "source-universe-operator-run-synthetic-00001");
+    assert_eq!(
+        runner.calls[0].operator_run_id,
+        "source-universe-operator-run-synthetic-00001"
+    );
 }
 
 #[test]
@@ -267,7 +279,11 @@ fn caching_fetcher_miss_then_hit_avoids_inner_and_persists_atomically() {
 
     let first = fetcher.fetch(&record).expect("first fetch populates cache");
     assert_eq!(first, object_bytes);
-    assert_eq!(inner_calls.load(Ordering::SeqCst), 1, "miss calls inner once");
+    assert_eq!(
+        inner_calls.load(Ordering::SeqCst),
+        1,
+        "miss calls inner once"
+    );
 
     let cache_path = cache_dir.join(&record.selected_object_sha256);
     assert!(cache_path.exists(), "cache entry persisted under sha key");
@@ -307,7 +323,9 @@ fn caching_fetcher_corrupt_entry_is_deleted_and_repaired() {
     let inner_calls = inner.calls();
     let mut fetcher = CachingSourceUniverseObjectFetcher::new(inner, &cache_dir);
 
-    let bytes = fetcher.fetch(&record).expect("corrupt entry falls through to inner");
+    let bytes = fetcher
+        .fetch(&record)
+        .expect("corrupt entry falls through to inner");
     assert_eq!(bytes, object_bytes);
     assert_eq!(
         inner_calls.load(Ordering::SeqCst),
@@ -415,13 +433,18 @@ fn resume_carries_forward_prior_clean_record_without_refetch() {
         resume_report.completed_record_count, 2,
         "carried + reprocessed both succeed"
     );
-    assert_eq!(resume_report.total_canonical_rows, 14, "totals include carried rows");
+    assert_eq!(
+        resume_report.total_canonical_rows, 14,
+        "totals include carried rows"
+    );
     assert_eq!(resume_report.total_nt_catalog_rows, 14);
-    assert_eq!(resume_report.records[0].sequence, 0, "carried record stays in order");
+    assert_eq!(
+        resume_report.records[0].sequence, 0,
+        "carried record stays in order"
+    );
     assert_eq!(resume_report.records[1].sequence, 1);
     assert_eq!(
-        resume_report.records[0].output_dir,
-        first_report.records[0].output_dir,
+        resume_report.records[0].output_dir, first_report.records[0].output_dir,
         "carried record keeps prior provenance verbatim"
     );
     assert_eq!(
@@ -429,7 +452,11 @@ fn resume_carries_forward_prior_clean_record_without_refetch() {
         &[1u64],
         "only the non-carried sequence was fetched"
     );
-    assert_eq!(resume_runner.calls.len(), 1, "carried record skips the runner");
+    assert_eq!(
+        resume_runner.calls.len(),
+        1,
+        "carried record skips the runner"
+    );
 }
 
 #[test]
@@ -553,8 +580,7 @@ fn resume_pack_id_mismatch_fails_loud() {
     );
     let err = result.expect_err("pack_id mismatch must fail loud");
     assert!(
-        err.to_string().contains("pack_id")
-            || format!("{err:#}").contains("pack_id"),
+        err.to_string().contains("pack_id") || format!("{err:#}").contains("pack_id"),
         "error names the pack_id mismatch: {err:#}"
     );
 }
@@ -616,7 +642,10 @@ fn resume_does_not_carry_forward_prior_failure_entries() {
     )
     .expect("prior failure is reprocessed");
 
-    assert_eq!(report.completed_record_count, 1, "failure entry was reprocessed");
+    assert_eq!(
+        report.completed_record_count, 1,
+        "failure entry was reprocessed"
+    );
     assert_eq!(
         fetch_calls.lock().expect("fetch log").as_slice(),
         &[0u64],
@@ -633,7 +662,12 @@ fn parallel_overlaps_and_matches_serial_report() {
     fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let objects: Vec<(u64, Vec<u8>)> = (0..8u64)
-        .map(|sequence| (sequence, format!("synthetic object {sequence}").into_bytes()))
+        .map(|sequence| {
+            (
+                sequence,
+                format!("synthetic object {sequence}").into_bytes(),
+            )
+        })
         .collect();
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
     write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
@@ -701,13 +735,24 @@ fn parallel_overlaps_and_matches_serial_report() {
     // Reports must be field-for-field identical except the per-record output_dir,
     // which embeds the (distinct) batch output root. Compare everything else.
     assert_eq!(parallel_report.status, serial_report.status);
-    assert_eq!(parallel_report.completed_record_count, serial_report.completed_record_count);
-    assert_eq!(parallel_report.failed_record_count, serial_report.failed_record_count);
-    assert_eq!(parallel_report.total_canonical_rows, serial_report.total_canonical_rows);
-    assert_eq!(parallel_report.total_nt_catalog_rows, serial_report.total_nt_catalog_rows);
+    assert_eq!(
+        parallel_report.completed_record_count,
+        serial_report.completed_record_count
+    );
+    assert_eq!(
+        parallel_report.failed_record_count,
+        serial_report.failed_record_count
+    );
+    assert_eq!(
+        parallel_report.total_canonical_rows,
+        serial_report.total_canonical_rows
+    );
+    assert_eq!(
+        parallel_report.total_nt_catalog_rows,
+        serial_report.total_nt_catalog_rows
+    );
     let serial_sequences: Vec<u64> = serial_report.records.iter().map(|r| r.sequence).collect();
-    let parallel_sequences: Vec<u64> =
-        parallel_report.records.iter().map(|r| r.sequence).collect();
+    let parallel_sequences: Vec<u64> = parallel_report.records.iter().map(|r| r.sequence).collect();
     assert_eq!(
         parallel_sequences, serial_sequences,
         "parallel records assembled in original sequence order"
@@ -717,7 +762,11 @@ fn parallel_overlaps_and_matches_serial_report() {
         (0..8u64).collect::<Vec<_>>(),
         "all sequences present in order"
     );
-    for (parallel, serial) in parallel_report.records.iter().zip(serial_report.records.iter()) {
+    for (parallel, serial) in parallel_report
+        .records
+        .iter()
+        .zip(serial_report.records.iter())
+    {
         assert_eq!(parallel.sequence, serial.sequence);
         assert_eq!(parallel.symbol, serial.symbol);
         assert_eq!(parallel.canonical_rows, serial.canonical_rows);
@@ -735,7 +784,12 @@ fn parallel_stop_on_error_returns_lowest_sequence_error() {
     fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let objects: Vec<(u64, Vec<u8>)> = (0..6u64)
-        .map(|sequence| (sequence, format!("synthetic object {sequence}").into_bytes()))
+        .map(|sequence| {
+            (
+                sequence,
+                format!("synthetic object {sequence}").into_bytes(),
+            )
+        })
         .collect();
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
     write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
@@ -775,7 +829,12 @@ fn parallel_continue_on_error_collects_failures() {
     fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
 
     let objects: Vec<(u64, Vec<u8>)> = (0..6u64)
-        .map(|sequence| (sequence, format!("synthetic object {sequence}").into_bytes()))
+        .map(|sequence| {
+            (
+                sequence,
+                format!("synthetic object {sequence}").into_bytes(),
+            )
+        })
         .collect();
     let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
     write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
@@ -841,8 +900,7 @@ fn parallel_duplicate_sha_records_share_cache_and_repair_corrupt_entry() {
     let cache_dir = temp_dir.path().join("object-cache");
     fs::create_dir_all(&cache_dir).expect("create cache dir");
     let shared_sha = sha256_hex(&shared_bytes);
-    fs::write(cache_dir.join(&shared_sha), b"corrupt cached payload")
-        .expect("plant corrupt entry");
+    fs::write(cache_dir.join(&shared_sha), b"corrupt cached payload").expect("plant corrupt entry");
 
     let output_dir = temp_dir.path().join("batch-output");
     let report = execute_source_universe_batch_with_factories(
@@ -1183,7 +1241,8 @@ fn synthetic_record(
 fn carried_record_fixture(
     sequence: u64,
     selected_object_sha256: &str,
-) -> backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchExecutionRecord {
+) -> backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchExecutionRecord
+{
     backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchExecutionRecord {
         sequence,
         operator_run_id: format!("source-universe-operator-run-synthetic-{sequence:05}"),
@@ -1204,7 +1263,7 @@ fn carried_record_fixture(
 fn failure_record_fixture(
     sequence: u64,
     selected_object_sha256: &str,
-) -> backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchExecutionFailureRecord {
+) -> backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchExecutionFailureRecord{
     backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchExecutionFailureRecord {
         sequence,
         operator_run_id: format!("source-universe-operator-run-synthetic-{sequence:05}"),

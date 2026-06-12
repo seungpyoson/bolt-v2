@@ -75,7 +75,8 @@ pub fn artifact_index_producer_iam_provisioning_plan(
             session_token: None,
         },
         policy,
-        expected_denied_write_attempts: spec.denied_artifact_kinds.len() * 3,
+        expected_denied_write_attempts: spec.denied_artifact_kinds.len()
+            * crate::artifact_index_commit_proof::ArtifactIndexIamProbePathKind::ALL.len(),
         proof_denied_artifact_kinds: spec.denied_artifact_kinds,
     })
 }

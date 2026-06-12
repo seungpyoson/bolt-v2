@@ -1,14 +1,12 @@
 //! Generate a venue-level backfill conversion completion ledger from a TOML spec.
 
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::PathBuf};
 
 use anyhow::Result;
 use backtesting_vertical_slice::backfill_conversion_completion::{
     BackfillConversionCompletionLedger, write_backfill_conversion_completion_ledger_from_spec_file,
 };
+use backtesting_vertical_slice::path_resolution::resolve_existing_input_path;
 use clap::Parser;
 
 #[derive(Debug, Parser)]
@@ -20,7 +18,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let spec_path = resolve_existing_path(&cli.spec);
+    let spec_path = resolve_existing_input_path(&cli.spec);
     let artifact = write_backfill_conversion_completion_ledger_from_spec_file(&spec_path)?;
     let ledger: BackfillConversionCompletionLedger =
         serde_json::from_slice(&fs::read(&artifact.path)?)?;
@@ -37,27 +35,4 @@ fn main() -> Result<()> {
     println!("total_canonical_rows = {}", ledger.total_canonical_rows);
     println!("total_nt_iterations = {}", ledger.total_nt_iterations);
     Ok(())
-}
-
-fn resolve_existing_path(path: &Path) -> PathBuf {
-    if path.is_absolute() || path.exists() {
-        return path.to_path_buf();
-    }
-
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            let candidate = ancestor.join(path);
-            if candidate.exists() {
-                return candidate;
-            }
-        }
-    }
-
-    path.to_path_buf()
 }

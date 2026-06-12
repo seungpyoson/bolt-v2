@@ -6,13 +6,14 @@
 
 use std::{
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use crate::hashing::sha256_hex;
+use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::source_archive_index_manifest::{
     SourceArchiveIndexManifest, SourceArchiveIndexManifestStatus,
 };
@@ -194,7 +195,7 @@ pub fn write_source_archive_index_source_universe_manifest(
 
     Ok(SourceArchiveIndexSourceUniverseArtifact {
         path,
-        content_hash: sha256_bytes(&bytes),
+        content_hash: sha256_hex(&bytes),
         bytes: bytes.len() as u64,
         object_count: manifest.object_count,
         accepted_bytes: manifest.accepted_bytes,
@@ -435,104 +436,7 @@ fn write_clean_artifact(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
     }
     fs::write(path, bytes).with_context(|| format!("write {label} {}", path.display()))
 }
-
-fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    if looks_repo_relative(path)
-        && let Some(candidate) = resolve_repo_relative_output(path)
-    {
-        return candidate;
-    }
-    if looks_repo_relative(path)
-        && let Some(candidate) = resolve_from_known_anchors(path)
-    {
-        return candidate;
-    }
-    let base_candidate = base_dir.join(path);
-    if base_candidate
-        .parent()
-        .is_some_and(|parent| parent.exists())
-    {
-        return base_candidate;
-    }
-    resolve_from_known_anchors(path).unwrap_or(base_candidate)
-}
-
-fn resolve_repo_relative_output(path: &Path) -> Option<PathBuf> {
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            if let Some(Component::Normal(component)) = path.components().next()
-                && ancestor.join(component).exists()
-                && ancestor.join("justfile").exists()
-                && ancestor.join("AGENTS.md").exists()
-            {
-                return Some(ancestor.join(path));
-            }
-        }
-    }
-    None
-}
-
-fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    if looks_repo_relative(path)
-        && let Some(candidate) = resolve_from_known_anchors(path)
-    {
-        return candidate;
-    }
-    if path.exists() {
-        return path.to_path_buf();
-    }
-    let base_candidate = base_dir.join(path);
-    if base_candidate.exists() {
-        return base_candidate;
-    }
-    resolve_from_known_anchors(path).unwrap_or_else(|| path.to_path_buf())
-}
-
-fn resolve_from_known_anchors(path: &Path) -> Option<PathBuf> {
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            let candidate = ancestor.join(path);
-            if candidate.parent().is_some_and(|parent| parent.exists()) {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-fn looks_repo_relative(path: &Path) -> bool {
-    matches!(
-        path.components().next(),
-        Some(Component::Normal(component))
-            if component == "specs" || component == "crates" || component == "docs" || component == "scripts"
-    )
-}
-
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).with_context(|| format!("read artifact {}", path.display()))?;
-    Ok(sha256_bytes(&bytes))
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
+    Ok(sha256_hex(&bytes))
 }

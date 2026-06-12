@@ -44,9 +44,9 @@ use nautilus_polymarket::{
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::{Deserialize, de::DeserializeOwned};
-use sha2::{Digest, Sha256};
 use ustr::Ustr;
 
+use crate::hashing::sha256_hex;
 use crate::{
     catalog_projection::logical_catalog_hash,
     conversion_boundary::{
@@ -454,7 +454,7 @@ pub fn project_pmxt_selected_source_parquet_to_nt(
             spec.selected_source_report_path.display()
         )
     })?;
-    let selected_source_report_hash = sha256_bytes(&report_bytes);
+    let selected_source_report_hash = sha256_hex(&report_bytes);
     let report: SelectedSourceSliceReport =
         serde_json::from_slice(&report_bytes).with_context(|| {
             format!(
@@ -540,7 +540,7 @@ fn read_selected_source_selector_report(
     let selector_path = Path::new(&report.selector_report_path);
     let selector_bytes = fs::read(selector_path)
         .with_context(|| format!("read selector report {}", selector_path.display()))?;
-    let selector_sha256 = sha256_bytes(&selector_bytes);
+    let selector_sha256 = sha256_hex(&selector_bytes);
     ensure!(
         selector_sha256 == report.selector_report_sha256,
         "selected-source selector report sha256 mismatch: report {:?}, actual {:?}",
@@ -1852,7 +1852,7 @@ fn decimal_to_string(value: i128, scale: i8) -> Result<String> {
         return Ok(value.to_string());
     }
     let sign = if value < 0 { "-" } else { "" };
-    let absolute = value.abs().to_string();
+    let absolute = value.unsigned_abs().to_string();
     if absolute.len() <= scale {
         let padded = format!("{:0>width$}", absolute, width = scale + 1);
         let split = padded.len() - scale;
@@ -1885,13 +1885,8 @@ fn required_column<'a>(batch: &'a RecordBatch, column: &str) -> Result<&'a dyn A
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes =
         fs::read(path).with_context(|| format!("read file for sha256 {}", path.display()))?;
-    Ok(sha256_bytes(&bytes))
+    Ok(sha256_hex(&bytes))
 }
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
 fn push_surface_once(surfaces: &mut Vec<String>, surface: &str) {
     if !surfaces.iter().any(|existing| existing == surface) {
         surfaces.push(surface.to_string());
@@ -1913,5 +1908,23 @@ impl From<PmxtOneOffTickSide> for PolymarketOrderSide {
             PmxtOneOffTickSide::Buy => Self::Buy,
             PmxtOneOffTickSide::Sell => Self::Sell,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decimal_to_string;
+
+    #[test]
+    fn decimal_to_string_handles_i128_min_without_overflow() {
+        // i128::MIN has no positive i128 counterpart; abs() would panic in
+        // debug and wrap in release. unsigned_abs() must render it exactly.
+        let rendered = decimal_to_string(i128::MIN, 2).expect("render i128::MIN");
+        assert_eq!(rendered, "-1701411834604692317316873037158841057.28");
+        let rendered_scale_zero = decimal_to_string(i128::MIN, 0).expect("render scale 0");
+        assert_eq!(
+            rendered_scale_zero,
+            "-170141183460469231731687303715884105728"
+        );
     }
 }

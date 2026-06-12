@@ -20,6 +20,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::path_resolution::resolve_existing_path;
 use crate::{
     operator::{RunSpec, run_from_run_spec},
     source_universe_execution_pack::{
@@ -164,8 +165,7 @@ impl HttpSourceUniverseObjectFetcher {
                 fetch_timeout_seconds > 0,
                 "fetch_timeout_seconds must be positive"
             );
-            client_builder =
-                client_builder.timeout(Duration::from_secs(fetch_timeout_seconds));
+            client_builder = client_builder.timeout(Duration::from_secs(fetch_timeout_seconds));
         }
         if let Some(http_user_agent) = http_user_agent {
             ensure!(
@@ -244,9 +244,8 @@ impl<F: SourceUniverseObjectFetcher> CachingSourceUniverseObjectFetcher<F> {
             Ok(cached) => cached,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("read object cache entry {}", cache_path.display())
-                });
+                return Err(error)
+                    .with_context(|| format!("read object cache entry {}", cache_path.display()));
             }
         };
         if verify_object(record, &cached).is_ok() {
@@ -265,10 +264,7 @@ impl<F: SourceUniverseObjectFetcher> CachingSourceUniverseObjectFetcher<F> {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error).with_context(|| {
-                format!(
-                    "delete corrupt object cache entry {}",
-                    cache_path.display()
-                )
+                format!("delete corrupt object cache entry {}", cache_path.display())
             }),
         }
     }
@@ -277,9 +273,8 @@ impl<F: SourceUniverseObjectFetcher> CachingSourceUniverseObjectFetcher<F> {
     /// Uses a unique temp file in the same directory then `fs::rename`, so
     /// concurrent writers of the same object converge on identical bytes.
     fn store_verified(&self, cache_path: &Path, object_bytes: &[u8]) -> Result<()> {
-        fs::create_dir_all(&self.cache_dir).with_context(|| {
-            format!("create object cache dir {}", self.cache_dir.display())
-        })?;
+        fs::create_dir_all(&self.cache_dir)
+            .with_context(|| format!("create object cache dir {}", self.cache_dir.display()))?;
         let temp_path = self.cache_dir.join(format!(
             "{}.{}.{}.tmp",
             cache_path
@@ -289,9 +284,8 @@ impl<F: SourceUniverseObjectFetcher> CachingSourceUniverseObjectFetcher<F> {
             std::process::id(),
             unique_temp_token()
         ));
-        fs::write(&temp_path, object_bytes).with_context(|| {
-            format!("write object cache temp file {}", temp_path.display())
-        })?;
+        fs::write(&temp_path, object_bytes)
+            .with_context(|| format!("write object cache temp file {}", temp_path.display()))?;
         fs::rename(&temp_path, cache_path).with_context(|| {
             format!(
                 "atomically install object cache entry {}",
@@ -583,7 +577,10 @@ fn prepare_batch(
     // prior report). Reject the contract violation up front, before any fetch.
     if let Some(resume_report) = config.resume_report.as_deref() {
         let output_report_path = output_dir.join(SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_FILE);
-        let same_target = match (resume_report.canonicalize(), output_report_path.canonicalize()) {
+        let same_target = match (
+            resume_report.canonicalize(),
+            output_report_path.canonicalize(),
+        ) {
             (Ok(resume), Ok(output)) => resume == output,
             _ => resume_report == output_report_path.as_path(),
         };
@@ -714,9 +711,9 @@ where
         Ok(object_bytes) => object_bytes,
         Err(error) => return record_error_slot(record, "fetch", error, config),
     };
-    if let Err(error) = verify_object(record, &object_bytes).with_context(|| {
-        format!("verify source object for {}", record.operator_run_id)
-    }) {
+    if let Err(error) = verify_object(record, &object_bytes)
+        .with_context(|| format!("verify source object for {}", record.operator_run_id))
+    {
         return record_error_slot(record, "verify_object", error, config);
     }
 
@@ -922,24 +919,6 @@ fn failure_record(
         failure_stage: failure_stage.to_string(),
         error: format!("{error:#}"),
     }
-}
-
-fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() && path.exists() {
-        return path.to_path_buf();
-    }
-    if path.exists() {
-        return path.to_path_buf();
-    }
-    let base_relative = base_dir.join(path);
-    if base_relative.exists() {
-        return base_relative;
-    }
-    let repo_relative = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path);
-    if repo_relative.exists() {
-        return repo_relative;
-    }
-    path.to_path_buf()
 }
 
 #[cfg(test)]

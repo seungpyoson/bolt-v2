@@ -1,0 +1,248 @@
+use std::collections::BTreeMap;
+
+use bolt_v2::{
+    bolt_v3_realized_volatility::{
+        RealizedVolAggregation, RealizedVolEngineConfig, RealizedVolObservation,
+        RealizedVolSampleKind, RealizedVolSourceClass, RealizedVolSourceConfig,
+        RealizedVolSourceRejectReason,
+    },
+    bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
+};
+
+const SURFACE_A: &str = "<SURFACE_A>";
+const SURFACE_B: &str = "<SURFACE_B>";
+const SOURCE_A: &str = "<SOURCE_A>";
+const SOURCE_B: &str = "<SOURCE_B>";
+
+fn source(source_id: &str, instrument_id: &str) -> RealizedVolSourceConfig {
+    RealizedVolSourceConfig {
+        source_id: source_id.to_string(),
+        data_client_id: "<DATA_CLIENT_ID>".to_string(),
+        instrument_id: instrument_id.to_string(),
+        source_class: RealizedVolSourceClass::SpotQuote,
+        sample_kind: RealizedVolSampleKind::Midpoint,
+        enabled: true,
+        counts_toward_quorum: true,
+        canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
+    }
+}
+
+fn config(surface_id: &str, source_id: &str, instrument_id: &str) -> RealizedVolEngineConfig {
+    RealizedVolEngineConfig {
+        surface_id: surface_id.to_string(),
+        window_ms: 4_000,
+        sampling_interval_ms: 1_000,
+        min_ready_sources: 1,
+        max_source_age_ms: 500,
+        max_event_receive_lag_ms: 250,
+        max_inter_sample_gap_ms: 2_000,
+        min_coverage_ratio: 0.75,
+        max_cross_source_dispersion: 0.50,
+        seconds_per_annum: 31_536_000.0,
+        aggregation: RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
+        estimator: bolt_v2::bolt_v3_realized_volatility::RealizedVolEstimatorConfig::measured(),
+        sources: vec![source(source_id, instrument_id)],
+    }
+}
+
+fn observation(source_id: &str, price: f64, ts_ms: u64) -> RealizedVolObservation {
+    RealizedVolObservation {
+        source_id: source_id.to_string(),
+        source_class: RealizedVolSourceClass::SpotQuote,
+        sample_kind: RealizedVolSampleKind::Midpoint,
+        price,
+        event_ts_ms: ts_ms,
+        recv_ts_ms: ts_ms,
+    }
+}
+
+#[test]
+fn runtime_builds_all_surfaces_from_config_map() {
+    let runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([
+        (
+            SURFACE_A.to_string(),
+            config(SURFACE_A, SOURCE_A, "<INSTRUMENT_A>.<DATA_CLIENT_ID>"),
+        ),
+        (
+            SURFACE_B.to_string(),
+            config(SURFACE_B, SOURCE_B, "<INSTRUMENT_B>.<DATA_CLIENT_ID>"),
+        ),
+    ]))
+    .expect("runtime should build all configured surfaces");
+
+    assert_eq!(
+        runtime.surface_ids(),
+        vec![SURFACE_A.to_string(), SURFACE_B.to_string()]
+    );
+}
+
+#[test]
+fn runtime_publishes_snapshot_by_surface_id_for_multiple_consumers() {
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(
+        SURFACE_A.to_string(),
+        config(SURFACE_A, SOURCE_A, "<INSTRUMENT_A>.<DATA_CLIENT_ID>"),
+    )]))
+    .expect("runtime should build");
+
+    for (index, price) in [100.0, 101.0, 102.0, 103.0].iter().enumerate() {
+        assert!(runtime.observe(observation(SOURCE_A, *price, (index as u64 + 1) * 1_000)));
+    }
+    let snapshot = runtime
+        .refresh_surface_at(SURFACE_A, 4_000)
+        .expect("configured surface should publish a snapshot");
+
+    let pricing_consumer = runtime
+        .snapshot(SURFACE_A)
+        .expect("pricing consumer should read latest snapshot");
+    let monitoring_consumer = runtime
+        .snapshot(SURFACE_A)
+        .expect("monitoring consumer should read same latest snapshot");
+
+    assert!(snapshot.ready);
+    assert_eq!(pricing_consumer, monitoring_consumer);
+    assert_eq!(pricing_consumer.surface_id, SURFACE_A);
+}
+
+#[test]
+fn runtime_refresh_ignores_stale_and_equal_explicit_refresh_timestamps() {
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(
+        SURFACE_A.to_string(),
+        config(SURFACE_A, SOURCE_A, "<INSTRUMENT_A>.<DATA_CLIENT_ID>"),
+    )]))
+    .expect("runtime should build");
+
+    for (index, price) in [100.0, 101.0, 102.0, 103.0].iter().enumerate() {
+        assert!(runtime.observe(observation(SOURCE_A, *price, (index as u64 + 1) * 1_000)));
+    }
+    let first = runtime
+        .refresh_surface_at(SURFACE_A, 4_000)
+        .expect("first refresh should publish");
+    let equal = runtime
+        .refresh_surface_at(SURFACE_A, 4_000)
+        .expect("equal refresh should return current snapshot");
+    let stale = runtime
+        .refresh_surface_at(SURFACE_A, 3_000)
+        .expect("stale refresh should return current snapshot");
+
+    assert_eq!(first.as_of_ms, 4_000);
+    assert_eq!(equal, first);
+    assert_eq!(stale, first);
+    assert_eq!(runtime.snapshot(SURFACE_A), Some(first));
+}
+
+#[test]
+fn runtime_direct_observe_wrong_sample_kind_rejects_without_republishing_snapshot() {
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(
+        SURFACE_A.to_string(),
+        config(SURFACE_A, SOURCE_A, "<INSTRUMENT_A>.<DATA_CLIENT_ID>"),
+    )]))
+    .expect("runtime should build");
+
+    for (index, price) in [100.0, 101.0, 102.0, 103.0].iter().enumerate() {
+        assert!(runtime.observe(observation(SOURCE_A, *price, (index as u64 + 1) * 1_000)));
+    }
+    let published = runtime
+        .refresh_surface_at(SURFACE_A, 4_000)
+        .expect("ready snapshot should publish");
+
+    assert!(!runtime.observe(RealizedVolObservation {
+        sample_kind: RealizedVolSampleKind::Trade,
+        price: 104.0,
+        event_ts_ms: 5_000,
+        recv_ts_ms: 5_000,
+        ..observation(SOURCE_A, 104.0, 5_000)
+    }));
+    assert_eq!(
+        runtime.snapshot(SURFACE_A),
+        Some(published),
+        "direct rejected observations must not publish a new snapshot"
+    );
+
+    let refreshed = runtime
+        .refresh_surface_at(SURFACE_A, 5_000)
+        .expect("explicit refresh should expose rejection diagnostics");
+    let diagnostic = refreshed
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == SOURCE_A)
+        .expect("configured source should remain diagnostic-visible");
+    assert_eq!(
+        diagnostic.last_rejected_reason,
+        Some(RealizedVolSourceRejectReason::SampleKindMismatch)
+    );
+    assert_eq!(
+        diagnostic
+            .rejection_counters
+            .get(&RealizedVolSourceRejectReason::SampleKindMismatch),
+        Some(&1)
+    );
+}
+
+#[test]
+fn runtime_direct_observe_unknown_source_drops_at_boundary_without_polluting_surfaces() {
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([
+        (
+            SURFACE_A.to_string(),
+            config(SURFACE_A, SOURCE_A, "<INSTRUMENT_A>.<DATA_CLIENT_ID>"),
+        ),
+        (
+            SURFACE_B.to_string(),
+            config(SURFACE_B, SOURCE_B, "<INSTRUMENT_B>.<DATA_CLIENT_ID>"),
+        ),
+    ]))
+    .expect("runtime should build");
+
+    assert!(!runtime.observe(observation("<UNKNOWN_SOURCE>", 100.0, 1_000)));
+
+    for surface_id in [SURFACE_A, SURFACE_B] {
+        let snapshot = runtime
+            .refresh_surface_at(surface_id, 1_000)
+            .expect("configured surface should publish diagnostics");
+        assert!(
+            snapshot.unknown_source_rejections.is_empty(),
+            "unknown direct observations should be dropped before reaching surface {surface_id}"
+        );
+    }
+}
+
+#[test]
+fn runtime_generic_observe_fans_out_duplicate_source_ids_across_surfaces() {
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([
+        (
+            SURFACE_A.to_string(),
+            config(SURFACE_A, SOURCE_A, "<INSTRUMENT_A>.<DATA_CLIENT_ID>"),
+        ),
+        (
+            SURFACE_B.to_string(),
+            config(SURFACE_B, SOURCE_A, "<INSTRUMENT_B>.<DATA_CLIENT_ID>"),
+        ),
+    ]))
+    .expect("runtime should build");
+
+    for (index, price) in [100.0, 101.0, 102.0, 103.0].iter().enumerate() {
+        assert!(runtime.observe(observation(SOURCE_A, *price, (index as u64 + 1) * 1_000)));
+    }
+
+    let surface_a = runtime
+        .refresh_surface_at(SURFACE_A, 4_000)
+        .expect("surface A should publish");
+    let surface_b = runtime
+        .refresh_surface_at(SURFACE_B, 4_000)
+        .expect("surface B should publish");
+
+    assert!(surface_a.ready);
+    assert!(surface_b.ready);
+}
+
+#[test]
+fn runtime_rejects_mark_sources_until_subscription_routing_exists() {
+    let mut cfg = config(SURFACE_A, SOURCE_A, "<INSTRUMENT_A>.<DATA_CLIENT_ID>");
+    cfg.sources[0].source_class = RealizedVolSourceClass::Mark;
+    cfg.sources[0].sample_kind = RealizedVolSampleKind::Mark;
+
+    let error =
+        RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(SURFACE_A.to_string(), cfg)]))
+            .expect_err("mark routing should fail closed until runtime support exists");
+
+    assert!(error.contains("mark"));
+}

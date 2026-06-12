@@ -8,13 +8,14 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use crate::hashing::sha256_hex;
+use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::source_proof::{
     AcceptanceMode, AcceptanceScope, CONTRACT_VERSION, CheckOutcome, L2ReplayEvidence,
     LicenseScope, NtMappingStatus, RequiredCheck, RequiredChecks, SOURCE_PROOF_SCHEMA_VERSION,
@@ -265,7 +266,7 @@ pub fn write_source_universe_source_proof_set(
     write_clean_artifact(&path, &bytes, "source-universe source-proof set")?;
     Ok(SourceUniverseSourceProofSetArtifact {
         path,
-        content_hash: sha256_bytes(&bytes),
+        content_hash: sha256_hex(&bytes),
         bytes: bytes.len() as u64,
         proof_count: proof_set.proof_count,
     })
@@ -460,7 +461,7 @@ fn evaluate_and_write_source_universe_source_proofs(
             first_archive_date: manifest.first_archive_date,
             last_archive_date: manifest.last_archive_date,
             proof_path,
-            proof_hash: sha256_bytes(&proof_bytes),
+            proof_hash: sha256_hex(&proof_bytes),
         });
     }
 
@@ -675,74 +676,4 @@ fn write_clean_artifact(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
         fs::write(path, bytes).with_context(|| format!("write {label} {}", path.display()))?;
     }
     Ok(())
-}
-
-fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    if looks_repo_relative(path)
-        && let Some(candidate) = resolve_from_known_anchors(path)
-    {
-        return candidate;
-    }
-    let base_candidate = base_dir.join(path);
-    if base_candidate
-        .parent()
-        .is_some_and(|parent| parent.exists())
-    {
-        return base_candidate;
-    }
-    resolve_from_known_anchors(path).unwrap_or(base_candidate)
-}
-
-fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    if looks_repo_relative(path)
-        && let Some(candidate) = resolve_from_known_anchors(path)
-    {
-        return candidate;
-    }
-    if path.exists() {
-        return path.to_path_buf();
-    }
-    let base_candidate = base_dir.join(path);
-    if base_candidate.exists() {
-        return base_candidate;
-    }
-    resolve_from_known_anchors(path).unwrap_or_else(|| path.to_path_buf())
-}
-
-fn resolve_from_known_anchors(path: &Path) -> Option<PathBuf> {
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            let candidate = ancestor.join(path);
-            if candidate.parent().is_some_and(|parent| parent.exists()) {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-fn looks_repo_relative(path: &Path) -> bool {
-    matches!(
-        path.components().next(),
-        Some(Component::Normal(component))
-            if component == "specs" || component == "crates" || component == "docs" || component == "scripts"
-    )
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
 }

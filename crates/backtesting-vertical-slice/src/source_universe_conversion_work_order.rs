@@ -7,13 +7,14 @@
 use std::{
     collections::BTreeSet,
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use crate::hashing::sha256_hex;
+use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
 use crate::{
     canonical_trades::RawPayloadContainer,
     source_universe_operator_inputs::{
@@ -202,7 +203,7 @@ pub fn write_source_universe_conversion_work_order(
 
     Ok(SourceUniverseConversionWorkOrderArtifact {
         path,
-        content_hash: sha256_bytes(&bytes),
+        content_hash: sha256_hex(&bytes),
         bytes: bytes.len() as u64,
         executable_record_count: work_order.executable_record_count,
         withheld_record_count: work_order.withheld_record_count,
@@ -225,7 +226,7 @@ pub fn evaluate_source_universe_conversion_work_order(
             inputs_path.display()
         )
     })?;
-    let inputs_hash = sha256_bytes(&inputs_bytes);
+    let inputs_hash = sha256_hex(&inputs_bytes);
     let inputs: SourceUniverseOperatorInputs =
         serde_json::from_slice(&inputs_bytes).with_context(|| {
             format!(
@@ -386,83 +387,4 @@ fn withheld_record(
         selected_object_bytes: input.selected_object_bytes,
         blocking_reasons: input.blocking_reasons.clone(),
     }
-}
-
-fn portable_artifact_path(path: &Path) -> PathBuf {
-    if !path.is_absolute() {
-        return path.to_path_buf();
-    }
-
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            if let Ok(candidate) = path.strip_prefix(ancestor)
-                && looks_repo_relative(candidate)
-            {
-                return candidate.to_path_buf();
-            }
-        }
-    }
-
-    path.to_path_buf()
-}
-
-fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    if looks_repo_relative(path)
-        && let Some(candidate) = resolve_from_known_anchors(path)
-    {
-        return candidate;
-    }
-    let base_candidate = base_dir.join(path);
-    if base_candidate.parent().is_some_and(Path::exists) {
-        return base_candidate;
-    }
-    resolve_from_known_anchors(path).unwrap_or(base_candidate)
-}
-
-fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() || path.exists() {
-        return path.to_path_buf();
-    }
-    let base_candidate = base_dir.join(path);
-    if base_candidate.exists() {
-        return base_candidate;
-    }
-    resolve_from_known_anchors(path).unwrap_or_else(|| path.to_path_buf())
-}
-
-fn resolve_from_known_anchors(path: &Path) -> Option<PathBuf> {
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            let candidate = ancestor.join(path);
-            if candidate.exists() || candidate.parent().is_some_and(Path::exists) {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-fn looks_repo_relative(path: &Path) -> bool {
-    path.components()
-        .next()
-        .is_some_and(|component| matches!(component, Component::Normal(first) if first == "specs"))
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
 }

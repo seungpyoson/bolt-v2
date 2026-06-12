@@ -19,7 +19,7 @@ use nautilus_polymarket::{
     websocket::{
         messages::{
             MarketWsMessage, PolymarketBookSnapshot, PolymarketQuote, PolymarketQuotes,
-            PolymarketTrade,
+            PolymarketTickSizeChange, PolymarketTrade,
         },
         parse::{
             parse_book_deltas, parse_book_snapshot, parse_quote_from_price_change, parse_trade_tick,
@@ -68,16 +68,33 @@ pub enum BacktestInstrumentEpochReplaySupport {
     StaticCatalogInstrumentLoadOnly,
 }
 
+/// Witness-typed record of the NT dynamic-instrument-epoch boundary.
+///
+/// Every capability field carries the `type_name` of the NT surface that
+/// proves it, bound at compile time in
+/// [`prove_polymarket_dynamic_instrument_epoch_surfaces`]; the struct cannot
+/// state a capability without naming the witness. The one `bool` field is a
+/// documented NEGATIVE boundary (NT has no instrument-definition backtest
+/// stream), not a capability claim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolymarketDynamicInstrumentEpochProof {
-    pub live_tick_size_change_message_supported: bool,
-    pub live_tick_size_rebuilds_instrument: bool,
-    pub catalog_instrument_snapshot_storage_supported: bool,
-    pub catalog_auxiliary_status_close_streams_supported: bool,
+    pub live_tick_size_change_message_type: String,
+    pub live_tick_size_rebuilder_type: &'static str,
+    pub catalog_instrument_snapshot_type: String,
+    pub catalog_auxiliary_status_close_data_types: [NautilusDataType; 2],
     pub backtest_data_config_instrument_definition_stream_supported: bool,
     pub backtest_instrument_epoch_replay_support: BacktestInstrumentEpochReplaySupport,
     pub nt_type_evidence: Vec<String>,
     pub nt_evidence_refs: Vec<&'static str>,
+}
+
+/// Compile-time witness that NT's market websocket envelope carries a
+/// `TickSizeChange` arm with the payload the rebuilder consumes.
+fn tick_size_change_payload(message: &MarketWsMessage) -> Option<&PolymarketTickSizeChange> {
+    match message {
+        MarketWsMessage::TickSizeChange(change) => Some(change),
+        _ => None,
+    }
 }
 
 #[must_use]
@@ -106,25 +123,19 @@ pub fn prove_polymarket_nt_public_surfaces() -> PolymarketNtSurfaceProof {
 pub fn prove_polymarket_dynamic_instrument_epoch_surfaces() -> PolymarketDynamicInstrumentEpochProof
 {
     let _: TickSizeRebuilder = rebuild_instrument_with_tick_size;
+    let _: fn(&MarketWsMessage) -> Option<&PolymarketTickSizeChange> = tick_size_change_payload;
     let live_message_type = type_name::<MarketWsMessage>().to_string();
     let data_stream_type = type_name::<Data>().to_string();
     let instrument_type = type_name::<InstrumentAny>().to_string();
 
     PolymarketDynamicInstrumentEpochProof {
-        live_tick_size_change_message_supported: live_message_type.ends_with("MarketWsMessage"),
-        live_tick_size_rebuilds_instrument: true,
-        catalog_instrument_snapshot_storage_supported: true,
-        catalog_auxiliary_status_close_streams_supported: [
+        live_tick_size_change_message_type: live_message_type.clone(),
+        live_tick_size_rebuilder_type: type_name::<TickSizeRebuilder>(),
+        catalog_instrument_snapshot_type: instrument_type.clone(),
+        catalog_auxiliary_status_close_data_types: [
             NautilusDataType::InstrumentStatus,
             NautilusDataType::InstrumentClose,
-        ]
-        .iter()
-        .all(|data_type| {
-            matches!(
-                data_type,
-                NautilusDataType::InstrumentStatus | NautilusDataType::InstrumentClose
-            )
-        }),
+        ],
         backtest_data_config_instrument_definition_stream_supported: false,
         backtest_instrument_epoch_replay_support:
             BacktestInstrumentEpochReplaySupport::StaticCatalogInstrumentLoadOnly,

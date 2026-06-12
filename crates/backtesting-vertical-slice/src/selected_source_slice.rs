@@ -19,11 +19,11 @@ use arrow::{
 };
 use parquet::arrow::{ArrowWriter, ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuilder};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::first_proof_selector::{
     FirstProofSelectorReport, FirstProofSelectorStatus, SelectedFirstProofAsset,
 };
+use crate::hashing::sha256_hex;
 
 pub const SELECTED_SOURCE_SLICE_REPORT_SCHEMA_VERSION: &str = "selected-source-slice-report.v1";
 
@@ -129,7 +129,7 @@ pub fn write_selected_source_slice(
             spec.selector_report_path.display()
         )
     })?;
-    let selector_report_sha256 = sha256_bytes(&selector_bytes);
+    let selector_report_sha256 = sha256_hex(&selector_bytes);
     let selector: FirstProofSelectorReport =
         serde_json::from_slice(&selector_bytes).with_context(|| {
             format!(
@@ -383,18 +383,13 @@ fn string_column_value<'a>(values: &'a dyn Array, column: &str, row: usize) -> R
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes =
         fs::read(path).with_context(|| format!("read file for sha256 {}", path.display()))?;
-    Ok(sha256_bytes(&bytes))
+    Ok(sha256_hex(&bytes))
 }
 
 fn report_hash(report: &SelectedSourceSliceReport) -> Result<String> {
     let bytes = serde_json::to_vec(report).context("serialize selected source report for hash")?;
-    Ok(sha256_bytes(&bytes))
+    Ok(sha256_hex(&bytes))
 }
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
 fn temp_artifact_path(path: &Path) -> PathBuf {
     let mut temp = path.as_os_str().to_os_string();
     temp.push(".tmp");

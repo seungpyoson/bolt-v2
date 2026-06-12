@@ -1,1 +1,0 @@
-../../../scripts/rust_verification.py

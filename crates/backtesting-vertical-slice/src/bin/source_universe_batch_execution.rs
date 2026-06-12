@@ -63,8 +63,10 @@ fn main() -> Result<()> {
     let object_cache_dir = cli.object_cache_dir.clone();
 
     let fetcher_factory = move || -> Result<BatchWorkerFetcher> {
-        let http_fetcher =
-            HttpSourceUniverseObjectFetcher::new(fetch_timeout_seconds, http_user_agent.as_deref())?;
+        let http_fetcher = HttpSourceUniverseObjectFetcher::new(
+            fetch_timeout_seconds,
+            http_user_agent.as_deref(),
+        )?;
         match &object_cache_dir {
             Some(cache_dir) => Ok(BatchWorkerFetcher::Cached(
                 CachingSourceUniverseObjectFetcher::new(http_fetcher, cache_dir),
@@ -72,9 +74,8 @@ fn main() -> Result<()> {
             None => Ok(BatchWorkerFetcher::Direct(http_fetcher)),
         }
     };
-    let runner_factory = || -> Result<LocalSourceUniverseOperatorRunner> {
-        Ok(LocalSourceUniverseOperatorRunner)
-    };
+    let runner_factory =
+        || -> Result<LocalSourceUniverseOperatorRunner> { Ok(LocalSourceUniverseOperatorRunner) };
 
     let report = execute_source_universe_batch_with_factories(
         &cli.batch_id,

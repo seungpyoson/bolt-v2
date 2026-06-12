@@ -1,10 +1,16 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Context, Result};
 use futures_util::future::BoxFuture;
 use nautilus_common::{actor::DataActor, component::Component};
 use nautilus_model::{
-    identifiers::{InstrumentId, StrategyId, Venue},
+    data::{IndexPriceUpdate, QuoteTick, TradeTick},
+    identifiers::{ClientId, InstrumentId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
 };
 use nautilus_system::trader::Trader;
@@ -14,6 +20,8 @@ use toml::Value;
 
 use crate::{
     bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_realized_volatility::RealizedVolSnapshot,
+    bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
@@ -57,6 +65,7 @@ pub struct StrategyBuildContext {
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     execution_venue: Venue,
+    realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
 }
 
 impl StrategyBuildContext {
@@ -77,7 +86,31 @@ impl StrategyBuildContext {
             decision_evidence,
             submit_admission,
             execution_venue,
+            realized_volatility_runtime: Arc::new(Mutex::new(RealizedVolSurfaceRuntime::empty())),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_realized_volatility_surfaces(
+        mut self,
+        surfaces: std::collections::BTreeMap<
+            String,
+            crate::bolt_v3_realized_volatility::RealizedVolEngineConfig,
+        >,
+    ) -> Self {
+        self.realized_volatility_runtime = Arc::new(Mutex::new(
+            RealizedVolSurfaceRuntime::from_configs(surfaces)
+                .expect("validated realized-volatility surfaces should build runtime"),
+        ));
+        self
+    }
+
+    pub fn with_realized_volatility_runtime(
+        mut self,
+        runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
+    ) -> Self {
+        self.realized_volatility_runtime = runtime;
+        self
     }
 
     pub fn fee_provider(&self) -> &dyn FeeProvider {
@@ -104,6 +137,68 @@ impl StrategyBuildContext {
     /// real order can only ever fire against an instrument on the venue it routes to.
     pub fn execution_venue(&self) -> Venue {
         self.execution_venue
+    }
+
+    pub fn realized_volatility_quote_subscription_requests(
+        &self,
+    ) -> Vec<(InstrumentId, Option<ClientId>)> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .quote_subscription_requests()
+    }
+
+    pub fn realized_volatility_trade_subscription_requests(
+        &self,
+    ) -> Vec<(InstrumentId, Option<ClientId>)> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .trade_subscription_requests()
+    }
+
+    pub fn realized_volatility_index_subscription_requests(
+        &self,
+    ) -> Vec<(InstrumentId, Option<ClientId>)> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .index_subscription_requests()
+    }
+
+    pub fn observe_realized_volatility_quote(&self, quote: &QuoteTick) -> Vec<RealizedVolSnapshot> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .observe_quote(quote)
+    }
+
+    pub fn observe_realized_volatility_trade(&self, trade: &TradeTick) -> Vec<RealizedVolSnapshot> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .observe_trade(trade)
+    }
+
+    pub fn observe_realized_volatility_index_price(
+        &self,
+        update: &IndexPriceUpdate,
+    ) -> Vec<RealizedVolSnapshot> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .observe_index_price(update)
+    }
+
+    pub fn refresh_realized_volatility_snapshot_at(
+        &self,
+        surface_id: &str,
+        now_ms: u64,
+    ) -> Option<RealizedVolSnapshot> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .refresh_surface_at(surface_id, now_ms)
     }
 }
 

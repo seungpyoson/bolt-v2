@@ -7,12 +7,13 @@
 use std::{
     collections::BTreeSet,
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
+use crate::hashing::sha256_hex;
+use crate::path_resolution::resolve_output_dir;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 pub const SOURCE_ARCHIVE_DISCOVERY_SEED_SCHEMA_VERSION: &str = "source-archive-discovery-seed.v1";
 pub const SOURCE_ARCHIVE_DISCOVERY_SEED_FILE: &str = "source-archive-discovery-seed.json";
@@ -156,7 +157,7 @@ pub fn write_source_archive_discovery_seed(
 
     Ok(SourceArchiveDiscoverySeedArtifact {
         path,
-        content_hash: sha256_bytes(&bytes),
+        content_hash: sha256_hex(&bytes),
         bytes: bytes.len() as u64,
         source_binding_count: seed.source_binding_count,
         representative_object_count: seed.representative_object_count,
@@ -268,63 +269,4 @@ pub fn evaluate_source_archive_discovery_seed(
 fn validate_non_empty(field: &str, value: &str) -> Result<()> {
     ensure!(!value.trim().is_empty(), "{field} must not be empty");
     Ok(())
-}
-
-fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-
-    if looks_repo_relative(path)
-        && let Some(candidate) = resolve_from_known_anchors(path)
-    {
-        return candidate;
-    }
-
-    let base_candidate = base_dir.join(path);
-    if base_candidate
-        .parent()
-        .is_some_and(|parent| parent.exists())
-    {
-        return base_candidate;
-    }
-
-    if let Some(candidate) = resolve_from_known_anchors(path) {
-        return candidate;
-    }
-
-    base_candidate
-}
-
-fn resolve_from_known_anchors(path: &Path) -> Option<PathBuf> {
-    let mut anchors = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        anchors.push(current_dir);
-    }
-    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-
-    for anchor in anchors {
-        for ancestor in anchor.ancestors() {
-            let candidate = ancestor.join(path);
-            if candidate.parent().is_some_and(|parent| parent.exists()) {
-                return Some(candidate);
-            }
-        }
-    }
-
-    None
-}
-
-fn looks_repo_relative(path: &Path) -> bool {
-    matches!(
-        path.components().next(),
-        Some(Component::Normal(component))
-            if component == "specs" || component == "crates" || component == "docs" || component == "scripts"
-    )
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
 }

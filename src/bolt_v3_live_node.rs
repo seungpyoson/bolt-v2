@@ -3558,6 +3558,7 @@ mod tests {
         DataClientReadinessProbeQuoteTargetBlock, DataClientReadinessProbeQuoteTargetSource,
         ReferenceDataBlock,
     };
+    use crate::bolt_v3_iv::error::IvRejectReason;
     use crate::bolt_v3_providers::hyperliquid::{
         ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
     };

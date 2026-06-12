@@ -2463,6 +2463,49 @@ max_notional = "200000"
     }
 
     #[test]
+    fn projection_rejects_empty_canonical_table() {
+        // Reproduction pin for the zero-row vacuous-pass concern: an empty
+        // canonical table must fail loud at validate() before any catalog
+        // write, so read-back can never compare 0 == 0 against an accepted
+        // record.
+        let mut table = canonical_table();
+        table.rows.clear();
+        let error = table.validate().expect_err("empty table rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("canonical trades table is empty")
+        );
+    }
+
+    #[test]
+    fn logical_catalog_hash_reproduces_committed_pmxt_reference_catalog_hash() {
+        // Hash-invariance regression pin: the committed PMXT reference catalog
+        // hash was recorded under the pre-explicit-file-list query mechanics.
+        // Recomputing over the committed bytes must keep producing the
+        // recorded value, or committed ledger records silently stop
+        // verifying against their catalogs.
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("repo root");
+        let run_dir = repo_root.join(
+            "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run",
+        );
+        let metadata: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(run_dir.join("catalog-metadata.json"))
+                .expect("read committed catalog metadata"),
+        )
+        .expect("parse committed catalog metadata");
+        let recorded = metadata["catalog_hash"]
+            .as_str()
+            .expect("catalog_hash present in committed metadata");
+        let recomputed =
+            logical_catalog_hash(&run_dir.join("nt-catalog")).expect("recompute logical hash");
+        assert_eq!(recomputed, recorded);
+    }
+
+    #[test]
     fn catalog_hash_matches_stable_currency_pair_fields() {
         let table = canonical_table();
         let dir = tempfile::TempDir::new().unwrap();

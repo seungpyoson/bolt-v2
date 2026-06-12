@@ -1428,6 +1428,7 @@ impl BacktestingRunManifest {
                 &input.catalog_fs_storage_options,
                 &input.catalog_fs_rust_storage_options,
             )?;
+            parse_and_validate_catalog_input_instrument_ids(input)?;
         }
         validate_catalog_storage_options(
             output_prefix_protocol(&self.output_prefix),
@@ -1690,32 +1691,8 @@ fn catalog_input_to_nt_data_config(
             });
         }
     };
-    let nt_instrument_id = input
-        .nt_instrument_id
-        .parse::<InstrumentId>()
-        .map_err(|_| ManifestError::InvalidInstrumentId {
-            instrument_id: input.nt_instrument_id.clone(),
-        })?;
-    let instrument_ids = input
-        .instrument_ids
-        .as_ref()
-        .map(|ids| {
-            ids.iter()
-                .map(|id| {
-                    id.parse::<InstrumentId>()
-                        .map_err(|_| ManifestError::InvalidInstrumentId {
-                            instrument_id: id.clone(),
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
-    validate_catalog_instrument_id_charset(&input.nt_instrument_id)?;
-    if let Some(ids) = input.instrument_ids.as_ref() {
-        for id in ids {
-            validate_catalog_instrument_id_charset(id)?;
-        }
-    }
+    let (nt_instrument_id, instrument_ids) =
+        parse_and_validate_catalog_input_instrument_ids(input)?;
     let requires_unfiltered_catalog_query =
         catalog_input_requires_unfiltered_nt_query_for_encoded_directory(input);
     let instrument_ids = if requires_unfiltered_catalog_query {
@@ -1769,6 +1746,45 @@ fn catalog_input_to_nt_data_config(
         .maybe_filter_expr(input.filter_expr.clone())
         .maybe_optimize_file_loading(input.optimize_file_loading)
         .build())
+}
+
+/// Parse and charset-validate every instrument-id surface of a catalog input.
+///
+/// Shared by [`BacktestingRunManifest::validate`] (the Gate 4 preflight) and
+/// [`catalog_input_to_nt_data_config`] so the preflight rejects exactly the
+/// ids the NT config build would reject: an id defect must fail before any
+/// derived canonical or catalog artifact is produced, not at NT-config
+/// construction mid-run.
+fn parse_and_validate_catalog_input_instrument_ids(
+    input: &ManifestCatalogInput,
+) -> Result<(InstrumentId, Option<Vec<InstrumentId>>), ManifestError> {
+    let nt_instrument_id = input
+        .nt_instrument_id
+        .parse::<InstrumentId>()
+        .map_err(|_| ManifestError::InvalidInstrumentId {
+            instrument_id: input.nt_instrument_id.clone(),
+        })?;
+    let instrument_ids = input
+        .instrument_ids
+        .as_ref()
+        .map(|ids| {
+            ids.iter()
+                .map(|id| {
+                    id.parse::<InstrumentId>()
+                        .map_err(|_| ManifestError::InvalidInstrumentId {
+                            instrument_id: id.clone(),
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    validate_catalog_instrument_id_charset(&input.nt_instrument_id)?;
+    if let Some(ids) = input.instrument_ids.as_ref() {
+        for id in ids {
+            validate_catalog_instrument_id_charset(id)?;
+        }
+    }
+    Ok((nt_instrument_id, instrument_ids))
 }
 
 fn catalog_input_requires_unfiltered_nt_query_for_encoded_directory(
@@ -2562,6 +2578,58 @@ mod tests {
         manifest.catalog_inputs[0].nt_instrument_id = "BASE~QUOTE.TESTVENUE".to_string();
 
         let error = manifest.to_nt_data_config().expect_err("charset rejected");
+
+        assert!(matches!(
+            error,
+            ManifestError::UnsupportedInstrumentIdCharset { instrument_id }
+                if instrument_id == "BASE~QUOTE.TESTVENUE"
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_unsupported_charset_instrument_id_at_preflight() {
+        // The Gate 4 preflight (validate + validate_run_spec_manifest_for_
+        // object_hash) must reject the same ids the NT config build rejects;
+        // otherwise the manifest is admitted, conversion and projection run,
+        // and the id defect only surfaces at NT-config construction mid-run.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].nt_instrument_id = "BASE~QUOTE.TESTVENUE".to_string();
+
+        let error = manifest
+            .validate(&accepted_dataset())
+            .expect_err("charset rejected at preflight");
+
+        assert!(matches!(
+            error,
+            ManifestError::UnsupportedInstrumentIdCharset { instrument_id }
+                if instrument_id == "BASE~QUOTE.TESTVENUE"
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_unparseable_instrument_id_at_preflight() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].nt_instrument_id = "NOVENUESEPARATOR".to_string();
+
+        let error = manifest
+            .validate(&accepted_dataset())
+            .expect_err("unparseable id rejected at preflight");
+
+        assert!(matches!(
+            error,
+            ManifestError::InvalidInstrumentId { instrument_id }
+                if instrument_id == "NOVENUESEPARATOR"
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_unsupported_charset_in_instrument_ids_list_at_preflight() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].instrument_ids = Some(vec!["BASE~QUOTE.TESTVENUE".to_string()]);
+
+        let error = manifest
+            .validate(&accepted_dataset())
+            .expect_err("charset rejected at preflight");
 
         assert!(matches!(
             error,

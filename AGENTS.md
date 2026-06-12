@@ -33,6 +33,7 @@ These repo-level rules are in addition to any higher-level agent instructions.
 - Do not run local compile-heavy Rust verification by default: no local `just test`, `just clippy`, `just build`, `just check-aarch64`, full `just source-fence`, `just bte-test`, `just bte-clippy`, `just bte-build`, or raw `cargo build/test/clippy/check/run/nextest/zigbuild`.
 - Use local non-compile gates for fast feedback: `just fmt-check`, `just deny`, `just ci-lint-workflow`, Python verifiers, and `just source-fence-static`.
 - For compile/test/clippy proof: commit, push, ensure the branch has an open or draft PR, then run `just verify-remote` and use exact-head PR CI evidence from Ubicloud/GitHub Actions.
+- `just verify-remote` waits for all reported PR checks on the exact head SHA, not a local subset of workflow jobs.
 - Human operator break-glass exists for exceptional local repro and live/operator lanes only. Agents must not use it as a normal verification path.
 - Enforcement boundary: repo tooling gates cooperative paths through `just`, `scripts/rust_verification.py`, and `.no-mistakes.yaml`; raw shell `cargo ...` remains outside this repo's control until external agent hooks intercept it.
 

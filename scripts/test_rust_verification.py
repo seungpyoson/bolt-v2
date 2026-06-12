@@ -173,6 +173,16 @@ printf 'args=%s\\n' "$*" >> {just_log}
         if not same_path(just_values["cwd"], repo) or just_values["target"] != str(target_dir) or just_values["args"] != expected_args:
             raise AssertionError(just_values)
 
+        break_glass_env = env.copy()
+        break_glass_env["BOLT_ALLOW_LOCAL_RUST"] = "1"
+        result = run_owner(["run", "--repo", str(repo), "build", "--break-glass"], env=break_glass_env)
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+        just_values = parse_log(just_log)
+        expected_args = f"-f {repo / 'justfile'} --working-directory {repo} -- managed-build --break-glass"
+        if not same_path(just_values["cwd"], repo) or just_values["target"] != str(target_dir) or just_values["args"] != expected_args:
+            raise AssertionError(just_values)
+
         result = run_owner(["validate-policy", "--repo", str(repo)], env=env)
         if result.returncode != 0:
             raise AssertionError(result.stderr)

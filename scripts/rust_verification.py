@@ -2504,7 +2504,30 @@ def pr_for_current_branch(repo: pathlib.Path, branch: str) -> tuple[dict[str, An
         return None, f"verify-remote could not inspect pull request state: {error}"
     if not isinstance(payload, dict):
         return None, "gh pr view returned an unexpected payload"
+    if payload.get("state") != "OPEN":
+        return None, f"verify-remote requires an open or draft PR for this branch; run: {pr_create_hint(branch)}"
     return payload, None
+
+
+def pr_for_exact_head(
+    repo: pathlib.Path,
+    branch: str,
+    head: str,
+    *,
+    during_watch: bool,
+) -> tuple[dict[str, Any] | None, str | None]:
+    pr, error = pr_for_current_branch(repo, branch)
+    if error is not None or pr is None:
+        return None, error or "unable to inspect pull request"
+    if pr.get("headRefOid") != head:
+        if during_watch:
+            return (
+                None,
+                f"PR branch advanced during watch: headRefOid {pr.get('headRefOid')} no longer matches "
+                f"local HEAD {head}; fetch the branch and rerun verify-remote",
+            )
+        return None, f"PR headRefOid {pr.get('headRefOid')} does not match local HEAD {head}; push the current branch"
+    return pr, None
 
 
 def pr_checks(repo: pathlib.Path) -> tuple[list[dict[str, Any]] | None, str | None]:
@@ -2541,22 +2564,20 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
     head, branch, error = ensure_verify_remote_preconditions(repo)
     if error is not None or head is None or branch is None:
         return verify_remote_fail(error or "unable to inspect git state")
-    pr, error = pr_for_current_branch(repo, branch)
+    pr, error = pr_for_exact_head(repo, branch, head, during_watch=False)
     if error is not None or pr is None:
         return verify_remote_fail(error or "unable to inspect pull request")
-    if pr.get("headRefOid") != head:
-        return verify_remote_fail(
-            f"PR headRefOid {pr.get('headRefOid')} does not match local HEAD {head}; push the current branch"
-        )
     pr_url = pr.get("url") or f"PR #{pr.get('number')}"
     checks_deadline = time.monotonic() + remote_policy["checks_appear_timeout_seconds"]
     overall_deadline = time.monotonic() + remote_policy["overall_timeout_seconds"]
     interval = remote_policy["poll_interval_seconds"]
-    saw_checks = False
     while True:
         now = time.monotonic()
         if now >= overall_deadline:
             return verify_remote_fail(f"timed out waiting for remote checks on {pr_url}")
+        _pr, error = pr_for_exact_head(repo, branch, head, during_watch=True)
+        if error is not None:
+            return verify_remote_fail(error)
         checks, error = pr_checks(repo)
         if error is not None:
             return verify_remote_fail(error)
@@ -2567,7 +2588,6 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
                 )
             time.sleep(interval)
             continue
-        saw_checks = True
         failing = [check for check in checks if check.get("bucket") in {"fail", "cancel"}]
         if failing:
             print(f"Remote checks failed for {head} on {pr_url}:", file=sys.stderr)
@@ -2580,11 +2600,17 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
             for check in checks
             if check.get("bucket") not in {"pass", "skipping", "pending", "fail", "cancel"}
         ]
-        if not pending and not unknown:
+        if unknown:
+            print(f"ERROR: unknown PR check bucket for {head} on {pr_url}:", file=sys.stderr)
+            for check in unknown:
+                print(f"- {check_summary(check)}", file=sys.stderr)
+            return 2
+        if not pending:
+            _pr, error = pr_for_exact_head(repo, branch, head, during_watch=True)
+            if error is not None:
+                return verify_remote_fail(error)
             print(f"OK: remote checks passed for {head} on {pr_url}")
             return 0
-        if saw_checks and now >= overall_deadline:
-            return verify_remote_fail(f"timed out waiting for pending remote checks on {pr_url}")
         time.sleep(interval)
 
 

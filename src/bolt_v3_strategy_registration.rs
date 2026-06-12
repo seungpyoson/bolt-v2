@@ -11,7 +11,7 @@ use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter;
 use crate::bolt_v3_iv::{
     config::IvProfile,
     query::IvQueryHandle,
-    runtime::IvRuntimeEngine,
+    runtime::{IvRuntimeEngine, runtime_derived_inputs_from_profile},
     store::{IvRetentionPolicy, IvStore},
 };
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
@@ -173,7 +173,7 @@ pub fn build_iv_query_handle_registry_for_root(
                         .with_quorum_policies(profile.quorum_policies.clone())
                         .with_helper_policies(profile.helper_policies.clone())
                         .with_derived_input_policies(profile.derived_input_policies.clone())
-                        .with_derived_inputs(profile.derived_inputs.clone())
+                        .with_derived_inputs(runtime_derived_inputs_from_profile(profile))
                         .with_retention_policy(retention_policy_from_profile(profile))
                         .with_current_subscription_generations(current_generations),
                 )

@@ -941,7 +941,7 @@ fn query_state_from_profile(profile: &IvProfile) -> IvQueryState {
         .with_current_subscription_generations(current_generations_from_profile(profile))
 }
 
-fn runtime_derived_inputs_from_profile(
+pub(crate) fn runtime_derived_inputs_from_profile(
     profile: &IvProfile,
 ) -> Vec<super::derive::IvDerivedInputSet> {
     profile

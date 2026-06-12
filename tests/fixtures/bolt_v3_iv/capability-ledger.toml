@@ -1926,6 +1926,571 @@ symbol = "order_iv"
 matched_terms = ["iv"]
 classification = "excluded"
 
+[[surfaces]]
+surface_id = "nt.crates.analysis.src.python.statistics.mod.returns_volatility"
+evidence_path = "crates/analysis/src/python/statistics/mod.rs"
+symbol = "returns_volatility"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.analysis.src.statistics.mod.returns_volatility"
+evidence_path = "crates/analysis/src/statistics/mod.rs"
+symbol = "returns_volatility"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.analysis.src.statistics.returns_volatility.new"
+evidence_path = "crates/analysis/src/statistics/returns_volatility.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.analysis.src.statistics.returns_volatility.returns_volatility"
+evidence_path = "crates/analysis/src/statistics/returns_volatility.rs"
+symbol = "ReturnsVolatility"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.python.greeks.py_greeks_calculator"
+evidence_path = "crates/common/src/python/greeks.rs"
+symbol = "PyGreeksCalculator"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.python.mod.greeks"
+evidence_path = "crates/common/src/python/mod.rs"
+symbol = "greeks"
+matched_terms = ["greeks"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.python.mod.option_chain_manager"
+evidence_path = "crates/data/src/python/mod.rs"
+symbol = "option_chain_manager"
+matched_terms = ["chain", "option"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.python.option_chain_manager.py_option_chain_manager"
+evidence_path = "crates/data/src/python/option_chain_manager.rs"
+symbol = "PyOptionChainManager"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.lib.volatility"
+evidence_path = "crates/indicators/src/lib.rs"
+symbol = "volatility"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.average.ama.py_new"
+evidence_path = "crates/indicators/src/python/average/ama.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.mod.volatility"
+evidence_path = "crates/indicators/src/python/mod.rs"
+symbol = "volatility"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.atr.py_new"
+evidence_path = "crates/indicators/src/python/volatility/atr.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.dc.py_new"
+evidence_path = "crates/indicators/src/python/volatility/dc.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.fuzzy.fn"
+evidence_path = "crates/indicators/src/python/volatility/fuzzy.rs"
+symbol = "fn"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.fuzzy.py_new"
+evidence_path = "crates/indicators/src/python/volatility/fuzzy.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.kc.py_new"
+evidence_path = "crates/indicators/src/python/volatility/kc.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.kp.py_new"
+evidence_path = "crates/indicators/src/python/volatility/kp.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.atr"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "atr"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.dc"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "dc"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.fuzzy"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "fuzzy"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.kc"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "kc"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.kp"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "kp"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.rvi"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "rvi"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.vr"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "vr"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.rvi.py_new"
+evidence_path = "crates/indicators/src/python/volatility/rvi.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.vr.py_new"
+evidence_path = "crates/indicators/src/python/volatility/vr.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.atr.average_true_range"
+evidence_path = "crates/indicators/src/volatility/atr.rs"
+symbol = "AverageTrueRange"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.atr.new"
+evidence_path = "crates/indicators/src/volatility/atr.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.atr.update_raw"
+evidence_path = "crates/indicators/src/volatility/atr.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.dc.donchian_channel"
+evidence_path = "crates/indicators/src/volatility/dc.rs"
+symbol = "DonchianChannel"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.dc.new"
+evidence_path = "crates/indicators/src/volatility/dc.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.dc.update_raw"
+evidence_path = "crates/indicators/src/volatility/dc.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.candle_body_size"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "CandleBodySize"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.candle_direction"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "CandleDirection"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.candle_size"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "CandleSize"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.candle_wick_size"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "CandleWickSize"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.fn"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "fn"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.fuzzy_candle"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "FuzzyCandle"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.fuzzy_candlesticks"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "FuzzyCandlesticks"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.new"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.reset"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "reset"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.update_raw"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.kc.keltner_channel"
+evidence_path = "crates/indicators/src/volatility/kc.rs"
+symbol = "KeltnerChannel"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.kc.new"
+evidence_path = "crates/indicators/src/volatility/kc.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.kc.update_raw"
+evidence_path = "crates/indicators/src/volatility/kc.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.kp.keltner_position"
+evidence_path = "crates/indicators/src/volatility/kp.rs"
+symbol = "KeltnerPosition"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.kp.new"
+evidence_path = "crates/indicators/src/volatility/kp.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.kp.update_raw"
+evidence_path = "crates/indicators/src/volatility/kp.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.atr"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "atr"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.dc"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "dc"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.fuzzy"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "fuzzy"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.kc"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "kc"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.kp"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "kp"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.rvi"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "rvi"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.vr"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "vr"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.rvi.new"
+evidence_path = "crates/indicators/src/volatility/rvi.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.rvi.relative_volatility_index"
+evidence_path = "crates/indicators/src/volatility/rvi.rs"
+symbol = "RelativeVolatilityIndex"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.rvi.update_raw"
+evidence_path = "crates/indicators/src/volatility/rvi.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.vr.new"
+evidence_path = "crates/indicators/src/volatility/vr.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.vr.update_raw"
+evidence_path = "crates/indicators/src/volatility/vr.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.vr.volatility_ratio"
+evidence_path = "crates/indicators/src/volatility/vr.rs"
+symbol = "VolatilityRatio"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.greeks.py_black_scholes_greeks"
+evidence_path = "crates/model/src/python/data/greeks.rs"
+symbol = "py_black_scholes_greeks"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.greeks.py_imply_vol"
+evidence_path = "crates/model/src/python/data/greeks.rs"
+symbol = "py_imply_vol"
+matched_terms = ["greeks", "implied", "option", "vol", "volatility"]
+seed_family = "greeks_helper"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.greeks.py_imply_vol_and_greeks"
+evidence_path = "crates/model/src/python/data/greeks.rs"
+symbol = "py_imply_vol_and_greeks"
+matched_terms = ["greeks", "implied", "vol", "volatility"]
+seed_family = "greeks_helper"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.greeks.py_refine_vol_and_greeks"
+evidence_path = "crates/model/src/python/data/greeks.rs"
+symbol = "py_refine_vol_and_greeks"
+matched_terms = ["greeks", "implied", "iv", "vol", "volatility"]
+seed_family = "greeks_helper"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.mod.greeks"
+evidence_path = "crates/model/src/python/data/mod.rs"
+symbol = "greeks"
+matched_terms = ["greeks"]
+seed_family = "custom_data"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.mod.option_chain"
+evidence_path = "crates/model/src/python/data/mod.rs"
+symbol = "option_chain"
+matched_terms = ["chain", "option"]
+seed_family = "custom_data"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.option_chain.from_pyobject"
+evidence_path = "crates/model/src/python/data/option_chain.rs"
+symbol = "from_pyobject"
+matched_terms = ["chain", "greeks", "option"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.option_chain.py_strike_range"
+evidence_path = "crates/model/src/python/data/option_chain.rs"
+symbol = "PyStrikeRange"
+matched_terms = ["chain", "option", "strike"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.plugin.src.surfaces.mod.option_chain"
+evidence_path = "crates/plugin/src/surfaces/mod.rs"
+symbol = "option_chain"
+matched_terms = ["chain", "option", "surface"]
+seed_family = "custom_data"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.plugin.src.surfaces.option_chain.chain"
+evidence_path = "crates/plugin/src/surfaces/option_chain.rs"
+symbol = "chain"
+matched_terms = ["chain", "option", "surface"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.plugin.src.surfaces.option_chain.into_inner"
+evidence_path = "crates/plugin/src/surfaces/option_chain.rs"
+symbol = "into_inner"
+matched_terms = ["chain", "option", "surface"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.plugin.src.surfaces.option_chain.new"
+evidence_path = "crates/plugin/src/surfaces/option_chain.rs"
+symbol = "new"
+matched_terms = ["chain", "option", "surface"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.plugin.src.surfaces.option_chain.option_chain_slice_handle"
+evidence_path = "crates/plugin/src/surfaces/option_chain.rs"
+symbol = "OptionChainSliceHandle"
+matched_terms = ["chain", "option", "surface"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.trading.src.examples.strategies.delta_neutral_vol.config.with_entry_iv_offset"
+evidence_path = "crates/trading/src/examples/strategies/delta_neutral_vol/config.rs"
+symbol = "with_entry_iv_offset"
+matched_terms = ["iv", "vol"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.trading.src.examples.strategies.delta_neutral_vol.config.with_iv_param_key"
+evidence_path = "crates/trading/src/examples/strategies/delta_neutral_vol/config.rs"
+symbol = "with_iv_param_key"
+matched_terms = ["iv", "vol"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.trading.src.examples.strategies.delta_neutral_vol.mod.config"
+evidence_path = "crates/trading/src/examples/strategies/delta_neutral_vol/mod.rs"
+symbol = "config"
+matched_terms = ["greeks", "option", "strike", "vol", "volatility"]
+seed_family = "data_actor_subscription"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.trading.src.examples.strategies.delta_neutral_vol.strategy.delta_neutral_vol"
+evidence_path = "crates/trading/src/examples/strategies/delta_neutral_vol/strategy.rs"
+symbol = "DeltaNeutralVol"
+matched_terms = ["option", "vol", "volatility"]
+seed_family = "data_actor_subscription"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.trading.src.examples.strategies.delta_neutral_vol.strategy.greeks_initialized"
+evidence_path = "crates/trading/src/examples/strategies/delta_neutral_vol/strategy.rs"
+symbol = "greeks_initialized"
+matched_terms = ["greeks", "vol"]
+seed_family = "data_actor_subscription"
+classification = "excluded"
+
 [[engine_mapping_rules]]
 surface_id_prefix = "nt.model.option_greeks"
 engine_mapping = { mapping_kind = "product_kind", target = "iv_option_greeks" }

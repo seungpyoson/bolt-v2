@@ -366,6 +366,31 @@ fn ledger_rejects_new_candidates_matched_only_by_broad_crate_prefix() {
 }
 
 #[test]
+fn ledger_rejects_review_candidates_covered_only_by_deep_module_prefix() {
+    let candidate = IvCapabilityCandidate {
+        surface_id: "nt.crates.indicators.src.volatility.new_iv_band".to_string(),
+        evidence_path: "crates/indicators/src/volatility/new_iv_band.rs".to_string(),
+        symbol: "NewIvBand".to_string(),
+        matched_terms: BTreeSet::from(["volatility".to_string()]),
+        seed_family: None,
+        engine_mapping: None,
+    };
+    let mut ledger = IvCapabilityLedger::empty();
+    ledger.classification_rules.push(
+        bolt_v2::bolt_v3_iv::capability::IvCapabilityClassificationRule {
+            surface_id_prefix: "nt.crates.indicators.src.volatility.".to_string(),
+            classification: CapabilityClassification::Excluded,
+        },
+    );
+
+    assert!(matches!(
+        ledger.validate_candidates(std::slice::from_ref(&candidate)),
+        Err(IvCapabilityError::UnclassifiedCandidate { surface_id })
+            if surface_id == candidate.surface_id
+    ));
+}
+
+#[test]
 fn broad_adapter_exclusion_can_cover_non_iv_options_false_positives() {
     let candidate = IvCapabilityCandidate {
         surface_id: "nt.crates.adapters.example.src.websocket.client.with_options".to_string(),

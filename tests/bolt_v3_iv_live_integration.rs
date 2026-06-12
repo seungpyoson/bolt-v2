@@ -10,11 +10,12 @@ use std::{
 use bolt_v2::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
     bolt_v3_iv::{
+        derive::IvDerivedInputSet,
         error::IvRejectReason,
         health::IvSourceHealthState,
         ingest::{IvBasisValue, IvGreekValues, IvIngestEvent, IvOptionGreeksPayload, IvRawPayload},
         query::{IvProductQuery, IvQuery, IvQueryProduct},
-        runtime::{IvRuntimeEngine, IvRuntimeEngineError},
+        runtime::{IvRuntimeEngine, IvRuntimeEngineError, cargo_pinned_nt_revision},
         selector::IvSelector,
         store::{IvRetentionPolicy, IvStore},
         subscription::IvRuntimeOperation,
@@ -1219,6 +1220,44 @@ configured_source_param = "configured-value"
     assert_eq!(lifecycle.start_plans.len(), 1);
     assert_eq!(lifecycle.stop_plans.len(), 1);
     assert_eq!(lifecycle.start_plans[0].subscription_generation, 7);
+}
+
+#[test]
+fn live_root_registry_stamps_derived_inputs_with_cargo_pinned_nt_revision() {
+    let mut root = live_event_router_root_config();
+    let profile = root.iv.as_mut().unwrap().profiles.first_mut().unwrap();
+    profile.derived_inputs = vec![IvDerivedInputSet {
+        profile_id: "configured-profile".to_string(),
+        source_id: "configured-greeks-source".to_string(),
+        source_kind: IvSourceKind::OptionGreeks,
+        selector_fingerprint: "configured-greeks-selector".to_string(),
+        instrument_id: "BTC-20240101-50000-C.DERIBIT".to_string(),
+        basis: IvBasis::Mark,
+        convention: IvConvention::Named("BLACK_SCHOLES".to_string()),
+        as_of_ns: UnixNanos::new(2_000),
+        received_ts_ns: UnixNanos::new(2_005),
+        subscription_generation: 7,
+        source_health_state: IvSourceHealthState::Active,
+        nt_revision: "configured-config-nt-revision".to_string(),
+        nt_evidence_path: "configured/nt/evidence/path.rs".to_string(),
+        input_event_ids: vec!["configured-input-event".to_string()],
+        option_price: None,
+        underlying_price: None,
+        strike: None,
+        option_side: None,
+        time_to_expiry_years: None,
+        rate: None,
+        carry: None,
+    }];
+
+    let registry = build_iv_query_handle_registry_for_root(&root, IvStore::empty()).unwrap();
+    let handle = registry
+        .handle("configured-strategy", "configured-profile")
+        .expect("configured strategy should receive configured IV profile handle");
+
+    let derived_inputs = handle.derived_inputs();
+    assert_eq!(derived_inputs.len(), 1);
+    assert_eq!(derived_inputs[0].nt_revision, cargo_pinned_nt_revision());
 }
 
 #[test]

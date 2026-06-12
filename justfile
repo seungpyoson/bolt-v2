@@ -159,7 +159,10 @@ bte-build: check-workspace require-rust-verification-owner
 check-aarch64: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- check --target {{target}} --locked
 
-source-fence: check-workspace require-rust-verification-owner
+verify-remote: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" verify-remote --repo "{{repo_root}}"
+
+source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/test_verify_bolt_v3_runtime_literals.py
     python3 scripts/verify_bolt_v3_runtime_literals.py
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
@@ -170,8 +173,6 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_naming.py
     python3 scripts/test_verify_bolt_v3_dependency_direction.py
     python3 scripts/verify_bolt_v3_dependency_direction.py
-    git fetch -q origin main 2>/dev/null
-    python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
     python3 scripts/test_verify_bolt_v3_status_map_current.py
     python3 scripts/verify_bolt_v3_status_map_current.py
     python3 scripts/test_verify_bolt_v3_schema_current.py
@@ -183,6 +184,10 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/test_verify_runtime_capture_yaml.py
+
+source-fence: source-fence-static
+    git fetch -q origin main 2>/dev/null
+    python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
     # Fresh CI runners need the pinned NT checkout before source-capture checks.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
     python3 scripts/verify_runtime_capture_yaml.py
@@ -224,7 +229,9 @@ ci-lint-workflow:
     [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
 
     github_automation_files=("${workflow_files[@]}" "${action_files[@]}")
-    rust_invocation_files=(justfile scripts/*.sh tests/*.sh "${github_automation_files[@]}")
+    repo_governance_files=()
+    [ -f .no-mistakes.yaml ] && repo_governance_files+=(.no-mistakes.yaml)
+    rust_invocation_files=(justfile "${repo_governance_files[@]}" scripts/*.sh tests/*.sh "${github_automation_files[@]}")
 
     if [ "${#github_automation_files[@]}" -eq 0 ]; then
         echo "No workflow or action files found — skipping"
@@ -248,6 +255,9 @@ ci-lint-workflow:
         failed=1
     fi
     if ! python3 scripts/test_rust_verification.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_verify_remote.py; then
         failed=1
     fi
     if ! python3 scripts/test_command_understanding.py; then

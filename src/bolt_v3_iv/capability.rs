@@ -173,9 +173,7 @@ impl IvCapabilityLedger {
                     | Some(CapabilityClassification::NotIvOptions)
                     | Some(CapabilityClassification::Excluded)
             ) {
-                if classification_rule
-                    .is_some_and(|rule| broad_crate_rule_requires_exact_review(rule, candidate))
-                {
+                if candidate_requires_exact_review(candidate) {
                     return Err(IvCapabilityError::UnclassifiedCandidate {
                         surface_id: candidate.surface_id.clone(),
                     });
@@ -190,23 +188,6 @@ impl IvCapabilityLedger {
 
         Ok(())
     }
-}
-
-fn is_broad_crate_classification_rule(rule: &IvCapabilityClassificationRule) -> bool {
-    rule.surface_id_prefix.starts_with("nt.crates.")
-        && rule
-            .surface_id_prefix
-            .split('.')
-            .filter(|segment| !segment.is_empty())
-            .count()
-            <= 3
-}
-
-fn broad_crate_rule_requires_exact_review(
-    rule: &IvCapabilityClassificationRule,
-    candidate: &IvCapabilityCandidate,
-) -> bool {
-    is_broad_crate_classification_rule(rule) && candidate_requires_exact_review(candidate)
 }
 
 fn candidate_requires_exact_review(candidate: &IvCapabilityCandidate) -> bool {

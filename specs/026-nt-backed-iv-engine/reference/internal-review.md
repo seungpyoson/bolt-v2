@@ -233,3 +233,25 @@ Current PR verification uses GitHub CI rather than local cargo reruns. Because a
 - `cargo fmt --check`: PASS.
 - `git diff --check`: PASS.
 - `just source-fence`: PASS.
+
+## 2026-06-12 Completion Review After `ad57ac4`
+
+**Reviewed working tree**: branch `026-nt-backed-iv-engine`, local delta after PR head `ad57ac408dbeed4e2d61673f3fd80ed2d815e4d8`
+**Recommendation**: PASS for local non-compile review gates; final PR proof requires commit, push, and exact-head GitHub CI through `just verify-remote`.
+
+| Issue | Evidence | Resolution |
+|---|---|---|
+| Capability classification rules could still hide review-worthy NT IV/options candidates behind deep module prefixes. | The existing broad-prefix guard only checked crate-root prefixes. A new regression covers a volatility candidate matched by `nt.crates.indicators.src.volatility.`. | `candidate_requires_exact_review()` now applies to any exclusion/not-IV/unreachable rule match, forcing exact ledger entries for greeks, implied, IV, volatility, smile, and option-surface candidates. Current pinned-checkout false positives are classified explicitly in `capability-ledger.toml`. |
+| Strategy-registration IV query handles copied config-provided derived inputs without the Cargo-pinned NT revision stamping used by runtime profile state. | `live_root_registry_stamps_derived_inputs_with_cargo_pinned_nt_revision` covers a config-derived input whose stale revision must be replaced before reaching the strategy handle. | `runtime_derived_inputs_from_profile()` is shared with strategy registration, and `IvQueryHandle::derived_inputs()` exposes test evidence for the stamped state. |
+| Aggregate-greeks custom-data subscription command translation lacked direct live-node coverage. | New `iv_aggregate_greeks_start_plan_translates_to_runtime_custom_data_command` checks command type, client ID, data type, identifier, merged source/selector metadata, and command params. | Live-node command translation now has explicit aggregate-greeks evidence matching the existing custom-IV path. |
+| Strategy authorization `allowed_source_ids` validation had production logic but no direct regression coverage. | `strategy_authorization_rejects_unknown_allowed_source_id` proves unknown source IDs reject at config validation. | The existing validator behavior is now locked by a focused config test. |
+| PR branch verification tooling was stale relative to current main's remote-first Rust verification policy. | `cargo fmt --check` and `just source-fence` initially failed because the branch had schema v1 `ci/rust-verification.toml`, while the machine cargo shim requires schema v2 `local_compile_policy`. | Ported the current-main schema v2 policy, `verify-remote`, `source-fence-static`, local-compile refusal logic, no-mistakes command mapping, and matching verifier self-tests while preserving the IV source-fence test in full `source-fence` for CI. |
+
+### 2026-06-12 Local Non-Compile Verification
+
+- `cargo fmt --check`: PASS.
+- `git diff --check`: PASS.
+- `just source-fence-static`: PASS.
+- `python3 scripts/test_verify_remote.py`: PASS.
+- `just ci-lint-workflow`: PASS.
+- Local compile-heavy Rust tests/clippy were not run by design; exact-head GitHub CI is the required proof after push.

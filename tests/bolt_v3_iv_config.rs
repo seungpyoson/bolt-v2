@@ -658,6 +658,24 @@ fn source_rename_rejects_stale_profile_scoped_references() {
 }
 
 #[test]
+fn strategy_authorization_rejects_unknown_allowed_source_id() {
+    let unknown_source_toml = valid_iv_toml().replacen(
+        "allowed_source_ids = []",
+        "allowed_source_ids = [\"configured-unknown-source\"]",
+        1,
+    );
+    let config: IvRootConfig = toml::from_str(&unknown_source_toml).unwrap();
+    let errors = validate_iv_root_config(&config);
+
+    assert!(
+        errors.iter().any(|message| {
+            message.contains("allowed_source_ids contains unknown source configured-unknown-source")
+        }),
+        "expected unknown allowed_source_ids rejection, got {errors:?}"
+    );
+}
+
+#[test]
 fn duplicate_profile_ids_reject_at_config_validation() {
     let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
     config.profiles.push(config.profiles[0].clone());

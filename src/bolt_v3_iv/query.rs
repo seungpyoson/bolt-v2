@@ -607,6 +607,10 @@ impl IvQueryHandle {
         self.state.derived_outputs()
     }
 
+    pub fn derived_inputs(&self) -> Vec<IvDerivedInputSet> {
+        self.state.derived_inputs()
+    }
+
     pub fn query_rejections(&self) -> Vec<IvPolicyDecision> {
         self.state.query_rejections()
     }

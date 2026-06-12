@@ -4,7 +4,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
+import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 
@@ -21,6 +26,7 @@ def _load(name: str):
 
 RV = _load("rust_verification")
 REPO_ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = Path(__file__).resolve().parent
 
 
 def _valid_lane_policy() -> dict:
@@ -88,6 +94,89 @@ def test_repo_policy_file_declares_lane_policy() -> None:
     assert "local_lane_policy" in data, "ci/rust-verification.toml must declare [local_lane_policy]"
 
 
+# Subprocess runner: acquire, write a sentinel, hold for --hold seconds, exit.
+HOLD_RUNNER = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+lock_dir, sentinel, hold = sys.argv[2], sys.argv[3], float(sys.argv[4])
+handle = lane_governor.acquire(
+    "hold-runner", lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=30, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+Path(sentinel).write_text(str(time.time()), encoding="utf-8")
+time.sleep(hold)
+print("released", time.time())
+"""
+
+# Subprocess runner: acquire once, print acquisition wall time, exit immediately.
+ONCE_RUNNER = """
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+lock_dir, timeout = sys.argv[2], float(sys.argv[3])
+handle = lane_governor.acquire(
+    "once-runner", lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=timeout, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+print("acquired", time.time())
+"""
+
+
+def _spawn(snippet: str, *args: str, env: dict | None = None) -> subprocess.Popen:
+    return subprocess.Popen(
+        [sys.executable, "-c", snippet, str(SCRIPTS_DIR), *args],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+    )
+
+
+def _wait_for(path: Path, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"sentinel {path} never appeared")
+
+
+def test_uncontended_acquire_is_fast() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        start = time.monotonic()
+        proc = _spawn(ONCE_RUNNER, tmp, "30")
+        out, err = proc.communicate(timeout=20)
+        assert proc.returncode == 0, err
+        assert "acquired" in out
+        assert time.monotonic() - start < 10, "uncontended acquire must not wait"
+
+
+def test_second_acquire_queues_until_release() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(HOLD_RUNNER, tmp, str(sentinel), "3")
+        _wait_for(sentinel)
+        t0 = time.monotonic()
+        waiter = _spawn(ONCE_RUNNER, tmp, "30")
+        out, err = waiter.communicate(timeout=30)
+        waited = time.monotonic() - t0
+        holder.communicate(timeout=10)
+        assert waiter.returncode == 0, err
+        assert waited >= 2.0, f"waiter should queue behind holder, waited only {waited:.2f}s"
+
+
+def test_holder_metadata_written() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(HOLD_RUNNER, tmp, str(sentinel), "3")
+        _wait_for(sentinel)
+        data = RV.load_policy(REPO_ROOT)
+        lock_path = Path(tmp) / f"{data['target_namespace']}.lane.lock"
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+        holder.communicate(timeout=10)
+        assert payload["pid"] == holder.pid
+        assert payload["lane"] == "hold-runner"
+
+
 def main() -> int:
     tests = [
         test_valid_lane_policy_passes,
@@ -98,6 +187,9 @@ def main() -> int:
         test_heartbeat_must_be_below_timeout,
         test_non_positive_intervals_rejected,
         test_repo_policy_file_declares_lane_policy,
+        test_uncontended_acquire_is_fast,
+        test_second_acquire_queues_until_release,
+        test_holder_metadata_written,
     ]
     for test in tests:
         test()

@@ -12,7 +12,7 @@ v3 keeps the v2 design that the review did not challenge (the F1–F15 resolutio
 - **B-1 (convergent read-path blocker, 5 of 6 reviewers):** the largest v3 change. Restructures §3, §4.3, §4.4, §4.5, §5.3 around (a) immutable per-commit NT-native catalog roots materialized only from a committed PromotionPackage, (b) NT-native interval filenames in canonical roots vs content+transform-hash names staging-only, (c) Tier-C-only physically-non-NT staging that NT's reader cannot enumerate, plus a fail-loud validator. Grounded: NT lists a single root's `data/<type>/` prefix naively with zero pointer awareness (`catalog.rs:1998-2021`) and over-includes unparseable filenames (`query_intersects_filename` returns `true` on `None`, `catalog.rs:4600`) — silent wrong-data, NOT a crash (Gemini's crash mechanism disproven).
 - **R-2 (cross-kind promotion atomicity):** one PromotionPackage commits as a single immutable `SnapshotSet` advanced by ONE CAS on `pointers/set/latest.json`; per-kind pointers are derived views; the backtest pins the committed set once at run start. New §4.5; §13 open sub-question "Pointer-commit ordering across kinds" RESOLVED.
 - **R-3 (idempotency digest):** staging key, PromotionPackage entry, and `ArtifactIndex.content_hash` key on a canonical LOGICAL-content digest (new §4.3b, via NT's own in-tree `arrow_row::RowConverter`), never raw parquet bytes (non-deterministic — `created_by`/SNAPPY/row-group, `parquet.rs:182-183`). §9.x cost-model note added.
-- **R-4 (instruments lane):** instruments go through `ConditionalCatalogWriter` (new §4.5); NT `write_instruments` (`catalog.rs:701`, NOT node.rs:165 which is the read side) is never called for writes; `event_time_source` guard exemption made class-correct via a table-level `time_series=false` predicate.
+- **R-4 (instruments lane):** instruments go through `ConditionalCatalogWriter` (new §4.5); NT `write_instruments` (`catalog.rs:701`, NOT node.rs:165 which is the read side) is never called for platform-root writes (§4.1 scope-boundary note); `event_time_source` guard exemption made class-correct via a table-level `time_series=false` predicate.
 - **R-5 (encoder seam):** `write_batches_to_object_store` is `pub` (`parquet.rs:170`) but encode+put share one function with no byte-return seam (`parquet.rs:178-197`); Phase-0 sub-task 0.E mandates verifying visibility and choosing vendor-encode vs arrow-rs, recorded in `NtCapabilityProof`.
 - **R-6 (conditional-put unprovable + multipart):** resolved S3ConditionalPut is not introspectable from a built store and NT's `create_s3_store` cannot even set it (drops unknown keys, `parquet.rs:712-714`); the writer builds its own `AmazonS3Builder` and asserts capability via a runtime probe at construction (Phase-0 prerequisite 0.6); public multipart cannot carry a create guard, so per-object size is bounded under the single-PUT limit, fail loud.
 - **R-7 (server-side copy):** promotion materializes canonical objects by backend-native `object_store::copy_opts(CopyMode::Create)` → S3 `CopyObject` (`aws/mod.rs:312`), zero egress; new §4.4a; §9 cost addendum.
@@ -97,8 +97,11 @@ NT rev `6e059dc`, crate `nautilus-persistence`:
   `copy`/`copy_if_not_exists` wrappers (`lib.rs:1386-1394`); on S3 `copy_opts` issues `CopyObject`
   (`aws/mod.rs:312`, `x-amz-copy-source` `aws/client.rs:596-597,702`). `CopyMode::Create` requires
   `S3CopyIfNotExists` configured or returns `Error::NotSupported` (`aws/mod.rs:374-378`).
-- `bolt-v2/Cargo.toml` is a **single-package binary crate** (`Cargo.toml:1-2`), NOT a workspace
-  (`find` returns only `./Cargo.toml`). It already lists `nautilus-persistence` as a direct
+- `bolt-v2/Cargo.toml` is a **single-package binary crate** (`Cargo.toml:1-2`), NOT a workspace.
+  (Staleness correction, 2026-06-12: `main` now additionally carries
+  `crates/backtesting-vertical-slice/` as its OWN excluded workspace root with its own `Cargo.lock`
+  and `nautilus-persistence` `cloud` feature — the live binary's resolution graph remains
+  single-package; see the §12 prior-art note.) It already lists `nautilus-persistence` as a direct
   dependency (`Cargo.toml:39`) with **no** `cloud` feature. `nautilus-persistence` default features
   are empty (`crates/persistence/Cargo.toml:24`); `cloud = object_store/{aws,azure,gcp,http}`
   (`:25-30`); `python` transitively enables `cloud` (`:39-49`). Today `cargo tree -e features` on the
@@ -179,7 +182,7 @@ do NOT go through `dispatch_query`.
 | `InstrumentStatus` | `instrument_status` | A | yes |
 | `InstrumentClose` | `instrument_closes` | A | yes |
 | `FundingRateUpdate` | `funding_rate_update` | **B** | **NO** |
-| `InstrumentAny` | `instruments` | separate lane — write via `ConditionalCatalogWriter` (NEVER NT `write_instruments`, `catalog.rs:701`); read via `query_instruments` (`catalog.rs:827`, called at `node.rs:165`) | n/a |
+| `InstrumentAny` | `instruments` | separate lane — write via `ConditionalCatalogWriter` (NEVER NT `write_instruments` for platform-root writes, `catalog.rs:701`; §4.1 scope-boundary note); read via `query_instruments` (`catalog.rs:827`, called at `node.rs:165`) | n/a |
 | `AccountState` | `account_state` | execution output, out of scope | no |
 
 Confirmed exact strings: `order_book_depths` (NOT `order_book_depth_10`); `funding_rate_update`
@@ -292,7 +295,9 @@ its NT-surface tier and is what scopes the replay claim.
 ### 3.1 Decision
 
 There is exactly **one** writer of the NT catalog and the Tier-C research Parquet: the Rust
-`ConditionalCatalogWriter` (§4.3). It is the only code path that ever puts staged or canonical bytes.
+`ConditionalCatalogWriter` (§4.3). It is the only code path that ever puts staged or canonical bytes
+into the platform's roots (the pre-existing vertical-slice run projection on `main` writes only its
+run-scoped scratch roots — §4.1 scope-boundary note).
 **Python is read-only** against both surfaces. Notebooks / Research-Analytics consume the catalog and
 the Tier-C research Parquet through read-only APIs; no Python process writes, promotes, consolidates,
 or mutates any object. This removes the v2 dual write path (a "Python convenience that writes the same
@@ -375,10 +380,13 @@ root (§4.4) and NT-native interval filenames inside it (§4.3).
 
 NT's `ParquetDataCatalog::write_to_parquet` / `write_custom_data_batch` (Rust:
 `catalog.rs:505,607`; Python: `write_data` `parquet.py:251`) is **never** called for any write —
-staged or canonical — from Rust **or** Python. ALL writes go through the external
+staged or canonical — from Rust **or** Python (scope: the platform's staging/canonical roots; the
+pre-existing vertical-slice run projection on `main` writes only its run-scoped scratch roots —
+§4.1 scope-boundary note). ALL platform writes go through the external
 `ConditionalCatalogWriter` (§4.3); the `write_instruments` lane is no exception (it also encodes-then-
 conditional-writes — see §4.3 / §4.5 / R-4). NT's catalog (Rust and Python) is used **only** for
-read-back/query. There is one writer and any number of readers; there is no second write path. See §4.
+read-back/query. There is one writer and any number of readers; there is no second write path into
+the platform's roots. See §4.
 
 ---
 
@@ -405,7 +413,8 @@ behavior, and no-overwrite behavior" gate or `ingest_manifest.no_overwrite_proof
 write.**
 
 > **Scope boundary — pre-existing vertical-slice run projection (external review, 2026-06-12).** The
-> NT-writer prohibition above (and everywhere it is restated: §2.1, §4.3, §9.4, §15 R-4, §16.1 D-2)
+> NT-writer prohibition above (and every restatement of it: the v3-changes R-4 bullet, the §2 tier
+> table, §2.1, §3.1, §3.5, §4.3, §9.4, §11, §15 R-4, §16.1 D-2)
 > is an invariant over THIS plan's catalog roots — the platform's staging and canonical
 > (`nt-catalog/sets/<id>/`) prefixes. It is NOT a repo-wide claim: `main` already carries an
 > NT-writer write path in the backtesting-vertical-slice run projection
@@ -589,7 +598,8 @@ transcript hash) is recorded as `ingest_manifest.no_overwrite_proof` (`backfill-
 absence of an accepted `no_overwrite_proof` blocks any `local_staging` or `canonical_s3` write.
 
 Every staged and canonical object — market data, custom data, AND instruments (§4.5) — goes through
-this layer. NT's `ParquetDataCatalog` write methods are never called.
+this layer. NT's `ParquetDataCatalog` write methods are never called for platform-root writes
+(§4.1 scope-boundary note).
 
 
 ### 4.3b Canonical logical-content digest (the single definition; resolves R-3)
@@ -712,17 +722,21 @@ wholesale. Promotion is the commit of an explicit promotion package, never a pre
    never appended to or mutated.
 
    > **Instrument-directory charset constraint (campaign-branch finding, 2026-06).** `object_store`'s
-   > path layer percent-encodes, at write time, every non-ASCII character and every ASCII character
-   > outside alphanumeric / `.` / `_` / `-` in each path segment (its INVALID encode set — including
-   > `~`, which is RFC 3986 unreserved). NT's identifier-filtered catalog queries cannot match a
-   > percent-encoded `<safe_instrument_id>` directory (upstream nautechsystems/nautilus_trader#4259);
-   > the backtesting-vertical-slice read path on the campaign branch works around this with explicit
-   > file-list queries plus a manifest-level instrument-id charset validator. The
-   > `ConditionalCatalogWriter` and canonical-root naming MUST therefore fix the charset policy at
-   > design time: canonical `<safe_instrument_id>` directory names are restricted to the
-   > object_store-verbatim ASCII subset (alphanumeric, `.`, `_`, `-`), and ids outside it are
-   > rejected fail-loud at admission — a canonical root must never depend on NT's filtered-query
-   > path matching a percent-encoded directory name.
+   > path layer percent-encodes, at write time, every non-ASCII character plus a specific INVALID
+   > ASCII set in each path segment (controls plus backslash, braces, caret, percent, backtick,
+   > square brackets, double quote, angle brackets, tilde, hash, pipe, asterisk, question mark, CR,
+   > LF — note `~` IS encoded despite being RFC 3986 unreserved; other ASCII punctuation is stored
+   > verbatim). NT's identifier-filtered catalog queries cannot match a percent-encoded
+   > `<safe_instrument_id>` directory (upstream nautechsystems/nautilus_trader#4259); the
+   > backtesting-vertical-slice read path on the campaign branch works around this with explicit
+   > file-list queries plus a manifest-level instrument-id charset validator admitting only
+   > alphanumeric / `.` / `_` / `-` — a deliberately CONSERVATIVE strict subset of what object_store
+   > stores verbatim, so admission never depends on per-character encode-set knowledge (over-strict
+   > early rejection is recoverable; an admitted-but-encoded id is a guaranteed late failure). The
+   > `ConditionalCatalogWriter` and canonical-root naming MUST fix the charset policy at design
+   > time: canonical `<safe_instrument_id>` directory names are restricted to the same conservative
+   > subset, and ids outside it are rejected fail-loud at admission — a canonical root must never
+   > depend on NT's filtered-query path matching a percent-encoded directory name.
 
 6. **Commit the whole package as ONE snapshot SET, advanced by a single CAS (R-2).** Promotion becomes
    "live" only after every object in step 5 is materialized, by atomically advancing exactly ONE hot
@@ -1864,7 +1878,11 @@ and falsifiable.
   lockfile**, outside `bolt-v2`'s dependency resolution. Concretely: a sibling directory (e.g.
   `tools/catalog-projector/`) carrying its own `[workspace]` + `Cargo.lock`, declared in the live
   `bolt-v2/Cargo.toml` via `[workspace] exclude` so it never joins the live binary's resolution graph;
-  OR a fully separate repo/path checkout. It depends on `nautilus-persistence = { rev = "6e059dc...",
+  OR a fully separate repo/path checkout. **Prior art already in-repo (do not duplicate scaffolding
+  unknowingly):** `crates/backtesting-vertical-slice/` on `main` implements exactly this pattern —
+  its own `[workspace]` root + `Cargo.lock` with `nautilus-persistence = { rev = "6e059dc…",
+  features = ["cloud"] }`, outside the live binary's graph. Phase-0 decides at build time whether to
+  extend that crate or scaffold the sibling projector crate. It depends on `nautilus-persistence = { rev = "6e059dc...",
   features = ["cloud"] }` (`cloud = object_store/{aws,azure,gcp,http}`, `crates/persistence/
   Cargo.toml:25-30`). The live `bolt-v2` package keeps its dependency line (`Cargo.toml:39`) with NO
   `cloud` feature.
@@ -2115,9 +2133,9 @@ the built store (`aws/precondition.rs:117-160`, `aws/client.rs:209`).
 - `transform_hash` must hash CODE + CONFIG, not config alone.
 - NT's writer is non-atomic (head-then-put TOCTOU, interval-keyed, default Overwrite) — Rust
   `write_to_parquet`/`write_custom_data_batch`/`write_instruments` AND Python
-  `write_data`/`consolidate_*` (`parquet.py:251,284-285,597,652`). ALL writes go through the Rust
-  `ConditionalCatalogWriter`; NT's writer (Rust or Python) is never called for writes. Python is
-  read-only (§3).
+  `write_data`/`consolidate_*` (`parquet.py:251,284-285,597,652`). ALL platform writes go through the
+  Rust `ConditionalCatalogWriter`; NT's writer (Rust or Python) is never called for platform-root
+  writes (§4.1 scope-boundary note). Python is read-only (§3).
 - **`write_mode` migration is a coupled change set (R-8):** migrating producers to `local_staging`
   without the ledger-logic edit silently un-counts every S3 binding at
   `backfill_coverage_ledger.py:292`. Producers + ledger + schema-validation test ship atomically (§16

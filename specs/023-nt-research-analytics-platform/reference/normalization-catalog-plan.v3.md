@@ -411,11 +411,11 @@ NT's `write_to_parquet` is non-atomic last-writer-wins, interval-keyed, not crea
 Conclusion: NT's writer cannot satisfy the contract's "Idempotent write manifest, create-only
 behavior, and no-overwrite behavior" gate or `ingest_manifest.no_overwrite_proof`. **Never call NT's
 `write_to_parquet`/`write_custom_data_batch`/`write_instruments` directly for any staged-or-canonical
-write.**
+write (platform roots — §4.1 scope-boundary note below).**
 
 > **Scope boundary — pre-existing vertical-slice run projection (external review, 2026-06-12).** The
 > NT-writer prohibition above (and every restatement of it: the v3-changes R-4 bullet, the §2 tier
-> table, §2.1, §3.1, §3.5, §4.3, §4.5, §9.4, §11, §15 R-4, §16.1 D-2)
+> table, §2.1, §3.1, §3.5, §4.3, §4.5, §9.4, the §14 writer-atomicity risk bullet, §15 R-4, §16.1 D-2)
 > is an invariant over THIS plan's catalog roots — the platform's staging and canonical
 > (`nt-catalog/sets/<id>/`) prefixes. It is NOT a repo-wide claim: `main` already carries an
 > NT-writer write path in the backtesting-vertical-slice run projection
@@ -448,7 +448,7 @@ roots keyed by snapshot-set id.
 
 A research-only crate (in the separate cloud-enabled workspace, §12) that **encodes parquet bytes
 itself and conditionally creates the object**. It NEVER delegates the object write to any NT catalog
-write method (`write_to_parquet`, `write_custom_data_batch`, `write_instruments`). It is the **single
+write method (`write_to_parquet`, `write_custom_data_batch`, `write_instruments`; platform roots — §4.1 scope-boundary note). It is the **single
 write path for every catalog and Parquet object in this system** — staging and canonical, market-data
 and instruments alike (scope: the platform's roots — see the §4.1 scope-boundary note for the
 pre-existing vertical-slice run projection on `main`). NT's `ParquetDataCatalog` is used **only**

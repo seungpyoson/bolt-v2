@@ -4,7 +4,7 @@
 
 **Goal:** At most one CPU-heavy repo verifier script runs locally per repo at a time — across all worktrees, checkouts, and agent runtimes (Claude Code, Codex, no-mistakes, manual shells) — while CI, `cargo fmt --check`, and `just verify-remote` remain untouched.
 
-**Architecture:** In-script self-governance (approved Option A). Every `scripts/verify_*.py` / `scripts/test_*.py` entry point acquires a per-repo machine-level exclusive flock before doing work. The lock path is declared in `ci/rust-verification.toml` `[local_lane_policy]` (committed, env-independent — review amendment F1), re-entrancy is detected by walking the caller's process ancestry, not env markers (F2), and a meta-check verifier makes coverage drift a CI failure (F3). Waiters queue with stderr heartbeats and fail loud at a policy timeout (F5: no-mistakes `ci_timeout` is 4h ≫ worst queue wait; default timeout 900s vs. worst measured single-script hold ~90s). Verifier performance itself (90s wall / 74s CPU for one literal scan) is filed as follow-up F4, not fixed here.
+**Architecture:** In-script self-governance (approved Option A). Every `scripts/verify_*.py` / `scripts/test_*.py` entry point acquires a per-repo machine-level exclusive flock before doing work. The lock path is declared in `ci/rust-verification.toml` `[local_lane_policy]` (committed, env-independent — review amendment F1), re-entrancy is detected by walking the caller's process ancestry, not env markers (F2), and a meta-check verifier makes coverage drift a CI failure (F3). Waiters queue with stderr heartbeats and fail loud at a policy timeout (F5: no-mistakes `ci_timeout` is 4h ≫ worst queue wait; default timeout 1800s — the longest governed script is unmeasured at plan time, so the default carries depth-3 headroom and Task 9 captures a real measurement). Verifier performance itself (90s wall / 74s CPU for one literal scan) is filed as follow-up F4, not fixed here.
 
 **Tech Stack:** Python 3.11+ stdlib only (`fcntl`, `ast`, `json`, `subprocess`), TOML policy via the existing repo verification owner `scripts/rust_verification.py`, `just` recipes, GitHub Actions CI.
 
@@ -19,8 +19,15 @@
   - **F1:** lock path must not derive from `HOME` or any env var (`RUST_VERIFICATION_ROOT_BASE`-style overrides void mutual exclusion across sandboxed harnesses). Fixed absolute `lock_dir` committed in the repo TOML.
   - **F2:** re-entrancy via lock-holder pid ancestry walk (env markers are lost when children are spawned with scrubbed env, e.g. `SCRUB_ENV_KEYS`).
   - **F3:** meta-check (`scripts/verify_lane_governance.py`) asserts every governed entry point acquires the guard; wired into `source-fence-static`, which CI runs via the `source-fence` job.
-  - **F5:** timeout calibration evidence: worst measured single-script hold 90s (`verify_bolt_v3_runtime_literals.py`, 2026-06-12, local run: real 90.19 / user 74.04); lock is held per-script, not per-lane, so a waiter's worst single wait ≈ longest single script × queue depth. Default `acquire_timeout_seconds = 900`. no-mistakes `~/.no-mistakes/config.yaml` `ci_timeout: "4h"`.
+  - **F5:** timeout calibration evidence: worst measured single-script hold 90s (`verify_bolt_v3_runtime_literals.py`, 2026-06-12, local run: real 90.19 / user 74.04); lock is held per-script, not per-lane, so a waiter's worst single wait ≈ longest single script × queue depth. The longest governed script is UNMEASURED at plan time, so the default is `acquire_timeout_seconds = 1800` (depth-3 headroom for multi-minute scripts, still ≪ the 4h no-mistakes ceiling, `~/.no-mistakes/config.yaml` `ci_timeout: "4h"`); Task 9 Step 1 records a real longest-script measurement to recalibrate from.
   - **F4 (follow-up, separate issue, Task 10):** profile/cache the verifiers themselves.
+- **Round-2 plan-review amendments (2026-06-12 adversarial pass over this plan):**
+  - **A1/A2/A3:** Task 9's acceptance demo uses a daemonized (`ppid=1`, unrelated-tree) deterministic holder killed by exact recorded pid — it proves cross-tree contention (the F1/F2 mechanism), is not timing-flaky, and never uses `pkill -f` patterns that could kill other agent sessions' verifier runs.
+  - **A4:** `-h`/`--help` invocations bypass the lock (a help call must never queue behind a multi-minute holder); pinned by test in Task 5.
+  - **A5:** timeout default raised 900 → 1800 (see F5).
+  - **A6:** ancestry pass-through requires the same holder pid on two consecutive busy polls, closing the stale-metadata window between a new holder's flock and its metadata write; pid-recycling into a live ancestor remains a documented residual (bounded impact: one ungoverned script run).
+  - **A7:** the F4 follow-up issue body cites only sourced measurements; lane script counts are captured at filing time, not estimated.
+  - **A8:** wiring commit stages with `git add -u scripts/` (tracked modifications only), never blanket `git add scripts/`.
 - **Pre-flight verified (2026-06-12):** repo validator `validate_policy_data` tolerates new top-level sections; cargo shim parses only `[local_compile_policy]` (section-scoped fallback parser); agent-layer `~/.claude/lib/rust_verification.py` strict key check applies to its v1 schema only — bolt-v2's TOML is v2 and is loaded via the repo-local owner. Adding `[local_lane_policy]` breaks neither.
 - **CI exemption:** `allowed_ci_env = "GITHUB_ACTIONS"` presence bypasses the lock (CI jobs are isolated runners; CI runs `just fmt-check` whose prerequisites are governed scripts — bypass keeps CI semantics identical).
 - **Out of scope:** `scripts/rust_verification.py` cargo passthrough (keeps `cargo fmt --check` instant), `just verify-remote`, Ubicloud cost (#648), CI topology, non-repo CPU consumers (`agent-doctor-log.mjs`).
@@ -223,7 +230,7 @@ Insert between the `[local_compile_policy]` block and `[remote_verification]`:
 enabled = true
 allowed_ci_env = "GITHUB_ACTIONS"
 lock_dir = "/tmp/rust-verification-lanes"
-acquire_timeout_seconds = 900
+acquire_timeout_seconds = 1800
 heartbeat_seconds = 15
 poll_interval_seconds = 1
 ```
@@ -459,6 +466,10 @@ def acquire(
     lane_policy = policy["local_lane_policy"]
     if honor_ci_env and os.environ.get(lane_policy["allowed_ci_env"]):
         return None
+    if {"-h", "--help"}.intersection(sys.argv[1:]):
+        # A help invocation does no heavy work and must never queue behind a
+        # multi-minute holder (A4).
+        return None
     label = lane or Path(sys.argv[0]).name or "unknown-lane"
     directory = Path(lock_dir) if lock_dir is not None else Path(lane_policy["lock_dir"])
     timeout = (
@@ -479,15 +490,25 @@ def acquire(
     handle = open(lock_path, "a+", encoding="utf-8")
     started = time.monotonic()
     last_heartbeat = started
+    last_busy_holder_pid: int | None = None
     while True:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             holder = _read_holder(lock_path)
             holder_pid = holder.get("pid")
-            if isinstance(holder_pid, int) and holder_is_ancestor(holder_pid):
+            if (
+                isinstance(holder_pid, int)
+                and holder_pid == last_busy_holder_pid
+                and holder_is_ancestor(holder_pid)
+            ):
+                # Same holder pid observed on two consecutive busy polls (A6):
+                # closes the window where a new holder has the flock but has
+                # not yet written its metadata, which would otherwise let a
+                # waiter pass through on the PREVIOUS holder's pid.
                 handle.close()
                 return None
+            last_busy_holder_pid = holder_pid if isinstance(holder_pid, int) else None
             now = time.monotonic()
             waited = now - started
             if waited >= timeout:
@@ -518,7 +539,7 @@ def acquire(
         return handle
 ```
 
-Design notes the implementer must not "fix": the lock is held for the remainder of the process (released by the OS on any exit — no stale-lock cleanup path needed, deliberately no `release()`); metadata reads by waiters are unlocked and may race, so `_read_holder` tolerates garbage; `holder_is_ancestor` re-checks every poll iteration because the holder can change while waiting.
+Design notes the implementer must not "fix": the lock is held for the remainder of the process (released by the OS on any exit — no stale-lock cleanup path needed, deliberately no `release()`); metadata reads by waiters are unlocked and may race, so `_read_holder` tolerates garbage; ancestry pass-through deliberately requires the same holder pid on two consecutive busy polls (A6) and re-checks every iteration because the holder can change while waiting; the `--help` fast-path (A4) is intentionally before any lock work.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -639,12 +660,12 @@ git commit -m "test: pin ancestry re-entrancy under scrubbed env (#653)"
 
 ---
 
-### Task 5: CI bypass
+### Task 5: CI bypass + `--help` fast-path
 
 **Files:**
 - Modify: `scripts/test_lane_governor.py`
 
-- [ ] **Step 1: Add test — CI env passes through even while another process holds**
+- [ ] **Step 1: Add tests — CI env and `--help` pass through even while another process holds**
 
 ```python
 CI_RUNNER = """
@@ -677,18 +698,51 @@ def test_ci_env_bypasses_lock() -> None:
         assert elapsed < 5.0, "CI bypass must not wait"
 ```
 
-Register `test_ci_env_bypasses_lock` in `main()`. Note `CI_RUNNER` deliberately omits `honor_ci_env=False` — it exercises the production default path under the policy's `allowed_ci_env`.
+Then add the `--help` fast-path test (A4 — a help invocation must never queue behind a multi-minute holder):
+
+```python
+HELP_RUNNER = """
+import sys, time
+scripts_dir, lock_dir = sys.argv[1], sys.argv[2]
+sys.path.insert(0, scripts_dir)
+import lane_governor
+sys.argv = ["verify_sample.py", "--help"]
+t0 = time.monotonic()
+result = lane_governor.acquire(
+    "help-runner", lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=20, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+print("help-result", result is None, time.monotonic() - t0)
+"""
+
+
+def test_help_invocation_bypasses_lock() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(HOLD_RUNNER, tmp, str(sentinel), "10")
+        _wait_for(sentinel)
+        helper = _spawn(HELP_RUNNER, tmp)
+        out, err = helper.communicate(timeout=20)
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert helper.returncode == 0, err
+        flag, elapsed = out.split()[1], float(out.split()[2])
+        assert flag == "True", "--help must not take or wait for the lane lock"
+        assert elapsed < 5.0, "--help fast-path must not wait"
+```
+
+Register `test_ci_env_bypasses_lock` and `test_help_invocation_bypasses_lock` in `main()`. Note `CI_RUNNER` deliberately omits `honor_ci_env=False` — it exercises the production default path under the policy's `allowed_ci_env`.
 
 - [ ] **Step 2: Run tests**
 
 Run: `python3 scripts/test_lane_governor.py`
-Expected: `OK: lane governor self-tests passed.` (bypass logic shipped in Task 2; this pins it. The full suite runs both in CI and locally because every contention test forces `honor_ci_env=False` except this one, which sets the env explicitly.)
+Expected: `OK: lane governor self-tests passed.` (bypass and help fast-path logic shipped in Task 2; this pins both. The full suite runs both in CI and locally because every contention test forces `honor_ci_env=False` except the CI one, which sets the env explicitly.)
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add scripts/test_lane_governor.py
-git commit -m "test: pin CI bypass for lane governance (#653)"
+git commit -m "test: pin CI bypass and --help fast-path for lane governance (#653)"
 ```
 
 ---

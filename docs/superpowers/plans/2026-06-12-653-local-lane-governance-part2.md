@@ -283,9 +283,11 @@ Expected: same pass/fail outcome as on `origin/main` (run it there first if unsu
 ```bash
 git add scripts/verify_lane_governance.py scripts/test_verify_lane_governance.py
 git commit -m "feat: add lane-governance meta-check (#653)"
-git add scripts/
+git add -u scripts/
 git commit -m "feat: acquire lane lock in every verifier and test entry point (#653)"
 ```
+
+(`git add -u` stages tracked modifications only — never blanket-add the directory, which would pick up untracked strays; A8.)
 
 ---
 
@@ -348,20 +350,36 @@ git commit -m "docs: wire lane governance into source-fence-static and agent doc
 
 Maps the issue's verification list to evidence. Run from the worktree root.
 
-- [ ] **Step 1: Concurrent lanes queue (issue criteria 1–2, bounded demo)**
+- [ ] **Step 1: Cross-tree contention queue (issue criteria 1–2; F1/F2 cross-runtime proof; A1/A2/A3)**
+
+Deterministic demo: a daemonized holder (double-fork, `ppid=1` — macOS has no `setsid` binary, hence the in-Python daemonization) takes the REAL lane lock from an unrelated process tree, then one governed script queues behind it. This proves exactly the mechanism that matters across agent runtimes — a non-ancestor holder must block us — without timing luck and without touching any other session's processes.
 
 ```bash
-just ci-lint-workflow > /tmp/653_lane_a.log 2>&1 &
-LANE_A=$!
-sleep 5
-( just source-fence-static > /tmp/653_lane_b.log 2>&1 & echo $! > /tmp/653_lane_b.pid )
-sleep 45
-grep -m1 "lane-governor: waiting" /tmp/653_lane_b.log && echo "QUEUE-OBSERVED"
-kill $LANE_A $(cat /tmp/653_lane_b.pid) 2>/dev/null
-pkill -f "scripts/verify_bolt_v3" 2>/dev/null; pkill -f "scripts/test_verify" 2>/dev/null; pkill -f "scripts/test_find_same_sha" 2>/dev/null; pkill -f "scripts/test_rust_verification" 2>/dev/null
+python3 - "$PWD/scripts" <<'EOF'
+import os, sys, time
+scripts_dir = sys.argv[1]
+if os.fork() > 0:
+    sys.exit(0)
+os.setsid()
+if os.fork() > 0:
+    os._exit(0)
+with open("/tmp/653_holder.pid", "w", encoding="utf-8") as fh:
+    fh.write(str(os.getpid()))
+sys.path.insert(0, scripts_dir)
+import lane_governor
+lane_governor.acquire("cross-tree-holder", honor_ci_env=False)
+time.sleep(40)
+EOF
+sleep 2
+ps -o ppid= -p "$(cat /tmp/653_holder.pid)"
+time python3 scripts/verify_lane_governance.py 2>/tmp/653_queue.log; echo "exit=$?"
+grep -m1 "lane-governor: waiting" /tmp/653_queue.log && echo "QUEUE-OBSERVED"
+kill "$(cat /tmp/653_holder.pid)" 2>/dev/null || true
 ```
 
-Expected: `QUEUE-OBSERVED` with a heartbeat line naming the holder pid and lane. Killing mid-lane is safe — flock releases on process death. Verify afterwards: `python3 scripts/verify_lane_governance.py` acquires instantly and prints `OK: ...`.
+Expected: `ps` prints `1` (holder runs in an unrelated tree, so ancestry pass-through must NOT fire); the governed script waits with heartbeat lines at ~15s/30s naming `cross-tree-holder` and its pid, acquires when the holder exits (~40s total), prints `OK: ...`, `exit=0`; `QUEUE-OBSERVED`. Afterwards `python3 scripts/verify_lane_governance.py` acquires instantly (flock released on holder exit). While here, record the longest governed script's duration (`/usr/bin/time` one full `just source-fence-static` run when convenient, or take it from CI timings) as the F5 recalibration measurement for `acquire_timeout_seconds`.
+
+Optional, non-gating secondary observation: run `just ci-lint-workflow` and `just source-fence-static` concurrently and watch the second's stderr for heartbeats. The lock alternates per-script, so absence of a heartbeat is NOT a failure (a continuous 15s wait may never occur). If you stop the lanes early, kill only the recorded job pids and their descendants (walk `pgrep -P <pid>` recursively) — NEVER `pkill -f` script-name patterns, which would kill other concurrent agent sessions' verifier runs.
 
 - [ ] **Step 2: `cargo fmt --check` remains allowed and ungoverned (issue criterion 3)**
 
@@ -427,9 +445,11 @@ Body (single consolidated issue, numbered sub-items, per MECE follow-up conventi
 ## Problem
 
 #653 serializes CPU-heavy local verifier lanes, but the lanes are expensive in
-absolute terms: `verify_bolt_v3_runtime_literals.py` alone measured real 90.19s /
-user 74.04s (2026-06-12, local), and `source-fence-static` runs 12 such scripts
-sequentially (~15 min CPU per gate run, before queueing). Serialization fixes
+absolute terms. Sourced measurement: `verify_bolt_v3_runtime_literals.py` alone
+measured real 90.19s / user 74.04s (2026-06-12, local, /usr/bin/time).
+`source-fence-static` runs every test_/verify_ pair in its recipe sequentially
+(<insert the script count from the justfile at HEAD and a fresh /usr/bin/time
+sample of the full lane when filing — do not estimate>). Serialization fixes
 contention, not cost; under #653 queueing, multi-session latency is cost × queue depth.
 
 ## Sub-items
@@ -461,4 +481,5 @@ Comment on #653: `Follow-up (verifier performance, review finding F4): #<new-num
 - **Spec coverage:** issue's expected outcome → Tasks 2–7; classification (cheap / CPU-heavy static / forbidden compile) → name-pattern rule + meta-check (Task 6) with `cargo fmt` and owner passthrough exempt (Task 9 Step 2 proves it); each verification bullet in the issue → Task 9 steps; non-goals untouched (no CI topology, no #648 changes, no verify-remote changes). Review amendments F1–F3 in Tasks 1/4/6, F5 in policy defaults + decision record, F4 in Task 10.
 - **Placeholder scan:** every code step contains complete code; the only deliberately deferred content is the PR URL inside the F4 issue body (knowable only after Task 9) and the meta-check red list (authoritative at run time by design).
 - **Type consistency:** `acquire()` signature in Task 2 matches every call site in Tasks 4–7 fixtures and runners; `lane_governance_violations(Path) -> list[str]` matches Task 6 tests; `validate_local_lane_policy(data)` matches Task 1 tests; lock file name `<target_namespace>.lane.lock` consistent between Task 2 implementation and Task 2 metadata test.
-- **Known residual (documented, accepted):** a process started before this change, running outside any repo checkout, or hand-rolling flock-free script copies is ungoverned — same residual class as #645's documented bypasses. Single-user machine assumption: `/tmp` lock dir is not hardened against hostile local users.
+- **Round-2 adversarial pass (A1–A10) applied:** deterministic cross-tree acceptance demo replaces the flaky two-lane/pkill version (A1/A2/A3); `--help` fast-path + test (A4); timeout 900 → 1800 with a Task 9 measurement step (A5); double-read ancestry confirmation (A6); sourced-metrics-only wording in the F4 issue body (A7); `git add -u` staging (A8).
+- **Known residuals (documented, accepted):** a process started before this change, running outside any repo checkout, or hand-rolling flock-free script copies is ungoverned — same residual class as #645's documented bypasses. Single-user machine assumption: `/tmp` lock dir is not hardened against hostile local users. Pid-recycling into a live ancestor of a waiter could in theory defeat the (double-read-confirmed) ancestry check — bounded impact: one ungoverned script run. flock wakeups have no FIFO fairness, so a waiter at queue depth ≥2 can be overtaken; starvation is bounded by the fail-loud timeout. The contention self-tests add ~25s of deliberate sleeps to every local `source-fence-static` run (CI included). The justfile lane lines themselves are convention-enforced, the same as every other verifier pair in the recipe (watcher-of-the-watcher accepted).

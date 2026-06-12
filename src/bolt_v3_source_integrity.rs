@@ -260,8 +260,10 @@ mod tests {
     // Re-derived again after adding checked fee-inclusive admission arithmetic.
     // Re-derived after moving entry limit-notional guarding into shared submit
     // admission.
+    // Re-derived after adding position-sizer submit admission state and evidence
+    // to the shared submit admission module.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "765681e898d3e6ab3c957031b30d2aefe82722ff2dccabfe6bdd85b3ee0b9131";
+        "5ff1f03a3fca0d167a6c18bc536ddcf8af30eeea5335c18cad549d99a9dd16c3";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

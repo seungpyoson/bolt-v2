@@ -1251,6 +1251,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 SizingEvidenceKind::Portfolio,
+                SizingEvidenceKind::VenueSpendability,
                 SizingEvidenceKind::OrderLifecycle,
                 SizingEvidenceKind::ProductState,
                 SizingEvidenceKind::ReservationLedger,

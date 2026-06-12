@@ -83,7 +83,6 @@ use nautilus_model::{
     data::{OrderBookDeltas, QuoteTick, TradeTick},
     enums::AggressorSide,
     identifiers::TradeId,
-    types::Quantity,
 };
 use ustr::Ustr;
 use zeroize::Zeroizing;
@@ -4434,11 +4433,11 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         assert!(trade_chunk_count_probe_passed(11, 10), "above m must pass");
     }
 
-    fn readiness_trade_tick(instrument_id: &str, trade_id: &str) -> TradeTick {
+    fn readiness_trade_tick(instrument_id: InstrumentId, trade_id: &str) -> TradeTick {
         TradeTick::new(
-            InstrumentId::from(instrument_id),
+            instrument_id,
             Price::from("1.00"),
-            Quantity::from("1.00"),
+            nautilus_model::types::Quantity::from("1.00"),
             AggressorSide::Buyer,
             TradeId::from(trade_id),
             1.into(),
@@ -4517,28 +4516,19 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         ]);
         let chunk = handle.chunk_count_next_chunk().expect("first chunk");
 
-        handle.record_trade(&readiness_trade_tick(
-            chunk[0].instrument_id.as_str(),
-            "T-A1",
-        ));
+        handle.record_trade(&readiness_trade_tick(chunk[0].instrument_id, "T-A1"));
         assert!(
             !handle.has_all_required_market_data(),
             "one distinct firing market is below m=2"
         );
 
-        handle.record_trade(&readiness_trade_tick(
-            chunk[0].instrument_id.as_str(),
-            "T-A2",
-        ));
+        handle.record_trade(&readiness_trade_tick(chunk[0].instrument_id, "T-A2"));
         assert!(
             !handle.has_all_required_market_data(),
             "duplicate trades from the same market must not double-count"
         );
 
-        handle.record_trade(&readiness_trade_tick(
-            chunk[1].instrument_id.as_str(),
-            "T-B1",
-        ));
+        handle.record_trade(&readiness_trade_tick(chunk[1].instrument_id, "T-B1"));
         assert!(
             handle.has_all_required_market_data(),
             "the trade chunk-count probe should pass once m distinct markets fire"
@@ -4557,10 +4547,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             );
         handle.chunk_count_capture_universe(vec![InstrumentId::from("A-1.OKX")]);
         let chunk = handle.chunk_count_next_chunk().expect("first chunk");
-        handle.record_trade(&readiness_trade_tick(
-            chunk[0].instrument_id.as_str(),
-            "T-A1",
-        ));
+        handle.record_trade(&readiness_trade_tick(chunk[0].instrument_id, "T-A1"));
 
         assert!(
             handle.chunk_count_next_chunk().is_none(),

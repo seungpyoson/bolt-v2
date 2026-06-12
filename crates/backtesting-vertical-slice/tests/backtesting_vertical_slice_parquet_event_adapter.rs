@@ -34,7 +34,7 @@ use backtesting_vertical_slice::{
     canonical_market_data::{CanonicalOrderBookDeltasTable, DeltaAction, DeltaSide},
     canonical_order_book_deltas::{
         DeltaInstrumentIdentities, DeltaMappingConfig, DeltaPriceSignPolicy, DeltaSourceFormat,
-        EmptyBookPolicy, InstrumentKeySpec, OrderingAuthority,
+        EmptyBookPolicy, EventStreamMappingFields, InstrumentKeySpec, OrderingAuthority,
         normalize_parquet_event_stream_deltas,
     },
     canonical_trades::{CanonicalInstrumentIdentity, CanonicalTradesTable, CsvTimestampUnit},
@@ -87,7 +87,7 @@ fn identities() -> DeltaInstrumentIdentities {
 
 fn mapping() -> DeltaMappingConfig {
     DeltaMappingConfig {
-        format: DeltaSourceFormat::EventStream {
+        format: DeltaSourceFormat::EventStream(Box::new(EventStreamMappingFields {
             event_type_field: "event_type".to_string(),
             snapshot_event_value: "book".to_string(),
             level_change_event_value: "price_change".to_string(),
@@ -109,7 +109,7 @@ fn mapping() -> DeltaMappingConfig {
             event_time_field: None,
             event_time_unit: None,
             trade_forbidden_claims: vec![TRADE_CLAIM.to_string()],
-        },
+        })),
         instrument_key: InstrumentKeySpec {
             key_field: None,
             exclusion_filter: None,

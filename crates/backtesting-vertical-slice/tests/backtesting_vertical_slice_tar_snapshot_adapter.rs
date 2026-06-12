@@ -29,7 +29,7 @@ use backtesting_vertical_slice::{
     canonical_order_book_deltas::{
         DeltaInstrumentIdentities, DeltaMappingConfig, DeltaPriceSignPolicy, DeltaSourceFormat,
         EmptyBookPolicy, InstrumentExclusionFilter, InstrumentKeySpec, OrderingAuthority,
-        normalize_tar_jsonl_snapshot_deltas,
+        SnapshotMappingFields, normalize_tar_jsonl_snapshot_deltas,
     },
     canonical_trades::{CanonicalInstrumentIdentity, CsvTimestampUnit},
     catalog_projection::{
@@ -114,14 +114,14 @@ fn keyed_identities() -> DeltaInstrumentIdentities {
 
 fn keyed_mapping() -> DeltaMappingConfig {
     DeltaMappingConfig {
-        format: DeltaSourceFormat::Snapshot {
+        format: DeltaSourceFormat::Snapshot(SnapshotMappingFields {
             bids_field: "bids".to_string(),
             asks_field: "asks".to_string(),
             level_price_field: "px".to_string(),
             level_size_field: "sz".to_string(),
             event_time_field: "time".to_string(),
             event_time_unit: CsvTimestampUnit::Milliseconds,
-        },
+        }),
         instrument_key: InstrumentKeySpec {
             key_field: Some("coin".to_string()),
             exclusion_filter: Some(InstrumentExclusionFilter::default()),

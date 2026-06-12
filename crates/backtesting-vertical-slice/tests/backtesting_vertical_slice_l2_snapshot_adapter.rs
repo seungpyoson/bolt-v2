@@ -22,7 +22,8 @@ use backtesting_vertical_slice::{
     canonical_market_data::{CanonicalOrderBookDeltasTable, DeltaAction, DeltaSide},
     canonical_order_book_deltas::{
         DeltaInstrumentIdentities, DeltaMappingConfig, DeltaPriceSignPolicy, DeltaSourceFormat,
-        EmptyBookPolicy, InstrumentKeySpec, OrderingAuthority, normalize_jsonl_snapshot_deltas,
+        EmptyBookPolicy, InstrumentKeySpec, OrderingAuthority, SnapshotMappingFields,
+        normalize_jsonl_snapshot_deltas,
     },
     canonical_trades::{CanonicalInstrumentIdentity, CsvTimestampUnit},
     catalog_projection::{
@@ -78,14 +79,14 @@ fn identities() -> DeltaInstrumentIdentities {
 
 fn mapping() -> DeltaMappingConfig {
     DeltaMappingConfig {
-        format: DeltaSourceFormat::Snapshot {
+        format: DeltaSourceFormat::Snapshot(SnapshotMappingFields {
             bids_field: "bids".to_string(),
             asks_field: "asks".to_string(),
             level_price_field: "px".to_string(),
             level_size_field: "sz".to_string(),
             event_time_field: "time".to_string(),
             event_time_unit: CsvTimestampUnit::Milliseconds,
-        },
+        }),
         instrument_key: InstrumentKeySpec {
             key_field: None,
             exclusion_filter: None,

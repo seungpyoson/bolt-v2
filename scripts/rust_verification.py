@@ -2554,6 +2554,13 @@ def check_summary(check: dict[str, Any]) -> str:
     return f"{name} [{bucket}]" + (f" {link}" if link else "")
 
 
+def verify_remote_head_current_or_fail(repo: pathlib.Path, branch: str, head: str) -> int | None:
+    _pr, error = pr_for_exact_head(repo, branch, head, during_watch=True)
+    if error is not None:
+        return verify_remote_fail(error)
+    return None
+
+
 def cmd_verify_remote(args: argparse.Namespace) -> int:
     repo = repo_path(args.repo)
     try:
@@ -2574,13 +2581,16 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
     while True:
         now = time.monotonic()
         if now >= overall_deadline:
+            head_result = verify_remote_head_current_or_fail(repo, branch, head)
+            if head_result is not None:
+                return head_result
             return verify_remote_fail(f"timed out waiting for remote checks on {pr_url}")
-        _pr, error = pr_for_exact_head(repo, branch, head, during_watch=True)
-        if error is not None:
-            return verify_remote_fail(error)
         checks, error = pr_checks(repo)
         if error is not None:
             return verify_remote_fail(error)
+        head_result = verify_remote_head_current_or_fail(repo, branch, head)
+        if head_result is not None:
+            return head_result
         if not checks:
             if now >= checks_deadline:
                 return verify_remote_fail(
@@ -2606,9 +2616,6 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
                 print(f"- {check_summary(check)}", file=sys.stderr)
             return 2
         if not pending:
-            _pr, error = pr_for_exact_head(repo, branch, head, during_watch=True)
-            if error is not None:
-                return verify_remote_fail(error)
             print(f"OK: remote checks passed for {head} on {pr_url}")
             return 0
         time.sleep(interval)

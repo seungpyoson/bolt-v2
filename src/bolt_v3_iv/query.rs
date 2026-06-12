@@ -145,6 +145,133 @@ struct IvRetainedProductKey {
     product_kind: IvProductKind,
 }
 
+// Query evaluation holds a read lock; mutations are replayed after the guard
+// drops to avoid cloning the retained store or upgrading the lock.
+#[derive(Debug, Default)]
+struct IvQuerySideEffects {
+    effects: Vec<IvQuerySideEffect>,
+}
+
+#[derive(Debug)]
+enum IvQuerySideEffect {
+    RetentionMiss(IvRetainedProductKey),
+    ProductQueryRejection {
+        product: IvQueryProduct,
+        reject_reason: IvRejectReason,
+    },
+    QueryRejection {
+        provenance: IvProvenance,
+        reject_reason: IvRejectReason,
+    },
+    SourceRejection {
+        profile_id: String,
+        source_id: String,
+        subscription_generation: u64,
+        ts_event_ns: UnixNanos,
+        reject_reason: IvRejectReason,
+        mark_rejected: bool,
+    },
+    DerivedOutput(IvDerivedOutput),
+    EnforceRetention,
+}
+
+impl IvQuerySideEffects {
+    fn record_retention_miss(&mut self, miss: IvRetainedProductKey) {
+        self.effects.push(IvQuerySideEffect::RetentionMiss(miss));
+    }
+
+    fn record_product_query_rejection(
+        &mut self,
+        product: &IvQueryProduct,
+        reject_reason: IvRejectReason,
+    ) {
+        self.effects.push(IvQuerySideEffect::ProductQueryRejection {
+            product: product.clone(),
+            reject_reason,
+        });
+    }
+
+    fn record_query_rejection(&mut self, provenance: &IvProvenance, reject_reason: IvRejectReason) {
+        self.effects.push(IvQuerySideEffect::QueryRejection {
+            provenance: provenance.clone(),
+            reject_reason,
+        });
+    }
+
+    fn record_derived_rejection(
+        &mut self,
+        inputs: &IvDerivedInputSet,
+        reject_reason: IvRejectReason,
+    ) {
+        self.effects.push(IvQuerySideEffect::SourceRejection {
+            profile_id: inputs.profile_id.clone(),
+            source_id: inputs.source_id.clone(),
+            subscription_generation: inputs.subscription_generation,
+            ts_event_ns: inputs.as_of_ns,
+            reject_reason,
+            mark_rejected: false,
+        });
+        self.enforce_retention();
+    }
+
+    fn record_derived_output(&mut self, output: IvDerivedOutput) {
+        self.effects.push(IvQuerySideEffect::DerivedOutput(output));
+    }
+
+    fn enforce_retention(&mut self) {
+        self.effects.push(IvQuerySideEffect::EnforceRetention);
+    }
+
+    fn apply(self, handle: &IvQueryHandle) {
+        for effect in self.effects {
+            match effect {
+                IvQuerySideEffect::RetentionMiss(miss) => {
+                    handle.state.record_retention_miss(&miss);
+                }
+                IvQuerySideEffect::ProductQueryRejection {
+                    product,
+                    reject_reason,
+                } => {
+                    handle
+                        .state
+                        .record_product_query_rejection(&product, reject_reason);
+                }
+                IvQuerySideEffect::QueryRejection {
+                    provenance,
+                    reject_reason,
+                } => {
+                    handle
+                        .state
+                        .record_query_rejection(&provenance, reject_reason);
+                }
+                IvQuerySideEffect::SourceRejection {
+                    profile_id,
+                    source_id,
+                    subscription_generation,
+                    ts_event_ns,
+                    reject_reason,
+                    mark_rejected,
+                } => {
+                    handle.state.record_source_rejection(
+                        profile_id,
+                        source_id,
+                        subscription_generation,
+                        ts_event_ns,
+                        reject_reason,
+                        mark_rejected,
+                    );
+                }
+                IvQuerySideEffect::DerivedOutput(output) => {
+                    handle.state.record_derived_output(output);
+                }
+                IvQuerySideEffect::EnforceRetention => {
+                    handle.enforce_retention_policy();
+                }
+            }
+        }
+    }
+}
+
 impl IvQueryState {
     pub fn new(store: IvStore) -> Self {
         Self {
@@ -660,34 +787,41 @@ impl IvQueryHandle {
             return Err(IvQueryError::ProductKindMismatch);
         }
 
-        let state = self.state.snapshot();
-        let product = match self.query_product_from_state(query, &state) {
-            Ok(product) => product,
-            Err(IvQueryError::RetentionMiss) => {
-                if let Some(miss) = retention_miss_for_query(&state, query) {
-                    self.state.record_retention_miss(&miss);
+        let (result, side_effects) = {
+            let state = self.state.read_state();
+            let mut side_effects = IvQuerySideEffects::default();
+            let result = match self.query_product_from_state(query, &state, &mut side_effects) {
+                Ok(product) => {
+                    if let IvQueryProduct::DerivedIv(derived) = &product
+                        && should_cache_derived_output(query)
+                    {
+                        side_effects.record_derived_output((**derived).clone());
+                        side_effects.enforce_retention();
+                    }
+                    Ok(product)
                 }
-                return Err(IvQueryError::RetentionMiss);
-            }
-            Err(error) => return Err(error),
+                Err(IvQueryError::RetentionMiss) => {
+                    if let Some(miss) = retention_miss_for_query(&state, query) {
+                        side_effects.record_retention_miss(miss);
+                    }
+                    Err(IvQueryError::RetentionMiss)
+                }
+                Err(error) => Err(error),
+            };
+            (result, side_effects)
         };
 
-        if let IvQueryProduct::DerivedIv(derived) = &product
-            && should_cache_derived_output(query)
-        {
-            self.state.record_derived_output((**derived).clone());
-            self.enforce_retention_policy();
-        }
-
-        Ok(product)
+        side_effects.apply(self);
+        result
     }
 
     fn query_product_from_state(
         &self,
         query: &IvProductQuery,
         state: &IvQueryState,
+        side_effects: &mut IvQuerySideEffects,
     ) -> Result<IvQueryProduct, IvQueryError> {
-        let mut product = self.find_product(query, state)?;
+        let mut product = self.find_product(query, state, side_effects)?;
         let product_is_current = product_satisfies_current_state(&product, state);
         let product_is_authorized = product_is_current
             && self.authorization.authorizes(
@@ -697,18 +831,19 @@ impl IvQueryHandle {
                 product.selector_fingerprint(),
             );
         if !product_is_authorized {
-            if let Some(authorized_product) = self.find_authorized_current_product(query, state)? {
+            if let Some(authorized_product) =
+                self.find_authorized_current_product(query, state, side_effects)?
+            {
                 product = authorized_product;
             } else if product_is_current {
-                self.state.record_product_query_rejection(
+                side_effects.record_product_query_rejection(
                     &product,
                     authorization_reject_reason(&self.authorization, query),
                 );
                 return Err(IvQueryError::StrategyNotAuthorized);
             } else {
                 if let Some(provenance) = product.provenance() {
-                    self.state
-                        .record_query_rejection(provenance, IvRejectReason::StaleData);
+                    side_effects.record_query_rejection(provenance, IvRejectReason::StaleData);
                 }
                 return Err(IvQueryError::ProductNotFound);
             }
@@ -720,7 +855,7 @@ impl IvQueryHandle {
             product.source_id(),
             product.selector_fingerprint(),
         ) {
-            self.state.record_product_query_rejection(
+            side_effects.record_product_query_rejection(
                 &product,
                 authorization_reject_reason(&self.authorization, query),
             );
@@ -734,6 +869,7 @@ impl IvQueryHandle {
         &self,
         query: &IvProductQuery,
         state: &IvQueryState,
+        side_effects: &mut IvQuerySideEffects,
     ) -> Result<Option<IvQueryProduct>, IvQueryError> {
         let products = match (&query.product_kind, &query.selector) {
             (
@@ -748,7 +884,7 @@ impl IvQueryHandle {
                 source_filter,
                 state_filter,
             ),
-            _ => match self.find_projection_products(query, state) {
+            _ => match self.find_projection_products(query, state, side_effects) {
                 Ok(products) => products,
                 Err(IvQueryError::ProductNotFound) => return Ok(None),
                 Err(error) => return Err(error),
@@ -770,6 +906,7 @@ impl IvQueryHandle {
         &self,
         query: &IvProductQuery,
         state: &IvQueryState,
+        side_effects: &mut IvQuerySideEffects,
     ) -> Result<IvQueryProduct, IvQueryError> {
         match (&query.product_kind, &query.selector) {
             (
@@ -933,6 +1070,7 @@ impl IvQueryHandle {
             ) => self.project_scalar_query(
                 query,
                 state,
+                side_effects,
                 input_selector,
                 projection_policy_id,
                 *as_of_ns,
@@ -948,6 +1086,7 @@ impl IvQueryHandle {
             ) => self.derived_iv_query(
                 query,
                 state,
+                side_effects,
                 instrument_id,
                 helper_policy_id,
                 *as_of_ns,
@@ -961,6 +1100,7 @@ impl IvQueryHandle {
         &self,
         query: &IvProductQuery,
         state: &IvQueryState,
+        side_effects: &mut IvQuerySideEffects,
         input_selector: &IvSelector,
         projection_policy_id: &str,
         as_of_ns: UnixNanos,
@@ -982,6 +1122,7 @@ impl IvQueryHandle {
         let mut input_products = self.find_projection_input_products(
             &input_query,
             state,
+            side_effects,
             projection_input_timestamp_tolerance(policy, state),
         )?;
         input_products.retain(|product| product_satisfies_current_state(product, state));
@@ -1070,23 +1211,26 @@ impl IvQueryHandle {
         &self,
         query: &IvProductQuery,
         state: &IvQueryState,
+        side_effects: &mut IvQuerySideEffects,
     ) -> Result<Vec<IvQueryProduct>, IvQueryError> {
-        self.find_projection_products_with_tolerance(query, state, None)
+        self.find_projection_products_with_tolerance(query, state, side_effects, None)
     }
 
     fn find_projection_input_products(
         &self,
         query: &IvProductQuery,
         state: &IvQueryState,
+        side_effects: &mut IvQuerySideEffects,
         tolerance_ns: u64,
     ) -> Result<Vec<IvQueryProduct>, IvQueryError> {
-        self.find_projection_products_with_tolerance(query, state, Some(tolerance_ns))
+        self.find_projection_products_with_tolerance(query, state, side_effects, Some(tolerance_ns))
     }
 
     fn find_projection_products_with_tolerance(
         &self,
         query: &IvProductQuery,
         state: &IvQueryState,
+        side_effects: &mut IvQuerySideEffects,
         tolerance_ns: Option<u64>,
     ) -> Result<Vec<IvQueryProduct>, IvQueryError> {
         match (&query.product_kind, &query.selector) {
@@ -1259,12 +1403,15 @@ impl IvQueryHandle {
             ) => self.find_derived_projection_products(
                 query,
                 state,
+                side_effects,
                 instrument_id,
                 helper_policy_id,
                 *as_of_ns,
                 inputs.as_deref(),
             ),
-            _ => self.find_product(query, state).map(|product| vec![product]),
+            _ => self
+                .find_product(query, state, side_effects)
+                .map(|product| vec![product]),
         }
     }
 
@@ -1272,13 +1419,16 @@ impl IvQueryHandle {
         &self,
         query: &IvProductQuery,
         state: &IvQueryState,
+        side_effects: &mut IvQuerySideEffects,
         instrument_id: &str,
         helper_policy_id: &str,
         as_of_ns: UnixNanos,
         request_inputs: Option<&IvDerivedInputSet>,
     ) -> Result<Vec<IvQueryProduct>, IvQueryError> {
         if request_inputs.is_some() {
-            return self.find_product(query, state).map(|product| vec![product]);
+            return self
+                .find_product(query, state, side_effects)
+                .map(|product| vec![product]);
         }
 
         let mut outputs = active_slice(&state.derived_outputs, state.derived_outputs_start)
@@ -1308,7 +1458,12 @@ impl IvQueryHandle {
             {
                 continue;
             }
-            let output = match self.derive_iv_from_inputs(state, helper_policy_id, inputs.clone()) {
+            let output = match self.derive_iv_from_inputs(
+                state,
+                side_effects,
+                helper_policy_id,
+                inputs.clone(),
+            ) {
                 Ok(output) => output,
                 Err(IvQueryError::DerivationRejected) => {
                     first_derivation_error.get_or_insert(IvQueryError::DerivationRejected);
@@ -1316,13 +1471,13 @@ impl IvQueryHandle {
                 }
                 Err(error) => return Err(error),
             };
-            self.state.record_derived_output(output.clone());
+            side_effects.record_derived_output(output.clone());
             outputs.push(output);
             derived_any = true;
         }
 
         if derived_any {
-            self.enforce_retention_policy();
+            side_effects.enforce_retention();
         }
 
         if outputs.is_empty() {
@@ -1339,6 +1494,7 @@ impl IvQueryHandle {
         &self,
         query: &IvProductQuery,
         state: &IvQueryState,
+        side_effects: &mut IvQuerySideEffects,
         instrument_id: &str,
         helper_policy_id: &str,
         as_of_ns: UnixNanos,
@@ -1364,13 +1520,14 @@ impl IvQueryHandle {
                 .cloned()
                 .ok_or(IvQueryError::DerivedInputNotFound)?
         };
-        self.derive_iv_from_inputs(state, helper_policy_id, inputs)
+        self.derive_iv_from_inputs(state, side_effects, helper_policy_id, inputs)
             .map(|output| IvQueryProduct::DerivedIv(Box::new(output)))
     }
 
     fn derive_iv_from_inputs(
         &self,
         state: &IvQueryState,
+        side_effects: &mut IvQuerySideEffects,
         helper_policy_id: &str,
         inputs: IvDerivedInputSet,
     ) -> Result<IvDerivedOutput, IvQueryError> {
@@ -1381,11 +1538,11 @@ impl IvQueryHandle {
             .iter()
             .find(|input_policy| input_policy.input_policy_id == policy.input_policy_ref)
         else {
-            self.record_derived_rejection(&inputs, IvRejectReason::HelperNotConfigured);
+            side_effects.record_derived_rejection(&inputs, IvRejectReason::HelperNotConfigured);
             return Err(IvQueryError::DerivationRejected);
         };
         if !derived_input_satisfies_current_state(&inputs, state) {
-            self.record_derived_rejection(&inputs, IvRejectReason::StaleData);
+            side_effects.record_derived_rejection(&inputs, IvRejectReason::StaleData);
             return Err(IvQueryError::DerivationRejected);
         }
         let current_derived_inputs = state
@@ -1401,29 +1558,17 @@ impl IvQueryHandle {
         ) {
             Ok(inputs) => inputs,
             Err(error) => {
-                self.record_derived_rejection(&inputs, derive_reject_reason(&error));
+                side_effects.record_derived_rejection(&inputs, derive_reject_reason(&error));
                 return Err(IvQueryError::DerivationRejected);
             }
         };
         match derive_iv(policy, inputs.clone()) {
             Ok(output) => Ok(output),
             Err(error) => {
-                self.record_derived_rejection(&inputs, derive_reject_reason(&error));
+                side_effects.record_derived_rejection(&inputs, derive_reject_reason(&error));
                 Err(IvQueryError::DerivationRejected)
             }
         }
-    }
-
-    fn record_derived_rejection(&self, inputs: &IvDerivedInputSet, reject_reason: IvRejectReason) {
-        self.state.record_source_rejection(
-            inputs.profile_id.clone(),
-            inputs.source_id.clone(),
-            inputs.subscription_generation,
-            inputs.as_of_ns,
-            reject_reason,
-            false,
-        );
-        self.enforce_retention_policy();
     }
 
     fn enforce_retention_policy(&self) {

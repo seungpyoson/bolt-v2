@@ -263,11 +263,12 @@ def base_classifications(
         classifications.append("draft-stage")
     if pr_state and pr_state.get("draft_timeline_truncated") is True:
         classifications.append("draft-timeline-truncated")
-    if fingerprint and fingerprint in prior_green_fingerprints:
+    is_fingerprint_workflow = workflow_key_for_path(run.get("path")) == fingerprint_workflow_key
+    if is_fingerprint_workflow and fingerprint and fingerprint in prior_green_fingerprints:
         classifications.append("fingerprint-identical")
-    if workflow_key_for_path(run.get("path")) == fingerprint_workflow_key and fingerprint_ambiguous:
+    if is_fingerprint_workflow and fingerprint_ambiguous:
         classifications.append("fingerprint-ambiguous")
-    elif workflow_key_for_path(run.get("path")) == fingerprint_workflow_key and fingerprint is None:
+    elif is_fingerprint_workflow and fingerprint is None:
         classifications.append("fingerprint-unknown")
     return classifications
 
@@ -381,7 +382,7 @@ def build_report(
             add_run_totals(lever_b_draft_stage_cancelled_superseded, run_totals)
         if workflow_key == runner_config.debug_workflow_key:
             debug_sessions.append(report_run)
-        if fingerprint and as_text(run.get("conclusion")) == "success":
+        if workflow_key == runner_config.fingerprint_workflow_key and fingerprint and as_text(run.get("conclusion")) == "success":
             prior_green_fingerprints.add(fingerprint)
 
     return {
@@ -659,12 +660,8 @@ query($owner:String!,$repo:String!,$number:Int!,$timelineLimit:Int!){
         number = pull_number_from_run(run)
         if number is not None:
             if number not in pr_cache:
-                try:
-                    pull_payload = client.api(f"pulls/{number}")
-                except MeterError:
-                    pr_cache[number] = None
-                else:
-                    pr_cache[number] = pull_payload if isinstance(pull_payload, dict) else None
+                pull_payload = client.api(f"pulls/{number}")
+                pr_cache[number] = pull_payload if isinstance(pull_payload, dict) else None
             pull = pr_cache[number]
         else:
             branch = as_text(run.get("head_branch"))

@@ -374,6 +374,31 @@ def assert_resolve_pr_states_uses_workflow_run_pr_number() -> None:
     assert states["30"]["draft_at_run"] is True, states
 
 
+def assert_resolve_pr_states_direct_pr_lookup_errors_are_fatal() -> None:
+    module = load_script()
+    config = load_test_config(module)
+
+    class FakeClient:
+        def api(self, path: str, *, params=None, paginate: bool = False):
+            assert path == "pulls/321", path
+            raise module.MeterError("rate limit while fetching PR")
+
+        def graphql(self, query: str, fields: dict[str, str | int]):
+            raise AssertionError("timeline must not be queried after PR lookup failure")
+
+    try:
+        module.resolve_pr_states(
+            FakeClient(),
+            "example/repo",
+            {"workflow_runs": [run_payload(39, pull_requests=[{"number": 321}])]},
+            config,
+        )
+    except module.MeterError as exc:
+        assert "rate limit while fetching PR" in str(exc), exc
+    else:
+        raise AssertionError("direct PR lookup failures must fail the meter")
+
+
 def assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs() -> None:
     module = load_script()
     config = load_test_config(module)
@@ -949,6 +974,44 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
     assert report["debug_sessions"][0]["id"] == 13, report["debug_sessions"]
 
 
+def assert_fingerprint_identity_is_scoped_to_fingerprint_workflow() -> None:
+    module = load_script()
+    config = load_test_config(module)
+    runs = [
+        run_payload(
+            70,
+            name="Backtester CI",
+            path=".github/workflows/backtester-ci.yml",
+            created_at="2026-06-12T00:00:00Z",
+        ),
+        run_payload(
+            71,
+            name="Backtester CI",
+            path=".github/workflows/backtester-ci.yml",
+            created_at="2026-06-12T00:01:00Z",
+        ),
+        run_payload(72, created_at="2026-06-12T00:02:00Z"),
+        run_payload(73, created_at="2026-06-12T00:03:00Z"),
+    ]
+    artifacts = {
+        run["id"]: {"artifacts": [artifact_payload("nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-inputs-z")]}
+        for run in runs
+    }
+    report = module.build_report(
+        repo="example/repo",
+        runs_payload={"workflow_runs": runs},
+        jobs_payload_by_run_id={run["id"]: {"jobs": []} for run in runs},
+        artifacts_payload_by_run_id=artifacts,
+        pr_state_by_run_id={},
+        runner_config=config,
+        generated_at="2026-06-12T02:00:00Z",
+    )
+    runs_by_id = {run["id"]: run for run in report["runs"]}
+    assert "fingerprint-identical" not in runs_by_id[71]["classifications"], runs_by_id[71]
+    assert "fingerprint-identical" not in runs_by_id[72]["classifications"], runs_by_id[72]
+    assert "fingerprint-identical" in runs_by_id[73]["classifications"], runs_by_id[73]
+
+
 def assert_unknown_labels_are_reported_without_crashing() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -984,6 +1047,7 @@ def main() -> int:
     assert_gh_client_rejects_graphql_errors()
     assert_fetch_runs_sorts_before_limit()
     assert_resolve_pr_states_uses_workflow_run_pr_number()
+    assert_resolve_pr_states_direct_pr_lookup_errors_are_fatal()
     assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs()
     assert_resolve_pr_states_abstains_without_pr_refs_or_head_owner()
     assert_resolve_pr_states_fallback_uses_head_repository_owner()
@@ -993,6 +1057,7 @@ def main() -> int:
     assert_resolve_pr_states_handles_null_graphql_payloads()
     assert_cancelled_superseded_requires_pull_request_pr_match_and_overlap()
     assert_build_report_classifies_runs_and_totals_minutes()
+    assert_fingerprint_identity_is_scoped_to_fingerprint_workflow()
     assert_unknown_labels_are_reported_without_crashing()
     print("OK: Ubicloud runner-minute meter self-tests passed.")
     return 0

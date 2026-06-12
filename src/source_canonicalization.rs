@@ -551,7 +551,7 @@ pub struct GatedSourceRoot {
     pub relative_roots: &'static [&'static str],
 }
 
-/// THE registry — the ONLY place the two gated source roots are named. Lives in
+/// THE registry — the ONLY place gated source roots are named. Lives in
 /// this `#[path]`-shared pure file so `build.rs` (which embeds the canonical
 /// bytes) and the runtime integrity owner reference the SAME list with no
 /// duplicated file list. `build.rs`, the verifier, the producer, and tests all
@@ -562,6 +562,8 @@ pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
         relative_roots: &[
             "src/strategies/binary_oracle_edge_taker",
             "src/bolt_v3_book_sizing.rs",
+            "src/bolt_v3_binary_outcome_edge.rs",
+            "src/bolt_v3_executable_cost.rs",
         ],
     },
     GatedSourceRoot {

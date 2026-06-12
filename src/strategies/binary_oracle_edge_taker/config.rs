@@ -15,7 +15,8 @@ use serde::Deserialize;
 use toml::Value;
 
 use crate::{
-    bolt_v3_market_families, bolt_v3_numeric::is_positive_finite,
+    bolt_v3_market_families,
+    bolt_v3_numeric::{BPS_DENOMINATOR, is_positive_finite},
     strategies::registry::ValidationError,
 };
 
@@ -62,13 +63,11 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             order_notional_target: f64 => Float;
             maximum_position_notional: f64 => Float;
             book_impact_cap_bps: u64 => Integer;
+            vwap_depth_limit_bps: u64 => Integer;
+            slippage_buffer_bps: u64 => Integer;
             risk_lambda: f64 => Float;
             edge_threshold_basis_points: i64 => Integer;
             exit_hysteresis_bps: i64 => Integer;
-            vol_window_secs: u64 => Integer;
-            vol_gap_reset_secs: u64 => Integer;
-            vol_min_observations: u64 => Integer;
-            vol_bridge_valid_secs: u64 => Integer;
             trade_flow_window_secs: u64 => Integer;
             trade_flow_max_samples: u64 => Integer;
             spike_guard_return_threshold: f64 => Float;
@@ -156,6 +155,7 @@ macro_rules! define_config_struct {
             pub(super) signal_instrument_id: Option<String>,
             pub(super) resolution_client_id: Option<String>,
             pub(super) resolution_instrument_id: Option<String>,
+            pub(super) realized_volatility_surface_id: String,
             pub(super) entry_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) exit_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
@@ -218,6 +218,7 @@ const ORDER_TRIGGER_TYPE_FIELD: &str = "trigger_type";
 const ORDER_TRIGGER_INSTRUMENT_ID_FIELD: &str = "trigger_instrument_id";
 const ORDER_TRAILING_OFFSET_FIELD: &str = "trailing_offset";
 const ORDER_TRAILING_OFFSET_TYPE_FIELD: &str = "trailing_offset_type";
+const REALIZED_VOLATILITY_SURFACE_ID_FIELD: &str = "realized_volatility_surface_id";
 
 macro_rules! match_order_field_names {
     ($( $field:ident => $field_type:ident; )+) => {
@@ -255,6 +256,10 @@ const FORCED_EXIT_ORDER_FIELD: &str = stringify!(forced_exit_order);
 const WRONG_TYPE_CODE: &str = stringify!(wrong_type);
 const UNKNOWN_FIELD_CODE: &str = stringify!(unknown_field);
 const INVALID_INSTRUMENT_ID_CODE: &str = stringify!(invalid_instrument_id);
+const UNSUPPORTED_EXECUTABLE_ENTRY_ORDER_SHAPE_CODE: &str =
+    stringify!(unsupported_executable_entry_order_shape);
+const ORDER_SIDE_BUY_VALUE: &str = stringify!(buy);
+const POSITION_SIDE_LONG_VALUE: &str = stringify!(long);
 
 impl BinaryOracleEdgeTakerBuilder {
     pub(super) fn parse_config(raw: &Value) -> Result<BinaryOracleEdgeTakerConfig> {
@@ -278,31 +283,72 @@ impl BinaryOracleEdgeTakerBuilder {
         for (field, value) in [
             (
                 stringify!(trade_flow_max_samples),
-                config.trade_flow_max_samples,
+                Some(config.trade_flow_max_samples),
             ),
             (
                 stringify!(trade_flow_window_secs),
-                config.trade_flow_window_secs,
+                Some(config.trade_flow_window_secs),
             ),
             (
                 stringify!(spike_guard_cooldown_secs),
-                config.spike_guard_cooldown_secs,
-            ),
-            (stringify!(vol_window_secs), config.vol_window_secs),
-            (stringify!(vol_gap_reset_secs), config.vol_gap_reset_secs),
-            (
-                stringify!(vol_min_observations),
-                config.vol_min_observations,
-            ),
-            (
-                stringify!(vol_bridge_valid_secs),
-                config.vol_bridge_valid_secs,
+                Some(config.spike_guard_cooldown_secs),
             ),
         ] {
-            anyhow::ensure!(value > u64::MIN, "{field} must be positive");
+            if let Some(value) = value {
+                anyhow::ensure!(value > u64::MIN, "{field} must be positive");
+            }
         }
+        Self::ensure_bps_runtime_knobs_within_full_scale(&config)?;
+        Self::ensure_executable_entry_order_shape(&config)?;
         Self::ensure_configured_instrument_id_fields_parse(&config)?;
         Ok(config)
+    }
+
+    fn ensure_bps_runtime_knobs_within_full_scale(
+        config: &BinaryOracleEdgeTakerConfig,
+    ) -> Result<()> {
+        for (field, value) in [
+            (stringify!(book_impact_cap_bps), config.book_impact_cap_bps),
+            (
+                stringify!(vwap_depth_limit_bps),
+                config.vwap_depth_limit_bps,
+            ),
+            (stringify!(slippage_buffer_bps), config.slippage_buffer_bps),
+        ] {
+            anyhow::ensure!(
+                (value as f64) <= BPS_DENOMINATOR,
+                "{field} must be at most {BPS_DENOMINATOR}"
+            );
+        }
+        anyhow::ensure!(
+            config.slippage_buffer_bps >= config.vwap_depth_limit_bps,
+            "slippage_buffer_bps must be greater than or equal to vwap_depth_limit_bps"
+        );
+        Ok(())
+    }
+
+    fn ensure_executable_entry_order_shape(config: &BinaryOracleEdgeTakerConfig) -> Result<()> {
+        anyhow::ensure!(
+            Self::entry_order_shape_supported(&config.entry_order),
+            "{ENTRY_ORDER_FIELD} must be buy/long limit FOK without post-only, reduce-only, quote-quantity, trigger, or trailing fields"
+        );
+        Ok(())
+    }
+
+    pub(super) fn entry_order_shape_supported(order: &BinaryOracleEdgeTakerOrderConfig) -> bool {
+        order.side == ORDER_SIDE_BUY_VALUE
+            && order.position_side == POSITION_SIDE_LONG_VALUE
+            && order.order_type == OrderType::Limit
+            && order.time_in_force == TimeInForce::Fok
+            && !order.is_post_only
+            && !order.is_reduce_only
+            && !order.is_quote_quantity
+            && order.trigger_price.is_none()
+            && order.activation_price.is_none()
+            && order.trigger_type.is_none()
+            && order.trigger_instrument_id.is_none()
+            && order.trailing_offset.is_none()
+            && order.trailing_offset_type.is_none()
     }
 
     fn ensure_configured_instrument_id_fields_parse(
@@ -389,6 +435,7 @@ impl BinaryOracleEdgeTakerBuilder {
                     | "signal_instrument_id"
                     | "resolution_client_id"
                     | "resolution_instrument_id"
+                    | REALIZED_VOLATILITY_SURFACE_ID_FIELD
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -400,6 +447,13 @@ impl BinaryOracleEdgeTakerBuilder {
             field_prefix,
             errors,
         );
+        for field_name in [
+            stringify!(book_impact_cap_bps),
+            stringify!(vwap_depth_limit_bps),
+            stringify!(slippage_buffer_bps),
+        ] {
+            Self::validate_bps_runtime_knob_upper_bound(table, field_prefix, field_name, errors);
+        }
         Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);
         Self::validate_optional_string_field(
             table,
@@ -416,6 +470,13 @@ impl BinaryOracleEdgeTakerBuilder {
             "resolution_instrument_id",
             errors,
         );
+        Self::validate_optional_string_field(
+            table,
+            field_prefix,
+            REALIZED_VOLATILITY_SURFACE_ID_FIELD,
+            errors,
+        );
+        Self::validate_required_realized_volatility_surface_id(table, field_prefix, errors);
         Self::validate_optional_instrument_id_field(
             table,
             field_prefix,
@@ -505,7 +566,122 @@ impl BinaryOracleEdgeTakerBuilder {
             concat!(stringify!(missing_), stringify!(forced_exit_order)),
             errors,
         );
+        Self::validate_executable_entry_order_shape(table, field_prefix, errors);
+        Self::validate_slippage_buffer_covers_vwap_depth(table, field_prefix, errors);
         Self::validate_rotating_market_family(table, field_prefix, errors);
+    }
+
+    fn validate_executable_entry_order_shape(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Some(order_table) = table.get(ENTRY_ORDER_FIELD).and_then(Value::as_table) else {
+            return;
+        };
+        let supported = order_table
+            .get(stringify!(side))
+            .and_then(Value::as_str)
+            .is_some_and(|value| value == ORDER_SIDE_BUY_VALUE)
+            && order_table
+                .get(stringify!(position_side))
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == POSITION_SIDE_LONG_VALUE)
+            && order_table
+                .get(stringify!(order_type))
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == stringify!(limit))
+            && order_table
+                .get(stringify!(time_in_force))
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == stringify!(fok))
+            && order_table
+                .get(stringify!(is_post_only))
+                .and_then(Value::as_bool)
+                .is_some_and(|value| !value)
+            && order_table
+                .get(stringify!(is_reduce_only))
+                .and_then(Value::as_bool)
+                .is_some_and(|value| !value)
+            && order_table
+                .get(stringify!(is_quote_quantity))
+                .and_then(Value::as_bool)
+                .is_some_and(|value| !value)
+            && !order_table.contains_key(ORDER_TRIGGER_PRICE_FIELD)
+            && !order_table.contains_key(ORDER_ACTIVATION_PRICE_FIELD)
+            && !order_table.contains_key(ORDER_TRIGGER_TYPE_FIELD)
+            && !order_table.contains_key(ORDER_TRIGGER_INSTRUMENT_ID_FIELD)
+            && !order_table.contains_key(ORDER_TRAILING_OFFSET_FIELD)
+            && !order_table.contains_key(ORDER_TRAILING_OFFSET_TYPE_FIELD);
+        if !supported {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{ENTRY_ORDER_FIELD}"),
+                code: UNSUPPORTED_EXECUTABLE_ENTRY_ORDER_SHAPE_CODE,
+                message: "must be buy/long limit FOK without post-only, reduce-only, quote-quantity, trigger, or trailing fields".to_string(),
+            });
+        }
+    }
+
+    fn validate_bps_runtime_knob_upper_bound(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        field_name: &'static str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Some(value) = table.get(field_name).and_then(Value::as_integer) else {
+            return;
+        };
+        if value.is_negative() || (value as f64) > BPS_DENOMINATOR {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{field_name}"),
+                code: stringify!(bps_out_of_range),
+                message: format!("must be at most {BPS_DENOMINATOR} bps"),
+            });
+        }
+    }
+
+    fn validate_slippage_buffer_covers_vwap_depth(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Some(vwap_depth_limit_bps) = table
+            .get(stringify!(vwap_depth_limit_bps))
+            .and_then(Value::as_integer)
+        else {
+            return;
+        };
+        let Some(slippage_buffer_bps) = table
+            .get(stringify!(slippage_buffer_bps))
+            .and_then(Value::as_integer)
+        else {
+            return;
+        };
+        if vwap_depth_limit_bps.is_negative() || slippage_buffer_bps.is_negative() {
+            return;
+        }
+        if slippage_buffer_bps < vwap_depth_limit_bps {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{}", stringify!(slippage_buffer_bps)),
+                code: stringify!(slippage_buffer_below_vwap_depth_limit),
+                message: "must be greater than or equal to vwap_depth_limit_bps".to_string(),
+            });
+        }
+    }
+
+    fn validate_required_realized_volatility_surface_id(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        if !table.contains_key(REALIZED_VOLATILITY_SURFACE_ID_FIELD) {
+            Self::push_missing(
+                errors,
+                format!("{field_prefix}.{REALIZED_VOLATILITY_SURFACE_ID_FIELD}"),
+                "missing_realized_volatility_surface",
+                BinaryOracleEdgeTakerFieldType::String,
+            );
+        }
     }
 
     /// Reject an unknown `rotating_market_family` at config-parse time (P5-10).

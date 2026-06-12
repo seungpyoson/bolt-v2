@@ -2,6 +2,12 @@ mod support;
 
 use std::fs;
 
+use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::{
+    BINARY_ORACLE_ENTRY_ORDER_MARKET_QUOTE_QUANTITY_CODE,
+    BINARY_ORACLE_ENTRY_ORDER_QUOTE_QUANTITY_CODE, BINARY_ORACLE_ENTRY_ORDER_REDUCE_ONLY_CODE,
+    BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE,
+};
+
 const OLD_CHAINLINK_FIXTURE_FEED_ID: &str =
     "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472";
 const CHAINLINK_BTC_TESTNET_FEED_ID: &str =
@@ -32,6 +38,22 @@ const SHIPPED_BINARY_ORACLE_STRATEGY_FILES: &[&str] = &[
     "config/strategies/binary_oracle_xrp.toml",
     "config/strategies/binary_oracle_doge.toml",
 ];
+
+fn assert_binary_oracle_entry_order_shape_rejected(messages: &[String], case_name: &str) {
+    assert!(
+        messages.iter().any(|message| validation_message_has_code(
+            message,
+            BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE
+        )),
+        "{case_name} should reject unsupported executable entry shape, got: {messages:#?}"
+    );
+}
+
+fn validation_message_has_code(message: &str, code: &str) -> bool {
+    message
+        .split_ascii_whitespace()
+        .any(|token| token.strip_prefix("error_code=") == Some(code))
+}
 
 #[test]
 fn shipped_polymarket_secrets_use_eu_west_2_registry_paths() {
@@ -893,7 +915,7 @@ fn bolt_v3_archetype_runtime_parameters_reject_unknown_fields() {
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_post_only_gtc_entry_order() {
+fn bolt_v3_archetype_rejects_post_only_gtc_entry_order() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -920,10 +942,7 @@ fn bolt_v3_archetype_accepts_post_only_gtc_entry_order() {
     }];
 
     let messages = validate_strategies(&stable_root, &loaded);
-    assert!(
-        messages.is_empty(),
-        "post-only GTC entry order should be accepted by binary_oracle_edge_taker validation: {messages:#?}"
-    );
+    assert_binary_oracle_entry_order_shape_rejected(&messages, "post-only GTC entry order");
 }
 
 #[test]
@@ -999,7 +1018,15 @@ fn bolt_v3_archetype_accepts_mixed_maker_taker_order_configs() {
     let maker_entry_taker_exit = fixture
         .replace("time_in_force = \"fok\"", "time_in_force = \"gtc\"")
         .replacen("is_post_only = false", "is_post_only = true", 1);
-    validate_strategy(maker_entry_taker_exit, "maker entry with taker exit");
+    let strategy: BoltV3StrategyConfig = toml::from_str(&maker_entry_taker_exit)
+        .expect("maker entry with taker exit should parse via NT order enums");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert_binary_oracle_entry_order_shape_rejected(&messages, "maker entry with taker exit");
 
     let maker_exit_taker_entry = mutate_parameters_exit_order(&fixture, |exit_block| {
         exit_block
@@ -1359,8 +1386,10 @@ fn bolt_v3_archetype_rejects_market_quote_quantity_entry_order() {
     assert!(
         messages.iter().any(|message| {
             message.contains("parameters.entry_order")
-                && message.contains("order_type=market")
-                && message.contains("is_quote_quantity")
+                && validation_message_has_code(
+                    message,
+                    BINARY_ORACLE_ENTRY_ORDER_MARKET_QUOTE_QUANTITY_CODE,
+                )
         }),
         "market quote-quantity entry must fail closed at load: {messages:#?}"
     );
@@ -1417,10 +1446,20 @@ fn bolt_v3_archetype_rejects_quote_quantity_limit_entry_order() {
     assert!(
         messages.iter().any(|message| {
             message.contains("parameters.entry_order")
-                && message.contains("is_quote_quantity")
+                && validation_message_has_code(
+                    message,
+                    BINARY_ORACLE_ENTRY_ORDER_QUOTE_QUANTITY_CODE,
+                )
                 && !message.contains("order_type=market")
         }),
-        "limit quote-quantity entry must fail closed at load via the base-quantity guard: {messages:#?}"
+        "limit quote-quantity entry must fail closed at load via the base-quantity guard code: {messages:#?}"
+    );
+    assert!(
+        !messages.iter().any(|message| validation_message_has_code(
+            message,
+            BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE
+        )),
+        "limit quote-quantity entry should use the specific quote-quantity error, not the broad executable-shape error: {messages:#?}"
     );
 }
 
@@ -1452,15 +1491,23 @@ fn bolt_v3_archetype_rejects_reduce_only_entry_order() {
 
     let messages = validate_strategies(&stable_root, &loaded);
     assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("entry_order") && message.contains("is_reduce_only")),
-        "reduce-only entry order should be rejected before NT submission: {messages:#?}"
+        messages.iter().any(|message| {
+            message.contains("entry_order")
+                && validation_message_has_code(message, BINARY_ORACLE_ENTRY_ORDER_REDUCE_ONLY_CODE)
+        }),
+        "reduce-only entry order should be rejected before NT submission with a stable code: {messages:#?}"
+    );
+    assert!(
+        !messages.iter().any(|message| validation_message_has_code(
+            message,
+            BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE
+        )),
+        "reduce-only entry order should use the specific reduce-only error, not the broad executable-shape error: {messages:#?}"
     );
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_nt_model_valid_limit_order_templates_without_maker_tuple_policy() {
+fn bolt_v3_archetype_rejects_entry_limit_gtc_and_accepts_exit_limit_fok() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -1492,7 +1539,15 @@ fn bolt_v3_archetype_accepts_nt_model_valid_limit_order_templates_without_maker_
     };
 
     let entry_limit_gtc = fixture.replace("time_in_force = \"fok\"", "time_in_force = \"gtc\"");
-    validate_strategy(entry_limit_gtc, "entry limit GTC without post-only");
+    let strategy: BoltV3StrategyConfig = toml::from_str(&entry_limit_gtc)
+        .expect("entry limit GTC without post-only should parse via NT order enums");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert_binary_oracle_entry_order_shape_rejected(&messages, "entry limit GTC without post-only");
 
     let exit_limit_fok = mutate_parameters_exit_order(&fixture, |exit_block| {
         exit_block
@@ -1759,7 +1814,7 @@ fn bolt_v3_archetype_rejects_market_order_expiry() {
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_gtd_limit_order_with_expiry() {
+fn bolt_v3_archetype_rejects_entry_gtd_limit_order_with_expiry() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -1788,10 +1843,7 @@ fn bolt_v3_archetype_accepts_gtd_limit_order_with_expiry() {
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
-    assert!(
-        messages.is_empty(),
-        "GTD limit order with explicit expiry should validate: {messages:#?}"
-    );
+    assert_binary_oracle_entry_order_shape_rejected(&messages, "entry GTD limit order with expiry");
 }
 
 #[test]
@@ -1910,7 +1962,7 @@ fn bolt_v3_archetype_rejects_non_triggered_exit_order_with_trigger_price() {
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_stop_market_entry_with_trigger_price() {
+fn bolt_v3_archetype_rejects_stop_market_entry_with_trigger_price() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -1941,14 +1993,11 @@ fn bolt_v3_archetype_accepts_stop_market_entry_with_trigger_price() {
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
-    assert!(
-        messages.is_empty(),
-        "StopMarket entry order with explicit trigger price should validate: {messages:#?}"
-    );
+    assert_binary_oracle_entry_order_shape_rejected(&messages, "StopMarket entry order");
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_triggered_entry_order_with_trigger_instrument_id() {
+fn bolt_v3_archetype_rejects_triggered_entry_order_with_trigger_instrument_id() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -1979,9 +2028,9 @@ fn bolt_v3_archetype_accepts_triggered_entry_order_with_trigger_instrument_id() 
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
-    assert!(
-        messages.is_empty(),
-        "triggered entry order with trigger_instrument_id should validate: {messages:#?}"
+    assert_binary_oracle_entry_order_shape_rejected(
+        &messages,
+        "triggered entry order with trigger_instrument_id",
     );
 }
 
@@ -2025,7 +2074,7 @@ fn bolt_v3_archetype_rejects_non_triggered_entry_order_with_trigger_instrument_i
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_market_if_touched_entry_with_trigger_price() {
+fn bolt_v3_archetype_rejects_market_if_touched_entry_with_trigger_price() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -2059,10 +2108,7 @@ fn bolt_v3_archetype_accepts_market_if_touched_entry_with_trigger_price() {
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
-    assert!(
-        messages.is_empty(),
-        "MarketIfTouched entry order with explicit trigger price should validate: {messages:#?}"
-    );
+    assert_binary_oracle_entry_order_shape_rejected(&messages, "MarketIfTouched entry order");
 }
 
 #[test]
@@ -2287,7 +2333,7 @@ fn bolt_v3_archetype_accepts_market_if_touched_exit_with_trigger_price() {
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_trailing_stop_market_entry_with_explicit_trailing_fields() {
+fn bolt_v3_archetype_rejects_trailing_stop_market_entry_with_explicit_trailing_fields() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -2321,14 +2367,14 @@ fn bolt_v3_archetype_accepts_trailing_stop_market_entry_with_explicit_trailing_f
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
-    assert!(
-        messages.is_empty(),
-        "TrailingStopMarket entry order with explicit trailing fields should validate: {messages:#?}"
+    assert_binary_oracle_entry_order_shape_rejected(
+        &messages,
+        "TrailingStopMarket entry order with explicit trailing fields",
     );
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_trailing_stop_market_entry_with_nt_default_fields() {
+fn bolt_v3_archetype_rejects_trailing_stop_market_entry_with_nt_default_fields() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -2362,9 +2408,9 @@ fn bolt_v3_archetype_accepts_trailing_stop_market_entry_with_nt_default_fields()
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
-    assert!(
-        messages.is_empty(),
-        "TrailingStopMarket entry order with NT-defaulted fields should validate: {messages:#?}"
+    assert_binary_oracle_entry_order_shape_rejected(
+        &messages,
+        "TrailingStopMarket entry order with NT-defaulted fields",
     );
 }
 
@@ -2519,7 +2565,7 @@ fn bolt_v3_archetype_rejects_trailing_stop_market_invalid_combinations() {
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_stop_limit_entry_with_trigger_price() {
+fn bolt_v3_archetype_rejects_stop_limit_entry_with_trigger_price() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -2550,10 +2596,7 @@ fn bolt_v3_archetype_accepts_stop_limit_entry_with_trigger_price() {
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
-    assert!(
-        messages.is_empty(),
-        "StopLimit entry order with explicit trigger price should validate: {messages:#?}"
-    );
+    assert_binary_oracle_entry_order_shape_rejected(&messages, "StopLimit entry order");
 }
 
 #[test]
@@ -2597,7 +2640,7 @@ fn bolt_v3_archetype_accepts_stop_limit_exit_with_trigger_price() {
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_limit_if_touched_entry_with_trigger_price() {
+fn bolt_v3_archetype_rejects_limit_if_touched_entry_with_trigger_price() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -2631,10 +2674,7 @@ fn bolt_v3_archetype_accepts_limit_if_touched_entry_with_trigger_price() {
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
-    assert!(
-        messages.is_empty(),
-        "LimitIfTouched entry order with explicit trigger price should validate: {messages:#?}"
-    );
+    assert_binary_oracle_entry_order_shape_rejected(&messages, "LimitIfTouched entry order");
 }
 
 #[test]

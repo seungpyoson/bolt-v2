@@ -90,8 +90,8 @@ pub fn registry_module_source_text(key: &str, max_bytes: u64) -> io::Result<Stri
 }
 
 /// A bound large enough to admit either gated root: the submit_admission single
-/// file and the strategy source set (strategy directory plus shared book sizing
-/// source, whose framed canonical stream is the raw content plus per-file
+/// file and the strategy source set (strategy directory plus shared execution
+/// sources, whose framed canonical stream is the raw content plus per-file
 /// path/length frames). Used by the text accessors (whole module / production
 /// text), where there is no operator-supplied cap.
 ///
@@ -121,8 +121,8 @@ pub fn module_source_text(key: &str) -> String {
 /// byte-for-byte — strips ONLY at the FIRST top-level test-module marker, so the
 /// earlier inline `#[cfg(test)]` markers are retained (value-stability).
 ///
-/// SOURCE-SET case (e.g. the strategy directory plus shared book sizing after
-/// A4): the production half of EACH file — split independently at its own first
+/// SOURCE-SET case (e.g. the strategy directory plus shared execution helpers):
+/// the production half of EACH file — split independently at its own first
 /// top-level marker — concatenated in canonical order. This keeps every
 /// production file in scope rather than dropping every file sorted after the
 /// marker-owning file.
@@ -146,7 +146,7 @@ mod tests {
     // GOLDEN_STRATEGY_DIGEST is re-derived only when an accepted source move
     // changes the canonical strategy source set. A4 moves book state and
     // VWAP/slippage sizing out of the strategy wrapper, so the strategy source
-    // set is now the strategy directory plus `src/bolt_v3_book_sizing.rs`.
+    // set is now the strategy directory plus shared execution helper modules.
     //
     // Re-derived by A6 after moving the exposure state machine into
     // `src/strategies/binary_oracle_edge_taker/exposure.rs`; the dynamic source
@@ -194,8 +194,60 @@ mod tests {
     // terminology from submit-admission construction and its call sites.
     // Re-derived again after merging current main's trade-flow extraction into
     // the #579 retired-gate removal head.
+    // Re-derived again after moving surfaced realized-volatility bindings and
+    // source forwarding into the strategy source set.
+    // Re-derived again after spelling the realized-volatility binding insertion
+    // as an explicit entry match to satisfy both clippy and source-fence.
+    // Re-derived again after refreshing surfaced realized-volatility snapshots
+    // before entry/exit pricing so stale sources block instead of freezing RV.
+    // Re-derived again after preserving signal-data bindings in surfaced RV
+    // mode while keeping legacy strategy-owned RV knobs rejected.
+    // Re-derived again after forwarding duplicate stream bindings to every
+    // configured surfaced realized-volatility source ID.
+    // Re-derived again after accepting zero-RV surfaced snapshots and exporting
+    // unknown-source surfaced RV rejection counters in strategy input evidence.
+    // Re-derived again after allowing zero-RV strategy evidence/position paths
+    // and adding disabled-source surfaced RV diagnostics coverage.
+    // Re-derived again after removing the strategy-owned internal realized
+    // volatility estimator and requiring surfaced RV for taker pricing.
+    // Re-derived again after recording RV-not-ready pricing blocks in strategy
+    // input evidence and forwarding disabled surfaced RV sources for audit
+    // without subscribing disabled-only source bindings.
+    // Re-derived again after fail-closing rejected surfaced RV engine configs
+    // without retaining source bindings.
+    // Re-derived again after root-level surfaced RV readiness redesign moved
+    // raw RV validation behind the shared ready snapshot accessor.
+    // Re-derived again after removing the dead strategy evidence fallback RV
+    // parameter, then after adding executable-edge cost breakdown to the gated
+    // strategy source set and aligning its strategy test coverage.
+    // Re-derived again after selected-side sized-notional executable-edge
+    // re-evaluation started recomputing the uncertainty band from the sized
+    // limit-price fee.
+    // Re-derived after deriving VWAP assertion expectations from test inputs.
+    // Re-derived after scaling the entry limit-notional float tolerance by
+    // sized notional.
+    // Re-derived after executable-edge review follow-ups tightened config
+    // validation, reused exact-size VWAP probes, and surfaced edge-threshold
+    // pricing blocks.
+    // Re-derived after exact-head review follow-ups made negative threshold
+    // checks authoritative and omitted unavailable executable-cost EV evidence.
+    // Re-derived after moving notional float tolerance into the shared numeric
+    // helper to remove duplicate tolerance definitions from the strategy source
+    // set.
+    // Re-derived after executable-edge review cleanup made non-positive net
+    // edge untradeable regardless of a negative configured threshold.
+    // Re-derived after exact-head review follow-ups blocked sell-side
+    // executable-edge economics, single-sourced typed entry-shape checks, and
+    // carried preliminary fee uncertainty into sized re-evaluation.
+    // Re-derived after follow-up cleanup separated sized executable-edge
+    // evidence, probed executable fees at VWAP, coupled slippage/depth config,
+    // labeled executable-edge Debug output, and named notional tolerance.
+    // Re-derived after splitting executable cost from binary outcome edge math
+    // and moving entry limit-notional guarding into shared submit admission.
+    // Re-derived after review cleanup single-sourced the cents-per-share unit
+    // conversion in shared numeric helpers.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "e059376f430b66d5c437b816d093c992ed8ef1f007168c983df09737bfac45c4";
+        "3cea08f65a9051d70c86dcbc4379f8ae0410b00e4f8c0bb9f9b307e54a46f11b";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -204,8 +256,10 @@ mod tests {
     // Re-derived again after removing vestigial retired gate arming constructor
     // terminology from submit-admission construction.
     // Re-derived again after adding checked fee-inclusive admission arithmetic.
+    // Re-derived after moving entry limit-notional guarding into shared submit
+    // admission.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "986e4e99c865a9b742cdaa8d0a34cc8cadfcb6633012b4915042a0ac5c9d506a";
+        "765681e898d3e6ab3c957031b30d2aefe82722ff2dccabfe6bdd85b3ee0b9131";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -310,12 +364,14 @@ mod tests {
     }
 
     #[test]
-    fn strategy_source_set_includes_wrapper_directory_and_shared_sizing_module() {
+    fn strategy_source_set_includes_wrapper_directory_and_shared_execution_modules() {
         assert_eq!(
             registry_relative_roots(STRATEGY_KEY),
             &[
                 "src/strategies/binary_oracle_edge_taker",
                 "src/bolt_v3_book_sizing.rs",
+                "src/bolt_v3_binary_outcome_edge.rs",
+                "src/bolt_v3_executable_cost.rs",
             ]
         );
     }
@@ -352,7 +408,7 @@ mod tests {
         let files = strategy_source_files_in_canonical_order();
         assert!(
             files.len() >= 4,
-            "expected current strategy directory plus shared sizing source files"
+            "expected current strategy directory plus shared execution source files"
         );
 
         // Build the framed stream and record each file's raw-byte span within it.

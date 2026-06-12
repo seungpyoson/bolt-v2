@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import json
+import importlib.util
 import pathlib
 import subprocess
 import sys
@@ -28,6 +29,15 @@ def run_owner(args: list[str], *, env: dict[str, str]) -> subprocess.CompletedPr
     )
 
 
+def load_owner_module() -> object:
+    spec = importlib.util.spec_from_file_location("rust_verification_under_test", SCRIPT)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load rust_verification.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def write_executable(path: pathlib.Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
@@ -38,9 +48,16 @@ def write_policy(repo: pathlib.Path) -> None:
     (repo / "ci" / "rust-verification.toml").write_text(
         textwrap.dedent(
             """\
-            schema_version = 1
+            schema_version = 2
             project_id = "bolt-v2"
             target_namespace = "bolt-v2"
+
+            [local_compile_policy]
+            enabled = true
+            allowed_ci_env = "GITHUB_ACTIONS"
+            break_glass_env = "BOLT_ALLOW_LOCAL_RUST"
+            refused_managed_commands = ["test", "clippy", "build"]
+            refused_cargo_subcommands = ["b", "bench", "build", "c", "check", "clippy", "d", "doc", "fetch", "install", "nextest", "r", "run", "rustc", "t", "test", "zigbuild"]
 
             [commands]
 
@@ -107,6 +124,8 @@ printf 'args=%s\\n' "$*" >> {just_log}
 
         root_base = tmp_path / "rust-root"
         env = os.environ.copy()
+        env.pop("GITHUB_ACTIONS", None)
+        env.pop("BOLT_ALLOW_LOCAL_RUST", None)
         env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
         env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
 
@@ -132,14 +151,35 @@ printf 'args=%s\\n' "$*" >> {just_log}
         if result.returncode != 0:
             raise AssertionError(result.stderr)
         cargo_values = parse_log(cargo_log)
-        if not same_path(cargo_values["cwd"], repo) or cargo_values["target"] != str(target_dir) or cargo_values["args"] != "fmt --check":
+        if not same_path(cargo_values["cwd"], repo) or cargo_values["target"] != "" or cargo_values["args"] != "fmt --check":
             raise AssertionError(cargo_values)
 
         result = run_owner(["run", "--repo", str(repo), "build", "--flag"], env=env)
+        if result.returncode != 2:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        refusal = json.loads(result.stderr)
+        if refusal.get("refusal_code") != "local_compile_disabled" or "verify-remote" not in "\n".join(
+            refusal.get("next_steps", [])
+        ):
+            raise AssertionError(refusal)
+
+        allowed_env = env.copy()
+        allowed_env["GITHUB_ACTIONS"] = "true"
+        result = run_owner(["run", "--repo", str(repo), "build", "--flag"], env=allowed_env)
         if result.returncode != 0:
             raise AssertionError(result.stderr)
         just_values = parse_log(just_log)
         expected_args = f"-f {repo / 'justfile'} --working-directory {repo} -- managed-build --flag"
+        if not same_path(just_values["cwd"], repo) or just_values["target"] != str(target_dir) or just_values["args"] != expected_args:
+            raise AssertionError(just_values)
+
+        break_glass_env = env.copy()
+        break_glass_env["BOLT_ALLOW_LOCAL_RUST"] = "1"
+        result = run_owner(["run", "--repo", str(repo), "build", "--break-glass"], env=break_glass_env)
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+        just_values = parse_log(just_log)
+        expected_args = f"-f {repo / 'justfile'} --working-directory {repo} -- managed-build --break-glass"
         if not same_path(just_values["cwd"], repo) or just_values["target"] != str(target_dir) or just_values["args"] != expected_args:
             raise AssertionError(just_values)
 
@@ -156,6 +196,39 @@ printf 'args=%s\\n' "$*" >> {just_log}
         }
         if payload != expected_payload:
             raise AssertionError(payload)
+
+
+def assert_fmt_avoids_managed_cache_lock() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        observed: dict[str, object] = {}
+
+        def forbidden_cache_lock(_policy: dict[str, object], *, exclusive: bool) -> object:
+            raise AssertionError("cargo fmt must not touch the managed cache lock")
+
+        def fake_run_process(argv: list[str], *, repo: pathlib.Path, env: dict[str, str]) -> int:
+            observed["argv"] = argv
+            observed["env"] = env
+            return 0
+
+        original_cache_lock = owner.cache_lock
+        original_run_process = owner.run_process
+        try:
+            owner.cache_lock = forbidden_cache_lock
+            owner.run_process = fake_run_process
+            args = type("Args", (), {"repo": str(repo), "args": ["fmt", "--check"]})()
+            result = owner.cmd_cargo(args)
+        finally:
+            owner.cache_lock = original_cache_lock
+            owner.run_process = original_run_process
+    if result != 0:
+        raise AssertionError(result)
+    env = observed.get("env")
+    if not isinstance(env, dict) or "CARGO_TARGET_DIR" in env or "BOLT_ALLOW_LOCAL_RUST" in env:
+        raise AssertionError(observed)
 
 
 def assert_system_python_contract() -> None:
@@ -193,6 +266,7 @@ def assert_oversized_policy_fails_closed() -> None:
 
 def main() -> int:
     assert_repo_local_owner_contract()
+    assert_fmt_avoids_managed_cache_lock()
     assert_system_python_contract()
     assert_oversized_policy_fails_closed()
     print("OK: Rust verification owner self-tests passed.")

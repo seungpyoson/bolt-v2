@@ -7,11 +7,64 @@ const POSITIVE_REQUIRED_INTEGER_FIELDS: &[&str] = &[
     stringify!(trade_flow_max_samples),
     stringify!(trade_flow_window_secs),
     stringify!(spike_guard_cooldown_secs),
-    stringify!(vol_window_secs),
-    stringify!(vol_gap_reset_secs),
-    stringify!(vol_min_observations),
-    stringify!(vol_bridge_valid_secs),
 ];
+const BPS_UPPER_BOUND_EXCESS: i64 = (BPS_DENOMINATOR as i64) + 1;
+const BPS_RUNTIME_KNOB_FIELDS: &[&str] = &[
+    stringify!(book_impact_cap_bps),
+    stringify!(vwap_depth_limit_bps),
+    stringify!(slippage_buffer_bps),
+];
+
+fn unsupported_executable_entry_order_shape_cases() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            stringify!(side),
+            Value::String(stringify!(sell).to_string()),
+        ),
+        (
+            stringify!(position_side),
+            Value::String(stringify!(short).to_string()),
+        ),
+        (
+            stringify!(order_type),
+            Value::String(stringify!(market).to_string()),
+        ),
+        (
+            stringify!(time_in_force),
+            Value::String(stringify!(ioc).to_string()),
+        ),
+        (stringify!(is_post_only), Value::Boolean(true)),
+        (stringify!(is_reduce_only), Value::Boolean(true)),
+        (stringify!(is_quote_quantity), Value::Boolean(true)),
+        (stringify!(trigger_price), Value::Float(1.0)),
+        (stringify!(activation_price), Value::Float(1.0)),
+        (
+            stringify!(trigger_type),
+            Value::String(stringify!(mark_price).to_string()),
+        ),
+        (
+            stringify!(trigger_instrument_id),
+            Value::String("TRIGGER.POLYMARKET".to_string()),
+        ),
+        (stringify!(trailing_offset), Value::Float(1.0)),
+        (
+            stringify!(trailing_offset_type),
+            Value::String(stringify!(price).to_string()),
+        ),
+    ]
+}
+
+fn raw_with_entry_order_field(field: &'static str, value: Value) -> Value {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .get_mut(stringify!(entry_order))
+        .expect("valid config must include entry_order")
+        .as_table_mut()
+        .expect("entry_order must be a table")
+        .insert(field.to_string(), value);
+    raw
+}
 
 #[test]
 fn strategy_core_uses_configured_nt_order_tag_and_oms_type() {
@@ -87,6 +140,169 @@ fn parse_config_rejects_zero_positive_required_integer_fields() {
             err.to_string()
                 .contains(&format!("{field} must be positive")),
             "expected positivity rejection for {field}, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn parse_config_rejects_bps_runtime_knobs_above_full_scale() {
+    for field in BPS_RUNTIME_KNOB_FIELDS {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert((*field).to_string(), Value::Integer(BPS_UPPER_BOUND_EXCESS));
+
+        let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("out-of-range bps runtime knob must be rejected");
+
+        assert!(
+            err.to_string()
+                .contains(&format!("{field} must be at most {BPS_DENOMINATOR}")),
+            "expected bps upper-bound rejection for {field}, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn parse_config_accepts_bps_runtime_knob_boundaries() {
+    for value in [0_i64, BPS_DENOMINATOR as i64] {
+        let mut raw = valid_raw_config();
+        let table = raw.as_table_mut().expect("raw config should be a table");
+        for field in BPS_RUNTIME_KNOB_FIELDS {
+            table.insert((*field).to_string(), Value::Integer(value));
+        }
+
+        BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .unwrap_or_else(|error| panic!("bps boundary {value} should parse: {error}"));
+    }
+}
+
+#[test]
+fn parse_config_rejects_slippage_buffer_below_vwap_depth_limit() {
+    let mut raw = valid_raw_config();
+    let table = raw.as_table_mut().expect("raw config should be a table");
+    table.insert(
+        stringify!(vwap_depth_limit_bps).to_string(),
+        Value::Integer(50),
+    );
+    table.insert(
+        stringify!(slippage_buffer_bps).to_string(),
+        Value::Integer(49),
+    );
+
+    let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+        .expect_err("slippage buffer must cover the configured VWAP depth limit");
+
+    assert!(
+        err.to_string()
+            .contains("slippage_buffer_bps must be greater than or equal to vwap_depth_limit_bps"),
+        "expected coupling rejection, got: {err}"
+    );
+}
+
+#[test]
+fn validate_config_rejects_bps_runtime_knobs_above_full_scale() {
+    for field in BPS_RUNTIME_KNOB_FIELDS {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert((*field).to_string(), Value::Integer(BPS_UPPER_BOUND_EXCESS));
+        let mut errors = Vec::new();
+
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        let error = find_error(
+            &errors,
+            &format!("strategies[0].config.{field}"),
+            "bps_out_of_range",
+        );
+        assert_eq!(
+            error.message,
+            format!("must be at most {BPS_DENOMINATOR} bps")
+        );
+    }
+}
+
+#[test]
+fn validate_config_rejects_negative_bps_runtime_knobs() {
+    for field in BPS_RUNTIME_KNOB_FIELDS {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert((*field).to_string(), Value::Integer(-1));
+        let mut errors = Vec::new();
+
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        let error = find_error(
+            &errors,
+            &format!("strategies[0].config.{field}"),
+            "bps_out_of_range",
+        );
+        assert_eq!(
+            error.message,
+            format!("must be at most {BPS_DENOMINATOR} bps")
+        );
+    }
+}
+
+#[test]
+fn validate_config_rejects_slippage_buffer_below_vwap_depth_limit() {
+    let mut raw = valid_raw_config();
+    let table = raw.as_table_mut().expect("raw config should be a table");
+    table.insert(
+        stringify!(vwap_depth_limit_bps).to_string(),
+        Value::Integer(50),
+    );
+    table.insert(
+        stringify!(slippage_buffer_bps).to_string(),
+        Value::Integer(49),
+    );
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    let error = find_error(
+        &errors,
+        "strategies[0].config.slippage_buffer_bps",
+        "slippage_buffer_below_vwap_depth_limit",
+    );
+    assert_eq!(
+        error.message,
+        "must be greater than or equal to vwap_depth_limit_bps"
+    );
+}
+
+#[test]
+fn parse_config_rejects_unsupported_executable_entry_order_shapes() {
+    for (field, value) in unsupported_executable_entry_order_shape_cases() {
+        let raw = raw_with_entry_order_field(field, value);
+
+        let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("unsupported executable entry shape must fail at parse-time");
+        assert!(
+            err.to_string()
+                .contains("entry_order must be buy/long limit FOK"),
+            "parse error for `{field}` should name executable entry shape: {err}"
+        );
+    }
+}
+
+#[test]
+fn validate_config_rejects_unsupported_executable_entry_order_shapes() {
+    for (field, value) in unsupported_executable_entry_order_shape_cases() {
+        let raw = raw_with_entry_order_field(field, value);
+        let mut errors = Vec::new();
+
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        assert!(
+            errors.iter().any(|error| {
+                error.field == "strategies[0].config.entry_order"
+                    && error.code == "unsupported_executable_entry_order_shape"
+                    && error.message.contains("must be buy/long limit FOK without")
+            }),
+            "`{field}` must reject unsupported executable entry shape: {errors:#?}"
         );
     }
 }
@@ -196,6 +412,51 @@ fn validate_config_rejects_missing_signal_data_pair() {
 }
 
 #[test]
+fn config_rejects_removed_internal_realized_volatility_fields() {
+    let mut raw = valid_raw_config();
+    let table = raw
+        .as_table_mut()
+        .expect("valid raw config should be a TOML table");
+    table.insert("vol_window_secs".to_string(), Value::Integer(60));
+
+    let mut errors = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    assert!(
+        errors.iter().any(|error| {
+            error.field == "strategies[0].config.vol_window_secs" && error.code == "unknown_field"
+        }),
+        "removed internal RV fields must be rejected as unknown fields: {errors:#?}"
+    );
+    assert!(
+        !errors.iter().any(|error| {
+            error.field == "strategies[0].config.signal_venue"
+                || error.field == "strategies[0].config.signal_instrument_id"
+        }),
+        "surfaced RV mode must keep signal data available for fast-spot pricing: {errors:#?}"
+    );
+}
+
+#[test]
+fn realized_volatility_surface_id_is_required_for_runtime_config() {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid raw config should be a TOML table")
+        .remove("realized_volatility_surface_id");
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    assert!(
+        errors.iter().any(|error| {
+            error.field == "strategies[0].config.realized_volatility_surface_id"
+                && error.code == "missing_realized_volatility_surface"
+        }),
+        "taker runtime config must consume the shared realized-volatility surface: {errors:#?}"
+    );
+}
+
+#[test]
 fn validate_config_rejects_resolution_data_with_only_one_field_set() {
     // The live Chainlink strike binding is optional, but both-or-neither: a
     // strategy either declares BOTH `resolution_client_id` +
@@ -277,6 +538,8 @@ fn builder_requires_strategy_id_and_client_id() {
         order_notional_target = 1000.0
         maximum_position_notional = 1000.0
         book_impact_cap_bps = 15
+        vwap_depth_limit_bps = 15
+        slippage_buffer_bps = 15
         risk_lambda = 0.5
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
@@ -440,6 +703,8 @@ fn builder_accepts_integer_literals_for_f64_fields() {
         ("order_notional_target", 1_000),
         ("maximum_position_notional", 1_000),
         ("book_impact_cap_bps", 15),
+        ("vwap_depth_limit_bps", 15),
+        ("slippage_buffer_bps", 15),
         ("risk_lambda", 1),
         ("edge_threshold_basis_points", -20),
         ("exit_hysteresis_bps", 5),
@@ -457,6 +722,32 @@ fn builder_accepts_integer_literals_for_f64_fields() {
     assert!(
         errors.is_empty(),
         "expected integer literals for f64 fields to validate, got: {errors:?}"
+    );
+}
+
+#[test]
+fn builder_requires_executable_edge_cost_runtime_knobs() {
+    let mut raw = valid_raw_config();
+    let raw_table = raw.as_table_mut().expect("valid config must be a table");
+    raw_table.remove("vwap_depth_limit_bps");
+    raw_table.remove("slippage_buffer_bps");
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    assert!(
+        errors.iter().any(|error| {
+            error.field == "strategies[0].config.vwap_depth_limit_bps"
+                && error.code == "missing_vwap_depth_limit_bps"
+        }),
+        "missing vwap_depth_limit_bps must fail validation: {errors:#?}"
+    );
+    assert!(
+        errors.iter().any(|error| {
+            error.field == "strategies[0].config.slippage_buffer_bps"
+                && error.code == "missing_slippage_buffer_bps"
+        }),
+        "missing slippage_buffer_bps must fail validation: {errors:#?}"
     );
 }
 
@@ -483,6 +774,8 @@ fn builder_requires_pricing_model_fields() {
         order_notional_target = 1000.0
         maximum_position_notional = 1000.0
         book_impact_cap_bps = 15
+        vwap_depth_limit_bps = 15
+        slippage_buffer_bps = 15
         risk_lambda = 0.5
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
@@ -519,26 +812,10 @@ fn builder_requires_pricing_model_fields() {
             .iter()
             .any(|e| e.field == "strategies[0].config.cadence_seconds")
     );
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.field == "strategies[0].config.vol_window_secs")
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.field == "strategies[0].config.vol_gap_reset_secs")
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.field == "strategies[0].config.vol_min_observations")
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.field == "strategies[0].config.vol_bridge_valid_secs")
-    );
+    assert!(errors.iter().any(|e| {
+        e.field == "strategies[0].config.realized_volatility_surface_id"
+            && e.code == "missing_realized_volatility_surface"
+    }));
     assert!(
         errors
             .iter()

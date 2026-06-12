@@ -33,10 +33,6 @@ inputs:
     description: Whether to resolve the managed target dir.
     required: false
     default: "false"
-  reclaim-disk-space:
-    description: Whether to delete unused preinstalled runner toolsets before disk-governed cargo lanes.
-    required: false
-    default: "false"
 
 outputs:
   rust_toolchain:
@@ -73,18 +69,6 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Reclaim runner disk space
-      if: ${{ inputs.reclaim-disk-space == 'true' }}
-      shell: bash
-      run: |
-        # Hosted ubuntu images ship ~67 GB used of 77 GB, leaving compile lanes
-        # only a few hundred MB above the managed-cargo disk-governance floor
-        # (ci/rust-verification.toml [cache] min_free_bytes). Delete the largest
-        # unused preinstalled toolsets so the floor holds with real margin.
-        echo "free before: $(df -B1 --output=avail / | tail -1 | tr -d ' ') bytes"
-        sudo rm -rf /usr/share/dotnet /opt/hostedtoolcache/CodeQL
-        echo "free after: $(df -B1 --output=avail / | tail -1 | tr -d ' ') bytes"
-
     - name: Install just
       shell: bash
       run: |

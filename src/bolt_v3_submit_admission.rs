@@ -3,6 +3,7 @@ use crate::bolt_v3_decision_evidence::{
     BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, compiled_order_price_source,
 };
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
+use crate::bolt_v3_numeric::{is_positive_finite, notional_float_tolerance};
 use anyhow::Context;
 use nautilus_model::{
     enums::{OrderSide, PositionSide},
@@ -818,14 +819,11 @@ pub(crate) fn checked_fee_inclusive_admission_notional(
 ///
 /// Scope: this guard is required precisely for any path where the operator
 /// approves an explicit `order_intent.notional` BEFORE the venue-precision order
-/// is constructed. The production strategy path does NOT use this guard and
-/// structurally does not need it: it builds the venue-precision order first and
-/// derives its admission notional from that already-rounded order
-/// (`binary_oracle_edge_taker::submit_admission_request_from_order`, whose
-/// intent is `BoltV3OrderIntentEvidence::from_compiled_order`), so the strict-`>`
-/// cap check in [`BoltV3SubmitAdmissionState::admit`] already evaluates the exact
-/// order handed to the venue — there is no separate unrounded intent for rounding
-/// to bypass. Both paths share the same
+/// is constructed. Paths that build the venue-precision order first and derive
+/// admission notional from that already-rounded order structurally do not need
+/// this guard: the strict-`>` cap check in [`BoltV3SubmitAdmissionState::admit`]
+/// already evaluates the exact order handed to the venue — there is no separate
+/// unrounded intent for rounding to bypass. Both paths share the same
 /// fee-inclusive cap arithmetic via [`fee_inclusive_admission_notional`].
 pub fn rounded_order_admission_notional(
     rounded_base_notional: Decimal,
@@ -842,6 +840,16 @@ pub fn rounded_order_admission_notional(
         rounded_base_notional,
         max_fee_bps,
     ))
+}
+
+pub(crate) fn limit_notional_exceeds_sized_notional(
+    limit_notional: f64,
+    sized_notional: f64,
+) -> bool {
+    if !is_positive_finite(limit_notional) || !is_positive_finite(sized_notional) {
+        return true;
+    }
+    limit_notional > sized_notional + notional_float_tolerance(sized_notional)
 }
 
 /// Admission notional for a market-style order — one with NO firm limit price
@@ -964,3 +972,37 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
 }
 
 impl std::error::Error for BoltV3SubmitAdmissionError {}
+
+#[cfg(test)]
+mod notional_guard_tests {
+    use crate::bolt_v3_numeric::{BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, notional_float_tolerance};
+
+    #[test]
+    fn limit_notional_guard_allows_scaled_float_noise() {
+        let sized_notional = BPS_DENOMINATOR;
+        let tolerance = notional_float_tolerance(sized_notional);
+        let representational_overage = sized_notional + (tolerance / MIDPOINT_DIVISOR_F64);
+        let material_overage = sized_notional + (tolerance * MIDPOINT_DIVISOR_F64);
+
+        assert!(!super::limit_notional_exceeds_sized_notional(
+            representational_overage,
+            sized_notional
+        ));
+        assert!(super::limit_notional_exceeds_sized_notional(
+            material_overage,
+            sized_notional
+        ));
+    }
+
+    #[test]
+    fn limit_notional_guard_blocks_non_finite_inputs() {
+        assert!(super::limit_notional_exceeds_sized_notional(
+            f64::NAN,
+            BPS_DENOMINATOR
+        ));
+        assert!(super::limit_notional_exceeds_sized_notional(
+            BPS_DENOMINATOR,
+            f64::INFINITY
+        ));
+    }
+}

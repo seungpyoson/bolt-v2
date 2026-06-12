@@ -3,7 +3,13 @@ mod support;
 use anyhow::Result;
 use bolt_v2::{
     bolt_v3_archetypes::binary_oracle_edge_taker,
-    bolt_v3_config::{DECISION_REFERENCE_GATE_ROLE, ReferenceDataBlock, load_bolt_v3_config},
+    bolt_v3_config::{
+        BoltV3RootConfig, ClientBlock, DECISION_REFERENCE_GATE_ROLE,
+        RealizedVolatilityAggregationBlock, RealizedVolatilityPolicyBlock,
+        RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceBlock,
+        RealizedVolatilitySourceClassBlock, RealizedVolatilitySurfaceBlock, ReferenceDataBlock,
+        load_bolt_v3_config,
+    },
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_submit_admission::{
@@ -19,12 +25,15 @@ use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     enums::OrderSide,
-    identifiers::{ClientId, InstrumentId, StrategyId},
+    identifiers::{ClientId, InstrumentId, StrategyId, Venue},
 };
 use rust_decimal::Decimal;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 struct NoopFeeProvider;
+
+const RV_DATA_CLIENT_ID: &str = "<DATA_CLIENT_ID>";
+const RV_DATA_CLIENT_VENUE: &str = "OKX";
 
 impl FeeProvider for NoopFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
@@ -34,6 +43,360 @@ impl FeeProvider for NoopFeeProvider {
     fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
         async { Ok(()) }.boxed()
     }
+}
+
+fn assert_unsupported_executable_entry_order_shape(raw: &toml::Value, label: &str) {
+    let mut errors: Vec<ValidationError> = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(
+        raw,
+        "strategies.configured_updown_main.parameters.runtime",
+        &mut errors,
+    );
+    assert!(
+        errors.iter().any(|error| {
+            error.field == "strategies.configured_updown_main.parameters.runtime.entry_order"
+                && error.code == "unsupported_executable_entry_order_shape"
+        }),
+        "{label} entry runtime table should reject unsupported executable entry shape: {errors:?}"
+    );
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let context = StrategyBuildContext::new(
+        Arc::new(NoopFeeProvider),
+        writer.clone(),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        support::fixture_execution_venue(),
+    );
+    assert!(
+        BinaryOracleEdgeTakerBuilder::build(raw, &context).is_err(),
+        "{label} entry runtime table must not parse into the strategy config"
+    );
+}
+
+fn valid_realized_volatility_surface() -> RealizedVolatilitySurfaceBlock {
+    RealizedVolatilitySurfaceBlock {
+        canonical_base_asset: "CONFIGURED_ASSET".to_string(),
+        canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
+        policy: RealizedVolatilityPolicyBlock {
+            window_ms: 4_000,
+            sampling_interval_ms: 1_000,
+            min_ready_sources: 1,
+            max_source_age_ms: 500,
+            max_event_receive_lag_ms: 250,
+            max_inter_sample_gap_ms: 2_000,
+            min_coverage_ratio: 0.75,
+            max_cross_source_dispersion: 0.50,
+            seconds_per_annum: 31_536_000.0,
+            aggregation: RealizedVolatilityAggregationBlock::UpperQuantile,
+            upper_quantile: 1.0,
+            trim_fraction: None,
+            guard_weight: None,
+        },
+        estimator: None,
+        sources: vec![RealizedVolatilitySourceBlock {
+            source_id: "<SOURCE_ID_A>".to_string(),
+            data_client_id: ClientId::from(RV_DATA_CLIENT_ID),
+            instrument_id: InstrumentId::from("CONFIGURED_ASSET-QUOTE.<DATA_CLIENT_ID>"),
+            source_class: RealizedVolatilitySourceClassBlock::SpotQuote,
+            sample_kind: RealizedVolatilitySampleKindBlock::Midpoint,
+            enabled: true,
+            counts_toward_quorum: true,
+            canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
+        }],
+    }
+}
+
+fn insert_placeholder_realized_volatility_client(root: &mut BoltV3RootConfig) {
+    root.clients.insert(
+        RV_DATA_CLIENT_ID.to_string(),
+        ClientBlock {
+            venue: Venue::from(RV_DATA_CLIENT_VENUE),
+            data: Some(toml::Value::Table(toml::map::Map::new())),
+            execution: None,
+            secrets: None,
+            readiness_probe: None,
+        },
+    );
+}
+
+fn insert_realized_volatility_surface(
+    root: &mut BoltV3RootConfig,
+    surface: RealizedVolatilitySurfaceBlock,
+) {
+    insert_placeholder_realized_volatility_client(root);
+    let _ = root
+        .realized_volatility_surfaces
+        .get_or_insert_with(BTreeMap::new)
+        .insert("<surface_id>".to_string(), surface);
+}
+
+fn realized_volatility_validation_errors(
+    mutate: impl FnOnce(&mut bolt_v2::bolt_v3_config::LoadedBoltV3Config),
+) -> Vec<String> {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    mutate(&mut loaded);
+    let mut errors = bolt_v2::bolt_v3_validate::validate_root_only(&loaded.root);
+    errors.extend(bolt_v2::bolt_v3_validate::validate_strategies(
+        &loaded.root,
+        &loaded.strategies,
+    ));
+    errors
+}
+
+fn assert_realized_volatility_validation_error(
+    mutate: impl FnOnce(&mut bolt_v2::bolt_v3_config::LoadedBoltV3Config),
+    expected: &str,
+) {
+    let errors = realized_volatility_validation_errors(mutate);
+    assert!(
+        errors
+            .iter()
+            .any(|message| message.contains("realized_volatility_surfaces")
+                && message.contains(expected)),
+        "expected realized_volatility_surfaces validation error containing `{expected}`, got: {errors:?}"
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_duplicate_source_id() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources.push(surface.sources[0].clone());
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "duplicate source_id",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_unknown_data_client_id() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources[0].data_client_id = ClientId::from("<UNKNOWN_DATA_CLIENT_ID>");
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "data_client_id",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_source_asset_mismatch() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources[0].instrument_id =
+                InstrumentId::from("OTHER_ASSET-QUOTE.<DATA_CLIENT_ID>");
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<surface_id>".to_string());
+        },
+        "canonical_base_asset",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_strategy_underlying_surface_asset_mismatch() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.canonical_base_asset = "OTHER_ASSET".to_string();
+            surface.sources[0].instrument_id =
+                InstrumentId::from("OTHER_ASSET-QUOTE.<DATA_CLIENT_ID>");
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<surface_id>".to_string());
+        },
+        "underlying_asset",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_same_instrument_distinct_data_clients() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            let mut second_source = surface.sources[0].clone();
+            second_source.source_id = "<SOURCE_ID_B>".to_string();
+            second_source.data_client_id = ClientId::from("<DATA_CLIENT_ID_B>");
+            surface.sources.push(second_source);
+            loaded.root.clients.insert(
+                "<DATA_CLIENT_ID_B>".to_string(),
+                ClientBlock {
+                    venue: Venue::from(RV_DATA_CLIENT_VENUE),
+                    data: Some(toml::Value::Table(toml::map::Map::new())),
+                    execution: None,
+                    secrets: None,
+                    readiness_probe: None,
+                },
+            );
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<surface_id>".to_string());
+        },
+        "distinct data_client_id",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_empty_source_list() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources.clear();
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "sources",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_quorum_larger_than_enabled_sources() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.policy.min_ready_sources = 2;
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "min_ready_sources",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_sampling_interval_larger_than_window() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.policy.window_ms = surface.policy.sampling_interval_ms - 1;
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "window_ms",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_mark_sources_for_taker_surface() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources[0].source_class = RealizedVolatilitySourceClassBlock::Mark;
+            surface.sources[0].sample_kind = RealizedVolatilitySampleKindBlock::Mark;
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "source_class",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_mismatched_source_sample_pair() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources[0].sample_kind = RealizedVolatilitySampleKindBlock::Trade;
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "sample_kind",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_mixed_enabled_quorum_source_contracts() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources.push(RealizedVolatilitySourceBlock {
+                source_id: "<SOURCE_ID_B>".to_string(),
+                source_class: RealizedVolatilitySourceClassBlock::Trade,
+                sample_kind: RealizedVolatilitySampleKindBlock::Trade,
+                ..surface.sources[0].clone()
+            });
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "source_class",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_strategy_missing_surface_reference() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<missing_surface_id>".to_string());
+        },
+        "realized_volatility_surface_id",
+    );
+}
+
+#[test]
+fn runtime_mapping_emits_surface_id_and_signal_data_for_surfaced_mode() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    insert_realized_volatility_surface(&mut loaded.root, valid_realized_volatility_surface());
+    loaded.strategies[0].config.realized_volatility_surface_id = Some("<surface_id>".to_string());
+
+    let strategy = loaded.strategies.first().expect("fixture strategy");
+    let expected_signal_data = strategy
+        .config
+        .signal_data
+        .values()
+        .next()
+        .expect("fixture strategy should include signal data");
+    let expected_signal_venue = expected_signal_data.data_client_id.to_string();
+    let expected_signal_instrument = expected_signal_data.instrument_id.to_string();
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect("surface id should map into runtime config");
+    let table = raw.as_table().expect("runtime config should be a table");
+
+    assert_eq!(
+        table
+            .get("realized_volatility_surface_id")
+            .and_then(toml::Value::as_str),
+        Some("<surface_id>")
+    );
+    assert!(!table.contains_key("vol_window_secs"));
+    assert!(!table.contains_key("vol_gap_reset_secs"));
+    assert!(!table.contains_key("vol_min_observations"));
+    assert!(!table.contains_key("vol_bridge_valid_secs"));
+    assert_eq!(
+        table.get("signal_venue").and_then(toml::Value::as_str),
+        Some(expected_signal_venue.as_str()),
+        "surfaced RV mode still needs signal data for fast-spot pricing"
+    );
+    assert_eq!(
+        table
+            .get("signal_instrument_id")
+            .and_then(toml::Value::as_str),
+        Some(expected_signal_instrument.as_str()),
+        "surfaced RV mode must not remove the fast-spot instrument binding"
+    );
+}
+
+#[test]
+fn surfaced_runtime_config_builds_without_legacy_realized_volatility_fields() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    insert_realized_volatility_surface(&mut loaded.root, valid_realized_volatility_surface());
+    loaded.strategies[0].config.realized_volatility_surface_id = Some("<surface_id>".to_string());
+
+    let raw = binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[0], &loaded)
+        .expect("surface id should map into runtime config");
+    let mut errors: Vec<ValidationError> = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+    assert!(
+        errors.is_empty(),
+        "surfaced runtime config should validate without legacy RV fields: {errors:?}"
+    );
+
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let context = StrategyBuildContext::new(
+        Arc::new(NoopFeeProvider),
+        writer.clone(),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        support::fixture_execution_venue(),
+    );
+    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
+        .expect("surfaced runtime config should build without legacy RV fields");
 }
 
 #[test]
@@ -424,7 +787,7 @@ fn binary_oracle_runtime_mapping_rejects_decision_reference_resolution_identity_
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_post_only_gtc_entry_order() {
+fn binary_oracle_runtime_mapping_rejects_post_only_gtc_entry_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -478,10 +841,12 @@ fn binary_oracle_runtime_mapping_preserves_post_only_gtc_entry_order() {
             .and_then(toml::Value::as_bool),
         Some(false)
     );
+
+    assert_unsupported_executable_entry_order_shape(&raw, "PostOnlyGtc");
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_stop_market_entry_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_stop_market_entry_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -535,29 +900,11 @@ fn binary_oracle_runtime_mapping_preserves_stop_market_entry_order_round_trip() 
         Some("last_price")
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "StopMarket runtime table should validate: {errors:?}"
-    );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
-        .expect("StopMarket runtime table should parse into the strategy config");
+    assert_unsupported_executable_entry_order_shape(&raw, "StopMarket");
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_market_if_touched_entry_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_market_if_touched_entry_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -603,25 +950,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_entry_order_round_t
         Some(0.52)
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "MarketIfTouched runtime table should validate: {errors:?}"
-    );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
-        .expect("MarketIfTouched runtime table should parse into the strategy config");
+    assert_unsupported_executable_entry_order_shape(&raw, "MarketIfTouched");
 }
 
 #[test]
@@ -705,7 +1034,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_entry_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_trailing_stop_market_entry_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -774,25 +1103,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_entry_order_roun
         Some("basis_points")
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "TrailingStopMarket entry runtime table should validate: {errors:?}"
-    );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
-        .expect("TrailingStopMarket entry runtime table should parse into the strategy config");
+    assert_unsupported_executable_entry_order_shape(&raw, "TrailingStopMarket");
 }
 
 #[test]
@@ -886,7 +1197,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_stop_limit_entry_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_stop_limit_entry_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -936,29 +1247,11 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_entry_order_round_trip() {
         Some(true)
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "StopLimit runtime table should validate: {errors:?}"
-    );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
-        .expect("StopLimit runtime table should parse into the strategy config");
+    assert_unsupported_executable_entry_order_shape(&raw, "StopLimit");
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_limit_if_touched_entry_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_limit_if_touched_entry_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -1008,25 +1301,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_entry_order_round_tr
         Some(true)
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "LimitIfTouched runtime table should validate: {errors:?}"
-    );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
-        .expect("LimitIfTouched runtime table should parse into the strategy config");
+    assert_unsupported_executable_entry_order_shape(&raw, "LimitIfTouched");
 }
 
 #[test]

@@ -46,7 +46,6 @@ env:
   # Same single base as ci.yml — one base, two namespaces. The crate's namespace
   # (backtesting-vertical-slice) is selected by --repo, not by a second base.
   RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
-
 permissions:
   contents: read
 
@@ -56,7 +55,7 @@ jobs:
   # PRs that never touch the crate while `backtester-gate` still reports a verdict.
   detect:
     name: bvs-detect
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     outputs:
       bvs_changed: ${{ steps.detect.outputs.bvs_changed }}
     steps:
@@ -81,6 +80,7 @@ jobs:
             scripts/rust_verification.py \
             scripts/command_understanding.py \
             rust-toolchain.toml \
+            ci/github-actions-runners.toml \
             '.github/actions/setup-environment/**' \
             .github/workflows/backtester-ci.yml)"
           if [[ -n "$changed" ]]; then
@@ -99,7 +99,7 @@ jobs:
     name: bvs-fmt
     needs: detect
     if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -117,7 +117,7 @@ jobs:
     name: bvs-clippy
     needs: [detect, fmt]
     if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -127,7 +127,6 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           toolchain-components: clippy
-          reclaim-disk-space: "true"
 
       # The setup action's managed_target_dir output is hardcoded to --repo $GITHUB_WORKSPACE
       # (the bolt-v2 root namespace). Resolve THIS crate's lane explicitly instead, or the cache
@@ -163,7 +162,7 @@ jobs:
     name: bvs-test
     needs: [detect, fmt]
     if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -173,7 +172,6 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
-          reclaim-disk-space: "true"
 
       - name: Resolve crate managed target dir
         id: crate_target
@@ -211,7 +209,7 @@ jobs:
     name: backtester-gate
     needs: [detect, fmt, clippy, test]
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - name: Check required lanes
         shell: bash

@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use crate::bolt_v3_binary_outcome_edge::BinaryOutcomeEdgeBlockReason;
 
 const TEST_PRICING_SNAPSHOT_REFERENCE_STEP_MS: u64 = 100;
 const TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP: f64 = 2.0;
@@ -16,6 +17,34 @@ const TEST_PRICING_SNAPSHOT_STALE_REFERENCE_PRICE: f64 =
 const TEST_PRICING_SNAPSHOT_FRESH_SIGNAL_PRICE: f64 = TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE;
 const TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE: f64 =
     TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP;
+
+struct PriceSensitiveEntryFeeProvider;
+
+impl FeeProvider for PriceSensitiveEntryFeeProvider {
+    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
+        Some(Decimal::ZERO)
+    }
+
+    fn entry_fee_bps(&self, _instrument: &InstrumentAny, entry_price: Decimal) -> Option<Decimal> {
+        if entry_price <= Decimal::new(55, 2) {
+            Some(Decimal::from(5_000))
+        } else {
+            Some(Decimal::ZERO)
+        }
+    }
+
+    fn max_entry_fee_bps(
+        &self,
+        _instrument: &InstrumentAny,
+        _entry_price: Decimal,
+    ) -> Option<Decimal> {
+        Some(Decimal::from(5_000))
+    }
+
+    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
+        async move { Ok(()) }.boxed()
+    }
+}
 
 #[test]
 fn reference_quote_tick_updates_fair_value_without_becoming_signal() {
@@ -286,294 +315,13 @@ fn pricing_state_clears_fast_spot_when_no_fast_venue_remains() {
 }
 
 #[test]
-fn selected_realized_vol_for_candidate_falls_closed_when_state_is_missing() {
-    let config = test_strategy().config.clone();
-    let pricing = PricingState::from_config(&taker_pricing_config(&config));
-
-    let estimator =
-        pricing.selected_realized_vol_for_candidate(&lead_signal("bybit", 0, 0, 1.0, 1.0, 0.01));
-
-    assert!(estimator.last_ready_vol.is_none());
-    assert_eq!(estimator.current_vol_at(1_000), None);
-}
-
-#[test]
-fn realized_vol_warms_across_lead_venue_switches_when_each_venue_has_history() {
-    let mut strategy = ready_to_trade_strategy();
-    strategy.config.vol_min_observations = 3;
-    strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
-
-    for (ts_ms, venue_name, fair_value, fast_price) in [
-        (1_000, "bybit", 3_100.0, 3_100.0),
-        (1_100, "okx", 3_100.2, 3_100.2),
-        (2_000, "bybit", 3_101.0, 3_101.0),
-        (2_100, "okx", 3_101.2, 3_101.2),
-        (3_000, "bybit", 3_102.0, 3_102.0),
-        (3_100, "okx", 3_102.2, 3_102.2),
-        (4_000, "bybit", 3_103.0, 3_103.0),
-    ] {
-        strategy.observe_reference_snapshot(&ReferenceSnapshot {
-            ts_ms,
-            topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(fair_value),
-            confidence: 1.0,
-            venues: vec![
-                oracle_venue("reference", 1.0, fair_value, ts_ms),
-                orderbook_venue(venue_name, 0.9, fast_price, ts_ms),
-            ],
-        });
-    }
-
-    assert_eq!(
-        strategy.pricing.fast_spot,
-        Some(fast_spot("bybit", 3_103.0, 4_000))
-    );
-    assert!(
-        strategy.current_realized_vol_at(4_000).is_some(),
-        "selected venue should be able to reuse its own warmed history across lead switches"
-    );
-}
-
-#[test]
-fn realized_vol_warms_for_eligible_nonlead_candidates_before_selection() {
-    let mut strategy = ready_to_trade_strategy();
-    strategy.config.vol_min_observations = 2;
-    strategy.config.lead_agreement_min_corr = 0.999;
-    strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
-
-    for (ts_ms, fair_value, bybit_price, okx_price) in [
-        (1_000, 3_100.0, 3_100.0, 3_100.3),
-        (2_000, 3_101.0, 3_101.0, 3_101.3),
-        (3_000, 3_102.0, 3_102.0, 3_102.3),
-        (4_000, 3_103.0, 3_103.0, 3_103.3),
-    ] {
-        strategy.observe_reference_snapshot(&ReferenceSnapshot {
-            ts_ms,
-            topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(fair_value),
-            confidence: 1.0,
-            venues: vec![
-                oracle_venue("reference", 1.0, fair_value, ts_ms),
-                orderbook_venue("bybit", 0.9, bybit_price, ts_ms),
-                orderbook_venue("okx", 0.8, okx_price, ts_ms),
-            ],
-        });
-    }
-
-    assert_eq!(
-        strategy.pricing.fast_spot,
-        Some(fast_spot("bybit", 3_103.0, 4_000))
-    );
-    assert!(
-        strategy
-            .pricing
-            .realized_vol_by_venue
-            .get("okx")
-            .is_some_and(|estimator| estimator.current_vol_at(4_000).is_some()),
-        "eligible non-lead venues should keep warming their own realized-vol state"
-    );
-
-    strategy.observe_reference_snapshot(&ReferenceSnapshot {
-        ts_ms: 5_000,
-        topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_104.0),
-        confidence: 1.0,
-        venues: vec![
-            oracle_venue("reference", 1.0, 3_104.0, 5_000),
-            orderbook_venue("okx", 0.8, 3_104.3, 5_000),
-        ],
-    });
-
-    assert_eq!(
-        strategy.pricing.fast_spot,
-        Some(fast_spot("okx", 3_104.3, 5_000))
-    );
-    assert!(
-        strategy.current_realized_vol_at(5_000).is_some(),
-        "an eligible venue should be ready immediately once it becomes the selected lead"
-    );
-}
-
-#[test]
-fn realized_vol_does_not_prewarm_ineligible_nonlead_candidates() {
-    let mut strategy = ready_to_trade_strategy();
-    strategy.config.vol_min_observations = 2;
-    strategy.config.lead_agreement_min_corr = 0.999;
-    strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
-
-    for (ts_ms, fair_value, bybit_price, okx_price) in [
-        (1_000, 3_100.0, 3_100.0, 3_000.0),
-        (2_000, 3_101.0, 3_101.0, 3_001.0),
-        (3_000, 3_102.0, 3_102.0, 3_002.0),
-    ] {
-        strategy.observe_reference_snapshot(&ReferenceSnapshot {
-            ts_ms,
-            topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(fair_value),
-            confidence: 1.0,
-            venues: vec![
-                oracle_venue("reference", 1.0, fair_value, ts_ms),
-                orderbook_venue("bybit", 0.9, bybit_price, ts_ms),
-                orderbook_venue("okx", 0.8, okx_price, ts_ms),
-            ],
-        });
-    }
-
-    assert!(
-        !strategy.pricing.realized_vol_by_venue.contains_key("okx"),
-        "non-eligible venues should not warm in the background"
-    );
-
-    strategy.observe_reference_snapshot(&ReferenceSnapshot {
-        ts_ms: 4_000,
-        topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_103.0),
-        confidence: 1.0,
-        venues: vec![
-            oracle_venue("reference", 1.0, 3_103.0, 4_000),
-            orderbook_venue("okx", 0.8, 3_103.0, 4_000),
-        ],
-    });
-
-    assert_eq!(
-        strategy.pricing.fast_spot,
-        Some(fast_spot("okx", 3_103.0, 4_000))
-    );
-    assert!(
-        strategy.current_realized_vol_at(4_000).is_none(),
-        "a venue that was previously ineligible should still cold-start when it first becomes eligible"
-    );
-}
-
-#[test]
-fn realized_vol_does_not_borrow_ready_state_from_a_different_venue() {
-    let mut strategy = ready_to_trade_strategy();
-    strategy.config.vol_min_observations = 2;
-    strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
-
-    for (ts_ms, fair_value, fast_price) in [
-        (1_000, 3_100.0, 3_100.0),
-        (2_000, 3_101.0, 3_101.0),
-        (3_000, 3_102.0, 3_102.0),
-    ] {
-        strategy.observe_reference_snapshot(&ReferenceSnapshot {
-            ts_ms,
-            topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(fair_value),
-            confidence: 1.0,
-            venues: vec![
-                oracle_venue("reference", 1.0, fair_value, ts_ms),
-                orderbook_venue("bybit", 0.9, fast_price, ts_ms),
-            ],
-        });
-    }
-
-    assert!(
-        strategy.current_realized_vol_at(3_000).is_some(),
-        "bybit should be warmed before the lead venue changes"
-    );
-
-    strategy.observe_reference_snapshot(&ReferenceSnapshot {
-        ts_ms: 3_100,
-        topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_102.2),
-        confidence: 1.0,
-        venues: vec![
-            oracle_venue("reference", 1.0, 3_102.2, 3_100),
-            orderbook_venue("okx", 0.9, 3_102.2, 3_100),
-        ],
-    });
-
-    assert_eq!(
-        strategy.pricing.fast_spot,
-        Some(fast_spot("okx", 3_102.2, 3_100))
-    );
-    assert!(
-        strategy.current_realized_vol_at(3_100).is_none(),
-        "selected venue should not inherit warmed vol from another venue"
-    );
-}
-
-#[test]
-fn realized_vol_resets_per_venue_after_gap_even_if_other_venue_keeps_warming() {
-    let mut strategy = ready_to_trade_strategy();
-    strategy.config.vol_min_observations = 1;
-    strategy.config.vol_gap_reset_secs = 1;
-    strategy.config.vol_bridge_valid_secs = 10;
-    strategy.config.lead_jitter_max_ms = 10_000;
-    strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
-
-    for (ts_ms, venue_name, fair_value, fast_price) in [
-        (1_000, "bybit", 3_100.0, 3_100.0),
-        (1_500, "bybit", 3_101.0, 3_101.0),
-        (2_600, "okx", 3_101.5, 3_101.5),
-        (3_100, "okx", 3_102.0, 3_102.0),
-    ] {
-        strategy.observe_reference_snapshot(&ReferenceSnapshot {
-            ts_ms,
-            topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(fair_value),
-            confidence: 1.0,
-            venues: vec![
-                oracle_venue("reference", 1.0, fair_value, ts_ms),
-                orderbook_venue(venue_name, 0.9, fast_price, ts_ms),
-            ],
-        });
-    }
-
-    assert_eq!(
-        strategy.pricing.fast_spot,
-        Some(fast_spot("okx", 3_102.0, 3_100))
-    );
-    assert!(
-        strategy.current_realized_vol_at(3_100).is_some(),
-        "okx should warm independently while bybit is absent"
-    );
-
-    strategy.observe_reference_snapshot(&ReferenceSnapshot {
-        ts_ms: 4_201,
-        topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_102.5),
-        confidence: 1.0,
-        venues: vec![
-            oracle_venue("reference", 1.0, 3_102.5, 4_201),
-            orderbook_venue("bybit", 0.9, 3_102.5, 4_201),
-        ],
-    });
-
-    assert_eq!(
-        strategy.pricing.fast_spot,
-        Some(fast_spot("bybit", 3_102.5, 4_201))
-    );
-    assert!(
-        strategy.current_realized_vol_at(4_201).is_none(),
-        "bybit should reset after its own gap instead of bridging stale or other-venue vol"
-    );
-}
-
-#[test]
-fn pricing_state_reports_realized_vol_source_during_bridge_without_fast_spot() {
-    let config = test_strategy().config.clone();
-    let mut pricing = PricingState::from_config(&taker_pricing_config(&config));
-    pricing.realized_vol_source_venue = Some("bybit".to_string());
-    pricing.realized_vol.last_ready_vol = Some(1.5);
-    pricing.realized_vol.last_ready_ts_ms = Some(1_200);
-
-    assert_eq!(
-        pricing.current_realized_vol_source_at(1_300),
-        (Some("bybit".to_string()), Some(1_200))
-    );
-    assert_eq!(pricing.current_realized_vol_source_at(12_201), (None, None));
-}
-
-#[test]
 fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.pricing.fast_spot = None;
     strategy.pricing.last_reference_fair_value = Some(3_101.0);
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
-    strategy.pricing.realized_vol_source_venue = Some("bybit".to_string());
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
 
     let submission = strategy.entry_submission_decision_at(1_200);
     let fields = strategy.entry_evaluation_log_fields_at(1_200, &submission);
@@ -585,7 +333,7 @@ fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
         vec![EntryPricingBlockReason::SpotPriceMissing]
     );
     assert_eq!(fields.realized_vol, Some(2.5));
-    assert_eq!(fields.realized_vol_source_venue.as_deref(), Some("bybit"));
+    assert_eq!(fields.realized_vol_source_venue, None);
     assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
 }
 
@@ -593,8 +341,7 @@ fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
 fn entry_evaluation_blocks_when_realized_vol_is_not_ready() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_101.0, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = None;
-    strategy.pricing.realized_vol.last_ready_ts_ms = None;
+    strategy.pricing.latest_realized_vol_snapshot = None;
 
     let decision = strategy.entry_evaluation_at(1_200);
 
@@ -608,7 +355,6 @@ fn entry_evaluation_blocks_when_realized_vol_is_not_ready() {
 #[test]
 fn live_fair_probability_is_computed_from_strategy_state_once_vol_warms() {
     let mut strategy = ready_to_trade_strategy();
-    strategy.config.vol_min_observations = 3;
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
     for (ts_ms, fair_value, fast_spot_price) in [
@@ -625,6 +371,9 @@ fn live_fair_probability_is_computed_from_strategy_state_once_vol_warms() {
             venues: vec![orderbook_venue("bybit", 0.9, fast_spot_price, ts_ms)],
         });
     }
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 4_000);
 
     let fair_probability = strategy
         .current_fair_probability_up_at(4_000)
@@ -681,8 +430,20 @@ fn entry_evaluation_uses_price_adjusted_fee_bps_not_cached_base_fee_rate() {
     let decision = strategy.entry_submission_decision_at(1_200);
     let fields = strategy.entry_evaluation_log_fields_at(1_200, &decision);
 
-    assert_eq!(fields.up_fee_bps, Some(511.111111111111));
-    assert_eq!(fields.down_fee_bps, Some(182.027027027027));
+    assert!(
+        fields
+            .up_fee_bps
+            .is_some_and(|value| (value - 511.111111111111).abs() < 1e-9),
+        "up fee bps should use price-adjusted fee: {:?}",
+        fields.up_fee_bps
+    );
+    assert!(
+        fields
+            .down_fee_bps
+            .is_some_and(|value| (value - 182.027027027027).abs() < 1e-9),
+        "down fee bps should use price-adjusted fee: {:?}",
+        fields.down_fee_bps
+    );
 }
 
 #[test]
@@ -871,8 +632,7 @@ fn task5_exit_decision_uses_hysteresis_boundary_and_fails_closed() {
 fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_101.0, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = None;
-    strategy.pricing.realized_vol.last_ready_ts_ms = None;
+    strategy.pricing.latest_realized_vol_snapshot = None;
 
     let decision = strategy.entry_evaluation_at(1_200);
 
@@ -887,9 +647,11 @@ fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
 #[test]
 fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.4, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
 
     let decision = strategy.entry_evaluation_at(1_200);
 
@@ -918,12 +680,449 @@ fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
 }
 
 #[test]
+fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap_limit() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    strategy.config.order_notional_target = 5.0;
+    strategy.config.vwap_depth_limit_bps = 0;
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 2.0),
+            (BookAction::Add, OrderSide::Sell, 0.70, 100.0),
+        ],
+    );
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert_eq!(
+        evaluation.pricing_blocked_by,
+        vec![
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Up,
+                BinaryOutcomeEdgeBlockReason::InsufficientDepth
+            ),
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Down,
+                BinaryOutcomeEdgeBlockReason::InsufficientDepth
+            ),
+        ]
+    );
+    assert_eq!(
+        evaluation
+            .up_executable_edge
+            .as_ref()
+            .and_then(|result| result.block_reason),
+        Some(BinaryOutcomeEdgeBlockReason::InsufficientDepth)
+    );
+    assert_eq!(
+        evaluation
+            .down_executable_edge
+            .as_ref()
+            .and_then(|result| result.block_reason),
+        Some(BinaryOutcomeEdgeBlockReason::InsufficientDepth)
+    );
+    assert_eq!(evaluation.up_worst_case_ev_bps, None);
+    assert_eq!(evaluation.down_worst_case_ev_bps, None);
+    assert_eq!(evaluation.selected_side, None);
+}
+
+#[test]
+fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.order_notional_target = 5.0;
+    strategy.config.maximum_position_notional = 5.0;
+    strategy.config.vwap_depth_limit_bps = 0;
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+    let up_instrument_id = strategy
+        .instrument_id_for_side(OutcomeSide::Up)
+        .expect("UP instrument should be configured");
+    let down_instrument_id = strategy
+        .instrument_id_for_side(OutcomeSide::Down)
+        .expect("DOWN instrument should be configured");
+    assert!(strategy.active.books.update_from_deltas(&book_deltas(
+        up_instrument_id,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 100.0),
+        ],
+    )));
+    assert!(strategy.active.books.update_from_deltas(&book_deltas(
+        down_instrument_id,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 2.0),
+            (BookAction::Add, OrderSide::Sell, 0.70, 100.0),
+        ],
+    )));
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert!(
+        evaluation.pricing_blocked_by.is_empty(),
+        "nonselected side blockers must not veto a tradeable selected side: {evaluation:#?}"
+    );
+    assert_eq!(evaluation.selected_side, Some(OutcomeSide::Up));
+    let down_edge = evaluation
+        .down_executable_edge
+        .expect("DOWN executable edge should still be evaluated");
+    assert!(!down_edge.trade_allowed);
+    assert_eq!(
+        down_edge.block_reason,
+        Some(BinaryOutcomeEdgeBlockReason::InsufficientDepth)
+    );
+    assert!(evaluation.up_worst_case_ev_bps.is_some());
+    assert_eq!(evaluation.down_worst_case_ev_bps, None);
+}
+
+#[test]
+fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
+    let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
+    strategy.config.order_notional_target = 10.0;
+    strategy.config.maximum_position_notional = 100.0;
+    strategy.config.risk_lambda = 0.10;
+    strategy.config.book_impact_cap_bps = 5_000;
+    strategy.config.vwap_depth_limit_bps = 5_000;
+    strategy.config.edge_threshold_basis_points = i64::default();
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.config.warmup_tick_count = 2;
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    strategy.active.price_to_beat = Some(3_100.0);
+    strategy.active.interval_open = Some(3_100.0);
+    strategy.active.warmup_count = 2;
+    strategy.active.last_reference_ts_ms = Some(1_200);
+    strategy.active.fast_venue_incoherent = false;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_500.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+    strategy.pricing.last_lead_gap_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    register_test_strategy_with_active_instruments(&mut strategy);
+
+    let up_instrument_id = strategy
+        .instrument_id_for_side(OutcomeSide::Up)
+        .expect("UP instrument should be configured");
+    let down_instrument_id = strategy
+        .instrument_id_for_side(OutcomeSide::Down)
+        .expect("DOWN instrument should be configured");
+    assert!(strategy.active.books.update_from_deltas(&book_deltas(
+        up_instrument_id,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 10.0),
+            (BookAction::Add, OrderSide::Sell, 0.70, 100.0),
+        ],
+    )));
+    assert!(strategy.active.books.update_from_deltas(&book_deltas(
+        down_instrument_id,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.90, 100.0),
+        ],
+    )));
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert_eq!(
+        evaluation.selected_side, None,
+        "sized re-evaluation must block when the sized limit price has a wider fee band: {evaluation:#?}"
+    );
+    assert!(
+        evaluation
+            .up_executable_edge
+            .is_some_and(|edge| edge.trade_allowed),
+        "preliminary UP edge should remain visible when sized re-evaluation blocks: {evaluation:#?}"
+    );
+    assert_eq!(
+        evaluation
+            .sized_executable_edge
+            .as_ref()
+            .and_then(|edge| edge.block_reason),
+        Some(BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge)
+    );
+    assert_eq!(
+        evaluation.pricing_blocked_by,
+        vec![EntryPricingBlockReason::ExecutableEdgeUnavailable(
+            OutcomeSide::Up,
+            BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge
+        )],
+        "sized selected-side threshold failure should surface as a pricing block"
+    );
+    assert!(
+        evaluation
+            .uncertainty_band_probability
+            .is_some_and(|band| (band - 0.5).abs() < 1e-9),
+        "final selected-side band should be recomputed from the sized fee: {evaluation:#?}"
+    );
+}
+
+#[test]
+fn executable_edge_fee_uses_exact_size_vwap_price_not_limit_price() {
+    let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
+    strategy.config.order_notional_target = 5.0;
+    strategy.config.maximum_position_notional = 5.0;
+    strategy.config.vwap_depth_limit_bps = 2_000;
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.config.warmup_tick_count = 2;
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    strategy.active.price_to_beat = Some(3_100.0);
+    strategy.active.interval_open = Some(3_100.0);
+    strategy.active.warmup_count = 2;
+    strategy.active.last_reference_ts_ms = Some(1_200);
+    strategy.active.fast_venue_incoherent = false;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+    strategy.pricing.last_lead_gap_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 5.0),
+            (BookAction::Add, OrderSide::Sell, 0.60, 100.0),
+        ],
+    );
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert_eq!(
+        evaluation
+            .up_executable_edge
+            .as_ref()
+            .map(|edge| edge.cost_breakdown.limit_price),
+        Some(Some(0.60))
+    );
+    assert!(
+        evaluation
+            .up_executable_edge
+            .as_ref()
+            .and_then(|edge| executable_edge_fee_bps(Some(*edge)))
+            .is_some_and(|fee_bps| (fee_bps - 5_000.0).abs() < 1e-9),
+        "fee must be probed at exact-size VWAP price, not the last limit level: {evaluation:#?}"
+    );
+}
+
+#[test]
+fn executable_edge_fee_requires_cached_instrument_in_test_builds() {
+    let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
+    strategy.config.order_notional_target = 5.0;
+    strategy.config.maximum_position_notional = 5.0;
+    strategy.config.vwap_depth_limit_bps = 2_000;
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.config.warmup_tick_count = 2;
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    strategy.active.price_to_beat = Some(3_100.0);
+    strategy.active.interval_open = Some(3_100.0);
+    strategy.active.warmup_count = 2;
+    strategy.active.last_reference_ts_ms = Some(1_200);
+    strategy.active.fast_venue_incoherent = false;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+    strategy.pricing.last_lead_gap_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 100.0),
+        ],
+    );
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert_eq!(
+        evaluation.pricing_blocked_by,
+        vec![
+            EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Up),
+            EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Down),
+        ],
+        "test builds must not fall back to FeeProvider::fee_bps when the NT instrument is missing: {evaluation:#?}"
+    );
+    assert_eq!(evaluation.selected_side, None);
+}
+
+#[test]
+fn executable_edge_blocks_unsupported_post_only_entry_shape() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+    strategy.config.entry_order.is_post_only = true;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert_eq!(
+        evaluation.pricing_blocked_by,
+        vec![
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Up,
+                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
+            ),
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Down,
+                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
+            ),
+        ]
+    );
+    assert_eq!(evaluation.selected_side, None);
+}
+
+#[test]
+fn entry_submission_caps_quantity_to_limit_price_liability() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.order_notional_target = 5.0;
+    strategy.config.maximum_position_notional = 5.0;
+    strategy.config.risk_lambda = 0.0;
+    strategy.config.book_impact_cap_bps = 1_000;
+    strategy.config.vwap_depth_limit_bps = 2_000;
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 5.0),
+            (BookAction::Add, OrderSide::Sell, 0.60, 100.0),
+        ],
+    );
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+
+    assert_eq!(decision.blocked_reason, None);
+    assert_eq!(decision.price, Some(0.60));
+    let price = decision.price.expect("decision should price the entry");
+    let sized_notional = decision
+        .evaluation
+        .sized_notional
+        .expect("decision should carry the sized notional");
+    let instrument = strategy
+        .current_instrument(
+            decision
+                .instrument_id
+                .expect("decision should choose an instrument"),
+        )
+        .expect("chosen instrument should stay cached");
+    let capped_quantity = instrument
+        .try_make_qty(sized_notional / price, Some(true))
+        .expect("capped liability quantity should normalize to an NT quantity");
+    let expected_quantity = strategy
+        .normalize_base_order_quantity_for_execution_venue(&instrument, capped_quantity)
+        .expect("venue quantity normalization should succeed")
+        .as_f64();
+
+    assert_eq!(
+        decision.quantity_value,
+        Some(expected_quantity),
+        "submission should cap normalized quantity by limit-price liability"
+    );
+    assert!(
+        decision
+            .quantity_value
+            .is_some_and(|quantity| price * quantity <= sized_notional),
+        "limit-price liability must not exceed sized notional, got {decision:#?}"
+    );
+}
+
+#[test]
+fn entry_submission_notional_guard_allows_scaled_float_noise() {
+    let sized_notional = BPS_DENOMINATOR;
+    let tolerance = notional_float_tolerance(sized_notional);
+    let representational_overage = sized_notional + (tolerance / MIDPOINT_DIVISOR_F64);
+    let material_overage = sized_notional + (tolerance * MIDPOINT_DIVISOR_F64);
+
+    assert!(!limit_notional_exceeds_sized_notional(
+        representational_overage,
+        sized_notional
+    ));
+    assert!(limit_notional_exceeds_sized_notional(
+        material_overage,
+        sized_notional
+    ));
+}
+
+#[test]
+fn entry_submission_notional_guard_blocks_non_finite_inputs() {
+    assert!(limit_notional_exceeds_sized_notional(
+        f64::NAN,
+        BPS_DENOMINATOR
+    ));
+    assert!(limit_notional_exceeds_sized_notional(
+        BPS_DENOMINATOR,
+        f64::INFINITY
+    ));
+}
+
+#[test]
 fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
-    let mut strategy =
-        ready_to_trade_strategy_with_live_fees(Decimal::new(250, 2), Decimal::new(250, 2));
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.order_notional_target = UNIT_F64;
+    strategy.config.maximum_position_notional = UNIT_F64;
+    strategy.config.edge_threshold_basis_points = 0;
+    let cheap_outcome_price = UNIT_F64 / BPS_DENOMINATOR.sqrt();
+    let book_quantity = BPS_DENOMINATOR;
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (
+                BookAction::Clear,
+                OrderSide::Buy,
+                cheap_outcome_price,
+                book_quantity,
+            ),
+            (
+                BookAction::Add,
+                OrderSide::Buy,
+                cheap_outcome_price,
+                book_quantity,
+            ),
+            (
+                BookAction::Add,
+                OrderSide::Sell,
+                cheap_outcome_price,
+                book_quantity,
+            ),
+        ],
+    );
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.4, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(0.02);
     strategy.pricing.last_jitter_penalty_probability = Some(0.01);
 
@@ -941,9 +1140,11 @@ fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
 fn task6_entry_evaluation_requires_live_uncertainty_components() {
     let mut strategy =
         ready_to_trade_strategy_with_live_fees(Decimal::new(250, 2), Decimal::new(250, 2));
+    register_test_strategy_with_active_instruments(&mut strategy);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.4, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     strategy.pricing.last_lead_gap_probability = None;
     strategy.pricing.last_jitter_penalty_probability = None;
 
@@ -959,10 +1160,11 @@ fn task6_entry_evaluation_requires_live_uncertainty_components() {
 #[test]
 fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
-    strategy.pricing.realized_vol.bridge_valid_ms = 1_000_000;
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     strategy.config.edge_threshold_basis_points = 2_000;
 
     let baseline = strategy.entry_evaluation_at(1_200);
@@ -971,11 +1173,21 @@ fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
     strategy.config.theta_decay_factor = 100.0;
     strategy.active.last_reference_ts_ms = Some(291_000);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 291_000));
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(291_000);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 291_000);
     let near_expiry = strategy.entry_evaluation_at(291_000);
 
     assert!(near_expiry.gate.blocked_by.is_empty());
-    assert!(near_expiry.pricing_blocked_by.is_empty());
+    assert!(
+        near_expiry.pricing_blocked_by.contains(
+            &EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Up,
+                BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge
+            )
+        ),
+        "theta-scaled threshold miss should surface as an executable-edge pricing block: {near_expiry:#?}"
+    );
     assert!(near_expiry.up_worst_case_ev_bps.is_some());
     assert!(near_expiry.min_worst_case_ev_bps.is_some());
     assert_eq!(near_expiry.selected_side, None);
@@ -991,6 +1203,7 @@ fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
 #[test]
 fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
     strategy.observe_reference_snapshot(&ReferenceSnapshot {
         ts_ms: 1_200,
         topic: "platform.reference.test.spot".to_string(),
@@ -1001,8 +1214,9 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
             orderbook_venue("bybit", 0.9, 3_101.0, 1_200),
         ],
     });
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
 
     let evaluation = strategy.entry_evaluation_at(1_200);
     let submission = strategy.entry_submission_decision_at(1_200);
@@ -1015,7 +1229,7 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
     assert_eq!(fields.reference_fair_value, Some(3_100.5));
     assert_eq!(fields.interval_open, Some(3_100.0));
     assert_eq!(fields.realized_vol, Some(2.5));
-    assert_eq!(fields.realized_vol_source_venue.as_deref(), Some("bybit"));
+    assert_eq!(fields.realized_vol_source_venue, None);
     assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
     assert_eq!(fields.fair_probability_up, evaluation.fair_probability_up);
     assert_eq!(fields.selected_side, evaluation.selected_side);
@@ -1025,6 +1239,18 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
         fields.uncertainty_band_reason,
         "derived_from_lead_gap_jitter_time_and_fee"
     );
+    assert!(fields.up_entry_limit_price.is_some());
+    assert!(fields.down_entry_limit_price.is_some());
+    assert!(fields.up_gross_cost_cents.is_some());
+    assert!(fields.down_gross_cost_cents.is_some());
+    assert!(fields.up_fee_cost_cents.is_some());
+    assert!(fields.down_fee_cost_cents.is_some());
+    assert!(fields.up_slippage_buffer_cents.is_some());
+    assert!(fields.down_slippage_buffer_cents.is_some());
+    assert!(fields.up_total_adjusted_cost_cents.is_some());
+    assert!(fields.down_total_adjusted_cost_cents.is_some());
+    assert!(fields.up_edge_cents_per_share.is_some());
+    assert!(fields.down_edge_cents_per_share.is_some());
     assert!(fields.lead_quality_policy_applied);
     assert!(
         fields
@@ -1074,8 +1300,9 @@ fn task6_exit_decision_requires_live_uncertainty_components() {
         ManagedPositionOrigin::StrategyEntry,
     );
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     strategy.pricing.last_lead_gap_probability = None;
     strategy.pricing.last_jitter_penalty_probability = None;
 
@@ -1093,4 +1320,67 @@ fn task6_exit_decision_requires_live_uncertainty_components() {
         strategy.active.books.up.instrument_id
     );
     assert_eq!(decision.blocked_reason, None);
+}
+
+#[test]
+fn position_probability_and_hold_ev_accept_ready_surfaced_zero_realized_volatility() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let open_position = OpenPositionState {
+        market_id: Some("MKT-1".to_string()),
+        instrument_id: strategy.active.books.up.instrument_id.unwrap(),
+        position_id: PositionId::from("P-UP-ZERO-RV"),
+        outcome_side: Some(OutcomeSide::Up),
+        outcome_fees: strategy.active.outcome_fees.clone(),
+        historical_entry_fee_bps: Some(0.0),
+        entry_order_side: OrderSide::Buy,
+        side: PositionSide::Long,
+        quantity: Quantity::new(10.0, 2),
+        avg_px_open: 0.450,
+        interval_open: Some(3_100.0),
+        selection_published_at_ms: Some(1_000),
+        seconds_to_expiry_at_selection: Some(300),
+        book: strategy.active.books.up.clone(),
+    };
+    set_managed_position(
+        &mut strategy,
+        open_position,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    strategy.pricing.observe_realized_vol_snapshot(
+        crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
+            surface_id: "<surface_id>".to_string(),
+            as_of_ms: 1_200,
+            annualized_realized_vol_decimal: Some(0.0),
+            measured_annualized_realized_vol_decimal: Some(0.0),
+            noise_robust_annualized_realized_vol_decimal: Some(0.0),
+            continuous_annualized_realized_vol_decimal: Some(0.0),
+            jump_annualized_realized_vol_decimal: Some(0.0),
+            forecast_annualized_realized_vol_decimal: None,
+            pricing_component:
+                crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
+            ready: true,
+            sources_used: vec!["<SOURCE_ID_A>".to_string()],
+            source_diagnostics: Vec::new(),
+            horizon_estimates: Vec::new(),
+            unknown_source_rejections: std::collections::BTreeMap::new(),
+            blocked_reasons: Vec::new(),
+            aggregate_method:
+                crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+                    quantile: 1.0,
+                },
+            seconds_per_annum: 31_536_000.0,
+            config_fingerprint: "<config_fingerprint>".to_string(),
+        },
+    );
+
+    assert_eq!(
+        strategy.current_position_fair_probability_up_at(1_200),
+        Some(1.0)
+    );
+    assert!(
+        strategy
+            .exit_evaluation_at(1_200)
+            .hold_ev_bps
+            .is_some_and(f64::is_finite)
+    );
 }

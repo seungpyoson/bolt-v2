@@ -20,8 +20,10 @@ pub(crate) const MILLIS_PER_SECOND_U64: u64 = 1_000;
 pub(crate) const NANOS_PER_MILLI_U64: u64 = MILLIS_PER_SECOND_U64 * MILLIS_PER_SECOND_U64;
 pub(crate) const MILLIS_PER_SECOND_F64: f64 = MILLIS_PER_SECOND_U64 as f64;
 pub(crate) const BPS_DENOMINATOR: f64 = 10_000.0;
+pub(crate) const CENTS_PER_SHARE: f64 = 100.0;
 pub(crate) const MIDPOINT_DIVISOR_F64: f64 = 2.0;
 pub(crate) const QUADRATIC_RISK_DIVISOR: f64 = 2.0;
+pub(crate) const NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER: f64 = 10_000.0;
 
 pub(crate) fn is_positive_finite(value: f64) -> bool {
     value.is_finite() && value > ZERO_F64
@@ -29,6 +31,10 @@ pub(crate) fn is_positive_finite(value: f64) -> bool {
 
 pub(crate) fn is_non_negative_finite(value: f64) -> bool {
     value.is_finite() && value >= ZERO_F64
+}
+
+pub(crate) fn notional_float_tolerance(reference_notional: f64) -> f64 {
+    reference_notional.abs() * f64::EPSILON * NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER
 }
 
 pub(crate) fn clamp_probability(value: f64) -> f64 {
@@ -136,6 +142,29 @@ mod tests {
         assert!(!is_non_negative_finite(f64::NAN));
         assert!(!is_non_negative_finite(f64::INFINITY));
         assert!(!is_non_negative_finite(f64::NEG_INFINITY));
+    }
+
+    #[test]
+    fn notional_float_tolerance_scales_with_reference_notional() {
+        assert_eq!(notional_float_tolerance(ZERO_F64), ZERO_F64);
+        assert_eq!(
+            notional_float_tolerance(-BPS_DENOMINATOR),
+            notional_float_tolerance(BPS_DENOMINATOR)
+        );
+        assert!(notional_float_tolerance(BPS_DENOMINATOR) > notional_float_tolerance(UNIT_F64));
+    }
+
+    #[test]
+    fn notional_float_tolerance_uses_named_epsilon_multiplier() {
+        assert_eq!(
+            notional_float_tolerance(BPS_DENOMINATOR),
+            BPS_DENOMINATOR * f64::EPSILON * NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER
+        );
+    }
+
+    #[test]
+    fn cents_per_share_unit_conversion_constant_is_shared() {
+        assert_eq!(CENTS_PER_SHARE, 100.0);
     }
 
     #[test]

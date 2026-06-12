@@ -17,6 +17,7 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -57,18 +58,13 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
         &order,
     );
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        strategy.submit_order_with_decision_evidence(
+    strategy
+        .submit_order_with_decision_evidence(
             intent,
             order,
             SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-    }));
-
-    assert!(
-        result.is_err(),
-        "test strategy is intentionally not registered with NT; ungated admission should reach NT submit"
-    );
+        .expect("ungated admission should reach NT submit");
     assert_eq!(submit_admission.admitted_order_count(), 1);
 }
 
@@ -80,13 +76,13 @@ fn provider_limited_submit_admission_allows_nt_submit_after_evidence() {
     );
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee keeps the notional (0.50) under the 1.0 cap so admission
-    // succeeds; the test then proves the submit reaches NT (and panics
-    // because the strategy is intentionally unregistered).
+    // succeeds; the test then proves the registered submit reaches NT.
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -127,18 +123,13 @@ fn provider_limited_submit_admission_allows_nt_submit_after_evidence() {
         &order,
     );
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        strategy.submit_order_with_decision_evidence(
+    strategy
+        .submit_order_with_decision_evidence(
             intent,
             order,
             SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-    }));
-
-    assert!(
-        result.is_err(),
-        "test strategy is intentionally not registered with NT; reaching NT submit should panic"
-    );
+        .expect("provider-limited admission should reach NT submit");
     assert_eq!(submit_admission.admitted_order_count(), 1);
 }
 
@@ -156,7 +147,7 @@ fn submit_context_routes_non_empty_nt_params_to_submit_order() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
-    let _cache = register_test_strategy(&mut strategy);
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let (risk_handler, risk_messages) =
         get_typed_into_message_saving_handler::<TradingCommand>(None);
     msgbus::register_trading_command_endpoint(
@@ -221,6 +212,7 @@ fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(2.0, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -835,6 +827,7 @@ fn over_notional_submit_admission_rejects_before_nt_submit() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(2.0, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -897,9 +890,7 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
     // 1.0 * (1 + 25/10000) = 1.0025, set EXACTLY equal to the cap. The
     // admission gate rejects only when notional STRICTLY exceeds the cap
     // (`request.notional > report.max_notional_per_order()`), so this must
-    // be ADMITTED. The strategy is intentionally unregistered, so reaching
-    // NT submit after a successful admission panics — proving admission
-    // passed.
+    // be ADMITTED and reach NT submit.
     //
     // NOTE: this is NOT a fee-discrimination test — with the cap set to the
     // fee-inclusive value, the raw 1.0 notional admits with OR without the
@@ -918,6 +909,7 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(1.0, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -958,18 +950,13 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
         &order,
     );
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        strategy.submit_order_with_decision_evidence(
+    strategy
+        .submit_order_with_decision_evidence(
             intent,
             order,
             SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-    }));
-
-    assert!(
-        result.is_err(),
-        "fee-inclusive notional exactly at the cap must be admitted and reach NT submit (which panics on the unregistered test strategy)"
-    );
+        .expect("fee-inclusive notional exactly at the cap must reach NT submit");
     assert_eq!(
         submit_admission.admitted_order_count(),
         1,
@@ -1003,6 +990,7 @@ fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(1.0, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -1068,9 +1056,7 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
     // (1.001) as the reject test, but the fee is ZERO so no scaling is
     // applied:
     //   admission notional = 1.0000 * (1 + 0/10000) = 1.0000 <= 1.001
-    // and the order is ADMITTED. The strategy is intentionally unregistered,
-    // so reaching NT submit after a successful admission panics — proving
-    // admission passed. Together with the reject test this pair proves the
+    // and the order is ADMITTED. Together with the reject test this pair proves the
     // rejection there is caused by the fee scaling specifically, not by the
     // raw notional (which admits at this cap when the fee is zero).
     let submit_admission = submit_admission_with_provider_cap(
@@ -1083,6 +1069,7 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(1.0, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -1123,18 +1110,13 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
         &order,
     );
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        strategy.submit_order_with_decision_evidence(
+    strategy
+        .submit_order_with_decision_evidence(
             intent,
             order,
             SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-    }));
-
-    assert!(
-        result.is_err(),
-        "zero-fee notional below the cap must be admitted and reach NT submit (which panics on the unregistered test strategy)"
-    );
+        .expect("zero-fee notional below the cap must reach NT submit");
     assert_eq!(
         submit_admission.admitted_order_count(),
         1,
@@ -1175,6 +1157,7 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -1231,50 +1214,7 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
 }
 
 #[test]
-fn down_entry_submission_price_uses_configured_order_side_price() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
-    let selected_side = selected_entry_side(&strategy);
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.41));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.41));
-
-    strategy.config.entry_order.side = "sell".to_string();
-    strategy.config.entry_order.position_side = "short".to_string();
-    strategy.config.exit_order.side = "buy".to_string();
-    strategy.config.exit_order.position_side = "short".to_string();
-
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.40));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.40));
-}
-
-#[test]
-fn post_only_entry_submission_price_uses_passive_book_price() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
-    strategy.config.entry_order.is_post_only = true;
-    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
-    let selected_side = selected_entry_side(&strategy);
-
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.40));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.40));
-}
-
-#[test]
-fn stop_market_entry_submission_price_uses_trigger_price_for_notional_sizing() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy.config.entry_order.order_type = OrderType::StopMarket;
-    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
-    strategy.config.entry_order.trigger_price = Some(0.52);
-    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
-    let instrument_id = selected_entry_instrument(&strategy);
-    let selected_side = configured_side_for_instrument(&mut strategy, instrument_id);
-
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.52));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.52));
-}
-
-#[test]
-fn quote_quantity_entry_submission_sizes_quantity_as_quote_notional() {
+fn quote_quantity_entry_submission_is_unsupported_executable_shape() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.entry_order.is_quote_quantity = true;
@@ -1283,18 +1223,25 @@ fn quote_quantity_entry_submission_sizes_quantity_as_quote_notional() {
     strategy.config.risk_lambda = 0.0001;
 
     let decision = strategy.entry_submission_decision_at(1_200);
-    let sized_notional = decision
-        .evaluation
-        .sized_notional
-        .expect("test setup should produce a positive sized notional");
 
-    assert_eq!(decision.blocked_reason, None);
-    assert!(
-        decision
-            .quantity_value
-            .is_some_and(|quantity| (quantity - sized_notional).abs() < 1e-9),
-        "quote-quantity entry should send quote notional as NT quantity, got {decision:#?}"
+    assert_eq!(
+        decision.blocked_reason,
+        Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
     );
+    assert_eq!(
+        decision.evaluation.pricing_blocked_by,
+        vec![
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Up,
+                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
+            ),
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Down,
+                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
+            ),
+        ]
+    );
+    assert_eq!(decision.quantity_value, None);
 }
 
 #[test]
@@ -1308,10 +1255,6 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
     strategy.config.entry_order.trigger_type = Some(TriggerType::MarkPrice);
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);
     let instrument_id = selected_entry_instrument(&strategy);
-    let selected_side = configured_side_for_instrument(&mut strategy, instrument_id);
-
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.52));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.52));
 
     let quantity = Quantity::new(2.0, 2);
     let fallback_price = Price::new(0.40, 2);
@@ -1425,8 +1368,9 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
     strategy.config.exit_order.is_post_only = true;
     set_active_books_best_prices(&mut strategy, 0.43, 0.51);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     let instrument_id = selected_entry_instrument(&strategy);
     let open_position = materialize_configured_position(
         &mut strategy,
@@ -1455,8 +1399,9 @@ fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used()
     strategy.config.exit_order.is_quote_quantity = true;
     strategy.config.exit_hysteresis_bps = 1_000_000;
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     let instrument_id = selected_entry_instrument(&strategy);
     let open_position = materialize_configured_position(
         &mut strategy,
@@ -1833,23 +1778,23 @@ fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
 #[test]
 fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
     let mut raw = valid_raw_config();
-    let entry_order = raw
+    let exit_order = raw
         .as_table_mut()
         .expect("valid config must be a table")
-        .get_mut("entry_order")
-        .expect("valid config should include entry_order")
+        .get_mut("exit_order")
+        .expect("valid config should include exit_order")
         .as_table_mut()
-        .expect("entry_order should be a table");
-    entry_order.insert(
+        .expect("exit_order should be a table");
+    exit_order.insert(
         "order_type".to_string(),
         Value::String("stop_market".to_string()),
     );
-    entry_order.insert(
+    exit_order.insert(
         "time_in_force".to_string(),
         Value::String("gtc".to_string()),
     );
-    entry_order.insert("trigger_price".to_string(), Value::Float(0.52));
-    entry_order.insert(
+    exit_order.insert("trigger_price".to_string(), Value::Float(0.52));
+    exit_order.insert(
         "trigger_instrument_id".to_string(),
         Value::String("TRIGGER.SOURCE".to_string()),
     );
@@ -1871,9 +1816,9 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
     let order = strategy
-        .build_configured_entry_order(
+        .build_configured_exit_order(
             instrument_id,
-            OrderSide::Buy,
+            OrderSide::Sell,
             Quantity::new(2.0, 2),
             Price::new(0.40, 2),
             ClientOrderId::from("O-19700101-000000-001-021-1"),
@@ -1889,14 +1834,14 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
 #[test]
 fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
     let mut raw = valid_raw_config();
-    let entry_order = raw
+    let exit_order = raw
         .as_table_mut()
         .expect("valid config must be a table")
-        .get_mut("entry_order")
-        .expect("valid config should include entry_order")
+        .get_mut("exit_order")
+        .expect("valid config should include exit_order")
         .as_table_mut()
-        .expect("entry_order should be a table");
-    entry_order.insert(
+        .expect("exit_order should be a table");
+    exit_order.insert(
         "trigger_instrument_id".to_string(),
         Value::String("TRIGGER.SOURCE".to_string()),
     );
@@ -1917,9 +1862,9 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
     let error = strategy
-        .build_configured_entry_order(
+        .build_configured_exit_order(
             instrument_id,
-            OrderSide::Buy,
+            OrderSide::Sell,
             Quantity::new(2.0, 2),
             Price::new(0.40, 2),
             ClientOrderId::from("O-19700101-000000-001-022-1"),
@@ -2877,8 +2822,9 @@ fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
         ManagedPositionOrigin::StrategyEntry,
     );
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
 
     let decision = strategy.exit_submission_decision_at(1_200);
 

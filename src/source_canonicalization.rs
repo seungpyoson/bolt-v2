@@ -563,6 +563,8 @@ pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
             "src/strategies/binary_oracle_edge_taker",
             "src/bolt_v3_book_sizing.rs",
             "src/bolt_v3_executable_edge.rs",
+            "src/bolt_v3_sizing.rs",
+            "src/bolt_v3_taker_updown_signal.rs",
         ],
     },
     GatedSourceRoot {

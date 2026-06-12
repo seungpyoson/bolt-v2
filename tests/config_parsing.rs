@@ -1393,7 +1393,7 @@ fn bolt_v3_archetype_rejects_negative_or_non_finite_risk_lambda() {
     // TOML floats legally admit negative, nan, and inf values. Each loads
     // through serde but makes the runtime sizing path fail soft to a zero
     // size (a silently dead strategy), so each must fail closed at load.
-    for bad_risk_lambda in [-0.5, f64::NAN, f64::INFINITY] {
+    for bad_risk_lambda in [-0.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let mut strategy: BoltV3StrategyConfig = toml::from_str(
             &fs::read_to_string(support::repo_path(
                 "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",

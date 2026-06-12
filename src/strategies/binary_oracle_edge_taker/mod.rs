@@ -2455,6 +2455,21 @@ impl BinaryOracleEdgeTaker {
         Some((uncertainty_band_probability, adjusted_probability_up))
     }
 
+    fn robust_sizing_inputs(
+        &self,
+        expected_ev_per_notional: f64,
+        impact_cap_notional: f64,
+    ) -> RobustSizingInputs {
+        RobustSizingInputs {
+            expected_ev_per_notional,
+            ev_reference_per_notional: self.config.sizing_ev_reference_bps as f64 / BPS_DENOMINATOR,
+            risk_lambda: self.config.risk_lambda,
+            order_notional_target: self.config.order_notional_target,
+            maximum_position_notional: self.config.maximum_position_notional,
+            impact_cap_notional,
+        }
+    }
+
     fn visible_book_notional_cap(&self, side: OutcomeSide) -> Option<f64> {
         let order_side = self.configured_entry_order_side().ok()?;
         let book_depth_side =
@@ -4660,15 +4675,9 @@ impl BinaryOracleEdgeTaker {
             if let (Some(expected_ev_per_notional), Some(book_impact_cap_notional)) =
                 (expected_ev_per_notional, book_impact_cap_notional)
             {
-                evaluation.sized_notional = Some(choose_robust_size(&RobustSizingInputs {
-                    expected_ev_per_notional,
-                    ev_reference_per_notional: self.config.sizing_ev_reference_bps as f64
-                        / BPS_DENOMINATOR,
-                    risk_lambda: self.config.risk_lambda,
-                    order_notional_target: self.config.order_notional_target,
-                    maximum_position_notional: self.config.maximum_position_notional,
-                    impact_cap_notional: book_impact_cap_notional,
-                }));
+                evaluation.sized_notional = Some(choose_robust_size(
+                    &self.robust_sizing_inputs(expected_ev_per_notional, book_impact_cap_notional),
+                ));
             }
             if let Some(sized_notional) = evaluation
                 .sized_notional
@@ -4738,15 +4747,10 @@ impl BinaryOracleEdgeTaker {
                     let sized_expected_ev_per_notional =
                         sized_executable_edge.edge_bps / BPS_DENOMINATOR;
                     evaluation.expected_ev_per_notional = Some(sized_expected_ev_per_notional);
-                    let resized_notional = choose_robust_size(&RobustSizingInputs {
-                        expected_ev_per_notional: sized_expected_ev_per_notional,
-                        ev_reference_per_notional: self.config.sizing_ev_reference_bps as f64
-                            / BPS_DENOMINATOR,
-                        risk_lambda: self.config.risk_lambda,
-                        order_notional_target: self.config.order_notional_target,
-                        maximum_position_notional: self.config.maximum_position_notional,
-                        impact_cap_notional: book_impact_cap_notional,
-                    });
+                    let resized_notional = choose_robust_size(&self.robust_sizing_inputs(
+                        sized_expected_ev_per_notional,
+                        book_impact_cap_notional,
+                    ));
                     if is_positive_finite(resized_notional)
                         && (resized_notional - sized_notional).abs()
                             > notional_float_tolerance(sized_notional)
@@ -4805,10 +4809,33 @@ impl BinaryOracleEdgeTaker {
                         evaluation.sized_worst_case_ev_bps =
                             executable_edge_worst_case_ev_bps(Some(resized_executable_edge));
                         evaluation.sized_executable_edge = Some(resized_executable_edge);
-                        if resized_executable_edge.trade_allowed {
+                        // The accepted (size, edge) pair must be self-consistent:
+                        // the final re-priced edge must itself support the resized
+                        // notional. A cliff-shaped book otherwise oscillates — a
+                        // small first pass fills cheap, the EV jump saturates the
+                        // resize to the full target, and the thin full-target edge
+                        // would be traded at a size it cannot support.
+                        let final_expected_ev_per_notional =
+                            resized_executable_edge.edge_bps / BPS_DENOMINATOR;
+                        let final_supported_notional =
+                            choose_robust_size(&self.robust_sizing_inputs(
+                                final_expected_ev_per_notional,
+                                book_impact_cap_notional,
+                            ));
+                        let resized_notional_supported = resized_notional
+                            <= final_supported_notional
+                                + notional_float_tolerance(final_supported_notional);
+                        if resized_executable_edge.trade_allowed && resized_notional_supported {
                             evaluation.sized_notional = Some(resized_notional);
                             evaluation.expected_ev_per_notional =
-                                Some(resized_executable_edge.edge_bps / BPS_DENOMINATOR);
+                                Some(final_expected_ev_per_notional);
+                        } else if resized_executable_edge.trade_allowed {
+                            evaluation.pricing_blocked_by.push(
+                                EntryPricingBlockReason::SizedNotionalUnsupported(selected_side),
+                            );
+                            evaluation.selected_side = None;
+                            evaluation.sized_notional = None;
+                            evaluation.expected_ev_per_notional = None;
                         } else {
                             push_executable_edge_pricing_block(
                                 &mut evaluation.pricing_blocked_by,
@@ -5736,6 +5763,9 @@ enum EntryPricingBlockReason {
     FeeUnavailable(OutcomeSide),
     ExecutableEntryCostUnavailable(OutcomeSide),
     ExecutableEdgeUnavailable(OutcomeSide, ExecutableEdgeBlockReason),
+    /// The sized re-evaluation oscillated: the final re-priced edge does not
+    /// support the resized notional, so the entry fails closed.
+    SizedNotionalUnsupported(OutcomeSide),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

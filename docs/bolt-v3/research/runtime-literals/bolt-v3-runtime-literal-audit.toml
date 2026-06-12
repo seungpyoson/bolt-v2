@@ -8151,6 +8151,22 @@ reason = '''Repo-relative root path of the shared executable-edge source include
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
 kind = '''string'''
+literal = '''"src/bolt_v3_sizing.rs"'''
+context = '''"src/bolt_v3_sizing.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared strategy-agnostic sizing source included in the binary-oracle strategy source set by the #623 review round; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"src/bolt_v3_taker_updown_signal.rs"'''
+context = '''"src/bolt_v3_taker_updown_signal.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the taker up/down signal source included in the binary-oracle strategy source set by the #623 review round; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
 literal = '''"strategy"'''
 context = '''pub const STRATEGY_KEY: &str = "strategy";'''
 classification = "gated_source_registry_key"

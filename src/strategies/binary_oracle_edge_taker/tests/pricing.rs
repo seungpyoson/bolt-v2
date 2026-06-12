@@ -677,6 +677,30 @@ fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
     );
     assert!(decision.sized_notional.is_some_and(|value| value > 0.0));
     assert_eq!(decision.selected_side, Some(OutcomeSide::Up));
+    // #618 regression pin on the LIVE evaluation path (not just the sizing
+    // unit tests): the accepted notional must be the dollar-anchored robust
+    // size of the final evaluated edge, never the EV fraction reinterpreted
+    // as dollars.
+    let sized_notional = decision
+        .sized_notional
+        .expect("sized notional asserted above");
+    let supported_notional = choose_robust_size(&RobustSizingInputs {
+        expected_ev_per_notional: decision
+            .expected_ev_per_notional
+            .expect("expected EV asserted above"),
+        ev_reference_per_notional: strategy.config.sizing_ev_reference_bps as f64 / BPS_DENOMINATOR,
+        risk_lambda: strategy.config.risk_lambda,
+        order_notional_target: strategy.config.order_notional_target,
+        maximum_position_notional: strategy.config.maximum_position_notional,
+        impact_cap_notional: decision
+            .book_impact_cap_notional
+            .expect("impact cap asserted above"),
+    });
+    assert!(
+        (sized_notional - supported_notional).abs() <= notional_float_tolerance(supported_notional),
+        "live-path sized notional {sized_notional} must equal the robust size \
+         {supported_notional} of the final evaluated edge: {decision:#?}"
+    );
 }
 
 #[test]
@@ -875,6 +899,150 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
             .uncertainty_band_probability
             .is_some_and(|band| (band - 0.5).abs() < 1e-9),
         "final selected-side band should be recomputed from the sized fee: {evaluation:#?}"
+    );
+}
+
+/// PR #623 review reproduction: a cliff-shaped ask book (thin cheap level,
+/// expensive depth behind it) makes the sized re-evaluation oscillate — the
+/// small first-pass size fills entirely at the cheap level, the EV jumps, the
+/// resize saturates to the full target, and the final re-priced edge at the
+/// full target is thin again. Acceptance must never keep a notional larger
+/// than the robust size supported by the final re-priced edge.
+#[test]
+fn sized_acceptance_rejects_notional_unsupported_by_final_repriced_edge() {
+    fn cliff_strategy() -> BinaryOracleEdgeTaker {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.config.order_notional_target = 10.0;
+        strategy.config.maximum_position_notional = 10.0;
+        strategy.config.risk_lambda = 0.5;
+        strategy.config.sizing_ev_reference_bps = 500;
+        strategy.config.vwap_depth_limit_bps = 5_000;
+        strategy.config.book_impact_cap_bps = 5_000;
+        strategy.config.edge_threshold_basis_points = 0;
+        strategy.config.slippage_buffer_bps = 0;
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+        strategy
+            .pricing
+            .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+        strategy
+    }
+    fn set_side_books(strategy: &mut BinaryOracleEdgeTaker, up_asks: &[(f64, f64)], up_bid: f64) {
+        let up_instrument_id = strategy
+            .instrument_id_for_side(OutcomeSide::Up)
+            .expect("UP instrument should be configured");
+        let down_instrument_id = strategy
+            .instrument_id_for_side(OutcomeSide::Down)
+            .expect("DOWN instrument should be configured");
+        let mut up_deltas = vec![
+            (BookAction::Clear, OrderSide::Buy, up_bid, 100.0),
+            (BookAction::Add, OrderSide::Buy, up_bid, 100.0),
+        ];
+        for (price, shares) in up_asks {
+            up_deltas.push((BookAction::Add, OrderSide::Sell, *price, *shares));
+        }
+        assert!(
+            strategy
+                .active
+                .books
+                .update_from_deltas(&book_deltas(up_instrument_id, &up_deltas))
+        );
+        assert!(strategy.active.books.update_from_deltas(&book_deltas(
+            down_instrument_id,
+            &[
+                (BookAction::Clear, OrderSide::Buy, 0.48, 100.0),
+                (BookAction::Add, OrderSide::Buy, 0.48, 100.0),
+                (BookAction::Add, OrderSide::Sell, 0.90, 100.0),
+            ],
+        )));
+    }
+
+    // Phase A — calibrate the worst-case success probability this fixture's
+    // pricing model produces, from a uniform tradeable book.
+    let mut calibration = cliff_strategy();
+    set_side_books(&mut calibration, &[(0.50, 100.0)], 0.49);
+    let calibration_evaluation = calibration.entry_evaluation_at(1_200);
+    assert_eq!(
+        calibration_evaluation.selected_side,
+        Some(OutcomeSide::Up),
+        "calibration book must trade: {calibration_evaluation:#?}"
+    );
+    let fair_probability = calibration_evaluation
+        .fair_probability_up
+        .expect("calibration must expose the fair probability");
+    let band_probability = calibration_evaluation
+        .uncertainty_band_probability
+        .expect("calibration must expose the uncertainty band");
+    let worst_case_probability = fair_probability - band_probability;
+    assert!(
+        (0.52..=0.97).contains(&worst_case_probability),
+        "calibration produced an unusable worst-case probability \
+         {worst_case_probability}: {calibration_evaluation:#?}"
+    );
+
+    // Phase B — build the cliff: a thin cheap ask the first-pass size fills
+    // entirely, and a deep level priced so the full-target VWAP keeps a small
+    // positive edge that supports far less than the full target.
+    let target_notional = 10.0;
+    let thin_notional = 2.0;
+    let cheap_cents = ((worst_case_probability - 0.10) * 100.0).floor();
+    let cheap = cheap_cents / 100.0;
+    let mut deep = None;
+    for cents in (cheap_cents as i64 + 1)..=99 {
+        let price = cents as f64 / 100.0;
+        let full_vwap =
+            target_notional / (thin_notional / cheap + (target_notional - thin_notional) / price);
+        let preliminary_ev = (worst_case_probability - full_vwap) / full_vwap;
+        if preliminary_ev > 0.0005 && preliminary_ev < 0.0100 {
+            deep = Some(price);
+            break;
+        }
+    }
+    let deep = deep.expect("a 2-decimal deep level must express the sizing cliff");
+
+    let mut strategy = cliff_strategy();
+    set_side_books(
+        &mut strategy,
+        &[(cheap, thin_notional / cheap), (deep, 100.0)],
+        cheap - 0.01,
+    );
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert!(
+        evaluation.sized_executable_edge.is_some(),
+        "scenario must engage the sized re-evaluation loop: {evaluation:#?}"
+    );
+    if let (Some(sized_notional), Some(final_ev_per_notional), Some(impact_cap_notional)) = (
+        evaluation.sized_notional,
+        evaluation.expected_ev_per_notional,
+        evaluation.book_impact_cap_notional,
+    ) {
+        let supported_notional = choose_robust_size(&RobustSizingInputs {
+            expected_ev_per_notional: final_ev_per_notional,
+            ev_reference_per_notional: strategy.config.sizing_ev_reference_bps as f64
+                / BPS_DENOMINATOR,
+            risk_lambda: strategy.config.risk_lambda,
+            order_notional_target: strategy.config.order_notional_target,
+            maximum_position_notional: strategy.config.maximum_position_notional,
+            impact_cap_notional,
+        });
+        assert!(
+            sized_notional <= supported_notional + notional_float_tolerance(supported_notional),
+            "accepted sized_notional {sized_notional} exceeds the robust size \
+             {supported_notional} supported by the final re-priced edge: {evaluation:#?}"
+        );
+    }
+    assert_eq!(
+        evaluation.selected_side, None,
+        "the cliff book oscillates, so the entry must fail closed: {evaluation:#?}"
+    );
+    assert!(
+        evaluation
+            .pricing_blocked_by
+            .contains(&EntryPricingBlockReason::SizedNotionalUnsupported(
+                OutcomeSide::Up
+            )),
+        "the fail-closed outcome must be evidenced as a pricing block: {evaluation:#?}"
     );
 }
 

@@ -43,11 +43,14 @@ pub(crate) fn choose_robust_size(inputs: &RobustSizingInputs) -> f64 {
     if !is_non_negative_finite(inputs.risk_lambda) {
         return ZERO_F64;
     }
-    if inputs.risk_lambda == ZERO_F64 {
-        return cap;
-    }
+    // Every declared input is validated unconditionally, even on paths that
+    // do not consume it: the zero-lambda escape hatch still requires a valid
+    // EV reference so an invalid input can never select the cap.
     if !is_positive_finite(inputs.ev_reference_per_notional) {
         return ZERO_F64;
+    }
+    if inputs.risk_lambda == ZERO_F64 {
+        return cap;
     }
 
     // Dimensional contract: the EV fraction only scales the operator's dollar
@@ -219,6 +222,26 @@ mod tests {
                     expected_ev_per_notional: 0.015,
                     ev_reference_per_notional,
                     risk_lambda: 0.5,
+                    order_notional_target: 5.0,
+                    maximum_position_notional: 10.0,
+                    impact_cap_notional: 100.0,
+                }),
+                0.0
+            );
+        }
+    }
+
+    #[test]
+    fn robust_sizing_fails_closed_on_invalid_ev_reference_even_with_zero_lambda() {
+        // PR #623 review reproduction: every declared input is validated
+        // unconditionally — the zero-lambda escape hatch must not skip the
+        // ev_reference guard and return the cap on an invalid reference.
+        for ev_reference_per_notional in [0.0, -0.05, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                choose_robust_size(&RobustSizingInputs {
+                    expected_ev_per_notional: 0.015,
+                    ev_reference_per_notional,
+                    risk_lambda: 0.0,
                     order_notional_target: 5.0,
                     maximum_position_notional: 10.0,
                     impact_cap_notional: 100.0,

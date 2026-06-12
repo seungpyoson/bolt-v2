@@ -250,8 +250,14 @@ mod tests {
     // taker-only signal module into `src/bolt_v3_sizing.rs`, then once more
     // after that signal module was renamed `bolt_v3_taker_updown_signal` to
     // carry its up/down market-family binding in the name.
+    // Re-derived again by the #623 review round: the sized re-evaluation now
+    // fails closed when the final re-priced edge does not support the resized
+    // notional, and the gated source set grew to include the moved sizing and
+    // signal modules (`src/bolt_v3_sizing.rs`,
+    // `src/bolt_v3_taker_updown_signal.rs`) so the digest covers all
+    // strategy-critical decision math.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "d9c46f3bececf0a9f23dfcbb0f2444d2a29dac61eacec8e96645846b3bc92116";
+        "d3ba79a6b671af8156bd1659df114ee7032b58253e5315d3287c2289ba163898";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -373,6 +379,8 @@ mod tests {
                 "src/strategies/binary_oracle_edge_taker",
                 "src/bolt_v3_book_sizing.rs",
                 "src/bolt_v3_executable_edge.rs",
+                "src/bolt_v3_sizing.rs",
+                "src/bolt_v3_taker_updown_signal.rs",
             ]
         );
     }

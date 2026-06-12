@@ -30,13 +30,14 @@ These repo-level rules are in addition to any higher-level agent instructions.
 
 ## Remote-First Rust Verification
 
-- Do not run local compile-heavy Rust verification by default: no local `just test`, `just clippy`, `just build`, `just check-aarch64`, full `just source-fence`, `just bte-test`, `just bte-clippy`, `just bte-build`, or raw `cargo build/test/clippy/check/run/nextest/zigbuild`.
+- Do not run local compile-heavy Rust verification by default: no local managed Rust test/build/clippy recipes through `just`, and no raw cargo subcommands refused by `ci/rust-verification.toml` `[local_compile_policy]`.
 - Use local non-compile gates for fast feedback: `just fmt-check`, `just deny`, `just ci-lint-workflow`, Python verifiers, and `just source-fence-static`.
 - For compile/test/clippy proof: commit, push, ensure the branch has an open or draft PR, then run `just verify-remote` and use exact-head PR CI evidence from Ubicloud/GitHub Actions.
 - `just verify-remote` waits for all reported PR checks on the exact head SHA, not a local subset of workflow jobs.
 - Human operator break-glass exists for exceptional local repro and live/operator lanes only. Agents must not use it as a normal verification path.
-- Enforcement boundary: repo tooling gates cooperative paths through `just`, `scripts/rust_verification.py`, and `.no-mistakes.yaml`; raw shell `cargo ...` remains outside this repo's control until external agent hooks intercept it.
+- Enforcement boundary: repo tooling gates cooperative paths through `just`, `scripts/rust_verification.py`, and `.no-mistakes.yaml`; standard PATH `cargo ...` is guarded by the machine-level cargo shim, which reads this repo's `ci/rust-verification.toml` `[local_compile_policy]`.
 - CPU-heavy local verifier lanes self-serialize: every `scripts/verify_*.py` / `scripts/test_*.py` entry point acquires the per-repo machine-level lane lock declared in `ci/rust-verification.toml` `[local_lane_policy]` before doing work. Concurrent local runs queue with stderr heartbeats and fail loud at the policy timeout; CI (`allowed_ci_env`) bypasses the lock; a holder that is a process ancestor passes through. Coverage drift is a CI failure via `scripts/verify_lane_governance.py` in `source-fence-static`.
+- Residual local bypasses remain outside the accidental-use guard: absolute-path cargo invocation, `rustup run <toolchain> cargo ...`, cross-repo invocations issued outside this repo such as `cargo --manifest-path <repo>/Cargo.toml ...` or `cargo -C <repo> ...`, already-running daemons with old environments, non-no-mistakes daemon managers whose `PATH` does not include the shim directory, processes that never load shell startup files, and direct `rustc` execution.
 
 ## Review Bar
 

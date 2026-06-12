@@ -1773,23 +1773,26 @@ fn deduplicate_projection_products(
     products: Vec<IvQueryProduct>,
     as_of_ns: UnixNanos,
 ) -> Vec<IvQueryProduct> {
-    let mut selected = BTreeMap::<ProjectionProductDedupKey, IvQueryProduct>::new();
+    let mut selected = Vec::new();
+    let mut selected_indices = BTreeMap::<ProjectionProductDedupKey, usize>::new();
     for product in products {
         let Some(key) = projection_product_dedup_key(&product) else {
             continue;
         };
-        match selected.entry(key) {
+        match selected_indices.entry(key) {
             std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(product);
+                entry.insert(selected.len());
+                selected.push(product);
             }
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
-                if projection_product_is_closer(&product, entry.get(), as_of_ns) {
-                    entry.insert(product);
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                let selected_index = *entry.get();
+                if projection_product_is_closer(&product, &selected[selected_index], as_of_ns) {
+                    selected[selected_index] = product;
                 }
             }
         }
     }
-    selected.into_values().collect()
+    selected
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

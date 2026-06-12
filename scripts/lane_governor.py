@@ -37,7 +37,65 @@ class LaneLockTimeout(SystemExit):
     """Raised (exit code 1) when the lane lock is not acquired in time."""
 
 
+def _procfs_parent_pid(pid: int) -> int | None:
+    stat_path = Path("/proc") / str(pid) / "stat"
+    try:
+        raw = stat_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    end = raw.rfind(")")
+    if end < 0:
+        return None
+    fields = raw[end + 2 :].split()
+    if len(fields) < 2:
+        return None
+    try:
+        value = int(fields[1])
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _darwin_parent_pid(pid: int) -> int | None:
+    if sys.platform != "darwin":
+        return None
+    try:
+        import ctypes
+        import ctypes.util
+        import struct
+
+        libc_path = ctypes.util.find_library("c")
+        if libc_path is None:
+            return None
+        libc = ctypes.CDLL(libc_path, use_errno=True)
+        proc_pidinfo = libc.proc_pidinfo
+        proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        proc_pidinfo.restype = ctypes.c_int
+        buffer = ctypes.create_string_buffer(256)
+        returned = proc_pidinfo(pid, 3, 0, buffer, ctypes.sizeof(buffer))
+    except (AttributeError, OSError):
+        return None
+    if returned < 20:
+        return None
+    value = struct.unpack_from("I", buffer.raw, 16)[0]
+    return value if value > 0 else None
+
+
 def _parent_pid(pid: int) -> int | None:
+    if pid == os.getpid():
+        return os.getppid()
+    procfs_parent = _procfs_parent_pid(pid)
+    if procfs_parent is not None:
+        return procfs_parent
+    darwin_parent = _darwin_parent_pid(pid)
+    if darwin_parent is not None:
+        return darwin_parent
     try:
         completed = subprocess.run(
             ["ps", "-o", "ppid=", "-p", str(pid)],
@@ -65,7 +123,7 @@ def holder_is_ancestor(holder_pid: int) -> bool:
         if pid == holder_pid:
             return True
         seen.add(pid)
-        pid = os.getppid() if pid == os.getpid() else _parent_pid(pid)
+        pid = _parent_pid(pid)
     return False
 
 

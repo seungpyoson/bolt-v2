@@ -152,6 +152,51 @@ print(completed.stdout, end="")
 sys.stderr.write(completed.stderr)
 """
 
+GRANDCHILD_RUNNER = """
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+t0 = time.monotonic()
+lane_governor.acquire(
+    "grandchild-runner", lock_dir=sys.argv[2], honor_ci_env=False,
+    acquire_timeout_seconds=2, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+print("grandchild-done", time.monotonic() - t0)
+"""
+
+INTERMEDIATE_CHILD_RUNNER = """
+import subprocess, sys
+scripts_dir, lock_dir, grandchild_code = sys.argv[1], sys.argv[2], sys.argv[3]
+completed = subprocess.run(
+    [sys.executable, "-c", grandchild_code, scripts_dir, lock_dir],
+    env={"PATH": "/usr/bin:/bin"}, text=True,
+    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+)
+print("grandchild-rc", completed.returncode)
+print(completed.stdout, end="")
+sys.stderr.write(completed.stderr)
+"""
+
+GRANDPARENT_CHILD_RUNNER = """
+import subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+scripts_dir, lock_dir = sys.argv[1], sys.argv[2]
+intermediate_code, grandchild_code = sys.argv[3], sys.argv[4]
+handle = lane_governor.acquire(
+    "grandparent-runner", lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=30, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+completed = subprocess.run(
+    [sys.executable, "-c", intermediate_code, scripts_dir, lock_dir, grandchild_code],
+    env={"PATH": "/usr/bin:/bin"}, text=True,
+    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+)
+print("middle-rc", completed.returncode)
+print(completed.stdout, end="")
+sys.stderr.write(completed.stderr)
+"""
+
 CI_RUNNER = """
 import sys, time
 sys.path.insert(0, sys.argv[1])
@@ -258,6 +303,18 @@ def test_scrubbed_env_child_reenters_while_parent_holds() -> None:
         assert elapsed < 5.0, f"child must pass through re-entrantly, took {elapsed:.1f}s"
 
 
+def test_scrubbed_env_grandchild_reenters_while_grandparent_holds() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        proc = _spawn(GRANDPARENT_CHILD_RUNNER, tmp, INTERMEDIATE_CHILD_RUNNER, GRANDCHILD_RUNNER)
+        out, err = proc.communicate(timeout=40)
+        assert proc.returncode == 0, err
+        assert "middle-rc 0" in out, f"intermediate child must succeed, got: {out}\n{err}"
+        assert "grandchild-rc 0" in out, f"grandchild must succeed, got: {out}\n{err}"
+        line = [l for l in out.splitlines() if l.startswith("grandchild-done")][0]
+        elapsed = float(line.split()[1])
+        assert elapsed < 5.0, f"grandchild must pass through re-entrantly, took {elapsed:.1f}s"
+
+
 def test_ci_env_bypasses_lock() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         sentinel = Path(tmp) / "held"
@@ -305,6 +362,7 @@ def main() -> int:
         test_holder_metadata_written,
         test_timeout_fails_loud_with_holder_info,
         test_scrubbed_env_child_reenters_while_parent_holds,
+        test_scrubbed_env_grandchild_reenters_while_grandparent_holds,
         test_ci_env_bypasses_lock,
         test_help_invocation_bypasses_lock,
     ]

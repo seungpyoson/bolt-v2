@@ -17,10 +17,14 @@ use backtesting_vertical_slice::{
         CanonicalBarRow, CanonicalBarSpec, CanonicalBarsTable, NORMALIZED_SCHEMA_VERSION,
     },
     canonical_trades::TradesPartition,
-    catalog_projection::{SpotInstrumentSpec, project_canonical_bars_to_catalog, read_back_bars},
+    catalog_projection::{
+        BinaryOptionInstrumentKind, BinaryOptionInstrumentSpec, SpotInstrumentSpec,
+        project_canonical_bars_to_catalog, read_back_bars,
+    },
     source_proof::SourceProofFidelityClass,
 };
-use nautilus_model::{enums::BarAggregation, types::Price};
+use nautilus_model::{enums::BarAggregation, instruments::InstrumentAny, types::Price};
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
 const NT_INSTRUMENT_ID: &str = "BASEQUOTE.TESTVENUE";
 const INSTRUMENT_ID: &str = "BASEQUOTE";
@@ -39,6 +43,37 @@ fn spec() -> SpotInstrumentSpec {
         max_quantity: "1000000".to_string(),
         min_notional: "1".to_string(),
         max_notional: "100000000".to_string(),
+    }
+}
+
+/// A binary-option spec carrying the SAME nt_instrument_id as the spot spec, so
+/// the same synthetic prediction-market bars project through NT's
+/// `BinaryOption` constructor via the generic catalog seam. Binary-option bar
+/// replay is a real family (the in-module `bars_table()` fixture is already
+/// prediction-market shaped).
+fn binary_option_spec() -> BinaryOptionInstrumentSpec {
+    BinaryOptionInstrumentSpec {
+        instrument_kind: BinaryOptionInstrumentKind::BinaryOption,
+        nt_instrument_id: NT_INSTRUMENT_ID.to_string(),
+        raw_symbol: INSTRUMENT_ID.to_string(),
+        asset_class: "ALTERNATIVE".to_string(),
+        currency: "USDC".to_string(),
+        activation_time_nanos: 1_700_000_000_000_000_000,
+        expiration_time_nanos: 1_700_086_400_000_000_000,
+        price_increment: "0.01".to_string(),
+        size_increment: "0.001".to_string(),
+        outcome: Some("Yes".to_string()),
+        description: Some("Bounded binary option fixture".to_string()),
+        max_quantity: Some("1000000".to_string()),
+        min_quantity: Some("0.001".to_string()),
+        max_notional: Some("100000000".to_string()),
+        min_notional: Some("1".to_string()),
+        max_price: Some("1.00".to_string()),
+        min_price: Some("0.01".to_string()),
+        margin_init: Some("0".to_string()),
+        margin_maint: Some("0".to_string()),
+        maker_fee: Some("0".to_string()),
+        taker_fee: Some("0".to_string()),
     }
 }
 
@@ -141,6 +176,58 @@ fn bars_round_trip_through_nt_catalog() {
         assert_eq!(bar.ts_event.as_u64(), row.close_time as u64);
         assert_eq!(bar.ts_init.as_u64(), row.close_time as u64);
         // Compare OHLCV numerically: Display renders at instrument precision.
+        assert_eq!(
+            bar.open.as_decimal(),
+            Price::from(row.open.as_str()).as_decimal()
+        );
+        assert_eq!(
+            bar.high.as_decimal(),
+            Price::from(row.high.as_str()).as_decimal()
+        );
+        assert_eq!(
+            bar.low.as_decimal(),
+            Price::from(row.low.as_str()).as_decimal()
+        );
+        assert_eq!(
+            bar.close.as_decimal(),
+            Price::from(row.close.as_str()).as_decimal()
+        );
+        assert_eq!(
+            bar.volume.as_decimal(),
+            nautilus_model::types::Quantity::from(row.volume.as_str()).as_decimal()
+        );
+    }
+}
+
+#[test]
+fn bars_round_trip_through_binary_option_spec() {
+    // The same synthetic prediction-market bars must project through the generic
+    // catalog seam when bound to a BinaryOption instrument, proving binary-option
+    // bar replay reaches the catalog exactly like spot/perp/future.
+    let table = bars_table();
+    let dir = tempfile::TempDir::new().expect("temp dir");
+
+    let projection = project_canonical_bars_to_catalog(&table, &binary_option_spec(), dir.path())
+        .expect("project bars via binary option spec");
+    assert_eq!(projection.trade_count, table.rows.len());
+    assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
+    assert!(!projection.catalog_hash.is_empty());
+
+    // The catalog instrument is an NT BinaryOption (not a CurrencyPair).
+    let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let instruments = catalog
+        .query_instruments(Some(&[NT_INSTRUMENT_ID.to_string()]))
+        .expect("query instruments");
+    assert_eq!(instruments.len(), 1);
+    assert!(matches!(&instruments[0], InstrumentAny::BinaryOption(_)));
+
+    let mut loaded = read_back_bars(dir.path(), NT_INSTRUMENT_ID).expect("read back");
+    assert_eq!(loaded.len(), table.rows.len());
+    loaded.sort_by_key(|bar| bar.ts_event.as_u64());
+    for (bar, row) in loaded.iter().zip(table.rows.iter()) {
+        assert_eq!(bar.instrument_id().to_string(), NT_INSTRUMENT_ID);
+        assert_eq!(bar.ts_event.as_u64(), row.close_time as u64);
+        assert_eq!(bar.ts_init.as_u64(), row.close_time as u64);
         assert_eq!(
             bar.open.as_decimal(),
             Price::from(row.open.as_str()).as_decimal()

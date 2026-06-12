@@ -39,8 +39,9 @@ use backtesting_vertical_slice::{
     },
     canonical_trades::{CanonicalInstrumentIdentity, CanonicalTradesTable, CsvTimestampUnit},
     catalog_projection::{
-        SpotInstrumentSpec, project_canonical_order_book_deltas_to_catalog,
-        project_canonical_trades_to_catalog, read_back_order_book_deltas, read_back_trade_ticks,
+        BinaryOptionInstrumentKind, BinaryOptionInstrumentSpec, SpotInstrumentSpec,
+        project_canonical_order_book_deltas_to_catalog, project_canonical_trades_to_catalog,
+        read_back_order_book_deltas, read_back_trade_ticks,
     },
     source_proof::{
         AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
@@ -52,8 +53,10 @@ use backtesting_vertical_slice::{
 };
 use nautilus_model::{
     enums::{AggressorSide, BookAction, OrderSide, RecordFlag},
+    instruments::InstrumentAny,
     types::{Price, Quantity},
 };
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use parquet::arrow::ArrowWriter;
 
 const NT_INSTRUMENT_ID: &str = "BASEQUOTE.TESTVENUE";
@@ -74,6 +77,37 @@ fn spec() -> SpotInstrumentSpec {
         max_quantity: "1000000".to_string(),
         min_notional: "1".to_string(),
         max_notional: "100000000".to_string(),
+    }
+}
+
+/// A binary-option spec carrying the SAME nt_instrument_id as the spot spec, so
+/// the SAME accepted prediction-market parquet object — once normalized —
+/// projects through NT's `BinaryOption` constructor end-to-end (parquet ->
+/// normalize -> project with a BinaryOption spec). The accepted dataset's
+/// fixture type is already `BinaryOption`.
+fn binary_option_spec() -> BinaryOptionInstrumentSpec {
+    BinaryOptionInstrumentSpec {
+        instrument_kind: BinaryOptionInstrumentKind::BinaryOption,
+        nt_instrument_id: NT_INSTRUMENT_ID.to_string(),
+        raw_symbol: INSTRUMENT_ID.to_string(),
+        asset_class: "ALTERNATIVE".to_string(),
+        currency: "USDC".to_string(),
+        activation_time_nanos: 1_700_000_000_000_000_000,
+        expiration_time_nanos: 1_700_086_400_000_000_000,
+        price_increment: "0.01".to_string(),
+        size_increment: "0.001".to_string(),
+        outcome: Some("Yes".to_string()),
+        description: Some("Bounded binary option fixture".to_string()),
+        max_quantity: Some("1000000".to_string()),
+        min_quantity: Some("0.001".to_string()),
+        max_notional: Some("100000000".to_string()),
+        min_notional: Some("1".to_string()),
+        max_price: Some("1.00".to_string()),
+        min_price: Some("0.01".to_string()),
+        margin_init: Some("0".to_string()),
+        margin_maint: Some("0".to_string()),
+        maker_fee: Some("0".to_string()),
+        taker_fee: Some("0".to_string()),
     }
 }
 
@@ -420,6 +454,54 @@ fn event_stream_deltas_round_trip_to_catalog() {
                 OrderSide::Sell
             };
             assert_eq!(delta.order.side, expected_side);
+        }
+    }
+}
+
+#[test]
+fn event_stream_deltas_round_trip_through_binary_option_spec() {
+    // End-to-end: an accepted prediction-market parquet object normalizes, then
+    // projects through the generic catalog seam bound to a BinaryOption
+    // instrument — the same path spot/perp/future already prove, now for the
+    // binary-option family.
+    let (_accepted, table, _trades) = normalized();
+    assert_eq!(table.rows.len(), 5);
+    assert_eq!(table.fidelity_class, SourceProofFidelityClass::L2Replay);
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let projection =
+        project_canonical_order_book_deltas_to_catalog(&table, &binary_option_spec(), dir.path())
+            .expect("project deltas via binary option spec");
+    assert_eq!(projection.trade_count, table.rows.len());
+    assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
+
+    // The catalog instrument is an NT BinaryOption (not a CurrencyPair).
+    let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let instruments = catalog
+        .query_instruments(Some(&[NT_INSTRUMENT_ID.to_string()]))
+        .expect("query instruments");
+    assert_eq!(instruments.len(), 1);
+    assert!(matches!(&instruments[0], InstrumentAny::BinaryOption(_)));
+
+    let mut loaded =
+        read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back deltas");
+    assert_eq!(loaded.len(), table.rows.len());
+    loaded.sort_by_key(|delta| delta.sequence);
+    for (delta, row) in loaded.iter().zip(table.rows.iter()) {
+        assert_eq!(delta.instrument_id.to_string(), NT_INSTRUMENT_ID);
+        assert_eq!(delta.sequence, row.sequence);
+        assert_eq!(delta.flags, row.flags);
+        if row.action == DeltaAction::Clear.as_str() {
+            assert_eq!(delta.action, BookAction::Clear);
+        } else {
+            assert_eq!(
+                delta.order.price.as_decimal(),
+                Price::from(row.price.as_str()).as_decimal()
+            );
+            assert_eq!(
+                delta.order.size.as_decimal(),
+                Quantity::from(row.size.as_str()).as_decimal()
+            );
         }
     }
 }

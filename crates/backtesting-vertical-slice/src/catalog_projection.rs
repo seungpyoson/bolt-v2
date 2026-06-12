@@ -27,7 +27,7 @@ use nautilus_model::{
         Bar, BarSpecification, BarType, CatalogPathPrefix, OrderBookDelta, TradeTick,
         order::BookOrder,
     },
-    enums::{AggregationSource, AggressorSide, BookAction, OrderSide, PriceType},
+    enums::{AggregationSource, AggressorSide, AssetClass, BookAction, OrderSide, PriceType},
     identifiers::{InstrumentId, Symbol, TradeId},
     instruments::{
         BinaryOption, CryptoFuture, CryptoPerpetual, CurrencyPair, Instrument, InstrumentAny,
@@ -38,6 +38,7 @@ use nautilus_persistence::backend::catalog::{ParquetDataCatalog, urisafe_instrum
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use ustr::Ustr;
 
 use super::{
     canonical_market_data::{
@@ -91,6 +92,7 @@ pub struct SpotInstrumentSpec {
 pub enum CatalogInstrumentSpec {
     CryptoPerpetual(CryptoPerpetualInstrumentSpec),
     CryptoFuture(CryptoFutureInstrumentSpec),
+    BinaryOption(BinaryOptionInstrumentSpec),
     Spot(SpotInstrumentSpec),
 }
 
@@ -99,7 +101,7 @@ impl CatalogInstrumentSpec {
     pub(crate) fn spot_mut(&mut self) -> Option<&mut SpotInstrumentSpec> {
         match self {
             Self::Spot(spec) => Some(spec),
-            Self::CryptoPerpetual(_) | Self::CryptoFuture(_) => None,
+            Self::CryptoPerpetual(_) | Self::CryptoFuture(_) | Self::BinaryOption(_) => None,
         }
     }
 }
@@ -176,6 +178,52 @@ pub struct CryptoFutureInstrumentSpec {
     pub taker_fee: Option<String>,
 }
 
+/// TOML discriminator for an NT [`BinaryOption`] instrument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BinaryOptionInstrumentKind {
+    BinaryOption,
+}
+
+/// Accepted binary-option metadata needed to build NT's [`BinaryOption`]
+/// instrument.
+///
+/// Prediction-market archives (emitted by the parquet event-stream and
+/// JSONL/tar snapshot adapters) carry an outcome-scoped binary contract rather
+/// than a base/quote pair: one settlement currency holds the contract value and
+/// the activation/expiration window bounds the resolvable epoch. Every field is
+/// a decimal/identifier string parsed exactly like the other specs parse
+/// theirs (fail-loud, never a panic); `price_precision`/`size_precision` are
+/// derived from the parsed increments only, per the module's
+/// single-source-of-precision rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOptionInstrumentSpec {
+    pub instrument_kind: BinaryOptionInstrumentKind,
+    pub nt_instrument_id: String,
+    pub raw_symbol: String,
+    /// NT [`AssetClass`] code, for example `ALTERNATIVE`.
+    pub asset_class: String,
+    /// Settlement (and quote) currency code, for example `USDC`.
+    pub currency: String,
+    pub activation_time_nanos: u64,
+    pub expiration_time_nanos: u64,
+    pub price_increment: String,
+    pub size_increment: String,
+    pub outcome: Option<String>,
+    pub description: Option<String>,
+    pub max_quantity: Option<String>,
+    pub min_quantity: Option<String>,
+    pub max_notional: Option<String>,
+    pub min_notional: Option<String>,
+    pub max_price: Option<String>,
+    pub min_price: Option<String>,
+    pub margin_init: Option<String>,
+    pub margin_maint: Option<String>,
+    pub maker_fee: Option<String>,
+    pub taker_fee: Option<String>,
+}
+
 /// A source of accepted metadata that can build one NT instrument.
 pub trait CatalogInstrumentSpecSource {
     /// Build the native NT instrument variant for this spec.
@@ -201,6 +249,7 @@ impl CatalogInstrumentSpecSource for CatalogInstrumentSpec {
                 build_crypto_perpetual(spec)?,
             )),
             Self::CryptoFuture(spec) => Ok(InstrumentAny::CryptoFuture(build_crypto_future(spec)?)),
+            Self::BinaryOption(spec) => Ok(InstrumentAny::BinaryOption(build_binary_option(spec)?)),
         }
     }
 }
@@ -313,6 +362,33 @@ fn parse_venue_currency(value: &str, label: &str) -> Result<Currency> {
     let code = value.trim();
     ensure!(!code.is_empty(), "{label} must not be empty");
     Ok(Currency::get_or_create_crypto(code))
+}
+
+fn parse_asset_class(value: &str, label: &str) -> Result<AssetClass> {
+    let code = value.trim();
+    ensure!(!code.is_empty(), "{label} must not be empty");
+    AssetClass::from_str(code)
+        .map_err(|error| anyhow::anyhow!("invalid {label} {value:?}: {error}"))
+}
+
+fn parse_optional_ustr(value: Option<&str>, label: &str) -> Result<Option<Ustr>> {
+    value
+        .map(|value| {
+            let text = value.trim();
+            ensure!(!text.is_empty(), "{label} must not be empty when present");
+            Ok(Ustr::from(text))
+        })
+        .transpose()
+}
+
+fn parse_optional_money(
+    value: Option<&str>,
+    currency: Currency,
+    label: &str,
+) -> Result<Option<Money>> {
+    value
+        .map(|value| parse_money(value, currency, label))
+        .transpose()
 }
 
 fn parse_price(value: &str, label: &str) -> Result<Price> {
@@ -523,6 +599,67 @@ pub fn build_crypto_future(spec: &CryptoFutureInstrumentSpec) -> Result<CryptoFu
     })
 }
 
+/// Build NT's [`BinaryOption`] from accepted prediction-market metadata.
+///
+/// Mirrors [`build_currency_pair`]'s structure: every constructor argument is
+/// parsed through a checked/fail-loud helper, and price/size precision derive
+/// from the parsed increments only (the module's single-source-of-precision
+/// rule). The single settlement `currency` is NautilusTrader's contract
+/// currency for a binary option (it has no base/quote pair); the
+/// activation/expiration window bounds the resolvable epoch.
+///
+/// # Errors
+///
+/// Returns an error if accepted metadata cannot construct a checked NT binary
+/// option.
+pub fn build_binary_option(spec: &BinaryOptionInstrumentSpec) -> Result<BinaryOption> {
+    let instrument_id = parse_instrument_id(&spec.nt_instrument_id)?;
+    let raw_symbol = parse_raw_symbol(&spec.raw_symbol)?;
+    let asset_class = parse_asset_class(&spec.asset_class, "asset_class")?;
+    let currency = parse_venue_currency(&spec.currency, "currency")?;
+    ensure!(
+        spec.activation_time_nanos < spec.expiration_time_nanos,
+        "activation_time_nanos must be before expiration_time_nanos"
+    );
+    let price_increment = parse_price(&spec.price_increment, "price_increment")?;
+    let size_increment = parse_quantity(&spec.size_increment, "size_increment")?;
+    let price_precision = price_increment.precision;
+    let size_precision = size_increment.precision;
+    BinaryOption::new_checked(
+        instrument_id,
+        raw_symbol,
+        asset_class,
+        currency,
+        UnixNanos::from(spec.activation_time_nanos),
+        UnixNanos::from(spec.expiration_time_nanos),
+        price_precision,
+        size_precision,
+        price_increment,
+        size_increment,
+        parse_optional_ustr(spec.outcome.as_deref(), "outcome")?,
+        parse_optional_ustr(spec.description.as_deref(), "description")?,
+        parse_optional_quantity(spec.max_quantity.as_deref(), "max_quantity")?,
+        parse_optional_quantity(spec.min_quantity.as_deref(), "min_quantity")?,
+        parse_optional_money(spec.max_notional.as_deref(), currency, "max_notional")?,
+        parse_optional_money(spec.min_notional.as_deref(), currency, "min_notional")?,
+        parse_optional_price(spec.max_price.as_deref(), "max_price")?,
+        parse_optional_price(spec.min_price.as_deref(), "min_price")?,
+        parse_optional_decimal(spec.margin_init.as_deref(), "margin_init")?,
+        parse_optional_decimal(spec.margin_maint.as_deref(), "margin_maint")?,
+        parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
+        parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
+        None,
+        UnixNanos::default(),
+        UnixNanos::default(),
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "invalid binary option for {:?}: {error}",
+            spec.nt_instrument_id
+        )
+    })
+}
+
 fn rescaled(value: &str, precision: u8) -> Result<String> {
     let mut decimal = Decimal::from_str(value).with_context(|| format!("decimal {value:?}"))?;
     decimal.normalize_assign();
@@ -684,6 +821,12 @@ fn widen_instrument_precision_for_data(
             inner.size_precision = size_increment.precision;
         }
         InstrumentAny::CryptoFuture(inner) => {
+            inner.price_increment = price_increment;
+            inner.size_increment = size_increment;
+            inner.price_precision = price_increment.precision;
+            inner.size_precision = size_increment.precision;
+        }
+        InstrumentAny::BinaryOption(inner) => {
             inner.price_increment = price_increment;
             inner.size_increment = size_increment;
             inner.price_precision = price_increment.precision;
@@ -2011,6 +2154,32 @@ mod tests {
         })
     }
 
+    fn binary_option_spec() -> CatalogInstrumentSpec {
+        CatalogInstrumentSpec::BinaryOption(BinaryOptionInstrumentSpec {
+            instrument_kind: BinaryOptionInstrumentKind::BinaryOption,
+            nt_instrument_id: "YES.TESTVENUE".to_string(),
+            raw_symbol: "YES".to_string(),
+            asset_class: "ALTERNATIVE".to_string(),
+            currency: "USDC".to_string(),
+            activation_time_nanos: 1_700_000_000_000_000_000,
+            expiration_time_nanos: 1_700_086_400_000_000_000,
+            price_increment: "0.01".to_string(),
+            size_increment: "0.001".to_string(),
+            outcome: Some("Yes".to_string()),
+            description: Some("Bounded binary option fixture".to_string()),
+            max_quantity: Some("1000000".to_string()),
+            min_quantity: Some("1".to_string()),
+            max_notional: Some("100000000".to_string()),
+            min_notional: Some("1".to_string()),
+            max_price: Some("1.00".to_string()),
+            min_price: Some("0.01".to_string()),
+            margin_init: Some("0".to_string()),
+            margin_maint: Some("0".to_string()),
+            maker_fee: Some("0".to_string()),
+            taker_fee: Some("0".to_string()),
+        })
+    }
+
     fn accepted_dataset() -> AcceptedDataset {
         let checks = RequiredChecks {
             source_access: RequiredCheck::passed("manifest"),
@@ -2304,6 +2473,141 @@ mod tests {
         assert!(future.activation_ns < future.expiration_ns);
     }
 
+    fn binary_option_inner() -> BinaryOptionInstrumentSpec {
+        let CatalogInstrumentSpec::BinaryOption(spec) = binary_option_spec() else {
+            panic!("expected BinaryOption fixture");
+        };
+        spec
+    }
+
+    #[test]
+    fn builds_binary_option_from_accepted_spec() {
+        let instrument = build_catalog_instrument(&binary_option_spec()).expect("instrument");
+        let InstrumentAny::BinaryOption(option) = instrument else {
+            panic!("expected BinaryOption");
+        };
+        assert_eq!(option.id().to_string(), "YES.TESTVENUE");
+        assert_eq!(option.raw_symbol.to_string(), "YES");
+        assert_eq!(option.asset_class, AssetClass::Alternative);
+        // Binary options carry one settlement/quote currency, not a base/quote
+        // pair.
+        assert_eq!(option.currency.to_string(), "USDC");
+        assert_eq!(option.base_currency(), None);
+        assert_eq!(option.quote_currency().to_string(), "USDC");
+        assert_eq!(option.settlement_currency().to_string(), "USDC");
+        assert_eq!(option.activation_ns.as_u64(), 1_700_000_000_000_000_000);
+        assert_eq!(option.expiration_ns.as_u64(), 1_700_086_400_000_000_000);
+        // Precision derives from the increments only (single-source-of-precision).
+        assert_eq!(option.price_precision(), 2);
+        assert_eq!(option.size_precision(), 3);
+        assert_eq!(
+            option.outcome.map(|o| o.to_string()),
+            Some("Yes".to_string())
+        );
+        assert_eq!(option.max_price(), Some(Price::from("1.00")));
+        assert_eq!(option.min_price(), Some(Price::from("0.01")));
+    }
+
+    #[test]
+    fn build_binary_option_omits_optional_fields() {
+        // Every Option<String> field absent must build a valid instrument: NT's
+        // BinaryOption constructor accepts None for outcome/description, the
+        // quantity/notional/price bounds, the margins, and the fees.
+        let mut spec = binary_option_inner();
+        spec.outcome = None;
+        spec.description = None;
+        spec.max_quantity = None;
+        spec.min_quantity = None;
+        spec.max_notional = None;
+        spec.min_notional = None;
+        spec.max_price = None;
+        spec.min_price = None;
+        spec.margin_init = None;
+        spec.margin_maint = None;
+        spec.maker_fee = None;
+        spec.taker_fee = None;
+        let option = build_binary_option(&spec).expect("optional fields default cleanly");
+        assert_eq!(option.outcome, None);
+        assert_eq!(option.description, None);
+        assert_eq!(option.max_quantity, None);
+        assert_eq!(option.min_notional, None);
+    }
+
+    #[test]
+    fn build_binary_option_honours_trailing_zero_increment() {
+        // Precision must agree with the increment's own precision, or NT's
+        // BinaryOption precision-equality check would reject the instrument.
+        let mut spec = binary_option_inner();
+        spec.price_increment = "0.010".to_string();
+        let option = build_binary_option(&spec).expect("trailing-zero increment");
+        assert_eq!(option.price_precision(), 3);
+    }
+
+    #[test]
+    fn build_binary_option_rejects_malformed_decimal() {
+        let mut spec = binary_option_inner();
+        spec.price_increment = "not-a-number".to_string();
+        assert!(build_binary_option(&spec).is_err());
+    }
+
+    #[test]
+    fn build_binary_option_rejects_blank_raw_symbol() {
+        let mut spec = binary_option_inner();
+        spec.raw_symbol = String::new();
+        assert!(build_binary_option(&spec).is_err());
+    }
+
+    #[test]
+    fn build_binary_option_rejects_blank_currency() {
+        let mut spec = binary_option_inner();
+        spec.currency = "   ".to_string();
+        assert!(build_binary_option(&spec).is_err());
+    }
+
+    #[test]
+    fn build_binary_option_rejects_unknown_asset_class() {
+        let mut spec = binary_option_inner();
+        spec.asset_class = "NOT_AN_ASSET_CLASS".to_string();
+        assert!(build_binary_option(&spec).is_err());
+    }
+
+    #[test]
+    fn build_binary_option_rejects_expiration_not_after_activation() {
+        // The resolvable epoch must be a forward-bounded window, mirroring the
+        // crypto-future activation/expiration ordering check.
+        let mut spec = binary_option_inner();
+        spec.expiration_time_nanos = spec.activation_time_nanos;
+        assert!(build_binary_option(&spec).is_err());
+    }
+
+    #[test]
+    fn build_binary_option_rejects_out_of_range_notional() {
+        // A notional that parses as an f64 but exceeds NT's Money range must
+        // surface as an error, never a panic, on the accepted-data path.
+        let mut spec = binary_option_inner();
+        spec.max_notional = Some("1e40".to_string());
+        assert!(build_binary_option(&spec).is_err());
+    }
+
+    #[test]
+    fn catalog_instrument_spec_deserializes_binary_option_shape() {
+        let parsed: CatalogInstrumentSpec = toml::from_str(
+            r#"
+instrument_kind = "binary_option"
+nt_instrument_id = "YES.TESTVENUE"
+raw_symbol = "YES"
+asset_class = "ALTERNATIVE"
+currency = "USDC"
+activation_time_nanos = 1700000000000000000
+expiration_time_nanos = 1700086400000000000
+price_increment = "0.01"
+size_increment = "0.001"
+"#,
+        )
+        .expect("binary option spec parses");
+        assert!(matches!(parsed, CatalogInstrumentSpec::BinaryOption(_)));
+    }
+
     #[test]
     fn catalog_instrument_spec_deserializes_legacy_spot_shape() {
         let parsed: CatalogInstrumentSpec = toml::from_str(
@@ -2511,6 +2815,39 @@ max_notional = "200000"
             read_back_trade_ticks(dir.path(), "BASEQUOTE-PERP.TESTVENUE").expect("read back");
         assert_eq!(loaded[0].price, Price::from("12.34"));
         assert_eq!(loaded[0].size, Quantity::from("0.3001"));
+    }
+
+    #[test]
+    fn projection_widens_binary_option_precision_when_data_is_finer() {
+        // The widening arm covers binary options too: the YES.TESTVENUE fixture
+        // is tick 0.01 / size precision 3, but a prediction-market archive can
+        // carry finer prints (price scale 3, size scale 4). The projection must
+        // widen the instrument to the data's actual scale instead of rejecting
+        // the accepted object.
+        let csv = "id,timestamp,price,volume,side,rpi\n\
+            1,1772323201665,0.491,10.0001,buy,0\n\
+            2,1772323312219,0.512,12.5,sell,0\n";
+        let table = synthetic_table(csv, "YES", "YES.TESTVENUE");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        project_canonical_trades_to_catalog(&table, &binary_option_spec(), dir.path())
+            .expect("binary option projection widens precision");
+
+        let loaded = read_back_trade_ticks(dir.path(), "YES.TESTVENUE").expect("read back");
+        assert_eq!(loaded[0].price, Price::from("0.491"));
+        assert_eq!(loaded[0].size, Quantity::from("10.0001"));
+
+        // The catalog instrument carries the widened precision, tick VALUE
+        // unchanged (0.01 -> 0.010, 0.001 -> 0.0010).
+        let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        let instruments = catalog
+            .query_instruments(Some(&["YES.TESTVENUE".to_string()]))
+            .expect("query instruments");
+        assert_eq!(instruments.len(), 1);
+        assert!(matches!(&instruments[0], InstrumentAny::BinaryOption(_)));
+        assert_eq!(instruments[0].price_precision(), 3);
+        assert_eq!(instruments[0].size_precision(), 4);
+        assert_eq!(instruments[0].price_increment(), Price::from("0.010"));
+        assert_eq!(instruments[0].size_increment(), Quantity::from("0.0010"));
     }
 
     #[test]

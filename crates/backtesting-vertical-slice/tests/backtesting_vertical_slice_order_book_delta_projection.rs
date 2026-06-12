@@ -19,15 +19,17 @@ use backtesting_vertical_slice::{
     },
     canonical_trades::TradesPartition,
     catalog_projection::{
-        SpotInstrumentSpec, project_canonical_order_book_deltas_to_catalog,
-        read_back_order_book_deltas,
+        BinaryOptionInstrumentKind, BinaryOptionInstrumentSpec, SpotInstrumentSpec,
+        project_canonical_order_book_deltas_to_catalog, read_back_order_book_deltas,
     },
     source_proof::SourceProofFidelityClass,
 };
 use nautilus_model::{
     enums::{BookAction, OrderSide, RecordFlag},
+    instruments::InstrumentAny,
     types::{Price, Quantity},
 };
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
 const NT_INSTRUMENT_ID: &str = "BASEQUOTE.TESTVENUE";
 const INSTRUMENT_ID: &str = "BASEQUOTE";
@@ -45,6 +47,37 @@ fn spec() -> SpotInstrumentSpec {
         max_quantity: "1000000".to_string(),
         min_notional: "1".to_string(),
         max_notional: "100000000".to_string(),
+    }
+}
+
+/// A binary-option spec carrying the SAME nt_instrument_id as the spot spec, so
+/// the same synthetic prediction-market deltas project through NT's
+/// `BinaryOption` constructor via the generic catalog seam. Prediction-market
+/// archives resolve to one settlement currency over a bounded epoch rather than
+/// a base/quote pair.
+fn binary_option_spec() -> BinaryOptionInstrumentSpec {
+    BinaryOptionInstrumentSpec {
+        instrument_kind: BinaryOptionInstrumentKind::BinaryOption,
+        nt_instrument_id: NT_INSTRUMENT_ID.to_string(),
+        raw_symbol: INSTRUMENT_ID.to_string(),
+        asset_class: "ALTERNATIVE".to_string(),
+        currency: "USDC".to_string(),
+        activation_time_nanos: 1_700_000_000_000_000_000,
+        expiration_time_nanos: 1_700_086_400_000_000_000,
+        price_increment: "0.01".to_string(),
+        size_increment: "0.001".to_string(),
+        outcome: Some("Yes".to_string()),
+        description: Some("Bounded binary option fixture".to_string()),
+        max_quantity: Some("1000000".to_string()),
+        min_quantity: Some("0.001".to_string()),
+        max_notional: Some("100000000".to_string()),
+        min_notional: Some("1".to_string()),
+        max_price: Some("1.00".to_string()),
+        min_price: Some("0.01".to_string()),
+        margin_init: Some("0".to_string()),
+        margin_maint: Some("0".to_string()),
+        maker_fee: Some("0".to_string()),
+        taker_fee: Some("0".to_string()),
     }
 }
 
@@ -186,6 +219,58 @@ fn deltas_round_trip_through_nt_catalog() {
             // Compare numerically: `Price`/`Quantity` Display renders at the
             // instrument precision (trailing zeros), so compare the
             // round-tripped value against the source parsed at the same scale.
+            assert_eq!(
+                delta.order.price.as_decimal(),
+                Price::from(row.price.as_str()).as_decimal()
+            );
+            assert_eq!(
+                delta.order.size.as_decimal(),
+                Quantity::from(row.size.as_str()).as_decimal()
+            );
+            let expected_side = if row.side == DeltaSide::Buy.as_str() {
+                OrderSide::Buy
+            } else {
+                OrderSide::Sell
+            };
+            assert_eq!(delta.order.side, expected_side);
+        }
+    }
+}
+
+#[test]
+fn deltas_round_trip_through_binary_option_spec() {
+    // The same synthetic prediction-market deltas must project through the
+    // generic catalog seam when bound to a BinaryOption instrument, proving the
+    // binary-option family reaches the catalog exactly like spot/perp/future.
+    let table = snapshot_then_delta_table();
+    let dir = tempfile::TempDir::new().expect("temp dir");
+
+    let projection =
+        project_canonical_order_book_deltas_to_catalog(&table, &binary_option_spec(), dir.path())
+            .expect("project via binary option spec");
+    assert_eq!(projection.trade_count, table.rows.len());
+    assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
+    assert!(!projection.catalog_hash.is_empty());
+
+    // The catalog instrument is an NT BinaryOption (not a CurrencyPair).
+    let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let instruments = catalog
+        .query_instruments(Some(&[NT_INSTRUMENT_ID.to_string()]))
+        .expect("query instruments");
+    assert_eq!(instruments.len(), 1);
+    assert!(matches!(&instruments[0], InstrumentAny::BinaryOption(_)));
+
+    let mut loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
+    assert_eq!(loaded.len(), table.rows.len());
+    loaded.sort_by_key(|delta| delta.sequence);
+    for (delta, row) in loaded.iter().zip(table.rows.iter()) {
+        assert_eq!(delta.instrument_id.to_string(), NT_INSTRUMENT_ID);
+        assert_eq!(delta.sequence, row.sequence);
+        assert_eq!(delta.flags, row.flags);
+        assert_eq!(delta.ts_event.as_u64(), row.event_time as u64);
+        if row.action == DeltaAction::Clear.as_str() {
+            assert_eq!(delta.action, BookAction::Clear);
+        } else {
             assert_eq!(
                 delta.order.price.as_decimal(),
                 Price::from(row.price.as_str()).as_decimal()

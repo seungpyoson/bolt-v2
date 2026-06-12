@@ -76,6 +76,15 @@ impl SourceUniverseExecutionPackVenueAccountTypes {
             CatalogInstrumentSpec::Spot(_) => &self.spot,
             CatalogInstrumentSpec::CryptoPerpetual(_) => &self.crypto_perpetual,
             CatalogInstrumentSpec::CryptoFuture(_) => &self.crypto_future,
+            // The source-universe execution pack maps crypto-venue REST
+            // instrument families to venue account types. Binary options come
+            // from prediction-market archives through the generic catalog
+            // projection, never through this crypto-venue pipeline, so one
+            // reaching here is a contract violation rather than a missing
+            // config field.
+            CatalogInstrumentSpec::BinaryOption(_) => bail!(
+                "source-universe execution pack does not support binary-option instrument specs"
+            ),
         };
         ensure!(
             !value.trim().is_empty(),

@@ -23,17 +23,19 @@ just ci-runner-minutes --repo seungpyoson/bolt-v2 --run-id 27400354248
 just ci-runner-minutes --repo seungpyoson/bolt-v2 --days 1 --json
 ```
 
-The meter reads workflow runs, jobs, artifacts, and PR draft events through `gh` API data. Runner labels are mapped to tiers from `ci/github-actions-runners.toml`; the script does not carry a second runner-label registry. The configured meter workflows are `ci`, `backtester_ci`, and `ci_runner_debug`.
+The meter reads workflow runs, jobs, artifacts, and PR draft events through `gh` API data. Runner labels, metered workflows, and meter API limits are mapped from `ci/github-actions-runners.toml`; the script does not carry a second runner-label or page-limit registry. The configured meter workflows are `ci`, `backtester_ci`, and `ci_runner_debug`.
 
-Fingerprint evidence is provenance-based. Runs before this instrumentation have no `nextest-archive-fingerprint-*` artifact, so the meter reports them as `fingerprint-unknown` instead of reconstructing cache keys from logs or historical checkouts.
+Fingerprint evidence is provenance-based. Runs before this instrumentation have no `nextest-archive-fingerprint-*` artifact, so the meter reports them as `fingerprint-unknown` instead of reconstructing cache keys from logs or historical checkouts. If one run ever publishes multiple matching fingerprint artifacts, the meter reports `fingerprint-ambiguous` and does not choose one.
 
 ### Meter Limitations
 
 - `cancelled-superseded` is an inference, not a GitHub API field. The meter only emits it for fetched pull-request runs with the same resolved PR number and workflow when the newer run was created before the cancelled run finished. A single `--run-id` without the replacing run cannot establish supersession.
 - Targeted `--run-id` reports are for forensics and fetch the requested runs directly. They do not apply the configured workflow allowlist, so do not mix arbitrary run IDs into governance totals.
-- Draft-stage classification depends on GitHub PR timeline data. The fallback lookup uses the run's `head_repository` owner when GitHub does not include `workflow_run.pull_requests`; if GitHub omits both the PR list and head repository owner for a fork, draft state is unknown instead of guessed. Draft timeline reconstruction reads the first 100 ready-for-review and convert-to-draft events.
+- Draft-stage classification depends on GitHub PR timeline data. The fallback lookup uses the run's `head_repository` owner when GitHub does not include `workflow_run.pull_requests`; if GitHub omits both the PR list and head repository owner for a fork, draft state is unknown instead of guessed. Draft timeline reconstruction reads `meter.api_limits.draft_timeline_items` ready-for-review and convert-to-draft events.
 - Lookback reports issue one or more GitHub API requests per included run for jobs, artifacts, PR metadata, and draft events. Keep lookback windows bounded when using the meter interactively.
 - Runner-minutes for labels absent from `ci/github-actions-runners.toml` are reported under `unknown` so reconciliation gaps stay visible.
+
+The nextest cache/fingerprint expression remains inline in `.github/workflows/ci.yml` because GitHub Actions evaluates `hashFiles(...)` inside workflow YAML. The hygiene verifier enforces structural identity across the cache restore key, cache save key, fingerprint file, and fingerprint artifact name so version, shard, or input drift fails CI.
 
 ## Baseline Evidence
 
@@ -88,6 +90,13 @@ One-day filtered lookback generated at `2026-06-12T08:45:37Z`:
 | CI runs missing fingerprint | 34 |
 | Fingerprint-identical runs | 0 |
 
+The report also emits `lever_b_bounds`:
+
+| Bound | managed_heavy | managed_light |
+| --- | ---: | ---: |
+| `draft_stage` | 709.484 | 64.183 |
+| `draft_stage_cancelled_superseded` | 53.034 | 4.016 |
+
 ## Cancellation
 
 Superseded PR cancellation is working.
@@ -134,7 +143,7 @@ Decision: go for a separate focused follow-up PR under #648 and #333.
 
 The one-day filtered lookback measured draft-stage runs at 709.484 `managed_heavy` minutes and 64.183 `managed_light` minutes. That is enough addressable spend to justify designing an on-demand heavy-lane flow, provided the required `gate` still blocks merge until a full green run or provenance-verified reuse exists on the exact final head SHA.
 
-Those draft-stage minutes are an upper bound for Lever B savings because they include explicit remote-first verification runs such as `just verify-remote` that operators would still request on draft PRs. The defensible lower bound is the intersection of `draft-stage` and `cancelled-superseded` minutes; the follow-up Lever B PR must report both numbers before changing CI topology.
+Those draft-stage minutes are an upper bound for Lever B savings because they include explicit remote-first verification runs such as `just verify-remote` that operators would still request on draft PRs. The defensible lower bound from the same baseline is the intersection of `draft-stage` and `cancelled-superseded`: 53.034 `managed_heavy` minutes and 4.016 `managed_light` minutes. The follow-up Lever B PR must remeasure both bounds before changing CI topology.
 
 ## Reconciliation
 

@@ -22,12 +22,28 @@ class MeterError(RuntimeError):
 
 
 @dataclasses.dataclass(frozen=True)
+class MeterApiLimits:
+    workflow_runs_per_page: int
+    run_jobs_per_page: int
+    run_artifacts_per_page: int
+    branch_pull_requests_per_page: int
+    draft_timeline_items: int
+
+
+@dataclasses.dataclass(frozen=True)
 class RunnerConfig:
     label_to_tier: dict[str, str]
     workflow_keys: set[str]
     fingerprint_artifact_prefix: str
     fingerprint_workflow_key: str
     debug_workflow_key: str
+    api_limits: MeterApiLimits
+
+
+@dataclasses.dataclass(frozen=True)
+class FingerprintEvidence:
+    value: str | None
+    ambiguous: bool
 
 
 def as_text(value: object) -> str:
@@ -56,6 +72,13 @@ def isoformat_utc(value: dt.datetime) -> str:
 def workflow_key_for_path(path: object) -> str:
     stem = pathlib.PurePosixPath(as_text(path)).stem
     return stem.replace("-", "_")
+
+
+def meter_positive_int(table: dict[str, object], key: str) -> int:
+    value = table.get(key)
+    if isinstance(value, int) and value > 0:
+        return value
+    raise MeterError(f"meter.api_limits.{key} must be a positive integer")
 
 
 def load_runner_config(path: pathlib.Path = DEFAULT_RUNNER_CONFIG) -> RunnerConfig:
@@ -96,6 +119,9 @@ def load_runner_config(path: pathlib.Path = DEFAULT_RUNNER_CONFIG) -> RunnerConf
     included = meter.get("included_workflows")
     if not isinstance(included, list) or not all(isinstance(key, str) and key for key in included):
         raise MeterError("meter.included_workflows must be a non-empty string list")
+    api_limits = meter.get("api_limits")
+    if not isinstance(api_limits, dict):
+        raise MeterError("meter.api_limits must be a table")
     workflow_keys = set(included)
     unknown_workflows = sorted(workflow_keys - configured_workflow_keys)
     if unknown_workflows:
@@ -113,6 +139,13 @@ def load_runner_config(path: pathlib.Path = DEFAULT_RUNNER_CONFIG) -> RunnerConf
         fingerprint_artifact_prefix=prefix,
         fingerprint_workflow_key=fingerprint_workflow_key,
         debug_workflow_key=debug_workflow_key,
+        api_limits=MeterApiLimits(
+            workflow_runs_per_page=meter_positive_int(api_limits, "workflow_runs_per_page"),
+            run_jobs_per_page=meter_positive_int(api_limits, "run_jobs_per_page"),
+            run_artifacts_per_page=meter_positive_int(api_limits, "run_artifacts_per_page"),
+            branch_pull_requests_per_page=meter_positive_int(api_limits, "branch_pull_requests_per_page"),
+            draft_timeline_items=meter_positive_int(api_limits, "draft_timeline_items"),
+        ),
     )
 
 
@@ -135,17 +168,23 @@ def job_runner_label(job: dict[str, object], config: RunnerConfig) -> str:
     return text_labels[0] if text_labels else ""
 
 
-def extract_fingerprint(artifacts_payload: dict[str, object], prefix: str) -> str | None:
+def extract_fingerprint_evidence(artifacts_payload: dict[str, object], prefix: str) -> FingerprintEvidence:
     artifacts = artifacts_payload.get("artifacts")
     if not isinstance(artifacts, list):
-        return None
+        return FingerprintEvidence(value=None, ambiguous=False)
     matches = [
         as_text(artifact.get("name"))[len(prefix) :]
         for artifact in artifacts
         if isinstance(artifact, dict) and as_text(artifact.get("name")).startswith(prefix)
     ]
     valid_matches = sorted(match for match in matches if match)
-    return valid_matches[0] if valid_matches else None
+    if len(valid_matches) == 1:
+        return FingerprintEvidence(value=valid_matches[0], ambiguous=False)
+    return FingerprintEvidence(value=None, ambiguous=len(valid_matches) > 1)
+
+
+def extract_fingerprint(artifacts_payload: dict[str, object], prefix: str) -> str | None:
+    return extract_fingerprint_evidence(artifacts_payload, prefix).value
 
 
 def run_sort_key(run: dict[str, object]) -> tuple[dt.datetime, int]:
@@ -195,6 +234,7 @@ def base_classifications(
     pr_state: dict[str, object] | None,
     pr_state_by_run_id: dict[int | str, dict[str, object]],
     fingerprint: str | None,
+    fingerprint_ambiguous: bool,
     prior_green_fingerprints: set[str],
     fingerprint_workflow_key: str,
 ) -> list[str]:
@@ -223,7 +263,9 @@ def base_classifications(
         classifications.append("draft-stage")
     if fingerprint and fingerprint in prior_green_fingerprints:
         classifications.append("fingerprint-identical")
-    if workflow_key_for_path(run.get("path")) == fingerprint_workflow_key and fingerprint is None:
+    if workflow_key_for_path(run.get("path")) == fingerprint_workflow_key and fingerprint_ambiguous:
+        classifications.append("fingerprint-ambiguous")
+    elif workflow_key_for_path(run.get("path")) == fingerprint_workflow_key and fingerprint is None:
         classifications.append("fingerprint-unknown")
     return classifications
 
@@ -231,6 +273,11 @@ def base_classifications(
 def add_tier_total(target: dict[str, dict[str, float]], tier: str, minutes: float) -> None:
     entry = target.setdefault(tier, {"minutes": 0.0})
     entry["minutes"] = round(entry["minutes"] + minutes, 3)
+
+
+def add_run_totals(target: dict[str, dict[str, float]], run_totals: dict[str, dict[str, float]]) -> None:
+    for tier, entry in run_totals.items():
+        add_tier_total(target, tier, entry["minutes"])
 
 
 def build_report(
@@ -252,6 +299,8 @@ def build_report(
     prior_green_fingerprints: set[str] = set()
     report_runs: list[dict[str, object]] = []
     totals_by_tier: dict[str, dict[str, float]] = {}
+    lever_b_draft_stage: dict[str, dict[str, float]] = {}
+    lever_b_draft_stage_cancelled_superseded: dict[str, dict[str, float]] = {}
     debug_sessions: list[dict[str, object]] = []
 
     for run in sorted_runs:
@@ -267,7 +316,8 @@ def build_report(
         jobs = jobs_payload.get("jobs")
         if not isinstance(jobs, list):
             raise MeterError(f"run {run_id} jobs payload is malformed")
-        fingerprint = extract_fingerprint(artifacts_payload, runner_config.fingerprint_artifact_prefix)
+        fingerprint_evidence = extract_fingerprint_evidence(artifacts_payload, runner_config.fingerprint_artifact_prefix)
+        fingerprint = fingerprint_evidence.value
         pr_state = lookup_by_run_id(pr_state_by_run_id, run_id)
         classifications = base_classifications(
             run,
@@ -275,6 +325,7 @@ def build_report(
             pr_state if isinstance(pr_state, dict) else None,
             pr_state_by_run_id,
             fingerprint,
+            fingerprint_evidence.ambiguous,
             prior_green_fingerprints,
             runner_config.fingerprint_workflow_key,
         )
@@ -322,6 +373,10 @@ def build_report(
             "jobs": report_jobs,
         }
         report_runs.append(report_run)
+        if "draft-stage" in classifications:
+            add_run_totals(lever_b_draft_stage, run_totals)
+        if "draft-stage" in classifications and "cancelled-superseded" in classifications:
+            add_run_totals(lever_b_draft_stage_cancelled_superseded, run_totals)
         if workflow_key == runner_config.debug_workflow_key:
             debug_sessions.append(report_run)
         if fingerprint and as_text(run.get("conclusion")) == "success":
@@ -332,6 +387,10 @@ def build_report(
         "generated_at": generated_at,
         "workflow_keys": sorted(runner_config.workflow_keys),
         "totals_by_tier": totals_by_tier,
+        "lever_b_bounds": {
+            "draft_stage": lever_b_draft_stage,
+            "draft_stage_cancelled_superseded": lever_b_draft_stage_cancelled_superseded,
+        },
         "runs": report_runs,
         "debug_sessions": debug_sessions,
         "notes": [
@@ -436,7 +495,7 @@ def fetch_runs(
     since = dt.datetime.now(dt.UTC) - dt.timedelta(days=days)
     payload = client.api(
         "actions/runs",
-        params={"per_page": "100", "created": f">={isoformat_utc(since)}"},
+        params={"per_page": str(config.api_limits.workflow_runs_per_page), "created": f">={isoformat_utc(since)}"},
         paginate=True,
     )
     workflow_paths = configured_workflow_paths(client, config)
@@ -449,7 +508,11 @@ def fetch_runs(
     return {"workflow_runs": filtered}
 
 
-def fetch_jobs_and_artifacts(client: GhClient, runs_payload: dict[str, object]) -> tuple[dict[str, dict[str, object]], dict[str, dict[str, object]]]:
+def fetch_jobs_and_artifacts(
+    client: GhClient,
+    runs_payload: dict[str, object],
+    config: RunnerConfig,
+) -> tuple[dict[str, dict[str, object]], dict[str, dict[str, object]]]:
     runs = runs_payload.get("workflow_runs")
     if not isinstance(runs, list):
         raise MeterError("workflow runs payload is malformed")
@@ -459,8 +522,16 @@ def fetch_jobs_and_artifacts(client: GhClient, runs_payload: dict[str, object]) 
         if not isinstance(run, dict):
             continue
         run_id = as_text(run.get("id"))
-        jobs[run_id] = client.api(f"actions/runs/{run_id}/jobs", params={"per_page": "100"}, paginate=True)
-        artifacts[run_id] = client.api(f"actions/runs/{run_id}/artifacts", params={"per_page": "100"}, paginate=True)
+        jobs[run_id] = client.api(
+            f"actions/runs/{run_id}/jobs",
+            params={"per_page": str(config.api_limits.run_jobs_per_page)},
+            paginate=True,
+        )
+        artifacts[run_id] = client.api(
+            f"actions/runs/{run_id}/artifacts",
+            params={"per_page": str(config.api_limits.run_artifacts_per_page)},
+            paginate=True,
+        )
     return jobs, artifacts
 
 
@@ -537,7 +608,12 @@ def draft_state_at_run(run_time: dt.datetime, pull: dict[str, object], timeline_
     return is_draft
 
 
-def resolve_pr_states(client: GhClient, repo: str, runs_payload: dict[str, object]) -> dict[str, dict[str, object]]:
+def resolve_pr_states(
+    client: GhClient,
+    repo: str,
+    runs_payload: dict[str, object],
+    config: RunnerConfig,
+) -> dict[str, dict[str, object]]:
     owner, repo_name = repo.split("/", 1)
     runs = runs_payload.get("workflow_runs")
     if not isinstance(runs, list):
@@ -547,10 +623,10 @@ def resolve_pr_states(client: GhClient, repo: str, runs_payload: dict[str, objec
     branch_pull_cache: dict[str, list[dict[str, object]]] = {}
     timeline_cache: dict[int, list[dict[str, object]]] = {}
     query = """
-query($owner:String!,$repo:String!,$number:Int!){
+query($owner:String!,$repo:String!,$number:Int!,$timelineLimit:Int!){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$number){
-      timelineItems(first:100,itemTypes:[READY_FOR_REVIEW_EVENT,CONVERT_TO_DRAFT_EVENT]){
+      timelineItems(first:$timelineLimit,itemTypes:[READY_FOR_REVIEW_EVENT,CONVERT_TO_DRAFT_EVENT]){
         nodes{
           __typename
           ... on ReadyForReviewEvent{createdAt}
@@ -586,7 +662,11 @@ query($owner:String!,$repo:String!,$number:Int!){
             if head not in branch_pull_cache:
                 pulls = client.api(
                     "pulls",
-                    params={"head": head, "state": "all", "per_page": "20"},
+                    params={
+                        "head": head,
+                        "state": "all",
+                        "per_page": str(config.api_limits.branch_pull_requests_per_page),
+                    },
                 )
                 if isinstance(pulls, list):
                     pull_list = pulls
@@ -602,7 +682,15 @@ query($owner:String!,$repo:String!,$number:Int!){
         if pull is None:
             continue
         if number not in timeline_cache:
-            payload = client.graphql(query, {"owner": owner, "repo": repo_name, "number": number})
+            payload = client.graphql(
+                query,
+                {
+                    "owner": owner,
+                    "repo": repo_name,
+                    "number": number,
+                    "timelineLimit": config.api_limits.draft_timeline_items,
+                },
+            )
             nodes = (
                 payload.get("data", {})
                 .get("repository", {})
@@ -657,6 +745,17 @@ def render_text(report: dict[str, object]) -> str:
         assert isinstance(entry, dict)
         lines.append(f"{tier}: {entry['minutes']:.3f} minutes")
 
+    lever_b_bounds = report.get("lever_b_bounds", {})
+    if isinstance(lever_b_bounds, dict):
+        lines.extend(["", "Lever B bounds:"])
+        for bound_name in ("draft_stage", "draft_stage_cancelled_superseded"):
+            bound = lever_b_bounds.get(bound_name)
+            if not isinstance(bound, dict):
+                continue
+            for tier, entry in sorted(bound.items()):
+                if isinstance(entry, dict):
+                    lines.append(f"{bound_name} {tier}: {entry['minutes']:.3f} minutes")
+
     debug_sessions = report.get("debug_sessions", [])
     if debug_sessions:
         lines.extend(["", "Debug sessions:"])
@@ -686,8 +785,8 @@ def main(argv: list[str]) -> int:
     config = load_runner_config(args.config)
     client = GhClient(repo)
     runs_payload = fetch_runs(client, config, args.run_id, args.days, args.limit)
-    jobs_payload, artifacts_payload = fetch_jobs_and_artifacts(client, runs_payload)
-    pr_states = resolve_pr_states(client, repo, runs_payload)
+    jobs_payload, artifacts_payload = fetch_jobs_and_artifacts(client, runs_payload, config)
+    pr_states = resolve_pr_states(client, repo, runs_payload, config)
     report = build_report(
         repo=repo,
         runs_payload=runs_payload,

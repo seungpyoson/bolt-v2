@@ -60,7 +60,21 @@ fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
 fingerprint_workflow = "ci"
 debug_workflow = "ci_runner_debug"
 included_workflows = ["ci", "backtester_ci", "ci_runner_debug"]
+
+[meter.api_limits]
+workflow_runs_per_page = 100
+run_jobs_per_page = 100
+run_artifacts_per_page = 100
+branch_pull_requests_per_page = 20
+draft_timeline_items = 100
 """
+
+
+def load_test_config(module, config_text: str | None = None):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_path = pathlib.Path(tmpdir) / "github-actions-runners.toml"
+        config_path.write_text(config_text or runner_config_text(), encoding="utf-8")
+        return module.load_runner_config(config_path)
 
 
 def run_payload(run_id: int, **overrides):
@@ -102,6 +116,18 @@ def assert_extract_fingerprint_ignores_empty_suffix() -> None:
     assert module.extract_fingerprint({"artifacts": [artifact_payload(prefix)]}, prefix) is None
     assert (
         module.extract_fingerprint(
+            {
+                "artifacts": [
+                    artifact_payload(f"{prefix}inputs-b"),
+                    artifact_payload(f"{prefix}inputs-a"),
+                ]
+            },
+            prefix,
+        )
+        is None
+    )
+    assert (
+        module.extract_fingerprint(
             {"artifacts": [artifact_payload(prefix), artifact_payload(f"{prefix}inputs-a")]},
             prefix,
         )
@@ -109,12 +135,90 @@ def assert_extract_fingerprint_ignores_empty_suffix() -> None:
     )
 
 
+def assert_meter_api_limits_come_from_config() -> None:
+    module = load_script()
+    config_text = (
+        runner_config_text()
+        .replace("workflow_runs_per_page = 100", "workflow_runs_per_page = 37")
+        .replace("run_jobs_per_page = 100", "run_jobs_per_page = 38")
+        .replace("run_artifacts_per_page = 100", "run_artifacts_per_page = 39")
+        .replace("branch_pull_requests_per_page = 20", "branch_pull_requests_per_page = 7")
+        .replace("draft_timeline_items = 100", "draft_timeline_items = 11")
+    )
+    config = load_test_config(module, config_text)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.api_calls = []
+            self.graphql_queries = []
+            self.graphql_fields = []
+
+        def api(self, path: str, *, params=None, paginate: bool = False):
+            self.api_calls.append((path, params, paginate))
+            if path == "actions/runs":
+                return {"workflow_runs": [run_payload(81)]}
+            if path == "actions/workflows":
+                return {"workflows": [{"path": ".github/workflows/ci.yml"}]}
+            if path == "actions/runs/81/jobs":
+                return {"jobs": []}
+            if path == "actions/runs/81/artifacts":
+                return {"artifacts": []}
+            if path == "pulls":
+                return [
+                    {
+                        "number": 81,
+                        "draft": False,
+                        "state": "open",
+                        "created_at": "2026-06-11T00:00:00Z",
+                        "closed_at": None,
+                        "updated_at": "2026-06-12T00:00:00Z",
+                    }
+                ]
+            raise AssertionError(f"unexpected API path: {path}")
+
+        def graphql(self, query: str, fields: dict[str, str | int]):
+            self.graphql_queries.append(query)
+            self.graphql_fields.append(fields)
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "timelineItems": {
+                                "nodes": [],
+                            }
+                        }
+                    }
+                }
+            }
+
+    client = FakeClient()
+    runs_payload = module.fetch_runs(client, config, [], 1, None)
+    module.fetch_jobs_and_artifacts(client, runs_payload, config)
+    module.resolve_pr_states(
+        client,
+        "example/repo",
+        {
+            "workflow_runs": [
+                run_payload(
+                    82,
+                    pull_requests=[],
+                    head_repository={"owner": {"login": "example"}, "full_name": "example/repo"},
+                )
+            ]
+        },
+        config,
+    )
+    assert ("actions/runs", {"per_page": "37", "created": client.api_calls[0][1]["created"]}, True) in client.api_calls
+    assert ("actions/runs/81/jobs", {"per_page": "38"}, True) in client.api_calls
+    assert ("actions/runs/81/artifacts", {"per_page": "39"}, True) in client.api_calls
+    assert ("pulls", {"head": "example:feature/cost", "state": "all", "per_page": "7"}, False) in client.api_calls
+    assert "timelineItems(first:$timelineLimit" in client.graphql_queries[0], client.graphql_queries
+    assert client.graphql_fields[0]["timelineLimit"] == 11, client.graphql_fields
+
+
 def assert_configured_workflow_paths_paginates_workflow_list() -> None:
     module = load_script()
-    with tempfile.TemporaryDirectory() as tmpdir:
-        config_path = pathlib.Path(tmpdir) / "github-actions-runners.toml"
-        config_path.write_text(runner_config_text(), encoding="utf-8")
-        config = module.load_runner_config(config_path)
+    config = load_test_config(module)
 
     class FakeClient:
         def __init__(self) -> None:
@@ -144,6 +248,7 @@ def assert_configured_workflow_paths_paginates_workflow_list() -> None:
 
 def assert_resolve_pr_states_uses_workflow_run_pr_number() -> None:
     module = load_script()
+    config = load_test_config(module)
 
     class FakeClient:
         def __init__(self) -> None:
@@ -182,15 +287,16 @@ def assert_resolve_pr_states_uses_workflow_run_pr_number() -> None:
         ]
     }
     client = FakeClient()
-    states = module.resolve_pr_states(client, "example/repo", runs_payload)
+    states = module.resolve_pr_states(client, "example/repo", runs_payload, config)
     assert client.api_paths == ["pulls/321"], client.api_paths
-    assert client.graphql_fields == [{"owner": "example", "repo": "repo", "number": 321}], client.graphql_fields
+    assert client.graphql_fields == [{"owner": "example", "repo": "repo", "number": 321, "timelineLimit": 100}], client.graphql_fields
     assert states["30"]["number"] == 321, states
     assert states["30"]["draft_at_run"] is True, states
 
 
 def assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs() -> None:
     module = load_script()
+    config = load_test_config(module)
 
     class FakeClient:
         def __init__(self) -> None:
@@ -242,11 +348,12 @@ def assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs() -> None:
                 )
             ]
         },
+        config,
     )
     assert client.api_calls == [
         ("pulls", {"head": "example:feature/cost", "state": "all", "per_page": "20"}, False)
     ], client.api_calls
-    assert client.graphql_fields == [{"owner": "example", "repo": "repo", "number": 654}], client.graphql_fields
+    assert client.graphql_fields == [{"owner": "example", "repo": "repo", "number": 654, "timelineLimit": 100}], client.graphql_fields
     assert states["31"]["number"] == 654, states
     assert states["31"]["draft_at_run"] is True, states
     assert states["31"]["ready_at"] == "2026-06-12T00:05:00Z", states
@@ -254,6 +361,7 @@ def assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs() -> None:
 
 def assert_resolve_pr_states_abstains_without_pr_refs_or_head_owner() -> None:
     module = load_script()
+    config = load_test_config(module)
 
     class FakeClient:
         def api(self, path: str, *, params=None, paginate: bool = False):
@@ -266,12 +374,14 @@ def assert_resolve_pr_states_abstains_without_pr_refs_or_head_owner() -> None:
         FakeClient(),
         "example/repo",
         {"workflow_runs": [run_payload(35, pull_requests=[])]},
+        config,
     )
     assert states == {}, states
 
 
 def assert_resolve_pr_states_fallback_uses_head_repository_owner() -> None:
     module = load_script()
+    config = load_test_config(module)
 
     class FakeClient:
         def __init__(self) -> None:
@@ -320,12 +430,14 @@ def assert_resolve_pr_states_fallback_uses_head_repository_owner() -> None:
                 )
             ]
         },
+        config,
     )
     assert states["34"]["number"] == 655, states
 
 
 def assert_resolve_pr_states_fallback_selects_by_run_time() -> None:
     module = load_script()
+    config = load_test_config(module)
 
     class FakeClient:
         def __init__(self) -> None:
@@ -388,6 +500,7 @@ def assert_resolve_pr_states_fallback_selects_by_run_time() -> None:
                 ),
             ]
         },
+        config,
     )
     assert client.api_calls == [
         ("pulls", {"head": "example:feature/cost", "state": "all", "per_page": "20"}, False)
@@ -398,6 +511,7 @@ def assert_resolve_pr_states_fallback_selects_by_run_time() -> None:
 
 def assert_resolve_pr_states_fallback_abstains_when_no_pr_lifetime_matches() -> None:
     module = load_script()
+    config = load_test_config(module)
 
     class FakeClient:
         def __init__(self) -> None:
@@ -443,6 +557,7 @@ def assert_resolve_pr_states_fallback_abstains_when_no_pr_lifetime_matches() -> 
                 )
             ]
         },
+        config,
     )
     assert states == {}, states
 
@@ -576,6 +691,11 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
             created_at="2026-06-12T01:40:00Z",
             updated_at="2026-06-12T01:41:00Z",
         ),
+        run_payload(
+            16,
+            created_at="2026-06-12T01:45:00Z",
+            updated_at="2026-06-12T01:46:00Z",
+        ),
     ]
     jobs_by_run_id = {
         10: {
@@ -612,6 +732,7 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
             ]
         },
         15: {"jobs": []},
+        16: {"jobs": []},
     }
     artifacts_by_run_id = {
         10: {"artifacts": []},
@@ -620,6 +741,12 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
         13: {"artifacts": []},
         14: {"artifacts": []},
         15: {"artifacts": []},
+        16: {
+            "artifacts": [
+                artifact_payload("nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-inputs-b"),
+                artifact_payload("nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-inputs-c"),
+            ]
+        },
     }
     pr_state_by_run_id = {
         10: {"number": 648, "draft_at_run": True, "ready_at": "2026-06-12T00:04:00Z"},
@@ -644,6 +771,8 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
     assert "completed-green" in runs_by_id[11]["classifications"], runs_by_id[11]
     assert "fingerprint-identical" in runs_by_id[12]["classifications"], runs_by_id[12]
     assert "failed" in runs_by_id[15]["classifications"], runs_by_id[15]
+    assert "fingerprint-ambiguous" in runs_by_id[16]["classifications"], runs_by_id[16]
+    assert "fingerprint-unknown" not in runs_by_id[16]["classifications"], runs_by_id[16]
     assert runs_by_id[11]["fingerprint"] == "v1-Linux-X64-test-profile-shards-4-inputs-a", runs_by_id[11]
     assert runs_by_id[13]["workflow_key"] == "ci_runner_debug", runs_by_id[13]
     assert runs_by_id[14]["workflow_key"] == "backtester_ci", runs_by_id[14]
@@ -651,6 +780,8 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
     totals = report["totals_by_tier"]
     assert totals["managed_heavy"]["minutes"] == 51.0, totals
     assert totals["managed_light"]["minutes"] == 3.0, totals
+    assert report["lever_b_bounds"]["draft_stage"]["managed_heavy"]["minutes"] == 2.0, report["lever_b_bounds"]
+    assert report["lever_b_bounds"]["draft_stage_cancelled_superseded"]["managed_heavy"]["minutes"] == 2.0, report["lever_b_bounds"]
     assert report["debug_sessions"][0]["id"] == 13, report["debug_sessions"]
 
 
@@ -682,6 +813,7 @@ def assert_unknown_labels_are_reported_without_crashing() -> None:
 
 def main() -> int:
     assert_extract_fingerprint_ignores_empty_suffix()
+    assert_meter_api_limits_come_from_config()
     assert_configured_workflow_paths_paginates_workflow_list()
     assert_resolve_pr_states_uses_workflow_run_pr_number()
     assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs()

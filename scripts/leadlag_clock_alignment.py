@@ -438,10 +438,7 @@ def cmd_live_probe(args: argparse.Namespace) -> None:
         STATS_HEADER,
     ]
     for source, vals in offsets.items():
-        if vals:
-            lines.append(offset_stats_row(source, vals))
-        else:
-            lines.append(f"| {source} | 0 | — captured nothing | | | | | | | |")
+        lines.append(offset_stats_row(source, vals))
     emit_report(lines, args.report)
 
 

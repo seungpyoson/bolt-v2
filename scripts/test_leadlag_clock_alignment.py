@@ -12,7 +12,11 @@
 #     "ntplib==0.4.0",
 # ]
 # ///
-"""Self-tests for the #633 clock-alignment research guards."""
+"""Manual self-tests for the #633 clock-alignment research guards.
+
+Run with `uv run --script scripts/test_leadlag_clock_alignment.py`; these
+research-script dependency checks are intentionally outside source-fence CI.
+"""
 
 from __future__ import annotations
 
@@ -68,7 +72,7 @@ def reset_pm_clock_registry() -> None:
     s4.PM_CLOCK_RESOLVED.clear()
 
 
-def assert_corrected_clock_compensates_wall_step() -> None:
+def test_corrected_clock_compensates_wall_step() -> None:
     wall_ms = 100_000.0
     mono_ms = 1_000.0
 
@@ -101,7 +105,7 @@ def assert_corrected_clock_compensates_wall_step() -> None:
             raise AssertionError(f"corrected time must stay monotonic across wall step: {after_step}")
 
 
-def assert_select_pm_clock_guards() -> None:
+def test_select_pm_clock_guards() -> None:
     reset_pm_clock_registry()
     old_cache = pl.DataFrame({"asset_id": ["tok"], "ts_ms": [10], "price": [0.5]})
     selected = s4.select_pm_clock(old_cache, "auto", "old")
@@ -137,7 +141,7 @@ def assert_select_pm_clock_guards() -> None:
     expect_system_exit(s4.pm_clock_provenance, "mixed PM clocks within one run")
 
 
-def assert_mixed_cache_concat_raises_guided_error() -> None:
+def test_mixed_cache_concat_raises_guided_error() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         old_dir = root / "pm_trades" / "2026-04-22"
@@ -155,7 +159,26 @@ def assert_mixed_cache_concat_raises_guided_error() -> None:
         )
 
 
-def assert_lake_missing_checkpoint_names_date() -> None:
+def test_mixed_cache_receive_mode_preserves_receive_timestamps() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        old_dir = root / "pm_trades" / "2026-04-22"
+        new_dir = root / "pm_trades" / "2026-04-23"
+        old_dir.mkdir(parents=True)
+        new_dir.mkdir(parents=True)
+        pl.DataFrame({"asset_id": ["tok"], "ts_ms": [10], "price": [0.5]}).write_parquet(old_dir / "old.parquet")
+        pl.DataFrame({"asset_id": ["tok"], "ts_ms": [20], "ts_venue_ms": [19], "price": [0.6]}).write_parquet(
+            new_dir / "new.parquet"
+        )
+        reset_pm_clock_registry()
+        trades = s4.load_trades(root, ["2026-04-22", "2026-04-23"], {"tok"}, "receive")
+        if trades["ts_ms"].to_list() != [10, 20]:
+            raise AssertionError("receive mode must preserve collector receive timestamps")
+        if "ts_venue_ms" in trades.columns:
+            raise AssertionError("receive mode must drop venue timestamp column before concat")
+
+
+def test_lake_missing_checkpoint_names_date() -> None:
     payload = {
         "rows": [["price_change", 1, 0, 1.0, [1.0] * len(lca.OFFSET_PERCENTILES), 1.0]],
         "hourly_med_min": 1.0,
@@ -193,7 +216,7 @@ async def _empty_reanchor(_clock: lca.CorrectedClock, _deadline: float) -> None:
     return None
 
 
-def assert_live_probe_rejects_zero_sample_sources() -> None:
+def test_live_probe_rejects_zero_sample_sources() -> None:
     with patched_attrs(
         [
             (lca, "probe_polymarket", _empty_probe),
@@ -222,7 +245,7 @@ async def _sleeping_reanchor(_clock: lca.CorrectedClock, _deadline: float) -> No
     await asyncio.sleep(10.0)
 
 
-def assert_live_probe_surfaces_dead_task_before_deadline() -> None:
+def test_live_probe_surfaces_dead_task_before_deadline() -> None:
     async def run_with_timeout() -> None:
         await asyncio.wait_for(lca.run_live_probe("btc", 10.0, lca.CorrectedClock(0.0)), timeout=0.2)
 
@@ -246,12 +269,13 @@ def assert_live_probe_surfaces_dead_task_before_deadline() -> None:
 
 
 def main() -> int:
-    assert_corrected_clock_compensates_wall_step()
-    assert_select_pm_clock_guards()
-    assert_mixed_cache_concat_raises_guided_error()
-    assert_lake_missing_checkpoint_names_date()
-    assert_live_probe_rejects_zero_sample_sources()
-    assert_live_probe_surfaces_dead_task_before_deadline()
+    test_corrected_clock_compensates_wall_step()
+    test_select_pm_clock_guards()
+    test_mixed_cache_concat_raises_guided_error()
+    test_mixed_cache_receive_mode_preserves_receive_timestamps()
+    test_lake_missing_checkpoint_names_date()
+    test_live_probe_rejects_zero_sample_sources()
+    test_live_probe_surfaces_dead_task_before_deadline()
     print("OK: lead-lag clock-alignment self-tests passed.")
     return 0
 

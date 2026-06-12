@@ -880,8 +880,9 @@ fn canonical_row_to_order_book_delta(
     let ts = UnixNanos::from(u64::try_from(row.event_time).context("negative event_time")?);
     if row.action == DeltaAction::Clear.as_str() {
         // NautilusTrader's `clear` sets F_SNAPSHOT only; carry the canonical
-        // row's full flag bitmask (F_SNAPSHOT|F_MBP, plus F_LAST when the row
-        // closes a snapshot expansion), which validate() has already enforced.
+        // row's full flag bitmask (F_SNAPSHOT required, optionally F_MBP and
+        // F_LAST when the row closes a snapshot expansion), which validate()
+        // has already enforced.
         let mut clear = OrderBookDelta::clear(instrument_id, row.sequence, ts, ts);
         clear.flags = row.flags;
         return Ok(clear);
@@ -1116,6 +1117,12 @@ pub fn project_canonical_bars_to_catalog<S: CatalogInstrumentSpecSource + ?Sized
 /// bare instrument id), so this resolves files through NautilusTrader's own
 /// identifier filtering (`query_typed_data` with the instrument id) rather than
 /// the instrument-directory file filter used for trades and deltas.
+///
+/// NautilusTrader resolves that identifier by substring match against the
+/// bar-type directory name, so an instrument id that is a strict prefix of
+/// another could over-collect in a shared catalog. The projectors in this
+/// module never produce that shape: every projection writes exactly one bar
+/// type into a clean root, so each catalog holds one bar directory.
 ///
 /// # Errors
 ///

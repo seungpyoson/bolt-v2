@@ -15,8 +15,11 @@
 //! [`SourceProofFidelityClass::L2Replay`] and bars require
 //! [`SourceProofFidelityClass::TradeBarReplay`].
 
-use anyhow::{Result, ensure};
-use nautilus_model::enums::{BarAggregation, RecordFlag};
+use anyhow::{Context, Result, ensure};
+use nautilus_model::{
+    data::BarSpecification,
+    enums::{BarAggregation, PriceType, RecordFlag},
+};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -140,7 +143,7 @@ pub struct CanonicalOrderBookDeltasTable {
 
 impl CanonicalOrderBookDeltasTable {
     /// Validate required fields, fidelity class, timestamps, sequence density,
-    /// and the L2 (MBP) delta-flag contract.
+    /// and the snapshot delta-flag contract.
     ///
     /// # Errors
     ///
@@ -176,7 +179,7 @@ impl CanonicalOrderBookDeltasTable {
             "order-book-delta table must carry explicit forbidden claims"
         );
 
-        let snapshot_flags = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
+        let snapshot_flag = RecordFlag::F_SNAPSHOT as u8;
         let last_flag = RecordFlag::F_LAST as u8;
         let mut previous_event_time = i64::MIN;
         for (index, row) in self.rows.iter().enumerate() {
@@ -202,12 +205,18 @@ impl CanonicalOrderBookDeltasTable {
                 "row {index}: instrument_id does not match partition"
             );
             for field in [
+                &row.ingest_run_id,
+                &row.source_binding,
+                &row.venue,
+                &row.product_family,
+                &row.product_category,
                 &row.instrument_id,
                 &row.canonical_instrument_key,
                 &row.venue_symbol,
                 &row.raw_payload_id,
                 &row.source_proof_id,
                 &row.payload_hash,
+                &row.transform_hash,
             ] {
                 ensure!(
                     !field.trim().is_empty(),
@@ -225,7 +234,7 @@ impl CanonicalOrderBookDeltasTable {
                     );
                 }
             }
-            validate_delta_action_payload(index, row, snapshot_flags)?;
+            validate_delta_action_payload(index, row, snapshot_flag)?;
         }
 
         validate_snapshot_f_last(&self.rows, last_flag)?;
@@ -237,7 +246,7 @@ impl CanonicalOrderBookDeltasTable {
 fn validate_delta_action_payload(
     index: usize,
     row: &CanonicalOrderBookDeltaRow,
-    snapshot_flags: u8,
+    snapshot_flag: u8,
 ) -> Result<()> {
     match row.action.as_str() {
         action if action == DeltaAction::Clear.as_str() => {
@@ -253,9 +262,12 @@ fn validate_delta_action_payload(
                 row.size.is_empty(),
                 "row {index}: CLEAR row must have empty size"
             );
+            // NautilusTrader's own snapshot helpers emit CLEAR rows carrying
+            // F_SNAPSHOT only; F_MBP is an informational price-level marker
+            // that converters may add but the contract must not mandate.
             ensure!(
-                row.flags & snapshot_flags == snapshot_flags,
-                "row {index}: CLEAR row flags must contain F_SNAPSHOT|F_MBP"
+                row.flags & snapshot_flag == snapshot_flag,
+                "row {index}: CLEAR row flags must contain F_SNAPSHOT"
             );
         }
         action
@@ -304,6 +316,7 @@ fn validate_delta_action_payload(
 /// final row of the table must close its event with `F_LAST`.
 fn validate_snapshot_f_last(rows: &[CanonicalOrderBookDeltaRow], last_flag: u8) -> Result<()> {
     let mut at_event_start = true;
+    let mut previous_was_clear = false;
     for (index, row) in rows.iter().enumerate() {
         let is_clear = row.action == DeltaAction::Clear.as_str();
         if is_clear {
@@ -311,7 +324,16 @@ fn validate_snapshot_f_last(rows: &[CanonicalOrderBookDeltaRow], last_flag: u8) 
                 at_event_start,
                 "row {index}: CLEAR may only begin a book event (previous event not closed with F_LAST)"
             );
+            // Two CLEARs in a row carry no book information, and a table that
+            // OPENS with two CLEARs would make the catalog's Parquet metadata
+            // pin file precision from a payload-free row, silently corrupting
+            // every later price/size on read-back. Forbid the shape outright.
+            ensure!(
+                !previous_was_clear,
+                "row {index}: consecutive CLEAR rows are not a valid book event sequence"
+            );
         }
+        previous_was_clear = is_clear;
         let closes_event = row.flags & last_flag != 0;
         at_event_start = closes_event;
     }
@@ -421,6 +443,21 @@ impl CanonicalBarsTable {
             ensure!(!field.trim().is_empty(), "empty partition/provenance field");
         }
         ensure!(self.bar_spec.step > 0, "bar step must be positive");
+        // The canonical table is the single source of truth for bar-spec
+        // admissibility: probe NautilusTrader's own step/aggregation
+        // periodicity rules here instead of deferring the failure to
+        // catalog projection.
+        BarSpecification::new_checked(
+            self.bar_spec.step,
+            self.bar_spec.aggregation,
+            PriceType::Last,
+        )
+        .with_context(|| {
+            format!(
+                "bar_spec step {} is not a valid {:?} specification",
+                self.bar_spec.step, self.bar_spec.aggregation
+            )
+        })?;
         ensure!(
             self.fidelity_class == SourceProofFidelityClass::TradeBarReplay,
             "bars must be labelled TRADE_BAR_REPLAY"
@@ -431,6 +468,7 @@ impl CanonicalBarsTable {
         );
 
         let mut previous_open_time = i64::MIN;
+        let mut previous_close_time = i64::MIN;
         for (index, row) in self.rows.iter().enumerate() {
             ensure!(
                 row.schema_version == NORMALIZED_SCHEMA_VERSION,
@@ -441,12 +479,18 @@ impl CanonicalBarsTable {
                 "row {index}: instrument_id does not match partition"
             );
             for field in [
+                &row.ingest_run_id,
+                &row.source_binding,
+                &row.venue,
+                &row.product_family,
+                &row.product_category,
                 &row.instrument_id,
                 &row.canonical_instrument_key,
                 &row.venue_symbol,
                 &row.raw_payload_id,
                 &row.source_proof_id,
                 &row.payload_hash,
+                &row.transform_hash,
                 &row.open,
                 &row.high,
                 &row.low,
@@ -483,6 +527,16 @@ impl CanonicalBarsTable {
                 row.close_time,
                 row.open_time
             );
+            // The catalog write orders bars by ts_init (= close_time) and
+            // requires it non-decreasing; enforce that here so the validated
+            // contract matches what the write step accepts.
+            ensure!(
+                row.close_time >= previous_close_time,
+                "row {index}: close_time {} precedes previous {}",
+                row.close_time,
+                previous_close_time
+            );
+            previous_close_time = row.close_time;
             validate_bar_ohlcv(index, row)?;
         }
         Ok(())
@@ -684,11 +738,101 @@ mod tests {
     }
 
     #[test]
-    fn deltas_validate_rejects_clear_missing_snapshot_flags() {
+    fn deltas_validate_rejects_clear_missing_snapshot_flag() {
         let mut table = snapshot_table();
-        table.rows[0].flags = RecordFlag::F_SNAPSHOT as u8;
-        let error = table.validate().expect_err("clear missing F_MBP rejected");
-        assert!(error.to_string().contains("F_SNAPSHOT|F_MBP"), "{error}");
+        table.rows[0].flags = RecordFlag::F_MBP as u8;
+        let error = table
+            .validate()
+            .expect_err("clear missing F_SNAPSHOT rejected");
+        assert!(
+            error.to_string().contains("must contain F_SNAPSHOT"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn deltas_validate_accepts_snapshot_flag_only_clear() {
+        // NautilusTrader's own snapshot helpers emit CLEAR rows carrying
+        // F_SNAPSHOT only (no F_MBP); the canonical contract must accept the
+        // shape converters faithfully port from that helper.
+        let snapshot = RecordFlag::F_SNAPSHOT as u8;
+        let last = RecordFlag::F_LAST as u8;
+        let event_time = 1_700_000_000_000_000_000;
+        let rows = vec![
+            delta_row(0, event_time, DeltaAction::Clear, "", "", "", snapshot),
+            delta_row(
+                1,
+                event_time,
+                DeltaAction::Add,
+                DeltaSide::Buy.as_str(),
+                "0.49",
+                "10",
+                snapshot,
+            ),
+            delta_row(
+                2,
+                event_time,
+                DeltaAction::Add,
+                DeltaSide::Sell.as_str(),
+                "0.51",
+                "12",
+                snapshot | last,
+            ),
+        ];
+        let table = CanonicalOrderBookDeltasTable {
+            rows,
+            ..snapshot_table()
+        };
+        table
+            .validate()
+            .expect("snapshot-flag-only CLEAR expansion is valid");
+    }
+
+    #[test]
+    fn deltas_validate_rejects_consecutive_clear_rows() {
+        // A table opening with two CLEAR rows would let the catalog's Parquet
+        // metadata pin file precision from a payload-free row, silently
+        // corrupting every later price/size on read-back.
+        let snapshot = RecordFlag::F_SNAPSHOT as u8;
+        let last = RecordFlag::F_LAST as u8;
+        let event_time = 1_700_000_000_000_000_000;
+        let rows = vec![
+            delta_row(
+                0,
+                event_time,
+                DeltaAction::Clear,
+                "",
+                "",
+                "",
+                snapshot | last,
+            ),
+            delta_row(
+                1,
+                event_time,
+                DeltaAction::Clear,
+                "",
+                "",
+                "",
+                snapshot | last,
+            ),
+            delta_row(
+                2,
+                event_time,
+                DeltaAction::Update,
+                DeltaSide::Buy.as_str(),
+                "0.48",
+                "5",
+                last,
+            ),
+        ];
+        let table = CanonicalOrderBookDeltasTable {
+            rows,
+            ..snapshot_table()
+        };
+        let error = table
+            .validate()
+            .expect_err("consecutive CLEAR rows rejected");
+        assert!(error.to_string().contains("consecutive CLEAR"), "{error}");
     }
 
     #[test]
@@ -880,6 +1024,30 @@ mod tests {
         table.rows[0].close_time = table.rows[0].open_time - 1;
         let error = table.validate().expect_err("close before open rejected");
         assert!(error.to_string().contains("precedes open_time"), "{error}");
+    }
+
+    #[test]
+    fn bars_validate_rejects_close_time_regression() {
+        // The catalog write orders bars by ts_init (= close_time); a close
+        // time that steps backwards across rows must fail at the canonical
+        // boundary, not at the write step.
+        let mut table = bars_table();
+        table.rows[0].close_time = table.rows[1].close_time + 1;
+        let error = table
+            .validate()
+            .expect_err("close_time regression rejected");
+        assert!(error.to_string().contains("precedes previous"), "{error}");
+    }
+
+    #[test]
+    fn bars_validate_rejects_non_periodic_bar_step() {
+        // NautilusTrader requires minute steps to divide the hour; the
+        // canonical table owns spec admissibility, so the violation must
+        // surface at validate(), not at catalog projection.
+        let mut table = bars_table();
+        table.bar_spec.step = 7;
+        let error = table.validate().expect_err("non-periodic step rejected");
+        assert!(error.to_string().contains("not a valid"), "{error}");
     }
 
     #[test]

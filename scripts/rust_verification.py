@@ -228,6 +228,7 @@ def validate_policy_data(data: dict[str, Any]) -> None:
     if build.get("artifact_layout") != "cargo":
         raise PolicyError("commands.build.artifact_layout must be 'cargo'")
     validate_local_compile_policy(data)
+    validate_local_lane_policy(data)
     if "remote_verification" in data:
         validate_remote_verification_policy(data)
     if "cache" in data:
@@ -262,6 +263,34 @@ def validate_local_compile_policy(data: dict[str, Any]) -> None:
     refused_cargo = set(string_array_policy_value(policy, "refused_cargo_subcommands"))
     if refused_cargo != CARGO_DISK_PREFLIGHT_SUBCOMMANDS:
         raise PolicyError("local_compile_policy.refused_cargo_subcommands must match disk-preflight subcommands")
+
+
+def validate_local_lane_policy(data: dict[str, Any]) -> None:
+    policy = data.get("local_lane_policy")
+    if not isinstance(policy, dict):
+        raise PolicyError("local_lane_policy table is required")
+    if policy.get("enabled") is not True:
+        raise PolicyError("local_lane_policy.enabled must be true")
+    if policy.get("allowed_ci_env") != "GITHUB_ACTIONS":
+        raise PolicyError("local_lane_policy.allowed_ci_env must be 'GITHUB_ACTIONS'")
+    lock_dir = policy.get("lock_dir")
+    if not isinstance(lock_dir, str):
+        raise PolicyError("local_lane_policy.lock_dir must be an absolute path")
+    if "$" in lock_dir or "~" in lock_dir:
+        raise PolicyError("local_lane_policy.lock_dir must not contain env or home expansions")
+    if not lock_dir.startswith("/"):
+        raise PolicyError("local_lane_policy.lock_dir must be an absolute path")
+    values: dict[str, int] = {}
+    for key in ("acquire_timeout_seconds", "heartbeat_seconds"):
+        value = policy.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise PolicyError(f"local_lane_policy.{key} must be a positive integer")
+        values[key] = value
+    poll = policy.get("poll_interval_seconds")
+    if not isinstance(poll, (int, float)) or isinstance(poll, bool) or poll <= 0:
+        raise PolicyError("local_lane_policy.poll_interval_seconds must be a positive number")
+    if values["heartbeat_seconds"] >= values["acquire_timeout_seconds"]:
+        raise PolicyError("local_lane_policy.heartbeat_seconds must be less than acquire_timeout_seconds")
 
 
 def validate_remote_verification_policy(data: dict[str, Any]) -> None:

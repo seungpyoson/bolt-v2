@@ -28,7 +28,7 @@ from command_understanding import (
     python_constant_string,
     python_inline_command_payloads,
 )
-from rust_verification import CARGO_DISK_PREFLIGHT_SUBCOMMANDS
+from rust_verification import CARGO_ALIAS_SUBCOMMANDS, CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -71,7 +71,7 @@ DEFAULT_REPO_AUTOMATION_GLOBS = (
 )
 S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
 LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS = {"build", "clippy", "test"}
-LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS = set(CARGO_DISK_PREFLIGHT_SUBCOMMANDS)
+LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS = set(CARGO_DISK_PREFLIGHT_SUBCOMMANDS) | set(CARGO_ALIAS_SUBCOMMANDS)
 YAML_ANCHOR_PATTERN = r"&[A-Za-z0-9_.-]+"
 YAML_STEP_ITEM_RE = re.compile(rf"^-\s+(?:{YAML_ANCHOR_PATTERN}(?:\s+|$))?")
 YAML_RUN_LINE_RE = re.compile(rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*(.*?)\s*$")
@@ -3581,7 +3581,7 @@ def local_compile_policy_errors(data: dict[str, object], display_name: str) -> l
     if string_set(policy, "refused_managed_commands") != LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS:
         errors.append(f"{display_name} local_compile_policy.refused_managed_commands must be build/clippy/test")
     if string_set(policy, "refused_cargo_subcommands") != LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS:
-        errors.append(f"{display_name} local_compile_policy.refused_cargo_subcommands must match disk preflight")
+        errors.append(f"{display_name} local_compile_policy.refused_cargo_subcommands must match disk preflight and aliases")
     return errors
 
 

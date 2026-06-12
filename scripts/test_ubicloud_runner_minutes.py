@@ -47,6 +47,10 @@ test-archive = "managed_heavy"
 test-shards = "managed_heavy"
 gate = "github_hosted"
 
+[workflows.backtester_ci]
+test = "managed_heavy"
+gate = "github_hosted"
+
 [workflows.ci_runner_debug]
 debug-heavy = "managed_heavy"
 debug-light = "managed_light"
@@ -55,7 +59,7 @@ debug-light = "managed_light"
 fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
 fingerprint_workflow = "ci"
 debug_workflow = "ci_runner_debug"
-included_workflows = ["ci", "ci_runner_debug"]
+included_workflows = ["ci", "backtester_ci", "ci_runner_debug"]
 """
 
 
@@ -122,6 +126,7 @@ def assert_configured_workflow_paths_paginates_workflow_list() -> None:
             return {
                 "workflows": [
                     {"path": ".github/workflows/ci.yml"},
+                    {"path": ".github/workflows/backtester-ci.yml"},
                     {"path": ".github/workflows/ci-runner-debug.yml"},
                     {"path": ".github/workflows/not-metered.yml"},
                 ]
@@ -130,7 +135,11 @@ def assert_configured_workflow_paths_paginates_workflow_list() -> None:
     client = FakeClient()
     paths = module.configured_workflow_paths(client, config)
     assert client.calls == [("actions/workflows", None, True)], client.calls
-    assert paths == {".github/workflows/ci.yml", ".github/workflows/ci-runner-debug.yml"}, paths
+    assert paths == {
+        ".github/workflows/ci.yml",
+        ".github/workflows/backtester-ci.yml",
+        ".github/workflows/ci-runner-debug.yml",
+    }, paths
 
 
 def assert_resolve_pr_states_uses_workflow_run_pr_number() -> None:
@@ -534,7 +543,7 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
         config_path = pathlib.Path(tmpdir) / "github-actions-runners.toml"
         config_path.write_text(runner_config_text(), encoding="utf-8")
         config = module.load_runner_config(config_path)
-        assert config.workflow_keys == {"ci", "ci_runner_debug"}, config.workflow_keys
+        assert config.workflow_keys == {"ci", "backtester_ci", "ci_runner_debug"}, config.workflow_keys
 
     runs = [
         run_payload(
@@ -553,6 +562,19 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
             head_branch="main",
             created_at="2026-06-12T01:00:00Z",
             updated_at="2026-06-12T01:30:00Z",
+        ),
+        run_payload(
+            14,
+            name="Backtester CI",
+            path=".github/workflows/backtester-ci.yml",
+            created_at="2026-06-12T01:30:00Z",
+            updated_at="2026-06-12T01:35:00Z",
+        ),
+        run_payload(
+            15,
+            conclusion="failure",
+            created_at="2026-06-12T01:40:00Z",
+            updated_at="2026-06-12T01:41:00Z",
         ),
     ]
     jobs_by_run_id = {
@@ -584,12 +606,20 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
                 job_payload("debug-heavy", "ubicloud-standard-4", "2026-06-12T01:00:00Z", "2026-06-12T01:30:00Z"),
             ]
         },
+        14: {
+            "jobs": [
+                job_payload("test", "ubicloud-standard-4", "2026-06-12T01:30:00Z", "2026-06-12T01:34:00Z"),
+            ]
+        },
+        15: {"jobs": []},
     }
     artifacts_by_run_id = {
         10: {"artifacts": []},
         11: {"artifacts": [artifact_payload("nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-inputs-a")]},
         12: {"artifacts": [artifact_payload("nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-inputs-a")]},
         13: {"artifacts": []},
+        14: {"artifacts": []},
+        15: {"artifacts": []},
     }
     pr_state_by_run_id = {
         10: {"number": 648, "draft_at_run": True, "ready_at": "2026-06-12T00:04:00Z"},
@@ -610,13 +640,16 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
     runs_by_id = {run["id"]: run for run in report["runs"]}
     assert "cancelled-superseded" in runs_by_id[10]["classifications"], runs_by_id[10]
     assert "draft-stage" in runs_by_id[10]["classifications"], runs_by_id[10]
+    assert "fingerprint-unknown" in runs_by_id[10]["classifications"], runs_by_id[10]
     assert "completed-green" in runs_by_id[11]["classifications"], runs_by_id[11]
     assert "fingerprint-identical" in runs_by_id[12]["classifications"], runs_by_id[12]
+    assert "failed" in runs_by_id[15]["classifications"], runs_by_id[15]
     assert runs_by_id[11]["fingerprint"] == "v1-Linux-X64-test-profile-shards-4-inputs-a", runs_by_id[11]
     assert runs_by_id[13]["workflow_key"] == "ci_runner_debug", runs_by_id[13]
+    assert runs_by_id[14]["workflow_key"] == "backtester_ci", runs_by_id[14]
 
     totals = report["totals_by_tier"]
-    assert totals["managed_heavy"]["minutes"] == 47.0, totals
+    assert totals["managed_heavy"]["minutes"] == 51.0, totals
     assert totals["managed_light"]["minutes"] == 3.0, totals
     assert report["debug_sessions"][0]["id"] == 13, report["debug_sessions"]
 

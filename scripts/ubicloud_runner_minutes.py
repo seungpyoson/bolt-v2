@@ -11,7 +11,6 @@ import pathlib
 import subprocess
 import sys
 import tomllib
-import urllib.parse
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]

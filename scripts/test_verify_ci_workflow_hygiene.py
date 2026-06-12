@@ -396,7 +396,7 @@ jobs:
           )
           echo "stage_dir=$stage_dir" >> "$GITHUB_OUTPUT"
       - name: Upload artifact
-        uses: actions/upload-artifact@example
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bolt-v2-binary
           path: |
@@ -4164,6 +4164,14 @@ def main() -> int:
             "PINNED_UPLOAD_ARTIFACT_PLACEHOLDER",
             "uses: actions/upload-artifact@v7",
             1,
+        ),
+    )
+    assert_error(
+        "actions/upload-artifact must be pinned to a 40-character SHA",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Upload artifact\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "      - name: Upload artifact\n        uses: actions/upload-artifact@v7",
         ),
     )
     assert_error(

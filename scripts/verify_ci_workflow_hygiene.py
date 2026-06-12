@@ -5824,6 +5824,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
     jobs = parse_jobs(workflow_text)
     errors.extend(raw_rust_storage_errors(workflow_text))
     errors.extend(exact_head_governance_cache_errors(workflow_text))
+    for job_lines in jobs.values():
+        errors.extend(upload_artifact_pin_errors(job_lines))
 
     actual_pr_paths_ignore = extract_paths_ignore_for_trigger(workflow_text, "pull_request")
     if actual_pr_paths_ignore is None or tuple(sorted(actual_pr_paths_ignore)) != CI_PR_PATHS_IGNORE_BASELINE:
@@ -5929,7 +5931,6 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must save nextest archive cache")
         if not archive_upload_blocks:
             errors.append("test-archive must upload nextest archive artifact")
-        errors.extend(upload_artifact_pin_errors(archive_lines))
         if "restore-keys:" in archive_text:
             errors.append("test-archive cache must not use restore-keys")
         if archive_text.count(TEST_ARCHIVE_CACHE_PATH) < 2:

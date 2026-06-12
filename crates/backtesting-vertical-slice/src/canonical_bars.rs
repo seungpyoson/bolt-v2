@@ -577,21 +577,21 @@ fn dedup_sorted_bar_rows(mut rows: Vec<ParsedBarRow>) -> Result<Vec<ParsedBarRow
     rows.sort_by_key(|row| row.open_time);
     let mut deduped: Vec<ParsedBarRow> = Vec::with_capacity(rows.len());
     for row in rows {
-        if let Some(last) = deduped.last() {
-            if last.open_time == row.open_time {
-                ensure!(
-                    last.open == row.open
-                        && last.high == row.high
-                        && last.low == row.low
-                        && last.close == row.close
-                        && last.volume == row.volume
-                        && last.close_time == row.close_time,
-                    "duplicate open_time {} for instrument {:?} carries disagreeing OHLCV",
-                    row.open_time,
-                    row.instrument_key
-                );
-                continue;
-            }
+        if let Some(last) = deduped.last()
+            && last.open_time == row.open_time
+        {
+            ensure!(
+                last.open == row.open
+                    && last.high == row.high
+                    && last.low == row.low
+                    && last.close == row.close
+                    && last.volume == row.volume
+                    && last.close_time == row.close_time,
+                "duplicate open_time {} for instrument {:?} carries disagreeing OHLCV",
+                row.open_time,
+                row.instrument_key
+            );
+            continue;
         }
         deduped.push(row);
     }
@@ -766,7 +766,12 @@ table_families = ["bars"]
             accepted_at: None,
             supersedes_source_proof_id: None,
         }
-        .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+        .accept_with_registry(
+            &source_binding_registry(),
+            AcceptanceMode::Manual,
+            "operator",
+            "2026-06-02T00:00:00Z",
+        )
         .expect("accept source proof");
         select_accepted_dataset_with_registry(
             &proof,

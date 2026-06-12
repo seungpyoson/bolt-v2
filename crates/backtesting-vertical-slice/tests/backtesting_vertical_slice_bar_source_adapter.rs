@@ -215,7 +215,12 @@ fn accepted_dataset() -> AcceptedDataset {
         accepted_at: None,
         supersedes_source_proof_id: None,
     }
-    .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+    .accept_with_registry(
+        &source_binding_registry(),
+        AcceptanceMode::Manual,
+        "operator",
+        "2026-06-02T00:00:00Z",
+    )
     .expect("accept source proof");
     select_accepted_dataset_with_registry(
         &proof,

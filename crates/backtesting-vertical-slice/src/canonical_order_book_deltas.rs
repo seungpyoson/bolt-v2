@@ -521,9 +521,11 @@ struct RowPayload<'a> {
 /// Each non-empty photo becomes `CLEAR` + one `ADD` per level (bids then asks),
 /// all carrying `F_SNAPSHOT`, with the photo's final row also carrying `F_LAST`.
 /// An empty photo becomes a lone `CLEAR` carrying `F_SNAPSHOT | F_LAST`; a run of
-/// consecutive empty photos collapses onto that one `CLEAR` so the table never
-/// carries two `CLEAR` rows in a row. Dense `sequence` is assigned after the
-/// collapse.
+/// consecutive empty photos collapses onto that one `CLEAR`, and the first
+/// populated photo after a lone `CLEAR` expands as snapshot ADDs only (its own
+/// `CLEAR` would be adjacent to the previous one, which the contract forbids,
+/// and the book is already provably empty). The table therefore never carries
+/// two `CLEAR` rows in a row. Dense `sequence` is assigned after the collapse.
 fn expand_photos(
     provenance: &RowProvenance<'_>,
     ordering: OrderingAuthority,
@@ -572,19 +574,27 @@ fn expand_photos(
             previous_was_lone_clear = true;
             continue;
         }
+        let book_established_empty = previous_was_lone_clear;
         previous_was_lone_clear = false;
 
-        rows.push(make_row(
-            provenance,
-            &RowPayload {
-                event_time: photo.event_time,
-                action: DeltaAction::Clear,
-                side: "",
-                price: "",
-                size: "",
-                flags: snapshot_flags,
-            },
-        ));
+        // A populated photo normally opens with its own CLEAR. When the
+        // previous event was a lone CLEAR the book is already provably empty,
+        // so a second CLEAR would be adjacent to the first (which the
+        // contract forbids) and carries no information: the photo expands as
+        // snapshot ADDs over the established-empty book instead.
+        if !book_established_empty {
+            rows.push(make_row(
+                provenance,
+                &RowPayload {
+                    event_time: photo.event_time,
+                    action: DeltaAction::Clear,
+                    side: "",
+                    price: "",
+                    size: "",
+                    flags: snapshot_flags,
+                },
+            ));
+        }
         for (side, levels) in [
             (DeltaSide::Buy, &photo.bids),
             (DeltaSide::Sell, &photo.asks),
@@ -944,15 +954,22 @@ table_families = ["order_book_snapshot_deltas"]
         )
         .expect("normalize collapses consecutive empties");
         let table = &tables[0];
-        // One lone CLEAR (first empty) + CLEAR/bid/ask (populated photo) = 4 rows.
-        assert_eq!(table.rows.len(), 4);
+        // One lone CLEAR (both empties collapsed) + bid/ask ADDs from the
+        // populated photo, which skips its own CLEAR because the book is
+        // already provably empty = 3 rows with no adjacent CLEARs.
+        assert_eq!(table.rows.len(), 3);
         assert_eq!(table.rows[0].action, DeltaAction::Clear.as_str());
         // The lone CLEAR closes its own event.
         assert_ne!(table.rows[0].flags & RecordFlag::F_LAST as u8, 0);
-        // The next row is the populated photo's CLEAR, not a second empty CLEAR.
-        assert_eq!(table.rows[1].action, DeltaAction::Clear.as_str());
+        // The populated photo expands as ADDs over the established-empty book.
+        assert_eq!(table.rows[1].action, DeltaAction::Add.as_str());
         assert_eq!(table.rows[1].flags & RecordFlag::F_LAST as u8, 0);
         assert_eq!(table.rows[2].action, DeltaAction::Add.as_str());
+        // The ADDs-only event still closes with F_LAST.
+        assert_ne!(table.rows[2].flags & RecordFlag::F_LAST as u8, 0);
+        table
+            .validate()
+            .expect("collapsed table satisfies the contract");
     }
 
     #[test]

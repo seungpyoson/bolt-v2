@@ -167,8 +167,8 @@ findings.
 
 Findings are recorded with the lead-lag lane's GO / NO-GO verdict model — see
 `../reference/leadlag-lane.md` as the seed RA model. The BTE emits the OBJECTIVE
-results; RA owns the SUBJECTIVE verdict: a finding is GO, NO-GO, or conditional-GO.
-The verdict's field set and how it is persisted, indexed, and lifecycle-tracked
+results; RA owns the SUBJECTIVE verdict.
+The verdict's types, field set, and how it is persisted, indexed, and lifecycle-tracked
 are defined once in `../reference/data-model.md` (ResearchAnalyticsArtifact /
 `experiment-results`) and `../reference/contracts.md` (Artifact Index Contract +
 Artifact Lifecycle Contract); this spec does not restate them.

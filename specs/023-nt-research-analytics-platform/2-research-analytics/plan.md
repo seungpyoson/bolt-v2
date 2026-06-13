@@ -186,7 +186,8 @@ there is no standing promotion machine and no separate promotion-only index or
 lifecycle layer. The artifact's verdict fields, index-commit path, and lifecycle
 behavior are defined once in `../reference/data-model.md`
 (ResearchAnalyticsArtifact) and `../reference/contracts.md` (Artifact Index
-Contract + Result And Promotion Boundary); this section does not restate them.
+Contract + Artifact Lifecycle Contract + Result And Promotion Boundary); this
+section does not restate them.
 
 - The BTE emits an objective `BacktestResult` — the in-process NT object the
   persisted `BacktestResultContract` is built from. RA, out-of-process, reads the

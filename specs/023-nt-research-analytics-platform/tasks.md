@@ -31,7 +31,7 @@ ROOT-009 is intentionally deferred; see Future Cross-Project Tasks below.
   display label, tooltip/legend meaning, owner/source of truth, which vertical
   may set it, and which vertical may only display it. Covered concepts include
   fidelity classes, source roles, data status/gap reasons, lifecycle states
-  (owner: `1-backtesting-engine/spec.md` Artifact Lifecycle Contract), run
+  (owner: `reference/contracts.md` Artifact Lifecycle Contract), run
   purposes, artifact kinds, proof statuses, warning labels, and product-gate
   outcomes.
 

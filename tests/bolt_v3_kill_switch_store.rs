@@ -42,7 +42,7 @@ fn missing_corrupt_or_unresolved_evidence_recovers_fail_closed() {
         trigger: KillSwitchHaltTrigger::loss_governor_breach(
             "bolt_v3.loss_governor",
             1_717_200_000_000_000_000,
-            "daily_realized_loss_limit",
+            "max_utc_daily_realized_loss",
         ),
     };
     store
@@ -94,7 +94,7 @@ fn config_relative_state_path_recovers_missing_evidence_fail_closed() {
 enabled = true
 state_path = "state/kill-switch.json"
 max_state_file_bytes = 65536
-daily_realized_loss_limit = "250.00"
+max_utc_daily_realized_loss = "250.00"
 action_retry_interval_ms = 250
 action_retry_timeout_ms = 5000
 mandatory_proof_max_age_ms = 1000

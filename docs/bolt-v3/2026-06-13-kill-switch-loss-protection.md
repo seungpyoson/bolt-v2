@@ -2,11 +2,11 @@
 
 This document describes the durable realized-loss kill switch wired through `[risk.kill_switch]`.
 
-It is the **hard** control in a two-control design: the instantaneous, unrealized-inclusive `LossGovernorRuntimeFeed` feeds the soft admission gate (`max_daily_loss`), while this controller owns the durable, realized-only daily accumulator that latches the kill switch at `daily_realized_loss_limit` and persists across restarts.
+It is the **hard** control in a two-control design: the instantaneous, unrealized-inclusive `LossGovernorRuntimeFeed` feeds the soft admission gate (`max_daily_loss`), while this controller owns the durable, realized-only daily accumulator that latches the kill switch at `max_utc_daily_realized_loss` and persists across restarts.
 
 ## Breach Behavior
 
-When enabled, the live runner subscribes to NT position events and records realized PnL for configured `account_ids` and `instrument_ids`. If same-day realized loss reaches `daily_realized_loss_limit`, the controller:
+When enabled, the live runner subscribes to NT position events and records realized PnL for configured `account_ids` and `instrument_ids`. If same-day realized loss reaches `max_utc_daily_realized_loss`, the controller:
 
 - transitions the shared kill-switch state from `Armed` to `Halting`
 - persists the halt evidence to `state_path`

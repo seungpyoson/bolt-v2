@@ -120,7 +120,7 @@ fn startup_recovery_blocks_entries_from_halting_and_missing_store_files() {
         trigger: KillSwitchHaltTrigger::loss_governor_breach(
             "nt_position_event",
             1_717_200_000_000_000_000,
-            "daily_realized_loss_limit",
+            "max_utc_daily_realized_loss",
         ),
     };
     halting_store
@@ -889,9 +889,9 @@ impl KillSwitchLossActionSink for FlakyLossActionSink {
     }
 }
 
-fn loss_config(daily_realized_loss_limit: Decimal) -> KillSwitchLossProtectionConfig {
+fn loss_config(max_utc_daily_realized_loss: Decimal) -> KillSwitchLossProtectionConfig {
     KillSwitchLossProtectionConfig {
-        daily_realized_loss_limit,
+        max_utc_daily_realized_loss,
         action_retry_interval_ms: TEST_ACTION_RETRY_INTERVAL_MS,
         action_retry_timeout_ms: TEST_ACTION_RETRY_TIMEOUT_MS,
         forced_reduction_policy: BoltV3KillSwitchForcedReductionPolicy::new(

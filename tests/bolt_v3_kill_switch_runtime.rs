@@ -19,7 +19,7 @@ fn enabled_kill_switch_config(state_path: &str) -> KillSwitchConfigBlock {
         enabled: true,
         state_path: state_path.to_string(),
         max_state_file_bytes: 65_536,
-        daily_realized_loss_limit: "250.00".to_string(),
+        max_utc_daily_realized_loss: "250.00".to_string(),
         action_retry_interval_ms: 250,
         action_retry_timeout_ms: 5_000,
         mandatory_proof_max_age_ms: 1_000,

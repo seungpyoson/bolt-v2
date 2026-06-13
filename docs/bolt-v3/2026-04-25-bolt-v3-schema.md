@@ -465,7 +465,7 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 - required: no
 - when absent or `enabled = false`, no kill-switch loss controller is wired
 - when enabled, startup loads `state_path` and seeds submit admission from the recovered state before the runner loop starts
-- `daily_realized_loss_limit` is a positive decimal string owned by TOML; same-day realized loss reaching it latches the kill switch (the durable, realized-only hard control; distinct from the soft, unrealized-inclusive `max_daily_loss` admission gate)
+- `max_utc_daily_realized_loss` is a positive decimal string owned by TOML; same-day realized loss reaching it latches the kill switch (the durable, realized-only hard control; distinct from the soft, unrealized-inclusive `max_daily_loss` admission gate)
 - `state_path` is a root-relative private JSON evidence path for kill-switch state and the loss-protection runtime snapshot; missing, corrupt, or incomplete evidence fails closed
 - `account_ids` scopes NT position-event PnL to configured execution accounts
 - `instrument_ids` scopes NT position-event PnL to configured execution instruments; it must contain concrete Nautilus execution instrument IDs when enabled

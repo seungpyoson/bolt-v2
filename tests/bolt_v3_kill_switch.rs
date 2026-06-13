@@ -32,7 +32,7 @@ fn loss_governor_trigger_moves_armed_to_halting_and_requires_durable_halt_eviden
     let trigger = KillSwitchHaltTrigger::loss_governor_breach(
         "bolt_v3.loss_governor",
         1_717_200_000_000_000_000,
-        "daily_realized_loss_limit",
+        "max_utc_daily_realized_loss",
     );
 
     let halting = transition_kill_switch_state(
@@ -67,7 +67,7 @@ fn durable_halt_evidence_write_failure_enters_failed_manual_intervention() {
         trigger: KillSwitchHaltTrigger::loss_governor_breach(
             "bolt_v3.loss_governor",
             1_717_200_000_000_000_000,
-            "daily_realized_loss_limit",
+            "max_utc_daily_realized_loss",
         ),
     };
 
@@ -128,7 +128,7 @@ fn halted_state_cannot_rearm_without_first_becoming_flat() {
         trigger: KillSwitchHaltTrigger::loss_governor_breach(
             "bolt_v3.loss_governor",
             1_717_200_000_000_000_000,
-            "daily_realized_loss_limit",
+            "max_utc_daily_realized_loss",
         ),
     };
 
@@ -314,7 +314,7 @@ fn reconciliation_requires_fresh_proof_and_no_remaining_risk_before_flat() {
         trigger: KillSwitchHaltTrigger::loss_governor_breach(
             "bolt_v3.loss_governor",
             1_717_200_000_000_000_000,
-            "daily_realized_loss_limit",
+            "max_utc_daily_realized_loss",
         ),
     };
     let clean_context = KillSwitchTransitionContext {

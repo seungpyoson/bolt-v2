@@ -20,14 +20,14 @@ use crate::{
 const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;
 const NANOS_PER_MILLISECOND: u64 = 1_000_000;
 const FAIL_CLOSED_RECOVERY_HALT_ID: &str = "kill-switch-recovery-fail-closed";
-const LOSS_TRIGGER_REASON: &str = "daily_realized_loss_limit";
+const LOSS_TRIGGER_REASON: &str = "max_utc_daily_realized_loss";
 const HALT_ACTION_RETRY_TIMEOUT_REASON: &str = "halt_action_retry_timeout";
 const FLATTEN_ACTION_ID: &str = "flatten-positions";
 const SNAPSHOT_PERSISTENCE_FAILED_REASON: &str = "loss_protection_snapshot_persistence_failed";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KillSwitchLossProtectionConfig {
-    pub daily_realized_loss_limit: Decimal,
+    pub max_utc_daily_realized_loss: Decimal,
     pub action_retry_interval_ms: u64,
     pub action_retry_timeout_ms: u64,
     pub forced_reduction_policy: BoltV3KillSwitchForcedReductionPolicy,
@@ -260,7 +260,7 @@ impl KillSwitchLossProtection {
         self.daily_realized_pnl += observation.realized_pnl;
 
         if self.daily_realized_pnl >= Decimal::ZERO
-            || -self.daily_realized_pnl < self.config.daily_realized_loss_limit
+            || -self.daily_realized_pnl < self.config.max_utc_daily_realized_loss
         {
             self.persist_runtime_snapshot_or_fail_closed()?;
             return Ok(None);

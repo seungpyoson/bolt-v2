@@ -10411,8 +10411,8 @@ reason = '''Stable synthetic halt id used only when recovery has no persisted ha
 [[allowed]]
 path = '''src/bolt_v3_loss_protection.rs'''
 kind = '''string'''
-literal = '''"daily_realized_loss_limit"'''
-context = '''const LOSS_TRIGGER_REASON: &str = "daily_realized_loss_limit";'''
+literal = '''"max_utc_daily_realized_loss"'''
+context = '''const LOSS_TRIGGER_REASON: &str = "max_utc_daily_realized_loss";'''
 classification = '''kill_switch_trigger_reason_code'''
 reason = '''Stable structured reason code identifying the TOML-owned daily loss limit that triggered a halt; the numeric limit remains configured in TOML.'''
 

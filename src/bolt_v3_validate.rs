@@ -1585,14 +1585,14 @@ fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
     if block.max_state_file_bytes == 0 {
         errors.push("risk.kill_switch.max_state_file_bytes must be positive".to_string());
     }
-    match parse_decimal_string(&block.daily_realized_loss_limit) {
+    match parse_decimal_string(&block.max_utc_daily_realized_loss) {
         Ok(limit) if limit > Decimal::ZERO => {}
         Ok(_) => {
-            errors.push("risk.kill_switch.daily_realized_loss_limit must be positive".to_string());
+            errors.push("risk.kill_switch.max_utc_daily_realized_loss must be positive".to_string());
         }
         Err(reason) => errors.push(format!(
-            "risk.kill_switch.daily_realized_loss_limit is not a valid decimal string ({reason}): `{}`",
-            block.daily_realized_loss_limit
+            "risk.kill_switch.max_utc_daily_realized_loss is not a valid decimal string ({reason}): `{}`",
+            block.max_utc_daily_realized_loss
         )),
     }
     if block.action_retry_interval_ms == 0 {

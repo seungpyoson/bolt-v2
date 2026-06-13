@@ -2105,10 +2105,10 @@ fn configure_bolt_v3_kill_switch_loss_protection(
     else {
         return Ok(None);
     };
-    let daily_realized_loss_limit = parse_decimal_string(&kill_switch.daily_realized_loss_limit)
-        .map_err(|reason| {
+    let max_utc_daily_realized_loss =
+        parse_decimal_string(&kill_switch.max_utc_daily_realized_loss).map_err(|reason| {
             BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
-                "risk.kill_switch.daily_realized_loss_limit parse failed: {reason}"
+                "risk.kill_switch.max_utc_daily_realized_loss parse failed: {reason}"
             ))
         })?;
     let forced_reduction_max_notional = parse_decimal_string(
@@ -2130,7 +2130,7 @@ fn configure_bolt_v3_kill_switch_loss_protection(
         ))
     })?;
     let config = KillSwitchLossProtectionConfig {
-        daily_realized_loss_limit,
+        max_utc_daily_realized_loss,
         action_retry_interval_ms: kill_switch.action_retry_interval_ms,
         action_retry_timeout_ms: kill_switch.action_retry_timeout_ms,
         forced_reduction_policy,

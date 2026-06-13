@@ -149,6 +149,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
     paths-ignore:
       - 'AGENTS.md'
       - 'CLAUDE.md'
@@ -166,6 +167,12 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      full_ci:
+        description: "Run full CI for the selected ref"
+        required: false
+        default: "true"
 
 concurrency:
   group: >-
@@ -179,6 +186,30 @@ permissions:
   actions: read
 
 jobs:
+  ci-policy:
+    name: ci-policy
+    outputs:
+      ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
+      full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
+      full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}
+      reason: ${{ steps.policy.outputs.reason }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Compute CI policy
+        id: policy
+        shell: bash
+        run: >
+          python3 scripts/ci_provenance.py ci-policy
+          --event-name "${{ github.event_name }}"
+          --event-action "${{ github.event.action || '' }}"
+          --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --ref "${{ github.ref }}"
+          | tee -a "$GITHUB_OUTPUT"
+
   detector:
     name: detector
     runs-on: ubuntu-latest
@@ -981,6 +1012,89 @@ check_name = "test"
         error = runner_config_load_error(config_text)
         if fragment not in error:
             raise AssertionError(f"expected {fragment!r}, got {error!r}")
+
+
+def assert_ci_policy_matrix() -> None:
+    verifier = load_verifier()
+    config = verifier.validate_ci_provenance_config(
+        verifier.tomllib.loads(ci_provenance_config_fixture())
+    )
+    policy = config["policy"]
+    cases = [
+        ("push", "", False, "refs/heads/main", "full"),
+        ("push", "", False, "refs/tags/v1.2.3", "tag_reuse"),
+        ("pull_request", "opened", True, "refs/pull/1/merge", "defer"),
+        ("pull_request", "synchronize", True, "refs/pull/1/merge", "defer"),
+        ("pull_request", "reopened", True, "refs/pull/1/merge", "defer"),
+        ("pull_request", "converted_to_draft", True, "refs/pull/1/merge", "defer"),
+        ("pull_request", "opened", False, "refs/pull/1/merge", "full"),
+        ("pull_request", "ready_for_review", True, "refs/pull/1/merge", "full"),
+        ("workflow_dispatch", "", True, "refs/heads/codex/branch", "full"),
+        ("unknown_event", "", True, "refs/heads/codex/branch", "full"),
+    ]
+    for event_name, action, draft, ref, expected in cases:
+        result = verifier.evaluate_ci_policy(
+            policy,
+            event_name=event_name,
+            action=action,
+            pull_request_draft=draft,
+            ref=ref,
+        )
+        if result.ci_policy_path != expected:
+            raise AssertionError((event_name, action, draft, ref, expected, result))
+        if result.full_ci_required != (expected == "full"):
+            raise AssertionError(f"full_ci_required must derive from {expected}: {result}")
+        if result.full_ci_deferred != (expected == "defer"):
+            raise AssertionError(f"full_ci_deferred must derive from {expected}: {result}")
+
+    forced = dict(policy)
+    forced["override"] = dict(policy["override"])
+    forced["override"]["force_full_ci"] = True
+    forced_result = verifier.evaluate_ci_policy(
+        forced,
+        event_name="pull_request",
+        action="synchronize",
+        pull_request_draft=True,
+        ref="refs/pull/1/merge",
+    )
+    if forced_result.ci_policy_path != "full":
+        raise AssertionError(f"force_full_ci must force PR events to full, got {forced_result}")
+
+
+def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "workflow must define workflow_dispatch",
+            re.sub(r"\n  workflow_dispatch:\n(?:    .+\n)+", "\n", workflow, count=1),
+        ),
+        (
+            "workflow_dispatch must define configured full CI input",
+            replace_once(workflow, "      full_ci:\n", "      not_full_ci:\n"),
+        ),
+        (
+            "pull_request types must include ready_for_review",
+            replace_once(
+                workflow,
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
+                "types: [opened, synchronize, reopened, converted_to_draft]",
+            ),
+        ),
+        (
+            "pull_request types must include converted_to_draft",
+            replace_once(
+                workflow,
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
+                "types: [opened, synchronize, reopened, ready_for_review]",
+            ),
+        ),
+        ("missing required job ci-policy", without_job(workflow, "ci-policy")),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
 
 def assert_runner_contract_rejects_missing_and_extra_jobs() -> None:
@@ -4624,8 +4738,8 @@ def main() -> int:
         "pull_request paths-ignore must match baseline",
         replace_once(
             BASE_WORKFLOW,
-            "    branches: [main]\n    paths-ignore:\n",
-            "    branches: [main]\n    # paths-ignore:\n",
+            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]\n    paths-ignore:\n",
+            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]\n    # paths-ignore:\n",
         ),
     )
     assert_error(
@@ -5930,6 +6044,8 @@ def main() -> int:
     assert_actionlint_rejects_stale_config_variables()
     assert_source_fence_static_ignores_comments()
     assert_rust_verification_policy_parse_errors_are_domain_specific()
+    assert_ci_policy_matrix()
+    assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

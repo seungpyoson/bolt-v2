@@ -502,6 +502,76 @@ def assert_top_level_help_is_supported() -> None:
         raise AssertionError(f"expected supported modes in help output, got {combined!r}")
 
 
+def assert_ci_policy_outputs_matrix() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp), CONFIG_TOML)
+        cases = [
+            ("push", "", "false", "refs/heads/main", "full"),
+            ("push", "", "false", "refs/tags/v1.2.3", "tag_reuse"),
+            ("pull_request", "opened", "true", "refs/pull/1/merge", "defer"),
+            ("pull_request", "synchronize", "true", "refs/pull/1/merge", "defer"),
+            ("pull_request", "reopened", "true", "refs/pull/1/merge", "defer"),
+            ("pull_request", "converted_to_draft", "true", "refs/pull/1/merge", "defer"),
+            ("pull_request", "opened", "false", "refs/pull/1/merge", "full"),
+            ("pull_request", "ready_for_review", "true", "refs/pull/1/merge", "full"),
+            ("workflow_dispatch", "", "true", "refs/heads/codex/branch", "full"),
+            ("unknown_event", "", "true", "refs/heads/codex/branch", "full"),
+        ]
+        for event_name, action, draft, ref, expected in cases:
+            code, stdout, stderr = run_cli(
+                [
+                    "ci-policy",
+                    "--config",
+                    str(config),
+                    "--event-name",
+                    event_name,
+                    "--event-action",
+                    action,
+                    "--pull-request-draft",
+                    draft,
+                    "--ref",
+                    ref,
+                ]
+            )
+            if code != 0:
+                raise AssertionError(f"ci-policy failed for {event_name}/{action}: {stderr}")
+            output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+            if output.get("ci_policy_path") != expected:
+                raise AssertionError((event_name, action, draft, ref, expected, output))
+            if output.get("full_ci_required") != str(expected == "full").lower():
+                raise AssertionError(f"full_ci_required must derive from {expected}: {output}")
+            if output.get("full_ci_deferred") != str(expected == "defer").lower():
+                raise AssertionError(f"full_ci_deferred must derive from {expected}: {output}")
+            if not output.get("reason"):
+                raise AssertionError(f"ci-policy must include reason: {output}")
+
+        force_config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace("force_full_ci = false", "force_full_ci = true"),
+            "force.toml",
+        )
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(force_config),
+                "--event-name",
+                "pull_request",
+                "--event-action",
+                "synchronize",
+                "--pull-request-draft",
+                "true",
+                "--ref",
+                "refs/pull/1/merge",
+            ]
+        )
+        if code != 0:
+            raise AssertionError(f"force_full_ci ci-policy failed: {stderr}")
+        output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if output.get("ci_policy_path") != "full":
+            raise AssertionError(f"force_full_ci must force draft PR events to full, got {output}")
+
+
 def assert_config_digest_is_canonical() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -862,6 +932,7 @@ def main() -> int:
     assert_unknown_record_schema_fails()
     assert_resolve_fingerprint_is_rejected()
     assert_top_level_help_is_supported()
+    assert_ci_policy_outputs_matrix()
     assert_config_digest_is_canonical()
     assert_github_api_bytes_strips_authorization_on_cross_host_redirect()
     assert_record_schema_requires_head_and_tested_sha()

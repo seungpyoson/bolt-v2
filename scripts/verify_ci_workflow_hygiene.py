@@ -9,6 +9,7 @@ import re
 import shlex
 import sys
 import tomllib
+from typing import NamedTuple
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -83,7 +84,16 @@ YAML_FOLDED_RUN_LINE_RE = re.compile(
 class PolicyError(RuntimeError):
     pass
 
+
+class CiPolicyResult(NamedTuple):
+    ci_policy_path: str
+    full_ci_required: bool
+    full_ci_deferred: bool
+    reason: str
+
+
 REQUIRED_JOBS = (
+    "ci-policy",
     "detector",
     "fmt-check",
     "deny",
@@ -570,6 +580,138 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
         errors.append("concurrency group must keep non-PR runs isolated by ref and SHA")
     if not any(line in cancel_text for line in PR_CONCURRENCY_CANCEL_LINES):
         errors.append("cancel-in-progress must be limited to pull_request events")
+    return errors
+
+
+def evaluate_ci_policy(
+    policy: dict[str, object],
+    *,
+    event_name: str,
+    action: str,
+    pull_request_draft: bool,
+    ref: str,
+) -> CiPolicyResult:
+    override = policy.get("override")
+    force_full_ci = isinstance(override, dict) and override.get("force_full_ci") is True
+
+    if event_name == "push" and ref.startswith("refs/tags/v"):
+        path = str(policy["tag"])
+        reason = "tag"
+    elif event_name == "workflow_dispatch":
+        path = str(policy["workflow_dispatch"])
+        reason = "workflow_dispatch"
+    elif event_name == "push" and ref == "refs/heads/main":
+        path = str(policy["main_push"])
+        reason = "main_push"
+    elif event_name == "pull_request":
+        if force_full_ci:
+            path = "full"
+            reason = "force_full_ci"
+        elif action == "ready_for_review":
+            path = str(policy["ready_for_review"])
+            reason = "ready_for_review"
+        elif not pull_request_draft:
+            path = str(policy["ready_pr"])
+            reason = "ready_pr"
+        elif action == "opened":
+            path = str(policy["draft_pr_opened"])
+            reason = "draft_pr_opened"
+        elif action == "synchronize":
+            path = str(policy["draft_pr_synchronize"])
+            reason = "draft_pr_synchronize"
+        elif action == "reopened":
+            path = str(policy["draft_pr_reopened"])
+            reason = "draft_pr_reopened"
+        elif action == "converted_to_draft":
+            path = str(policy["converted_to_draft"])
+            reason = "converted_to_draft"
+        else:
+            path = str(policy["unknown_event"])
+            reason = "unknown_event"
+    else:
+        path = str(policy["unknown_event"])
+        reason = "unknown_event"
+
+    if path not in CI_PROVENANCE_POLICY_VALUES:
+        raise ValueError(f"resolved invalid ci_policy_path {path!r}")
+    return CiPolicyResult(
+        ci_policy_path=path,
+        full_ci_required=path == "full",
+        full_ci_deferred=path == "defer",
+        reason=reason,
+    )
+
+
+def workflow_trigger_block(workflow_text: str, trigger: str) -> list[str]:
+    on_block = top_level_block(workflow_text, "on")
+    trigger_line = f"  {trigger}:"
+    for index, line in enumerate(on_block):
+        if line.strip() != trigger_line.strip():
+            continue
+        block: list[str] = []
+        for child in on_block[index + 1 :]:
+            if re.match(r"^  [^ \t:#][^:#]*:", child):
+                break
+            block.append(child)
+        return block
+    return []
+
+
+def parse_inline_yaml_list(value: str) -> set[str]:
+    stripped = value.strip()
+    if not (stripped.startswith("[") and stripped.endswith("]")):
+        return set()
+    return {item.strip().strip("'\"") for item in stripped[1:-1].split(",") if item.strip()}
+
+
+def workflow_pull_request_type_errors(workflow_text: str) -> list[str]:
+    block = workflow_trigger_block(workflow_text, "pull_request")
+    types: set[str] = set()
+    for index, line in enumerate(block):
+        stripped = line.strip()
+        if stripped.startswith("types:"):
+            after = stripped.split(":", 1)[1].strip()
+            types.update(parse_inline_yaml_list(after))
+            for child in block[index + 1 :]:
+                child_stripped = child.strip()
+                if not child.startswith("      - "):
+                    break
+                types.add(child_stripped.removeprefix("- ").strip().strip("'\""))
+    errors: list[str] = []
+    for required_type in ("ready_for_review", "converted_to_draft"):
+        if required_type not in types:
+            errors.append(f"pull_request types must include {required_type}")
+    return errors
+
+
+def workflow_dispatch_input_errors(workflow_text: str, input_name: str) -> list[str]:
+    block = workflow_trigger_block(workflow_text, "workflow_dispatch")
+    if not block and "workflow_dispatch:" not in "\n".join(top_level_block(workflow_text, "on")):
+        return ["workflow must define workflow_dispatch"]
+    block_text = "\n".join(block)
+    if "inputs:" not in block_text or not re.search(rf"^\s+{re.escape(input_name)}:\s*$", block_text, re.MULTILINE):
+        return ["workflow_dispatch must define configured full CI input"]
+    return []
+
+
+def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
+    text = uncommented_text(job_lines)
+    errors: list[str] = []
+    for output in ("ci_policy_path", "full_ci_required", "full_ci_deferred", "reason"):
+        if f"{output}: ${{{{ steps.policy.outputs.{output} }}}}" not in text:
+            errors.append(f"ci-policy must expose {output}")
+    if 'tee -a "$GITHUB_OUTPUT"' not in text:
+        errors.append("ci-policy must write script output to GITHUB_OUTPUT")
+    if "python3 scripts/ci_provenance.py ci-policy" not in text:
+        errors.append("ci-policy must run ci_provenance.py ci-policy")
+    if '--event-name "${{ github.event_name }}"' not in text:
+        errors.append("ci-policy must pass github.event_name")
+    if '--event-action "${{ github.event.action || \'\' }}"' not in text:
+        errors.append("ci-policy must pass github.event.action")
+    if '--pull-request-draft "${{ github.event.pull_request.draft || false }}"' not in text:
+        errors.append("ci-policy must pass pull_request draft state")
+    if '--ref "${{ github.ref }}"' not in text:
+        errors.append("ci-policy must pass github.ref")
     return errors
 
 
@@ -5741,6 +5883,21 @@ def configured_ci_provenance_retention_days() -> int:
     return retention_days if isinstance(retention_days, int) else -1
 
 
+def configured_ci_provenance_dispatch_input() -> str:
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
+        return ""
+    ci_provenance = config.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        return ""
+    dispatch = ci_provenance.get("dispatch")
+    if not isinstance(dispatch, dict):
+        return ""
+    workflow_input = dispatch.get("workflow_input")
+    return workflow_input if isinstance(workflow_input, str) else ""
+
+
 def branch_body(gate_text: str, keyword: str, condition: str) -> str | None:
     pattern = re.compile(
         rf"^\s*{keyword}\s+\[\[\s*{re.escape(condition)}\s*\]\];\s*then\s*$\n(?P<body>.*?)(?=^\s*(?:elif|else|fi)\b)",
@@ -5927,6 +6084,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
     errors.extend(workflow_steps_alias_errors(workflow_text))
     jobs = parse_jobs(workflow_text)
+    triggers = workflow_trigger_keys(workflow_text)
+    is_ci_topology = "pull_request" in triggers and "push" in triggers
     errors.extend(raw_rust_storage_errors(workflow_text))
     errors.extend(exact_head_governance_cache_errors(workflow_text))
     for job_lines in jobs.values():
@@ -5944,6 +6103,16 @@ def verify_workflow(workflow_text: str) -> list[str]:
             "on.push must have no paths-ignore (push to main/tags must always run full CI); "
             f"got {actual_push_paths_ignore!r}"
         )
+    if is_ci_topology:
+        errors.extend(workflow_pull_request_type_errors(workflow_text))
+        dispatch_input = configured_ci_provenance_dispatch_input()
+        if dispatch_input:
+            errors.extend(
+                workflow_dispatch_input_errors(
+                    workflow_text,
+                    dispatch_input,
+                )
+            )
 
     errors.extend(verify_pr_concurrency(workflow_text))
 
@@ -5956,6 +6125,9 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if "fmt-check" in jobs and "detector" in extract_needs(jobs["fmt-check"]):
         errors.append("fmt-check must not need detector")
+
+    if "ci-policy" in jobs:
+        errors.extend(ci_policy_job_errors(jobs["ci-policy"]))
 
     for job in TAG_SKIP_REQUIRED_JOBS:
         if job in jobs and not job_skips_tag_reuse(jobs[job]):

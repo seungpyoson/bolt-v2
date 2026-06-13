@@ -3,6 +3,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
     # paths-ignore is intentionally narrow: only explicitly-listed root-level
     # agent docs and pure-config dirs whose contents are NOT consumed by any
     # build/test/lint script. Do NOT add '**.md' or 'docs/**' — both contain
@@ -30,6 +31,12 @@ on:
     # defense-in-depth against direct-to-main commits.
     branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      full_ci:
+        description: "Run full CI for the selected ref"
+        required: false
+        default: "true"
 
 concurrency:
   group: >-
@@ -49,6 +56,32 @@ permissions:
   actions: read
 
 jobs:
+  ci-policy:
+    name: ci-policy
+    outputs:
+      ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
+      full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
+      full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}
+      reason: ${{ steps.policy.outputs.reason }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Compute CI policy
+        id: policy
+        shell: bash
+        run: >
+          python3 scripts/ci_provenance.py ci-policy
+          --event-name "${{ github.event_name }}"
+          --event-action "${{ github.event.action || '' }}"
+          --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --ref "${{ github.ref }}"
+          | tee -a "$GITHUB_OUTPUT"
+
   detector:
     name: detector
     outputs:

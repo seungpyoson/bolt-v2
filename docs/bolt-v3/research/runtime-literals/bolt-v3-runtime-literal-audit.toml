@@ -9571,14 +9571,6 @@ reason = "IV derivation uses typed helper/input/provenance labels and numeric va
 [[allowed]]
 path = "src/bolt_v3_iv/derive.rs"
 kind = "number"
-literal = '''1.0e-8'''
-context = '''const NT_IMPLIED_VOL_FAILURE_FLOOR: f64 = 1.0e-8;'''
-classification = "iv_helper_contract_literal"
-reason = "This is the pinned NautilusTrader implied-volatility failure floor used to reject failed helper solves before caching derived IV; operator IV bounds remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_iv/derive.rs"
-kind = "number"
 literal = '''0.0'''
 context = '''if !value.is_finite() || (positive_required && value <= 0.0) {'''
 classification = "iv_helper_contract_literal"
@@ -11194,12 +11186,12 @@ classification = "iv_helper_contract_literal"
 reason = "IV derivation validates the configured helper parameter signature against the pinned NT helper ABI; operator helper selection remains policy/config-owned."
 
 [[allowed]]
-path = "src/bolt_v3_iv/query.rs"
+path = "src/bolt_v3_iv/config.rs"
 kind = "number"
-literal = '''6'''
-context = '''const RETENTION_MISS_INDEXED_PRODUCT_KIND_COUNT: usize = 6;'''
-classification = "iv_retention_family_count_literal"
-reason = "IV query retention uses a named count of indexed product families when bounding audit tombstones; retention limits remain profile-owned TOML values."
+literal = '''0.0'''
+context = '''if policy.minimum_valid_iv_output <= 0.0 || !policy.minimum_valid_iv_output.is_finite() {'''
+classification = "iv_helper_contract_literal"
+reason = "IV config validation rejects disabled or non-positive configured helper-output floors; the effective threshold is supplied by TOML policy."
 
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"

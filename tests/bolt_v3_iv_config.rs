@@ -81,6 +81,7 @@ parameter_signature = "s,r,b,is_call,k,t,price"
 allowed_outputs = ["iv_and_greeks"]
 input_policy_ref = "configured-derived-input-policy"
 failure_policy = "reject_invalid_helper_output"
+minimum_valid_iv_output = 0.000001
 max_input_timestamp_skew_ns = 10
 max_operator_input_age_ns = 100
 
@@ -97,7 +98,7 @@ exclusive_max = 6.0
 unit = "unitless"
 
 [profiles.helper_policies.output_bounds.allowed_conventions]
-allowed_conventions = []
+allowed_conventions = ["configured-convention"]
 
 [[profiles.derived_input_policies]]
 input_policy_id = "configured-derived-input-policy"
@@ -877,6 +878,69 @@ fn helper_policy_output_bounds_must_require_finite_positive_iv() {
         message.contains("helper_policies.configured-helper-policy.output_bounds")
             && message.contains("finite")
             && message.contains("positive")
+    }));
+}
+
+#[test]
+fn helper_policy_minimum_valid_iv_output_must_be_finite_positive() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0].helper_policies[0].minimum_valid_iv_output = 0.0;
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("helper_policies.configured-helper-policy.minimum_valid_iv_output")
+            && message.contains("finite")
+            && message.contains("positive")
+    }));
+}
+
+#[test]
+fn helper_policy_convention_allow_lists_must_be_non_empty() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0].helper_policies[0]
+        .convention_policy
+        .allowed_conventions
+        .clear();
+    config.profiles[0].helper_policies[0]
+        .output_bounds
+        .allowed_conventions
+        .allowed_conventions
+        .clear();
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("helper_policies.configured-helper-policy.convention_policy")
+            && message.contains("allowed_conventions")
+            && message.contains("non-empty")
+    }));
+    assert!(errors.iter().any(|message| {
+        message
+            .contains("helper_policies.configured-helper-policy.output_bounds.allowed_conventions")
+            && message.contains("non-empty")
+    }));
+}
+
+#[test]
+fn derived_input_policy_freshness_and_conventions_must_be_non_empty() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0].derived_input_policies[0].freshness_ns = 0;
+    config.profiles[0].derived_input_policies[0]
+        .convention_policy
+        .allowed_conventions
+        .clear();
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("derived_input_policies.configured-derived-input-policy.freshness_ns")
+            && message.contains("positive")
+    }));
+    assert!(errors.iter().any(|message| {
+        message.contains("derived_input_policies.configured-derived-input-policy.convention_policy")
+            && message.contains("allowed_conventions")
+            && message.contains("non-empty")
     }));
 }
 

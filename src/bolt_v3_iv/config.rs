@@ -601,9 +601,32 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.helper_policy_id
             ));
         }
+        if policy.minimum_valid_iv_output <= 0.0 || !policy.minimum_valid_iv_output.is_finite() {
+            errors.push(format!(
+                "{context}.helper_policies.{}.minimum_valid_iv_output must be finite and positive",
+                policy.helper_policy_id
+            ));
+        }
         if !policy.output_bounds.finite_required || !policy.output_bounds.positive_required {
             errors.push(format!(
                 "{context}.helper_policies.{}.output_bounds must require finite and positive IV outputs",
+                policy.helper_policy_id
+            ));
+        }
+        if policy
+            .output_bounds
+            .allowed_conventions
+            .allowed_conventions
+            .is_empty()
+        {
+            errors.push(format!(
+                "{context}.helper_policies.{}.output_bounds.allowed_conventions must be non-empty",
+                policy.helper_policy_id
+            ));
+        }
+        if policy.convention_policy.allowed_conventions.is_empty() {
+            errors.push(format!(
+                "{context}.helper_policies.{}.convention_policy.allowed_conventions must be non-empty",
                 policy.helper_policy_id
             ));
         }
@@ -697,6 +720,18 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
         if policy.max_input_skew_ns == 0 {
             errors.push(format!(
                 "{context}.derived_input_policies.{}.max_input_skew_ns must be positive",
+                policy.input_policy_id
+            ));
+        }
+        if policy.freshness_ns == 0 {
+            errors.push(format!(
+                "{context}.derived_input_policies.{}.freshness_ns must be positive",
+                policy.input_policy_id
+            ));
+        }
+        if policy.convention_policy.allowed_conventions.is_empty() {
+            errors.push(format!(
+                "{context}.derived_input_policies.{}.convention_policy.allowed_conventions must be non-empty",
                 policy.input_policy_id
             ));
         }

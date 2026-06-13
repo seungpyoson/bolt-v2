@@ -6,8 +6,8 @@ use bolt_v2::bolt_v3_iv::{
     ingest::{IvBasisValue, IvGreekValues, IvIngestEvent, IvOptionGreeksPayload, IvRawPayload},
     query::{IvProductQuery, IvQuery, IvQueryError, IvQueryHandle, IvQueryProduct},
     runtime::{
-        IvRuntimeBindingAdapter, IvRuntimeEngine, IvRuntimeEngineError, apply_subscription_plans,
-        cargo_pinned_nt_revision,
+        IvRuntimeBindingAdapter, IvRuntimeBindingError, IvRuntimeEngine, IvRuntimeEngineError,
+        apply_subscription_plans, cargo_pinned_nt_revision,
     },
     selector::IvSelector,
     subscription::{
@@ -874,6 +874,37 @@ configured_source_param = "greeks-source-value"
     };
     assert_eq!(health.subscription_state, IvSourceHealthState::Subscribing);
     assert_eq!(health.subscription_generation, 7);
+}
+
+#[test]
+fn runtime_engine_apply_plan_outcomes_returns_binding_errors_after_recording_health() {
+    let config = configured_runtime_config();
+    let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();
+    let plans = plan_profile_start(&config.profiles[0].subscription_config()).unwrap();
+    let mut adapter = RecordingRuntimeAdapter::default();
+    let mut outcomes = apply_subscription_plans(&mut adapter, &plans);
+    outcomes[0].error = Some(IvRuntimeBindingError::subscription_failed(
+        &outcomes[0].plan,
+        "configured subscription failure".to_string(),
+    ));
+    outcomes[0].source_health.subscription_state = IvSourceHealthState::SubscriptionFailed;
+    outcomes[0].source_health.last_reject_reason = Some(IvRejectReason::SubscriptionFailed);
+
+    assert_eq!(
+        engine.apply_plan_outcomes(&outcomes),
+        Err(IvRuntimeEngineError::SubscriptionPlanFailed {
+            profile_id: "iv-profile".to_string(),
+            source_id: "greeks-source".to_string(),
+            reason: IvRejectReason::SubscriptionFailed,
+        })
+    );
+    let health = engine
+        .source_health("iv-profile", "greeks-source")
+        .expect("failed outcome should still update source health");
+    assert_eq!(
+        health.subscription_state,
+        IvSourceHealthState::SubscriptionFailed
+    );
 }
 
 #[test]

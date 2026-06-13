@@ -1033,7 +1033,7 @@ evidence_path = "crates/model/src/data/greeks.rs"
 symbol = "imply_vol"
 matched_terms = ["greeks", "vol"]
 seed_family = "greeks_helper"
-classification = "supported"
+classification = "unreachable"
 
 [[surfaces]]
 surface_id = "nt.crates.model.src.data.greeks.imply_vol_and_greeks"
@@ -1073,7 +1073,7 @@ evidence_path = "crates/model/src/data/greeks.rs"
 symbol = "refine_vol_and_greeks"
 matched_terms = ["greeks", "implied", "iv", "vol", "volatility"]
 seed_family = "greeks_helper"
-classification = "supported"
+classification = "unreachable"
 
 [[surfaces]]
 surface_id = "nt.crates.model.src.data.greeks.yield_curve_data"
@@ -2585,10 +2585,6 @@ engine_mapping = { mapping_kind = "api", target = "iv_custom_data_api" }
 
 [[engine_mapping_rules]]
 surface_id_prefix = "nt.crates.model.src.data.greeks.imply_vol"
-engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
-
-[[engine_mapping_rules]]
-surface_id_prefix = "nt.crates.model.src.data.greeks.refine_vol"
 engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
 
 [[engine_mapping_rules]]

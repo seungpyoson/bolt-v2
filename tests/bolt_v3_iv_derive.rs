@@ -43,6 +43,7 @@ fn helper_policy() -> IvHelperPolicy {
         allowed_outputs: BTreeSet::from([IvHelperOutput::IvAndGreeks]),
         input_policy_ref: "configured-derived-input-policy".to_string(),
         output_bounds: bounds(2.0),
+        minimum_valid_iv_output: 1.0e-8,
         convention_policy: IvConventionBounds {
             allowed_conventions: BTreeSet::from([convention()]),
         },
@@ -821,6 +822,20 @@ fn helper_floor_output_rejects_as_invalid_iv() {
         Err(IvDeriveError::Rejected {
             reason: IvRejectReason::InvalidIvValue,
             field: "iv".to_string(),
+        })
+    );
+}
+
+#[test]
+fn zero_freshness_rejects_stale_market_inputs() {
+    let mut policy = derived_input_policy();
+    policy.freshness_ns = 0;
+
+    assert_eq!(
+        resolve_derived_input_policy(&policy, complete_inputs(), &[]),
+        Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::StaleData,
+            field: "freshness".to_string(),
         })
     );
 }

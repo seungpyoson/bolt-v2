@@ -118,6 +118,11 @@ pub enum IvRuntimeEngineError {
         source_id: String,
         reason: IvRejectReason,
     },
+    SubscriptionPlanFailed {
+        profile_id: String,
+        source_id: String,
+        reason: IvRejectReason,
+    },
     Store(IvStoreError),
 }
 
@@ -906,7 +911,17 @@ impl IvRuntimeEngine {
         &self,
         outcomes: &[IvRuntimePlanOutcome],
     ) -> Result<(), IvRuntimeEngineError> {
+        let mut first_error = None;
         for outcome in outcomes {
+            if first_error.is_none()
+                && let Some(error) = &outcome.error
+            {
+                first_error = Some(IvRuntimeEngineError::SubscriptionPlanFailed {
+                    profile_id: error.profile_id.clone(),
+                    source_id: error.source_id.clone(),
+                    reason: error.reason,
+                });
+            }
             let Some((state, retention_policy)) = ({
                 let inner = self.read_inner();
                 inner
@@ -931,7 +946,7 @@ impl IvRuntimeEngine {
             }
         }
 
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 }
 

@@ -7624,14 +7624,16 @@ def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config
     errors.extend(raw_rust_storage_errors(action_text))
     errors.extend(verify_setup_action(action_text))
     errors.extend(verify_nextest_config(nextest_config_text))
-    errors.extend(verify_install_action_pin_consistency(workflows))
+    install_action_pin_sources = dict(workflows)
+    install_action_pin_sources[".github/actions/setup-environment/action.yml"] = action_text
+    errors.extend(verify_install_action_pin_consistency(install_action_pin_sources))
     return errors
 
 
-def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str]:
+def verify_install_action_pin_consistency(sources: dict[str, str]) -> list[str]:
     # Dependabot groups action bumps so all taiki-e/install-action pins move
     # together; this guards against half-bumps in human-authored PRs that
-    # leave workflow files referencing inconsistent SHAs. Scan line-by-line
+    # leave workflow/action files referencing inconsistent SHAs. Scan line-by-line
     # after stripping comments so commentary containing the action ref does
     # not produce false positives.
     #
@@ -7647,9 +7649,9 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
     # reference must not phantom-bucket and mask a real drift.
     errors: list[str] = []
     sha_to_files: dict[str, list[str]] = {}
-    for workflow_name, workflow_text in workflows.items():
+    for source_name, source_text in sources.items():
         previous_line_was_bare_uses_key = False
-        for line_index, line in enumerate(workflow_text.splitlines(), start=1):
+        for line_index, line in enumerate(source_text.splitlines(), start=1):
             clean = strip_comment(line)
             mentions_install_action = bool(TAIKI_INSTALL_ACTION_MENTION_RE.search(clean))
             scoped_to_uses_value = (
@@ -7662,12 +7664,12 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
             match = TAIKI_INSTALL_ACTION_RE.match(clean)
             if match is None:
                 errors.append(
-                    f"{workflow_name}:{line_index}: taiki-e/install-action must be referenced as "
+                    f"{source_name}:{line_index}: taiki-e/install-action must be referenced as "
                     f"'uses: taiki-e/install-action@<40-hex-SHA>' on a single line, got: {clean.strip()}"
                 )
                 continue
             sha = match.group(2).lower()
-            sha_to_files.setdefault(sha, []).append(workflow_name)
+            sha_to_files.setdefault(sha, []).append(source_name)
     if len(sha_to_files) > 1:
         parts = sorted(
             f"{sha} in {','.join(sorted(set(files)))}"

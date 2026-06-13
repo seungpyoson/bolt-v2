@@ -370,6 +370,7 @@ fn helper_policy() -> IvHelperPolicy {
         allowed_outputs: BTreeSet::from([IvHelperOutput::IvAndGreeks]),
         input_policy_ref: "configured-derived-input-policy".to_string(),
         output_bounds: bounds(),
+        minimum_valid_iv_output: 1.0e-8,
         convention_policy: IvConventionBounds {
             allowed_conventions: BTreeSet::from([convention()]),
         },
@@ -1033,6 +1034,29 @@ fn strategy_query_rejects_products_when_current_source_health_is_stale() {
 }
 
 #[test]
+fn strategy_query_rejects_products_when_current_source_health_is_missing() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            2_000,
+            test_implied_volatility(42),
+        ))
+        .unwrap();
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_source_health(vec![source_health(
+            "configured-other-source",
+            IvSourceHealthState::Active,
+        )]);
+
+    assert_eq!(
+        handle.query(&point_query(None, 2_000)),
+        Err(IvQueryError::ProductNotFound)
+    );
+}
+
+#[test]
 fn strategy_query_records_stale_source_health_rejection_for_current_product() {
     let mut store = IvStore::empty();
     store
@@ -1287,6 +1311,54 @@ fn retention_miss_tombstones_are_bounded_by_profile_retention() {
 }
 
 #[test]
+fn unauthorized_retention_miss_query_does_not_mutate_source_health() {
+    let mut store = IvStore::empty();
+    for ts in [2_000, 2_010] {
+        store
+            .ingest_event(greeks_event(
+                "configured-source",
+                "configured-selector-fingerprint",
+                ts,
+                test_implied_volatility(42),
+            ))
+            .unwrap();
+    }
+    let state = IvQueryStateHandle::new(IvQueryState::new(store));
+    let scoped = IvQueryHandle::from_state(
+        "configured-profile",
+        selector_scoped_authorization(),
+        state.clone(),
+    )
+    .with_retention_policy(IvRetentionPolicy {
+        max_raw_events: 2,
+        max_indexed_points: 1,
+        max_smiles: 1,
+        max_surfaces: 1,
+        max_derived_points: 1,
+        max_source_health_events: 4,
+    });
+    let observer =
+        IvQueryHandle::from_state("configured-profile", profile_wide_authorization(), state);
+    let before = observer
+        .source_health_for("configured-profile", "configured-source")
+        .expect("eviction should record retention source health");
+    assert_eq!(
+        before.reject_counts.get(&IvRejectReason::RetentionMiss),
+        Some(&1)
+    );
+
+    assert_eq!(
+        scoped.query(&point_query(None, 2_000)),
+        Err(IvQueryError::RetentionMiss)
+    );
+
+    let after = observer
+        .source_health_for("configured-profile", "configured-source")
+        .expect("retention source health should remain observable");
+    assert_eq!(after.reject_counts, before.reject_counts);
+}
+
+#[test]
 fn strategy_query_handle_rejects_raw_payload_requests() {
     let mut store = IvStore::empty();
     let raw = store
@@ -1355,6 +1427,10 @@ fn projected_scalar_query_uses_configured_fallback_policy_when_primary_projectio
         panic!("expected projected scalar IV product");
     };
     assert_eq!(projected.value, test_implied_volatility(42));
+    assert_eq!(
+        projected.provenance.transformation_steps,
+        vec!["configured-projection-policy".to_string()]
+    );
     assert!(
         projected
             .provenance
@@ -3537,6 +3613,45 @@ fn derived_iv_query_rejects_stale_profile_owned_input_candidate() {
             },
         })),
         Err(IvQueryError::DerivationRejected)
+    );
+}
+
+#[test]
+fn derived_iv_query_rejects_profile_owned_input_without_current_source_health() {
+    let mut profile_source_inputs = complete_inputs();
+    profile_source_inputs.source_id = "configured-underlying-source".to_string();
+    profile_source_inputs.source_kind = IvSourceKind::CustomImpliedVolatility;
+    profile_source_inputs.selector_fingerprint = "configured-underlying-selector".to_string();
+    profile_source_inputs.input_event_ids = vec!["configured-underlying-event".to_string()];
+
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_helper_policies(vec![helper_policy()])
+    .with_derived_input_policies(vec![query_supplied_derived_input_policy(
+        "configured-derived-input-policy",
+    )])
+    .with_derived_inputs(vec![profile_source_inputs])
+    .with_source_health(vec![source_health(
+        "configured-other-source",
+        IvSourceHealthState::Active,
+    )]);
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::DerivedIv,
+            selector: IvSelector::DerivedIvQuery {
+                instrument_id: "configured-option-instrument".to_string(),
+                helper_policy_id: "configured-helper-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+                inputs: None,
+            },
+        })),
+        Err(IvQueryError::DerivedInputNotFound)
     );
 }
 

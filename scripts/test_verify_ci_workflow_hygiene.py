@@ -216,7 +216,7 @@ jobs:
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
@@ -341,7 +341,7 @@ jobs:
           key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
       - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
@@ -405,7 +405,7 @@ jobs:
         run: |
           echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
@@ -451,7 +451,7 @@ jobs:
         run: |
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
       - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
           fallback: none
@@ -655,7 +655,7 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
@@ -1528,7 +1528,7 @@ def assert_nextest_live_node_group_covers_bolt_v3_builders() -> None:
 # and BASE_ADVISORY_WORKFLOW; SHA_ALT is a different valid 40-hex SHA used to
 # exercise drift, and SHA_BASE_UPPER is the base SHA in uppercase to exercise
 # normalization.
-PIN_CONSISTENCY_SHA_BASE = "3771e22aa892e03fd35585fae288baad1755695c"
+PIN_CONSISTENCY_SHA_BASE = "e49978b799e49ff429d162b7a30601a569ab6538"
 PIN_CONSISTENCY_SHA_ALT = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 PIN_CONSISTENCY_SHA_BASE_UPPER = PIN_CONSISTENCY_SHA_BASE.upper()
 
@@ -1573,6 +1573,31 @@ def assert_pin_consistency_same_sha_no_error() -> None:
     if drift_errors:
         raise AssertionError(
             f"expected no pin-drift errors for identical SHAs, got: {drift_errors!r}"
+        )
+
+
+def assert_pin_consistency_includes_setup_action() -> None:
+    """The composite setup action must be in the same install-action pin bucket."""
+    verifier = load_verifier()
+    setup_action_alt = BASE_ACTION.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_ALT}",
+        1,
+    )
+    errors = verifier.verify_workflows(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW},
+        setup_action_alt,
+        BASE_NEXTEST_CONFIG,
+    )
+    drift_errors = [e for e in errors if "taiki-e/install-action pin drift" in e]
+    if not drift_errors:
+        raise AssertionError(
+            f"expected setup-action pin drift to be reported, got: {errors!r}"
+        )
+    drift = drift_errors[0]
+    if ".github/actions/setup-environment/action.yml" not in drift:
+        raise AssertionError(
+            f"pin-drift error must include the setup action path, got: {drift!r}"
         )
 
 
@@ -4165,6 +4190,7 @@ def main() -> int:
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
     assert_pin_consistency_cross_file_mismatch_errors()
     assert_pin_consistency_same_sha_no_error()
+    assert_pin_consistency_includes_setup_action()
     assert_pin_consistency_rejects_mutable_tag()
     assert_pin_consistency_ignores_non_uses_mentions()
     assert_pin_consistency_accepts_uppercase_sha()
@@ -5222,7 +5248,7 @@ def main() -> int:
             "advisory.yml": replace_once(
                 BASE_ADVISORY_WORKFLOW,
                 """      - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none""",
@@ -5248,7 +5274,7 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none""",
@@ -5269,8 +5295,8 @@ def main() -> int:
         "ci.yml deny must install cargo-deny with pinned taiki-e/install-action",
         replace_once(
             BASE_WORKFLOW,
-            "uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c",
-            "uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c-suffix",
+            "uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538",
+            "uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538-suffix",
         ),
     )
     assert_error(
@@ -5278,14 +5304,14 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
       - run: just deny""",
             """      - run: just deny
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none""",
@@ -5685,7 +5711,7 @@ def main() -> int:
             BASE_WORKFLOW,
             """      - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none""",
@@ -5709,7 +5735,7 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-nextest
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none""",
@@ -5741,14 +5767,14 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-nextest
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
       - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4""",
             """      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none""",
@@ -5759,7 +5785,7 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
           fallback: none""",
@@ -5772,7 +5798,7 @@ def main() -> int:
         "ci.yml build must install cargo-zigbuild with pinned taiki-e/install-action",
         replace_once(
             BASE_WORKFLOW,
-            "        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c\n        with:\n          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
+            "        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538\n        with:\n          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
             "        uses: taiki-e/install-action@v2\n        with:\n          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
         ),
     )
@@ -5857,14 +5883,14 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
           fallback: none
       - run: just build""",
             """      - run: just build
       - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
           fallback: none""",
@@ -5877,7 +5903,7 @@ def main() -> int:
             "advisory.yml": replace_once(
                 BASE_ADVISORY_WORKFLOW,
                 """      - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
@@ -5886,7 +5912,7 @@ def main() -> int:
                 """      - name: Check advisories
         run: just deny-advisories
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none""",

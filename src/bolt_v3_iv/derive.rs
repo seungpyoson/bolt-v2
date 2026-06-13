@@ -19,8 +19,6 @@ pub enum IvNtHelperSymbol {
     ImplyVolAndGreeks,
 }
 
-const NT_IMPLIED_VOL_FAILURE_FLOOR: f64 = 1.0e-8;
-
 impl IvNtHelperSymbol {
     pub fn nt_symbol(self) -> &'static str {
         match self {
@@ -44,6 +42,7 @@ pub struct IvHelperPolicy {
     pub allowed_outputs: BTreeSet<IvHelperOutput>,
     pub input_policy_ref: String,
     pub output_bounds: IvNumericBounds,
+    pub minimum_valid_iv_output: f64,
     pub convention_policy: IvConventionBounds,
     pub failure_policy: IvHelperFailurePolicy,
     pub max_input_timestamp_skew_ns: u64,
@@ -306,7 +305,7 @@ pub fn derive_iv(
         resolved.option_price,
     );
 
-    if helper_result.vol <= NT_IMPLIED_VOL_FAILURE_FLOOR {
+    if helper_result.vol <= policy.minimum_valid_iv_output {
         return Err(IvDeriveError::Rejected {
             reason: IvRejectReason::InvalidIvValue,
             field: "iv".to_string(),
@@ -488,10 +487,9 @@ fn validate_resolved_input_policy(
             field: "max_input_skew_ns".to_string(),
         });
     }
-    if policy.freshness_ns > 0
-        && market_timed_inputs.iter().any(|(_, (_, ts))| {
-            inputs.as_of_ns.get().saturating_sub(ts.get()) > policy.freshness_ns
-        })
+    if market_timed_inputs
+        .iter()
+        .any(|(_, (_, ts))| inputs.as_of_ns.get().saturating_sub(ts.get()) > policy.freshness_ns)
     {
         return Err(IvDeriveError::Rejected {
             reason: IvRejectReason::StaleData,
@@ -513,7 +511,7 @@ fn validate_resolved_input_policy(
 }
 
 fn convention_policy_accepts(policy: &IvConventionBounds, convention: &IvConvention) -> bool {
-    policy.allowed_conventions.is_empty() || policy.allowed_conventions.contains(convention)
+    !policy.allowed_conventions.is_empty() && policy.allowed_conventions.contains(convention)
 }
 
 fn validate_input_bounds(

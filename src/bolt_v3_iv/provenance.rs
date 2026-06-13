@@ -191,6 +191,9 @@ pub fn validate_iv_provenance(provenance: &IvProvenance) -> Result<(), IvRejectR
             if provenance.input_event_ids.is_empty() || provenance.policy_decisions.is_empty() {
                 return Err(IvRejectReason::ProvenanceIncomplete);
             }
+            if provenance.helper_identity.is_none() && provenance.transformation_steps.is_empty() {
+                return Err(IvRejectReason::ProvenanceIncomplete);
+            }
             if provenance.helper_identity.is_some()
                 && !provenance
                     .policy_decisions

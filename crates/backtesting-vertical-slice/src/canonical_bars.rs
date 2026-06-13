@@ -607,9 +607,14 @@ pub fn normalize_csv_native_bars(
                      interval_source = \"declared\"",
                     opens.len()
                 );
-                let instrument_spec = bar_spec_from_open_times(&opens).with_context(|| {
-                    format!("instrument {instrument_key:?}: cannot derive bar period")
-                })?;
+                // Prefix the instrument key while preserving the specific
+                // derivation failure (e.g. "not a multiple") in the Display.
+                // A `with_context` wrapper would bury that reason behind a
+                // generic message in `to_string()`, masking the operator-
+                // actionable cause and diverging from the declared-interval
+                // path, which surfaces "not a multiple" at the top level.
+                let instrument_spec = bar_spec_from_open_times(&opens)
+                    .map_err(|error| anyhow::anyhow!("instrument {instrument_key:?}: {error:#}"))?;
                 match &object_spec {
                     None => object_spec = Some(instrument_spec),
                     Some(existing) => {

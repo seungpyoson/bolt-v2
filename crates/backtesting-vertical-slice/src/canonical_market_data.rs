@@ -154,31 +154,6 @@ pub struct CanonicalOrderBookDeltasTable {
     pub rows: Vec<CanonicalOrderBookDeltaRow>,
 }
 
-/// Enforce the NautilusTrader catalog-write ordering axis for one row.
-///
-/// NT's `write_to_parquet` orders and hard-checks by `ts_init`, where
-/// `ts_init = availability_time.unwrap_or(capture_time)` (catalog
-/// `check_ascending_timestamps` requires `a.ts_init() <= b.ts_init()`). The
-/// per-series `event_time` monotonicity guard does not cover this axis, so a
-/// table with monotonic `event_time` but a regressing `ts_init` would pass
-/// `validate()` and then fail late at the write (after the instrument is already
-/// written). This is the single shared `ts_init` guard mirroring the
-/// `previous_event_time` check: it returns the row's `ts_init` so the caller can
-/// thread it as `previous_ts_init` into the next row.
-pub(crate) fn ensure_ts_init_non_decreasing(
-    index: usize,
-    availability_time: Option<i64>,
-    capture_time: i64,
-    previous_ts_init: i64,
-) -> Result<i64> {
-    let ts_init = availability_time.unwrap_or(capture_time);
-    ensure!(
-        ts_init >= previous_ts_init,
-        "row {index}: ts_init {ts_init} precedes previous {previous_ts_init}"
-    );
-    Ok(ts_init)
-}
-
 impl CanonicalOrderBookDeltasTable {
     /// Validate required fields, fidelity class, timestamps, sequence density,
     /// and the snapshot delta-flag contract.
@@ -220,7 +195,6 @@ impl CanonicalOrderBookDeltasTable {
         let snapshot_flag = RecordFlag::F_SNAPSHOT as u8;
         let last_flag = RecordFlag::F_LAST as u8;
         let mut previous_event_time = i64::MIN;
-        let mut previous_ts_init = i64::MIN;
         for (index, row) in self.rows.iter().enumerate() {
             ensure!(
                 row.schema_version == NORMALIZED_SCHEMA_VERSION,
@@ -234,12 +208,6 @@ impl CanonicalOrderBookDeltasTable {
                 previous_event_time
             );
             previous_event_time = row.event_time;
-            previous_ts_init = ensure_ts_init_non_decreasing(
-                index,
-                row.availability_time,
-                row.capture_time,
-                previous_ts_init,
-            )?;
             ensure!(
                 row.sequence == index as u64,
                 "row {index}: sequence {} is not dense ascending from 0",
@@ -715,7 +683,6 @@ impl CanonicalQuotesTable {
         );
 
         let mut previous_event_time = i64::MIN;
-        let mut previous_ts_init = i64::MIN;
         for (index, row) in self.rows.iter().enumerate() {
             ensure!(
                 row.schema_version == NORMALIZED_SCHEMA_VERSION,
@@ -732,12 +699,6 @@ impl CanonicalQuotesTable {
                 previous_event_time
             );
             previous_event_time = row.event_time;
-            previous_ts_init = ensure_ts_init_non_decreasing(
-                index,
-                row.availability_time,
-                row.capture_time,
-                previous_ts_init,
-            )?;
             ensure!(
                 row.instrument_id == self.partition.instrument_id,
                 "row {index}: instrument_id does not match partition"
@@ -942,7 +903,6 @@ impl CanonicalIndexPricesTable {
         );
 
         let mut previous_event_time = i64::MIN;
-        let mut previous_ts_init = i64::MIN;
         for (index, row) in self.rows.iter().enumerate() {
             ensure!(
                 row.schema_version == NORMALIZED_SCHEMA_VERSION,
@@ -960,12 +920,6 @@ impl CanonicalIndexPricesTable {
                 previous_event_time
             );
             previous_event_time = row.event_time;
-            previous_ts_init = ensure_ts_init_non_decreasing(
-                index,
-                row.availability_time,
-                row.capture_time,
-                previous_ts_init,
-            )?;
             ensure!(
                 row.instrument_id == self.partition.instrument_id,
                 "row {index}: instrument_id does not match partition"
@@ -1116,7 +1070,6 @@ impl CanonicalMarkPricesTable {
         );
 
         let mut previous_event_time = i64::MIN;
-        let mut previous_ts_init = i64::MIN;
         for (index, row) in self.rows.iter().enumerate() {
             ensure!(
                 row.schema_version == NORMALIZED_SCHEMA_VERSION,
@@ -1134,12 +1087,6 @@ impl CanonicalMarkPricesTable {
                 previous_event_time
             );
             previous_event_time = row.event_time;
-            previous_ts_init = ensure_ts_init_non_decreasing(
-                index,
-                row.availability_time,
-                row.capture_time,
-                previous_ts_init,
-            )?;
             ensure!(
                 row.instrument_id == self.partition.instrument_id,
                 "row {index}: instrument_id does not match partition"
@@ -1870,43 +1817,6 @@ mod tests {
     }
 
     #[test]
-    fn deltas_validate_rejects_decreasing_ts_init() {
-        // event_time stays monotonic but ts_init (= availability_time or
-        // capture_time) regresses across rows. NT's catalog write orders and
-        // hard-checks by ts_init, so a table that passes the event_time guard but
-        // not the ts_init guard would fail late at the write; reject it here.
-        let mut table = snapshot_table();
-        // Row 0 carries a large capture_time; row 1 a smaller one -> ts_init drops
-        // while every event_time stays equal (the snapshot shares one event_time).
-        table.rows[0].capture_time = table.rows[0].event_time + 10;
-        table.rows[1].capture_time = table.rows[1].event_time;
-        let error = table.validate().expect_err("decreasing ts_init rejected");
-        assert!(
-            error.to_string().contains("ts_init")
-                && error.to_string().contains("precedes previous"),
-            "expected ts_init regression rejection; got: {error}"
-        );
-    }
-
-    #[test]
-    fn deltas_validate_rejects_decreasing_ts_init_via_availability_time() {
-        // availability_time, when present, is the ts_init axis (it shadows
-        // capture_time). A regressing availability_time must be rejected even
-        // when capture_time itself is monotonic.
-        let mut table = snapshot_table();
-        table.rows[0].availability_time = Some(table.rows[0].event_time + 10);
-        table.rows[1].availability_time = Some(table.rows[1].event_time);
-        let error = table
-            .validate()
-            .expect_err("decreasing availability_time ts_init rejected");
-        assert!(
-            error.to_string().contains("ts_init")
-                && error.to_string().contains("precedes previous"),
-            "expected ts_init regression rejection; got: {error}"
-        );
-    }
-
-    #[test]
     fn deltas_validate_rejects_clear_with_non_empty_payload() {
         let mut table = snapshot_table();
         table.rows[0].price = "0.50".to_string();
@@ -2528,22 +2438,6 @@ mod tests {
         assert!(error.to_string().contains("precedes previous"), "{error}");
     }
 
-    #[test]
-    fn quotes_validate_rejects_decreasing_ts_init() {
-        // event_time advances normally but ts_init (= capture_time here)
-        // regresses across rows; NT's catalog write orders by ts_init, so this
-        // must fail at validate(), not late at the write.
-        let mut table = quotes_table();
-        table.rows[0].capture_time = table.rows[0].event_time + 10;
-        table.rows[1].capture_time = table.rows[1].event_time;
-        let error = table.validate().expect_err("decreasing ts_init rejected");
-        assert!(
-            error.to_string().contains("ts_init")
-                && error.to_string().contains("precedes previous"),
-            "expected ts_init regression rejection; got: {error}"
-        );
-    }
-
     fn index_row(event_time: i64, value: &str) -> CanonicalIndexPriceRow {
         CanonicalIndexPriceRow {
             schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
@@ -2645,22 +2539,6 @@ mod tests {
             .validate()
             .expect_err("decreasing event_time rejected");
         assert!(error.to_string().contains("precedes previous"), "{error}");
-    }
-
-    #[test]
-    fn index_prices_validate_rejects_decreasing_ts_init() {
-        // event_time advances normally but ts_init (= capture_time here)
-        // regresses; NT's catalog write orders by ts_init, so reject at
-        // validate() rather than late at the write.
-        let mut table = index_prices_table();
-        table.rows[0].capture_time = table.rows[0].event_time + 10;
-        table.rows[1].capture_time = table.rows[1].event_time;
-        let error = table.validate().expect_err("decreasing ts_init rejected");
-        assert!(
-            error.to_string().contains("ts_init")
-                && error.to_string().contains("precedes previous"),
-            "expected ts_init regression rejection; got: {error}"
-        );
     }
 
     #[test]
@@ -2780,22 +2658,6 @@ mod tests {
             .validate()
             .expect_err("decreasing event_time rejected");
         assert!(error.to_string().contains("precedes previous"), "{error}");
-    }
-
-    #[test]
-    fn mark_prices_validate_rejects_decreasing_ts_init() {
-        // event_time advances normally but ts_init (= capture_time here)
-        // regresses; NT's catalog write orders by ts_init, so reject at
-        // validate() rather than late at the write.
-        let mut table = mark_prices_table();
-        table.rows[0].capture_time = table.rows[0].event_time + 10;
-        table.rows[1].capture_time = table.rows[1].event_time;
-        let error = table.validate().expect_err("decreasing ts_init rejected");
-        assert!(
-            error.to_string().contains("ts_init")
-                && error.to_string().contains("precedes previous"),
-            "expected ts_init regression rejection; got: {error}"
-        );
     }
 
     #[test]

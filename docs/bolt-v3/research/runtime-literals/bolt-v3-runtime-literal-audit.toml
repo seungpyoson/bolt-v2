@@ -8769,6 +8769,30 @@ classification = "realized_volatility_evidence_label"
 reason = "Stable realized-volatility rejection-reason evidence label emitted from source diagnostics; it records fail-closed provenance and does not configure trading behavior."
 
 [[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"buy"'''
+context = '''const SUBMIT_RESERVATION_METADATA_SIDE_BUY: &str = "buy";'''
+classification = "submit_reservation_metadata_label"
+reason = "Stable side buy metadata string label used to annotate submitted orders in prediction markets; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"prediction_market_binary"'''
+context = '''const SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY: &str = "prediction_market_binary";'''
+classification = "submit_reservation_metadata_label"
+reason = "Stable product kind metadata string label used to annotate submitted orders in prediction markets; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"sell"'''
+context = '''const SUBMIT_RESERVATION_METADATA_SIDE_SELL: &str = "sell";'''
+classification = "submit_reservation_metadata_label"
+reason = "Stable side sell metadata string label used to annotate submitted orders in prediction markets; not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_realized_volatility.rs"
 kind = "number"
 literal = '''1'''
@@ -9647,6 +9671,30 @@ literal = '''"submit_reservation_fill"'''
 context = '''"submit_reservation_fill" => {'''
 classification = "decision_evidence_envelope_kind"
 reason = "Replay discriminator for submit-reservation fill records used during recovery replay; it is a schema tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"prediction_market_binary"'''
+context = '''const SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY: &str = "prediction_market_binary";'''
+classification = "position_sizer_product_kind_tag"
+reason = "Canonical schema tag accepted by the startup recovery evidence reader for binary prediction-market reservation metadata."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"buy"'''
+context = '''const SUBMIT_RESERVATION_METADATA_SIDE_BUY: &str = "buy";'''
+classification = "position_sizer_order_side_tag"
+reason = "Canonical schema tag accepted by the startup recovery evidence reader for buy-side reservation metadata."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"sell"'''
+context = '''const SUBMIT_RESERVATION_METADATA_SIDE_SELL: &str = "sell";'''
+classification = "position_sizer_order_side_tag"
+reason = "Canonical schema tag accepted by the startup recovery evidence reader for sell-side reservation metadata."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"

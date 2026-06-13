@@ -312,6 +312,78 @@ fn feed_derives_collateral_allowance_from_venue_spendability_minimum() {
 }
 
 #[test]
+fn account_update_does_not_make_external_venue_spendability_fresh() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission);
+
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(100, 30, 25))
+            .is_none()
+    );
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            10_000,
+            100.0,
+        ))
+        .is_none()
+    );
+    let components = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            10_000,
+            100.0,
+        ))
+        .expect("complete account, portfolio, and venue state should publish");
+
+    assert_eq!(
+        components.venue_spendability.observed_at_ns, 100,
+        "fresh NT account state must not refresh externally sourced venue evidence"
+    );
+}
+
+#[test]
+fn recomputed_product_allowance_carries_fresh_component_timestamp() {
+    let admission = Arc::new(position_sized_admission());
+    let mut config = runtime_feed_config();
+    config.startup_observed_at_ns = 0;
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
+    product.observed_at_ns = 0;
+    let mut feed = PositionSizerRuntimeFeed::new(config, admission);
+
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(10_000, 30, 25))
+            .is_none()
+    );
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            10_000,
+            100.0,
+        ))
+        .is_none()
+    );
+    let components = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            10_000,
+            100.0,
+        ))
+        .expect("complete fresh components should publish");
+
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.collateral_allowance, Decimal::new(25, 0));
+    assert_eq!(
+        product.observed_at_ns, 10_000,
+        "recomputed product allowance must be timestamped with the fresh constraining inputs"
+    );
+}
+
+#[test]
 fn feed_uses_spendable_collateral_when_it_binds_before_allowance() {
     let admission = Arc::new(position_sized_admission());
     let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());

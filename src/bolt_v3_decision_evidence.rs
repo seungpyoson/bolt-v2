@@ -32,6 +32,9 @@ const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
 const BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";
 const BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND: &str = "submit_reservation_metadata";
 const BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND: &str = "submit_reservation_fill";
+const SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY: &str = "prediction_market_binary";
+const SUBMIT_RESERVATION_METADATA_SIDE_BUY: &str = "buy";
+const SUBMIT_RESERVATION_METADATA_SIDE_SELL: &str = "sell";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
 
@@ -1123,6 +1126,22 @@ fn validate_submit_reservation_metadata(
     if metadata.observed_at_ns == 0 {
         return Err(anyhow!(
             "submit reservation metadata observed_at_ns must be positive"
+        ));
+    }
+    if metadata.product_kind != SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY {
+        return Err(anyhow!(
+            "submit reservation metadata product_kind must use canonical `{}` encoding",
+            SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY
+        ));
+    }
+    if !matches!(
+        metadata.side.as_str(),
+        SUBMIT_RESERVATION_METADATA_SIDE_BUY | SUBMIT_RESERVATION_METADATA_SIDE_SELL
+    ) {
+        return Err(anyhow!(
+            "submit reservation metadata side must use canonical `{}` or `{}` encoding",
+            SUBMIT_RESERVATION_METADATA_SIDE_BUY,
+            SUBMIT_RESERVATION_METADATA_SIDE_SELL
         ));
     }
     require_positive_decimal(

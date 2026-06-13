@@ -14,7 +14,7 @@ use bolt_v2::{
         BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitIntentKind, BoltV3SubmitReservationFillEvidence,
         BoltV3SubmitReservationMetadataEvidence, decision_evidence_path,
-        read_latest_entry_decision_evidence_chain,
+        read_latest_entry_decision_evidence_chain, read_submit_reservation_recovery_evidence,
     },
     bolt_v3_realized_volatility::{
         RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
@@ -346,6 +346,39 @@ fn latest_entry_decision_evidence_chain_rejects_stale_v5_before_admission_payloa
     );
 }
 
+#[test]
+fn submit_reservation_recovery_rejects_noncanonical_metadata_encodings() {
+    for (field, value) in [("side", "Buy"), ("product_kind", "PredictionMarketBinary")] {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let evidence_path = temp.path().join("decision-evidence.jsonl");
+        let mut metadata = sample_submit_reservation_metadata();
+        match field {
+            "side" => metadata.side = value.to_string(),
+            "product_kind" => metadata.product_kind = value.to_string(),
+            _ => unreachable!("test only mutates known fields"),
+        }
+        write_decision_evidence_lines(
+            &evidence_path,
+            &[serde_json::json!({
+                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "recorded_at_utc_ns": 1_i64,
+                "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+                "kind": "submit_reservation_metadata",
+                "metadata": metadata,
+            })],
+        );
+
+        let error = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+            .expect_err("non-canonical submit reservation metadata must fail at read time");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains(field) && rendered.contains("canonical"),
+            "expected canonical {field} diagnostic, got: {rendered}"
+        );
+    }
+}
+
 fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
     let snapshot = BoltV3StrategyInputEvidenceSnapshot {
         strategy_id: "strategy-one".to_string(),
@@ -460,6 +493,27 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
             "decision": admission,
         }),
     ]
+}
+
+fn sample_submit_reservation_metadata() -> BoltV3SubmitReservationMetadataEvidence {
+    BoltV3SubmitReservationMetadataEvidence {
+        client_order_id: "client-order-one".to_string(),
+        submit_reservation_id: "client-order-one#1".to_string(),
+        venue_id: "POLYMARKET".to_string(),
+        account_id: "POLYMARKET-001".to_string(),
+        product_kind: "prediction_market_binary".to_string(),
+        collateral_currency: "PUSD".to_string(),
+        capital_pool_id: "polymarket-prediction-live".to_string(),
+        collateral_group_id: "condition-one".to_string(),
+        instrument_id: "condition-one-yes.POLYMARKET".to_string(),
+        side: "buy".to_string(),
+        submitted_quantity: "10".to_string(),
+        liability_factor: "0.4".to_string(),
+        additive_liability: "0.3".to_string(),
+        reserved_liability: "4.3".to_string(),
+        observed_at_ns: 1_000,
+        source: "submit_admission".to_string(),
+    }
 }
 
 fn write_decision_evidence_lines(path: &std::path::Path, lines: &[serde_json::Value]) {

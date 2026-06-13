@@ -527,9 +527,7 @@ impl PositionSizerRuntimeComponentBuilder {
         observed_at_ns: u64,
     ) {
         match self.latest_venue_spendability.as_mut() {
-            Some(current) if current.source != NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE => {
-                current.observed_at_ns = current.observed_at_ns.max(observed_at_ns);
-            }
+            Some(current) if current.source != NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE => {}
             Some(current) => {
                 current.observed_at_ns = observed_at_ns;
                 current.spendable_collateral = free_collateral;
@@ -653,9 +651,11 @@ impl PositionSizerRuntimeComponentBuilder {
                 snapshot.collateral_allowance = free_collateral
                     .min(venue_spendability.spendable_collateral)
                     .min(venue_spendability.collateral_allowance);
-                snapshot
+                snapshot.observed_at_ns = snapshot
                     .observed_at_ns
-                    .max(venue_spendability.observed_at_ns)
+                    .max(account_observed_at_ns)
+                    .max(venue_spendability.observed_at_ns);
+                snapshot.observed_at_ns
             }
         };
         let observed_at_ns = account_observed_at_ns

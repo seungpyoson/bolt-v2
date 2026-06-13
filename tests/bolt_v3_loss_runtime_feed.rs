@@ -1,6 +1,7 @@
 mod support;
 
 use bolt_v2::bolt_v3_loss_governor::LossGovernorPolicy;
+use bolt_v2::bolt_v3_loss_halt_actions::LossGovernorHaltActionHandler;
 use bolt_v2::bolt_v3_loss_runtime_feed::{
     LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig, subscribe_loss_governor_runtime_feed,
 };
@@ -86,6 +87,82 @@ fn subscribed_nt_events_update_submit_admission_loss_snapshot() {
     admission
         .admit_at(&submit_request(Decimal::new(1, 0)), 2_100)
         .expect("subscribed NT-derived snapshot should admit entry submit");
+}
+
+#[test]
+fn halt_action_handler_receives_snapshot_init_time_as_now() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-HALT-INIT");
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let handler_calls = Rc::clone(&calls);
+    let handler: LossGovernorHaltActionHandler = Rc::new(move |snapshot, now_ns| {
+        handler_calls
+            .borrow_mut()
+            .push((snapshot.map(|snapshot| snapshot.observed_at_ns), now_ns));
+    });
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 500,
+        },
+        admission,
+    )
+    .with_halt_action_handler(handler);
+
+    feed.on_portfolio_snapshot(&portfolio_snapshot_with_init(
+        account_id, 1_000, 2_000, -4.0, -3.0, 1_000.0,
+    ))
+    .expect("valid portfolio facts should publish a loss snapshot");
+
+    assert_eq!(
+        calls.borrow().as_slice(),
+        &[(Some(1_000), 2_000)],
+        "halt actions must evaluate freshness at NT init time, not at the snapshot observation time"
+    );
+}
+
+#[test]
+fn subscribed_untrusted_portfolio_snapshot_invokes_halt_action_with_none() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-UNTRUSTED");
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let handler_calls = Rc::clone(&calls);
+    let handler: LossGovernorHaltActionHandler = Rc::new(move |snapshot, now_ns| {
+        handler_calls
+            .borrow_mut()
+            .push((snapshot.is_none(), now_ns));
+    });
+    let feed = Rc::new(RefCell::new(
+        LossGovernorRuntimeFeed::new(
+            LossGovernorRuntimeFeedConfig {
+                account_id,
+                rolling_window_ns: 500,
+            },
+            admission,
+        )
+        .with_halt_action_handler(handler),
+    ));
+    let mut subscription = subscribe_loss_governor_runtime_feed(feed);
+
+    publish_portfolio_snapshot(
+        "events.portfolio.SIM-LOSS-UNTRUSTED".into(),
+        &portfolio_snapshot_without_pnl(account_id, 1_000, 2_000, 1_000.0),
+    );
+    subscription.unsubscribe_all();
+
+    assert_eq!(
+        calls.borrow().as_slice(),
+        &[(true, 2_000)],
+        "same-account malformed NT loss evidence must trigger the untrusted-snapshot action path"
+    );
 }
 
 #[test]
@@ -242,6 +319,50 @@ fn portfolio_snapshot(
         UUID4::default(),
         ts_event.into(),
         ts_event.into(),
+    )
+}
+
+fn portfolio_snapshot_with_init(
+    account_id: AccountId,
+    ts_event: u64,
+    ts_init: u64,
+    realized_pnl: f64,
+    unrealized_pnl: f64,
+    total_equity: f64,
+) -> PortfolioSnapshot {
+    PortfolioSnapshot::new(
+        account_id,
+        AccountType::Cash,
+        Some(Currency::USD()),
+        vec![],
+        vec![],
+        vec![Money::new(unrealized_pnl, Currency::USD())],
+        vec![Money::new(realized_pnl, Currency::USD())],
+        vec![Money::new(total_equity, Currency::USD())],
+        UUID4::default(),
+        ts_event.into(),
+        ts_init.into(),
+    )
+}
+
+fn portfolio_snapshot_without_pnl(
+    account_id: AccountId,
+    ts_event: u64,
+    ts_init: u64,
+    total_equity: f64,
+) -> PortfolioSnapshot {
+    PortfolioSnapshot::new(
+        account_id,
+        AccountType::Cash,
+        Some(Currency::USD()),
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![Money::new(total_equity, Currency::USD())],
+        UUID4::default(),
+        ts_event.into(),
+        ts_init.into(),
     )
 }
 

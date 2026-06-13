@@ -86,27 +86,42 @@ pub fn subscribe_loss_governor_runtime_feed(
 ) -> LossGovernorRuntimeFeedSubscription {
     let position_feed = Rc::clone(&feed);
     let position_events = TypedHandler::from(move |event: &PositionEvent| {
-        let (snapshot, handler) = {
+        let now_ns = position_event_ts_init(event);
+        let (snapshot, handler, should_invoke) = {
             let mut feed = position_feed.borrow_mut();
+            let should_invoke = position_event_can_carry_loss_fact(event)
+                && position_event_account_id(event) == feed.config.account_id;
             (
-                feed.on_position_event_without_halt_action(event),
+                should_invoke
+                    .then(|| feed.on_position_event_without_halt_action(event))
+                    .flatten(),
                 feed.halt_action_handler.clone(),
+                should_invoke,
             )
         };
-        invoke_loss_halt_action(handler, snapshot.as_ref());
+        if should_invoke {
+            invoke_loss_halt_action(handler, snapshot.as_ref(), now_ns);
+        }
     });
     subscribe_position_events(position_events_pattern(), position_events.clone(), None);
 
     let portfolio_feed = Rc::clone(&feed);
     let portfolio_snapshots = TypedHandler::from(move |snapshot: &PortfolioSnapshot| {
-        let (loss_snapshot, handler) = {
+        let now_ns = snapshot.ts_init.as_u64();
+        let (loss_snapshot, handler, should_invoke) = {
             let mut feed = portfolio_feed.borrow_mut();
+            let should_invoke = snapshot.account_id == feed.config.account_id;
             (
-                feed.on_portfolio_snapshot_without_halt_action(snapshot),
+                should_invoke
+                    .then(|| feed.on_portfolio_snapshot_without_halt_action(snapshot))
+                    .flatten(),
                 feed.halt_action_handler.clone(),
+                should_invoke,
             )
         };
-        invoke_loss_halt_action(handler, loss_snapshot.as_ref());
+        if should_invoke {
+            invoke_loss_halt_action(handler, loss_snapshot.as_ref(), now_ns);
+        }
     });
     subscribe_portfolio_snapshot(
         portfolio_snapshots_pattern(),
@@ -158,9 +173,13 @@ impl LossGovernorRuntimeFeed {
     }
 
     pub fn on_portfolio_snapshot(&mut self, snapshot: &PortfolioSnapshot) -> Option<LossSnapshot> {
-        let snapshot = self.on_portfolio_snapshot_without_halt_action(snapshot)?;
-        self.invoke_halt_action(&snapshot);
-        Some(snapshot)
+        if snapshot.account_id != self.config.account_id {
+            return None;
+        }
+        let now_ns = snapshot.ts_init.as_u64();
+        let snapshot = self.on_portfolio_snapshot_without_halt_action(snapshot);
+        self.invoke_halt_action(snapshot.as_ref(), now_ns);
+        snapshot
     }
 
     fn on_portfolio_snapshot_without_halt_action(
@@ -206,9 +225,15 @@ impl LossGovernorRuntimeFeed {
     }
 
     pub fn on_position_event(&mut self, event: &PositionEvent) -> Option<LossSnapshot> {
-        let snapshot = self.on_position_event_without_halt_action(event)?;
-        self.invoke_halt_action(&snapshot);
-        Some(snapshot)
+        if !position_event_can_carry_loss_fact(event)
+            || position_event_account_id(event) != self.config.account_id
+        {
+            return None;
+        }
+        let now_ns = position_event_ts_init(event);
+        let snapshot = self.on_position_event_without_halt_action(event);
+        self.invoke_halt_action(snapshot.as_ref(), now_ns);
+        snapshot
     }
 
     fn on_position_event_without_halt_action(
@@ -265,9 +290,9 @@ impl LossGovernorRuntimeFeed {
         Some(snapshot)
     }
 
-    fn invoke_halt_action(&self, snapshot: &LossSnapshot) {
+    fn invoke_halt_action(&self, snapshot: Option<&LossSnapshot>, now_ns: u64) {
         if let Some(handler) = self.halt_action_handler.as_ref() {
-            handler(Some(snapshot), snapshot.observed_at_ns);
+            handler(snapshot, now_ns);
         }
     }
 }
@@ -275,9 +300,10 @@ impl LossGovernorRuntimeFeed {
 fn invoke_loss_halt_action(
     handler: Option<LossGovernorHaltActionHandler>,
     snapshot: Option<&LossSnapshot>,
+    now_ns: u64,
 ) {
-    if let (Some(handler), Some(snapshot)) = (handler, snapshot) {
-        handler(Some(snapshot), snapshot.observed_at_ns);
+    if let Some(handler) = handler {
+        handler(snapshot, now_ns);
     }
 }
 
@@ -407,6 +433,28 @@ fn position_pnl_fact(event: &PositionEvent) -> Option<PositionPnlFact> {
             })
         }
     }
+}
+
+fn position_event_account_id(event: &PositionEvent) -> AccountId {
+    match event {
+        PositionEvent::PositionOpened(opened) => opened.account_id,
+        PositionEvent::PositionChanged(changed) => changed.account_id,
+        PositionEvent::PositionClosed(closed) => closed.account_id,
+        PositionEvent::PositionAdjusted(adjusted) => adjusted.account_id,
+    }
+}
+
+fn position_event_ts_init(event: &PositionEvent) -> u64 {
+    match event {
+        PositionEvent::PositionOpened(opened) => opened.ts_init.as_u64(),
+        PositionEvent::PositionChanged(changed) => changed.ts_init.as_u64(),
+        PositionEvent::PositionClosed(closed) => closed.ts_init.as_u64(),
+        PositionEvent::PositionAdjusted(adjusted) => adjusted.ts_init.as_u64(),
+    }
+}
+
+fn position_event_can_carry_loss_fact(event: &PositionEvent) -> bool {
+    !matches!(event, PositionEvent::PositionOpened(_))
 }
 
 fn combined_position_pnl(realized_pnl: Option<Money>, unrealized_pnl: Money) -> Option<Decimal> {

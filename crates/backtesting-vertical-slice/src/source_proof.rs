@@ -115,6 +115,17 @@ pub fn resolve_source_bindings_path(path: &Path) -> PathBuf {
     }
 }
 
+/// Read a source-binding registry from a (possibly repo-relative) path.
+/// Single source of truth for loading a configured registry from disk.
+pub fn read_source_binding_registry_from_path(
+    path: &std::path::Path,
+) -> std::io::Result<SourceBindingRegistry> {
+    let resolved = resolve_source_bindings_path(path);
+    let text = std::fs::read_to_string(&resolved)?;
+    SourceBindingRegistry::from_toml_str(&text)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
 impl SourceBindingConfig {
     fn into_metadata(self) -> SourceBindingMetadata {
         SourceBindingMetadata {

@@ -1,5 +1,6 @@
 ledger_id = "backfill-coverage-ledger-binance-bnbusdc-2026-03-01-2026-05-31"
 output_dir = "specs/023-nt-research-analytics-platform/reference/backfill-coverage-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 
 [[manifest]]
 manifest_uri = "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/accepted-tranche/backfill-accepted-tranche-manifest.json"

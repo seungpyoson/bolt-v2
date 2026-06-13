@@ -11,7 +11,10 @@ use backtesting_vertical_slice::{
         write_coverage_ledger_artifact_from_manifest_files,
         write_coverage_ledger_artifact_from_spec_file,
     },
-    source_proof::{CONTRACT_VERSION, SOURCE_PROOF_SCHEMA_VERSION, SourceProofStatus},
+    source_proof::{
+        CONTRACT_VERSION, SOURCE_PROOF_SCHEMA_VERSION, SourceProofStatus,
+        committed_source_binding_registry,
+    },
 };
 
 fn completed_manifest() -> BackfillCoverageManifestEvidence {
@@ -132,6 +135,7 @@ fn coverage_ledger_binds_source_proof_metadata_from_report_path() {
             r#"
 ledger_id = "ledger-synthetic-source-proof-bound"
 output_dir = "{}"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 
 [[manifest]]
 manifest_uri = "manifest://synthetic/source-proof-bound.json"
@@ -208,6 +212,7 @@ fn coverage_ledger_rejects_metadata_conflicting_with_source_proof_path() {
             r#"
 ledger_id = "ledger-synthetic-source-proof-conflict"
 output_dir = "{}"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 
 [[manifest]]
 manifest_uri = "manifest://synthetic/source-proof-conflict.json"
@@ -294,6 +299,7 @@ fn coverage_ledger_rejects_source_proof_path_with_invalid_accepted_proof() {
             r#"
 ledger_id = "ledger-synthetic-invalid-accepted-proof"
 output_dir = "{}"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 
 [[manifest]]
 manifest_uri = "manifest://synthetic/invalid-accepted-proof.json"
@@ -880,6 +886,7 @@ fn coverage_ledger_writer_reads_manifest_json_files_and_writes_artifact() {
             manifest_file("manifest://synthetic/file-b.json", second_path),
         ],
         vec![],
+        &committed_source_binding_registry(),
     )
     .expect("write coverage ledger from manifest files");
 
@@ -920,6 +927,7 @@ fn coverage_ledger_writer_binds_coverage_axis_from_manifest_file_spec() {
             r#"
 ledger_id = "ledger-synthetic-file-axis"
 output_dir = "{}"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 
 [[manifest]]
 manifest_uri = "manifest://synthetic/file-axis.json"
@@ -975,6 +983,7 @@ fn coverage_ledger_accepts_accepted_tranche_manifest_with_spec_owned_write_mode(
             r#"
 ledger_id = "ledger-synthetic-accepted-tranche"
 output_dir = "{}"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 
 [[manifest]]
 manifest_uri = "repo://synthetic/accepted-tranche.json"
@@ -1024,6 +1033,7 @@ fn coverage_ledger_writer_reports_manifest_uri_for_invalid_json_file() {
             manifest_path.clone(),
         )],
         vec![],
+        &committed_source_binding_registry(),
     )
     .unwrap_err();
 
@@ -1069,6 +1079,7 @@ fn coverage_ledger_writer_reads_toml_spec_and_writes_artifact() {
             r#"
 ledger_id = "ledger-synthetic-spec"
 output_dir = "{}"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 
 [[manifest]]
 manifest_uri = "manifest://synthetic/spec-a.json"
@@ -1118,6 +1129,7 @@ fn coverage_ledger_spec_binds_source_proof_metadata_when_manifest_lacks_it() {
             r#"
 ledger_id = "ledger-synthetic-bound-proof"
 output_dir = "{}"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 
 [[manifest]]
 manifest_uri = "manifest://synthetic/bound-proof.json"

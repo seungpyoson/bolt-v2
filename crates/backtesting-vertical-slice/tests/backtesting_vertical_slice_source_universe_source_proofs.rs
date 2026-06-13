@@ -25,6 +25,7 @@ fn binance_all_instrument_category_source_proofs_are_materialized_from_manifests
             r#"
 proof_set_id = "source-universe-source-proofs-binance-data-vision-trades-2026-03-01-all-instruments"
 output_dir = "{output_dir}"
+source_bindings_path = "{source_bindings_path}"
 venue = "binance"
 table_family = "trades"
 manifest_table_family = "native_trades"
@@ -118,6 +119,9 @@ instrument_universe_id = "binance-coin-m-delivery-instruments-2026-03-01-all-ins
 category_manifest_path = "{manifest_root}/binance-data-vision-trades-object-manifest-coin_m_delivery.json"
 "#,
             output_dir = output_dir.display(),
+            source_bindings_path = reference_root
+                .join("backfill-source-bindings.v1.toml")
+                .display(),
             manifest_root = manifest_root.display(),
         ),
     )
@@ -172,6 +176,7 @@ fn source_universe_source_proofs_preserve_configured_l2_replay_evidence() {
             r#"
 proof_set_id = "source-universe-source-proofs-binance-l2-evidence-regression"
 output_dir = "{output_dir}"
+source_bindings_path = "{source_bindings_path}"
 venue = "binance"
 table_family = "trades"
 manifest_table_family = "native_trades"
@@ -227,6 +232,9 @@ instrument_universe_id = "binance-spot-instruments-2026-03-01-all-instruments"
 category_manifest_path = "{manifest_path}"
 "#,
             output_dir = output_dir.display(),
+            source_bindings_path = reference_root
+                .join("backfill-source-bindings.v1.toml")
+                .display(),
             manifest_path = manifest_path.display(),
         ),
     )
@@ -277,6 +285,7 @@ fn source_universe_source_proofs_materialize_pmxt_pending_manifest_scoped_l2_pro
             r#"
 proof_set_id = "source-universe-source-proofs-pmxt-polymarket-v2-current"
 output_dir = "{output_dir}"
+source_bindings_path = "{source_bindings_path}"
 venue = "polymarket"
 table_family = "order_book_snapshot_deltas"
 manifest_table_family = "order_book_snapshot_deltas"
@@ -371,6 +380,9 @@ instrument_universe_id = "pmxt-polymarket-v2-current-orderbook"
 category_manifest_path = "{manifest_path}"
 "#,
             output_dir = output_dir.display(),
+            source_bindings_path = reference_root
+                .join("backfill-source-bindings.v1.toml")
+                .display(),
             manifest_path = manifest_path.display(),
         ),
     )

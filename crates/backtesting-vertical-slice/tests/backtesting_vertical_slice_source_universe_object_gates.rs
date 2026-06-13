@@ -28,6 +28,7 @@ fn source_universe_object_gates_cover_every_bybit_queue_item() {
 gate_id = "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
 queue_path = "{queue_path}"
 output_dir = "{output_dir}"
+source_bindings_path = "{source_bindings_path}"
 
 [[source_binding]]
 source_binding = "bybit-spot-tick-trades"
@@ -45,6 +46,9 @@ source_proof_path = "{inverse_proof}"
 category_manifest_path = "{inverse_manifest}"
 "#,
             output_dir = output_dir.display(),
+            source_bindings_path = reference_root
+                .join("backfill-source-bindings.v1.toml")
+                .display(),
             queue_path = reference_root
                 .join("source-universe-conversion-queues/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/queue/source-universe-conversion-queue.json")
                 .display(),
@@ -136,6 +140,7 @@ fn committed_binance_source_universe_object_gates_use_canonical_trade_table_fami
 gate_id = "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments"
 queue_path = "{queue_path}"
 output_dir = "{output_dir}"
+source_bindings_path = "{source_bindings_path}"
 
 [[source_binding]]
 source_binding = "binance-spot-native-trades"
@@ -163,6 +168,9 @@ source_proof_path = "{coin_m_delivery_proof}"
 category_manifest_path = "{coin_m_delivery_manifest}"
 "#,
             output_dir = output_dir.display(),
+            source_bindings_path = reference_root
+                .join("backfill-source-bindings.v1.toml")
+                .display(),
             queue_path = reference_root
                 .join("source-universe-conversion-queues/binance-data-vision-trades-2026-03-01-all-instruments/queue/source-universe-conversion-queue.json")
                 .display(),
@@ -319,6 +327,7 @@ fn source_universe_object_gates_accept_non_sha_source_hashes_without_faking_payl
 gate_id = "source-universe-object-gates-non-sha-source-hashes"
 queue_path = "{queue_path}"
 output_dir = "{output_dir}"
+source_bindings_path = "{source_bindings_path}"
 
 [[source_binding]]
 source_binding = "bybit-spot-tick-trades"
@@ -327,6 +336,9 @@ category_manifest_path = "{category_manifest_path}"
 "#,
             queue_path = queue_path.display(),
             output_dir = output_dir.display(),
+            source_bindings_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml")
+                .display(),
             proof_path = proof_path.display(),
             category_manifest_path = category_manifest_path.display(),
         ),

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::{
-    source_proof::SourceProofReport,
+    source_proof::{SourceBindingRegistry, SourceProofReport},
     source_universe_conversion_queue::{
         SourceUniverseConversionQueue, SourceUniverseConversionQueueStatus,
         SourceUniverseConversionWorkItem,
@@ -31,6 +31,7 @@ pub struct SourceUniverseObjectGateMaterializationSpec {
     pub gate_id: String,
     pub queue_path: PathBuf,
     pub output_dir: PathBuf,
+    pub source_bindings_path: PathBuf,
     #[serde(default)]
     pub overwrite_existing_artifacts: bool,
     #[serde(rename = "source_binding", default)]
@@ -305,7 +306,15 @@ pub fn evaluate_source_universe_object_gate_materialization(
         "source-universe conversion queue work_item_count does not match records"
     );
 
-    let contexts = binding_contexts(base_dir, &spec.source_bindings)?;
+    let registry =
+        crate::source_proof::read_source_binding_registry_from_path(&spec.source_bindings_path)
+            .with_context(|| {
+                format!(
+                    "read source-binding registry {}",
+                    spec.source_bindings_path.display()
+                )
+            })?;
+    let contexts = binding_contexts(base_dir, &spec.source_bindings, &registry)?;
     let mut artifact_refs = vec![artifact_ref(
         "source_universe_conversion_queue",
         &queue_path,
@@ -389,6 +398,7 @@ pub fn evaluate_source_universe_object_gate_materialization(
 fn binding_contexts(
     base_dir: &Path,
     specs: &[SourceUniverseObjectGateSourceBindingSpec],
+    registry: &SourceBindingRegistry,
 ) -> Result<BTreeMap<String, BindingContext>> {
     let mut seen = BTreeSet::new();
     let mut contexts = BTreeMap::new();
@@ -413,12 +423,14 @@ fn binding_contexts(
             source_proof.source_binding,
             spec.source_binding
         );
-        source_proof.evaluate_acceptance().with_context(|| {
-            format!(
-                "source proof {} is not accepted",
-                source_proof.source_proof_id
-            )
-        })?;
+        source_proof
+            .evaluate_acceptance_with_registry(registry)
+            .with_context(|| {
+                format!(
+                    "source proof {} is not accepted",
+                    source_proof.source_proof_id
+                )
+            })?;
         let category_manifest: CategoryObjectManifest = read_json(&category_manifest_path)?;
         ensure!(
             category_manifest.source_binding == spec.source_binding,

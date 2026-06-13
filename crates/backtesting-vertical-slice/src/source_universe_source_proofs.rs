@@ -21,7 +21,6 @@ use crate::source_proof::{
     LicenseScope, NtMappingStatus, RequiredCheck, RequiredChecks, SOURCE_PROOF_SCHEMA_VERSION,
     SourceCandidateClass, SourceProofClaimLimit, SourceProofFidelityClass, SourceProofReport,
     SourceProofStatus, SourceProofUsageScope, SourceSelectionStatus, TimeRange,
-    committed_source_binding_registry,
 };
 
 pub const SOURCE_UNIVERSE_SOURCE_PROOF_SET_SCHEMA_VERSION: &str =
@@ -33,6 +32,7 @@ pub const SOURCE_UNIVERSE_SOURCE_PROOF_SET_FILE: &str = "source-universe-source-
 pub struct SourceUniverseSourceProofSetSpec {
     pub proof_set_id: String,
     pub output_dir: PathBuf,
+    pub source_bindings_path: PathBuf,
     pub venue: String,
     pub table_family: String,
     pub manifest_table_family: String,
@@ -304,7 +304,14 @@ fn evaluate_and_write_source_universe_source_proofs(
     );
     validate_acceptance_provenance_config(spec)?;
 
-    let registry = committed_source_binding_registry();
+    let registry =
+        crate::source_proof::read_source_binding_registry_from_path(&spec.source_bindings_path)
+            .with_context(|| {
+                format!(
+                    "read source-binding registry {}",
+                    spec.source_bindings_path.display()
+                )
+            })?;
     let mut seen_bindings = BTreeSet::new();
     let mut seen_proofs = BTreeSet::new();
     let mut summaries = Vec::with_capacity(spec.source_bindings.len());
@@ -438,12 +445,14 @@ fn evaluate_and_write_source_universe_source_proofs(
             supersedes_source_proof_id: None,
         };
         if proof.status == SourceProofStatus::Accepted {
-            proof.evaluate_acceptance().with_context(|| {
-                format!(
-                    "generated source proof {} is not accepted",
-                    proof.source_proof_id
-                )
-            })?;
+            proof
+                .evaluate_acceptance_with_registry(&registry)
+                .with_context(|| {
+                    format!(
+                        "generated source proof {} is not accepted",
+                        proof.source_proof_id
+                    )
+                })?;
             accepted_proof_count += 1;
         }
         let proof_bytes = serde_json::to_vec_pretty(&proof)

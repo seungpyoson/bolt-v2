@@ -34,6 +34,7 @@ fn coverage_ledger_cli_writes_artifact_from_config_owned_spec() {
             r#"
 ledger_id = "ledger-synthetic-cli"
 output_dir = "{}"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 
 [[manifest]]
 manifest_uri = "manifest://synthetic/cli-a.json"

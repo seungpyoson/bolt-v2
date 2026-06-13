@@ -1,5 +1,6 @@
 proof_set_id = "source-universe-source-proofs-binance-data-vision-trades-2026-03-01-all-instruments"
 output_dir = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 venue = "binance"
 table_family = "trades"
 manifest_table_family = "native_trades"

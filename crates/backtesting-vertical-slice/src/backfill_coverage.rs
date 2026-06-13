@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::source_proof::{SourceProofReport, SourceProofStatus};
+use crate::source_proof::{SourceBindingRegistry, SourceProofReport, SourceProofStatus};
 
 pub const BACKFILL_COVERAGE_LEDGER_SCHEMA_VERSION: &str = "backfill-coverage-ledger.v1";
 pub const BACKFILL_COVERAGE_LEDGER_FILE: &str = "backfill-coverage-ledger.json";
@@ -145,6 +145,10 @@ pub enum BackfillCoverageManifestFileError {
         path: String,
         error: String,
     },
+    ReadSourceBindings {
+        path: String,
+        error: String,
+    },
     ReadManifest {
         manifest_uri: String,
         path: String,
@@ -188,6 +192,9 @@ impl fmt::Display for BackfillCoverageManifestFileError {
             }
             Self::ParseSpecToml { path, error } => {
                 write!(f, "parse backfill coverage spec TOML {path}: {error}")
+            }
+            Self::ReadSourceBindings { path, error } => {
+                write!(f, "read backfill coverage source bindings {path}: {error}")
             }
             Self::ReadManifest {
                 manifest_uri,
@@ -341,6 +348,7 @@ pub struct BackfillCoverageManifestFile {
 pub struct BackfillCoverageLedgerSpec {
     pub ledger_id: String,
     pub output_dir: PathBuf,
+    pub source_bindings_path: PathBuf,
     #[serde(rename = "manifest", default)]
     pub manifests: Vec<BackfillCoverageManifestFile>,
     #[serde(rename = "inventory", default)]
@@ -675,6 +683,7 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
     ledger_id: impl Into<String>,
     manifest_files: Vec<BackfillCoverageManifestFile>,
     inventories: Vec<BackfillPhysicalInventory>,
+    registry: &SourceBindingRegistry,
 ) -> Result<BackfillCoverageLedgerArtifact, BackfillCoverageManifestFileError> {
     let manifest_summaries = manifest_files
         .into_iter()
@@ -709,7 +718,7 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
             })?;
             let source_proof_metadata = source_proof_path
                 .as_deref()
-                .map(|path| read_source_proof_metadata(&manifest_uri, path))
+                .map(|path| read_source_proof_metadata(&manifest_uri, path, registry))
                 .transpose()?;
             let source_binding = merge_source_proof_metadata_string(
                 &manifest_uri,
@@ -836,17 +845,27 @@ pub fn write_coverage_ledger_artifact_from_spec_file(
             error: error.to_string(),
         }
     })?;
+    let registry =
+        crate::source_proof::read_source_binding_registry_from_path(&spec.source_bindings_path)
+            .map_err(
+                |error| BackfillCoverageManifestFileError::ReadSourceBindings {
+                    path: spec.source_bindings_path.display().to_string(),
+                    error: error.to_string(),
+                },
+            )?;
     write_coverage_ledger_artifact_from_manifest_files(
         &spec.output_dir,
         spec.ledger_id,
         spec.manifests,
         spec.inventories,
+        &registry,
     )
 }
 
 fn read_source_proof_metadata(
     manifest_uri: &str,
     path: &Path,
+    registry: &SourceBindingRegistry,
 ) -> Result<SourceProofReport, BackfillCoverageManifestFileError> {
     let path_display = path.display().to_string();
     let bytes =
@@ -863,13 +882,15 @@ fn read_source_proof_metadata(
         }
     })?;
     if proof.status == SourceProofStatus::Accepted {
-        proof.evaluate_acceptance().map_err(|error| {
-            BackfillCoverageManifestFileError::SourceProofAcceptanceRejected {
-                manifest_uri: manifest_uri.to_string(),
-                path: path_display,
-                error: error.to_string(),
-            }
-        })?;
+        proof
+            .evaluate_acceptance_with_registry(registry)
+            .map_err(
+                |error| BackfillCoverageManifestFileError::SourceProofAcceptanceRejected {
+                    manifest_uri: manifest_uri.to_string(),
+                    path: path_display,
+                    error: error.to_string(),
+                },
+            )?;
     }
     Ok(proof)
 }

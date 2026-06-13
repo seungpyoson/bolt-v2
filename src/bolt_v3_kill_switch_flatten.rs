@@ -61,8 +61,7 @@ impl BoltV3KillSwitchFlattenCandidate {
                 BoltV3KillSwitchFlattenQuantitySource::PositionStatusReportQuantity
             }
         };
-        if is_observed_open_side(position_state.position_side)
-            && position_state.quantity.is_zero()
+        if is_observed_open_side(position_state.position_side) && position_state.quantity.is_zero()
         {
             return Err(BoltV3KillSwitchFlattenError::InconsistentPositionProof);
         }

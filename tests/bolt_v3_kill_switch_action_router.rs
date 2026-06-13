@@ -243,10 +243,7 @@ fn action_scope_rejects_malformed_nt_identifier_strings_fail_closed() {
         "instrument scope without a symbol/venue '.' separator must fail closed at construction"
     );
     assert_eq!(
-        BoltV3KillSwitchActionScope::new(
-            vec!["POLYMARKET-001".to_string()],
-            vec![" ".to_string()],
-        ),
+        BoltV3KillSwitchActionScope::new(vec!["POLYMARKET-001".to_string()], vec![" ".to_string()],),
         Err(BoltV3KillSwitchActionRouterError::InvalidInstrumentId),
         "blank instrument scope must fail closed through NT parsing, not slip past as valid"
     );

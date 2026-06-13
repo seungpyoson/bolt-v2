@@ -167,6 +167,9 @@ CI_PROVENANCE_POLICY_EXPECTED = {
     "tag": "tag_reuse",
     "unknown_event": "full",
 }
+assert set(CI_PROVENANCE_POLICY_ROWS) == set(
+    CI_PROVENANCE_POLICY_EXPECTED
+), "CI_PROVENANCE_POLICY_ROWS and CI_PROVENANCE_POLICY_EXPECTED keys must match"
 TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build", "ci-provenance-emit")
 TAG_SKIP_REQUIRED_JOBS = (
     "fmt-check",

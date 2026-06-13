@@ -1088,6 +1088,26 @@ check_name = "test"
             "ci_provenance.policy.draft_pr_synchronize must be defer",
             valid.replace('draft_pr_synchronize = "defer"', 'draft_pr_synchronize = "full"'),
         ),
+        (
+            "ci_provenance.policy.draft_pr_opened must be defer",
+            valid.replace('draft_pr_opened = "defer"', 'draft_pr_opened = "full"'),
+        ),
+        (
+            "ci_provenance.policy.draft_pr_reopened must be defer",
+            valid.replace('draft_pr_reopened = "defer"', 'draft_pr_reopened = "full"'),
+        ),
+        (
+            "ci_provenance.policy.converted_to_draft must be defer",
+            valid.replace('converted_to_draft = "defer"', 'converted_to_draft = "full"'),
+        ),
+        (
+            "ci_provenance.policy.tag must be tag_reuse",
+            valid.replace('tag = "tag_reuse"', 'tag = "full"'),
+        ),
+        (
+            "ci_provenance.policy.unknown_event must be full",
+            valid.replace('unknown_event = "full"', 'unknown_event = "defer"'),
+        ),
     ]
     for fragment, config_text in cases:
         error = runner_config_load_error(config_text)

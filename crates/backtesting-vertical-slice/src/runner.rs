@@ -15,7 +15,7 @@ use std::{path::Path, str::FromStr};
 use anyhow::{Context, Result, bail, ensure};
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
 use nautilus_model::{
-    data::{Bar, BarSpecification, OrderBookDelta, QuoteTick, TradeTick},
+    data::{Bar, BarSpecification, IndexPriceUpdate, OrderBookDelta, QuoteTick, TradeTick},
     enums::{AggregationSource, AggressorSide, BookAction, OrderSide, OrderStatus, PriceType},
     identifiers::InstrumentId,
     orders::Order,
@@ -905,6 +905,57 @@ pub(crate) fn assert_quote_read_back_matches(
             quote.ts_init.as_u64() == expected_ts_init,
             "quote read-back {index} ts_init {} does not match canonical {expected_ts_init}",
             quote.ts_init.as_u64()
+        );
+    }
+    Ok(())
+}
+
+/// Prove an index-price catalog read-back is value-faithful, mirroring
+/// [`assert_read_back_matches`] for the index family: element-wise in catalog
+/// order, every read-back update must carry the projected instrument id and the
+/// canonical `value` decimal, with `ts_event` the event clock and `ts_init` the
+/// availability-or-capture receipt clock derived through the SAME shared
+/// projection owner the seam uses (NO DUAL PATHS) — this is the load-bearing
+/// `ts_init == capture_time` proof for the index family.
+pub(crate) fn assert_index_read_back_matches(
+    read_back: &[IndexPriceUpdate],
+    table: &super::canonical_market_data::CanonicalIndexPricesTable,
+    expected_instrument_id: &str,
+) -> Result<()> {
+    ensure!(
+        read_back.len() == table.rows.len(),
+        "index catalog read-back count {} does not match canonical rows {}",
+        read_back.len(),
+        table.rows.len()
+    );
+    for (index, (update, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
+        ensure!(
+            update.instrument_id.to_string() == expected_instrument_id,
+            "index read-back {index} instrument {} does not match projected {expected_instrument_id}",
+            update.instrument_id
+        );
+        let expected_value = Decimal::from_str(&row.value)
+            .with_context(|| format!("canonical value {:?}", row.value))?;
+        ensure!(
+            update.value.as_decimal() == expected_value,
+            "index read-back {index} value {} does not match canonical {expected_value}",
+            update.value.as_decimal()
+        );
+        let label = format!("index price {}", row.event_time);
+        let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
+        ensure!(
+            update.ts_event.as_u64() == expected_ts_event,
+            "index read-back {index} ts_event {} does not match canonical {expected_ts_event}",
+            update.ts_event.as_u64()
+        );
+        // ts_init is the availability-or-capture receipt clock (the clock
+        // NautilusTrader replays by), derived through the shared projection owner.
+        let expected_ts_init =
+            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+        ensure!(
+            update.ts_init.as_u64() == expected_ts_init,
+            "index read-back {index} ts_init {} does not match canonical {expected_ts_init}",
+            update.ts_init.as_u64()
         );
     }
     Ok(())

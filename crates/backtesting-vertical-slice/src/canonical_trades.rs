@@ -138,6 +138,26 @@ pub const SNAPSHOT_QUOTES_TRANSFORM_IDENTITY: &str = "jsonl-top-of-book-to-canon
 /// Version of the registered compiled snapshot-quote converter implementation.
 pub const SNAPSHOT_QUOTES_TRANSFORM_VERSION: &str = "1";
 
+/// NT catalog path-prefix and source-proof table family for index-price updates.
+///
+/// Matches NautilusTrader's own `IndexPriceUpdate` catalog prefix
+/// (`impl_catalog_path_prefix!(IndexPriceUpdate, "index_prices")`), so the
+/// canonical family name and the NT catalog directory agree.
+pub const INDEX_PRICES_TABLE_FAMILY: &str = "index_prices";
+
+/// Stable identity of the config-driven index-price normalization transform.
+///
+/// Source-agnostic: a new index/oracle source that emits the same point-update
+/// shape binds this identity. The raw wire normalizer that fills a
+/// `CanonicalIndexPricesTable` from raw bytes is OUT OF SCOPE for this slice
+/// (data acquisition is tracked in bolt-v2 #685); only the canonical->NT
+/// projection path is delivered here. The operator dispatch fails loud naming
+/// that follow-up.
+pub const INDEX_PRICES_TRANSFORM_IDENTITY: &str = "index-price-source-to-canonical-index-prices.v1";
+
+/// Version of the registered index-price converter contract.
+pub const INDEX_PRICES_TRANSFORM_VERSION: &str = "1";
+
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
 /// Expected sample raw header, in order.
@@ -159,6 +179,7 @@ pub enum SourceAdapterKind {
     TarJsonlSnapshotDeltas,
     ParquetEventStreamDeltas,
     SnapshotQuotes,
+    IndexPrices,
     #[cfg(test)]
     SyntheticOrderBookDeltas,
 }
@@ -384,6 +405,15 @@ pub const SNAPSHOT_QUOTES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefini
     nt_data_type: crate::catalog_projection::NT_DATA_TYPE_QUOTE_TICK,
 };
 
+pub const INDEX_PRICES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
+    identity: INDEX_PRICES_TRANSFORM_IDENTITY,
+    version: INDEX_PRICES_TRANSFORM_VERSION,
+    kind: SourceAdapterKind::IndexPrices,
+    table_family: INDEX_PRICES_TABLE_FAMILY,
+    normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
+    nt_data_type: crate::catalog_projection::NT_DATA_TYPE_INDEX_PRICE_UPDATE,
+};
+
 #[cfg(test)]
 pub const SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
     identity: "synthetic-order-book-deltas-fixture.v1",
@@ -404,6 +434,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
     PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
     SNAPSHOT_QUOTES_ADAPTER,
+    INDEX_PRICES_ADAPTER,
 ];
 
 #[cfg(test)]
@@ -416,6 +447,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
     PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
     SNAPSHOT_QUOTES_ADAPTER,
+    INDEX_PRICES_ADAPTER,
     SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER,
 ];
 
@@ -1242,6 +1274,9 @@ pub fn normalize_registered_trade_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize native trades")
         }
+        SourceAdapterKind::IndexPrices => {
+            bail!("index-price adapter cannot normalize native trades")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize native trades")
@@ -1318,6 +1353,9 @@ pub fn normalize_registered_bar_converter(
         }
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize native bars")
+        }
+        SourceAdapterKind::IndexPrices => {
+            bail!("index-price adapter cannot normalize native bars")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1396,6 +1434,9 @@ pub fn normalize_registered_paged_json_bar_converter(
         }
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize paged-JSON bars")
+        }
+        SourceAdapterKind::IndexPrices => {
+            bail!("index-price adapter cannot normalize paged-JSON bars")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1477,6 +1518,9 @@ pub fn normalize_registered_jsonl_multi_interval_bar_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize JSONL multi-interval bars")
         }
+        SourceAdapterKind::IndexPrices => {
+            bail!("index-price adapter cannot normalize JSONL multi-interval bars")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize JSONL multi-interval bars")
@@ -1555,6 +1599,9 @@ pub fn normalize_registered_order_book_delta_converter(
         }
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize order-book deltas")
+        }
+        SourceAdapterKind::IndexPrices => {
+            bail!("index-price adapter cannot normalize order-book deltas")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1642,6 +1689,9 @@ pub fn normalize_registered_tar_order_book_delta_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize tar order-book deltas")
         }
+        SourceAdapterKind::IndexPrices => {
+            bail!("index-price adapter cannot normalize tar order-book deltas")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize tar order-book deltas")
@@ -1728,6 +1778,9 @@ pub fn normalize_registered_event_stream_delta_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize event-stream deltas")
         }
+        SourceAdapterKind::IndexPrices => {
+            bail!("index-price adapter cannot normalize event-stream deltas")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize event-stream deltas")
@@ -1805,6 +1858,9 @@ pub fn normalize_registered_quote_converter(
         }
         SourceAdapterKind::ParquetEventStreamDeltas => {
             bail!("Parquet event-stream delta adapter cannot normalize top-of-book quotes")
+        }
+        SourceAdapterKind::IndexPrices => {
+            bail!("index-price adapter cannot normalize top-of-book quotes")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -2710,6 +2766,40 @@ mod tests {
                 .contains("not a JSONL snapshot-delta converter"),
             "{jsonl_guard_on_event_stream}"
         );
+    }
+
+    #[test]
+    fn index_price_source_adapter_registry_exposes_data_family_metadata() {
+        let adapter = require_registered_source_adapter_for_table_family(
+            INDEX_PRICES_TRANSFORM_IDENTITY,
+            INDEX_PRICES_TRANSFORM_VERSION,
+            INDEX_PRICES_TABLE_FAMILY,
+        )
+        .expect("registered index-price source adapter");
+
+        assert_eq!(adapter.kind, SourceAdapterKind::IndexPrices);
+        assert_eq!(adapter.table_family, INDEX_PRICES_TABLE_FAMILY);
+        assert_eq!(adapter.normalized_schema_version, NORMALIZED_SCHEMA_VERSION);
+        assert_eq!(
+            adapter.nt_data_type,
+            crate::catalog_projection::NT_DATA_TYPE_INDEX_PRICE_UPDATE
+        );
+        assert_eq!(adapter.nt_data_type, "IndexPriceUpdate");
+        assert!(REGISTERED_SOURCE_ADAPTERS.contains(&INDEX_PRICES_ADAPTER));
+        // The index table family is the NT `IndexPriceUpdate` catalog prefix.
+        assert_eq!(INDEX_PRICES_TABLE_FAMILY, "index_prices");
+    }
+
+    #[test]
+    fn index_price_source_adapter_registry_rejects_table_family_mismatch() {
+        let mismatch = format!("{INDEX_PRICES_TABLE_FAMILY}_mismatch");
+        let err = require_registered_source_adapter_for_table_family(
+            INDEX_PRICES_TRANSFORM_IDENTITY,
+            INDEX_PRICES_TRANSFORM_VERSION,
+            &mismatch,
+        )
+        .expect_err("index-price adapter table-family mismatch must fail closed");
+        assert!(err.to_string().contains("table_family"), "{err}");
     }
 
     fn accepted_dataset() -> AcceptedDataset {

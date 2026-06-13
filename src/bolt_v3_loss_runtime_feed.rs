@@ -189,6 +189,19 @@ impl LossGovernorRuntimeFeed {
         if self.state.per_trade_pnl_source != Some(PerTradePnlSource::PositionEvent) {
             self.state.per_trade_pnl = Some(TimedDecimal::new(Decimal::ZERO, observed_at_ns));
             self.state.per_trade_pnl_source = Some(PerTradePnlSource::PortfolioBaseline);
+        } else if let Some(existing) = self.state.per_trade_pnl {
+            // A PositionEvent per-trade value stays authoritative between fills, but
+            // this portfolio snapshot re-confirms feed liveness as of `observed_at_ns`
+            // (NT delivers any intervening fill as a position event before this
+            // snapshot on the single-threaded bus). Advance the observation time while
+            // preserving the realized value so the published `observed_at_ns = min(..)`
+            // tracks feed liveness instead of freezing at the last fill. Without this,
+            // once the bot goes flat the per-trade timestamp can only advance on a new
+            // fill, every entry rejects `StaleLossSnapshot` after `max_snapshot_age_ns`,
+            // and no fill can occur to refresh it -> permanent entry lockout. `.max()`
+            // refuses to regress on an out-of-order older snapshot.
+            let refreshed_at_ns = existing.observed_at_ns.max(observed_at_ns);
+            self.state.per_trade_pnl = Some(TimedDecimal::new(existing.value, refreshed_at_ns));
         }
 
         self.state.current_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));

@@ -196,6 +196,68 @@ fn stale_peak_timestamp_does_not_make_fresh_portfolio_snapshot_stale() {
         .expect("fresh below-limit drawdown snapshot should admit entry submit");
 }
 
+#[test]
+fn portfolio_heartbeat_keeps_loss_snapshot_fresh_after_going_flat() {
+    // Regression for the loss-feed stale-halt deadlock (#516): once a fill set
+    // per_trade_pnl_source = PositionEvent, later portfolio snapshots used to leave
+    // the per-trade observation frozen at the fill ts, so the published
+    // observed_at_ns (min over components) stuck at the last fill. After
+    // max_snapshot_age_ns every entry rejected StaleLossSnapshot forever, since only
+    // a new fill (itself blocked once flat) could refresh it.
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        LossGovernorPolicy {
+            max_snapshot_age_ns: 1_000,
+            max_per_trade_loss: Some(Decimal::new(10, 0)),
+            max_daily_loss: Some(Decimal::new(100, 0)),
+            max_rolling_loss: Some(Decimal::new(100, 0)),
+            max_drawdown: Some(Decimal::new(100, 0)),
+        },
+    ));
+    let account_id = AccountId::from("SIM-LOSS-006");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 10_000,
+        },
+        admission.clone(),
+    );
+
+    // Baseline portfolio snapshot, then a fill that sets the per-trade source to
+    // PositionEvent and pins the per-trade observation to ts = 2_000.
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, 0.0, 0.0, 1_000.0))
+        .expect("baseline portfolio snapshot should publish");
+    let after_fill = feed
+        .on_position_event(&changed_position_event(account_id, 2_000, -2.0))
+        .expect("fill should publish per-trade pnl");
+    assert_eq!(after_fill.per_trade_pnl, Some(Decimal::new(-2, 0)));
+
+    // A later portfolio heartbeat (no new fill) must advance the published freshness
+    // clock past the fill while preserving the per-trade value. Pre-fix this stuck at
+    // 2_000 (the fill ts); post-fix it tracks the heartbeat.
+    let heartbeat = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(account_id, 5_000, -2.0, 0.0, 998.0))
+        .expect("later portfolio heartbeat should publish");
+    assert_eq!(
+        heartbeat.observed_at_ns, 5_000,
+        "portfolio heartbeat must advance loss-snapshot freshness past the last fill"
+    );
+    assert_eq!(
+        heartbeat.per_trade_pnl,
+        Some(Decimal::new(-2, 0)),
+        "per-trade value from the fill must be preserved across the heartbeat"
+    );
+
+    // Binding control: an entry submitted long after the fill but within
+    // max_snapshot_age_ns of the heartbeat must still admit. Pre-fix this rejected
+    // StaleLossSnapshot permanently.
+    admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 5_500)
+        .expect("entry must admit on a feed kept fresh by portfolio heartbeats after going flat");
+    assert_eq!(admission.admitted_order_count(), 1);
+}
+
 fn loss_policy() -> LossGovernorPolicy {
     LossGovernorPolicy {
         max_snapshot_age_ns: 1_000,

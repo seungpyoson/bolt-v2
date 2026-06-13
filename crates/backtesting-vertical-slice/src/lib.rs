@@ -19,6 +19,7 @@
 //! backtest input is an [`source_proof::AcceptedDataset`] produced from an
 //! accepted [`source_proof::SourceProofReport`].
 
+pub mod artifact_store;
 pub mod canonical_trades;
 pub mod catalog_projection;
 pub mod operator;

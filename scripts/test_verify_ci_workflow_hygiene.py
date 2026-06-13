@@ -976,7 +976,7 @@ def replace_once(text: str, old: str, new: str) -> str:
 
 
 def repo_workflow_text(path: str) -> str:
-    return (REPO_ROOT / path).read_text()
+    return (REPO_ROOT / path).read_text().replace("\r\n", "\n")
 
 
 def strip_ci_provenance_config(config_text: str) -> str:
@@ -1109,6 +1109,26 @@ def assert_ci_policy_matrix() -> None:
     )
     if forced_result.ci_policy_path != "full":
         raise AssertionError(f"force_full_ci must force PR events to full, got {forced_result}")
+
+
+def assert_pull_request_type_parser_accepts_block_list_indentation() -> None:
+    verifier = load_verifier()
+    workflow = """\
+name: CI
+
+on:
+  pull_request:
+    types:
+    - opened
+    - synchronize
+    - ready_for_review
+    - converted_to_draft
+  push:
+    branches: [main]
+"""
+    errors = verifier.workflow_pull_request_type_errors(workflow)
+    if errors:
+        raise AssertionError(errors)
 
 
 def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
@@ -6277,6 +6297,7 @@ def main() -> int:
     assert_source_fence_static_ignores_comments()
     assert_rust_verification_policy_parse_errors_are_domain_specific()
     assert_ci_policy_matrix()
+    assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
     assert_ci_detector_forces_build_on_workflow_dispatch()
     assert_ci_policy_heavy_lane_gaps_are_reported()

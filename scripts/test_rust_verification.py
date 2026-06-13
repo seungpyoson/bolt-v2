@@ -693,6 +693,16 @@ def assert_verify_remote_fork_draft_fails_closed() -> None:
             raise AssertionError((result, stderr))
 
 
+def assert_repository_owner_requires_owner_separator() -> None:
+    owner = load_owner_module()
+    if owner.repository_owner("bolt-v2") is not None:
+        raise AssertionError("bare repository names must not be parsed as owners")
+    if owner.repository_owner("seungpyoson/bolt-v2") != "seungpyoson":
+        raise AssertionError("owner/repo strings must expose the owner")
+    if owner.repository_name("seungpyoson/bolt-v2") != "bolt-v2":
+        raise AssertionError("owner/repo strings must expose the repository name")
+
+
 def assert_verify_remote_api_error_fails_closed() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -773,6 +783,7 @@ def main() -> int:
     assert_verify_remote_ready_pr_waits_for_full_run_after_stale_deferred_gate()
     assert_verify_remote_uses_green_full_run_over_stale_deferred_gate()
     assert_verify_remote_fork_draft_fails_closed()
+    assert_repository_owner_requires_owner_separator()
     assert_verify_remote_api_error_fails_closed()
     assert_verify_remote_preflight_rejects_dirty_or_unpushed_head_before_ci()
     print("OK: Rust verification owner self-tests passed.")

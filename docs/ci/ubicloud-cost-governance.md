@@ -20,8 +20,8 @@ This policy does not move broad Rust verification back to local cargo and does n
 Use the runner-minute meter for GitHub Actions evidence:
 
 ```bash
-just ci-runner-minutes --repo seungpyoson/bolt-v2 --run-id 27400354248
-just ci-runner-minutes --repo seungpyoson/bolt-v2 --days 1 --json
+just ci-runner-minutes --repo <owner>/<repo> --run-id <run-id>
+just ci-runner-minutes --repo <owner>/<repo> --days 1 --json
 ```
 
 The meter reads workflow runs, jobs, artifacts, and PR draft events through `gh` API data. Runner labels, metered workflows, and meter API limits are mapped from `ci/github-actions-runners.toml`; the script does not carry a second runner-label or page-limit registry. The configured meter workflows are `ci`, `backtester_ci`, and `ci_runner_debug`.
@@ -149,7 +149,7 @@ Those draft-stage minutes are an upper bound for Lever B savings because they in
 Slice 2b remeasurement before the topology change:
 
 ```bash
-just ci-runner-minutes --repo seungpyoson/bolt-v2 --days 1 --json
+just ci-runner-minutes --repo <owner>/<repo> --days 1 --json
 ```
 
 The meter generated the report at `2026-06-13T05:10:26Z`. It reported `9023.518` total `managed_heavy` minutes, `881.573` total `managed_light` minutes, and the Lever B bounds below:
@@ -183,7 +183,7 @@ Dashboard/API access to Ubicloud spend was not available in this session. No dol
 
 When dashboard access is available:
 
-1. Run `just ci-runner-minutes --repo seungpyoson/bolt-v2 --days 1 --json`.
+1. Run `just ci-runner-minutes --repo <owner>/<repo> --days 1 --json`.
 2. Record `managed_heavy` and `managed_light` minutes for the same UTC day.
 3. Compare against Ubicloud dashboard spend for the repository or project.
 4. Record the dashboard total, meter total, and delta in the PR body or operations log.

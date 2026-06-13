@@ -686,7 +686,7 @@ def workflow_pull_request_type_errors(workflow_text: str) -> list[str]:
             types.update(parse_inline_yaml_list(after))
             for child in block[index + 1 :]:
                 child_stripped = child.strip()
-                if not child.startswith("      - "):
+                if not child_stripped.startswith("- "):
                     break
                 types.add(child_stripped.removeprefix("- ").strip().strip("'\""))
     errors: list[str] = []

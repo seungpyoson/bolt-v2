@@ -2678,7 +2678,7 @@ def repository_owner(value: Any) -> str | None:
         if isinstance(name_with_owner, str) and "/" in name_with_owner:
             return name_with_owner.split("/", 1)[0]
     if isinstance(value, str):
-        return value.split("/", 1)[0]
+        return value.split("/", 1)[0] if "/" in value else None
     return None
 
 

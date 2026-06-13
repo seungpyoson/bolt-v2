@@ -1,10 +1,6 @@
 name: CI
 
 on:
-  # Manual lane: GitHub Actions does not deliver pull_request events for PRs
-  # whose diff exceeds its internal size limit (observed at ~28k files on #610),
-  # so oversized PRs need a manually dispatched run against the branch ref.
-  workflow_dispatch:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
@@ -35,6 +31,10 @@ on:
     # defense-in-depth against direct-to-main commits.
     branches: [main]
     tags: ["v*"]
+  # Manual lane: GitHub Actions does not deliver pull_request events for PRs
+  # whose diff exceeds its internal size limit (observed at ~28k files on #610),
+  # so oversized PRs need a manually dispatched run against the branch ref.
+  # full_ci defaults true, so a bare `gh workflow run ci.yml` still runs everything.
   workflow_dispatch:
     inputs:
       full_ci:

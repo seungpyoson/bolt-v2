@@ -313,8 +313,10 @@ mod tests {
     // shadow-mode submit switch.
     // Re-derived after exposing read-only loss-governor policy/snapshot
     // accessors for live manual recovery.
+    // Re-derived after removing duplicate NT-owned risk scaffolding from
+    // submit admission.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "490905e38555139fdd4180ee747be5329e70fd120a19debca058e3136e85c4f1";
+        "42d06768ce43b38335fa02cc63491469f609e54a92cacd75439c285f63efba3a";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

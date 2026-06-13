@@ -1221,8 +1221,8 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                     loss_governor.max_per_trade_loss.as_deref(),
                 ),
                 (
-                    "risk.loss_governor.max_daily_loss",
-                    loss_governor.max_daily_loss.as_deref(),
+                    "risk.loss_governor.max_session_loss",
+                    loss_governor.max_session_loss.as_deref(),
                 ),
                 (
                     "risk.loss_governor.max_rolling_loss",
@@ -1286,8 +1286,8 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                 loss_governor.max_per_trade_loss.as_deref(),
             ),
             (
-                "risk.loss_governor.max_daily_loss",
-                loss_governor.max_daily_loss.as_deref(),
+                "risk.loss_governor.max_session_loss",
+                loss_governor.max_session_loss.as_deref(),
             ),
             (
                 "risk.loss_governor.max_rolling_loss",

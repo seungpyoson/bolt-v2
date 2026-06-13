@@ -2402,9 +2402,9 @@ fn loss_governor_policy_from_loaded(
             "risk.loss_governor.max_per_trade_loss",
             block.max_per_trade_loss.as_deref(),
         )?),
-        max_daily_loss: Some(required_loss_governor_decimal(
-            "risk.loss_governor.max_daily_loss",
-            block.max_daily_loss.as_deref(),
+        max_session_loss: Some(required_loss_governor_decimal(
+            "risk.loss_governor.max_session_loss",
+            block.max_session_loss.as_deref(),
         )?),
         max_rolling_loss: Some(required_loss_governor_decimal(
             "risk.loss_governor.max_rolling_loss",

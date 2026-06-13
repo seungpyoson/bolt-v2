@@ -957,7 +957,7 @@ mod tests {
         LossGovernorPolicy {
             max_snapshot_age_ns: 100,
             max_per_trade_loss: Some(Decimal::new(10, 0)),
-            max_daily_loss: None,
+            max_session_loss: None,
             max_rolling_loss: None,
             max_drawdown: None,
         }

@@ -545,7 +545,8 @@ pub struct PersistedCatalogProjection {
     pub objects: Vec<PersistedCatalogProjectionObject>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateOnlyProbeTranscript {
     pub probe_uri: String,
     pub copy_source_uri: String,

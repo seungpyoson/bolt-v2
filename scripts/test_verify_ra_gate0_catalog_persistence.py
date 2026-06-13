@@ -104,7 +104,7 @@ pub async fn persist_catalog_projection_for_source_binding() {
 def compliant_capability_proof() -> str:
     return """
 use crate::{
-    artifact_store::{CreateOnlyArtifactWriter, ResolvedArtifactRoot},
+    artifact_store::{CreateOnlyArtifactWriter, CreateOnlyProbeTranscript, ResolvedArtifactRoot},
     run_manifest::MarketStructureFixture,
 };
 
@@ -135,11 +135,26 @@ pub struct NtCatalogCapabilityProofArtifact {
     pub proof_artifact_sha256: String,
 }
 pub struct NtCatalogCapabilityControls {
+    pub no_cloud_feature_gate_failed: bool,
     pub ambient_credentials_scrubbed: bool,
     pub invalid_credentials_write_failed: bool,
     pub ssm_credentials_write_reopen_query_succeeded: bool,
     pub conditional_put_probe_succeeded: bool,
     pub copy_if_not_exists_probe_succeeded: bool,
+}
+pub struct NtCatalogReadBackEvidence {
+    pub query_files_succeeded: bool,
+    pub query_instruments_succeeded: bool,
+    pub binary_option_instrument_read_back: bool,
+    pub perps_spot_instrument_read_back: bool,
+}
+pub struct NtCatalogCapabilityEvidence {
+    pub no_cloud_feature_gate_failed: bool,
+    pub ambient_credentials_scrubbed: bool,
+    pub invalid_credentials_write_failed: bool,
+    pub ssm_credentials_write_reopen_query_succeeded: bool,
+    pub read_back: NtCatalogReadBackEvidence,
+    pub create_only_probe: CreateOnlyProbeTranscript,
 }
 pub struct NtCatalogCapabilityProof {
     pub synthetic_source_proof_id: String,
@@ -148,18 +163,41 @@ pub struct NtCatalogCapabilityProof {
 }
 
 impl NtCatalogCapabilityProof {
+    pub fn from_evidence(evidence: &NtCatalogCapabilityEvidence) -> NtCatalogCapabilityControls {
+        let _query_files = evidence.read_back.query_files_succeeded;
+        let _query_instruments = evidence.read_back.query_instruments_succeeded;
+        let _binary_option = evidence.read_back.binary_option_instrument_read_back;
+        let _perps_spot = evidence.read_back.perps_spot_instrument_read_back;
+        let _probe = &evidence.create_only_probe;
+        NtCatalogCapabilityControls {
+            no_cloud_feature_gate_failed: evidence.no_cloud_feature_gate_failed,
+            ambient_credentials_scrubbed: evidence.ambient_credentials_scrubbed,
+            invalid_credentials_write_failed: evidence.invalid_credentials_write_failed,
+            ssm_credentials_write_reopen_query_succeeded: evidence.ssm_credentials_write_reopen_query_succeeded,
+            conditional_put_probe_succeeded: true,
+            copy_if_not_exists_probe_succeeded: true,
+        }
+    }
     pub fn proof_plan(&self) -> NtCatalogCapabilityPlan { NtCatalogCapabilityPlan }
     pub fn completed_proof(&self) -> Self { Self {
         synthetic_source_proof_id: self.synthetic_source_proof_id.clone(),
         provenance: self.provenance.clone(),
         synthetic_fixture_coverage: self.synthetic_fixture_coverage.clone(),
     } }
+    pub fn completed_proof_from_evidence(&self, evidence: &NtCatalogCapabilityEvidence) -> Self {
+        let _controls = Self::from_evidence(evidence);
+        self.completed_proof()
+    }
     pub async fn persist_completed_proof(&self, writer: &CreateOnlyArtifactWriter<'_>) -> NtCatalogCapabilityProofArtifact {
         writer.put_create_idempotent(path, bytes).await.unwrap();
         NtCatalogCapabilityProofArtifact {
             proof_artifact_uri: "s3://bucket/nt-catalog-synthetic-proof/v1/proof=proof-run/nt-catalog-capability-proof.json".to_string(),
             proof_artifact_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
         }
+    }
+    pub async fn persist_completed_proof_from_evidence(&self, writer: &CreateOnlyArtifactWriter<'_>, evidence: &NtCatalogCapabilityEvidence) -> NtCatalogCapabilityProofArtifact {
+        let _proof = self.completed_proof_from_evidence(evidence);
+        self.persist_completed_proof(writer).await
     }
 
     pub fn direct_s3_catalog_access_proven(&self, artifact_root: &ResolvedArtifactRoot) {
@@ -212,14 +250,38 @@ fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
 
 fn resolves_synthetic_nt_catalog_proof_root_outside_canonical_catalog() {}
 
+fn successful_capability_evidence() -> NtCatalogCapabilityEvidence {
+    NtCatalogCapabilityEvidence {
+        no_cloud_feature_gate_failed: true,
+        ambient_credentials_scrubbed: true,
+        invalid_credentials_write_failed: true,
+        ssm_credentials_write_reopen_query_succeeded: true,
+        read_back: NtCatalogReadBackEvidence {
+            query_files_succeeded: true,
+            query_instruments_succeeded: true,
+            binary_option_instrument_read_back: true,
+            perps_spot_instrument_read_back: true,
+        },
+        create_only_probe: CreateOnlyProbeTranscript {
+            first_create_succeeded: true,
+            duplicate_create_rejected: true,
+            first_copy_succeeded: true,
+            duplicate_copy_rejected: true,
+        },
+    }
+}
+
 fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
     let run_spec: NtCatalogCapabilityRunSpec = nt_catalog_capability_proof;
+    let mut evidence = successful_capability_evidence();
     let plan = run_spec.proof_plan();
     let _profile = plan.profile_file_paths_redirected;
     let _imds = plan.imds_blocked;
-    let _completed = plan.completed_proof();
+    let _completed = plan.completed_proof_from_evidence(&evidence);
+    evidence.read_back.query_instruments_succeeded = false;
+    evidence.create_only_probe.duplicate_copy_rejected = false;
     let proof = NtCatalogCapabilityProof {};
-    let persisted = proof.persist_completed_proof(&writer);
+    let persisted = proof.persist_completed_proof_from_evidence(&writer, &evidence);
     let _proof_uri = persisted.proof_artifact_uri;
     let _proof_sha256 = persisted.proof_artifact_sha256;
     let _credential_source = NtCatalogCredentialSource::Ssm;

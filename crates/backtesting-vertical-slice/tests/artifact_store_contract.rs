@@ -12,12 +12,13 @@ use backtesting_vertical_slice::{
         ArtifactIndexPointer, ArtifactIndexSnapshot, ArtifactIndexSnapshotRow,
         ArtifactIndexWriteAuthority, ArtifactIndexWriter, ArtifactKind, ArtifactLifecycleState,
         ArtifactLineageRef, ArtifactStorageProfile, ArtifactStoreConfig, CatalogDispatchConfig,
-        CatalogProjectionBinding, CreateOnlyArtifactWriter, StoredArtifactIndexPointer,
+        CatalogProjectionBinding, CreateOnlyArtifactWriter, CreateOnlyProbeTranscript,
+        ResolvedArtifactRoot, StoredArtifactIndexPointer,
         persist_catalog_projection_for_source_binding,
     },
     nt_catalog_capability::{
-        NtCatalogCapabilityControls, NtCatalogCapabilityProof, NtCatalogCapabilityRunSpec,
-        NtCatalogCredentialSource,
+        NtCatalogCapabilityControls, NtCatalogCapabilityEvidence, NtCatalogCapabilityProof,
+        NtCatalogCapabilityRunSpec, NtCatalogCredentialSource, NtCatalogReadBackEvidence,
     },
     operator::{RunSpec, run_from_run_spec_with_artifact_store},
     run_manifest::MarketStructureFixture,
@@ -67,6 +68,31 @@ struct CommittedCapabilityProofFixture {
 
 fn committed_capability_proof_fixture() -> CommittedCapabilityProofFixture {
     toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec capability proof parses")
+}
+
+fn successful_capability_evidence(root: &ResolvedArtifactRoot) -> NtCatalogCapabilityEvidence {
+    let probe_id = "capability-proof-test-probe";
+    NtCatalogCapabilityEvidence {
+        no_cloud_feature_gate_failed: true,
+        ambient_credentials_scrubbed: true,
+        invalid_credentials_write_failed: true,
+        ssm_credentials_write_reopen_query_succeeded: true,
+        read_back: NtCatalogReadBackEvidence {
+            query_files_succeeded: true,
+            query_instruments_succeeded: true,
+            binary_option_instrument_read_back: true,
+            perps_spot_instrument_read_back: true,
+        },
+        create_only_probe: CreateOnlyProbeTranscript {
+            probe_uri: root.create_only_probe_uri(probe_id),
+            copy_source_uri: root.create_only_probe_copy_source_uri(probe_id),
+            copy_dest_uri: root.create_only_probe_copy_dest_uri(probe_id),
+            first_create_succeeded: true,
+            duplicate_create_rejected: true,
+            first_copy_succeeded: true,
+            duplicate_copy_rejected: true,
+        },
+    }
 }
 
 fn artifact_config_toml() -> &'static str {
@@ -289,43 +315,46 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
         "capability proof plan must not point at the canonical NT catalog root"
     );
 
-    let committed_proof = fixture
-        .nt_catalog_capability_proof
-        .completed_proof(
-            &fixture.artifact_store,
-            NtCatalogCapabilityControls {
-                no_cloud_feature_gate_failed: true,
-                ambient_credentials_scrubbed: true,
-                invalid_credentials_write_failed: true,
-                ssm_credentials_write_reopen_query_succeeded: true,
-                conditional_put_probe_succeeded: true,
-                copy_if_not_exists_probe_succeeded: true,
-            },
-        )
-        .expect("committed capability proof completes from TOML");
     let committed_root = fixture
         .artifact_store
         .resolve()
         .expect("committed artifact root");
+    let evidence = successful_capability_evidence(&committed_root);
+    let committed_proof = fixture
+        .nt_catalog_capability_proof
+        .completed_proof_from_evidence(&fixture.artifact_store, &evidence)
+        .expect("committed capability proof completes from evidence");
     committed_proof
         .direct_s3_catalog_access_proven(&committed_root)
         .expect("committed proof controls validate");
+    let mut missing_query_evidence = evidence.clone();
+    missing_query_evidence.read_back.query_instruments_succeeded = false;
+    assert!(
+        fixture
+            .nt_catalog_capability_proof
+            .completed_proof_from_evidence(&fixture.artifact_store, &missing_query_evidence)
+            .is_err(),
+        "capability proof must reject missing NT query evidence"
+    );
+    let mut missing_duplicate_copy_evidence = evidence.clone();
+    missing_duplicate_copy_evidence
+        .create_only_probe
+        .duplicate_copy_rejected = false;
+    assert!(
+        fixture
+            .nt_catalog_capability_proof
+            .completed_proof_from_evidence(
+                &fixture.artifact_store,
+                &missing_duplicate_copy_evidence
+            )
+            .is_err(),
+        "capability proof must reject missing duplicate copy-if-not-exists evidence"
+    );
     let store = InMemory::new();
     let writer = CreateOnlyArtifactWriter::new(&store);
     let persisted = fixture
         .nt_catalog_capability_proof
-        .persist_completed_proof(
-            &fixture.artifact_store,
-            &writer,
-            NtCatalogCapabilityControls {
-                no_cloud_feature_gate_failed: true,
-                ambient_credentials_scrubbed: true,
-                invalid_credentials_write_failed: true,
-                ssm_credentials_write_reopen_query_succeeded: true,
-                conditional_put_probe_succeeded: true,
-                copy_if_not_exists_probe_succeeded: true,
-            },
-        )
+        .persist_completed_proof_from_evidence(&fixture.artifact_store, &writer, &evidence)
         .await
         .expect("proof artifact persists create-only");
     assert!(persisted.proof_artifact_uri.ends_with(

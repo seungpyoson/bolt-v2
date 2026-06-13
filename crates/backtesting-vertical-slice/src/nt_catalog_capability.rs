@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    artifact_store::{ArtifactStoreConfig, CreateOnlyArtifactWriter, ResolvedArtifactRoot},
+    artifact_store::{
+        ArtifactStoreConfig, CreateOnlyArtifactWriter, CreateOnlyProbeTranscript,
+        ResolvedArtifactRoot,
+    },
     run_manifest::MarketStructureFixture,
 };
 
@@ -102,6 +105,57 @@ pub struct NtCatalogCapabilityControls {
 }
 
 impl NtCatalogCapabilityControls {
+    /// # Errors
+    ///
+    /// Returns an error unless every runtime evidence field needed to prove
+    /// direct-S3 NT catalog access has passed.
+    pub fn from_evidence(evidence: &NtCatalogCapabilityEvidence) -> Result<Self> {
+        ensure!(
+            evidence.no_cloud_feature_gate_failed,
+            "capability evidence must include the no-cloud-feature negative control"
+        );
+        ensure!(
+            evidence.ambient_credentials_scrubbed,
+            "capability evidence must prove ambient AWS credentials were scrubbed"
+        );
+        ensure!(
+            evidence.invalid_credentials_write_failed,
+            "capability evidence must prove invalid credentials fail writes"
+        );
+        ensure!(
+            evidence.ssm_credentials_write_reopen_query_succeeded,
+            "capability evidence must prove SSM credentials can write, reopen, and query"
+        );
+        evidence.read_back.validate()?;
+        ensure!(
+            evidence.create_only_probe.first_create_succeeded,
+            "capability evidence must include the first create-only write"
+        );
+        ensure!(
+            evidence.create_only_probe.duplicate_create_rejected,
+            "capability evidence must prove duplicate create-only writes are rejected"
+        );
+        ensure!(
+            evidence.create_only_probe.first_copy_succeeded,
+            "capability evidence must include the first copy-if-not-exists write"
+        );
+        ensure!(
+            evidence.create_only_probe.duplicate_copy_rejected,
+            "capability evidence must prove duplicate copy-if-not-exists writes are rejected"
+        );
+        Ok(Self {
+            no_cloud_feature_gate_failed: evidence.no_cloud_feature_gate_failed,
+            ambient_credentials_scrubbed: evidence.ambient_credentials_scrubbed,
+            invalid_credentials_write_failed: evidence.invalid_credentials_write_failed,
+            ssm_credentials_write_reopen_query_succeeded: evidence
+                .ssm_credentials_write_reopen_query_succeeded,
+            conditional_put_probe_succeeded: evidence.create_only_probe.first_create_succeeded
+                && evidence.create_only_probe.duplicate_create_rejected,
+            copy_if_not_exists_probe_succeeded: evidence.create_only_probe.first_copy_succeeded
+                && evidence.create_only_probe.duplicate_copy_rejected,
+        })
+    }
+
     #[must_use]
     pub const fn all_passed(&self) -> bool {
         self.no_cloud_feature_gate_failed
@@ -111,6 +165,48 @@ impl NtCatalogCapabilityControls {
             && self.conditional_put_probe_succeeded
             && self.copy_if_not_exists_probe_succeeded
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NtCatalogReadBackEvidence {
+    pub query_files_succeeded: bool,
+    pub query_instruments_succeeded: bool,
+    pub binary_option_instrument_read_back: bool,
+    pub perps_spot_instrument_read_back: bool,
+}
+
+impl NtCatalogReadBackEvidence {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.query_files_succeeded,
+            "capability evidence must prove NT query_files read-back"
+        );
+        ensure!(
+            self.query_instruments_succeeded,
+            "capability evidence must prove NT query_instruments read-back"
+        );
+        ensure!(
+            self.binary_option_instrument_read_back,
+            "capability evidence must read back the binary-option synthetic instrument"
+        );
+        ensure!(
+            self.perps_spot_instrument_read_back,
+            "capability evidence must read back the perps-spot synthetic instrument"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NtCatalogCapabilityEvidence {
+    pub no_cloud_feature_gate_failed: bool,
+    pub ambient_credentials_scrubbed: bool,
+    pub invalid_credentials_write_failed: bool,
+    pub ssm_credentials_write_reopen_query_succeeded: bool,
+    pub read_back: NtCatalogReadBackEvidence,
+    pub create_only_probe: CreateOnlyProbeTranscript,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,7 +327,7 @@ impl NtCatalogCapabilityRunSpec {
     ///
     /// Returns an error unless the run spec and passed runtime controls prove a
     /// completed synthetic direct-S3 catalog capability run.
-    pub fn completed_proof(
+    fn completed_proof(
         &self,
         artifact_store: &ArtifactStoreConfig,
         controls: NtCatalogCapabilityControls,
@@ -244,9 +340,22 @@ impl NtCatalogCapabilityRunSpec {
 
     /// # Errors
     ///
+    /// Returns an error unless the run spec and observed runtime evidence prove
+    /// a completed synthetic direct-S3 catalog capability run.
+    pub fn completed_proof_from_evidence(
+        &self,
+        artifact_store: &ArtifactStoreConfig,
+        evidence: &NtCatalogCapabilityEvidence,
+    ) -> Result<NtCatalogCapabilityProof> {
+        let controls = NtCatalogCapabilityControls::from_evidence(evidence)?;
+        self.completed_proof(artifact_store, controls)
+    }
+
+    /// # Errors
+    ///
     /// Returns an error if the run spec is invalid, the runtime controls are
     /// incomplete, serialization fails, or create-only persistence fails.
-    pub async fn persist_completed_proof(
+    async fn persist_completed_proof(
         &self,
         artifact_store: &ArtifactStoreConfig,
         writer: &CreateOnlyArtifactWriter<'_>,
@@ -268,6 +377,21 @@ impl NtCatalogCapabilityRunSpec {
             proof_artifact_sha256,
             proof,
         })
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if evidence-derived controls are incomplete, the run
+    /// spec is invalid, serialization fails, or create-only persistence fails.
+    pub async fn persist_completed_proof_from_evidence(
+        &self,
+        artifact_store: &ArtifactStoreConfig,
+        writer: &CreateOnlyArtifactWriter<'_>,
+        evidence: &NtCatalogCapabilityEvidence,
+    ) -> Result<NtCatalogCapabilityProofArtifact> {
+        let controls = NtCatalogCapabilityControls::from_evidence(evidence)?;
+        self.persist_completed_proof(artifact_store, writer, controls)
+            .await
     }
 }
 
@@ -314,10 +438,7 @@ impl NtCatalogCapabilityPlan {
     }
 
     #[must_use]
-    pub fn completed_proof(
-        self,
-        controls: NtCatalogCapabilityControls,
-    ) -> NtCatalogCapabilityProof {
+    fn completed_proof(self, controls: NtCatalogCapabilityControls) -> NtCatalogCapabilityProof {
         NtCatalogCapabilityProof {
             schema_version: NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION.to_string(),
             proof_run_id: self.proof_run_id,

@@ -59,6 +59,7 @@ use crate::{
         BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, UNIT_F64, clamp_probability,
         is_non_negative_finite, is_positive_finite, notional_float_tolerance,
     },
+    bolt_v3_order_execution::{BoltV3SubmitContext, BoltV3SubmitRoutingOutcome},
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::is_observed_open_side,
     bolt_v3_providers::{
@@ -184,41 +185,6 @@ impl From<&BinaryOracleEdgeTakerOrderConfig> for ConfiguredNtOrderTemplate {
             is_quote_quantity: order.is_quote_quantity,
         }
     }
-}
-
-#[derive(Debug, Clone)]
-struct SubmitContext {
-    client_id: Option<ClientId>,
-    position_id: Option<PositionId>,
-    params: Option<Params>,
-}
-
-impl SubmitContext {
-    fn from_parts(
-        client_id: Option<ClientId>,
-        position_id: Option<PositionId>,
-        params: Option<Params>,
-    ) -> Self {
-        Self {
-            client_id,
-            position_id,
-            params,
-        }
-    }
-
-    fn with_client_id(client_id: ClientId) -> Self {
-        Self::from_parts(Some(client_id), None, None)
-    }
-
-    fn with_client_id_and_position_id(client_id: ClientId, position_id: PositionId) -> Self {
-        Self::from_parts(Some(client_id), Some(position_id), None)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SubmitOrderOutcome {
-    Submitted,
-    SkippedByConfig,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3455,8 +3421,8 @@ impl BinaryOracleEdgeTaker {
         &mut self,
         intent: BoltV3OrderIntentEvidence,
         order: nautilus_model::orders::OrderAny,
-        submit_context: SubmitContext,
-    ) -> Result<SubmitOrderOutcome> {
+        submit_context: BoltV3SubmitContext,
+    ) -> Result<BoltV3SubmitRoutingOutcome> {
         // A15: build the (fallible) admission request BEFORE recording the
         // order-intent evidence line. The request build can fail (e.g. a
         // market-style order whose instrument declares no structural price
@@ -3467,52 +3433,31 @@ impl BinaryOracleEdgeTaker {
         // evidence chain truthful: an order-intent line exists only once the
         // order is fully valued and about to enter admission.
         let request = self.submit_admission_request_from_order(&intent, &order)?;
-        self.context
-            .decision_evidence()
-            .record_order_intent(&intent)?;
-        if !self.config.submit_orders {
-            self.context
-                .submit_admission()
-                .evaluate_and_record_without_consuming_capacity(&request)?;
-            log::info!(
-                "binary_oracle_edge_taker submit skipped by config: strategy_id={} client_order_id={}",
-                self.config.strategy_id,
-                order.client_order_id(),
-            );
-            return Ok(SubmitOrderOutcome::SkippedByConfig);
-        }
-        let _permit = self.context.submit_admission().admit(&request)?;
-        self.submit_order(
+        let policy = self.context.order_execution_policy();
+        let decision_evidence = self.context.decision_evidence_arc();
+        let submit_admission = self.context.submit_admission_arc();
+        policy.route_submit(
+            decision_evidence.as_ref(),
+            submit_admission.as_ref(),
+            intent,
+            request,
+            self,
             order,
-            submit_context.position_id,
-            submit_context.client_id,
-            submit_context.params,
-        )?;
-        Ok(SubmitOrderOutcome::Submitted)
+            submit_context,
+        )
     }
 
-    /// Cancel a resting order at the venue — the cancel half of the single
-    /// shadow-mode chokepoint. With `submit_orders = false` (shadow mode) the
-    /// strategy records what it WOULD trade and mutates NO venue state, so the
-    /// cancel is suppressed exactly as `submit_order_with_decision_evidence`
-    /// suppresses submits. Live mode (`submit_orders = true`) cancels as before.
-    /// Keeping the guard here (not only at the exposure-state level) makes the
-    /// "no venue mutation in shadow mode" invariant a local property of every
-    /// venue-action site rather than an emergent consequence of state reachability.
-    fn cancel_resting_order_if_live(
+    fn cancel_resting_order(
         &mut self,
         client_order_id: ClientOrderId,
         client_id: ClientId,
     ) -> Result<()> {
-        if !self.config.submit_orders {
-            log::info!(
-                "binary_oracle_edge_taker cancel skipped by config: strategy_id={} client_order_id={}",
-                self.config.strategy_id,
-                client_order_id,
-            );
-            return Ok(());
-        }
-        self.cancel_order(client_order_id, Some(client_id), None)?;
+        self.context.order_execution_policy().route_cancel(
+            self,
+            client_order_id,
+            Some(client_id),
+            None,
+        )?;
         Ok(())
     }
 
@@ -4232,7 +4177,7 @@ impl BinaryOracleEdgeTaker {
         if !decision.forced_flat_reasons.is_empty()
             && let Some(pending_entry) = managed_position.pending_entry.as_ref()
         {
-            self.cancel_resting_order_if_live(pending_entry.client_order_id, client_id)
+            self.cancel_resting_order(pending_entry.client_order_id, client_id)
                 .with_context(|| {
                     format!(
                         "forced-flat exit could not cancel pending entry client_order_id={}",
@@ -4272,13 +4217,13 @@ impl BinaryOracleEdgeTaker {
         match self.submit_order_with_decision_evidence(
             intent,
             order,
-            SubmitContext::with_client_id_and_position_id(
+            BoltV3SubmitContext::with_client_id_and_position_id(
                 client_id,
                 managed_position.position.position_id,
             ),
         ) {
-            Ok(SubmitOrderOutcome::Submitted) => {}
-            Ok(SubmitOrderOutcome::SkippedByConfig) => {}
+            Ok(BoltV3SubmitRoutingOutcome::Submitted) => {}
+            Ok(BoltV3SubmitRoutingOutcome::SkippedByPolicy) => {}
             Err(error) => {
                 self.exposure = ExposureState::Managed(managed_position);
                 return Err(error);
@@ -4546,11 +4491,11 @@ impl BinaryOracleEdgeTaker {
                 self.submit_order_with_decision_evidence(
                     intent,
                     order,
-                    SubmitContext::with_client_id(client_id),
+                    BoltV3SubmitContext::with_client_id(client_id),
                 )
             }) {
-            Ok(SubmitOrderOutcome::Submitted) => {}
-            Ok(SubmitOrderOutcome::SkippedByConfig) => {
+            Ok(BoltV3SubmitRoutingOutcome::Submitted) => {}
+            Ok(BoltV3SubmitRoutingOutcome::SkippedByPolicy) => {
                 self.clear_pending_entry_state();
             }
             Err(error) => {
@@ -5272,7 +5217,7 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
                 let client_order_id = pending_entry.client_order_id;
                 self.exposure = ExposureState::PendingEntry(pending_entry);
                 let client_id = ClientId::from(self.config.client_id.as_str());
-                if let Err(error) = self.cancel_resting_order_if_live(client_order_id, client_id) {
+                if let Err(error) = self.cancel_resting_order(client_order_id, client_id) {
                     log::error!(
                         "binary_oracle_edge_taker external position close could not cancel pending entry: strategy_id={} client_order_id={} error={error}",
                         self.config.strategy_id,

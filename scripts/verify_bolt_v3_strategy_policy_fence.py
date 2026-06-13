@@ -87,6 +87,14 @@ FORBIDDEN_RULES: tuple[Rule, ...] = (
             r"|(?<![A-Za-z0-9_])flatten_all_positions(?![A-Za-z0-9_])"
         ),
     ),
+    Rule(
+        "direct NT venue mutation call",
+        re.compile(
+            r"(?:\.\s*|(?<![A-Za-z0-9_])Strategy::)"
+            r"(?:submit_order|submit_order_list|modify_order|cancel_order|cancel_orders|"
+            r"cancel_all_orders|close_position|close_all_positions)\s*\("
+        ),
+    ),
 )
 
 

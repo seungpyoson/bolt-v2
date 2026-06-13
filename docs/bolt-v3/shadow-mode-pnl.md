@@ -4,15 +4,17 @@ Shadow mode reports admitted entry-intent PnL from live data without sending ven
 
 ## 1. Run The Live Strategy Without Submitting
 
-Set the strategy parameter:
+Set the root runtime mode:
 
 ```toml
-[parameters]
-submit_orders = false
+[runtime]
+mode = "Live"
+order_execution_mode = "shadow"
 ```
 
-`submit_orders` is required in every strategy `parameters` block. Existing external TOML that predates
-shadow mode must add `submit_orders = true` to preserve live-submit behavior.
+Shadow mode is global. Every loaded strategy must disable NautilusTrader-managed venue actions:
+`manage_stop = false`, `manage_gtd_expiry = false`, `manage_contingent_orders = false`, and
+`external_order_claims = []`.
 
 Run the normal bolt-v3 live process. Evaluation, sizing, order-intent evidence, and submit-admission evidence still write to:
 

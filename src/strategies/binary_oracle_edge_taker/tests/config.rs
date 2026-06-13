@@ -96,6 +96,7 @@ fn strategy_core_accepts_nt_hedging_oms_type() {
                 RecordingDecisionEvidenceWriter,
             )),
         ),
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     );
 
@@ -451,87 +452,17 @@ fn runtime_config_parse_normalizes_order_fields_to_nt_enums() {
 }
 
 #[test]
-fn runtime_config_parse_accepts_submit_orders_switch() {
-    let mut raw = valid_raw_config();
-    let table = raw.as_table_mut().expect("valid config must be a table");
-    table.insert("submit_orders".to_string(), Value::Boolean(false));
-    // Shadow mode forbids NautilusTrader-managed venue actions (they bypass the
-    // submit/cancel chokepoints), so disable them; this test exercises the switch
-    // itself, not the managed-action rejection covered by the dedicated tests below.
-    table.insert("manage_stop".to_string(), Value::Boolean(false));
-    table.insert("manage_gtd_expiry".to_string(), Value::Boolean(false));
-    table.insert(
-        "manage_contingent_orders".to_string(),
-        Value::Boolean(false),
-    );
-    table.insert(
-        "external_order_claims".to_string(),
-        Value::Array(Vec::new()),
-    );
-
-    let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
-        .expect("submit_orders should parse through runtime config");
-
-    assert!(!config.submit_orders);
-}
-
-#[test]
-fn parse_config_rejects_shadow_mode_with_nt_managed_venue_actions() {
-    // valid_raw_config ships the NautilusTrader-managed knobs ON (live mode). Flipping
-    // only submit_orders to false must be rejected at load: shadow mode may not leave
-    // any NT-managed venue action that bypasses the submit/cancel chokepoints.
+fn runtime_config_parse_rejects_stale_submit_orders_switch() {
     let mut raw = valid_raw_config();
     raw.as_table_mut()
         .expect("valid config must be a table")
-        .insert("submit_orders".to_string(), Value::Boolean(false));
+        .insert("submit_orders".to_string(), Value::Boolean(true));
 
     let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
-        .expect_err("shadow mode with NT-managed venue actions must be rejected");
-    let rendered = format!("{err}");
+        .expect_err("strategy-local submit_orders should be rejected as stale policy");
     assert!(
-        rendered.contains("submit_orders=false"),
-        "rejection must cite the shadow-mode invariant: {rendered}"
-    );
-}
-
-#[test]
-fn validate_config_reports_every_shadow_mode_managed_venue_action() {
-    // The lint path collects (does not short-circuit) so a fully-managed config under
-    // shadow mode surfaces a violation for each NT-managed venue knob plus the
-    // non-empty external_order_claims, not just the first.
-    let mut raw = valid_raw_config();
-    raw.as_table_mut()
-        .expect("valid config must be a table")
-        .insert("submit_orders".to_string(), Value::Boolean(false));
-
-    let mut errors = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
-    let rendered = format!("{errors:?}");
-    for field in [
-        "manage_stop",
-        "manage_gtd_expiry",
-        "manage_contingent_orders",
-        "external_order_claims",
-    ] {
-        assert!(
-            rendered.contains(field),
-            "shadow mode must reject {field}: {errors:#?}"
-        );
-    }
-}
-
-#[test]
-fn runtime_config_parse_rejects_missing_submit_orders() {
-    let mut raw = valid_raw_config();
-    raw.as_table_mut()
-        .expect("valid config must be a table")
-        .remove("submit_orders");
-
-    let mut errors = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
-    assert!(
-        format!("{errors:?}").contains("submit_orders"),
-        "a config that omits submit_orders must fail validation (fail-closed, no default): {errors:#?}"
+        err.to_string().contains("submit_orders"),
+        "unknown stale field should be named: {err}"
     );
 }
 
@@ -553,6 +484,7 @@ fn strategy_core_uses_explicit_configured_nt_strategy_fields() {
                     RecordingDecisionEvidenceWriter,
                 )),
             ),
+            crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         ),
     );

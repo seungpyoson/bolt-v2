@@ -844,10 +844,9 @@ fn bolt_v3_order_execution_mode_accepts_only_lowercase_live_and_shadow() {
     }
 
     for value in ["Live", "Shadow", "LIVE", "SHADOW"] {
-        let error = toml::from_str::<BoltV3RootConfig>(
-            &fixture_root_with_order_execution_mode(value),
-        )
-        .expect_err("mixed-case order_execution_mode must not parse");
+        let error =
+            toml::from_str::<BoltV3RootConfig>(&fixture_root_with_order_execution_mode(value))
+                .expect_err("mixed-case order_execution_mode must not parse");
         assert!(
             error.to_string().contains("order_execution_mode"),
             "mixed-case value {value:?} should identify order_execution_mode: {error}"
@@ -897,7 +896,8 @@ fn shadow_order_execution_mode_rejects_managed_venue_action_knobs() {
         ),
     ] {
         let root_toml = fixture_root_with_order_execution_mode("shadow");
-        let strategy_toml = strategy_fixture_without_submit_orders().replace(stale_line, replacement);
+        let strategy_toml =
+            strategy_fixture_without_submit_orders().replace(stale_line, replacement);
         let messages =
             strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
         let rendered = messages.join("\n");

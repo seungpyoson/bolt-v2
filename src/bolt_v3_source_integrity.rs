@@ -278,14 +278,17 @@ mod tests {
     // Re-derived after merging #623's dollar-sizing strategy source roots into
     // the shadow-mode submit switch.
     // Re-derived after adding the shadow-mode fail-closed config guard
-    // (submit_orders=false forbids NautilusTrader-managed venue actions) and its
-    // tests in config.rs.
+    // (runtime.order_execution_mode=shadow forbids NautilusTrader-managed venue
+    // actions) and its tests in config.rs.
     // Re-derived after bringing the archetype config translator
     // (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs) into the strategy
-    // source set, so the sole TOML->runtime-table mapping for the shadow-mode
-    // kill switch is now tamper-evidenced alongside its validating consumer.
+    // source set, so the TOML->runtime-table mapping for venue-action knobs is
+    // now tamper-evidenced alongside its validating consumer.
+    // Re-derived after moving shadow submit/cancel gating from
+    // binary-oracle-local `submit_orders` into the shared root-owned order
+    // execution policy and removing the stale strategy-local field.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "c5ad6466a12fe43623769431d571e86a24366768508a1cdd991de952cd1ad036";
+        "7b06cc3550bfc1c7afac1c12d836e08ec9ed2b7e16ab8bf99849b87594d20b2a";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

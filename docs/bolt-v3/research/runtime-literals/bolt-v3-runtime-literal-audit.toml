@@ -311,14 +311,6 @@ reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TO
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"submit_orders"'''
-context = '''insert_bool(&mut table, "submit_orders", parameters.submit_orders);'''
-classification = "strategy_runtime_schema_field"
-reason = "This is the configured shadow-mode submission switch projected from bolt-v3 TOML into the runtime strategy config; the value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
 literal = '''"log_rejected_due_post_only_as_warning"'''
 context = '''"log_rejected_due_post_only_as_warning",'''
 classification = "strategy_runtime_schema_field"
@@ -8234,7 +8226,7 @@ kind = '''string'''
 literal = '''"src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"'''
 context = '''"src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",'''
 classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the archetype config translator, brought into the binary-oracle strategy source set so the sole TOML->runtime-table mapping for the shadow-mode submit_orders kill switch and NT-managed venue-action knobs is tamper-evidenced alongside its validating consumer; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+reason = '''Repo-relative root path of the archetype config translator, brought into the binary-oracle strategy source set so the TOML->runtime-table mapping for NautilusTrader-managed venue-action knobs is tamper-evidenced alongside its validating consumer; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''

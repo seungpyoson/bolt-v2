@@ -562,11 +562,9 @@ pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
         relative_roots: &[
             "src/strategies/binary_oracle_edge_taker",
             // The archetype translates operator TOML into the runtime config
-            // table that carries `submit_orders` and the NautilusTrader-managed
-            // venue-action knobs. It is the sole producer of that table, so it
-            // belongs under the same tamper-evidence as the consumer
-            // (`config.rs`) that validates the shadow-mode kill switch — a
-            // mistranslation here must rotate the digest.
+            // table that carries the NautilusTrader-managed venue-action knobs.
+            // It is the sole producer of that table, so it belongs under the same
+            // tamper-evidence as the consumer (`config.rs`) that validates them.
             "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
             "src/bolt_v3_book_sizing.rs",
             "src/bolt_v3_binary_outcome_edge.rs",

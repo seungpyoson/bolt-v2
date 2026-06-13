@@ -11,10 +11,11 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
     BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
 };
+use nautilus_core::Params;
 use nautilus_model::enums::{OrderSide, TimeInForce};
 use nautilus_model::identifiers::{ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId};
 use nautilus_model::orders::{LimitOrder, Order, OrderAny};
-use nautilus_model::types::{Params, Price, Quantity};
+use nautilus_model::types::{Price, Quantity};
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -165,10 +166,7 @@ fn intent_for_order(order: &OrderAny) -> BoltV3OrderIntentEvidence {
     )
 }
 
-fn submit_request_for_order(
-    order: &OrderAny,
-    notional: Decimal,
-) -> BoltV3SubmitAdmissionRequest {
+fn submit_request_for_order(order: &OrderAny, notional: Decimal) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
         strategy_id: "strategy-a".to_string(),
         execution_client_id: "polymarket_main".to_string(),

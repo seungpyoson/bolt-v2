@@ -57,6 +57,22 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         self.assertIn("strategy-local kill switch policy", labels)
         self.assertIn("direct kill-switch action bypass", labels)
 
+    def test_detects_direct_nt_venue_mutation_calls_from_strategy_source(self) -> None:
+        labels = self.labels_for(
+            """
+            self.submit_order(order, None, Some(client_id), None)?;
+            self.submit_order_list(order_list, None, Some(client_id), None)?;
+            self.modify_order(client_order_id, None, None, None, None)?;
+            self.cancel_order(client_order_id, Some(client_id), None)?;
+            self.cancel_orders(&client_order_ids, Some(client_id), None)?;
+            self.cancel_all_orders(None, Some(client_id), None)?;
+            self.close_position(instrument_id, position_id, Some(client_id), None)?;
+            self.close_all_positions(instrument_id, Some(client_id), None)?;
+            """
+        )
+
+        self.assertIn("direct NT venue mutation call", labels)
+
     def test_identifier_rules_do_not_match_substrings(self) -> None:
         labels = self.labels_for(
             """

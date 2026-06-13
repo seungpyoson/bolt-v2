@@ -773,6 +773,10 @@ fn two_strategy_instances_query_shared_engine_state_with_different_selectors() {
         ))
         .unwrap();
     let shared_state = IvQueryStateHandle::new(IvQueryState::new(store));
+    shared_state.replace_source_health(vec![
+        source_health("configured-source-a", IvSourceHealthState::Active),
+        source_health("configured-source-b", IvSourceHealthState::Active),
+    ]);
     let strategy_a = IvQueryHandle::from_state(
         "configured-profile",
         IvSelectorAuthorization {

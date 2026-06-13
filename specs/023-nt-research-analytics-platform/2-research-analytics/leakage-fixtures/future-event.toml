@@ -1,0 +1,27 @@
+[case]
+expected = "fail"
+
+[dataset]
+source_hash = "sha256:source-future-event"
+query_hash = "sha256:query-future-event"
+config_hash = "sha256:config-future-event"
+
+[rules]
+join_keys = ["market_id"]
+observation_event_time = "signal_event_time_nanos"
+observation_as_of_time = "signal_as_of_time_nanos"
+feature_event_time = "feature_event_time_nanos"
+feature_availability_time = "feature_availability_time_nanos"
+feature_source_hash = "feature_source_hash"
+max_staleness_nanos = 500
+
+[[observations]]
+market_id = "binary-option"
+signal_event_time_nanos = 1000
+signal_as_of_time_nanos = 1100
+
+[[features]]
+market_id = "binary-option"
+feature_event_time_nanos = 1101
+feature_availability_time_nanos = 1000
+feature_source_hash = "sha256:feature-future-event"

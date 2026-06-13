@@ -2,6 +2,7 @@
 
 Issue: #648
 Measured: 2026-06-12
+Slice 2b remeasured: 2026-06-13
 
 ## Scope
 
@@ -144,6 +145,37 @@ Decision: go for a separate focused follow-up PR under #648 and #333.
 The one-day filtered lookback measured draft-stage runs at 709.484 `managed_heavy` minutes and 64.183 `managed_light` minutes. That is enough addressable spend to justify designing an on-demand heavy-lane flow, provided the required `gate` still blocks merge until a full green run or provenance-verified reuse exists on the exact final head SHA.
 
 Those draft-stage minutes are an upper bound for Lever B savings because they include explicit remote-first verification runs such as `just verify-remote` that operators would still request on draft PRs. The defensible lower bound from the same baseline is the intersection of `draft-stage` and `cancelled-superseded`: 53.034 `managed_heavy` minutes and 4.016 `managed_light` minutes. The follow-up Lever B PR must remeasure both bounds before changing CI topology.
+
+Slice 2b remeasurement before the topology change:
+
+```bash
+just ci-runner-minutes --repo seungpyoson/bolt-v2 --days 1 --json
+```
+
+The meter generated the report at `2026-06-13T05:10:26Z`. It reported `9023.518` total `managed_heavy` minutes, `881.573` total `managed_light` minutes, and the Lever B bounds below:
+
+| Bound | managed_heavy | managed_light | github_hosted |
+| --- | ---: | ---: | ---: |
+| `draft_stage` | 2374.694 | 229.330 | 54.725 |
+| `draft_stage_cancelled_superseded` | 364.180 | 45.766 | 10.202 |
+
+Slice 2b implements Lever B only for `.github/workflows/ci.yml`. `backtester-ci.yml` remains measured by the same meter, but its draft-stage policy is out of scope for this slice.
+
+Deferred draft CI is intentionally red at the `gate` job. A draft PR push runs cheap feedback, skips heavy full-CI lanes, and fails `gate` with the operator path to run `just verify-remote` or mark the PR ready. This preserves branch-protection semantics: cheap draft feedback is not represented as merge-ready green CI.
+
+For draft PRs, `just verify-remote` dispatches configured full CI on the PR branch when no matching full-CI run already exists, then waits on the matching workflow run for the exact pushed head SHA. That dispatched run proves branch-head confidence for the operator. It is not a merge-readiness substitute; merge readiness still requires the ready/non-draft `pull_request` full run and branch protection to go green on that PR state.
+
+Draft fork PRs fail closed because upstream `workflow_dispatch` cannot safely target arbitrary fork refs. The operator message is:
+
+```text
+draft fork PRs cannot dispatch upstream full CI; mark the PR ready for review or have a maintainer move the branch into the upstream repository
+```
+
+Rollback switches:
+
+- Set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to make draft PRs run full CI again without reverting the whole slice.
+- Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; set it only for an explicit provenance-emitter incident response where full CI evidence should not be blocked by artifact emission.
+- Revert the Slice 2b workflow-policy commits if the demand-shaping behavior itself must be removed.
 
 ## Reconciliation
 

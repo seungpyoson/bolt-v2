@@ -9,6 +9,7 @@ pub mod bolt_v3_decision_evidence;
 pub mod bolt_v3_executable_cost;
 pub mod bolt_v3_instrument_filters;
 pub mod bolt_v3_kill_switch;
+pub mod bolt_v3_kill_switch_action_router;
 pub mod bolt_v3_kill_switch_store;
 pub mod bolt_v3_live_node;
 pub mod bolt_v3_loss_governor;

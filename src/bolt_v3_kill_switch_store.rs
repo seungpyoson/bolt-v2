@@ -31,6 +31,17 @@ pub enum KillSwitchRecoveryReason {
     UnresolvedHalt,
 }
 
+impl std::fmt::Display for KillSwitchRecoveryReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingEvidence => write!(f, "missing evidence"),
+            Self::CorruptEvidence => write!(f, "corrupt evidence"),
+            Self::UnsupportedSchemaVersion => write!(f, "unsupported schema version"),
+            Self::UnresolvedHalt => write!(f, "unresolved halt"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct KillSwitchStore {
     path: PathBuf,
@@ -136,6 +147,26 @@ struct PersistedKillSwitchState {
 pub enum KillSwitchStoreError {
     Io { path: PathBuf, source: io::Error },
     Serialize(serde_json::Error),
+}
+
+impl std::fmt::Display for KillSwitchStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io { path, source } => {
+                write!(f, "failed to access {}: {source}", path.display())
+            }
+            Self::Serialize(error) => write!(f, "failed to serialize kill-switch state: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for KillSwitchStoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::Serialize(error) => Some(error),
+        }
+    }
 }
 
 fn write_private_synced_file(path: &Path, bytes: &[u8]) -> Result<(), KillSwitchStoreError> {

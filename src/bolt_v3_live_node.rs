@@ -60,8 +60,10 @@ use nautilus_live::{
 };
 #[cfg(test)]
 use nautilus_model::{
-    data::{OrderBookDeltas, QuoteTick},
-    identifiers::InstrumentId,
+    data::{OrderBookDeltas, QuoteTick, TradeTick},
+    enums::BookType,
+    identifiers::{ActorId, InstrumentId, Venue},
+    instruments::Instrument,
 };
 use nautilus_model::{
     enums::{BarIntervalType, TradingState},
@@ -95,6 +97,10 @@ use crate::{
         BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         JsonlBoltV3DecisionEvidenceWriter,
+    },
+    bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind},
+    bolt_v3_kill_switch_store::{
+        KillSwitchRecoveryReason, KillSwitchRecoveryState, KillSwitchStore, KillSwitchStoreError,
     },
     bolt_v3_loss_governor::{LossGovernorPolicy, evaluate_loss_admission},
     bolt_v3_loss_halt_actions::{
@@ -1207,6 +1213,14 @@ impl BoltV3LiveNodeRuntime {
     pub fn position_sizer_reconciled(&self) -> Option<bool> {
         self.submit_admission.position_sizer_reconciled()
     }
+
+    pub fn kill_switch_state_kind(&self) -> KillSwitchStateKind {
+        self.submit_admission.kill_switch_state_kind()
+    }
+
+    pub fn nt_trading_state(&self) -> TradingState {
+        self.node.kernel().risk_engine().borrow().trading_state()
+    }
 }
 
 impl std::fmt::Debug for BoltV3LiveNodeRuntime {
@@ -1259,6 +1273,17 @@ pub enum BoltV3LiveNodeError {
     ClientRegistration(BoltV3ClientRegistrationError),
     StrategyRegistration(BoltV3StrategyRegistrationError),
     RiskPolicy(anyhow::Error),
+    /// Enabled kill-switch startup recovery found durable state that cannot
+    /// safely re-arm local admission. The build path fails closed before
+    /// resolving secrets, constructing NT clients, or registering
+    /// submit-capable strategy runtime.
+    KillSwitchRecovery {
+        reason: KillSwitchRecoveryReason,
+    },
+    /// Enabled kill-switch startup recovery could not read the durable
+    /// state store. This is distinct from classified fail-closed states
+    /// because the underlying I/O error is useful operator evidence.
+    KillSwitchStore(KillSwitchStoreError),
     Build(anyhow::Error),
     /// Provider-specific live-submit approval loading or consumption failed
     /// while building the adapter bundle. This is intentionally outside the
@@ -1383,6 +1408,14 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::RiskPolicy(error) => {
                 write!(f, "bolt-v3 risk policy mapping failed: {error}")
             }
+            BoltV3LiveNodeError::KillSwitchRecovery { reason } => write!(
+                f,
+                "bolt-v3 kill-switch durable state recovery failed closed before live-node build: {reason}"
+            ),
+            BoltV3LiveNodeError::KillSwitchStore(error) => write!(
+                f,
+                "bolt-v3 kill-switch durable state store read failed before live-node build: {error}"
+            ),
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => {
                 write!(
@@ -1495,6 +1528,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
             BoltV3LiveNodeError::StrategyRegistration(error) => Some(error),
             BoltV3LiveNodeError::RiskPolicy(error) => Some(error.as_ref()),
+            BoltV3LiveNodeError::KillSwitchStore(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => Some(error.as_ref()),
             BoltV3LiveNodeError::Run(error) => error.source(),
@@ -1507,6 +1541,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::ConnectIncomplete
             | BoltV3LiveNodeError::DisconnectTimeout { .. }
             | BoltV3LiveNodeError::LiveTransportScope { .. }
+            | BoltV3LiveNodeError::KillSwitchRecovery { .. }
             | BoltV3LiveNodeError::StrategyFreeStartTimeout { .. }
             | BoltV3LiveNodeError::StrategyFreeStartTimeoutOverflow
             | BoltV3LiveNodeError::StrategyFreeStartIncomplete
@@ -1527,6 +1562,8 @@ pub fn build_bolt_v3_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     let transport_loaded = trade_transport_loaded_config(loaded)?;
+    let kill_switch_startup_state =
+        recover_kill_switch_state_before_live_node_build(&transport_loaded)?;
     let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
     let bundle =
         live_node_adapter_bundle_with_provider_live_submit_approvals(&transport_loaded, &resolved)?;
@@ -1535,6 +1572,7 @@ pub fn build_bolt_v3_live_node(
         &resolved,
         bundle.configs,
         bundle.live_submit_approval_limits,
+        kill_switch_startup_state,
     )?;
     Ok(runtime)
 }
@@ -1695,11 +1733,17 @@ pub fn build_bolt_v3_strategy_free_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     let transport_loaded = trade_transport_loaded_config(loaded)?;
+    let kill_switch_startup_state =
+        recover_kill_switch_state_before_live_node_build(&transport_loaded)?;
     let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
     let adapters = strategy_free_transport_adapter_configs(&transport_loaded, &resolved)?;
     let strategy_free_loaded = strategy_free_transport_loaded_config(&transport_loaded);
-    let (runtime, _summary) =
-        build_live_node_with_clients(&strategy_free_loaded, &resolved, adapters)?;
+    let (runtime, _summary) = build_live_node_with_clients(
+        &strategy_free_loaded,
+        &resolved,
+        adapters,
+        kill_switch_startup_state,
+    )?;
     Ok(runtime)
 }
 
@@ -1708,22 +1752,34 @@ pub fn build_bolt_v3_strategy_free_data_client_probe_live_node(
     client_key: &str,
 ) -> Result<(BoltV3LiveNodeRuntime, LoadedBoltV3Config), BoltV3LiveNodeError> {
     let probe_loaded = data_client_probe_loaded_config(loaded, client_key)?;
+    let kill_switch_startup_state =
+        recover_kill_switch_state_before_live_node_build(&probe_loaded)?;
     let resolved = resolve_bolt_v3_live_node_secrets(&probe_loaded)?;
     let adapters = strategy_free_transport_adapter_configs(&probe_loaded, &resolved)?;
     let strategy_free_loaded = strategy_free_transport_loaded_config(&probe_loaded);
-    let (runtime, _summary) =
-        build_live_node_with_clients(&strategy_free_loaded, &resolved, adapters)?;
+    let (runtime, _summary) = build_live_node_with_clients(
+        &strategy_free_loaded,
+        &resolved,
+        adapters,
+        kill_switch_startup_state,
+    )?;
     Ok((runtime, strategy_free_loaded))
 }
 
 pub fn build_bolt_v3_all_configured_client_mapping_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
+    let kill_switch_startup_state = recover_kill_switch_state_before_live_node_build(loaded)?;
     let resolved = resolve_bolt_v3_live_node_secrets(loaded)?;
     let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
     let mapping_loaded = strategy_free_transport_loaded_config(loaded);
-    let (runtime, _summary) = build_live_node_with_clients(&mapping_loaded, &resolved, adapters)?;
+    let (runtime, _summary) = build_live_node_with_clients(
+        &mapping_loaded,
+        &resolved,
+        adapters,
+        kill_switch_startup_state,
+    )?;
     Ok(runtime)
 }
 
@@ -1939,6 +1995,8 @@ where
     E: std::fmt::Display,
 {
     let transport_loaded = trade_transport_loaded_config(loaded)?;
+    let kill_switch_startup_state =
+        recover_kill_switch_state_before_live_node_build(&transport_loaded)?;
     check_no_forbidden_credential_env_vars_with(&transport_loaded.root, env_is_set)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
     let resolved = resolve_bolt_v3_secrets_with(&transport_loaded, resolver)
@@ -1950,7 +2008,30 @@ where
         &resolved,
         bundle.configs,
         bundle.live_submit_approval_limits,
+        kill_switch_startup_state,
     )
+}
+
+fn recover_kill_switch_state_before_live_node_build(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<KillSwitchState>, BoltV3LiveNodeError> {
+    let Some(config) = loaded.root.risk.kill_switch.as_ref() else {
+        return Ok(None);
+    };
+    if !config.enabled {
+        return Ok(None);
+    }
+
+    let store = KillSwitchStore::from_root_config_path(&loaded.root_path, config);
+    match store
+        .load_recovery_state()
+        .map_err(BoltV3LiveNodeError::KillSwitchStore)?
+    {
+        KillSwitchRecoveryState::Recovered(state) => Ok(Some(state)),
+        KillSwitchRecoveryState::FailClosed { reason, .. } => {
+            Err(BoltV3LiveNodeError::KillSwitchRecovery { reason })
+        }
+    }
 }
 
 pub fn build_bolt_v3_all_configured_client_mapping_live_node_with_summary<F, R, E>(
@@ -1963,6 +2044,7 @@ where
     R: FnMut(&str, &str) -> Result<String, E>,
     E: std::fmt::Display,
 {
+    let kill_switch_startup_state = recover_kill_switch_state_before_live_node_build(loaded)?;
     check_no_forbidden_credential_env_vars_with(&loaded.root, env_is_set)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
     let resolved = resolve_bolt_v3_secrets_with(loaded, resolver)
@@ -1970,19 +2052,26 @@ where
     let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
     let mapping_loaded = strategy_free_transport_loaded_config(loaded);
-    build_live_node_with_clients(&mapping_loaded, &resolved, adapters)
+    build_live_node_with_clients(
+        &mapping_loaded,
+        &resolved,
+        adapters,
+        kill_switch_startup_state,
+    )
 }
 
 fn build_live_node_with_clients(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     adapters: BoltV3AdapterConfigs,
+    kill_switch_startup_state: Option<KillSwitchState>,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
     build_live_node_with_clients_and_submit_approval_limits(
         loaded,
         resolved,
         adapters,
         BTreeMap::new(),
+        kill_switch_startup_state,
     )
 }
 
@@ -1991,6 +2080,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     resolved: &ResolvedBoltV3Secrets,
     adapters: BoltV3AdapterConfigs,
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
+    kill_switch_startup_state: Option<KillSwitchState>,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
     let loss_policy = loss_governor_policy_from_loaded(loaded)?;
     let loss_halt_action_policy = loss_governor_halt_action_policy_from_loaded(loaded)?;
@@ -2045,11 +2135,17 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             }
             None => (None, None),
         };
+    if let Some(state) = kill_switch_startup_state.as_ref() {
+        submit_admission.replace_kill_switch_state(state.clone());
+    }
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
+    if let Some(state) = kill_switch_startup_state.as_ref() {
+        sync_nt_trading_state_for_kill_switch(&mut node, state);
+    }
     let strategy_summary = register_bolt_v3_strategies_on_node_with_bindings(
         &mut node,
         loaded,
@@ -2445,6 +2541,29 @@ fn required_loss_governor_decimal(
         )));
     }
     Ok(decimal)
+}
+
+fn sync_nt_trading_state_for_kill_switch(node: &mut LiveNode, state: &KillSwitchState) {
+    let Some(trading_state) = nt_trading_state_for_kill_switch_state(state) else {
+        return;
+    };
+    node.kernel()
+        .risk_engine()
+        .borrow_mut()
+        .set_trading_state(trading_state);
+}
+
+fn nt_trading_state_for_kill_switch_state(state: &KillSwitchState) -> Option<TradingState> {
+    match state {
+        KillSwitchState::Armed => None,
+        KillSwitchState::Halting { .. }
+        | KillSwitchState::Halted { .. }
+        | KillSwitchState::Cancelling { .. }
+        | KillSwitchState::Flattening { .. } => Some(TradingState::Reducing),
+        KillSwitchState::Flat { .. } | KillSwitchState::FailedManualIntervention { .. } => {
+            Some(TradingState::Halted)
+        }
+    }
 }
 
 /// Translates a validated bolt-v3 config into an NT-native

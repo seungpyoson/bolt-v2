@@ -15,11 +15,15 @@ use backtesting_vertical_slice::{
         CatalogProjectionBinding, CreateOnlyArtifactWriter, StoredArtifactIndexPointer,
         persist_catalog_projection_for_source_binding,
     },
-    nt_catalog_capability::{NtCatalogCapabilityProof, NtCatalogCredentialSource},
+    nt_catalog_capability::{
+        NtCatalogCapabilityControls, NtCatalogCapabilityProof, NtCatalogCapabilityRunSpec,
+        NtCatalogCredentialSource,
+    },
     operator::{RunSpec, run_from_run_spec_with_artifact_store},
     run_manifest::MarketStructureFixture,
 };
 use flate2::{Compression, write::GzEncoder};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const COMMITTED_RUN_SPEC: &str = include_str!(
@@ -53,6 +57,16 @@ fn committed_run_spec_for(gz_bytes: &[u8]) -> RunSpec {
 
 fn artifact_config() -> ArtifactStoreConfig {
     toml::from_str(artifact_config_toml()).expect("artifact config parses")
+}
+
+#[derive(Debug, Deserialize)]
+struct CommittedCapabilityProofFixture {
+    artifact_store: ArtifactStoreConfig,
+    nt_catalog_capability_proof: NtCatalogCapabilityRunSpec,
+}
+
+fn committed_capability_proof_fixture() -> CommittedCapabilityProofFixture {
+    toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec capability proof parses")
 }
 
 fn artifact_config_toml() -> &'static str {
@@ -257,6 +271,46 @@ fn resolves_synthetic_nt_catalog_proof_root_outside_canonical_catalog() {
 
 #[test]
 fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
+    let fixture = committed_capability_proof_fixture();
+    let plan = fixture
+        .nt_catalog_capability_proof
+        .proof_plan(&fixture.artifact_store)
+        .expect("committed capability proof plan");
+    assert_eq!(plan.credential_source, NtCatalogCredentialSource::Ssm);
+    assert_eq!(plan.storage_options_keys, vec!["region".to_string()]);
+    assert!(plan.ambient_credential_scrub.profile_file_paths_redirected);
+    assert!(plan.ambient_credential_scrub.imds_blocked);
+    assert!(
+        plan.synthetic_catalog_root_uri
+            .contains("/nt-catalog-synthetic-proof/v1/proof=synthetic-capability-proof/")
+    );
+    assert!(
+        !plan.synthetic_catalog_root_uri.contains("/nt-catalog/v1/"),
+        "capability proof plan must not point at the canonical NT catalog root"
+    );
+
+    let committed_proof = fixture
+        .nt_catalog_capability_proof
+        .completed_proof(
+            &fixture.artifact_store,
+            NtCatalogCapabilityControls {
+                no_cloud_feature_gate_failed: true,
+                ambient_credentials_scrubbed: true,
+                invalid_credentials_write_failed: true,
+                ssm_credentials_write_reopen_query_succeeded: true,
+                conditional_put_probe_succeeded: true,
+                copy_if_not_exists_probe_succeeded: true,
+            },
+        )
+        .expect("committed capability proof completes from TOML");
+    let committed_root = fixture
+        .artifact_store
+        .resolve()
+        .expect("committed artifact root");
+    committed_proof
+        .direct_s3_catalog_access_proven(&committed_root)
+        .expect("committed proof controls validate");
+
     let root = artifact_config().resolve().expect("valid artifact root");
     let mut proof = NtCatalogCapabilityProof::synthetic_success(
         &root,

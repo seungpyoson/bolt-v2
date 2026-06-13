@@ -16,6 +16,38 @@ accepted_by = "backtesting-vertical-slice-operator"
 accepted_at_utc = "2026-06-02T00:00:00Z"
 create_only_probe_id = "backtesting-vertical-slice-bnbusdc-2026-03-01"
 
+[nt_catalog_capability_proof]
+proof_run_id = "synthetic-capability-proof"
+nt_revision = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+credential_source = "ssm"
+expected_storage_options_keys = ["region"]
+synthetic_fixture_coverage = ["binary-option", "perps-spot"]
+synthetic_source_proof_id = "synthetic-fixture"
+provenance = "synthetic"
+
+[nt_catalog_capability_proof.ambient_credential_scrub]
+unset_env_vars = [
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_DEFAULT_REGION",
+  "AWS_REGION",
+  "AWS_ENDPOINT",
+  "AWS_ENDPOINT_URL_S3",
+  "AWS_WEB_IDENTITY_TOKEN_FILE",
+  "AWS_ROLE_ARN",
+  "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+  "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+  "AWS_PROFILE",
+]
+profile_file_paths_redirected = true
+imds_blocked = true
+
+[nt_catalog_capability_proof.ssm_parameter_refs]
+access_key_id = "/bolt-v2/research/catalog/aws-access-key-id"
+secret_access_key = "/bolt-v2/research/catalog/aws-secret-access-key"
+session_token = "/bolt-v2/research/catalog/aws-session-token"
+
 [accepted_object]
 s3_uri = "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BNBUSDC/object=d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598.csv.gz"
 source_url = "https://public.bybit.com/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz"

@@ -107,8 +107,25 @@ use crate::{artifact_store::ResolvedArtifactRoot, run_manifest::MarketStructureF
 
 pub const NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION: &str = "nt-catalog-capability-proof.v1";
 pub const SYNTHETIC_SOURCE_PROOF_ID: &str = "synthetic-fixture";
+pub const REQUIRED_AMBIENT_AWS_CREDENTIAL_ENV_VARS: &[&str] = &["AWS_ACCESS_KEY_ID"];
 
 pub enum NtCatalogCredentialSource { Ssm }
+pub struct NtCatalogSsmParameterRefs;
+pub struct AmbientCredentialScrubPlan {
+    pub unset_env_vars: Vec<String>,
+    pub profile_file_paths_redirected: bool,
+    pub imds_blocked: bool,
+}
+pub struct NtCatalogCapabilityRunSpec {
+    pub credential_source: NtCatalogCredentialSource,
+    pub expected_storage_options_keys: Vec<String>,
+    pub synthetic_source_proof_id: String,
+    pub provenance: String,
+    pub synthetic_fixture_coverage: Vec<MarketStructureFixture>,
+    pub ambient_credential_scrub: AmbientCredentialScrubPlan,
+    pub ssm_parameter_refs: NtCatalogSsmParameterRefs,
+}
+pub struct NtCatalogCapabilityPlan;
 pub struct NtCatalogCapabilityControls {
     pub ambient_credentials_scrubbed: bool,
     pub invalid_credentials_write_failed: bool,
@@ -123,6 +140,13 @@ pub struct NtCatalogCapabilityProof {
 }
 
 impl NtCatalogCapabilityProof {
+    pub fn proof_plan(&self) -> NtCatalogCapabilityPlan { NtCatalogCapabilityPlan }
+    pub fn completed_proof(&self) -> Self { Self {
+        synthetic_source_proof_id: self.synthetic_source_proof_id.clone(),
+        provenance: self.provenance.clone(),
+        synthetic_fixture_coverage: self.synthetic_fixture_coverage.clone(),
+    } }
+
     pub fn direct_s3_catalog_access_proven(&self, artifact_root: &ResolvedArtifactRoot) {
         let _root = artifact_root.nt_catalog_synthetic_proof_root("proof-run").unwrap();
         let _credential_source = NtCatalogCredentialSource::Ssm;
@@ -174,6 +198,11 @@ fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
 fn resolves_synthetic_nt_catalog_proof_root_outside_canonical_catalog() {}
 
 fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
+    let run_spec: NtCatalogCapabilityRunSpec = nt_catalog_capability_proof;
+    let plan = run_spec.proof_plan();
+    let _profile = plan.profile_file_paths_redirected;
+    let _imds = plan.imds_blocked;
+    let _completed = plan.completed_proof();
     let proof = NtCatalogCapabilityProof {};
     let _credential_source = NtCatalogCredentialSource::Ssm;
     proof.direct_s3_catalog_access_proven();
@@ -225,6 +254,38 @@ def write_compliant_tree(root: Path) -> None:
         ),
         """
 create_only_probe_id = "probe-run"
+
+[nt_catalog_capability_proof]
+proof_run_id = "synthetic-capability-proof"
+nt_revision = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+credential_source = "ssm"
+expected_storage_options_keys = ["region"]
+synthetic_fixture_coverage = ["binary-option", "perps-spot"]
+synthetic_source_proof_id = "synthetic-fixture"
+provenance = "synthetic"
+
+[nt_catalog_capability_proof.ambient_credential_scrub]
+unset_env_vars = [
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_DEFAULT_REGION",
+  "AWS_REGION",
+  "AWS_ENDPOINT",
+  "AWS_ENDPOINT_URL_S3",
+  "AWS_WEB_IDENTITY_TOKEN_FILE",
+  "AWS_ROLE_ARN",
+  "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+  "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+  "AWS_PROFILE",
+]
+profile_file_paths_redirected = true
+imds_blocked = true
+
+[nt_catalog_capability_proof.ssm_parameter_refs]
+access_key_id = "/bolt-v2/research/catalog/aws-access-key-id"
+secret_access_key = "/bolt-v2/research/catalog/aws-secret-access-key"
+session_token = "/bolt-v2/research/catalog/aws-session-token"
 
 [artifact_store.s3]
 region = "us-east-1"

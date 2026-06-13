@@ -7,7 +7,7 @@ use super::{
     error::IvRejectReason,
     health::IvSourceHealthState,
     ingest::IvGreekValues,
-    provenance::{IvHelperIdentity, IvPolicyDecision, IvProvenance},
+    provenance::{IvHelperIdentity, IvPolicyDecision, IvProvenance, validate_iv_provenance},
     store::IvPoint,
     time::UnixNanos,
     types::{IvBasis, IvConvention, IvSourceKind},
@@ -18,6 +18,8 @@ use super::{
 pub enum IvNtHelperSymbol {
     ImplyVolAndGreeks,
 }
+
+const NT_IMPLIED_VOL_FAILURE_FLOOR: f64 = 1.0e-8;
 
 impl IvNtHelperSymbol {
     pub fn nt_symbol(self) -> &'static str {
@@ -304,6 +306,12 @@ pub fn derive_iv(
         resolved.option_price,
     );
 
+    if helper_result.vol <= NT_IMPLIED_VOL_FAILURE_FLOOR {
+        return Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::InvalidIvValue,
+            field: "iv".to_string(),
+        });
+    }
     if !policy
         .output_bounds
         .accepts(helper_result.vol, &inputs.convention)
@@ -367,11 +375,15 @@ pub fn derive_iv(
         ts_event_ns: inputs.as_of_ns,
         ts_init_ns: None,
         received_ts_ns: inputs.received_ts_ns,
-        ingest_sequence: 0,
+        ingest_sequence: inputs.received_ts_ns.get(),
         subscription_generation: inputs.subscription_generation,
         source_health_state: inputs.source_health_state,
         reject_reason: None,
     };
+    validate_iv_provenance(&provenance).map_err(|_| IvDeriveError::Rejected {
+        reason: IvRejectReason::ProvenanceIncomplete,
+        field: "provenance".to_string(),
+    })?;
     let point = IvPoint {
         profile_id: inputs.profile_id,
         source_id: inputs.source_id,

@@ -363,6 +363,13 @@ fn validate_audit_policy(
             ));
         }
     }
+    if profile.audit_policy.audit_retention.max_events.is_none()
+        && profile.audit_policy.audit_retention.max_age_ns.is_none()
+    {
+        errors.push(format!(
+            "{audit_context}.audit_retention must set max_events or max_age_ns"
+        ));
+    }
     if let Some(max_events) = profile.audit_policy.audit_retention.max_events {
         if max_events == 0 {
             errors.push(format!(

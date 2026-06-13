@@ -2040,3 +2040,57 @@ fn runtime_engine_rejects_events_older_than_profile_freshness_bound() {
     assert!(health.stale_state);
     assert_eq!(health.last_reject_reason, Some(IvRejectReason::StaleData));
 }
+
+#[test]
+fn runtime_engine_recovers_from_stale_rejection_after_fresh_ingest() {
+    let mut parsed = live_event_router_root_config();
+    let profile = parsed
+        .iv
+        .as_mut()
+        .unwrap()
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.profile_id == "configured-profile")
+        .unwrap();
+    profile.max_source_event_age_ns = Some(5);
+    let engine = IvRuntimeEngine::from_iv_root(parsed.iv.as_ref().unwrap()).unwrap();
+    let registry = build_iv_query_handle_registry_for_runtime(&parsed, &engine).unwrap();
+    let handle = registry
+        .handle("configured-strategy", "configured-profile")
+        .expect("configured strategy should receive configured IV profile handle");
+    let mut stale_event = greeks_event_with_generation(2_000, 7);
+    stale_event.received_ts_ns = UnixNanos::new(2_006);
+
+    assert!(matches!(
+        engine.ingest_event(stale_event),
+        Err(IvRuntimeEngineError::IngestRejected {
+            reason: IvRejectReason::StaleData,
+            ..
+        })
+    ));
+
+    engine
+        .ingest_event(greeks_event_with_generation(2_010, 7))
+        .expect("fresh ingest should recover stale source health");
+
+    let health = engine
+        .source_health("configured-profile", "configured-greeks-source")
+        .expect("fresh ingest must restore source health");
+    assert_eq!(health.subscription_state, IvSourceHealthState::Active);
+    assert!(!health.stale_state);
+
+    assert!(matches!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::IvPoint,
+            selector: IvSelector::PointQuery {
+                instrument_ids: vec!["configured-option-instrument".to_string()],
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(2_010),
+                source_filter: None,
+            },
+        })),
+        Ok(IvQueryProduct::IvPoint(_))
+    ));
+}

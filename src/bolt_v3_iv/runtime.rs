@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
 use serde::{Deserialize, Serialize};
@@ -25,14 +25,16 @@ use super::{
 use nautilus_model::data::{CustomData, HasTsInit};
 
 const INITIAL_SUBSCRIPTION_GENERATION: u64 = 0;
-const NAUTILUS_TRADER_LOCK_SOURCE_PREFIX: &str =
-    "source = \"git+https://github.com/nautechsystems/nautilus_trader.git?rev=";
-const PINNED_NT_REVISION_LENGTH: usize = 40;
 const CARGO_LOCK_TEXT: &str = include_str!("../../Cargo.lock");
+static CARGO_PINNED_NT_REVISION: OnceLock<String> = OnceLock::new();
 
 pub fn cargo_pinned_nt_revision() -> &'static str {
-    cargo_pinned_nt_revision_from_lock(CARGO_LOCK_TEXT)
-        .expect("Cargo.lock must contain the pinned NautilusTrader revision")
+    CARGO_PINNED_NT_REVISION
+        .get_or_init(|| {
+            cargo_pinned_nt_revision_from_lock(CARGO_LOCK_TEXT)
+                .expect("Cargo.lock must contain the pinned NautilusTrader revision")
+        })
+        .as_str()
 }
 
 pub trait IvRuntimeBindingAdapter {
@@ -1010,17 +1012,34 @@ fn source_generations_from_runtime_sources(
         .collect()
 }
 
-fn cargo_pinned_nt_revision_from_lock(lock_text: &'static str) -> Option<&'static str> {
-    lock_text.lines().find_map(|line| {
-        let source = line
-            .trim()
-            .strip_prefix(NAUTILUS_TRADER_LOCK_SOURCE_PREFIX)?;
-        let revision = source.split_once('#')?.1.trim_end_matches('"');
-        (revision.len() == PINNED_NT_REVISION_LENGTH
-            && revision
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
-        .then_some(revision)
+fn cargo_pinned_nt_revision_from_lock(lock_text: &str) -> Option<String> {
+    let lock = toml::from_str::<toml::Value>(lock_text).ok()?;
+    lock.get("package")?
+        .as_array()?
+        .iter()
+        .filter_map(|package| package.get("source")?.as_str())
+        .find_map(nt_source_revision)
+}
+
+fn nt_source_revision(source: &str) -> Option<String> {
+    if !source.contains("nautilus_trader") {
+        return None;
+    }
+
+    if let Some((_, revision)) = source.rsplit_once('#')
+        && !revision.is_empty()
+    {
+        return Some(revision.to_string());
+    }
+
+    source.find("rev=").and_then(|start| {
+        let revision_start = start + "rev=".len();
+        let revision = source[revision_start..]
+            .split(['&', '#'])
+            .next()
+            .unwrap_or("");
+
+        (!revision.is_empty()).then(|| revision.to_string())
     })
 }
 

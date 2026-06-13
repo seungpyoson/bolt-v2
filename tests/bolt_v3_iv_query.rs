@@ -252,6 +252,14 @@ fn profile_wide_authorization() -> IvSelectorAuthorization {
     }
 }
 
+fn profile_wide_surface_authorization() -> IvSelectorAuthorization {
+    let mut authorization = profile_wide_authorization();
+    authorization
+        .allowed_product_kinds
+        .insert(IvProductKind::Surface);
+    authorization
+}
+
 fn selector_scoped_authorization() -> IvSelectorAuthorization {
     IvSelectorAuthorization {
         authorization_mode: IvAuthorizationMode::SelectorScoped,
@@ -673,15 +681,9 @@ fn selector_scoped_point_query_records_rejection_decision_for_unauthorized_sourc
         Err(IvQueryError::StrategyNotAuthorized)
     );
 
-    assert_eq!(
-        handle.query_rejections(),
-        vec![IvPolicyDecision::RejectionDecision {
-            reject_reason: IvRejectReason::SelectorNotAuthorized,
-            failed_field: None,
-            policy_id: None,
-            source_health_state: IvSourceHealthState::Active,
-            subscription_generation: 1,
-        }]
+    assert!(
+        handle.query_rejections().is_empty(),
+        "selector-scoped handles must not expose the shared rejection log"
     );
 }
 
@@ -710,15 +712,9 @@ fn selector_scoped_source_health_query_records_rejection_decision_for_unauthoriz
         Err(IvQueryError::StrategyNotAuthorized)
     );
 
-    assert_eq!(
-        handle.query_rejections(),
-        vec![IvPolicyDecision::RejectionDecision {
-            reject_reason: IvRejectReason::SelectorNotAuthorized,
-            failed_field: None,
-            policy_id: None,
-            source_health_state: IvSourceHealthState::Active,
-            subscription_generation: 1,
-        }]
+    assert!(
+        handle.query_rejections().is_empty(),
+        "selector-scoped handles must not expose the shared rejection log"
     );
 }
 
@@ -1138,6 +1134,119 @@ fn strategy_query_returns_retention_miss_for_evicted_indexed_point() {
         Some(IvRejectReason::RetentionMiss)
     );
     assert!(health.retention_state);
+}
+
+#[test]
+fn strategy_query_returns_retention_miss_for_evicted_surface_smile() {
+    let mut store = IvStore::empty();
+    for ts in [2_000, 2_010] {
+        store
+            .ingest_event(option_chain_event_with_source(
+                "configured-source",
+                "configured-selector-fingerprint",
+                ts,
+                test_implied_volatility(42),
+                test_implied_volatility(43),
+            ))
+            .unwrap();
+    }
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_surface_authorization(),
+        store,
+    )
+    .with_retention_policy(IvRetentionPolicy {
+        max_raw_events: 2,
+        max_indexed_points: 2,
+        max_smiles: 1,
+        max_surfaces: 1,
+        max_derived_points: 1,
+        max_source_health_events: 2,
+    });
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::Surface,
+            selector: IvSelector::SurfaceQuery {
+                series_selectors: vec!["configured-surface-selector".to_string()],
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        })),
+        Err(IvQueryError::RetentionMiss)
+    );
+}
+
+#[test]
+fn strategy_query_returns_retention_miss_for_surface_evicted_by_surface_limit() {
+    let mut store = IvStore::empty();
+    let mut old_surface = option_chain_event_with_source(
+        "configured-source",
+        "configured-selector-fingerprint",
+        2_000,
+        test_implied_volatility(42),
+        test_implied_volatility(43),
+    );
+    let IvRawPayload::OptionChainSlice(payload) = &mut old_surface.payload else {
+        panic!("expected option-chain fixture");
+    };
+    payload.surface_selector = "configured-old-surface".to_string();
+    store.ingest_event(old_surface).unwrap();
+    let mut current_surface = option_chain_event_with_source(
+        "configured-source",
+        "configured-selector-fingerprint",
+        2_010,
+        test_implied_volatility(44),
+        test_implied_volatility(45),
+    );
+    let IvRawPayload::OptionChainSlice(payload) = &mut current_surface.payload else {
+        panic!("expected option-chain fixture");
+    };
+    payload.surface_selector = "configured-current-surface".to_string();
+    store.ingest_event(current_surface).unwrap();
+
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_surface_authorization(),
+        store,
+    )
+    .with_retention_policy(IvRetentionPolicy {
+        max_raw_events: 2,
+        max_indexed_points: 2,
+        max_smiles: 8,
+        max_surfaces: 1,
+        max_derived_points: 1,
+        max_source_health_events: 2,
+    });
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::Surface,
+            selector: IvSelector::SurfaceQuery {
+                series_selectors: vec!["configured-old-surface".to_string()],
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        })),
+        Err(IvQueryError::RetentionMiss)
+    );
+    assert!(matches!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::Surface,
+            selector: IvSelector::SurfaceQuery {
+                series_selectors: vec!["configured-current-surface".to_string()],
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(2_010),
+            },
+        })),
+        Ok(IvQueryProduct::Surface(_))
+    ));
 }
 
 #[test]
@@ -3162,6 +3271,30 @@ fn selector_scoped_source_health_query_uses_allowed_source_ids() {
 }
 
 #[test]
+fn selector_scoped_source_health_accessor_hides_unauthorized_sources() {
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        selector_scoped_source_health_authorization(),
+        IvStore::empty(),
+    )
+    .with_source_health(vec![
+        source_health("configured-active-source", IvSourceHealthState::Active),
+        source_health("configured-denied-source", IvSourceHealthState::Active),
+    ]);
+
+    assert!(
+        handle
+            .source_health_for("configured-profile", "configured-active-source")
+            .is_some()
+    );
+    assert!(
+        handle
+            .source_health_for("configured-profile", "configured-denied-source")
+            .is_none()
+    );
+}
+
+#[test]
 fn derived_iv_query_uses_engine_owned_nt_helper_inputs() {
     let handle = IvQueryHandle::new(
         "configured-profile",
@@ -3197,6 +3330,62 @@ fn derived_iv_query_uses_engine_owned_nt_helper_inputs() {
         "nautilus_model::data::imply_vol_and_greeks"
     );
     assert!(derived.point.iv > 0.0);
+}
+
+#[test]
+fn selector_scoped_derived_accessors_filter_unauthorized_shared_state() {
+    let mut allowed_inputs = complete_inputs();
+    allowed_inputs.source_id = "configured-allowed-source".to_string();
+    allowed_inputs.selector_fingerprint = "configured-allowed-selector".to_string();
+    allowed_inputs.input_event_ids = vec!["configured-allowed-event".to_string()];
+    let mut denied_inputs = complete_inputs();
+    denied_inputs.source_id = "configured-denied-source".to_string();
+    denied_inputs.selector_fingerprint = "configured-denied-selector".to_string();
+    denied_inputs.input_event_ids = vec!["configured-denied-event".to_string()];
+
+    let state = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+    let producer = IvQueryHandle::from_state(
+        "configured-profile",
+        profile_wide_authorization(),
+        state.clone(),
+    )
+    .with_helper_policies(vec![helper_policy()])
+    .with_derived_input_policies(vec![query_supplied_derived_input_policy(
+        "configured-derived-input-policy",
+    )])
+    .with_derived_inputs(vec![allowed_inputs.clone(), denied_inputs.clone()]);
+
+    for inputs in [allowed_inputs, denied_inputs] {
+        producer
+            .query(&IvQuery::product(IvProductQuery {
+                strategy_id: "configured-strategy".to_string(),
+                profile_id: "configured-profile".to_string(),
+                product_kind: IvProductKind::DerivedIv,
+                selector: IvSelector::DerivedIvQuery {
+                    instrument_id: "configured-option-instrument".to_string(),
+                    helper_policy_id: "configured-helper-policy".to_string(),
+                    as_of_ns: UnixNanos::new(2_000),
+                    inputs: Some(Box::new(inputs)),
+                },
+            }))
+            .unwrap();
+    }
+
+    let scoped = IvQueryHandle::from_state(
+        "configured-profile",
+        selector_scoped_derived_authorization(),
+        state,
+    );
+
+    let retained_inputs = scoped.derived_inputs();
+    assert_eq!(retained_inputs.len(), 1);
+    assert_eq!(retained_inputs[0].source_id, "configured-allowed-source");
+    let retained_outputs = scoped.derived_outputs();
+    assert_eq!(retained_outputs.len(), 1);
+    assert_eq!(
+        retained_outputs[0].point.source_id,
+        "configured-allowed-source"
+    );
 }
 
 #[test]

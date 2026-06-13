@@ -19,11 +19,11 @@ use super::{
         IvPolicyOutput, IvProjectionPolicy, IvQuorumPolicy, IvStrikeSelection, interpolate_smile,
         project_scalar, resolve_fallback, resolve_quorum,
     },
-    provenance::{IvPolicyDecision, IvProvenance},
+    provenance::{IvPolicyDecision, IvProvenance, validate_iv_provenance},
     selector::IvSelector,
     store::{
         IvAggregateGreeks, IvEvidence, IvGreeksPoint, IvPoint, IvRetentionPolicy, IvSmile, IvStore,
-        IvStoreError, IvSurface,
+        IvStoreError, IvSurface, evicted_surface_keys, surface_retention_key,
     },
     time::UnixNanos,
     types::{IvBasis, IvConvention, IvProductKind},
@@ -140,6 +140,7 @@ struct IvRetainedProductKey {
     profile_id: String,
     source_id: String,
     instrument_id: String,
+    surface_selector: String,
     basis: IvBasis,
     product_kind: IvProductKind,
     product_key: String,
@@ -593,6 +594,11 @@ impl IvQueryStateHandle {
     }
 
     pub fn record_derived_output(&self, output: IvDerivedOutput) {
+        if validate_iv_provenance(&output.provenance).is_err()
+            || validate_iv_provenance(&output.point.provenance).is_err()
+        {
+            return;
+        }
         let mut state = self.write_state();
         let derived_outputs_start = state.derived_outputs_start.min(state.derived_outputs.len());
         let derived_outputs = &mut state.derived_outputs[derived_outputs_start..];
@@ -762,18 +768,53 @@ impl IvQueryHandle {
     }
 
     pub fn source_health_for(&self, profile_id: &str, source_id: &str) -> Option<IvSourceHealth> {
+        if profile_id != self.profile_id
+            || !self.authorization.authorizes(
+                &self.authorization.strategy_id,
+                IvProductKind::SourceHealth,
+                Some(source_id),
+                "",
+            )
+        {
+            return None;
+        }
         self.state.source_health_for(profile_id, source_id)
     }
 
     pub fn derived_outputs(&self) -> Vec<IvDerivedOutput> {
-        self.state.derived_outputs()
+        self.state
+            .derived_outputs()
+            .into_iter()
+            .filter(|output| {
+                self.authorization.authorizes(
+                    &self.authorization.strategy_id,
+                    IvProductKind::DerivedIv,
+                    Some(&output.point.source_id),
+                    &output.point.provenance.selector_fingerprint,
+                )
+            })
+            .collect()
     }
 
     pub fn derived_inputs(&self) -> Vec<IvDerivedInputSet> {
-        self.state.derived_inputs()
+        self.state
+            .derived_inputs()
+            .into_iter()
+            .filter(|inputs| {
+                self.authorization.authorizes(
+                    &self.authorization.strategy_id,
+                    IvProductKind::DerivedIv,
+                    Some(&inputs.source_id),
+                    &inputs.selector_fingerprint,
+                )
+            })
+            .collect()
     }
 
     pub fn query_rejections(&self) -> Vec<IvPolicyDecision> {
+        if !self.authorization.is_profile_wide() {
+            return Vec::new();
+        }
         self.state.query_rejections()
     }
 
@@ -2593,6 +2634,15 @@ fn record_retention_misses(state: &mut IvQueryState, policy: &IvRetentionPolicy)
     for smile in state.store.smiles().iter().take(evicted_smiles) {
         state.retention_misses.insert(retained_smile_key(smile));
     }
+    let smiles_after_smile_limit =
+        &state.store.smiles()[evicted_smiles.min(state.store.smiles().len())..];
+    let evicted_surfaces = evicted_surface_keys(smiles_after_smile_limit, policy.max_surfaces);
+    for smile in smiles_after_smile_limit
+        .iter()
+        .filter(|smile| evicted_surfaces.contains(&surface_retention_key(smile)))
+    {
+        state.retention_misses.insert(retained_smile_key(smile));
+    }
 
     let evicted_aggregate_greeks = state
         .store
@@ -2658,6 +2708,7 @@ fn retained_iv_point_key(point: &IvPoint, product_kind: IvProductKind) -> IvReta
         profile_id: point.profile_id.clone(),
         source_id: point.source_id.clone(),
         instrument_id: point.instrument_id.clone(),
+        surface_selector: point.instrument_id.clone(),
         basis: point.basis,
         product_kind,
         product_key: point.instrument_id.clone(),
@@ -2671,6 +2722,7 @@ fn retained_smile_key(smile: &IvSmile) -> IvRetainedProductKey {
         profile_id: smile.profile_id.clone(),
         source_id: smile.source_id.clone(),
         instrument_id: smile.series_id.clone(),
+        surface_selector: smile.surface_selector.clone(),
         basis: smile.basis,
         product_kind: IvProductKind::Smile,
         product_key: smile_key(&smile.series_id, smile.side.as_str()),
@@ -2684,6 +2736,7 @@ fn retained_aggregate_greeks_key(aggregate: &IvAggregateGreeks) -> IvRetainedPro
         profile_id: aggregate.profile_id.clone(),
         source_id: aggregate.source_id.clone(),
         instrument_id: aggregate.aggregate_key.clone(),
+        surface_selector: aggregate.aggregate_key.clone(),
         basis: IvBasis::Mark,
         product_kind: IvProductKind::AggregateGreeks,
         product_key: aggregate_greeks_key(
@@ -2700,6 +2753,7 @@ fn retained_iv_evidence_key(evidence: &IvEvidence) -> IvRetainedProductKey {
         profile_id: evidence.profile_id.clone(),
         source_id: evidence.source_id.clone(),
         instrument_id: evidence.iv_evidence_kind.clone(),
+        surface_selector: evidence.iv_evidence_kind.clone(),
         basis: IvBasis::Mark,
         product_kind: IvProductKind::CustomIvEvidence,
         product_key: evidence.iv_evidence_kind.clone(),
@@ -2713,6 +2767,7 @@ fn retained_derived_output_key(output: &IvDerivedOutput) -> IvRetainedProductKey
         profile_id: output.point.profile_id.clone(),
         source_id: output.point.source_id.clone(),
         instrument_id: output.point.instrument_id.clone(),
+        surface_selector: output.point.instrument_id.clone(),
         basis: output.point.basis,
         product_kind: IvProductKind::DerivedIv,
         product_key: derived_output_key(
@@ -2794,7 +2849,7 @@ fn retention_miss_for_query(
             .find(|miss| {
                 miss.profile_id == query.profile_id
                     && miss.product_kind == IvProductKind::Smile
-                    && series_selectors.contains(&miss.instrument_id)
+                    && series_selectors.contains(&miss.surface_selector)
                     && miss.basis == *basis
                     && miss.ts_event_ns == *as_of_ns
             })
@@ -2991,10 +3046,13 @@ fn select_source_health<'a>(
 }
 
 fn merge_source_health_update(existing: &mut IvSourceHealth, mut incoming: IvSourceHealth) {
+    let successful_active_event = incoming.subscription_state == IvSourceHealthState::Active
+        && incoming.last_event_ts_ns.is_some()
+        && !incoming.stale_state;
     if incoming.last_event_ts_ns.is_none() {
         incoming.last_event_ts_ns = existing.last_event_ts_ns;
     }
-    if incoming.last_reject_reason.is_none() {
+    if incoming.last_reject_reason.is_none() && !successful_active_event {
         incoming.last_reject_reason = existing.last_reject_reason;
     }
     for (reason, count) in &existing.reject_counts {
@@ -3003,7 +3061,9 @@ fn merge_source_health_update(existing: &mut IvSourceHealth, mut incoming: IvSou
             .entry(*reason)
             .or_insert(INITIAL_REJECT_COUNT) += count;
     }
-    incoming.stale_state |= existing.stale_state;
+    if !successful_active_event {
+        incoming.stale_state |= existing.stale_state;
+    }
     incoming.retention_state |= existing.retention_state;
     *existing = incoming;
 }
@@ -3213,6 +3273,7 @@ mod tests {
             source_id: source_id.to_string(),
             subscription_generation,
             instrument_id: "test_instrument".to_string(),
+            surface_selector: "test_surface_selector".to_string(),
             basis: IvBasis::Mark,
             ts_event_ns: UnixNanos::new(ts_event_ns),
             product_kind: IvProductKind::IvPoint,

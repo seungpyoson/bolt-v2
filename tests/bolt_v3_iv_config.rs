@@ -444,6 +444,21 @@ fn unknown_schema_version_rejects_before_subscription_planning() {
 }
 
 #[test]
+fn audit_retention_without_any_bound_rejects_at_validation() {
+    let invalid = valid_iv_toml().replace("max_events = 2\nmax_age_ns = 10000", "");
+    let config: IvRootConfig = toml::from_str(&invalid).unwrap();
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(
+        errors
+            .iter()
+            .any(|message| message.contains("audit_retention must set max_events or max_age_ns")),
+        "expected audit retention bound error, got {errors:?}"
+    );
+}
+
+#[test]
 fn selector_scoped_source_health_authorization_can_scope_by_source_id() {
     let toml = valid_iv_toml()
         .replace(

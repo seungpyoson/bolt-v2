@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -69,6 +69,15 @@ pub struct IvSurface {
     pub smiles: Vec<IvSmile>,
     pub as_of_ns: UnixNanos,
     pub provenance: IvProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct IvSurfaceRetentionKey {
+    profile_id: String,
+    source_id: String,
+    surface_selector: String,
+    basis: IvBasis,
+    ts_event_ns: UnixNanos,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -282,6 +291,9 @@ impl IvStore {
         let smiles_start = self.smiles_start;
         self.smiles_start =
             retain_with_logical_start(&mut self.smiles, smiles_start, policy.max_smiles);
+        let smiles_start = self.smiles_start;
+        self.smiles_start =
+            retain_smiles_by_surface_limit(&mut self.smiles, smiles_start, policy.max_surfaces);
         let aggregate_greeks_start = self.aggregate_greeks_start;
         self.aggregate_greeks_start = retain_with_logical_start(
             &mut self.aggregate_greeks,
@@ -414,10 +426,12 @@ impl IvStore {
             if !strike.strike.is_finite() {
                 return Err(IvStoreError::InvalidIvValue);
             }
-            let greeks = strike.greeks.as_ref().ok_or(IvStoreError::MissingIvBasis)?;
+            let Some(greeks) = strike.greeks.as_ref() else {
+                continue;
+            };
             for basis_value in &greeks.basis_values {
                 if !valid_iv(basis_value.iv) {
-                    return Err(IvStoreError::InvalidIvValue);
+                    continue;
                 }
                 points_by_basis_and_convention
                     .entry((basis_value.basis, greeks.convention.clone()))
@@ -529,6 +543,54 @@ fn retain_with_logical_start<T>(items: &mut Vec<T>, start: usize, max_len: usize
         retained_start = EMPTY_RETENTION_START;
     }
     retained_start
+}
+
+fn retain_smiles_by_surface_limit(
+    smiles: &mut Vec<IvSmile>,
+    start: usize,
+    max_surfaces: usize,
+) -> usize {
+    let retained_start = start.min(smiles.len());
+    if retained_start > 0 {
+        smiles.drain(..retained_start);
+    }
+    if max_surfaces == 0 {
+        smiles.clear();
+        return EMPTY_RETENTION_START;
+    }
+
+    let evicted = evicted_surface_keys(smiles, max_surfaces);
+    if evicted.is_empty() {
+        return EMPTY_RETENTION_START;
+    }
+    smiles.retain(|smile| !evicted.contains(&surface_retention_key(smile)));
+    EMPTY_RETENTION_START
+}
+
+pub(super) fn evicted_surface_keys(
+    smiles: &[IvSmile],
+    max_surfaces: usize,
+) -> BTreeSet<IvSurfaceRetentionKey> {
+    let mut seen = BTreeSet::new();
+    let mut ordered = Vec::new();
+    for smile in smiles {
+        let key = surface_retention_key(smile);
+        if seen.insert(key.clone()) {
+            ordered.push(key);
+        }
+    }
+    let evicted_count = ordered.len().saturating_sub(max_surfaces);
+    ordered.into_iter().take(evicted_count).collect()
+}
+
+pub(super) fn surface_retention_key(smile: &IvSmile) -> IvSurfaceRetentionKey {
+    IvSurfaceRetentionKey {
+        profile_id: smile.profile_id.clone(),
+        source_id: smile.source_id.clone(),
+        surface_selector: smile.surface_selector.clone(),
+        basis: smile.basis,
+        ts_event_ns: smile.ts_event_ns,
+    }
 }
 
 impl From<IvRejectReason> for IvStoreError {

@@ -2937,6 +2937,13 @@ fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> 
             client_keys.insert(resolution.data_client_id.to_string());
         }
     }
+    if let Some(iv_root) = loaded.root.iv.as_ref() {
+        for profile in &iv_root.profiles {
+            for source in &profile.sources {
+                client_keys.insert(source.client_id.clone());
+            }
+        }
+    }
     client_keys
 }
 
@@ -6000,6 +6007,18 @@ configured_source_param = "configured-value"
             !loaded.strategies.is_empty(),
             "helper must not mutate the caller's loaded config"
         );
+    }
+
+    #[test]
+    fn trade_transport_config_keeps_iv_only_source_clients() {
+        let loaded = fixture_loaded_config_with_external_option_greeks_iv();
+
+        let scoped =
+            trade_transport_loaded_config(&loaded).expect("IV source client must stay in scope");
+
+        assert_eq!(scoped.root.clients.len(), 1);
+        assert!(scoped.root.clients.contains_key("configured-client"));
+        assert!(loaded.root.clients.contains_key("configured-client"));
     }
 
     #[test]

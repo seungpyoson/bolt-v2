@@ -810,3 +810,31 @@ fn helper_output_outside_configured_bounds_rejects() {
         })
     );
 }
+
+#[test]
+fn helper_floor_output_rejects_as_invalid_iv() {
+    let mut inputs = complete_inputs();
+    inputs.option_price.as_mut().unwrap().value = 1.0e-12;
+
+    assert_eq!(
+        derive_iv(&helper_policy(), inputs),
+        Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::InvalidIvValue,
+            field: "iv".to_string(),
+        })
+    );
+}
+
+#[test]
+fn derived_output_with_incomplete_provenance_rejects_before_return() {
+    let mut inputs = complete_inputs();
+    inputs.input_event_ids.clear();
+
+    assert_eq!(
+        derive_iv(&helper_policy(), inputs),
+        Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::ProvenanceIncomplete,
+            field: "provenance".to_string(),
+        })
+    );
+}

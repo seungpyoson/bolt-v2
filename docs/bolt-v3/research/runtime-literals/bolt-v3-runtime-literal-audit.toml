@@ -9483,10 +9483,10 @@ reason = "IV derivation uses typed helper/input/provenance labels and numeric va
 [[allowed]]
 path = "src/bolt_v3_iv/derive.rs"
 kind = "number"
-literal = '''0'''
-context = '''ingest_sequence: 0,'''
+literal = '''1.0e-8'''
+context = '''const NT_IMPLIED_VOL_FAILURE_FLOOR: f64 = 1.0e-8;'''
 classification = "iv_helper_contract_literal"
-reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+reason = "This is the pinned NautilusTrader implied-volatility failure floor used to reject failed helper solves before caching derived IV; operator IV bounds remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_iv/derive.rs"
@@ -9626,22 +9626,6 @@ reason = "IV runtime initializes source-health reject counters from observed bin
 
 [[allowed]]
 path = "src/bolt_v3_iv/runtime.rs"
-kind = "number"
-literal = '''1'''
-context = '''let revision = source.split_once('#')?.1.trim_end_matches('"');'''
-classification = "iv_cargo_evidence_parser_literal"
-reason = "IV runtime extracts the Cargo.lock git revision after the lockfile source separator; this is dependency evidence parsing, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_iv/runtime.rs"
-kind = "number"
-literal = '''40'''
-context = '''const PINNED_NT_REVISION_LENGTH: usize = 40;'''
-classification = "iv_cargo_evidence_parser_literal"
-reason = "Git revisions are validated as 40-character SHA-1 object IDs when stamping NT provenance from Cargo.lock; this is dependency evidence shape, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_iv/runtime.rs"
 kind = "string"
 literal = '''"../../Cargo.lock"'''
 context = '''const CARGO_LOCK_TEXT: &str = include_str!("../../Cargo.lock");'''
@@ -9651,10 +9635,42 @@ reason = "Runtime NT provenance is stamped from the repository Cargo.lock embedd
 [[allowed]]
 path = "src/bolt_v3_iv/runtime.rs"
 kind = "string"
-literal = '''"source = \"git+https://github.com/nautechsystems/nautilus_trader.git?rev="'''
-context = '''"source = \"git+https://github.com/nautechsystems/nautilus_trader.git?rev=";'''
+literal = '''"package"'''
+context = '''lock.get("package")?'''
 classification = "iv_cargo_evidence_parser_literal"
-reason = "Runtime NT provenance identifies the Cargo.lock source line for the pinned NautilusTrader dependency; this is dependency evidence parsing, not an operator runtime value."
+reason = "Runtime NT provenance parses the Cargo.lock package array to find the pinned NautilusTrader source; this is dependency evidence parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "string"
+literal = '''"source"'''
+context = '''.filter_map(|package| package.get("source")?.as_str())'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "Runtime NT provenance reads Cargo.lock package source fields to find the pinned NautilusTrader revision; this is dependency evidence parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "string"
+literal = '''"nautilus_trader"'''
+context = '''if !source.contains("nautilus_trader") {'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "Runtime NT provenance identifies the NautilusTrader dependency entry inside Cargo.lock; this is dependency evidence parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "string"
+literal = '''"rev="'''
+context = '''source.find("rev=").and_then(|start| {'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "Runtime NT provenance extracts a git revision query parameter from Cargo.lock source URLs when no fragment revision is present; this is dependency evidence parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "string"
+literal = '''"rev="'''
+context = '''let revision_start = start + "rev=".len();'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "Runtime NT provenance advances past the Cargo.lock git revision query key while parsing dependency evidence; this is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_iv/query.rs"

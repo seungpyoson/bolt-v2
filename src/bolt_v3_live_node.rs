@@ -60,10 +60,8 @@ use nautilus_live::{
 };
 #[cfg(test)]
 use nautilus_model::{
-    data::{OrderBookDeltas, QuoteTick, TradeTick},
-    enums::BookType,
-    identifiers::{ActorId, InstrumentId, Venue},
-    instruments::Instrument,
+    data::{OrderBookDeltas, QuoteTick},
+    identifiers::InstrumentId,
 };
 use nautilus_model::{
     enums::{BarIntervalType, TradingState},
@@ -1181,10 +1179,6 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn loss_governor_runtime_feed_configured(&self) -> bool {
         self.loss_runtime_feed.is_some() && self.loss_runtime_feed_subscription.is_some()
-    }
-
-    pub fn nt_risk_trading_state(&self) -> TradingState {
-        self.node.kernel().risk_engine().borrow().trading_state()
     }
 
     pub fn position_sizer_configured(&self) -> bool {

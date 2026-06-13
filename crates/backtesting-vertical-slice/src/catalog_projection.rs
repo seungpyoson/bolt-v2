@@ -24,7 +24,7 @@ use anyhow::{Context, Result, ensure};
 use nautilus_core::{Params, UnixNanos, string::urlencoding};
 use nautilus_model::{
     data::{
-        Bar, BarSpecification, BarType, CatalogPathPrefix, OrderBookDelta, TradeTick,
+        Bar, BarSpecification, BarType, CatalogPathPrefix, OrderBookDelta, QuoteTick, TradeTick,
         order::BookOrder,
     },
     enums::{AggregationSource, AggressorSide, AssetClass, BookAction, OrderSide, PriceType},
@@ -43,7 +43,8 @@ use ustr::Ustr;
 use super::{
     canonical_market_data::{
         CanonicalBarRow, CanonicalBarsTable, CanonicalOrderBookDeltaRow,
-        CanonicalOrderBookDeltasTable, DeltaAction, DeltaSide,
+        CanonicalOrderBookDeltasTable, CanonicalQuoteRow, CanonicalQuotesTable, DeltaAction,
+        DeltaSide,
     },
     canonical_trades::{CanonicalTradesTable, TradeAggressorSide},
     source_proof::SourceProofFidelityClass,
@@ -57,6 +58,9 @@ pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
 
 /// NautilusTrader data type written for the bar projection.
 pub const NT_DATA_TYPE_BAR: &str = "Bar";
+
+/// NautilusTrader data type written for the top-of-book quote projection.
+pub const NT_DATA_TYPE_QUOTE_TICK: &str = "QuoteTick";
 
 /// Accepted spot instrument metadata needed to build the NautilusTrader
 /// `CurrencyPair`. Built from the accepted instrument-universe payload.
@@ -847,6 +851,23 @@ impl CanonicalPriceSizeView for CanonicalBarsTable {
     }
 }
 
+impl CanonicalPriceSizeView for CanonicalQuotesTable {
+    fn price_values(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(
+            self.rows
+                .iter()
+                .flat_map(|row| [row.bid.as_str(), row.ask.as_str()]),
+        )
+    }
+    fn size_values(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(
+            self.rows
+                .iter()
+                .flat_map(|row| [row.bid_size.as_str(), row.ask_size.as_str()]),
+        )
+    }
+}
+
 /// Widen the catalog instrument's price/size precision to the accepted
 /// data's actual maximum decimal scale.
 ///
@@ -1218,6 +1239,151 @@ pub fn read_back_order_book_deltas(
         .context("query order book deltas from catalog")
 }
 
+/// Convert canonical top-of-book quote rows into NautilusTrader `QuoteTick`s at
+/// the instrument's price/size precision.
+///
+/// NT example strategies enter from `on_quote` (see the strategy examples at
+/// `crates/.../strategy` @6e059dc); replaying `QuoteTick` data will drive
+/// strategy `on_quote`. Keep the reference/non-traded instrument_id boundary
+/// explicit at the run-spec layer (the `instrument_spec` keying at
+/// `resolve_instrument_spec`): a quote on a reference instrument feeds signals,
+/// a quote on the traded instrument can trigger entries.
+///
+/// # Errors
+///
+/// Returns an error if a price/size cannot be represented at the instrument
+/// precision.
+pub fn canonical_rows_to_quote_ticks<I: Instrument + ?Sized>(
+    table: &CanonicalQuotesTable,
+    instrument: &I,
+) -> Result<Vec<QuoteTick>> {
+    let instrument_id = instrument.id();
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+    table
+        .rows
+        .iter()
+        .map(|row| canonical_row_to_quote_tick(instrument_id, row, price_precision, size_precision))
+        .collect()
+}
+
+fn canonical_row_to_quote_tick(
+    instrument_id: InstrumentId,
+    row: &CanonicalQuoteRow,
+    price_precision: u8,
+    size_precision: u8,
+) -> Result<QuoteTick> {
+    let label = match row.source_sequence.as_deref() {
+        Some(sequence) => format!("quote {sequence}"),
+        None => format!("quote {}", row.event_time),
+    };
+    let price_at = |value: &str, name: &str| -> Result<Price> {
+        let rescaled = rescaled(value, price_precision)?;
+        Price::from_str(&rescaled)
+            .map_err(|error| anyhow::anyhow!("invalid rescaled {name} {rescaled:?}: {error}"))
+    };
+    let size_at = |value: &str, name: &str| -> Result<Quantity> {
+        let rescaled = rescaled(value, size_precision)?;
+        Quantity::from_str(&rescaled)
+            .map_err(|error| anyhow::anyhow!("invalid rescaled {name} {rescaled:?}: {error}"))
+    };
+    let bid_price = price_at(&row.bid, "bid")?;
+    let ask_price = price_at(&row.ask, "ask")?;
+    let bid_size = size_at(&row.bid_size, "bid_size")?;
+    let ask_size = size_at(&row.ask_size, "ask_size")?;
+    let ts_event = ts_event_nanos(row.event_time, &label)?;
+    let ts_init = ts_init_nanos(row.availability_time, row.capture_time, &label)?;
+    // `QuoteTick::new` panics only on precision inequality (bid vs ask price, or
+    // bid vs ask size). Both prices rescale to the SAME instrument price
+    // precision and both sizes to the SAME size precision, so equality holds;
+    // the canonical table's spread validation has already proven both sides carry
+    // a price. This mirrors the `TradeTick::new` template choice (rescaling
+    // guarantees the invariant), so no `_checked` branch is needed here.
+    Ok(QuoteTick::new(
+        instrument_id,
+        bid_price,
+        ask_price,
+        bid_size,
+        ask_size,
+        ts_event,
+        ts_init,
+    ))
+}
+
+/// Project a canonical top-of-book quote table into a NautilusTrader
+/// `ParquetDataCatalog`.
+///
+/// Mirrors [`project_canonical_trades_to_catalog`]: validate, build the
+/// instrument, widen precision to the accepted data, assert the instrument id
+/// matches the canonical rows, convert, refuse a dirty root, then write the
+/// instrument and the `QuoteTick` projection. NautilusTrader writes its native
+/// `data/quotes/<instrument_id>/...` tree below `catalog_root`.
+///
+/// # Errors
+///
+/// Returns an error if instrument construction, conversion, or catalog writes
+/// fail, or if `catalog_root` is a non-empty (dirty) directory.
+pub fn project_canonical_quotes_to_catalog<S: CatalogInstrumentSpecSource + ?Sized>(
+    table: &CanonicalQuotesTable,
+    spec: &S,
+    catalog_root: &Path,
+) -> Result<CatalogProjection> {
+    table.validate()?;
+    let instrument = spec.build_instrument_any()?;
+    // Venue instrument metadata can be coarser than the accepted archive's
+    // actual prints; widen precision to the data before binding and writing.
+    let instrument = widen_instrument_precision_for_data(instrument, table)?;
+    let instrument_id = instrument.id();
+    let row_instrument_id = table.rows[0]
+        .nt_instrument_id
+        .as_deref()
+        .context("canonical row missing nt_instrument_id")?;
+    ensure!(
+        instrument_id.to_string() == row_instrument_id,
+        "instrument id {instrument_id} does not match canonical rows {}",
+        row_instrument_id
+    );
+    let ticks = canonical_rows_to_quote_ticks(table, &instrument)?;
+    let quote_count = ticks.len();
+
+    ensure_clean_catalog_root(catalog_root)?;
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_instruments(vec![instrument])
+        .context("write instrument to catalog")?;
+    catalog
+        .write_to_parquet(ticks, None, None, None)
+        .context("write quote ticks to catalog")?;
+
+    Ok(CatalogProjection {
+        catalog_root: catalog_root.to_path_buf(),
+        nt_instrument_id: instrument_id.to_string(),
+        data_type: NT_DATA_TYPE_QUOTE_TICK.to_string(),
+        trade_count: quote_count,
+        catalog_hash: logical_catalog_hash(catalog_root)?,
+        fidelity_class: table.fidelity_class,
+    })
+}
+
+/// Prove the resolved NautilusTrader dependency can read the projected
+/// `QuoteTick` data back from `catalog_root`.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_quotes(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec<QuoteTick>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    let instrument_ids = vec![nt_instrument_id.to_string()];
+    let files =
+        catalog_files_for_instruments::<QuoteTick>(&catalog, catalog_root, &instrument_ids)?;
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    catalog
+        .query_typed_data::<QuoteTick>(None, None, None, None, Some(files), false)
+        .context("query quote ticks from catalog")
+}
+
 /// Convert canonical bar rows into NautilusTrader `Bar`s under the table's
 /// externally-aggregated bar type, at the instrument's price/size precision.
 ///
@@ -1438,6 +1604,24 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
             bar.volume.as_decimal().to_string(),
         )
     });
+    let quote_files = catalog_files_for_instruments::<QuoteTick>(&catalog, root, &instrument_ids)?;
+    let mut quotes = if quote_files.is_empty() {
+        Vec::new()
+    } else {
+        catalog
+            .query_typed_data::<QuoteTick>(None, None, None, None, Some(quote_files), false)
+            .context("query quote ticks from catalog for logical hash")?
+    };
+    quotes.sort_by_key(|quote| {
+        (
+            quote.ts_event.as_u64(),
+            quote.instrument_id.to_string(),
+            quote.bid_price.as_decimal().to_string(),
+            quote.ask_price.as_decimal().to_string(),
+            quote.bid_size.as_decimal().to_string(),
+            quote.ask_size.as_decimal().to_string(),
+        )
+    });
 
     let mut hasher = Sha256::new();
     hasher.update(b"nautilus-logical-catalog.v1");
@@ -1500,6 +1684,27 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(bar.ts_event.as_u64().to_string().as_bytes());
         hasher.update([26u8]);
         hasher.update(bar.ts_init.as_u64().to_string().as_bytes());
+    }
+    // Quote loop appended AFTER the bars loop with NEW unique domain-separator
+    // tags 27..33 (existing tags: 0,2..8 ticks; 9..18 deltas; 19..26 bars). The
+    // existing instrument/tick/delta/bar byte stream is unperturbed, so the
+    // committed PMXT reference catalog (which holds zero quote files) keeps
+    // hashing to its recorded value — this loop emits nothing for it.
+    for quote in quotes {
+        hasher.update([27u8]);
+        hasher.update(quote.instrument_id.to_string().as_bytes());
+        hasher.update([28u8]);
+        hasher.update(quote.bid_price.as_decimal().to_string().as_bytes());
+        hasher.update([29u8]);
+        hasher.update(quote.ask_price.as_decimal().to_string().as_bytes());
+        hasher.update([30u8]);
+        hasher.update(quote.bid_size.as_decimal().to_string().as_bytes());
+        hasher.update([31u8]);
+        hasher.update(quote.ask_size.as_decimal().to_string().as_bytes());
+        hasher.update([32u8]);
+        hasher.update(quote.ts_event.as_u64().to_string().as_bytes());
+        hasher.update([33u8]);
+        hasher.update(quote.ts_init.as_u64().to_string().as_bytes());
     }
     Ok(hex::encode(hasher.finalize()))
 }
@@ -3006,6 +3211,188 @@ max_notional = "200000"
         assert_eq!(loaded[0].instrument_id.to_string(), "BNBUSDC.BYBIT");
         // 617 rescaled to price precision 1 -> 617.0
         assert_eq!(loaded[2].price, Price::from("617.0"));
+    }
+
+    fn quote_row(
+        event_time: i64,
+        capture_time: i64,
+        availability_time: Option<i64>,
+        bid: &str,
+        ask: &str,
+        bid_size: &str,
+        ask_size: &str,
+    ) -> CanonicalQuoteRow {
+        CanonicalQuoteRow {
+            schema_version: crate::canonical_trades::NORMALIZED_SCHEMA_VERSION.to_string(),
+            ingest_run_id: "ingest-run-test".to_string(),
+            source_binding: "synthetic-archive".to_string(),
+            venue: "BYBIT".to_string(),
+            product_family: "spot".to_string(),
+            product_category: "spot".to_string(),
+            instrument_id: "BNBUSDC".to_string(),
+            canonical_instrument_key: "bybit/spot/BNBUSDC".to_string(),
+            venue_symbol: "BNBUSDC".to_string(),
+            nt_instrument_id: Some("BNBUSDC.BYBIT".to_string()),
+            event_time,
+            capture_time,
+            availability_time,
+            source_sequence: Some(event_time.to_string()),
+            raw_payload_id: "feedface".to_string(),
+            source_proof_id: "source-proof-synthetic".to_string(),
+            payload_hash: "feedface".to_string(),
+            transform_hash: "0badc0de".to_string(),
+            bid: bid.to_string(),
+            ask: ask.to_string(),
+            bid_size: bid_size.to_string(),
+            ask_size: ask_size.to_string(),
+        }
+    }
+
+    // Distinct capture_time != event_time (and availability_time=None) so the
+    // ts_init==capture_time proof is non-vacuous: it actually distinguishes the
+    // receipt clock from the event clock.
+    fn canonical_quotes_table() -> CanonicalQuotesTable {
+        let event_time = 1_700_000_000_000_000_000;
+        let capture_time = 1_700_000_000_000_000_500;
+        let rows = vec![
+            quote_row(event_time, capture_time, None, "617.0", "617.1", "10", "12"),
+            quote_row(
+                event_time + 1,
+                capture_time + 1,
+                None,
+                "617.1",
+                "617.2",
+                "8",
+                "0",
+            ),
+        ];
+        CanonicalQuotesTable {
+            schema_version: crate::canonical_trades::NORMALIZED_SCHEMA_VERSION.to_string(),
+            partition: crate::canonical_trades::TradesPartition {
+                venue: "BYBIT".to_string(),
+                product_family: "spot".to_string(),
+                product_category: "spot".to_string(),
+                instrument_id: "BNBUSDC".to_string(),
+                dt: "2026-05-22".to_string(),
+            },
+            source_proof_id: "source-proof-synthetic".to_string(),
+            source_proof_version: 1,
+            fidelity_class: SourceProofFidelityClass::QuoteReplay,
+            forbidden_claims: vec!["No execution-quality claims.".to_string()],
+            transform_hash: "0badc0de".to_string(),
+            payload_hash: "feedface".to_string(),
+            rows,
+        }
+    }
+
+    #[test]
+    fn projects_and_reads_back_quote_ticks() {
+        let table = canonical_quotes_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let projection =
+            project_canonical_quotes_to_catalog(&table, &spec(), dir.path()).expect("project");
+        assert_eq!(projection.trade_count, 2);
+        assert_eq!(projection.data_type, NT_DATA_TYPE_QUOTE_TICK);
+        assert_eq!(projection.nt_instrument_id, "BNBUSDC.BYBIT");
+        assert!(!projection.catalog_hash.is_empty());
+
+        let loaded = read_back_quotes(dir.path(), "BNBUSDC.BYBIT").expect("read back");
+        assert_eq!(loaded.len(), 2);
+        let mut loaded = loaded;
+        loaded.sort_by_key(|quote| quote.ts_event.as_u64());
+        for (quote, row) in loaded.iter().zip(table.rows.iter()) {
+            assert_eq!(quote.instrument_id.to_string(), "BNBUSDC.BYBIT");
+            assert_eq!(
+                quote.bid_price.as_decimal(),
+                Decimal::from_str(&row.bid).unwrap()
+            );
+            assert_eq!(
+                quote.ask_price.as_decimal(),
+                Decimal::from_str(&row.ask).unwrap()
+            );
+            assert_eq!(
+                quote.bid_size.as_decimal(),
+                Decimal::from_str(&row.bid_size).unwrap()
+            );
+            assert_eq!(
+                quote.ask_size.as_decimal(),
+                Decimal::from_str(&row.ask_size).unwrap()
+            );
+            // ts_event preserves the event clock; ts_init is the receipt clock.
+            assert_eq!(
+                quote.ts_event.as_u64(),
+                u64::try_from(row.event_time).unwrap()
+            );
+            assert_eq!(row.availability_time, None);
+            assert_eq!(
+                quote.ts_init.as_u64(),
+                u64::try_from(row.capture_time).unwrap(),
+                "ts_init must equal capture_time (the receipt clock), not event_time"
+            );
+        }
+    }
+
+    #[test]
+    fn quote_ticks_fail_loud_when_capture_invalid_and_no_availability() {
+        // validate() does not guard capture_time, so a None availability with a
+        // non-positive capture clock reaches the seam and must fail loud naming
+        // the capture_time field, never silently stamping ts_init=0.
+        let mut table = canonical_quotes_table();
+        table.rows[0].availability_time = None;
+        table.rows[0].capture_time = 0;
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let err = canonical_rows_to_quote_ticks(&table, &instrument).unwrap_err();
+        assert!(err.to_string().contains("capture_time"), "{err}");
+    }
+
+    #[test]
+    fn quote_ticks_fail_loud_when_availability_some_but_invalid() {
+        // A present-but-invalid availability_time must fail, never fall back to
+        // the (valid) capture clock.
+        let mut table = canonical_quotes_table();
+        table.rows[0].availability_time = Some(0);
+        table.rows[0].capture_time = 42;
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let err = canonical_rows_to_quote_ticks(&table, &instrument).unwrap_err();
+        assert!(err.to_string().contains("availability_time"), "{err}");
+    }
+
+    #[test]
+    fn quote_table_validate_rejects_crossed_book() {
+        let mut table = canonical_quotes_table();
+        table.rows[0].ask = "0.40".to_string();
+        let err = table.validate().expect_err("crossed book rejected");
+        assert!(err.to_string().contains("below bid"), "{err}");
+    }
+
+    #[test]
+    fn quote_catalog_hash_matches_projection() {
+        // Proves the new quote query-back + hash block is wired into the logical
+        // digest: recomputing over the written catalog reproduces the hash the
+        // projection recorded.
+        let table = canonical_quotes_table();
+        let dir = tempfile::TempDir::new().unwrap();
+        let projection = project_canonical_quotes_to_catalog(&table, &spec(), dir.path()).unwrap();
+        assert_eq!(
+            projection.catalog_hash,
+            logical_catalog_hash(dir.path()).unwrap(),
+            "quote catalog hash must describe the logical quote catalog contents"
+        );
+    }
+
+    #[test]
+    fn quote_catalog_hash_is_deterministic_across_roots() {
+        // No committed reference quote catalog exists, so determinism across two
+        // independent roots is the pin: the same quote data must hash identically.
+        let table = canonical_quotes_table();
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let a = project_canonical_quotes_to_catalog(&table, &spec(), dir_a.path()).unwrap();
+        let b = project_canonical_quotes_to_catalog(&table, &spec(), dir_b.path()).unwrap();
+        assert_eq!(
+            a.catalog_hash, b.catalog_hash,
+            "same quote data must hash identically regardless of root"
+        );
     }
 
     // Synthetic, token-agnostic fixtures for the precision-widening tests.

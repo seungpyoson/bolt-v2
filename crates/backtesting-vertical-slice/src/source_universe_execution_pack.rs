@@ -617,6 +617,7 @@ fn materialize_run_spec(
             paged_json_bars: None,
             jsonl_bars: None,
             deltas: None,
+            quotes: None,
         })
         .context("serialize converter config to TOML")?,
     )?;

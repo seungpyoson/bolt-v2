@@ -578,6 +578,228 @@ fn validate_bar_ohlcv(index: usize, row: &CanonicalBarRow) -> Result<()> {
     Ok(())
 }
 
+/// One normalized top-of-book quote row with full provenance.
+///
+/// The provenance prefix mirrors
+/// [`super::canonical_trades::CanonicalTradeRow`] exactly; the payload fields
+/// (`bid`, `ask`, `bid_size`, `ask_size`) describe a single NautilusTrader
+/// `QuoteTick` (best bid/ask snapshot), preserving the exact source decimal
+/// strings with the same discipline as the bar OHLCV columns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalQuoteRow {
+    pub schema_version: String,
+    pub ingest_run_id: String,
+    pub source_binding: String,
+    pub venue: String,
+    pub product_family: String,
+    pub product_category: String,
+    pub instrument_id: String,
+    pub canonical_instrument_key: String,
+    pub venue_symbol: String,
+    pub nt_instrument_id: Option<String>,
+    /// Exchange/source event timestamp in Unix nanoseconds.
+    pub event_time: i64,
+    /// Worker receipt/capture timestamp in Unix nanoseconds.
+    pub capture_time: i64,
+    /// Source availability timestamp in Unix nanoseconds, when distinct from event time.
+    pub availability_time: Option<i64>,
+    /// Native source sequence/print identity, when present.
+    pub source_sequence: Option<String>,
+    pub raw_payload_id: String,
+    pub source_proof_id: String,
+    /// Lowercase SHA-256 hex over the canonical raw object bytes.
+    pub payload_hash: String,
+    /// Lowercase SHA-256 hex over the transform identity.
+    pub transform_hash: String,
+    /// Exact source best-bid price string.
+    pub bid: String,
+    /// Exact source best-ask price string.
+    pub ask: String,
+    /// Exact source best-bid size string (`0` for an empty bid side).
+    pub bid_size: String,
+    /// Exact source best-ask size string (`0` for an empty ask side).
+    pub ask_size: String,
+}
+
+/// A validated canonical normalized top-of-book quote table for one accepted object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalQuotesTable {
+    pub schema_version: String,
+    pub partition: TradesPartition,
+    pub source_proof_id: String,
+    pub source_proof_version: u32,
+    pub fidelity_class: SourceProofFidelityClass,
+    pub forbidden_claims: Vec<String>,
+    pub transform_hash: String,
+    pub payload_hash: String,
+    pub rows: Vec<CanonicalQuoteRow>,
+}
+
+impl CanonicalQuotesTable {
+    /// Validate required fields, fidelity class, timestamps, and the top-of-book
+    /// spread/positivity contract.
+    ///
+    /// Top-of-book best bid/ask is a SNAPSHOT of the order book, not full L2
+    /// depth, so the table binds [`SourceProofFidelityClass::QuoteReplay`] — the
+    /// dedicated NT quote-stream replay class admitted by the run-manifest gate
+    /// (`ADMITTANCE_TABLE`) — never [`SourceProofFidelityClass::L2Replay`]
+    /// (which would conflate top-of-book with full-depth and trip the
+    /// L2-evidence gate).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first contract violation.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.schema_version == NORMALIZED_SCHEMA_VERSION,
+            "unexpected schema_version {:?}",
+            self.schema_version
+        );
+        ensure!(!self.rows.is_empty(), "canonical quotes table is empty");
+        for field in [
+            &self.partition.venue,
+            &self.partition.product_family,
+            &self.partition.product_category,
+            &self.partition.instrument_id,
+            &self.partition.dt,
+            &self.source_proof_id,
+            &self.transform_hash,
+            &self.payload_hash,
+        ] {
+            ensure!(!field.trim().is_empty(), "empty partition/provenance field");
+        }
+        ensure!(
+            self.fidelity_class == SourceProofFidelityClass::QuoteReplay,
+            "quotes must be labelled QUOTE_REPLAY"
+        );
+        ensure!(
+            !self.forbidden_claims.is_empty(),
+            "quote table must carry explicit forbidden claims"
+        );
+
+        let mut previous_event_time = i64::MIN;
+        for (index, row) in self.rows.iter().enumerate() {
+            ensure!(
+                row.schema_version == NORMALIZED_SCHEMA_VERSION,
+                "row {index}: schema_version mismatch"
+            );
+            ensure!(row.event_time > 0, "row {index}: non-positive event_time");
+            // Quotes share an event_time clock with trades/deltas: multiple
+            // quotes can carry the same timestamp, so the rule is non-decreasing
+            // (>=), not the bars' strictly-increasing open_time rule.
+            ensure!(
+                row.event_time >= previous_event_time,
+                "row {index}: event_time {} precedes previous {}",
+                row.event_time,
+                previous_event_time
+            );
+            previous_event_time = row.event_time;
+            ensure!(
+                row.instrument_id == self.partition.instrument_id,
+                "row {index}: instrument_id does not match partition"
+            );
+            for field in [
+                &row.ingest_run_id,
+                &row.source_binding,
+                &row.venue,
+                &row.product_family,
+                &row.product_category,
+                &row.instrument_id,
+                &row.canonical_instrument_key,
+                &row.venue_symbol,
+                &row.raw_payload_id,
+                &row.source_proof_id,
+                &row.payload_hash,
+                &row.transform_hash,
+                &row.bid,
+                &row.ask,
+                &row.bid_size,
+                &row.ask_size,
+            ] {
+                ensure!(
+                    !field.trim().is_empty(),
+                    "row {index}: empty required field"
+                );
+            }
+            for (name, field) in [
+                ("nt_instrument_id", &row.nt_instrument_id),
+                ("source_sequence", &row.source_sequence),
+            ] {
+                if let Some(field) = field {
+                    ensure!(
+                        !field.trim().is_empty(),
+                        "row {index}: empty nullable field {name}"
+                    );
+                }
+            }
+            validate_quote_spread(index, row)?;
+        }
+        Ok(())
+    }
+}
+
+/// Validate the top-of-book spread/positivity invariant for one quote row.
+///
+/// Both sides must carry a price (`bid > 0`, `ask > 0`) and the book must not be
+/// crossed (`ask >= bid`). Sizes must be non-negative; a zero side size is a
+/// legitimate empty side, so sizes are not required to be strictly positive.
+fn validate_quote_spread(index: usize, row: &CanonicalQuoteRow) -> Result<()> {
+    let parse = |value: &str, label: &str| -> Result<Decimal> {
+        value
+            .parse::<Decimal>()
+            .map_err(|error| anyhow::anyhow!("row {index}: invalid {label} {value:?}: {error}"))
+    };
+    let bid = parse(&row.bid, "bid")?;
+    let ask = parse(&row.ask, "ask")?;
+    let bid_size = parse(&row.bid_size, "bid_size")?;
+    let ask_size = parse(&row.ask_size, "ask_size")?;
+    ensure!(bid > Decimal::ZERO, "row {index}: non-positive bid {bid}");
+    ensure!(ask > Decimal::ZERO, "row {index}: non-positive ask {ask}");
+    ensure!(
+        bid_size >= Decimal::ZERO,
+        "row {index}: negative bid_size {bid_size}"
+    );
+    ensure!(
+        ask_size >= Decimal::ZERO,
+        "row {index}: negative ask_size {ask_size}"
+    );
+    ensure!(ask >= bid, "row {index}: ask {ask} below bid {bid}");
+    Ok(())
+}
+
+/// Run-spec owned top-of-book quote column mapping for a snapshot-quote source
+/// adapter.
+///
+/// A new source that emits the same top-of-book best-bid/ask snapshot shape
+/// selects the quote converter from TOML and supplies its field mapping here.
+/// Mirrors [`DeltaMappingConfig`]: the timestamp unit is the shared
+/// [`super::canonical_trades::CsvTimestampUnit`] and field names are resolved
+/// against each source record rather than positionally, so no column literal is
+/// hardcoded in code.
+///
+/// SCOPE: this struct + the registered adapter + the canonical table +
+/// projection land in slice S3quote; the wire-format parser that fills a
+/// [`CanonicalQuotesTable`] from raw bytes is a follow-up slice. The
+/// snapshot-quotes operator dispatch arm names that follow-up and fails loud
+/// (the registered seam is real, not a TODO); the projection is proven by the
+/// synthetic round-trip test in [`super::catalog_projection`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuoteMappingConfig {
+    /// Field name carrying the exchange book time.
+    pub event_time_field: String,
+    /// Unit of `event_time_field`.
+    pub event_time_unit: super::canonical_trades::CsvTimestampUnit,
+    /// Field name carrying the best-bid price.
+    pub bid_field: String,
+    /// Field name carrying the best-ask price.
+    pub ask_field: String,
+    /// Field name carrying the best-bid size.
+    pub bid_size_field: String,
+    /// Field name carrying the best-ask size.
+    pub ask_size_field: String,
+}
+
 /// Write one canonical table record batch as a Parquet artifact.
 ///
 /// Shared by the bar and order-book-delta canonical writers; mirrors the
@@ -805,6 +1027,102 @@ impl CanonicalBarsTable {
             ],
         )
         .context("failed to build canonical bar record batch")
+    }
+
+    /// Write the canonical normalized table as a Parquet artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table is invalid or the file cannot be written.
+    pub fn write_parquet(&self, path: &Path) -> Result<()> {
+        self.validate()?;
+        write_record_batch_parquet(&self.to_record_batch()?, path)
+    }
+}
+
+impl CanonicalQuotesTable {
+    /// Arrow schema for the canonical top-of-book quote table.
+    #[must_use]
+    pub fn arrow_schema() -> Arc<Schema> {
+        let utf8 = |name: &str| Field::new(name, DataType::Utf8, false);
+        let utf8_nullable = |name: &str| Field::new(name, DataType::Utf8, true);
+        let int64 = |name: &str| Field::new(name, DataType::Int64, false);
+        let int64_nullable = |name: &str| Field::new(name, DataType::Int64, true);
+        Arc::new(Schema::new(vec![
+            utf8("schema_version"),
+            utf8("ingest_run_id"),
+            utf8("source_binding"),
+            utf8("venue"),
+            utf8("product_family"),
+            utf8("product_category"),
+            utf8("instrument_id"),
+            utf8("canonical_instrument_key"),
+            utf8("venue_symbol"),
+            utf8_nullable("nt_instrument_id"),
+            int64("event_time"),
+            int64("capture_time"),
+            int64_nullable("availability_time"),
+            utf8_nullable("source_sequence"),
+            utf8("raw_payload_id"),
+            utf8("source_proof_id"),
+            utf8("payload_hash"),
+            utf8("transform_hash"),
+            utf8("bid"),
+            utf8("ask"),
+            utf8("bid_size"),
+            utf8("ask_size"),
+        ]))
+    }
+
+    fn to_record_batch(&self) -> Result<RecordBatch> {
+        let utf8_col = |f: fn(&CanonicalQuoteRow) -> &str| {
+            Arc::new(StringArray::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let int64_col = |f: fn(&CanonicalQuoteRow) -> i64| {
+            Arc::new(Int64Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let opt_utf8_col = |f: fn(&CanonicalQuoteRow) -> Option<&str>| {
+            Arc::new(StringArray::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let opt_int64_col = |f: fn(&CanonicalQuoteRow) -> Option<i64>| {
+            Arc::new(Int64Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        RecordBatch::try_new(
+            Self::arrow_schema(),
+            vec![
+                utf8_col(|r| r.schema_version.as_str()),
+                utf8_col(|r| r.ingest_run_id.as_str()),
+                utf8_col(|r| r.source_binding.as_str()),
+                utf8_col(|r| r.venue.as_str()),
+                utf8_col(|r| r.product_family.as_str()),
+                utf8_col(|r| r.product_category.as_str()),
+                utf8_col(|r| r.instrument_id.as_str()),
+                utf8_col(|r| r.canonical_instrument_key.as_str()),
+                utf8_col(|r| r.venue_symbol.as_str()),
+                opt_utf8_col(|r| r.nt_instrument_id.as_deref()),
+                int64_col(|r| r.event_time),
+                int64_col(|r| r.capture_time),
+                opt_int64_col(|r| r.availability_time),
+                opt_utf8_col(|r| r.source_sequence.as_deref()),
+                utf8_col(|r| r.raw_payload_id.as_str()),
+                utf8_col(|r| r.source_proof_id.as_str()),
+                utf8_col(|r| r.payload_hash.as_str()),
+                utf8_col(|r| r.transform_hash.as_str()),
+                utf8_col(|r| r.bid.as_str()),
+                utf8_col(|r| r.ask.as_str()),
+                utf8_col(|r| r.bid_size.as_str()),
+                utf8_col(|r| r.ask_size.as_str()),
+            ],
+        )
+        .context("failed to build canonical quote record batch")
     }
 
     /// Write the canonical normalized table as a Parquet artifact.
@@ -1472,5 +1790,125 @@ mod tests {
         table.rows[0].volume = "-1".to_string();
         let error = table.validate().expect_err("negative volume rejected");
         assert!(error.to_string().contains("negative volume"), "{error}");
+    }
+
+    fn quote_row(
+        event_time: i64,
+        bid: &str,
+        ask: &str,
+        bid_size: &str,
+        ask_size: &str,
+    ) -> CanonicalQuoteRow {
+        CanonicalQuoteRow {
+            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+            ingest_run_id: "ingest-run-test".to_string(),
+            source_binding: "synthetic-archive".to_string(),
+            venue: "testvenue".to_string(),
+            product_family: "prediction-market".to_string(),
+            product_category: "binary".to_string(),
+            instrument_id: "YES".to_string(),
+            canonical_instrument_key: "testvenue/prediction-market/YES".to_string(),
+            venue_symbol: "YES".to_string(),
+            nt_instrument_id: Some("YES.TESTVENUE".to_string()),
+            event_time,
+            capture_time: event_time,
+            availability_time: None,
+            source_sequence: Some(event_time.to_string()),
+            raw_payload_id: "feedface".to_string(),
+            source_proof_id: "source-proof-synthetic".to_string(),
+            payload_hash: "feedface".to_string(),
+            transform_hash: "0badc0de".to_string(),
+            bid: bid.to_string(),
+            ask: ask.to_string(),
+            bid_size: bid_size.to_string(),
+            ask_size: ask_size.to_string(),
+        }
+    }
+
+    fn quotes_table() -> CanonicalQuotesTable {
+        let base = 1_700_000_000_000_000_000;
+        let rows = vec![
+            quote_row(base, "0.49", "0.51", "10", "12"),
+            quote_row(base + 1, "0.50", "0.52", "8", "0"),
+        ];
+        CanonicalQuotesTable {
+            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+            partition: partition(),
+            source_proof_id: "source-proof-synthetic".to_string(),
+            source_proof_version: 1,
+            fidelity_class: SourceProofFidelityClass::QuoteReplay,
+            forbidden_claims: vec!["No execution-quality claims.".to_string()],
+            transform_hash: "0badc0de".to_string(),
+            payload_hash: "feedface".to_string(),
+            rows,
+        }
+    }
+
+    #[test]
+    fn quotes_validate_accepts_well_formed() {
+        quotes_table()
+            .validate()
+            .expect("well-formed quote table is valid");
+    }
+
+    #[test]
+    fn quotes_validate_rejects_empty_table() {
+        let mut table = quotes_table();
+        table.rows.clear();
+        let error = table.validate().expect_err("empty quote table rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("canonical quotes table is empty"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn quotes_validate_rejects_wrong_fidelity_class() {
+        let mut table = quotes_table();
+        table.fidelity_class = SourceProofFidelityClass::L2Replay;
+        let error = table.validate().expect_err("wrong fidelity rejected");
+        assert!(error.to_string().contains("QUOTE_REPLAY"), "{error}");
+    }
+
+    #[test]
+    fn quotes_validate_rejects_empty_forbidden_claims() {
+        let mut table = quotes_table();
+        table.forbidden_claims.clear();
+        let error = table
+            .validate()
+            .expect_err("empty forbidden claims rejected");
+        assert!(error.to_string().contains("forbidden claims"), "{error}");
+    }
+
+    #[test]
+    fn quotes_validate_rejects_crossed_book() {
+        // ask below bid is a crossed top-of-book and must be rejected.
+        let mut table = quotes_table();
+        table.rows[0].ask = "0.40".to_string();
+        let error = table.validate().expect_err("crossed book rejected");
+        assert!(
+            error.to_string().contains("ask") && error.to_string().contains("below bid"),
+            "expected crossed-book rejection; got: {error}"
+        );
+    }
+
+    #[test]
+    fn quotes_validate_rejects_non_positive_bid() {
+        let mut table = quotes_table();
+        table.rows[0].bid = "0".to_string();
+        let error = table.validate().expect_err("non-positive bid rejected");
+        assert!(error.to_string().contains("non-positive bid"), "{error}");
+    }
+
+    #[test]
+    fn quotes_validate_rejects_decreasing_event_time() {
+        let mut table = quotes_table();
+        table.rows[1].event_time = table.rows[0].event_time - 1;
+        let error = table
+            .validate()
+            .expect_err("decreasing event_time rejected");
+        assert!(error.to_string().contains("precedes previous"), "{error}");
     }
 }

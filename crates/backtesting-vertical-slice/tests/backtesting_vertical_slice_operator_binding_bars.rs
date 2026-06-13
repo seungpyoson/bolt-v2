@@ -342,6 +342,7 @@ fn converter(adapter: &SourceAdapterDefinition, object_len: u64) -> ConverterCon
         paged_json_bars: None,
         jsonl_bars: None,
         deltas: None,
+        quotes: None,
     }
 }
 

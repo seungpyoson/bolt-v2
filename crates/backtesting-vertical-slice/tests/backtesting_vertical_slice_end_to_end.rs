@@ -70,6 +70,7 @@ fn converter_config() -> ConverterConfig {
         paged_json_bars: None,
         jsonl_bars: None,
         deltas: None,
+        quotes: None,
     }
 }
 

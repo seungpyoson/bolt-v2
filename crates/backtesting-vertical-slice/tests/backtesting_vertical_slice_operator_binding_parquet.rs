@@ -343,6 +343,7 @@ fn parquet_converter(object_len: u64) -> ConverterConfig {
         paged_json_bars: None,
         jsonl_bars: None,
         deltas: Some(event_stream_mapping()),
+        quotes: None,
     }
 }
 

@@ -340,6 +340,7 @@ fn converter(adapter: &SourceAdapterDefinition, raw_payload: RawPayloadConfig) -
         paged_json_bars: None,
         jsonl_bars: None,
         deltas: None,
+        quotes: None,
     }
 }
 

@@ -119,6 +119,25 @@ pub const EVENT_STREAM_DELTAS_TRANSFORM_VERSION: &str = "1";
 /// Source-proof table family accepted by the JSONL snapshot-delta converter.
 pub const DELTAS_TABLE_FAMILY: &str = "order_book_snapshot_deltas";
 
+/// NT catalog path-prefix and source-proof table family for top-of-book quotes.
+///
+/// Matches NautilusTrader's own `QuoteTick` catalog prefix
+/// (`impl_catalog_path_prefix!(QuoteTick, "quotes")`), so the canonical family
+/// name and the NT catalog directory agree.
+pub const QUOTE_TABLE_FAMILY: &str = "quotes";
+
+/// Stable identity of the config-driven top-of-book snapshot quote normalization
+/// transform.
+///
+/// Distinct from the delta identities because the wire shape and meaning differ:
+/// a single best-bid/ask snapshot (a `QuoteTick`) versus full-depth L2 photos /
+/// typed events (the `order_book_snapshot_deltas` family). Both bind their own
+/// fidelity class — quotes are `QUOTE_REPLAY`, deltas are `L2_REPLAY`.
+pub const SNAPSHOT_QUOTES_TRANSFORM_IDENTITY: &str = "jsonl-top-of-book-to-canonical-quotes.v1";
+
+/// Version of the registered compiled snapshot-quote converter implementation.
+pub const SNAPSHOT_QUOTES_TRANSFORM_VERSION: &str = "1";
+
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
 /// Expected sample raw header, in order.
@@ -139,6 +158,7 @@ pub enum SourceAdapterKind {
     JsonlSnapshotDeltas,
     TarJsonlSnapshotDeltas,
     ParquetEventStreamDeltas,
+    SnapshotQuotes,
     #[cfg(test)]
     SyntheticOrderBookDeltas,
 }
@@ -198,6 +218,12 @@ pub struct ConverterConfig {
     pub jsonl_bars: Option<super::canonical_bars::JsonlBarMappingConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deltas: Option<super::canonical_order_book_deltas::DeltaMappingConfig>,
+    /// Top-of-book snapshot-quote field mapping, present only when the registered
+    /// adapter kind is [`SourceAdapterKind::SnapshotQuotes`]; the snapshot-quotes
+    /// operator dispatch fail-closes when a quote-kind config omits it. Existing
+    /// run-specs carry no `quotes` key and deserialize unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quotes: Option<super::canonical_market_data::QuoteMappingConfig>,
 }
 
 impl ConverterConfig {
@@ -349,6 +375,15 @@ pub const PARQUET_EVENT_STREAM_DELTAS_ADAPTER: SourceAdapterDefinition = SourceA
     nt_data_type: crate::catalog_projection::NT_DATA_TYPE_ORDER_BOOK_DELTA,
 };
 
+pub const SNAPSHOT_QUOTES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
+    identity: SNAPSHOT_QUOTES_TRANSFORM_IDENTITY,
+    version: SNAPSHOT_QUOTES_TRANSFORM_VERSION,
+    kind: SourceAdapterKind::SnapshotQuotes,
+    table_family: QUOTE_TABLE_FAMILY,
+    normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
+    nt_data_type: crate::catalog_projection::NT_DATA_TYPE_QUOTE_TICK,
+};
+
 #[cfg(test)]
 pub const SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
     identity: "synthetic-order-book-deltas-fixture.v1",
@@ -368,6 +403,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     JSONL_SNAPSHOT_DELTAS_ADAPTER,
     TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
     PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
+    SNAPSHOT_QUOTES_ADAPTER,
 ];
 
 #[cfg(test)]
@@ -379,6 +415,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     JSONL_SNAPSHOT_DELTAS_ADAPTER,
     TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
     PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
+    SNAPSHOT_QUOTES_ADAPTER,
     SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER,
 ];
 
@@ -612,6 +649,32 @@ pub fn require_registered_event_stream_delta_converter_for_table_family(
     ensure!(
         adapter.kind == SourceAdapterKind::ParquetEventStreamDeltas,
         "adapter {:?} version {:?} is {:?}, not a Parquet event-stream delta converter",
+        adapter.identity,
+        adapter.version,
+        adapter.kind
+    );
+    Ok(adapter)
+}
+
+#[must_use]
+pub fn registered_quote_converter(
+    identity: &str,
+    version: &str,
+) -> Option<&'static SourceAdapterDefinition> {
+    registered_source_adapter(identity, version)
+        .filter(|adapter| adapter.kind == SourceAdapterKind::SnapshotQuotes)
+}
+
+pub fn require_registered_quote_converter_for_table_family(
+    identity: &str,
+    version: &str,
+    table_family: &str,
+) -> Result<&'static SourceAdapterDefinition> {
+    let adapter =
+        require_registered_source_adapter_for_table_family(identity, version, table_family)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::SnapshotQuotes,
+        "adapter {:?} version {:?} is {:?}, not a snapshot-quotes converter",
         adapter.identity,
         adapter.version,
         adapter.kind
@@ -1176,6 +1239,9 @@ pub fn normalize_registered_trade_converter(
                  with the parquet bytes, not the single-object native-trades path"
             )
         }
+        SourceAdapterKind::SnapshotQuotes => {
+            bail!("snapshot-quotes adapter cannot normalize native trades")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize native trades")
@@ -1249,6 +1315,9 @@ pub fn normalize_registered_bar_converter(
         }
         SourceAdapterKind::ParquetEventStreamDeltas => {
             bail!("Parquet event-stream delta adapter cannot normalize native bars")
+        }
+        SourceAdapterKind::SnapshotQuotes => {
+            bail!("snapshot-quotes adapter cannot normalize native bars")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1324,6 +1393,9 @@ pub fn normalize_registered_paged_json_bar_converter(
         }
         SourceAdapterKind::ParquetEventStreamDeltas => {
             bail!("Parquet event-stream delta adapter cannot normalize paged-JSON bars")
+        }
+        SourceAdapterKind::SnapshotQuotes => {
+            bail!("snapshot-quotes adapter cannot normalize paged-JSON bars")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1402,6 +1474,9 @@ pub fn normalize_registered_jsonl_multi_interval_bar_converter(
         SourceAdapterKind::ParquetEventStreamDeltas => {
             bail!("Parquet event-stream delta adapter cannot normalize JSONL multi-interval bars")
         }
+        SourceAdapterKind::SnapshotQuotes => {
+            bail!("snapshot-quotes adapter cannot normalize JSONL multi-interval bars")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize JSONL multi-interval bars")
@@ -1477,6 +1552,9 @@ pub fn normalize_registered_order_book_delta_converter(
         }
         SourceAdapterKind::JsonlMultiIntervalBars => {
             bail!("JSONL multi-interval bar adapter cannot normalize order-book deltas")
+        }
+        SourceAdapterKind::SnapshotQuotes => {
+            bail!("snapshot-quotes adapter cannot normalize order-book deltas")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1561,6 +1639,9 @@ pub fn normalize_registered_tar_order_book_delta_converter(
         SourceAdapterKind::JsonlMultiIntervalBars => {
             bail!("JSONL multi-interval bar adapter cannot normalize tar order-book deltas")
         }
+        SourceAdapterKind::SnapshotQuotes => {
+            bail!("snapshot-quotes adapter cannot normalize tar order-book deltas")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize tar order-book deltas")
@@ -1644,9 +1725,90 @@ pub fn normalize_registered_event_stream_delta_converter(
         SourceAdapterKind::JsonlMultiIntervalBars => {
             bail!("JSONL multi-interval bar adapter cannot normalize event-stream deltas")
         }
+        SourceAdapterKind::SnapshotQuotes => {
+            bail!("snapshot-quotes adapter cannot normalize event-stream deltas")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize event-stream deltas")
+        }
+    }
+}
+
+/// Normalize an accepted top-of-book snapshot object through the registered
+/// snapshot-quotes converter selected by the run-spec, fail-closing when the
+/// kind/config do not match.
+///
+/// Mirrors [`normalize_registered_order_book_delta_converter`]: the adapter kind
+/// must be [`SourceAdapterKind::SnapshotQuotes`] for the accepted object's table
+/// family, and the run-spec must carry the `quotes` mapping that kind requires.
+///
+/// SCOPE (slice S3quote): this slice owns the canonical [`CanonicalQuotesTable`],
+/// its projection, the registered adapter, the operator dispatch wiring, and the
+/// `quotes` config struct. The wire-format parser that fills a
+/// [`CanonicalQuotesTable`] from raw bytes lands in a FOLLOW-UP slice. This entry
+/// point therefore validates that the converter is a real registered
+/// snapshot-quotes adapter carrying its `quotes` mapping, then fails loud naming
+/// the follow-up — a registered seam that fails loud is not a debt/TODO, and the
+/// canonical table + projection are proven by the synthetic round-trip test in
+/// [`super::catalog_projection`].
+///
+/// # Errors
+///
+/// Returns an error if the converter is not a registered snapshot-quotes
+/// converter for the table family, the `quotes` mapping is absent, or — until the
+/// follow-up parser slice — always (naming that follow-up).
+pub fn normalize_registered_quote_converter(
+    converter_config: &ConverterConfig,
+    accepted: &AcceptedDataset,
+    _identity: &CanonicalInstrumentIdentity,
+    _text: &str,
+    _capture_time_nanos: i64,
+    _ingest_run_id: &str,
+) -> Result<Vec<super::canonical_market_data::CanonicalQuotesTable>> {
+    let converter = require_registered_quote_converter_for_table_family(
+        &converter_config.identity,
+        &converter_config.version,
+        &accepted.table_family,
+    )?;
+    match converter.kind {
+        SourceAdapterKind::SnapshotQuotes => {
+            let _mapping = converter_config.quotes.as_ref().with_context(|| {
+                format!(
+                    "converter {:?} is a snapshot-quotes adapter but carries no [converter.quotes] mapping",
+                    converter.identity
+                )
+            })?;
+            bail!(
+                "snapshot-quotes wire normalizer is a registered seam but its parsing \
+                 path lands in a follow-up slice; the CanonicalQuotesTable contract and \
+                 its catalog projection are proven by the synthetic round-trip test"
+            )
+        }
+        SourceAdapterKind::CsvNativeTrades => {
+            bail!("CSV native-trades adapter cannot normalize top-of-book quotes")
+        }
+        SourceAdapterKind::CsvNativeBars => {
+            bail!("CSV native-bars adapter cannot normalize top-of-book quotes")
+        }
+        SourceAdapterKind::PagedJsonBars => {
+            bail!("paged-JSON bar adapter cannot normalize top-of-book quotes")
+        }
+        SourceAdapterKind::JsonlMultiIntervalBars => {
+            bail!("JSONL multi-interval bar adapter cannot normalize top-of-book quotes")
+        }
+        SourceAdapterKind::JsonlSnapshotDeltas => {
+            bail!("JSONL snapshot-delta adapter cannot normalize top-of-book quotes")
+        }
+        SourceAdapterKind::TarJsonlSnapshotDeltas => {
+            bail!("tar JSONL snapshot-delta adapter cannot normalize top-of-book quotes")
+        }
+        SourceAdapterKind::ParquetEventStreamDeltas => {
+            bail!("Parquet event-stream delta adapter cannot normalize top-of-book quotes")
+        }
+        #[cfg(test)]
+        SourceAdapterKind::SyntheticOrderBookDeltas => {
+            bail!("test fixture adapter cannot normalize top-of-book quotes")
         }
     }
 }

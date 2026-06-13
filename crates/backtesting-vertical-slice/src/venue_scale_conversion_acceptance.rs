@@ -833,7 +833,12 @@ fn evaluate_universe(
         selected_asset_count = Some(report.selected_asset_count);
     }
 
-    validate_status_inputs(spec, converted_record_count, source_object_count)?;
+    validate_status_inputs(
+        spec,
+        converted_record_count,
+        source_object_count,
+        source_conversion_run_object_count,
+    )?;
 
     Ok(VenueScaleConversionAcceptanceUniverse {
         universe_id: spec.universe_id.clone(),
@@ -889,6 +894,7 @@ fn validate_status_inputs(
     spec: &VenueScaleConversionAcceptanceUniverseSpec,
     converted_record_count: u64,
     source_object_count: u64,
+    planned_conversion_run_object_count: u64,
 ) -> Result<()> {
     match spec.status {
         VenueScaleConversionAcceptanceStatus::Converted => {
@@ -901,6 +907,20 @@ fn validate_status_inputs(
                 spec.blocking_issues.is_empty(),
                 "converted universe {} must not contain blocking issues",
                 spec.universe_id
+            );
+            // A Converted status must be COMPUTED from completeness, never
+            // copied from the operator-asserted spec: when the conversion run
+            // plan declares planned objects, every one must have a converted
+            // record (record_count_mismatch otherwise). Mirrors the sibling
+            // source-universe execution acceptance completeness blocker.
+            ensure!(
+                planned_conversion_run_object_count == 0
+                    || converted_record_count == planned_conversion_run_object_count,
+                "converted universe {} record_count_mismatch: converted {} records but conversion \
+                 run plan planned {} objects",
+                spec.universe_id,
+                converted_record_count,
+                planned_conversion_run_object_count
             );
         }
         VenueScaleConversionAcceptanceStatus::SourceOnly => {
@@ -993,4 +1013,48 @@ where
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).with_context(|| format!("read artifact {}", path.display()))?;
     Ok(sha256_hex(&bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn converted_universe_spec() -> VenueScaleConversionAcceptanceUniverseSpec {
+        VenueScaleConversionAcceptanceUniverseSpec {
+            universe_id: "test-universe".to_string(),
+            scope_label: "test-scope".to_string(),
+            status: VenueScaleConversionAcceptanceStatus::Converted,
+            completion_ledger_path: None,
+            source_archive_discovery_seed_path: None,
+            source_archive_index_manifest_path: None,
+            source_universe_manifest_path: None,
+            source_universe_conversion_queue_path: None,
+            source_universe_source_proof_set_path: None,
+            source_universe_object_gates_path: None,
+            source_universe_conversion_run_plan_path: None,
+            selected_conversion_manifest_path: None,
+            selected_source_report_path: None,
+            blocking_issues: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn converted_status_requires_full_planned_object_coverage() {
+        let spec = converted_universe_spec();
+        // converted_record_count (3) < planned conversion-run object count (5):
+        // the operator-asserted Converted status must be rejected, not copied.
+        let error = validate_status_inputs(&spec, 3, 0, 5)
+            .expect_err("converted universe short of planned objects must be blocked");
+        assert!(
+            format!("{error:#}").contains("record_count_mismatch"),
+            "expected record_count_mismatch blocker, got: {error:#}"
+        );
+    }
+
+    #[test]
+    fn converted_status_accepts_full_planned_object_coverage() {
+        let spec = converted_universe_spec();
+        validate_status_inputs(&spec, 5, 0, 5)
+            .expect("converted universe covering every planned object is accepted");
+    }
 }

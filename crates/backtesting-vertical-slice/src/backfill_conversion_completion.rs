@@ -21,6 +21,9 @@ use crate::{
     backfill_execution_plan::BackfillExecutionPlan,
     source_catalog_mapping_readiness::SourceCatalogMappingStatusEntry,
     source_proof::SourceProofUsageScope,
+    source_universe_batch_execution::{
+        SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
+    },
 };
 
 pub const BACKFILL_CONVERSION_COMPLETION_SCHEMA_VERSION: &str =
@@ -34,6 +37,12 @@ pub struct BackfillConversionCompletionLedgerSpec {
     pub ledger_id: String,
     pub batch_plan_path: PathBuf,
     pub output_dir: PathBuf,
+    /// Optional path to the source-universe batch-execution report. When set,
+    /// the completion ledger reconciles against the actual run evidence (the
+    /// run must have Completed with zero failures and full planned coverage)
+    /// before any Ready status is granted.
+    #[serde(default)]
+    pub batch_execution_report_path: Option<PathBuf>,
     pub requirements: BackfillConversionCompletionRequirements,
     #[serde(rename = "record", default)]
     pub records: Vec<BackfillConversionCompletionRecordSpec>,
@@ -89,6 +98,10 @@ pub enum BackfillConversionCompletionBlockingIssue {
     DuplicateRecordInput,
     BatchPlanNotReady,
     MissingBatchRecord,
+    UncoveredBatchRecord,
+    BatchExecutionReportNotCompleted,
+    BatchExecutionReportFailedRecords,
+    BatchExecutionReportCompletedCountMismatch,
     ExecutionPlanRecordMismatch,
     ExecutionPlanObjectCountMismatch,
     PublicationScopeStatusMismatch,
@@ -173,6 +186,8 @@ pub enum BackfillConversionCompletionLedgerError {
     ParseSpecToml { path: String, error: String },
     ReadBatchPlan { path: String, error: String },
     ParseBatchPlanJson { path: String, error: String },
+    ReadBatchExecutionReport { path: String, error: String },
+    ParseBatchExecutionReportJson { path: String, error: String },
     ReadPublicationEvidence { path: String, error: String },
     ParsePublicationEvidenceJson { path: String, error: String },
     ReadCatalogMappingEvaluation { path: String, error: String },
@@ -208,6 +223,18 @@ impl fmt::Display for BackfillConversionCompletionLedgerError {
                 write!(
                     f,
                     "parse backfill conversion-batch plan JSON {path}: {error}"
+                )
+            }
+            Self::ReadBatchExecutionReport { path, error } => {
+                write!(
+                    f,
+                    "read source-universe batch-execution report {path}: {error}"
+                )
+            }
+            Self::ParseBatchExecutionReportJson { path, error } => {
+                write!(
+                    f,
+                    "parse source-universe batch-execution report JSON {path}: {error}"
                 )
             }
             Self::ReadPublicationEvidence { path, error } => {
@@ -271,6 +298,7 @@ pub fn evaluate_backfill_conversion_completion_ledger(
     batch: &BackfillConversionBatchPlan,
     requirements: &BackfillConversionCompletionRequirements,
     inputs: Vec<BackfillConversionCompletionInput>,
+    batch_execution_report: Option<&SourceUniverseBatchExecutionReport>,
 ) -> BackfillConversionCompletionLedger {
     let ledger_id = ledger_id.into();
     let mut blocking_issues = Vec::new();
@@ -307,6 +335,38 @@ pub fn evaluate_backfill_conversion_completion_ledger(
             validate_mapping_evidence(batch_record, requirements, &input, &mut blocking_issues);
         if let Some(record) = completion_record(batch_record, requirements, &input, mapping_entry) {
             completion_records.push(record);
+        }
+    }
+
+    // Coverage is COMPUTED, not assumed from the input count: a Ready ledger
+    // must account for every batch record. Inputs covering only part of the
+    // batch keyset (e.g. 10 inputs against a 92-record batch) are blocked, so
+    // status can never derive from a partial input set.
+    if batch_records
+        .keys()
+        .any(|record_id| !seen.contains(*record_id))
+    {
+        blocking_issues.push(BackfillConversionCompletionBlockingIssue::UncoveredBatchRecord);
+    }
+
+    // Reconcile against the actual batch-execution run evidence when present:
+    // the run must have Completed with no failed records, and its completed
+    // count must match the full planned batch keyset, before Ready is granted.
+    // Without this, a CompletedWithFailures/Failed run (or a partial-scope run)
+    // could still yield a Ready completion ledger.
+    if let Some(report) = batch_execution_report {
+        if report.status != SourceUniverseBatchExecutionReportStatus::Completed {
+            blocking_issues
+                .push(BackfillConversionCompletionBlockingIssue::BatchExecutionReportNotCompleted);
+        }
+        if report.failed_record_count != 0 {
+            blocking_issues
+                .push(BackfillConversionCompletionBlockingIssue::BatchExecutionReportFailedRecords);
+        }
+        if report.completed_record_count != batch_records.len() as u64 {
+            blocking_issues.push(
+                BackfillConversionCompletionBlockingIssue::BatchExecutionReportCompletedCountMismatch,
+            );
         }
     }
 
@@ -408,11 +468,33 @@ pub fn write_backfill_conversion_completion_ledger_from_spec_file(
         let batch_record = batch_records.get(record.record_id.as_str());
         inputs.push(read_input(record, batch_record, &path_base)?);
     }
+    let batch_execution_report = match &spec.batch_execution_report_path {
+        Some(report_path) => {
+            let report_display = report_path.display().to_string();
+            let resolved_report_path = resolve_path(&path_base, report_path);
+            let report_bytes = fs::read(&resolved_report_path).map_err(|error| {
+                BackfillConversionCompletionLedgerError::ReadBatchExecutionReport {
+                    path: report_display.clone(),
+                    error: error.to_string(),
+                }
+            })?;
+            let report: SourceUniverseBatchExecutionReport = serde_json::from_slice(&report_bytes)
+                .map_err(|error| {
+                    BackfillConversionCompletionLedgerError::ParseBatchExecutionReportJson {
+                        path: report_display,
+                        error: error.to_string(),
+                    }
+                })?;
+            Some(report)
+        }
+        None => None,
+    };
     let ledger = evaluate_backfill_conversion_completion_ledger(
         spec.ledger_id,
         &batch,
         &spec.requirements,
         inputs,
+        batch_execution_report.as_ref(),
     );
     let output_dir = resolve_path(&path_base, &spec.output_dir);
     write_backfill_conversion_completion_ledger(&output_dir, &ledger)
@@ -867,4 +949,178 @@ impl AcceptedConversionAndPublication {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct AcceptedPublicationNtResult {
     iterations: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backfill_conversion_batch::{
+        BACKFILL_CONVERSION_BATCH_PLAN_SCHEMA_VERSION, BackfillConversionBatchSelection,
+    };
+    use crate::source_universe_batch_execution::{
+        SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION, SourceUniverseBatchExecutionReport,
+        SourceUniverseBatchExecutionReportStatus,
+    };
+
+    fn batch_record(record_id: &str) -> BackfillConversionBatchRecord {
+        BackfillConversionBatchRecord {
+            record_id: record_id.to_string(),
+            source_binding: "test-source-binding".to_string(),
+            table_family: "trades".to_string(),
+            coverage_axis: "test-axis".to_string(),
+            source_proof_id: "test-source-proof".to_string(),
+            source_proof_version: 1,
+            canonical_ready: true,
+            accepted_objects: 1,
+            accepted_bytes: 1,
+            run_spec_path: PathBuf::from("run-spec.toml"),
+            run_spec_hash: "test-run-spec-hash".to_string(),
+            execution_plan_path: PathBuf::from("execution-plan.json"),
+            execution_plan_hash: "test-execution-plan-hash".to_string(),
+            operator_run_id: "test-operator-run".to_string(),
+            output_prefix: "test/output/prefix".to_string(),
+        }
+    }
+
+    fn ready_batch_plan(record_ids: &[&str]) -> BackfillConversionBatchPlan {
+        let records: Vec<_> = record_ids.iter().map(|id| batch_record(id)).collect();
+        BackfillConversionBatchPlan {
+            schema_version: BACKFILL_CONVERSION_BATCH_PLAN_SCHEMA_VERSION.to_string(),
+            batch_id: "test-batch".to_string(),
+            coverage_ledger_id: "test-coverage-ledger".to_string(),
+            status: BackfillConversionBatchStatus::Ready,
+            selection: BackfillConversionBatchSelection {
+                max_records: 100,
+                max_accepted_objects: 100,
+                max_accepted_bytes: 100,
+                require_uniform_source_binding: true,
+                allow_gaps: false,
+            },
+            record_count: records.len() as u64,
+            total_accepted_objects: records.len() as u64,
+            total_accepted_bytes: records.len() as u64,
+            canonical_ready_records: records.len() as u64,
+            records,
+            blocking_issues: Vec::new(),
+        }
+    }
+
+    fn requirements() -> BackfillConversionCompletionRequirements {
+        BackfillConversionCompletionRequirements {
+            scope_status: "accepted".to_string(),
+            usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
+            current_bte_status: "accepted".to_string(),
+            parquet_catalog_status: "proven".to_string(),
+            nt_data_type: "TradeTick".to_string(),
+            fidelity_class: "TRADE_REPLAY".to_string(),
+            require_direct_s3_catalog_access: true,
+            require_publication_verification: true,
+        }
+    }
+
+    fn batch_execution_report(
+        status: SourceUniverseBatchExecutionReportStatus,
+        completed_record_count: u64,
+        failed_record_count: u64,
+    ) -> SourceUniverseBatchExecutionReport {
+        SourceUniverseBatchExecutionReport {
+            schema_version: SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION.to_string(),
+            batch_id: "test-batch".to_string(),
+            status,
+            pack_id: "test-pack".to_string(),
+            universe_id: "test-universe".to_string(),
+            venue: "test-venue".to_string(),
+            selected_record_count: completed_record_count + failed_record_count,
+            completed_record_count,
+            failed_record_count,
+            total_canonical_rows: 0,
+            total_nt_catalog_rows: 0,
+            records: Vec::new(),
+            failures: Vec::new(),
+        }
+    }
+
+    // F3: inputs covering fewer records than the batch keyset must block on an
+    // uncovered batch record; status must derive from coverage, not the input
+    // count, so a partial input set can never yield Ready.
+    #[test]
+    fn partial_input_coverage_blocks_on_uncovered_batch_record() {
+        let batch = ready_batch_plan(&["record-a", "record-b"]);
+        let ledger = evaluate_backfill_conversion_completion_ledger(
+            "test-ledger",
+            &batch,
+            &requirements(),
+            Vec::new(),
+            None,
+        );
+        assert!(
+            ledger
+                .blocking_issues
+                .contains(&BackfillConversionCompletionBlockingIssue::UncoveredBatchRecord),
+            "expected UncoveredBatchRecord blocker, got: {:?}",
+            ledger.blocking_issues
+        );
+        assert_eq!(ledger.status, BackfillConversionCompletionStatus::Blocked);
+    }
+
+    // F18: a batch-execution run that did not cleanly complete (status other
+    // than Completed, or any failed records) must block the completion ledger
+    // before any Ready status is granted.
+    #[test]
+    fn completed_with_failures_report_blocks_completion_ledger() {
+        let batch = ready_batch_plan(&["record-a"]);
+        let report = batch_execution_report(
+            SourceUniverseBatchExecutionReportStatus::CompletedWithFailures,
+            1,
+            1,
+        );
+        let ledger = evaluate_backfill_conversion_completion_ledger(
+            "test-ledger",
+            &batch,
+            &requirements(),
+            Vec::new(),
+            Some(&report),
+        );
+        assert!(
+            ledger.blocking_issues.contains(
+                &BackfillConversionCompletionBlockingIssue::BatchExecutionReportNotCompleted
+            ),
+            "expected BatchExecutionReportNotCompleted blocker, got: {:?}",
+            ledger.blocking_issues
+        );
+        assert!(
+            ledger.blocking_issues.contains(
+                &BackfillConversionCompletionBlockingIssue::BatchExecutionReportFailedRecords
+            ),
+            "expected BatchExecutionReportFailedRecords blocker, got: {:?}",
+            ledger.blocking_issues
+        );
+        assert_eq!(ledger.status, BackfillConversionCompletionStatus::Blocked);
+    }
+
+    // F18 negative control: a clean Completed report covering every planned
+    // batch record contributes no reconciliation blockers.
+    #[test]
+    fn completed_report_with_full_coverage_adds_no_reconciliation_blockers() {
+        let batch = ready_batch_plan(&["record-a"]);
+        let report =
+            batch_execution_report(SourceUniverseBatchExecutionReportStatus::Completed, 1, 0);
+        let ledger = evaluate_backfill_conversion_completion_ledger(
+            "test-ledger",
+            &batch,
+            &requirements(),
+            Vec::new(),
+            Some(&report),
+        );
+        assert!(
+            !ledger.blocking_issues.iter().any(|issue| matches!(
+                issue,
+                BackfillConversionCompletionBlockingIssue::BatchExecutionReportNotCompleted
+                    | BackfillConversionCompletionBlockingIssue::BatchExecutionReportFailedRecords
+                    | BackfillConversionCompletionBlockingIssue::BatchExecutionReportCompletedCountMismatch
+            )),
+            "clean report must add no reconciliation blockers, got: {:?}",
+            ledger.blocking_issues
+        );
+    }
 }

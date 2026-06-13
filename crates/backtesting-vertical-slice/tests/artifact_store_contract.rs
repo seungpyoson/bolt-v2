@@ -4,7 +4,7 @@ use object_store::{
     ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult,
     Result as ObjectStoreResult, memory::InMemory, path::Path as ObjectPath,
 };
-use std::{fmt, fs};
+use std::{fmt, fs, io::Write};
 
 use backtesting_vertical_slice::{
     artifact_store::{
@@ -15,8 +15,40 @@ use backtesting_vertical_slice::{
         CatalogProjectionBinding, CreateOnlyArtifactWriter, StoredArtifactIndexPointer,
         persist_catalog_projection_for_source_binding,
     },
+    operator::{RunSpec, run_from_run_spec_with_artifact_store},
     run_manifest::MarketStructureFixture,
 };
+use flate2::{Compression, write::GzEncoder};
+use sha2::{Digest, Sha256};
+
+const COMMITTED_RUN_SPEC: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
+);
+const SAMPLE_CSV: &str = "id,timestamp,price,volume,side,rpi\n\
+    1,1772323201665,617.2,0.3,buy,0\n\
+    2,1772323312219,617.9,0.1456,sell,0\n\
+    3,1772323312236,617,0.1544,sell,0\n";
+
+fn gzip(text: &str) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(text.as_bytes()).expect("gzip write");
+    encoder.finish().expect("gzip finish")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+fn committed_run_spec_for(gz_bytes: &[u8]) -> RunSpec {
+    let mut spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+    let object_hash = sha256_hex(gz_bytes);
+    spec.accepted_object.sha256 = object_hash.clone();
+    spec.accepted_object.bytes = gz_bytes.len() as u64;
+    spec.source_proof.raw_sample_hash = object_hash;
+    spec
+}
 
 fn artifact_config() -> ArtifactStoreConfig {
     toml::from_str(artifact_config_toml()).expect("artifact config parses")
@@ -435,6 +467,72 @@ async fn rejects_duplicate_catalog_projection_bytes() {
     .expect_err("duplicate projection bytes must be rejected");
 
     assert!(err.to_string().contains("differs"), "{err}");
+}
+
+#[tokio::test]
+async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
+    let gz = gzip(SAMPLE_CSV);
+    let spec = committed_run_spec_for(&gz);
+    let output_dir = tempfile::TempDir::new().expect("temp dir");
+    let store = InMemory::new();
+    let artifact_root = spec
+        .artifact_store
+        .resolve()
+        .expect("artifact root resolves");
+    let expected_catalog_root = spec
+        .catalog_dispatch
+        .catalog_root_for(&spec.source_proof.source_binding, &artifact_root)
+        .expect("source binding dispatches");
+
+    let artifacts = run_from_run_spec_with_artifact_store(&spec, &gz, output_dir.path(), &store)
+        .await
+        .expect("operator artifact-store run");
+
+    assert_eq!(
+        artifacts.canonical_catalog_uri.as_deref(),
+        Some(expected_catalog_root.as_str())
+    );
+    assert_eq!(
+        artifacts.output.contract.artifact_uris.nt_catalog_uri,
+        expected_catalog_root
+    );
+    assert!(
+        artifacts
+            .create_only_probe_transcript
+            .as_ref()
+            .expect("create-only probe transcript")
+            .duplicate_create_rejected
+    );
+    assert!(
+        artifacts
+            .create_only_probe_transcript
+            .as_ref()
+            .expect("create-only probe transcript")
+            .duplicate_copy_rejected
+    );
+    assert!(
+        !artifacts.persisted_catalog_objects.is_empty(),
+        "operator must persist projected catalog objects through artifact-store dispatch"
+    );
+
+    let contract_json = fs::read_to_string(&artifacts.contract_path).expect("read contract");
+    assert!(
+        contract_json.contains(expected_catalog_root.as_str()),
+        "durable contract must contain canonical catalog root: {contract_json}"
+    );
+    for object in &artifacts.persisted_catalog_objects {
+        let object_path = artifact_root
+            .object_path_for_uri(&object.uri)
+            .expect("persisted object under artifact root");
+        let stored = store
+            .get(&object_path)
+            .await
+            .expect("persisted catalog object")
+            .bytes()
+            .await
+            .expect("persisted catalog bytes");
+        assert_eq!(stored.len(), object.byte_len);
+    }
 }
 
 #[tokio::test]

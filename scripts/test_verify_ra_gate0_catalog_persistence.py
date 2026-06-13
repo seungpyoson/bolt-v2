@@ -122,6 +122,15 @@ fn persists_catalog_projection_directory_with_create_only_dispatch() {
 }
 
 fn rejects_duplicate_catalog_projection_bytes() {}
+
+fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
+    let _store = InMemory::new();
+    let artifacts = run_from_run_spec_with_artifact_store();
+    let _canonical_catalog_uri = artifacts.canonical_catalog_uri;
+    let _persisted_catalog_objects = artifacts.persisted_catalog_objects;
+    let _create_only_probe_transcript = artifacts.create_only_probe_transcript;
+    let _nt_catalog_uri = artifacts.output.contract.artifact_uris.nt_catalog_uri;
+}
 """
 
 

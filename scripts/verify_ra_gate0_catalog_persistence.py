@@ -66,6 +66,12 @@ TEST_REQUIRED = (
     "create_only_probe_requires_duplicate_create_rejection",
     "persists_catalog_projection_directory_with_create_only_dispatch",
     "rejects_duplicate_catalog_projection_bytes",
+    "operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri",
+    "run_from_run_spec_with_artifact_store",
+    "canonical_catalog_uri",
+    "persisted_catalog_objects",
+    "create_only_probe_transcript",
+    "artifact_uris.nt_catalog_uri",
     "InMemory::new",
     "persist_catalog_projection_for_source_binding",
 )

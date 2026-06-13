@@ -16,7 +16,7 @@ use toml::Value;
 
 use crate::{
     bolt_v3_market_families,
-    bolt_v3_numeric::{BPS_DENOMINATOR, is_positive_finite},
+    bolt_v3_numeric::{BPS_DENOMINATOR, is_non_negative_finite, is_positive_finite},
     strategies::registry::ValidationError,
 };
 
@@ -278,6 +278,10 @@ impl BinaryOracleEdgeTakerBuilder {
             is_positive_finite(config.spike_guard_return_threshold),
             "spike_guard_return_threshold must be positive and finite"
         );
+        anyhow::ensure!(
+            is_non_negative_finite(config.risk_lambda),
+            "risk_lambda must be finite and >= 0"
+        );
         // Fail loud at load for positive-required integer knobs. A zero
         // trade-flow sample cap makes the count-cap evict every observation,
         // permanently emptying the buffer and starving the W3 read seam.
@@ -293,6 +297,10 @@ impl BinaryOracleEdgeTakerBuilder {
             (
                 stringify!(spike_guard_cooldown_secs),
                 Some(config.spike_guard_cooldown_secs),
+            ),
+            (
+                stringify!(sizing_ev_reference_bps),
+                Some(config.sizing_ev_reference_bps),
             ),
         ] {
             if let Some(value) = value {
@@ -460,6 +468,18 @@ impl BinaryOracleEdgeTakerBuilder {
         ] {
             Self::validate_bps_runtime_knob_upper_bound(table, field_prefix, field_name, errors);
         }
+        Self::validate_positive_u64_field(
+            table,
+            field_prefix,
+            stringify!(sizing_ev_reference_bps),
+            errors,
+        );
+        Self::validate_non_negative_finite_float_field(
+            table,
+            field_prefix,
+            stringify!(risk_lambda),
+            errors,
+        );
         Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);
         Self::validate_optional_string_field(
             table,
@@ -642,6 +662,42 @@ impl BinaryOracleEdgeTakerBuilder {
                 field: format!("{field_prefix}.{field_name}"),
                 code: stringify!(bps_out_of_range),
                 message: format!("must be at most {BPS_DENOMINATOR} bps"),
+            });
+        }
+    }
+
+    fn validate_positive_u64_field(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        field_name: &'static str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Some(value) = table.get(field_name).and_then(Value::as_integer) else {
+            return;
+        };
+        if value <= 0 {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{field_name}"),
+                code: stringify!(positive_required),
+                message: "must be positive".to_string(),
+            });
+        }
+    }
+
+    fn validate_non_negative_finite_float_field(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        field_name: &'static str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Some(value) = table.get(field_name).and_then(Value::as_float_or_integer) else {
+            return;
+        };
+        if !is_non_negative_finite(value) {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{field_name}"),
+                code: stringify!(value_out_of_range),
+                message: "must be finite and >= 0".to_string(),
             });
         }
     }

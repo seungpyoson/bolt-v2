@@ -1434,6 +1434,14 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
         strategy.config.maximum_position_notional
     );
     assert_eq!(fields.risk_lambda, strategy.config.risk_lambda);
+    assert_eq!(
+        fields.order_notional_target,
+        strategy.config.order_notional_target
+    );
+    assert_eq!(
+        fields.sizing_ev_reference_bps,
+        strategy.config.sizing_ev_reference_bps
+    );
     let rendered_fields = format!("{fields:?}");
     assert!(
         rendered_fields.contains("order_notional_target"),

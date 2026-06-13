@@ -1480,7 +1480,7 @@ fn validate_parameter_bounds(
     // the misconfiguration must fail closed at load instead.
     if parameters.runtime.sizing_ev_reference_bps == 0 {
         errors.push(format!(
-            "{context}: parameters.runtime.sizing_ev_reference_bps must be > 0 (worst-case EV in bps at which sizing saturates at order_notional_target)"
+            "{context}: parameters.runtime.sizing_ev_reference_bps must be > 0 (sizing saturates at order_notional_target when worst-case EV reaches 2 * risk_lambda * sizing_ev_reference_bps)"
         ));
     }
     if (parameters.runtime.sizing_ev_reference_bps as f64) > crate::bolt_v3_numeric::BPS_DENOMINATOR

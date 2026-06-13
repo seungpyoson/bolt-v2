@@ -213,19 +213,22 @@ fn bars_round_trip_preserves_non_default_bar_spec() {
         "0.52",
         "100",
     )]);
-    // Override the bar spec: 5-HOUR instead of 1-MINUTE.
+    // Override the bar spec: 4-HOUR instead of 1-MINUTE. The step must evenly
+    // divide 24 to be a valid (periodic) NautilusTrader Hour specification, so
+    // 4 is a non-default choice that survives the admissibility probe (5 would
+    // not: 5 does not divide 24).
     table.bar_spec = CanonicalBarSpec {
-        step: 5,
+        step: 4,
         aggregation: BarAggregation::Hour,
     };
-    // Adjust close_time to respect the new interval (5 hours in nanos) so
+    // Adjust close_time to respect the new interval (4 hours in nanos) so
     // that the periodic-step validation passes.
-    let five_hours_nanos: i64 = 5 * 3_600_000_000_000;
-    table.rows[0].close_time = BASE_OPEN_TIME + five_hours_nanos;
-    table.rows[0].capture_time = BASE_OPEN_TIME + five_hours_nanos;
+    let four_hours_nanos: i64 = 4 * 3_600_000_000_000;
+    table.rows[0].close_time = BASE_OPEN_TIME + four_hours_nanos;
+    table.rows[0].capture_time = BASE_OPEN_TIME + four_hours_nanos;
 
     let dir = tempfile::TempDir::new().expect("temp dir");
-    project_canonical_bars_to_catalog(&table, &spec(), dir.path()).expect("project 5-HOUR bars");
+    project_canonical_bars_to_catalog(&table, &spec(), dir.path()).expect("project 4-HOUR bars");
 
     let loaded = read_back_bars(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     assert_eq!(loaded.len(), 1);
@@ -241,7 +244,7 @@ fn bars_round_trip_preserves_non_default_bar_spec() {
             panic!("expected Standard bar type, got Composite");
         }
     };
-    assert_eq!(bt_spec.step.get(), 5, "step must be 5 not default 1");
+    assert_eq!(bt_spec.step.get(), 4, "step must be 4 not default 1");
     assert_eq!(
         bt_spec.aggregation,
         BarAggregation::Hour,

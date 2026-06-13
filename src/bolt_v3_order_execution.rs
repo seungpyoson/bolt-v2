@@ -112,8 +112,8 @@ pub struct BoltV3SubmitRoutingRequest<'a> {
 
 impl<'a> BoltV3SubmitRoutingRequest<'a> {
     pub fn new(
-        decision_evidence: &dyn BoltV3DecisionEvidenceWriter,
-        submit_admission: &BoltV3SubmitAdmissionState,
+        decision_evidence: &'a dyn BoltV3DecisionEvidenceWriter,
+        submit_admission: &'a BoltV3SubmitAdmissionState,
         intent: BoltV3OrderIntentEvidence,
         request: BoltV3SubmitAdmissionRequest,
     ) -> Self {

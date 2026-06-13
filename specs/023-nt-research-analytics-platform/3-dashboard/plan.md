@@ -71,16 +71,19 @@ Product choice is deferred until these jobs are specified and weighted:
 
 ## Field Source Matrix Seed
 
-| Field group | Required source stance |
-|---|---|
-| Orders/fills/positions | NT reports/events/snapshots only. |
-| Trade explanation | Strategy/signal/reason evidence refs and source binding from accepted upstream artifacts; never inferred by dashboard. |
-| Account state and portfolio equity | `PortfolioSnapshot` (#409) or explicit unavailable label until #409/equivalent lands. |
-| Exposure | NT reports/events/snapshots or accepted derived analytics table with freshness; otherwise omit or render explicit partial/unavailable label. |
-| Historical PnL | Durable trade-history/PnL path from #77 or omit/render explicit gap label. |
-| Redemption-realized PnL | Include only after #36 scope decision, otherwise mark excluded/unavailable. |
-| Strategy state/outlook | Accepted source contract or omit/render exploratory/non-trading-truth label. |
-| Data health/freshness | Source timestamp plus configured stale threshold. |
+Matrix semantics come from `../reference/contracts.md`; this plan only selects
+dashboard fields and source columns.
+
+| Field group | Required source stance | Required source columns |
+|---|---|---|
+| Orders/fills/positions | NT reports/events/snapshots only. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
+| Trade explanation fields | Strategy/signal/reason evidence refs and source binding from accepted upstream artifacts; never inferred by dashboard. | `source_proof_id`, `run_purpose`, `proof_pin_reason_code`, `proof_pin_reason_detail`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
+| Account state and portfolio equity | `PortfolioSnapshot` (#409) or explicit unavailable label until #409/equivalent lands. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
+| Exposure | NT reports/events/snapshots or accepted derived analytics table with freshness; otherwise omit or render explicit partial/unavailable label. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
+| Historical PnL | Durable trade-history/PnL path from #77 or omit/render explicit gap label. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
+| Redemption-realized PnL | Include only after #36 scope decision, otherwise mark excluded/unavailable. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
+| Strategy state/outlook | Accepted source contract or omit/render exploratory/non-trading-truth label. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
+| Data health/freshness | Source timestamp plus configured stale threshold. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
 
 ## Product Gate
 

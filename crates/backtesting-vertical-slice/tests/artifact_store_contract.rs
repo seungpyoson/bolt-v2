@@ -15,6 +15,7 @@ use backtesting_vertical_slice::{
         CatalogProjectionBinding, CreateOnlyArtifactWriter, StoredArtifactIndexPointer,
         persist_catalog_projection_for_source_binding,
     },
+    nt_catalog_capability::{NtCatalogCapabilityProof, NtCatalogCredentialSource},
     operator::{RunSpec, run_from_run_spec_with_artifact_store},
     run_manifest::MarketStructureFixture,
 };
@@ -251,6 +252,57 @@ fn resolves_synthetic_nt_catalog_proof_root_outside_canonical_catalog() {
     assert!(
         root.nt_catalog_synthetic_proof_root("bad/proof").is_err(),
         "synthetic proof ids must be path tokens"
+    );
+}
+
+#[test]
+fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let mut proof = NtCatalogCapabilityProof::synthetic_success(
+        &root,
+        "s3-proof-run-123",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        vec!["region".to_string()],
+    )
+    .expect("synthetic capability proof");
+
+    assert_eq!(proof.credential_source, NtCatalogCredentialSource::Ssm);
+    proof
+        .direct_s3_catalog_access_proven(&root)
+        .expect("complete synthetic proof proves direct S3 catalog access");
+
+    proof.synthetic_catalog_root_uri = root.nt_catalog_projection_root("canonical-projection");
+    assert!(
+        proof.direct_s3_catalog_access_proven(&root).is_err(),
+        "capability proof must not point at the canonical NT catalog root"
+    );
+
+    let mut proof = NtCatalogCapabilityProof::synthetic_success(
+        &root,
+        "s3-proof-run-456",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        vec!["region".to_string()],
+    )
+    .expect("synthetic capability proof");
+    proof.controls.invalid_credentials_write_failed = false;
+    assert!(
+        proof.direct_s3_catalog_access_proven(&root).is_err(),
+        "credential negative control is required"
+    );
+
+    let mut proof = NtCatalogCapabilityProof::synthetic_success(
+        &root,
+        "s3-proof-run-789",
+        "cccccccccccccccccccccccccccccccccccccccc",
+        vec!["region".to_string()],
+    )
+    .expect("synthetic capability proof");
+    proof
+        .synthetic_fixture_coverage
+        .retain(|fixture| *fixture != MarketStructureFixture::BinaryOption);
+    assert!(
+        proof.direct_s3_catalog_access_proven(&root).is_err(),
+        "binary-option synthetic fixture coverage is required"
     );
 }
 

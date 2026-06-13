@@ -22,6 +22,7 @@
 pub mod artifact_store;
 pub mod canonical_trades;
 pub mod catalog_projection;
+pub mod nt_catalog_capability;
 pub mod operator;
 pub mod research_reader;
 pub mod result_contract;

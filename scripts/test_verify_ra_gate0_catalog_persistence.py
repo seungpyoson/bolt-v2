@@ -101,6 +101,37 @@ pub async fn persist_catalog_projection_for_source_binding() {
 """
 
 
+def compliant_capability_proof() -> str:
+    return """
+use crate::{artifact_store::ResolvedArtifactRoot, run_manifest::MarketStructureFixture};
+
+pub const NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION: &str = "nt-catalog-capability-proof.v1";
+pub const SYNTHETIC_SOURCE_PROOF_ID: &str = "synthetic-fixture";
+
+pub enum NtCatalogCredentialSource { Ssm }
+pub struct NtCatalogCapabilityControls {
+    pub ambient_credentials_scrubbed: bool,
+    pub invalid_credentials_write_failed: bool,
+    pub ssm_credentials_write_reopen_query_succeeded: bool,
+    pub conditional_put_probe_succeeded: bool,
+    pub copy_if_not_exists_probe_succeeded: bool,
+}
+pub struct NtCatalogCapabilityProof {
+    pub synthetic_source_proof_id: String,
+    pub provenance: String,
+    pub synthetic_fixture_coverage: Vec<MarketStructureFixture>,
+}
+
+impl NtCatalogCapabilityProof {
+    pub fn direct_s3_catalog_access_proven(&self, artifact_root: &ResolvedArtifactRoot) {
+        let _root = artifact_root.nt_catalog_synthetic_proof_root("proof-run").unwrap();
+        let _credential_source = NtCatalogCredentialSource::Ssm;
+        let _fixtures = [MarketStructureFixture::BinaryOption, MarketStructureFixture::PerpsSpot];
+    }
+}
+"""
+
+
 def compliant_operator() -> str:
     return f"""
 use crate::artifact_store::{{ArtifactStoreConfig, CatalogDispatchConfig}};
@@ -141,6 +172,12 @@ fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
 }
 
 fn resolves_synthetic_nt_catalog_proof_root_outside_canonical_catalog() {}
+
+fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
+    let proof = NtCatalogCapabilityProof {};
+    let _credential_source = NtCatalogCredentialSource::Ssm;
+    proof.direct_s3_catalog_access_proven();
+}
 """
 
 
@@ -154,6 +191,16 @@ def write_compliant_tree(root: Path) -> None:
         root,
         "crates/backtesting-vertical-slice/src/artifact_store.rs",
         compliant_artifact_store(),
+    )
+    write_file(
+        root,
+        "crates/backtesting-vertical-slice/src/nt_catalog_capability.rs",
+        compliant_capability_proof(),
+    )
+    write_file(
+        root,
+        "crates/backtesting-vertical-slice/src/lib.rs",
+        "pub mod nt_catalog_capability;\n",
     )
     write_file(
         root,

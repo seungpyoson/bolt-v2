@@ -223,6 +223,11 @@ impl S3ArtifactStoreConfig {
 
 impl ResolvedArtifactRoot {
     #[must_use]
+    pub fn artifact_root_uri(&self) -> &str {
+        &self.artifact_root
+    }
+
+    #[must_use]
     pub fn lifecycle_policy(&self) -> &ArtifactLifecyclePolicy {
         &self.lifecycle
     }

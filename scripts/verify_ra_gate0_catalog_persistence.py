@@ -10,6 +10,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT_STORE = Path("crates/backtesting-vertical-slice/src/artifact_store.rs")
+CAPABILITY_PROOF = Path("crates/backtesting-vertical-slice/src/nt_catalog_capability.rs")
+LIB_PATH = Path("crates/backtesting-vertical-slice/src/lib.rs")
 OPERATOR = Path("crates/backtesting-vertical-slice/src/operator.rs")
 CONTRACT_TEST = Path("crates/backtesting-vertical-slice/tests/artifact_store_contract.rs")
 BTE_CARGO_TOML = Path("crates/backtesting-vertical-slice/Cargo.toml")
@@ -54,6 +56,26 @@ ARTIFACT_STORE_REQUIRED = (
     ".put_create_idempotent(",
     "fs::read(",
 )
+CAPABILITY_PROOF_REQUIRED = (
+    "pub const NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION",
+    "pub const SYNTHETIC_SOURCE_PROOF_ID",
+    "pub struct NtCatalogCapabilityProof",
+    "pub struct NtCatalogCapabilityControls",
+    "pub enum NtCatalogCredentialSource",
+    "NtCatalogCredentialSource::Ssm",
+    "synthetic_source_proof_id",
+    "provenance",
+    "ambient_credentials_scrubbed",
+    "invalid_credentials_write_failed",
+    "ssm_credentials_write_reopen_query_succeeded",
+    "conditional_put_probe_succeeded",
+    "copy_if_not_exists_probe_succeeded",
+    "synthetic_fixture_coverage",
+    "MarketStructureFixture::BinaryOption",
+    "MarketStructureFixture::PerpsSpot",
+    "nt_catalog_synthetic_proof_root",
+    "direct_s3_catalog_access_proven",
+)
 OPERATOR_REQUIRED = (
     "ArtifactStoreConfig",
     "CatalogDispatchConfig",
@@ -71,6 +93,10 @@ TEST_REQUIRED = (
     "rejects_duplicate_catalog_projection_bytes",
     "operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri",
     "resolves_synthetic_nt_catalog_proof_root_outside_canonical_catalog",
+    "nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls",
+    "NtCatalogCapabilityProof",
+    "NtCatalogCredentialSource::Ssm",
+    "direct_s3_catalog_access_proven",
     "run_from_run_spec_with_artifact_store",
     "canonical_catalog_uri",
     "persisted_catalog_objects",
@@ -132,6 +158,24 @@ def scan_root(root: Path) -> list[str]:
                 findings.append(
                     f"{ARTIFACT_STORE}: forbidden hidden S3 config fallback `{forbidden}`"
                 )
+
+    capability_proof = root / CAPABILITY_PROOF
+    if not capability_proof.exists():
+        findings.append(f"{CAPABILITY_PROOF}: NT catalog capability proof module is missing")
+    else:
+        findings.extend(
+            missing_snippets(
+                CAPABILITY_PROOF,
+                capability_proof.read_text(encoding="utf-8"),
+                CAPABILITY_PROOF_REQUIRED,
+            )
+        )
+
+    lib = root / LIB_PATH
+    if not lib.exists():
+        findings.append(f"{LIB_PATH}: lib.rs is missing")
+    elif "pub mod nt_catalog_capability;" not in lib.read_text(encoding="utf-8"):
+        findings.append(f"{LIB_PATH}: missing public nt_catalog_capability module export")
 
     operator = root / OPERATOR
     if not operator.exists():

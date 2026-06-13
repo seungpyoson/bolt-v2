@@ -290,8 +290,10 @@ mod tests {
     // the shared execution-policy boundary into the gated strategy source set.
     // Re-derived after split strategy tests imported the NT Strategy trait for
     // direct callback method resolution.
+    // Re-derived again after CI contract tests were aligned with the current
+    // split-test inventory and shared execution-policy source-set boundary.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "b70344e3e05b55107c4edd801f3614a556f7ae5f04fe6c47dba189363aa2e9a1";
+        "2e2a8c726ff28c861748292aa99c5c66aa8b1e418e51f1fd332a0c691c1149ec";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

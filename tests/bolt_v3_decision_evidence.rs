@@ -561,10 +561,14 @@ fn binary_oracle_edge_taker_routes_evidence_admission_and_submit_through_shared_
         evidence_wrapper_call_after_strategy_input > 0,
         "entry strategy input snapshot must be recorded before order-intent evidence wrapper"
     );
-    // This intentionally scans the whole strategy source set, including in-file
-    // tests, because no strategy code path should bypass the shared policy boundary.
+    // This intentionally scans the strategy source set, including in-file tests,
+    // but excludes the shared NT mutation sink itself because the sink is the
+    // approved policy boundary verified above.
+    let strategy_source_without_execution_sink = strategy_source.replace(execution_source, "");
     assert_eq!(
-        strategy_source.matches("self.submit_order(").count(),
+        strategy_source_without_execution_sink
+            .matches("self.submit_order(")
+            .count(),
         0,
         "strategy code must not call NT submit directly"
     );

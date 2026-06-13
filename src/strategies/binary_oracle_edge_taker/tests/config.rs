@@ -460,9 +460,10 @@ fn runtime_config_parse_rejects_stale_submit_orders_switch() {
 
     let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
         .expect_err("strategy-local submit_orders should be rejected as stale policy");
+    let rendered = format!("{err:#}");
     assert!(
-        err.to_string().contains("submit_orders"),
-        "unknown stale field should be named: {err}"
+        rendered.contains("submit_orders"),
+        "unknown stale field should be named: {rendered}"
     );
 }
 

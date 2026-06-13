@@ -23,7 +23,7 @@
       "venue": "binance",
       "source": "data_vision",
       "family": "trades",
-      "table_family": "native_trades",
+      "table_family": "trades",
       "status": "partially_ready_for_conversion_execution",
       "source_gate_count": 2051,
       "source_conversion_batch_count": 8,
@@ -44,22 +44,22 @@
         {
           "role": "source_universe_object_gates",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json",
-          "sha256": "9704ebddaf79d8b3eb2eac4f61a2ebd9c8ebaac5a596a000b13578635566cc58"
+          "sha256": "5949a7375a3e6c87d9718b9ac49b814e7887a13bbcd916d2c770d8fc757e8a2a"
         },
         {
           "role": "source_universe_conversion_run_plan",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/binance-data-vision-trades-2026-03-01-all-instruments/run-plan/source-universe-conversion-run-plan.json",
-          "sha256": "1a2e7b5bdd027f471d4feb6d4da6030ce38bb25a89b062851f0d98767c0f1a10"
+          "sha256": "753650cc74c10cbbfbb349f816fb0c4202e1d17a98621ee84172f6742913a898"
         },
         {
           "role": "source_universe_operator_inputs",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments/operator-inputs/source-universe-operator-inputs.json",
-          "sha256": "9c3ac79793f49c7a50a0d2c6b34857486ac79f925ef893fb1559147c09c28264"
+          "sha256": "349a0208481e2bfdcfb93cc276a720ba351b7c7b608fac94f71b6c2de782c36d"
         },
         {
           "role": "source_universe_execution_pack",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/execution-pack/source-universe-execution-pack.json",
-          "sha256": "595985b51eb031b7d3773cfe312590062d5e4cd1340a60a516e4cc6fa6f7238a"
+          "sha256": "69bd2c31e3a3797d3331dc96d6b6817a7b1400faf9ba1dd4ecbd080969d13c1e"
         }
       ],
       "blocking_reasons": [
@@ -103,12 +103,12 @@
         {
           "role": "source_universe_operator_inputs",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/operator-inputs/source-universe-operator-inputs.json",
-          "sha256": "c9af95047f9721693df3cbc18c916ddb3f25bb6cc72c50b607a85e5694fe586b"
+          "sha256": "63005e76ade22d0d7395a1373d20ba6c008e51d5c1fa2a7beaee5b6057604008"
         },
         {
           "role": "source_universe_execution_pack",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/source-universe-execution-pack.json",
-          "sha256": "917ac6ce7cb7b95c1901d8588cce68013823832ca8b43875b3716656bd541a10"
+          "sha256": "0449d19a01e641cbd721936c78fb0cb146beea55746ad4a888634b677a8064f3"
         }
       ],
       "blocking_reasons": []
@@ -139,12 +139,12 @@
         {
           "role": "source_universe_manifest",
           "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
-          "sha256": "d020be8d337b404f1b7cea7b5962bccd5873ca1532e7cc9d6b0be09c33528299"
+          "sha256": "1fc294c059bf0c13dfab528b80a8bc19a2fb1534fbe6bac2301197211e2239a6"
         },
         {
           "role": "source_universe_conversion_queue",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json",
-          "sha256": "e96a49330cb03640d2046bec134a523f59596ecd97e90f02233505835a97b2d5"
+          "sha256": "5444284811d4b9cd8c9f2f5b97562082a1f1058e379d6e744732b3b551ac190a"
         }
       ],
       "blocking_reasons": [

@@ -1,8 +1,9 @@
 use std::{fs, path::Path};
 
 use backtesting_vertical_slice::source_universe_execution_acceptance::{
-    SourceUniverseExecutionAcceptanceLedger, SourceUniverseExecutionAcceptanceLedgerStatus,
-    SourceUniverseExecutionAcceptanceUniverseStatus,
+    SourceUniverseExecutionAcceptanceLedger, SourceUniverseExecutionAcceptanceLedgerSpec,
+    SourceUniverseExecutionAcceptanceLedgerStatus, SourceUniverseExecutionAcceptanceUniverseStatus,
+    evaluate_source_universe_execution_acceptance_ledger,
     write_source_universe_execution_acceptance_ledger_from_spec_file,
 };
 
@@ -485,6 +486,39 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
         pmxt.blocking_reasons
             .iter()
             .any(|reason| reason == "missing_source_universe_conversion_run_plan")
+    );
+}
+
+#[test]
+fn committed_source_universe_execution_acceptance_ledger_round_trips_through_evaluator() {
+    // Read the committed spec TOML and the committed output JSON.
+    let spec_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference")
+        .join("source-universe-execution-acceptance-ledgers/binance-bybit-pmxt-current")
+        .join("source-universe-execution-acceptance-ledger.toml");
+    let spec_path = spec_path
+        .canonicalize()
+        .expect("committed spec path must exist");
+
+    let committed_ledger_path = spec_path
+        .parent()
+        .expect("spec parent")
+        .join("ledger/source-universe-execution-acceptance-ledger.json");
+    let committed_bytes = fs::read(&committed_ledger_path).expect("read committed ledger");
+    let committed_ledger: SourceUniverseExecutionAcceptanceLedger =
+        serde_json::from_slice(&committed_bytes).expect("parse committed ledger");
+
+    let spec_text = fs::read_to_string(&spec_path).expect("read committed spec");
+    let spec: SourceUniverseExecutionAcceptanceLedgerSpec =
+        toml::from_str(&spec_text).expect("parse committed spec TOML");
+    let base_dir = spec_path.parent().expect("spec parent");
+    let evaluated = evaluate_source_universe_execution_acceptance_ledger(&spec, base_dir)
+        .expect("evaluate committed spec");
+
+    assert_eq!(
+        evaluated, committed_ledger,
+        "evaluator output must match the committed ledger; \
+         if input artifacts changed, regenerate the committed ledger from the spec"
     );
 }
 

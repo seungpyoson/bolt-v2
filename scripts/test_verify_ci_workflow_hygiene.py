@@ -1201,6 +1201,7 @@ def assert_workflow_hygiene_reviewer_regressions() -> None:
     env_chdir_cases = [
         "env -Ctarget aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
         "env -iC target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+        "env -u -C -C target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
     ]
     for script in env_chdir_cases:
         errors = verifier.raw_rust_storage_errors(script)
@@ -1209,6 +1210,7 @@ def assert_workflow_hygiene_reviewer_regressions() -> None:
 
     sudo_chdir_cases = [
         "sudo -ED target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+        "sudo -u -D -D target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
     ]
     for script in sudo_chdir_cases:
         errors = verifier.raw_rust_storage_errors(script)
@@ -1735,6 +1737,10 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         """,
         "active target zipped with clustered option argument before S3 upload": """
             zip -qr0b /tmp cache.zip target
+            aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
+        """,
+        "active target zipped with exclude option argument before S3 upload": """
+            zip -x ignored cache.zip target
             aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
         """,
         "s3 archive downloaded locally before active target extraction": """
@@ -3737,8 +3743,10 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "scripts/raw-substitution-backtick.sh": "#!/usr/bin/env bash\nx=`cargo build`\n",
             "scripts/raw-find-exec.sh": "#!/usr/bin/env bash\nfind . -name Cargo.toml -exec cargo build \\;\n",
             "scripts/raw-su.sh": "#!/usr/bin/env bash\nsu user -c 'cargo build'\n",
+            "scripts/raw-su-shell-arg.sh": "#!/usr/bin/env bash\nsu -s -c user -c 'cargo build'\n",
             "scripts/raw-runuser.sh": "#!/usr/bin/env bash\nrunuser -u user -- cargo build\n",
             "scripts/raw-flock.sh": "#!/usr/bin/env bash\nflock /tmp/lock -ccargo\\ build\n",
+            "scripts/raw-flock-option-arg.sh": "#!/usr/bin/env bash\nflock -w -c /tmp/lock -c 'cargo build'\n",
             "scripts/multiline-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo build\"\nbash -c \"$CMD\"\n",
             "scripts/multiline-quoted-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo\nbuild --target-dir /tmp/raw\"\nbash -c \"$CMD\"\n",
             "scripts/comment-blind.sh": "# comment with unbalanced quote '\ncargo build\necho 'closing quote'\n",
@@ -3793,10 +3801,14 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"script find-exec raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-su.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script su raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-su-shell-arg.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script su shell-arg raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-runuser.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script runuser raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-flock.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script flock raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-flock-option-arg.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script flock option-arg raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/multiline-eval.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script multiline eval raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/multiline-quoted-eval.sh" in error and expected in error for error in repo_errors):

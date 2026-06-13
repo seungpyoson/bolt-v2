@@ -1106,6 +1106,45 @@ ENV_OPTIONS_WITHOUT_ARGUMENT = {
     "--ignore-environment",
     "--null",
 }
+SU_SG_OPTIONS_WITH_ARGUMENT = {
+    "-g",
+    "-G",
+    "-s",
+    "-w",
+    "--group",
+    "--shell",
+    "--supp-group",
+    "--whitelist-environment",
+}
+SU_SG_OPTIONS_WITHOUT_ARGUMENT = {
+    "-l",
+    "-m",
+    "-M",
+    "-p",
+    "-P",
+    "--fast",
+    "--login",
+    "--preserve-environment",
+    "--pty",
+}
+SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS = {"m", "M", "p", "P", "l"}
+FLOCK_OPTIONS_WITH_ARGUMENT = {"-E", "-w", "--conflict-exit-code", "--wait", "--timeout"}
+FLOCK_OPTIONS_WITHOUT_ARGUMENT = {
+    "-F",
+    "-n",
+    "-o",
+    "-s",
+    "-u",
+    "-x",
+    "--close",
+    "--exclusive",
+    "--no-fork",
+    "--nonblock",
+    "--shared",
+    "--unlock",
+    "--verbose",
+}
+FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS = {"s", "x", "n", "u", "o", "F"}
 TIME_OPTIONS_WITH_ARGUMENT = {"-f", "-o", "--format", "--output"}
 TIME_OPTIONS_WITHOUT_ARGUMENT = {"-a", "-p", "-v", "--append", "--portability", "--verbose"}
 SHELL_PUNCTUATION_CHARS = ";&|(){}!<>"
@@ -2065,6 +2104,66 @@ def chroot_inner_tokens(tokens: list[str]) -> list[str] | None:
     return tokens[index + 1 :] if index < len(tokens) else []
 
 
+def short_cluster_consumes_option_argument(
+    tokens: list[str],
+    index: int,
+    argument_flags: set[str],
+    no_argument_flags: set[str],
+) -> int | None:
+    token = tokens[index]
+    if not token.startswith("-") or token.startswith("--"):
+        return None
+    offset = 1
+    while offset < len(token):
+        flag = token[offset]
+        if flag in no_argument_flags:
+            offset += 1
+            continue
+        if flag in argument_flags:
+            return index + 1 if offset + 1 < len(token) or index + 1 >= len(tokens) else index + 2
+        return None
+    return index + 1
+
+
+def su_sg_command_option_tokens(tokens: list[str]) -> list[str] | None:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in SU_SG_OPTIONS_WITH_ARGUMENT and index + 1 < len(tokens):
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in SU_SG_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        if token in SU_SG_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        if token in {"-c", "--command"} and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        if token.startswith("--command="):
+            return command_tokens(token.split("=", 1)[1])
+        if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+            return command_tokens(token[2:])
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            prefix, suffix = token[1:].split("c", 1)
+            if set(prefix) <= SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS:
+                if suffix:
+                    return command_tokens(suffix)
+                if index + 1 < len(tokens):
+                    return command_tokens(tokens[index + 1])
+        next_index = short_cluster_consumes_option_argument(
+            tokens,
+            index,
+            {"g", "G", "s", "w"},
+            SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS,
+        )
+        if next_index is not None:
+            index = next_index
+            continue
+        index += 1
+    return None
+
+
 def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
     executable = pathlib.Path(tokens[0]).name if tokens else ""
     if executable == "command":
@@ -2268,30 +2367,19 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
             return tokens[index:]
         return []
     if executable in {"su", "sg"}:
-        index = 1
-        while index < len(tokens):
-            token = tokens[index]
-            if token in {"-c", "--command"} and index + 1 < len(tokens):
-                return command_tokens(tokens[index + 1])
-            if token.startswith("--command="):
-                return command_tokens(token.split("=", 1)[1])
-            if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
-                return command_tokens(token[2:])
-            if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
-                prefix, suffix = token[1:].split("c", 1)
-                if set(prefix) <= {"m", "M", "p", "P", "l"}:
-                    if suffix:
-                        return command_tokens(suffix)
-                    if index + 1 < len(tokens):
-                        return command_tokens(tokens[index + 1])
-            index += 1
-        return None
+        return su_sg_command_option_tokens(tokens)
     if executable == "runuser":
         index = 1
         while index < len(tokens):
             token = tokens[index]
             if token == "--":
                 return tokens[index + 1 :]
+            if token in {"-u", "--user", "-g", "--group", "-G", "--supp-group", "-s", "--shell"} and index + 1 < len(tokens):
+                index += 2
+                continue
+            if token.startswith(("--user=", "--group=", "--supp-group=", "--shell=")):
+                index += 1
+                continue
             if token in {"-c", "--command"} and index + 1 < len(tokens):
                 return command_tokens(tokens[index + 1])
             if token.startswith("--command="):
@@ -2305,23 +2393,43 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
                         return command_tokens(suffix)
                     if index + 1 < len(tokens):
                         return command_tokens(tokens[index + 1])
-            if token in {"-u", "--user", "-g", "--group", "-G", "--supp-group", "-s", "--shell"} and index + 1 < len(tokens):
-                index += 2
-                continue
-            if token.startswith(("--user=", "--group=", "--supp-group=", "--shell=")):
-                index += 1
+            next_index = short_cluster_consumes_option_argument(
+                tokens,
+                index,
+                {"G", "g", "s", "u"},
+                SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS,
+            )
+            if next_index is not None:
+                index = next_index
                 continue
             if token.startswith("-"):
                 index += 1
                 continue
-            for command_index in range(index + 1, len(tokens)):
+            command_index = index + 1
+            while command_index < len(tokens):
                 candidate = tokens[command_index]
+                if candidate in {"-u", "--user", "-g", "--group", "-G", "--supp-group", "-s", "--shell"} and command_index + 1 < len(tokens):
+                    command_index += 2
+                    continue
+                if candidate.startswith(("--user=", "--group=", "--supp-group=", "--shell=")):
+                    command_index += 1
+                    continue
                 if candidate in {"-c", "--command"} and command_index + 1 < len(tokens):
                     return command_tokens(tokens[command_index + 1])
                 if candidate.startswith("--command="):
                     return command_tokens(candidate.split("=", 1)[1])
                 if candidate.startswith("-c") and not candidate.startswith("--") and len(candidate) > 2:
                     return command_tokens(candidate[2:])
+                next_command_index = short_cluster_consumes_option_argument(
+                    tokens,
+                    command_index,
+                    {"G", "g", "s", "u"},
+                    SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS,
+                )
+                if next_command_index is not None:
+                    command_index = next_command_index
+                    continue
+                command_index += 1
             return tokens[index:]
         return None
     starters = {
@@ -2556,16 +2664,28 @@ def flock_inner_tokens(tokens: list[str]) -> list[str] | None:
             return command_tokens(token[2:])
         if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
             prefix, suffix = token[1:].split("c", 1)
-            if set(prefix) <= {"s", "x", "n", "u", "o", "F"}:
+            if set(prefix) <= FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS:
                 if suffix:
                     return command_tokens(suffix)
                 if index + 1 < len(tokens):
                     return command_tokens(tokens[index + 1])
-        if token in ("-E", "--conflict-exit-code", "-w", "--wait", "--timeout") and index + 1 < len(tokens):
+        if token in FLOCK_OPTIONS_WITH_ARGUMENT and index + 1 < len(tokens):
             index += 2
             continue
         if token.startswith(("--conflict-exit-code=", "--wait=", "--timeout=")):
             index += 1
+            continue
+        if token in FLOCK_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        next_index = short_cluster_consumes_option_argument(
+            tokens,
+            index,
+            {"E", "w"},
+            FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS,
+        )
+        if next_index is not None:
+            index = next_index
             continue
         if token.startswith("-"):
             index += 1
@@ -2590,11 +2710,29 @@ def flock_command_option_tokens(tokens: list[str]) -> list[str] | None:
             return command_tokens(token[2:])
         if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
             prefix, suffix = token[1:].split("c", 1)
-            if set(prefix) <= {"s", "x", "n", "u", "o", "F"}:
+            if set(prefix) <= FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS:
                 if suffix:
                     return command_tokens(suffix)
                 if index + 1 < len(tokens):
                     return command_tokens(tokens[index + 1])
+        if token in FLOCK_OPTIONS_WITH_ARGUMENT and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--conflict-exit-code=", "--wait=", "--timeout=")):
+            index += 1
+            continue
+        if token in FLOCK_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        next_index = short_cluster_consumes_option_argument(
+            tokens,
+            index,
+            {"E", "w"},
+            FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS,
+        )
+        if next_index is not None:
+            index = next_index
+            continue
         index += 1
     return None
 
@@ -4288,23 +4426,42 @@ def tar_extracts_s3_archive_to_active_target(
 def zip_archive_operands(tokens: list[str], index: int) -> tuple[str, list[str]] | None:
     tail = command_tail_until_boundary(tokens, index + 1)
     operands: list[str] = []
+    options_with_argument = {
+        "-b",
+        "-i",
+        "-n",
+        "-O",
+        "-P",
+        "-t",
+        "-x",
+        "--before-date",
+        "--exclude",
+        "--from-date",
+        "--include",
+        "--out",
+        "--output-file",
+        "--password",
+        "--suffixes",
+        "--temp-path",
+    }
+    short_options_with_argument = {"b", "i", "n", "O", "P", "t", "x"}
     cursor = 0
     while cursor < len(tail):
         token = tail[cursor]
         if token == "--":
             cursor += 1
             continue
-        if token in {"-b", "--temp-path", "-P", "--password", "-n", "--suffixes", "-O", "--output-file"} and cursor + 1 < len(tail):
+        if token in options_with_argument and cursor + 1 < len(tail):
             cursor += 2
             continue
-        if token.startswith(("--temp-path=", "--password=", "--suffixes=", "--output-file=")):
+        if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
             cursor += 1
             continue
         if token.startswith("-") and not token.startswith("--"):
             cluster = token[1:]
             argument_consumed = False
             for position, flag in enumerate(cluster):
-                if flag not in {"b", "P", "n", "O"}:
+                if flag not in short_options_with_argument:
                     continue
                 if position + 1 < len(cluster):
                     cursor += 1
@@ -4911,19 +5068,44 @@ def env_chdir_value(tokens: list[str]) -> str | None:
     command_index = env_command_prefix_index(tokens, 1)
     if command_index is None:
         return None
-    for index, token in enumerate(tokens[1:command_index], start=1):
+    index = 1
+    while index < command_index:
+        token = tokens[index]
         if token in ("-C", "--chdir") and index + 1 < command_index:
             return tokens[index + 1]
         if token.startswith("--chdir="):
             return token.split("=", 1)[1]
         if token.startswith("-") and not token.startswith("--") and "C" in token[1:]:
-            prefix, suffix = token[1:].split("C", 1)
-            if set(prefix) - {"0", "i", "v"}:
+            offset = 1
+            while offset < len(token):
+                option = token[offset]
+                if option in "0iv":
+                    offset += 1
+                    continue
+                if option == "C":
+                    suffix = token[offset + 1 :]
+                    if suffix:
+                        return suffix
+                    if index + 1 < command_index:
+                        return tokens[index + 1]
+                    break
+                if option in "Su":
+                    index += 1 if offset + 1 < len(token) or index + 1 >= command_index else 2
+                    break
+                break
+            else:
+                index += 1
                 continue
-            if suffix:
-                return suffix
-            if index + 1 < command_index:
-                return tokens[index + 1]
+            if index >= command_index or token[offset] not in "Su":
+                index += 1
+            continue
+        if token in ENV_OPTIONS_WITH_ARGUMENT and index + 1 < command_index:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in ENV_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        index += 1
     return None
 
 
@@ -4937,21 +5119,46 @@ def sudo_chdir_value(tokens: list[str]) -> str | None:
     )
     if command_index is None:
         return None
-    for index, token in enumerate(tokens[1:command_index], start=1):
+    index = 1
+    short_options_with_argument = {option[1] for option in SUDO_OPTIONS_WITH_ARGUMENT if re.match(r"^-[A-Za-z0-9]$", option)}
+    short_options_without_argument = {option[1] for option in SUDO_OPTIONS_WITHOUT_ARGUMENT if re.match(r"^-[A-Za-z0-9]$", option)}
+    while index < command_index:
+        token = tokens[index]
         if token in ("-D", "--chdir") and index + 1 < command_index:
             return tokens[index + 1]
         if token.startswith("--chdir="):
             return token.split("=", 1)[1]
-        if token.startswith("-D") and len(token) > 2:
-            return token[2:]
         if token.startswith("-") and not token.startswith("--") and "D" in token[1:]:
-            prefix, suffix = token[1:].split("D", 1)
-            if set(prefix) - {"A", "b", "E", "e", "H", "i", "K", "k", "l", "n", "P", "S", "s", "V", "v"}:
+            offset = 1
+            while offset < len(token):
+                option = token[offset]
+                if option in short_options_without_argument:
+                    offset += 1
+                    continue
+                if option == "D":
+                    suffix = token[offset + 1 :]
+                    if suffix:
+                        return suffix
+                    if index + 1 < command_index:
+                        return tokens[index + 1]
+                    break
+                if option in short_options_with_argument:
+                    index += 1 if offset + 1 < len(token) or index + 1 >= command_index else 2
+                    break
+                break
+            else:
+                index += 1
                 continue
-            if suffix:
-                return suffix
-            if index + 1 < command_index:
-                return tokens[index + 1]
+            if index >= command_index or token[offset] not in short_options_with_argument - {"D"}:
+                index += 1
+            continue
+        if token in SUDO_OPTIONS_WITH_ARGUMENT and index + 1 < command_index:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in SUDO_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        index += 1
     return None
 
 

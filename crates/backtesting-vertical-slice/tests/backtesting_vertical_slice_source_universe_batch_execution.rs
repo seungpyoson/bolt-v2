@@ -382,7 +382,7 @@ fn resume_carries_forward_prior_clean_record_without_refetch() {
     let first_output = temp_dir.path().join("batch-output-first");
     let mut fetcher = SequencedFetcher::from_objects(&objects);
     let mut runner = RecordingRunner::default();
-    let first_report = execute_source_universe_batch_with_config(
+    let mut first_report = execute_source_universe_batch_with_config(
         "source-universe-batch-synthetic",
         &pack_path,
         &first_output,
@@ -401,6 +401,29 @@ fn resume_carries_forward_prior_clean_record_without_refetch() {
         first_report.completed_record_count, 1,
         "prior report is a partial: only sequence 0 was processed"
     );
+
+    // The carry-forward gate re-opens the carried record's prior OUTPUT catalog
+    // and re-hashes it through `logical_catalog_hash`, carrying the record
+    // forward without refetch only when that recomputed hash matches the
+    // recorded `catalog_hash`. The in-test `RecordingRunner` double records a
+    // synthetic hash but writes no real NT catalog under `output_dir`, so to
+    // exercise the intended "clean record, prior output present and matching"
+    // path the test plants a real, hash-matching NT catalog under the prior
+    // record's `output_dir` before resuming. This mirrors the src-side unit
+    // test `carried_output_verifies_against_intact_reference_catalog`, which
+    // copies the committed PMXT reference catalog into the record's output and
+    // pins the catalog's recorded hash. It is NOT a second verification seam:
+    // the resume run still proves carry-forward through the one real gate.
+    let prior_output_dir = first_report.records[0].output_dir.clone();
+    copy_dir_all(
+        &committed_reference_run_dir().join("nt-catalog"),
+        &prior_output_dir.join("nt-catalog"),
+    );
+    // Pin the carried record's `catalog_hash` to the planted catalog's recorded
+    // hash so the gate verifies. Never mutate the committed reference; only the
+    // temp copy and the in-memory prior report are touched.
+    first_report.records[0].catalog_hash = committed_reference_catalog_hash();
+
     let resume_report_path = first_output.join("prior-report.json");
     fs::write(
         &resume_report_path,
@@ -1390,6 +1413,50 @@ fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 
     hex::encode(Sha256::digest(bytes))
+}
+
+/// Repo-relative path to the committed PMXT reference NT catalog run, whose
+/// `catalog-metadata.json` records the real `logical_catalog_hash`. Mirrors the
+/// src-side `committed_reference_run_dir` so the resume carry-forward gate can be
+/// exercised against a genuine catalog instead of a hand-built one.
+fn committed_reference_run_dir() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("repo root")
+        .join(
+            "specs/023-nt-research-analytics-platform/reference/\
+             pmxt-polymarket-selected-source-conversion/backtests/pmxt-run",
+        )
+}
+
+/// Recorded logical catalog hash of the committed PMXT reference catalog.
+fn committed_reference_catalog_hash() -> String {
+    let metadata: serde_json::Value = serde_json::from_slice(
+        &fs::read(committed_reference_run_dir().join("catalog-metadata.json"))
+            .expect("read committed catalog metadata"),
+    )
+    .expect("parse committed catalog metadata");
+    metadata["catalog_hash"]
+        .as_str()
+        .expect("catalog_hash present in committed metadata")
+        .to_string()
+}
+
+/// Recursively copy `src` into `dst`, used to plant the committed reference
+/// catalog under a resumed record's `output_dir` without touching the committed
+/// fixture.
+fn copy_dir_all(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).expect("create copy dir");
+    for entry in fs::read_dir(src).expect("read source dir") {
+        let entry = entry.expect("dir entry");
+        let target = dst.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_dir_all(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), &target).expect("copy file");
+        }
+    }
 }
 
 fn write_two_record_pack(

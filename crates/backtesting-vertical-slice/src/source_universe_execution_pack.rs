@@ -290,12 +290,15 @@ pub fn write_source_universe_execution_pack(
         let instrument = instruments_by_key
             .get(&record.instrument_key)
             .with_context(|| format!("missing instrument spec for {}", record.instrument_key))?;
-        let proof = proofs.get(&record.source_proof_id).with_context(|| {
-            format!(
-                "missing source proof {} for {}",
-                record.source_proof_id, record.work_item_id
-            )
-        })?;
+        let proof = &proofs
+            .get(&record.source_proof_id)
+            .with_context(|| {
+                format!(
+                    "missing source proof {} for {}",
+                    record.source_proof_id, record.work_item_id
+                )
+            })?
+            .report;
         ensure!(
             proof.source_proof_version == record.source_proof_version,
             "source proof version mismatch for {}",
@@ -454,23 +457,19 @@ pub fn write_source_universe_execution_pack(
         },
     ];
     for proof_id in used_source_proof_ids {
-        if let Some(proof_ref) = object_gates
-            .artifact_refs
-            .iter()
-            .find(|artifact| artifact.role == "source_proof")
-            .filter(|artifact| {
-                proofs
-                    .get(&proof_id)
-                    .is_some_and(|proof| proof.source_proof_id == proof_id)
-                    && source_proof_ref_matches_id(base_dir, artifact, &proof_id).unwrap_or(false)
-            })
-        {
-            artifact_refs.push(SourceUniverseExecutionPackArtifactRef {
-                role: "source_proof".to_string(),
-                path: portable_artifact_path(&resolve_existing_path(base_dir, &proof_ref.path)),
-                sha256: proof_ref.sha256.clone(),
-            });
-        }
+        // Reuse the artifact ref `source_proofs_by_id` already read, sha-verified,
+        // and parsed for this id; every used id is guaranteed present in `proofs`
+        // because it was selected from the same validated map above. No second
+        // filesystem read, so there is no read/parse failure to swallow.
+        let proof_ref = &proofs
+            .get(&proof_id)
+            .with_context(|| format!("missing validated source proof {proof_id} for artifact ref"))?
+            .artifact_ref;
+        artifact_refs.push(SourceUniverseExecutionPackArtifactRef {
+            role: "source_proof".to_string(),
+            path: portable_artifact_path(&resolve_existing_path(base_dir, &proof_ref.path)),
+            sha256: proof_ref.sha256.clone(),
+        });
     }
 
     let pack = SourceUniverseExecutionPack {
@@ -854,17 +853,27 @@ fn accepted_tranche_for_record(
     }
 }
 
+/// A source proof read, sha-verified, and parsed once at the single consume
+/// boundary, kept alongside the gate artifact ref it came from. Bundling the
+/// validated report with its ref means the artifact-ref selection loop can reuse
+/// this proven read instead of re-opening (and re-parsing) the same file, so a
+/// later read/parse failure can never be silently downgraded to "not a match".
+struct ValidatedSourceProof {
+    report: SourceProofReport,
+    artifact_ref: crate::source_universe_object_gates::SourceUniverseObjectGateArtifactRef,
+}
+
 fn source_proofs_by_id(
     base_dir: &Path,
     gates: &SourceUniverseObjectGateMaterialization,
-) -> Result<BTreeMap<String, SourceProofReport>> {
+) -> Result<BTreeMap<String, ValidatedSourceProof>> {
     let mut proofs = BTreeMap::new();
     for artifact in gates
         .artifact_refs
         .iter()
         .filter(|artifact| artifact.role == "source_proof")
     {
-        let (_, _, proof): (PathBuf, String, SourceProofReport) = read_json_artifact(
+        let (_, _, report): (PathBuf, String, SourceProofReport) = read_json_artifact(
             base_dir,
             &artifact.path,
             Some(artifact.sha256.as_str()),
@@ -872,7 +881,13 @@ fn source_proofs_by_id(
         )?;
         ensure!(
             proofs
-                .insert(proof.source_proof_id.clone(), proof)
+                .insert(
+                    report.source_proof_id.clone(),
+                    ValidatedSourceProof {
+                        report,
+                        artifact_ref: artifact.clone(),
+                    },
+                )
                 .is_none(),
             "duplicate source proof id in source-universe object gates"
         );
@@ -954,19 +969,6 @@ fn operator_inputs_artifact_ref<'a>(
         .iter()
         .find(|artifact| artifact.role == role)
         .with_context(|| format!("source-universe operator inputs missing artifact ref {role}"))
-}
-
-fn source_proof_ref_matches_id(
-    base_dir: &Path,
-    artifact: &crate::source_universe_object_gates::SourceUniverseObjectGateArtifactRef,
-    proof_id: &str,
-) -> Result<bool> {
-    let path = resolve_existing_path(base_dir, &artifact.path);
-    let bytes = fs::read(&path)
-        .with_context(|| format!("read source proof artifact {}", path.display()))?;
-    let proof: SourceProofReport = serde_json::from_slice(&bytes)
-        .with_context(|| format!("parse source proof artifact {}", path.display()))?;
-    Ok(proof.source_proof_id == proof_id)
 }
 
 fn read_json_artifact<T>(

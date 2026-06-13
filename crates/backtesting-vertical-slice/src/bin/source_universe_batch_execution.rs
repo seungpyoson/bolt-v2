@@ -4,10 +4,17 @@ use anyhow::Result;
 use backtesting_vertical_slice::source_universe_batch_execution::{
     CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
     LocalSourceUniverseOperatorRunner, SourceUniverseBatchExecutionConfig,
-    SourceUniverseObjectFetcher, execute_source_universe_batch_with_factories,
-    write_source_universe_batch_execution_report,
+    SourceUniverseBatchExecutionReportStatus, SourceUniverseObjectFetcher,
+    execute_source_universe_batch_with_factories, write_source_universe_batch_execution_report,
 };
 use clap::Parser;
+
+/// Process exit code when the batch completed but at least one record failed
+/// (`--continue-on-error` produced a `CompletedWithFailures`/`Failed` report)
+/// and `--allow-partial` was not set. Distinct from anyhow's exit 1 (a hard
+/// error before/while assembling the report) so automation can tell a partial
+/// data outcome apart from a runner crash.
+const EXIT_PARTIAL_FAILURE: i32 = 2;
 
 #[derive(Debug, Parser)]
 #[command(about = "Execute source-universe single-object operator runs from an execution pack")]
@@ -34,6 +41,12 @@ struct Cli {
     object_cache_dir: Option<PathBuf>,
     #[arg(long)]
     resume_from_report: Option<PathBuf>,
+    /// Treat a `CompletedWithFailures`/`Failed` report as a success exit. Without
+    /// this flag the process exits with [`EXIT_PARTIAL_FAILURE`] whenever any
+    /// record failed, so `--continue-on-error` cannot hide partial failure from
+    /// automation.
+    #[arg(long)]
+    allow_partial: bool,
 }
 
 /// Object fetcher used by every batch worker: the HTTP fetcher, optionally
@@ -104,5 +117,107 @@ fn main() -> Result<()> {
     println!("failed_records = {}", report.failed_record_count);
     println!("total_canonical_rows = {}", report.total_canonical_rows);
     println!("total_nt_catalog_rows = {}", report.total_nt_catalog_rows);
+
+    // The report is written before exiting non-zero, so a partial-failure run
+    // still leaves its full evidence on disk. Derive the exit from the report
+    // status (not an unconditional `Ok(())`) so `--continue-on-error` cannot mask
+    // a `CompletedWithFailures`/`Failed` outcome from automation.
+    if let Some(exit_code) =
+        partial_failure_exit_code(report.status, report.failed_record_count, cli.allow_partial)
+    {
+        eprintln!(
+            "batch completed with {} failed record(s); status {:?}. \
+             Pass --allow-partial to exit zero.",
+            report.failed_record_count, report.status
+        );
+        std::process::exit(exit_code);
+    }
     Ok(())
+}
+
+/// Map a finished batch report to its process exit code. Returns
+/// `Some(EXIT_PARTIAL_FAILURE)` when the run completed but any record failed and
+/// `--allow-partial` was not set, otherwise `None` (a clean `Ok(())` exit).
+///
+/// `Completed` always maps to `None`; a non-`Completed` status OR a non-zero
+/// failure count is a partial failure. Both signals are checked so a report can
+/// never read as clean while still carrying failures.
+fn partial_failure_exit_code(
+    status: SourceUniverseBatchExecutionReportStatus,
+    failed_record_count: u64,
+    allow_partial: bool,
+) -> Option<i32> {
+    if allow_partial {
+        return None;
+    }
+    let has_failures = failed_record_count > 0
+        || !matches!(status, SourceUniverseBatchExecutionReportStatus::Completed);
+    has_failures.then_some(EXIT_PARTIAL_FAILURE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EXIT_PARTIAL_FAILURE, partial_failure_exit_code};
+    use backtesting_vertical_slice::source_universe_batch_execution::SourceUniverseBatchExecutionReportStatus;
+
+    #[test]
+    fn completed_report_exits_clean() {
+        assert_eq!(
+            partial_failure_exit_code(
+                SourceUniverseBatchExecutionReportStatus::Completed,
+                0,
+                false
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn completed_with_failures_exits_nonzero_without_allow_partial() {
+        // The regression this guards: `--continue-on-error` produced a
+        // `CompletedWithFailures` report, but `main` returned `Ok(())`, so a
+        // partial failure exited zero and was hidden from automation.
+        assert_eq!(
+            partial_failure_exit_code(
+                SourceUniverseBatchExecutionReportStatus::CompletedWithFailures,
+                1,
+                false,
+            ),
+            Some(EXIT_PARTIAL_FAILURE)
+        );
+    }
+
+    #[test]
+    fn failed_report_exits_nonzero_without_allow_partial() {
+        assert_eq!(
+            partial_failure_exit_code(SourceUniverseBatchExecutionReportStatus::Failed, 3, false),
+            Some(EXIT_PARTIAL_FAILURE)
+        );
+    }
+
+    #[test]
+    fn allow_partial_overrides_partial_failure_to_clean_exit() {
+        assert_eq!(
+            partial_failure_exit_code(
+                SourceUniverseBatchExecutionReportStatus::CompletedWithFailures,
+                5,
+                true,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn nonzero_failure_count_alone_exits_nonzero() {
+        // Defense in depth: even if status somehow read `Completed`, a non-zero
+        // failure count must still surface as a partial failure.
+        assert_eq!(
+            partial_failure_exit_code(
+                SourceUniverseBatchExecutionReportStatus::Completed,
+                2,
+                false
+            ),
+            Some(EXIT_PARTIAL_FAILURE)
+        );
+    }
 }

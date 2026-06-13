@@ -103,7 +103,12 @@ impl ConvertReport {
 /// `emit` as it completes (for incremental, durable progress) and recorded into
 /// `report`. An `Err` from `convert_one` is captured as a failure outcome (with
 /// its full error chain) and the loop continues to the next key.
-pub fn run_objects<F, E>(
+///
+/// `pub(crate)`: the production batch runner converts through
+/// `operator::run_from_run_spec`, so this per-object fault-isolation loop has no
+/// production caller today; only this module's tests exercise it. Scoping it to
+/// the crate keeps it off the public API without deleting test-covered logic.
+pub(crate) fn run_objects<F, E>(
     report: &mut ConvertReport,
     binding: &str,
     object_keys: &[String],

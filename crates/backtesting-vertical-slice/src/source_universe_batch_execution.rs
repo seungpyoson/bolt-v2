@@ -20,9 +20,10 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::catalog_projection::logical_catalog_hash;
 use crate::path_resolution::resolve_existing_path;
 use crate::{
-    operator::{RunSpec, run_from_run_spec},
+    operator::{CATALOG_DIR, RunSpec, run_from_run_spec},
     source_universe_execution_pack::{
         SourceUniverseExecutionPack, SourceUniverseExecutionPackRecord,
         SourceUniverseExecutionPackStatus,
@@ -508,9 +509,11 @@ where
 }
 
 /// A single unit of batch work after selection and resume filtering: either a
-/// record carried forward verbatim from a prior report, or a pack record that
-/// still needs fetch + verify + run. The carried record is boxed to keep the
-/// two variants similarly sized.
+/// record carried forward from a prior report (only after its input sha matches
+/// AND its prior output catalog re-verifies — see
+/// [`carried_output_still_verifies`]), or a pack record that still needs
+/// fetch + verify + run. The carried record is boxed to keep the two variants
+/// similarly sized.
 enum BatchWorkItem<'pack> {
     Carried(Box<SourceUniverseBatchExecutionRecord>),
     NeedsWork(&'pack SourceUniverseExecutionPackRecord),
@@ -650,8 +653,19 @@ impl OwnedBatchPlan {
             .take(self.record_limit)
             .map(|record| match self.resume_records.get(&record.sequence) {
                 // Pack-regeneration guard: carry forward only when the prior
-                // record's pinned sha still matches the current pack record.
-                Some(prior) if prior.selected_object_sha256 == record.selected_object_sha256 => {
+                // record's pinned sha still matches the current pack record AND
+                // the prior output catalog still exists and re-hashes to the
+                // carried `catalog_hash`. A bare sha match only proves the INPUT
+                // is unchanged; it never re-checks that the prior OUTPUT survived.
+                // Re-verifying through the same `logical_catalog_hash` the
+                // operator's completed-output reuse path uses means a deleted or
+                // corrupted prior catalog re-executes the record (downgraded to
+                // `NeedsWork`) instead of being marked completed off a stale
+                // marker — fail safe, never carry a phantom output forward.
+                Some(prior)
+                    if prior.selected_object_sha256 == record.selected_object_sha256
+                        && carried_output_still_verifies(prior) =>
+                {
                     BatchWorkItem::Carried(Box::new(prior.clone()))
                 }
                 _ => BatchWorkItem::NeedsWork(record),
@@ -661,6 +675,24 @@ impl OwnedBatchPlan {
             pack_base_dir: self.pack_base_dir.clone(),
             work_items,
         }
+    }
+}
+
+/// Re-prove a carried record's prior OUTPUT before it is reused on resume.
+///
+/// The carried record stores its prior run's `output_dir`; the NautilusTrader
+/// catalog sits beneath it at [`CATALOG_DIR`]. This re-opens that catalog and
+/// re-hashes it through the same [`logical_catalog_hash`] the operator's
+/// completed-output reuse path runs, asserting the recomputed hash equals the
+/// carried `catalog_hash`. A missing, unreadable, or drifted catalog returns
+/// `false` so the caller downgrades the record to fresh work instead of
+/// trusting the stale resume marker — output corruption can never survive a
+/// resume.
+fn carried_output_still_verifies(prior: &SourceUniverseBatchExecutionRecord) -> bool {
+    let catalog_root = prior.output_dir.join(CATALOG_DIR);
+    match logical_catalog_hash(&catalog_root) {
+        Ok(actual_catalog_hash) => actual_catalog_hash == prior.catalog_hash,
+        Err(_) => false,
     }
 }
 
@@ -958,6 +990,7 @@ fn failure_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_universe_execution_pack::SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION;
 
     /// Inner fetcher double for cache-repair unit tests; must never be called.
     struct PanicFetcher;
@@ -997,6 +1030,222 @@ mod tests {
         assert!(
             format!("{error:#}").contains("delete corrupt object cache entry"),
             "loud removal failure expected, got: {error:#}"
+        );
+    }
+
+    /// Repo-relative path to the committed PMXT reference NT catalog and the
+    /// metadata that records its logical hash. Reusing the same fixture the
+    /// `catalog_projection` hash-invariance test pins gives a real catalog whose
+    /// `logical_catalog_hash` is known, so the carry-forward gate can be proven
+    /// in both directions without hand-building a catalog.
+    fn committed_reference_run_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("repo root")
+            .join(
+                "specs/023-nt-research-analytics-platform/reference/\
+                 pmxt-polymarket-selected-source-conversion/backtests/pmxt-run",
+            )
+    }
+
+    fn committed_reference_catalog_hash() -> String {
+        let metadata: serde_json::Value = serde_json::from_slice(
+            &fs::read(committed_reference_run_dir().join("catalog-metadata.json"))
+                .expect("read committed catalog metadata"),
+        )
+        .expect("parse committed catalog metadata");
+        metadata["catalog_hash"]
+            .as_str()
+            .expect("catalog_hash present in committed metadata")
+            .to_string()
+    }
+
+    /// Recursively copy `src` into `dst`, used to plant the committed reference
+    /// catalog under a temp record `output_dir` so it can be deleted/corrupted
+    /// without touching the committed fixture.
+    fn copy_dir_all(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).expect("create copy dir");
+        for entry in fs::read_dir(src).expect("read source dir") {
+            let entry = entry.expect("dir entry");
+            let target = dst.join(entry.file_name());
+            if entry.file_type().expect("file type").is_dir() {
+                copy_dir_all(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), &target).expect("copy file");
+            }
+        }
+    }
+
+    fn carried_record_with_output(
+        output_dir: PathBuf,
+        catalog_hash: String,
+    ) -> SourceUniverseBatchExecutionRecord {
+        SourceUniverseBatchExecutionRecord {
+            sequence: 0,
+            operator_run_id: "operator-run-carried".to_string(),
+            source_binding: "binding".to_string(),
+            category: "spot".to_string(),
+            symbol: "SYMBOL".to_string(),
+            archive_date: "2026-03-01".to_string(),
+            selected_object_sha256: "a".repeat(64),
+            selected_object_bytes: 0,
+            canonical_rows: 7,
+            nt_catalog_rows: 7,
+            catalog_hash,
+            output_dir,
+        }
+    }
+
+    /// Build an [`OwnedBatchPlan`] with a single pack record whose sha matches
+    /// the carried `prior`, so the carry-forward decision turns purely on the
+    /// new output re-verification gate.
+    fn owned_plan_with_carry(prior: &SourceUniverseBatchExecutionRecord) -> OwnedBatchPlan {
+        let pack_record = SourceUniverseExecutionPackRecord {
+            sequence: prior.sequence,
+            work_item_id: "work-item".to_string(),
+            operator_run_id: prior.operator_run_id.clone(),
+            source_binding: prior.source_binding.clone(),
+            category: prior.category.clone(),
+            symbol: prior.symbol.clone(),
+            archive_date: prior.archive_date.clone(),
+            source_uri: "s3://bucket/object.csv.gz".to_string(),
+            source_url: "https://example/object.csv.gz".to_string(),
+            selected_object_sha256: prior.selected_object_sha256.clone(),
+            selected_object_bytes: prior.selected_object_bytes,
+            source_proof_id: "proof".to_string(),
+            source_proof_version: 1,
+            accepted_tranche_id: "tranche".to_string(),
+            output_prefix: "s3://bucket/out".to_string(),
+            run_spec_path: PathBuf::from("run-spec.toml"),
+            run_spec_sha256: "run-spec-sha".to_string(),
+            accepted_tranche_path: PathBuf::from("tranche.json"),
+            accepted_tranche_sha256: "tranche-sha".to_string(),
+            execution_plan_path: PathBuf::from("execution-plan.json"),
+            execution_plan_sha256: "execution-plan-sha".to_string(),
+        };
+        let pack = SourceUniverseExecutionPack {
+            schema_version: SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION.to_string(),
+            pack_id: "pack".to_string(),
+            status: SourceUniverseExecutionPackStatus::Ready,
+            work_order_id: "work-order".to_string(),
+            input_id: "input".to_string(),
+            gate_id: "gate".to_string(),
+            conversion_run_plan_id: "run-plan".to_string(),
+            universe_id: "universe".to_string(),
+            venue: "venue".to_string(),
+            source: "public_archive".to_string(),
+            family: "tick_trades".to_string(),
+            table_family: "trades".to_string(),
+            planned_object_count: 1,
+            executable_record_count: 1,
+            withheld_record_count: 0,
+            selected_record_count: 1,
+            materialized_record_count: 1,
+            skipped_executable_record_count: 0,
+            executable_source_bytes: 0,
+            materialized_source_bytes: 0,
+            artifact_refs: Vec::new(),
+            records: vec![pack_record],
+            blocking_reasons: Vec::new(),
+        };
+        let mut resume_records = BTreeMap::new();
+        resume_records.insert(prior.sequence, prior.clone());
+        OwnedBatchPlan {
+            pack,
+            pack_base_dir: PathBuf::from("."),
+            resume_records,
+            start_sequence: None,
+            record_limit: usize::MAX,
+        }
+    }
+
+    #[test]
+    fn carried_output_verifies_against_intact_reference_catalog() {
+        // Positive control: a carried record whose prior output catalog is intact
+        // and whose carried hash matches the catalog re-verifies, so the gate is
+        // not vacuously rejecting every record.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        copy_dir_all(
+            &committed_reference_run_dir().join(CATALOG_DIR),
+            &output_dir.join(CATALOG_DIR),
+        );
+        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        assert!(
+            carried_output_still_verifies(&record),
+            "intact prior catalog matching the carried hash must verify"
+        );
+    }
+
+    #[test]
+    fn carried_output_does_not_verify_when_catalog_is_deleted() {
+        // The finding's scenario: the prior output catalog no longer exists. The
+        // bare sha match must NOT carry it forward off the stale marker.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        fs::create_dir_all(&output_dir).expect("create empty output dir");
+        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        assert!(
+            !carried_output_still_verifies(&record),
+            "a deleted prior catalog must fail re-verification"
+        );
+    }
+
+    #[test]
+    fn carried_output_does_not_verify_when_catalog_is_corrupted() {
+        // The prior output catalog still exists but its bytes drifted, so its
+        // recomputed logical hash no longer matches the carried hash.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        let catalog_root = output_dir.join(CATALOG_DIR);
+        copy_dir_all(
+            &committed_reference_run_dir().join(CATALOG_DIR),
+            &catalog_root,
+        );
+        // Carry a hash that does not describe the planted catalog: a drifted
+        // output must read as "not a match" rather than be reused verbatim.
+        let record = carried_record_with_output(output_dir, "f".repeat(64));
+        assert!(
+            !carried_output_still_verifies(&record),
+            "a prior catalog whose recomputed hash differs from the carried hash must not verify"
+        );
+    }
+
+    #[test]
+    fn plan_reexecutes_carried_record_when_prior_output_is_missing() {
+        // End-to-end through the carry-forward decision: a sha-matching prior
+        // record whose output catalog is gone is downgraded to NeedsWork (fresh
+        // fetch + verify + run), never carried forward as Completed from the
+        // stale resume marker.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        fs::create_dir_all(&output_dir).expect("create empty output dir");
+        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        let owned_plan = owned_plan_with_carry(&record);
+        let plan = owned_plan.plan();
+        assert!(
+            matches!(plan.work_items.as_slice(), [BatchWorkItem::NeedsWork(_)]),
+            "a carried record with a missing prior catalog must re-execute, not carry forward"
+        );
+    }
+
+    #[test]
+    fn plan_carries_record_forward_when_prior_output_verifies() {
+        // Positive control through the decision: with an intact, hash-matching
+        // prior catalog the record is still carried forward (no needless re-run).
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        copy_dir_all(
+            &committed_reference_run_dir().join(CATALOG_DIR),
+            &output_dir.join(CATALOG_DIR),
+        );
+        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        let owned_plan = owned_plan_with_carry(&record);
+        let plan = owned_plan.plan();
+        assert!(
+            matches!(plan.work_items.as_slice(), [BatchWorkItem::Carried(_)]),
+            "an intact, hash-matching prior catalog must still carry forward"
         );
     }
 }

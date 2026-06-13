@@ -224,8 +224,12 @@ TAG_SKIP_ALWAYS_IF_RE = re.compile(
     r")\s*\}\}\s*$"
 )
 SAME_SHA_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
+FULL_CI_REQUIRED_EXPR = "needs.ci-policy.outputs.full_ci_required == 'true'"
+TAG_REUSE_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'tag_reuse'"
+BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
 BUILD_IF_RE = re.compile(
-    r"^    if:\s*\$\{\{\s*!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*&&\s*"
+    r"^    if:\s*\$\{\{\s*"
+    r"needs\.ci-policy\.outputs\.full_ci_required\s*==\s*['\"]true['\"]\s*&&\s*"
     r"needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*\}\}\s*$"
 )
 PR_CONCURRENCY_EVENT_RE = re.compile(r"github\.event_name\s*==\s*['\"]pull_request['\"]")
@@ -5585,11 +5589,25 @@ def test_has_inline_shard_reproduction_command(job_lines: list[str]) -> bool:
 
 
 def job_skips_tag_reuse(job_lines: list[str]) -> bool:
-    return has_line_matching(job_lines, TAG_SKIP_IF_RE) or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
+    text = uncommented_text(job_lines)
+    return (
+        has_line_matching(job_lines, TAG_SKIP_IF_RE)
+        or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
+        or FULL_CI_REQUIRED_EXPR in text
+    )
 
 
 def job_if_uses_always(job_lines: list[str]) -> bool:
-    return has_line_matching(job_lines, GATE_IF_RE) or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
+    return has_line_matching(job_lines, GATE_IF_RE) or "always()" in uncommented_text(job_lines)
+
+
+def job_gates_on_full_ci_required(job_lines: list[str]) -> bool:
+    return FULL_CI_REQUIRED_EXPR in uncommented_text(job_lines)
+
+
+def check_aarch64_runs_on_full_or_tag_reuse(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return FULL_CI_REQUIRED_EXPR in text and TAG_REUSE_POLICY_EXPR in text
 
 
 def same_sha_job_has_outputs(job_lines: list[str]) -> bool:
@@ -6136,6 +6154,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "source-fence" in jobs and "detector" not in extract_needs(jobs["source-fence"]):
         # FR-005: #342 owns the early-fail source-fence lane, so it remains detector-gated.
         errors.append("source-fence needs detector")
+    if "source-fence" in jobs:
+        source_fence_needs = extract_needs(jobs["source-fence"])
+        if "ci-policy" not in source_fence_needs:
+            errors.append("source-fence needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["source-fence"]):
+            errors.append("source-fence must gate on full_ci_required")
 
     for job_name, recipe in JOB_REQUIRED_JUST_RECIPE.items():
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):
@@ -6161,10 +6185,13 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("clippy must not install aarch64 cross compiler")
 
     if "check-aarch64" in jobs:
-        if "detector" not in extract_needs(jobs["check-aarch64"]):
+        check_aarch64_needs = extract_needs(jobs["check-aarch64"])
+        if "detector" not in check_aarch64_needs:
             errors.append("check-aarch64 needs detector")
-        if has_line_matching(jobs["check-aarch64"], CHECK_AARCH64_JOB_LEVEL_IF_RE):
-            errors.append("check-aarch64 must have no job-level if condition")
+        if "ci-policy" not in check_aarch64_needs:
+            errors.append("check-aarch64 needs ci-policy")
+        if not check_aarch64_runs_on_full_or_tag_reuse(jobs["check-aarch64"]):
+            errors.append("check-aarch64 must run on full CI or tag reuse")
         if not check_aarch64_has_coverage_owner_step(jobs["check-aarch64"]):
             errors.append("check-aarch64 must document build-lane aarch64 coverage delegation")
         if not check_aarch64_installs_cross_compiler_packages(jobs["check-aarch64"]):
@@ -6172,6 +6199,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.extend(check_aarch64_standalone_guard_errors(jobs["check-aarch64"]))
 
     if "test-archive" in jobs:
+        test_archive_needs = extract_needs(jobs["test-archive"])
+        if "ci-policy" not in test_archive_needs:
+            errors.append("test-archive needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["test-archive"]):
+            errors.append("test-archive must gate on full_ci_required")
         archive_lines = jobs["test-archive"]
         archive_text = uncommented_text(archive_lines)
         archive_cache_blocks = [
@@ -6219,6 +6251,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.extend(test_archive_fingerprint_errors(archive_lines))
 
     if "test-shards" in jobs:
+        test_shards_needs = extract_needs(jobs["test-shards"])
+        if "ci-policy" not in test_shards_needs:
+            errors.append("test-shards needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["test-shards"]):
+            errors.append("test-shards must gate on full_ci_required")
         test_lines = jobs["test-shards"]
         test_text = uncommented_text(test_lines)
         if not has_line_matching(test_lines, TEST_FAIL_FAST_FALSE_RE):
@@ -6248,6 +6285,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "test" in jobs:
         test_needs = extract_needs(jobs["test"])
         test_text = uncommented_text(jobs["test"])
+        if "ci-policy" not in test_needs:
+            errors.append("test needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["test"]):
+            errors.append("test must gate on full_ci_required")
         if "test-shards" not in test_needs:
             errors.append("test needs test-shards")
         if not gate_checks_lane_success(test_text, "test-shards"):
@@ -6256,14 +6297,21 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test must use always()")
 
     if "build" in jobs:
-        if "detector" not in extract_needs(jobs["build"]):
+        build_needs = extract_needs(jobs["build"])
+        if "detector" not in build_needs:
             errors.append("build needs detector")
+        if "ci-policy" not in build_needs:
+            errors.append("build needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["build"]):
+            errors.append("build must gate on full_ci_required")
         if not has_line_matching(jobs["build"], BUILD_IF_RE):
             errors.append("build must gate on needs.detector.outputs.build_required and skip tag reuse")
 
     if "ci-provenance-emit" in jobs:
         emit_lines = jobs["ci-provenance-emit"]
         emit_needs = extract_needs(emit_lines)
+        if "ci-policy" not in emit_needs:
+            errors.append("ci-provenance-emit needs ci-policy")
         for job in (*CI_PROVENANCE_REQUIRED_JOBS, "build"):
             if job not in emit_needs:
                 errors.append(f"ci-provenance-emit needs {job}")
@@ -6273,6 +6321,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("ci-provenance-emit must use always()")
         if not job_skips_tag_reuse(emit_lines):
             errors.append("ci-provenance-emit must skip tag reuse")
+        if not job_gates_on_full_ci_required(emit_lines):
+            errors.append("ci-provenance-emit must gate on full_ci_required")
         if not ci_provenance_emit_runs_emitter(emit_lines):
             errors.append("ci-provenance-emit must run provenance emitter")
         for missing in ci_provenance_emit_checks_needs(

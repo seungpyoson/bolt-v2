@@ -281,7 +281,8 @@ jobs:
 
   check-aarch64:
     name: check-aarch64
-    needs: detector
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'tag_reuse' }}
     runs-on: ubuntu-latest
     steps:
       - name: Resolve aarch64 coverage owner
@@ -321,8 +322,8 @@ jobs:
 
   source-fence:
     name: source-fence
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -346,8 +347,8 @@ jobs:
 
   test-archive:
     name: nextest archive
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
@@ -408,8 +409,8 @@ jobs:
 
   test-shards:
     name: nextest shard ${{ matrix.shard }} of 4
-    needs: test-archive
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, test-archive]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -444,8 +445,8 @@ jobs:
 
   test:
     name: test
-    needs: test-shards
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}
+    needs: [ci-policy, test-shards]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -455,8 +456,8 @@ jobs:
 
   build:
     name: build
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.outputs.build_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -528,8 +529,8 @@ jobs:
 
   ci-provenance-emit:
     name: ci-provenance-emit
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]
-    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1090,6 +1091,97 @@ def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
             ),
         ),
         ("missing required job ci-policy", without_job(workflow, "ci-policy")),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "source-fence needs ci-policy",
+            replace_once(
+                workflow,
+                "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]",
+                "  source-fence:\n    name: source-fence\n    needs: detector",
+            ),
+        ),
+        (
+            "source-fence must gate on full_ci_required",
+            replace_once(
+                workflow,
+                "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+                "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}",
+            ),
+        ),
+        (
+            "test-archive needs ci-policy",
+            replace_once(
+                workflow,
+                "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector]",
+                "  test-archive:\n    name: nextest archive\n    needs: detector",
+            ),
+        ),
+        (
+            "test-shards needs ci-policy",
+            replace_once(
+                workflow,
+                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive]",
+                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: test-archive",
+            ),
+        ),
+        (
+            "test needs ci-policy",
+            replace_once(
+                workflow,
+                "  test:\n    name: test\n    needs: [ci-policy, test-shards]",
+                "  test:\n    name: test\n    needs: test-shards",
+            ),
+        ),
+        (
+            "build needs ci-policy",
+            replace_once(
+                workflow,
+                "  build:\n    name: build\n    needs: [ci-policy, detector]",
+                "  build:\n    name: build\n    needs: detector",
+            ),
+        ),
+        (
+            "ci-provenance-emit needs ci-policy",
+            replace_once(
+                workflow,
+                "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
+                "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
+            ),
+        ),
+        (
+            "ci-provenance-emit must gate on full_ci_required",
+            replace_once(
+                workflow,
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
+            ),
+        ),
+        (
+            "check-aarch64 needs ci-policy",
+            replace_once(
+                workflow,
+                "  check-aarch64:\n    name: check-aarch64\n    needs: [ci-policy, detector]",
+                "  check-aarch64:\n    name: check-aarch64\n    needs: detector",
+            ),
+        ),
+        (
+            "check-aarch64 must run on full CI or tag reuse",
+            replace_once(
+                workflow,
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'tag_reuse' }}",
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            ),
+        ),
     ]
     for fragment, mutated_workflow in cases:
         errors = verifier.verify_workflow(mutated_workflow)
@@ -4121,8 +4213,8 @@ def main() -> int:
         "check-aarch64 needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  check-aarch64:\n    name: check-aarch64\n    needs: detector",
-            "  check-aarch64:\n    name: check-aarch64",
+            "  check-aarch64:\n    name: check-aarch64\n    needs: [ci-policy, detector]",
+            "  check-aarch64:\n    name: check-aarch64\n    needs: ci-policy",
         ),
     )
     assert_error(
@@ -4139,14 +4231,6 @@ def main() -> int:
             BASE_WORKFLOW,
             "        run: sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross",
             "        run: sudo apt-get install -y gcc-aarch64-linux-gnu",
-        ),
-    )
-    assert_error(
-        "check-aarch64 must have no job-level if condition",
-        replace_once(
-            BASE_WORKFLOW,
-            "  check-aarch64:\n    name: check-aarch64\n    needs: detector\n    runs-on: ubuntu-latest",
-            "  check-aarch64:\n    name: check-aarch64\n    needs: detector\n    if: needs.detector.outputs.build_required != 'true'\n    runs-on: ubuntu-latest",
         ),
     )
     assert_error(
@@ -4628,32 +4712,32 @@ def main() -> int:
         "test-archive needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: detector",
-            "  test-archive:\n    name: nextest archive\n    needs: fmt-check",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector]",
+            "  test-archive:\n    name: nextest archive\n    needs: ci-policy",
         ),
     )
     assert_error(
         "test-archive must not need source-fence",
         replace_once(
             BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: detector",
-            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector]",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector, source-fence]",
         ),
     )
     assert_error(
         "test-shards needs test-archive",
         replace_once(
             BASE_WORKFLOW,
-            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: test-archive",
-            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: detector",
+            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive]",
+            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: ci-policy",
         ),
     )
     assert_error(
         "test needs test-shards",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: test-shards",
-            "  test:\n    name: test\n    needs: detector",
+            "  test:\n    name: test\n    needs: [ci-policy, test-shards]",
+            "  test:\n    name: test\n    needs: ci-policy",
         ),
     )
     assert_error(
@@ -4664,8 +4748,8 @@ def main() -> int:
         "test must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: test-shards\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}",
-            "  test:\n    name: test\n    needs: test-shards",
+            "  test:\n    name: test\n    needs: [ci-policy, test-shards]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  test:\n    name: test\n    needs: [ci-policy, test-shards]",
         ),
     )
     assert_error(
@@ -4692,8 +4776,8 @@ def main() -> int:
         "source-fence needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  source-fence:\n    name: source-fence\n    needs: detector",
-            "  source-fence:\n    name: source-fence",
+            "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]",
+            "  source-fence:\n    name: source-fence\n    needs: ci-policy",
         ),
     )
     assert_error(
@@ -4754,15 +4838,15 @@ def main() -> int:
         "build needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  build:\n    name: build\n    needs: detector",
-            "  build:\n    name: build",
+            "  build:\n    name: build\n    needs: [ci-policy, detector]",
+            "  build:\n    name: build\n    needs: ci-policy",
         ),
     )
     assert_error(
         "build must gate on needs.detector.outputs.build_required",
         replace_once(
             BASE_WORKFLOW,
-            "if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}",
+            "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.outputs.build_required == 'true' }}",
             "if: ${{ needs.detector.outputs.build_required != 'true' }}",
         ),
     )
@@ -4771,7 +4855,7 @@ def main() -> int:
         replace_once(
             replace_once(
                 BASE_WORKFLOW,
-                "    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}\n",
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.outputs.build_required == 'true' }}\n",
                 "",
             ),
             "      - uses: ./.github/actions/setup-environment",
@@ -4782,16 +4866,16 @@ def main() -> int:
         "ci-provenance-emit needs source-fence",
         replace_once(
             BASE_WORKFLOW,
-            "    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
-            "    needs: [detector, fmt-check, deny, clippy, check-aarch64, test-archive, test-shards, test, build]",
+            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
+            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, test-archive, test-shards, test, build]",
         ),
     )
     assert_error(
         "ci-provenance-emit must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
-            "    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
         ),
     )
     assert_error(
@@ -6046,6 +6130,7 @@ def main() -> int:
     assert_rust_verification_policy_parse_errors_are_domain_specific()
     assert_ci_policy_matrix()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
+    assert_ci_policy_heavy_lane_gaps_are_reported()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

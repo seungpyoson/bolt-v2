@@ -265,7 +265,7 @@ mod tests {
     // Re-derived after external-review cleanup aligned direct builder validation
     // and entry-evaluation sizing-input observability with the archetype path.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "a76168f7540c193e1d6b52ae78cc1f42a9cd28214abbeed6bbc985bd003f762c";
+        "d145d999b5754e7f2556d62052d5aec097f5d88ecffb3989dab8abc7960b389a";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

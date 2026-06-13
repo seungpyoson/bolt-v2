@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import datetime
+import hashlib
 import json
 import pathlib
+import re
 import sys
 import tomllib
 
@@ -27,6 +30,8 @@ POLICY_ROWS = (
     "tag",
     "unknown_event",
 )
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ProvenanceError(RuntimeError):
@@ -109,6 +114,46 @@ def load_toml(path: pathlib.Path) -> dict[str, object]:
         raise ProvenanceError(f"config is invalid TOML: {exc}") from exc
     except OSError as exc:
         raise ProvenanceError(f"config could not be read: {exc}") from exc
+
+
+def canonical_json_value(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: canonical_json_value(value[key])
+            for key in sorted(value)
+            if isinstance(key, str)
+        }
+    if isinstance(value, list):
+        return [canonical_json_value(item) for item in value]
+    return value
+
+
+def provenance_config_payload(path: pathlib.Path = DEFAULT_CONFIG) -> dict[str, object]:
+    data = load_toml(path)
+    ci_provenance = data.get("ci_provenance")
+    meter = data.get("meter")
+    if not isinstance(ci_provenance, dict):
+        raise ProvenanceError("missing [ci_provenance]")
+    if not isinstance(meter, dict):
+        raise ProvenanceError("missing [meter]")
+    fingerprint_source = ci_provenance.get("fingerprint_source")
+    if fingerprint_source != "meter":
+        raise ProvenanceError("ci_provenance.fingerprint_source must be meter")
+    return {
+        "ci_provenance": canonical_json_value(ci_provenance),
+        "meter": canonical_json_value(
+            {
+                "fingerprint_artifact_prefix": meter.get("fingerprint_artifact_prefix"),
+                "fingerprint_workflow": meter.get("fingerprint_workflow"),
+            }
+        ),
+    }
+
+
+def provenance_config_digest(path: pathlib.Path = DEFAULT_CONFIG) -> str:
+    payload = provenance_config_payload(path)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
@@ -275,11 +320,159 @@ def load_json(path: pathlib.Path) -> dict[str, object]:
     return data
 
 
-def validate_record_schema(record: dict[str, object], config: ProvenanceConfig) -> None:
+def sha256_file(path: pathlib.Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError as exc:
+        raise ProvenanceError(f"file missing for digest: {path}") from exc
+    except OSError as exc:
+        raise ProvenanceError(f"file could not be read for digest: {path}: {exc}") from exc
+
+
+def workflow_file_digest(config: ProvenanceConfig) -> str:
+    return sha256_file(REPO_ROOT / config.workflow_path)
+
+
+def require_record_string(record: dict[str, object], key: str) -> str:
+    value = record.get(key)
+    if not isinstance(value, str) or not value:
+        raise ProvenanceError(f"record {key} must be a non-empty string")
+    return value
+
+
+def require_record_sha(record: dict[str, object], key: str) -> str:
+    value = require_record_string(record, key)
+    if SHA_RE.fullmatch(value) is None:
+        raise ProvenanceError(f"record {key} must be a 40-character lowercase hex SHA")
+    return value
+
+
+def require_record_digest(record: dict[str, object], key: str) -> str:
+    value = require_record_string(record, key)
+    if DIGEST_RE.fullmatch(value) is None:
+        raise ProvenanceError(f"record {key} must be a sha256 hex digest")
+    return value
+
+
+def require_positive_record_id(record: dict[str, object], key: str) -> None:
+    value = record.get(key)
+    if isinstance(value, int) and value > 0:
+        return
+    if isinstance(value, str) and value.isdecimal() and int(value) > 0:
+        return
+    raise ProvenanceError(f"record {key} must be a positive integer or numeric string")
+
+
+def validate_created_at(value: object) -> None:
+    if not isinstance(value, str) or not value:
+        raise ProvenanceError("record created_at must be a non-empty timestamp")
+    try:
+        datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ProvenanceError("record created_at must be ISO-8601") from exc
+
+
+def validate_pull_request_metadata(record: dict[str, object]) -> None:
+    pull_request = record.get("pull_request")
+    if not isinstance(pull_request, dict):
+        raise ProvenanceError("record pull_request must be an object")
+    number = pull_request.get("number")
+    base_sha = pull_request.get("base_sha")
+    if record.get("event") == "pull_request":
+        if not isinstance(number, int) or number <= 0:
+            raise ProvenanceError("record pull_request.number must be positive for pull_request events")
+        if not isinstance(base_sha, str) or SHA_RE.fullmatch(base_sha) is None:
+            raise ProvenanceError("record pull_request.base_sha must be a SHA for pull_request events")
+    elif number is not None or base_sha is not None:
+        raise ProvenanceError("record pull_request metadata must be null outside pull_request events")
+
+
+def validate_required_jobs(record: dict[str, object], config: ProvenanceConfig) -> None:
+    required_jobs = record.get("required_jobs")
+    if not isinstance(required_jobs, dict):
+        raise ProvenanceError("record required_jobs must be an object")
+    if set(required_jobs) != set(config.required_jobs):
+        raise ProvenanceError("record required_jobs must match configured full-CI jobs")
+    for job, conclusion in required_jobs.items():
+        if conclusion != "success":
+            raise ProvenanceError(f"record required_jobs.{job} must be success")
+
+
+def validate_conditional_jobs(record: dict[str, object], config: ProvenanceConfig) -> None:
+    conditional_jobs = record.get("conditional_jobs")
+    if not isinstance(conditional_jobs, dict):
+        raise ProvenanceError("record conditional_jobs must be an object")
+    if set(conditional_jobs) != set(config.conditional_jobs):
+        raise ProvenanceError("record conditional_jobs must match configured conditional jobs")
+    for job, payload in conditional_jobs.items():
+        if not isinstance(payload, dict):
+            raise ProvenanceError(f"record conditional_jobs.{job} must be an object")
+        if not isinstance(payload.get("required"), bool):
+            raise ProvenanceError(f"record conditional_jobs.{job}.required must be boolean")
+        result = payload.get("result")
+        if result is not None and not isinstance(result, str):
+            raise ProvenanceError(f"record conditional_jobs.{job}.result must be string or null")
+
+
+def validate_record_schema(
+    record: dict[str, object],
+    config: ProvenanceConfig,
+    *,
+    config_path: pathlib.Path = DEFAULT_CONFIG,
+) -> None:
     if record.get("schema_version") != config.schema_version:
         raise ProvenanceError(f"unknown provenance schema {record.get('schema_version')!r}")
     if record.get("kind") != "full-ci":
         raise ProvenanceError("record kind must be full-ci")
+    require_record_string(record, "repository")
+    if require_record_string(record, "workflow_path") != config.workflow_path:
+        raise ProvenanceError("record workflow_path does not match config")
+    workflow_digest = require_record_digest(record, "workflow_digest")
+    if workflow_digest != workflow_file_digest(config):
+        raise ProvenanceError("record workflow_digest does not match workflow bytes")
+    config_digest = require_record_digest(record, "provenance_config_digest")
+    if config_digest != provenance_config_digest(config_path):
+        raise ProvenanceError("record provenance_config_digest does not match config")
+    require_record_sha(record, "head_sha")
+    require_record_sha(record, "tested_sha")
+    require_positive_record_id(record, "run_id")
+    require_positive_record_id(record, "run_attempt")
+    require_positive_record_id(record, "check_suite_id")
+    event = require_record_string(record, "event")
+    head_branch = record.get("head_branch")
+    if head_branch is not None and not isinstance(head_branch, str):
+        raise ProvenanceError("record head_branch must be string or null")
+    if event == "push" and not head_branch:
+        raise ProvenanceError("record head_branch must be present for push events")
+    validate_pull_request_metadata(record)
+    validate_required_jobs(record, config)
+    validate_conditional_jobs(record, config)
+    nextest_fingerprint = record.get("nextest_fingerprint")
+    if nextest_fingerprint is not None and (
+        not isinstance(nextest_fingerprint, str) or not nextest_fingerprint
+    ):
+        raise ProvenanceError("record nextest_fingerprint must be string or null")
+    validate_created_at(record.get("created_at"))
+
+
+def validate_exact_sha_record(
+    record: dict[str, object],
+    config: ProvenanceConfig,
+    *,
+    requested_sha: str,
+    config_path: pathlib.Path = DEFAULT_CONFIG,
+) -> None:
+    validate_record_schema(record, config, config_path=config_path)
+    if SHA_RE.fullmatch(requested_sha) is None:
+        raise ProvenanceError("requested_sha must be a 40-character lowercase hex SHA")
+    if record.get("event") == "pull_request":
+        raise ProvenanceError("pull_request provenance cannot validate exact-SHA reuse for a PR head")
+    if record.get("event") != config.deploy_source_event:
+        raise ProvenanceError(f"record event must be {config.deploy_source_event}")
+    if record.get("head_branch") != config.deploy_source_branch:
+        raise ProvenanceError(f"record head_branch must be {config.deploy_source_branch}")
+    if record.get("head_sha") != requested_sha or record.get("tested_sha") != requested_sha:
+        raise ProvenanceError("record head_sha and tested_sha must match requested exact SHA")
 
 
 def emit_full_ci(config: ProvenanceConfig) -> dict[str, object]:
@@ -327,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
         if mode == "emit-full-ci":
             print(json.dumps(emit_full_ci(config), sort_keys=True))
         elif mode == "validate-record":
-            validate_record_schema(load_json(args.record), config)
+            validate_record_schema(load_json(args.record), config, config_path=args.config)
             print("record valid")
         elif mode == "resolve-exact-sha":
             resolve_exact_sha(config)

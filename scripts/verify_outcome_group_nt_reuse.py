@@ -62,6 +62,12 @@ APPROVED_PROVIDER_NORMALIZER_PREFIXES: tuple[str, ...] = (
     "src/bolt_v3_providers/hyperliquid/",
 )
 
+OPAQUE_PROOF_ALLOWED_PREFIXES: tuple[str, ...] = (
+    "src/bolt_v3_outcome_groups.rs",
+    "src/bolt_v3_outcome_group_polymarket.rs",
+    "src/bolt_v3_outcome_group_hyperliquid.rs",
+)
+
 LEDGER_FENCE_RE = re.compile(
     r"^```(?:toml\s+)?outcome_group_nt_capability_ledger\s*\n(.*?)^```",
     re.MULTILINE | re.DOTALL,
@@ -232,6 +238,13 @@ def is_provider_or_normalizer(relative_path: str) -> bool:
     )
 
 
+def is_opaque_proof_allowed(relative_path: str) -> bool:
+    return any(
+        relative_path == prefix or relative_path.startswith(prefix)
+        for prefix in OPAQUE_PROOF_ALLOWED_PREFIXES
+    )
+
+
 def add_pattern_findings(
     relative_path: str,
     text: str,
@@ -275,6 +288,11 @@ DIRECT_CLIENT_RE = re.compile(
     r"|\bnautilus_hyperliquid::http::client\b",
     re.MULTILINE,
 )
+OPAQUE_PROOF_VARIANT_RE = re.compile(
+    r"\b(?:GroupingProof|RoleBindingProof|OutcomeGroupSourceKind|SettlementSourceKind"
+    r"|NormalizedPriceScaleEvidence|PriceScaleAssertionSource|OrderConstraintSource)::",
+    re.MULTILINE,
+)
 
 
 def validate_source_file(root: Path, path: Path) -> list[str]:
@@ -284,6 +302,15 @@ def validate_source_file(root: Path, path: Path) -> list[str]:
 
     if not is_provider_or_normalizer(relative_path):
         add_pattern_findings(relative_path, text, DIRECT_CLIENT_RE, "direct venue/provider client import", findings)
+
+    if not is_opaque_proof_allowed(relative_path):
+        add_pattern_findings(
+            relative_path,
+            text,
+            OPAQUE_PROOF_VARIANT_RE,
+            "opaque outcome-group proof variant branch",
+            findings,
+        )
 
     if "scanner" in relative_path or "scan" in relative_path:
         if not re.search(r"\b(?:OrderBook|OrderBookDepth10|OrderBookDeltas|BookLevel|QuoteTick)\b", text):

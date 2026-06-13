@@ -288,6 +288,21 @@ class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
 
         self.assert_has_finding(findings, "general order-cache/history model")
 
+    def test_opaque_proof_variant_branch_outside_model_or_normalizer_fails(self) -> None:
+        findings = self.collect(
+            sources={
+                "src/bolt_v3_basket_admission.rs": """
+                    use crate::bolt_v3_outcome_groups::GroupingProof;
+
+                    fn admit(grouping_proof: &GroupingProof) -> bool {
+                        matches!(grouping_proof, GroupingProof::PolymarketNegRisk { .. })
+                    }
+                """
+            }
+        )
+
+        self.assert_has_finding(findings, "opaque outcome-group proof variant branch")
+
     def test_nt_wrapping_fixture_passes(self) -> None:
         findings = self.collect(
             sources={

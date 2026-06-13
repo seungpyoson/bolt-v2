@@ -9591,3 +9591,907 @@ literal = '''"unsupported_order_shape"'''
 context = '''Self::UnsupportedOrderShape => "unsupported_order_shape",'''
 classification = "executable_cost_block_reason_label"
 reason = "Stable structured block-reason label for executable-cost output; it records decision evidence and does not configure runtime behavior."
+
+# Outcome-group shared model canonical evidence labels.
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping_proof.proof_fingerprint"'''
+context = '''validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?;'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping_proof.discovery_scope.gamma_query_fingerprint"'''
+context = '''"grouping_proof.discovery_scope.gamma_query_fingerprint",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping_proof.proof_fingerprint"'''
+context = '''} => validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?,'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping_proof.attestation_sha256"'''
+context = '''validate_sha256_field("grouping_proof.attestation_sha256", attestation_sha256)?;'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping_proof.proof_fingerprint"'''
+context = '''validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?;'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"group"'''
+context = '''CanonicalField::new(["group", "group_id"], &group.group_id),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"group_id"'''
+context = '''CanonicalField::new(["group", "group_id"], &group.group_id),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"group"'''
+context = '''["group", "source_client_id"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"source_client_id"'''
+context = '''["group", "source_client_id"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"group"'''
+context = '''CanonicalField::new(["group", "venue"], group.venue.to_string()),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"venue"'''
+context = '''CanonicalField::new(["group", "venue"], group.venue.to_string()),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"group"'''
+context = '''["group", "source_kind"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"source_kind"'''
+context = '''["group", "source_kind"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"group"'''
+context = '''CanonicalField::new(["group", "settlement_asset_id"], &group.settlement_asset_id),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"settlement_asset_id"'''
+context = '''CanonicalField::new(["group", "settlement_asset_id"], &group.settlement_asset_id),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"group"'''
+context = '''CanonicalField::new(["group", "freshness_source_id"], &group.freshness_source_id),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"freshness_source_id"'''
+context = '''CanonicalField::new(["group", "freshness_source_id"], &group.freshness_source_id),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"terminal_states"'''
+context = '''"terminal_states".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"label"'''
+context = '''"label".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"terminal_states"'''
+context = '''"terminal_states".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"kind"'''
+context = '''"kind".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"legs"'''
+context = '''"legs".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"instrument_id"'''
+context = '''"instrument_id".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"legs"'''
+context = '''"legs".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"native_leg_id"'''
+context = '''"native_leg_id".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"legs"'''
+context = '''"legs".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"settlement_asset_id"'''
+context = '''"settlement_asset_id".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"legs"'''
+context = '''"legs".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"outcome_label"'''
+context = '''"outcome_label".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"legs"'''
+context = '''vec!["legs".to_string(), leg_id.clone(), "side_label".to_string()],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"side_label"'''
+context = '''vec!["legs".to_string(), leg_id.clone(), "side_label".to_string()],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"legs"'''
+context = '''vec!["legs".to_string(), leg_id.clone()],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"legs"'''
+context = '''"legs".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"price_scale"'''
+context = '''"price_scale".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"positive_side_bindings"'''
+context = '''let prefix = vec!["positive_side_bindings".to_string(), index.to_string()];'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"terminal_state_label"'''
+context = '''prefixed_path(&prefix, "terminal_state_label"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"pays_on_leg"'''
+context = '''prefixed_path(&prefix, "pays_on_leg"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"pays_unless_leg"'''
+context = '''prefixed_path(&prefix, "pays_unless_leg"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"terminal_state_id"'''
+context = '''CanonicalField::new(["terminal_state_id"], terminal_state_id),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"label"'''
+context = '''CanonicalField::new(["label"], label),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"refund_convention"'''
+context = '''CanonicalField::new(["refund_convention"], refund_convention),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"cols"'''
+context = '''vec!["cols".to_string(), index.to_string()],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"payouts"'''
+context = '''vec!["payouts".to_string(), index.to_string()],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "number"
+literal = '''64'''
+context = '''value.len() == 64'''
+classification = "outcome_group_model_validation_bound"
+reason = "Stable SHA-256 lowercase-hex length check for evidence fingerprints; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''b"bolt-v3-outcome-group-canonical-v1\0"'''
+context = '''bytes.extend_from_slice(b"bolt-v3-outcome-group-canonical-v1\0");'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"price_scale.proof_fingerprint"'''
+context = '''validate_sha256_field("price_scale.proof_fingerprint", proof_fingerprint)?;'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"price_scale.attestation_sha256"'''
+context = '''validate_sha256_field("price_scale.attestation_sha256", attestation_sha256)?;'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"non_standard_terminal_payouts.attestation_sha256"'''
+context = '''"non_standard_terminal_payouts.attestation_sha256",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"role_binding_proof.attestation_sha256"'''
+context = '''validate_sha256_field("role_binding_proof.attestation_sha256", attestation_sha256)?;'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"role_binding_proof.proof_fingerprint"'''
+context = '''validate_sha256_field("role_binding_proof.proof_fingerprint", proof_fingerprint)?;'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"0"'''
+context = '''return "0".to_string();'''
+classification = "outcome_group_model_decimal_label"
+reason = "Stable canonical Decimal zero rendering for evidence hashing; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"polymarket"'''
+context = '''OutcomeGroupSourceKind::Polymarket => "polymarket",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"hyperliquid"'''
+context = '''OutcomeGroupSourceKind::Hyperliquid => "hyperliquid",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"operator_attested"'''
+context = '''OutcomeGroupSourceKind::OperatorAttested => "operator_attested",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"standard"'''
+context = '''TerminalStateKind::Standard => "standard",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"void"'''
+context = '''TerminalStateKind::Void => "void",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"fallback"'''
+context = '''TerminalStateKind::Fallback => "fallback",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''["grouping", "kind"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"kind"'''
+context = '''["grouping", "kind"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"polymarket_neg_risk"'''
+context = '''"polymarket_neg_risk",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''["grouping", "neg_risk_market_id"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"neg_risk_market_id"'''
+context = '''["grouping", "neg_risk_market_id"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''["grouping", "source_id"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''["grouping", "source_id"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''vec!["grouping".to_string(), "market_slugs".to_string()],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"market_slugs"'''
+context = '''vec!["grouping".to_string(), "market_slugs".to_string()],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''["grouping", "kind"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"kind"'''
+context = '''["grouping", "kind"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"hyperliquid_outcome"'''
+context = '''"hyperliquid_outcome",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''["grouping", "question"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"question"'''
+context = '''["grouping", "question"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''"grouping".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"outcome_indices"'''
+context = '''"outcome_indices".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''["grouping", "kind"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"kind"'''
+context = '''["grouping", "kind"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"operator_attested"'''
+context = '''"operator_attested",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''["grouping", "settlement_contract_id"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"settlement_contract_id"'''
+context = '''["grouping", "settlement_contract_id"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''["grouping", "attestation_id"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"attestation_id"'''
+context = '''["grouping", "attestation_id"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"role_kind"'''
+context = '''prefixed_path(&prefix, "role_kind"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"pays_on_terminal_state"'''
+context = '''"pays_on_terminal_state",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"terminal_state_id"'''
+context = '''prefixed_path(&prefix, "terminal_state_id"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"role_kind"'''
+context = '''prefixed_path(&prefix, "role_kind"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"pays_unless_terminal_state"'''
+context = '''"pays_unless_terminal_state",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"terminal_state_id"'''
+context = '''prefixed_path(&prefix, "terminal_state_id"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"role_kind"'''
+context = '''prefixed_path(&prefix, "role_kind"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"unsupported_multi_state"'''
+context = '''"unsupported_multi_state",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"terminal_state_ids"'''
+context = '''prefixed_path(&prefix, "terminal_state_ids"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"kind"'''
+context = '''prefixed_path(&prefix, "kind"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"binary_one_payout_equals_one_settlement_unit"'''
+context = '''"binary_one_payout_equals_one_settlement_unit",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"settlement_asset_id"'''
+context = '''prefixed_path(&prefix, "settlement_asset_id"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"payout_per_contract"'''
+context = '''prefixed_path(&prefix, "payout_per_contract"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"price_units_per_payout"'''
+context = '''prefixed_path(&prefix, "price_units_per_payout"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"assertion_source_kind"'''
+context = '''prefixed_path(&prefix, "assertion_source_kind"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"venue_structured_fields"'''
+context = '''"venue_structured_fields",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"assertion_source_fingerprint"'''
+context = '''prefixed_path(&prefix, "assertion_source_fingerprint"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"assertion_source_kind"'''
+context = '''prefixed_path(&prefix, "assertion_source_kind"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"operator_attested"'''
+context = '''"operator_attested",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"assertion_source_fingerprint"'''
+context = '''prefixed_path(&prefix, "assertion_source_fingerprint"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"kind"'''
+context = '''prefixed_path(&prefix, "kind"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"native_leg_id"'''
+context = '''"native_leg_id",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"native_leg_id"'''
+context = '''prefixed_path(&prefix, "native_leg_id"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"kind"'''
+context = '''prefixed_path(&prefix, "kind"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"outcome_and_side"'''
+context = '''"outcome_and_side",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"outcome_label"'''
+context = '''prefixed_path(&prefix, "outcome_label"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"side_label"'''
+context = '''prefixed_path(&prefix, "side_label"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"settlement"'''
+context = '''["settlement", "asset_id"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"asset_id"'''
+context = '''["settlement", "asset_id"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"terminal_states"'''
+context = '''"terminal_states".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"label"'''
+context = '''"label".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"terminal_states"'''
+context = '''"terminal_states".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"kind"'''
+context = '''"kind".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."

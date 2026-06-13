@@ -45,9 +45,85 @@ class FindingAllowance:
     exact_excerpt: str
 
 
-# Keep this tuple empty unless an active, reviewed Phase 9 exception exists.
+# Keep this tuple narrowly scoped unless an active, reviewed exception exists.
 # `exact_excerpt` must match the stripped source line produced by `excerpt_for`.
-FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = ()
+FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = (
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "Polymarket,",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "Hyperliquid,",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "PolymarketNegRisk {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "discovery_scope: PolymarketDiscoveryScopeEvidence,",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "HyperliquidOutcome {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "Self::PolymarketNegRisk {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        'Self::HyperliquidOutcome { question, .. } => format!("hyperliquid:{question}"),',
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "Self::HyperliquidOutcome {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "pub struct PolymarketDiscoveryScopeEvidence {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        'OutcomeGroupSourceKind::Polymarket => "polymarket",',
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        'OutcomeGroupSourceKind::Hyperliquid => "hyperliquid",',
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "GroupingProof::PolymarketNegRisk {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "GroupingProof::HyperliquidOutcome {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "provider-key string literal in core production code",
+        'OutcomeGroupSourceKind::Polymarket => "polymarket",',
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "provider-key string literal in core production code",
+        'OutcomeGroupSourceKind::Hyperliquid => "hyperliquid",',
+    ),
+)
 
 
 def rules_for(

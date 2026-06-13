@@ -2500,6 +2500,26 @@ def current_branch(repo: pathlib.Path) -> tuple[str | None, str | None]:
     return git_output(repo, "branch", "--show-current")
 
 
+def live_upstream_head(repo: pathlib.Path, branch: str) -> tuple[str | None, str | None]:
+    remote, error = git_output(repo, "config", f"branch.{branch}.remote")
+    if error is not None or not remote:
+        return None, None
+    merge_ref, error = git_output(repo, "config", f"branch.{branch}.merge")
+    if error is not None or not merge_ref:
+        return None, None
+    if not merge_ref.startswith("refs/heads/"):
+        return None, f"verify-remote requires upstream to be a branch, got {merge_ref}"
+    upstream_branch = merge_ref.removeprefix("refs/heads/")
+    refs, error = git_output(repo, "ls-remote", "--heads", remote, upstream_branch)
+    if error is not None:
+        return None, error
+    for line in refs.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[1] == f"refs/heads/{upstream_branch}":
+            return fields[0], None
+    return None, None
+
+
 def ensure_verify_remote_preconditions(repo: pathlib.Path) -> tuple[str | None, str | None, str | None]:
     status, error = git_output(repo, "status", "--porcelain", "--untracked-files=normal")
     if error is not None:
@@ -2509,18 +2529,19 @@ def ensure_verify_remote_preconditions(repo: pathlib.Path) -> tuple[str | None, 
     head, error = git_output(repo, "rev-parse", "HEAD")
     if error is not None:
         return None, None, error
-    upstream, error = git_output(repo, "rev-parse", "@{u}")
-    if error is not None:
-        branch, _branch_error = current_branch(repo)
-        hint = "git push -u origin HEAD" if branch else "push this branch and set an upstream"
-        return None, None, f"verify-remote requires pushed HEAD with an upstream; run: {hint}"
-    if upstream != head:
-        return None, None, "verify-remote requires HEAD to be pushed to the upstream branch"
     branch, error = current_branch(repo)
     if error is not None:
         return None, None, error
     if not branch:
         return None, None, "verify-remote requires a named branch"
+    upstream, error = live_upstream_head(repo, branch)
+    if error is not None:
+        return None, None, error
+    if upstream is None:
+        hint = "git push -u origin HEAD" if branch else "push this branch and set an upstream"
+        return None, None, f"verify-remote requires pushed HEAD with an upstream; run: {hint}"
+    if upstream != head:
+        return None, None, "verify-remote requires HEAD to be pushed to the upstream branch"
     return head, branch, None
 
 

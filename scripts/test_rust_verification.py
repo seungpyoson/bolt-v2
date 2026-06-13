@@ -751,6 +751,45 @@ def assert_verify_remote_preflight_rejects_dirty_or_unpushed_head_before_ci() ->
         repo = pathlib.Path(tmp) / "repo"
         repo.mkdir()
 
+        def stale_tracking_ref_run_capture(
+            argv: list[str], *, repo: pathlib.Path
+        ) -> subprocess.CompletedProcess[str]:
+            if argv == ["git", "status", "--porcelain", "--untracked-files=normal"]:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            if argv == ["git", "rev-parse", "HEAD"]:
+                return subprocess.CompletedProcess(argv, 0, VERIFY_REMOTE_HEAD + "\n", "")
+            if argv == ["git", "rev-parse", "@{u}"]:
+                return subprocess.CompletedProcess(argv, 0, ("b" * 40) + "\n", "")
+            if argv == ["git", "branch", "--show-current"]:
+                return subprocess.CompletedProcess(argv, 0, "codex/slice\n", "")
+            if argv == ["git", "config", "branch.codex/slice.remote"]:
+                return subprocess.CompletedProcess(argv, 0, "origin\n", "")
+            if argv == ["git", "config", "branch.codex/slice.merge"]:
+                return subprocess.CompletedProcess(argv, 0, "refs/heads/codex/slice\n", "")
+            if argv == ["git", "ls-remote", "--heads", "origin", "codex/slice"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    f"{VERIFY_REMOTE_HEAD}\trefs/heads/codex/slice\n",
+                    "",
+                )
+            raise AssertionError(f"unexpected command: {argv}")
+
+        original_run_capture = owner.run_capture
+        try:
+            owner.run_capture = stale_tracking_ref_run_capture
+            head, branch, error = owner.ensure_verify_remote_preconditions(repo)
+        finally:
+            owner.run_capture = original_run_capture
+        if error is not None:
+            raise AssertionError(error)
+        if head != VERIFY_REMOTE_HEAD or branch != "codex/slice":
+            raise AssertionError((head, branch))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+
         def unpushed_run_capture(argv: list[str], *, repo: pathlib.Path) -> subprocess.CompletedProcess[str]:
             if argv == ["git", "status", "--porcelain", "--untracked-files=normal"]:
                 return subprocess.CompletedProcess(argv, 0, "", "")
@@ -758,6 +797,19 @@ def assert_verify_remote_preflight_rejects_dirty_or_unpushed_head_before_ci() ->
                 return subprocess.CompletedProcess(argv, 0, VERIFY_REMOTE_HEAD + "\n", "")
             if argv == ["git", "rev-parse", "@{u}"]:
                 return subprocess.CompletedProcess(argv, 0, ("b" * 40) + "\n", "")
+            if argv == ["git", "branch", "--show-current"]:
+                return subprocess.CompletedProcess(argv, 0, "codex/slice\n", "")
+            if argv == ["git", "config", "branch.codex/slice.remote"]:
+                return subprocess.CompletedProcess(argv, 0, "origin\n", "")
+            if argv == ["git", "config", "branch.codex/slice.merge"]:
+                return subprocess.CompletedProcess(argv, 0, "refs/heads/codex/slice\n", "")
+            if argv == ["git", "ls-remote", "--heads", "origin", "codex/slice"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    f"{'b' * 40}\trefs/heads/codex/slice\n",
+                    "",
+                )
             raise AssertionError(f"unexpected command: {argv}")
 
         original_run_capture = owner.run_capture

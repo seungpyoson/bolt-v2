@@ -116,8 +116,13 @@ def assert_verify_remote_precondition_errors() -> None:
                 lambda _repo, *args: {
                     ("status", "--porcelain", "--untracked-files=normal"): ("", None),
                     ("rev-parse", "HEAD"): ("abc", None),
-                    ("rev-parse", "@{u}"): ("def", None),
                     ("branch", "--show-current"): ("feature", None),
+                    ("config", "branch.feature.remote"): ("origin", None),
+                    ("config", "branch.feature.merge"): ("refs/heads/feature", None),
+                    ("ls-remote", "--heads", "origin", "feature"): (
+                        "def\trefs/heads/feature",
+                        None,
+                    ),
                 }[args],
                 "HEAD to be pushed",
             ),
@@ -125,8 +130,8 @@ def assert_verify_remote_precondition_errors() -> None:
                 lambda _repo, *args: {
                     ("status", "--porcelain", "--untracked-files=normal"): ("", None),
                     ("rev-parse", "HEAD"): ("abc", None),
-                    ("rev-parse", "@{u}"): (None, "no upstream"),
                     ("branch", "--show-current"): ("feature", None),
+                    ("config", "branch.feature.remote"): (None, "no upstream"),
                 }[args],
                 "git push -u origin HEAD",
             ),

@@ -239,6 +239,80 @@ fn deltas_round_trip_through_nt_catalog() {
 }
 
 #[test]
+fn zero_size_delete_round_trips_through_nt_catalog() {
+    // Finding #8: a level-removal DELETE carries size "0" (the real event-stream
+    // output for a level removal). Prove it survives NT's OrderBookDelta
+    // new_checked at projection and reads back faithfully as BookAction::Delete
+    // with a zero size — the existing round-trip fixture deliberately used a
+    // non-zero DELETE size, leaving this exact shape uncovered end to end.
+    let snapshot_flags = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
+    let last = RecordFlag::F_LAST as u8;
+    let mbp = RecordFlag::F_MBP as u8;
+    let table = table_with_rows(vec![
+        delta_row(
+            0,
+            BASE_EVENT_TIME,
+            DeltaAction::Clear,
+            "",
+            "",
+            "",
+            snapshot_flags,
+        ),
+        delta_row(
+            1,
+            BASE_EVENT_TIME,
+            DeltaAction::Add,
+            DeltaSide::Sell.as_str(),
+            "0.51",
+            "12",
+            snapshot_flags | last,
+        ),
+        // Standalone zero-size DELETE removing the sell-side level.
+        delta_row(
+            2,
+            BASE_EVENT_TIME + 1,
+            DeltaAction::Delete,
+            DeltaSide::Sell.as_str(),
+            "0.51",
+            "0",
+            mbp | last,
+        ),
+    ]);
+    // The canonical contract permits a zero-size DELETE (positive-size is only
+    // required for ADD/UPDATE).
+    table.validate().expect("zero-size DELETE table validates");
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path()).expect("project");
+
+    let mut loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
+    loaded.sort_by_key(|delta| delta.sequence);
+    assert_eq!(loaded.len(), 3);
+
+    let delete = &loaded[2];
+    assert_eq!(
+        delete.action,
+        BookAction::Delete,
+        "zero-size DELETE must round-trip as BookAction::Delete"
+    );
+    assert_eq!(delete.order.side, OrderSide::Sell);
+    assert_eq!(
+        delete.order.size.as_decimal(),
+        Quantity::from("0").as_decimal(),
+        "DELETE size must read back as zero"
+    );
+    assert_eq!(
+        delete.order.price.as_decimal(),
+        Price::from("0.51").as_decimal()
+    );
+    assert_ne!(
+        delete.flags & RecordFlag::F_LAST as u8,
+        0,
+        "standalone DELETE closes its own event"
+    );
+}
+
+#[test]
 fn snapshot_expands_to_clear_then_adds_with_f_last() {
     let table = snapshot_then_delta_table();
     let dir = tempfile::TempDir::new().expect("temp dir");

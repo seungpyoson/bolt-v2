@@ -2936,6 +2936,115 @@ table_families = ["order_book_snapshot_deltas"]
         table.validate().expect("lone-clear table validates");
     }
 
+    /// Shared writer for synthetic event-stream Parquet objects: given the
+    /// ordered `(field, column)` pairs, assemble one `RecordBatch` and serialize
+    /// it. The schema-guard negative tests below route through here so they
+    /// share a single write path with a caller-controlled schema.
+    fn write_event_parquet(columns: Vec<(Field, ArrayRef)>) -> Vec<u8> {
+        let schema = Arc::new(Schema::new(
+            columns
+                .iter()
+                .map(|(field, _)| field.clone())
+                .collect::<Vec<_>>(),
+        ));
+        let arrays = columns
+            .into_iter()
+            .map(|(_, array)| array)
+            .collect::<Vec<_>>();
+        let batch =
+            RecordBatch::try_new(schema.clone(), arrays).expect("synthetic event-stream batch");
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut writer =
+            ArrowWriter::try_new(&mut buffer, schema, None).expect("event-stream parquet writer");
+        writer.write(&batch).expect("write event-stream batch");
+        writer.close().expect("finalize event-stream parquet");
+        buffer
+    }
+
+    /// The standard event-stream columns for a single `book` (snapshot) row,
+    /// EXCEPT `capture_time`. The schema-guard negative tests add their own
+    /// (deliberately malformed) `capture_time` column — wrong-typed or omitted —
+    /// so the decoder's first cell read (`capture_time`) hits the guard under
+    /// test in `optional_string_cell`.
+    fn book_row_columns_without_capture_time() -> Vec<(Field, ArrayRef)> {
+        let utf8 = |name: &str, value: Option<&'static str>| -> (Field, ArrayRef) {
+            (
+                Field::new(name, DataType::Utf8, true),
+                Arc::new(StringArray::from(vec![value])),
+            )
+        };
+        vec![
+            utf8("coin", None),
+            utf8("event_type", Some("book")),
+            utf8("exchange_time", Some("1699999999000")),
+            utf8("bids", Some("[[\"0.49\",\"10\"]]")),
+            utf8("asks", Some("[[\"0.51\",\"12\"]]")),
+            utf8("price", None),
+            utf8("size", None),
+            utf8("side", None),
+            utf8("trade_price", None),
+            utf8("trade_size", None),
+            utf8("trade_id", None),
+        ]
+    }
+
+    // Fail-loud schema guards in `optional_string_cell` (the helper behind every
+    // event-stream cell read). These mirror the regression-substring discipline
+    // already applied to this file's other fail-loud branches (unknown
+    // event_type, unknown side token, dual-path format guards, regressing time):
+    // each documented bail must have a test that asserts it fires and names the
+    // offending column, so a future coerce-instead-of-bail downgrade cannot pass
+    // silently.
+
+    #[test]
+    fn event_stream_rejects_wrong_typed_capture_time_column() {
+        use arrow::array::Float64Array;
+        // capture_time is read first for every row; a non-null Float64 cell is
+        // neither Utf8 nor Int64, so the decoder must bail rather than coerce.
+        let mut columns = book_row_columns_without_capture_time();
+        let capture: ArrayRef = Arc::new(Float64Array::from(vec![1_700_000_000_000.0_f64]));
+        columns.push((Field::new("capture_time", DataType::Float64, true), capture));
+        let parquet = write_event_parquet(columns);
+
+        let accepted = accepted_dataset();
+        let err = normalize_parquet_event_stream_deltas(
+            &accepted,
+            &single_identity(),
+            &event_stream_mapping(None),
+            &parquet,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("a wrong-typed capture_time column must fail loud");
+        let message = err.to_string();
+        assert!(message.contains("is not Utf8 or Int64"), "{err:#}");
+        assert!(message.contains("capture_time"), "{err:#}");
+    }
+
+    #[test]
+    fn event_stream_rejects_missing_capture_time_column() {
+        // Omit capture_time entirely; the decoder's first cell read must fail
+        // loud naming the missing column rather than silently skip the row.
+        let parquet = write_event_parquet(book_row_columns_without_capture_time());
+
+        let accepted = accepted_dataset();
+        let err = normalize_parquet_event_stream_deltas(
+            &accepted,
+            &single_identity(),
+            &event_stream_mapping(None),
+            &parquet,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("a missing capture_time column must fail loud");
+        let message = err.to_string();
+        assert!(
+            message.contains("event-stream parquet missing column"),
+            "{err:#}"
+        );
+        assert!(message.contains("capture_time"), "{err:#}");
+    }
+
     #[test]
     fn event_stream_level_change_zero_size_is_delete() {
         let accepted = accepted_dataset();

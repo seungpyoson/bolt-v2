@@ -56,6 +56,7 @@ pub(super) fn valid_raw_config() -> Value {
         vwap_depth_limit_bps = 15
         slippage_buffer_bps = 15
         risk_lambda = 0.5
+        sizing_ev_reference_bps = 500
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
         realized_volatility_surface_id = "<surface_id>"
@@ -516,6 +517,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             vwap_depth_limit_bps: 15,
             slippage_buffer_bps: 15,
             risk_lambda: 0.5,
+            sizing_ev_reference_bps: 500,
             edge_threshold_basis_points: -20,
             exit_hysteresis_bps: 5,
             trade_flow_window_secs: 30,

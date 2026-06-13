@@ -32,7 +32,8 @@ Per-target destination + layer (Track A):
 | Target → module | Destination layer |
 |---|---|
 | `numeric` → `bolt_v3_numeric.rs` | core/shared util |
-| `taker_signal` → `bolt_v3_taker_signal.rs` | shared decision-math (family-agnostic) |
+| `sizing` → `bolt_v3_sizing.rs` | shared dollar-intent sizing math |
+| `taker_updown_signal` → `bolt_v3_taker_updown_signal.rs` | taker/updown EV, side-selection, and uncertainty math |
 | `selection` -> `strategies/binary_oracle_edge_taker/selection.rs` | strategy-local concern module: candidate/selection snapshot construction and venue-routing predicates move out of the single file. This completes the planned A3 monolith shrink, not a shared/family generalization. Family-owned identity/target validation remains in `bolt_v3_market_families/*`; route-by-instrument-identity and any shared/family split of `CandidateMarket` are separate future work, not hidden in A3. |
 | `book_sizing` → `bolt_v3_book_sizing.rs` | shared execution (book state, VWAP/slippage sizing, **rounding + fee-adjustment**) |
 | `taker_pricing` → `bolt_v3_taker_pricing.rs` | shared pricing-state |

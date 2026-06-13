@@ -242,10 +242,30 @@ mod tests {
     // Re-derived after follow-up cleanup separated sized executable-edge
     // evidence, probed executable fees at VWAP, coupled slippage/depth config,
     // labeled executable-edge Debug output, and named notional tolerance.
+    // Re-derived by #618 after robust sizing started scaling the operator's
+    // dollar target by the EV fraction against the configured EV reference
+    // instead of reinterpreting the EV fraction as dollars, then once more
+    // after merging main's #619 executable-edge follow-up cleanup, then once
+    // more after the strategy-agnostic sizing primitive moved out of the
+    // taker-only signal module into `src/bolt_v3_sizing.rs`, then once more
+    // after that signal module was renamed `bolt_v3_taker_updown_signal` to
+    // carry its up/down market-family binding in the name.
+    // Re-derived again by the #623 review round: the sized re-evaluation now
+    // fails closed when the final re-priced edge does not support the resized
+    // notional, and the gated source set grew to include the moved sizing and
+    // signal modules (`src/bolt_v3_sizing.rs`,
+    // `src/bolt_v3_taker_updown_signal.rs`) so the digest covers all
+    // strategy-critical decision math.
     // Re-derived after splitting executable cost from binary outcome edge math
     // and moving entry limit-notional guarding into shared submit admission.
     // Re-derived after review cleanup single-sourced the cents-per-share unit
     // conversion in shared numeric helpers.
+    // Re-derived after merging current main's split executable-cost source set
+    // with #623's shared sizing and taker up/down signal source roots.
+    // Re-derived after external-review cleanup aligned direct builder validation
+    // and entry-evaluation sizing-input observability with the archetype path.
+    // Re-derived after adding coverage for the within-tolerance sized
+    // re-evaluation acceptance branch.
     // Re-derived after adding the TOML-owned shadow-mode submit switch and
     // preserving decision evidence before skipped NT submits.
     // Re-derived after the shadow-submit test started seeding admission
@@ -255,10 +275,10 @@ mod tests {
     // Re-derived after skipped shadow exits retained the exit-pending latch.
     // Re-derived after shadow skipped submits stopped consuming live admission
     // capacity while still recording admission evidence.
-    // Re-derived after merging main's executable-edge module split and
-    // cents-per-share single-sourcing into the shadow-mode submit switch.
+    // Re-derived after merging #623's dollar-sizing strategy source roots into
+    // the shadow-mode submit switch (value pending exact-head CI re-derivation).
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "38c6703c997d928bfd2d2106c4aa1686ee9232e49799a15ed3c903e590397d40";
+        "1ad5babbee2a00448759ed7bf6dc6c7b3a4412f06c9ee73b1ad32ecd30579ef6";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -387,6 +407,8 @@ mod tests {
                 "src/bolt_v3_book_sizing.rs",
                 "src/bolt_v3_binary_outcome_edge.rs",
                 "src/bolt_v3_executable_cost.rs",
+                "src/bolt_v3_sizing.rs",
+                "src/bolt_v3_taker_updown_signal.rs",
             ]
         );
     }

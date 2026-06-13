@@ -38,7 +38,8 @@ src/strategies/binary_oracle_edge_taker/
   config.rs         # TOML config structs + parse/validate (pure)   [or fold into archetype]
   tests/            # the 238 tests, split to mirror submodules
 
-src/bolt_v3_taker_signal.rs   # SHARED: pure decision/sizing/EV/side-selection/uncertainty math (maker-reusable)
+src/bolt_v3_sizing.rs          # SHARED: pure dollar-intent sizing math (maker-reusable)
+src/bolt_v3_taker_updown_signal.rs # TAKER/UPDOWN: pure EV/side-selection/uncertainty math
 src/bolt_v3_taker_pricing.rs  # SHARED: reference-quote/RV/lead-venue pricing state (maker-reusable)
 src/bolt_v3_book_sizing.rs    # SHARED: OutcomeBookState + VWAP/slippage execution sizing (rule #9)
 # OutcomeSide (binary up/down side) consolidates INTO src/bolt_v3_market_families/ (merges with UpdownOutcomeSide; A2) — NOT taker_signal

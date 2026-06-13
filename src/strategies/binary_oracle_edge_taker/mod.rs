@@ -65,6 +65,7 @@ use crate::{
         STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     },
+    bolt_v3_sizing::{RobustSizingInputs, choose_robust_size},
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequest,
         BoltV3SubmitAdmissionRequestInput, BoltV3SubmitLifecyclePolicy,
@@ -74,10 +75,9 @@ use crate::{
         FastSpotObservation, TakerPricingBlockReason, TakerPricingConfig, TakerPricingRequest,
         TakerPricingState as PricingState,
     },
-    bolt_v3_taker_signal::{
-        RobustSizingInputs, SideSelectionInputs, UncertaintyBandInputs, WorstCaseEvInputs,
-        choose_entry_side, choose_robust_size, compute_worst_case_ev_bps,
-        outcome_side_evidence_label, uncertainty_band_probability,
+    bolt_v3_taker_updown_signal::{
+        SideSelectionInputs, UncertaintyBandInputs, WorstCaseEvInputs, choose_entry_side,
+        compute_worst_case_ev_bps, outcome_side_evidence_label, uncertainty_band_probability,
     },
     bolt_v3_trade_flow::{SignedTradeFlow, SignedTradeFlowConfig},
     strategies::registry::{
@@ -93,7 +93,7 @@ use crate::{
     bolt_v3_numeric::sanitize_probability,
     bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
     bolt_v3_taker_pricing::VenueTimingState,
-    bolt_v3_taker_signal::{price_agreement_corr, price_gap_probability},
+    bolt_v3_taker_updown_signal::{price_agreement_corr, price_gap_probability},
 };
 
 mod selection;
@@ -2123,8 +2123,10 @@ impl BinaryOracleEdgeTaker {
             ),
             sized_worst_case_ev_bps: evaluation.sized_worst_case_ev_bps,
             expected_ev_per_notional: evaluation.expected_ev_per_notional,
+            order_notional_target: self.config.order_notional_target,
             maximum_position_notional: self.config.maximum_position_notional,
             risk_lambda: self.config.risk_lambda,
+            sizing_ev_reference_bps: self.config.sizing_ev_reference_bps,
             book_impact_cap_bps: self.config.book_impact_cap_bps,
             book_impact_cap_notional: evaluation.book_impact_cap_notional,
             sized_notional: evaluation.sized_notional,
@@ -2170,7 +2172,7 @@ impl BinaryOracleEdgeTaker {
                 );
             }
             log::warn!(
-                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} maximum_position_notional={} risk_lambda={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_fair_value_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_fair_value_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
                 fields.phase,
@@ -2223,8 +2225,10 @@ impl BinaryOracleEdgeTaker {
                 fields.sized_edge_cents_per_share,
                 fields.sized_worst_case_ev_bps,
                 fields.expected_ev_per_notional,
+                fields.order_notional_target,
                 fields.maximum_position_notional,
                 fields.risk_lambda,
+                fields.sizing_ev_reference_bps,
                 fields.book_impact_cap_bps,
                 fields.book_impact_cap_notional,
                 fields.sized_notional,
@@ -2244,7 +2248,7 @@ impl BinaryOracleEdgeTaker {
             );
         } else {
             log::info!(
-                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} maximum_position_notional={} risk_lambda={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_fair_value_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_fair_value_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
                 fields.phase,
@@ -2297,8 +2301,10 @@ impl BinaryOracleEdgeTaker {
                 fields.sized_edge_cents_per_share,
                 fields.sized_worst_case_ev_bps,
                 fields.expected_ev_per_notional,
+                fields.order_notional_target,
                 fields.maximum_position_notional,
                 fields.risk_lambda,
+                fields.sizing_ev_reference_bps,
                 fields.book_impact_cap_bps,
                 fields.book_impact_cap_notional,
                 fields.sized_notional,
@@ -2474,6 +2480,21 @@ impl BinaryOracleEdgeTaker {
             }
         };
         Some((uncertainty_band_probability, adjusted_probability_up))
+    }
+
+    fn robust_sizing_inputs(
+        &self,
+        expected_ev_per_notional: f64,
+        impact_cap_notional: f64,
+    ) -> RobustSizingInputs {
+        RobustSizingInputs {
+            expected_ev_per_notional,
+            ev_reference_per_notional: self.config.sizing_ev_reference_bps as f64 / BPS_DENOMINATOR,
+            risk_lambda: self.config.risk_lambda,
+            order_notional_target: self.config.order_notional_target,
+            maximum_position_notional: self.config.maximum_position_notional,
+            impact_cap_notional,
+        }
     }
 
     fn visible_book_notional_cap(&self, side: OutcomeSide) -> Option<f64> {
@@ -4702,13 +4723,9 @@ impl BinaryOracleEdgeTaker {
             if let (Some(expected_ev_per_notional), Some(book_impact_cap_notional)) =
                 (expected_ev_per_notional, book_impact_cap_notional)
             {
-                evaluation.sized_notional = Some(choose_robust_size(&RobustSizingInputs {
-                    expected_ev_per_notional,
-                    risk_lambda: self.config.risk_lambda,
-                    order_notional_target: self.config.order_notional_target,
-                    maximum_position_notional: self.config.maximum_position_notional,
-                    impact_cap_notional: book_impact_cap_notional,
-                }));
+                evaluation.sized_notional = Some(choose_robust_size(
+                    &self.robust_sizing_inputs(expected_ev_per_notional, book_impact_cap_notional),
+                ));
             }
             if let Some(sized_notional) = evaluation
                 .sized_notional
@@ -4778,13 +4795,10 @@ impl BinaryOracleEdgeTaker {
                     let sized_expected_ev_per_notional =
                         sized_executable_edge.edge_bps / BPS_DENOMINATOR;
                     evaluation.expected_ev_per_notional = Some(sized_expected_ev_per_notional);
-                    let resized_notional = choose_robust_size(&RobustSizingInputs {
-                        expected_ev_per_notional: sized_expected_ev_per_notional,
-                        risk_lambda: self.config.risk_lambda,
-                        order_notional_target: self.config.order_notional_target,
-                        maximum_position_notional: self.config.maximum_position_notional,
-                        impact_cap_notional: book_impact_cap_notional,
-                    });
+                    let resized_notional = choose_robust_size(&self.robust_sizing_inputs(
+                        sized_expected_ev_per_notional,
+                        book_impact_cap_notional,
+                    ));
                     if is_positive_finite(resized_notional)
                         && (resized_notional - sized_notional).abs()
                             > notional_float_tolerance(sized_notional)
@@ -4843,10 +4857,36 @@ impl BinaryOracleEdgeTaker {
                         evaluation.sized_worst_case_ev_bps =
                             executable_edge_worst_case_ev_bps(Some(resized_executable_edge));
                         evaluation.sized_executable_edge = Some(resized_executable_edge);
-                        if resized_executable_edge.trade_allowed {
+                        // The accepted (size, edge) pair must be self-consistent:
+                        // the final re-priced edge must itself support the resized
+                        // notional. A cliff-shaped book otherwise oscillates — a
+                        // small first pass fills cheap, the EV jump saturates the
+                        // resize to the full target, and the thin full-target edge
+                        // would be traded at a size it cannot support.
+                        let final_expected_ev_per_notional =
+                            resized_executable_edge.edge_bps / BPS_DENOMINATOR;
+                        let final_supported_notional =
+                            choose_robust_size(&self.robust_sizing_inputs(
+                                final_expected_ev_per_notional,
+                                book_impact_cap_notional,
+                            ));
+                        let resized_notional_supported = resized_notional
+                            <= final_supported_notional
+                                + notional_float_tolerance(final_supported_notional);
+                        if resized_executable_edge.trade_allowed && resized_notional_supported {
                             evaluation.sized_notional = Some(resized_notional);
                             evaluation.expected_ev_per_notional =
-                                Some(resized_executable_edge.edge_bps / BPS_DENOMINATOR);
+                                Some(final_expected_ev_per_notional);
+                        } else if resized_executable_edge.trade_allowed {
+                            evaluation.pricing_blocked_by.push(
+                                EntryPricingBlockReason::SizedNotionalUnsupported(selected_side),
+                            );
+                            // Keep the re-priced edge evidence, but clear the
+                            // executable intent fields so submission stays
+                            // blocked for this unsupported notional.
+                            evaluation.selected_side = None;
+                            evaluation.sized_notional = None;
+                            evaluation.expected_ev_per_notional = None;
                         } else {
                             push_executable_edge_pricing_block(
                                 &mut evaluation.pricing_blocked_by,
@@ -5767,6 +5807,9 @@ enum EntryPricingBlockReason {
     FeeUnavailable(OutcomeSide),
     ExecutableEntryCostUnavailable(OutcomeSide),
     ExecutableEdgeUnavailable(OutcomeSide, BinaryOutcomeEdgeBlockReason),
+    /// The sized re-evaluation oscillated: the final re-priced edge does not
+    /// support the resized notional, so the entry fails closed.
+    SizedNotionalUnsupported(OutcomeSide),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5919,8 +5962,10 @@ struct EntryEvaluationLogFields {
     sized_edge_cents_per_share: Option<f64>,
     sized_worst_case_ev_bps: Option<f64>,
     expected_ev_per_notional: Option<f64>,
+    order_notional_target: f64,
     maximum_position_notional: f64,
     risk_lambda: f64,
+    sizing_ev_reference_bps: u64,
     book_impact_cap_bps: u64,
     book_impact_cap_notional: Option<f64>,
     sized_notional: Option<f64>,

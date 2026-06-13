@@ -84,6 +84,64 @@ fn input_bound(
     }
 }
 
+fn field_policy(
+    field: IvDerivedInputField,
+    source_kind: IvDerivedInputSourceKind,
+) -> IvDerivedInputFieldPolicy {
+    IvDerivedInputFieldPolicy {
+        field,
+        allowed_source_kinds: BTreeSet::from([source_kind]),
+        profile_source_ref: None,
+        operator_number: None,
+        operator_side: None,
+    }
+}
+
+fn complete_input_policy() -> IvDerivedInputPolicy {
+    IvDerivedInputPolicy {
+        input_policy_id: "configured-derived-input-policy".to_string(),
+        helper_policy_ref: "configured-helper-policy".to_string(),
+        required_fields: IvDerivedInputField::required_fields().to_vec(),
+        field_sources: vec![
+            field_policy(
+                IvDerivedInputField::OptionPrice,
+                IvDerivedInputSourceKind::QuerySupplied,
+            ),
+            field_policy(
+                IvDerivedInputField::UnderlyingPrice,
+                IvDerivedInputSourceKind::QuerySupplied,
+            ),
+            field_policy(
+                IvDerivedInputField::Strike,
+                IvDerivedInputSourceKind::QuerySupplied,
+            ),
+            field_policy(
+                IvDerivedInputField::OptionSide,
+                IvDerivedInputSourceKind::QuerySupplied,
+            ),
+            field_policy(
+                IvDerivedInputField::TimeToExpiryYears,
+                IvDerivedInputSourceKind::QuerySupplied,
+            ),
+            field_policy(
+                IvDerivedInputField::Rate,
+                IvDerivedInputSourceKind::OperatorConfigured,
+            ),
+            field_policy(
+                IvDerivedInputField::Carry,
+                IvDerivedInputSourceKind::OperatorConfigured,
+            ),
+        ],
+        freshness_ns: 100,
+        max_input_skew_ns: 20,
+        bounds: input_bounds(),
+        convention_policy: IvConventionBounds {
+            allowed_conventions: BTreeSet::from([convention()]),
+        },
+        operator_value_refresh_policy: IvOperatorValueRefreshPolicy::RejectExpiredOperatorValues,
+    }
+}
+
 fn timed(value: f64, ts: u64) -> IvTimedInput<f64> {
     IvTimedInput {
         value,
@@ -828,7 +886,7 @@ fn helper_floor_output_rejects_as_invalid_iv() {
 
 #[test]
 fn zero_freshness_rejects_stale_market_inputs() {
-    let mut policy = derived_input_policy();
+    let mut policy = complete_input_policy();
     policy.freshness_ns = 0;
 
     assert_eq!(

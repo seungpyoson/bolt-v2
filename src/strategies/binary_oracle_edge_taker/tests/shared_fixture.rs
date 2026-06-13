@@ -42,6 +42,7 @@ pub(super) fn valid_raw_config() -> Value {
         manage_contingent_orders = true
         manage_gtd_expiry = true
         manage_stop = true
+        submit_orders = true
         market_exit_interval_ms = 250
         market_exit_max_attempts = 7
         log_events = false
@@ -454,6 +455,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             manage_contingent_orders: true,
             manage_gtd_expiry: true,
             manage_stop: true,
+            submit_orders: true,
             market_exit_interval_ms: 250,
             market_exit_max_attempts: 7,
             log_events: false,

@@ -1,0 +1,1164 @@
+#!/usr/bin/env python3
+"""Emit and resolve CI provenance evidence."""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import datetime
+import hashlib
+import io
+import json
+import os
+import pathlib
+import re
+import sys
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+DEFAULT_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
+SUPPORTED_MODES = {"emit-full-ci", "resolve-exact-sha", "validate-record"}
+POLICY_VALUES = {"full", "defer", "tag_reuse"}
+POLICY_ROWS = (
+    "draft_pr_synchronize",
+    "draft_pr_opened",
+    "draft_pr_reopened",
+    "converted_to_draft",
+    "ready_pr",
+    "ready_for_review",
+    "workflow_dispatch",
+    "main_push",
+    "tag",
+    "unknown_event",
+)
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+GITHUB_API_HEADERS = {
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+}
+GITHUB_API_REDIRECT_HEADERS = {"authorization", "accept", "x-github-api-version"}
+
+
+class ProvenanceError(RuntimeError):
+    """Raised when provenance evidence is absent, malformed, or unsafe."""
+
+
+@dataclasses.dataclass(frozen=True)
+class JobConfig:
+    logical_name: str
+    check_name: str | None
+    check_name_template: str | None
+    shard_count: int | None
+    conditional: str | None
+
+
+@dataclasses.dataclass(frozen=True)
+class ProvenanceConfig:
+    schema_version: int
+    artifact_name_template: str
+    workflow_key: str
+    workflow_name: str
+    workflow_path: str
+    fingerprint_source: str
+    fingerprint_artifact_prefix: str
+    fingerprint_workflow: str
+    required_jobs: tuple[str, ...]
+    conditional_jobs: tuple[str, ...]
+    conditional_job_outputs: dict[str, str]
+    jobs: dict[str, JobConfig]
+    deploy_artifact_name: str
+    deploy_source_event: str
+    deploy_source_branch: str
+    deploy_require_gate_check: bool
+    dispatch_workflow_input: str
+    workflow_runs_per_page: int
+    run_jobs_per_page: int
+    run_artifacts_per_page: int
+    max_lookback_pages: int
+    max_lookback_age_seconds: int
+    artifact_retention_days: int
+    policy: dict[str, str]
+    force_full_ci: bool
+    ignore_emit_failure: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class ResolvedEvidence:
+    run: dict[str, object]
+    artifact: dict[str, object]
+    record: dict[str, object]
+
+
+def require_table(parent: dict[str, object], key: str, prefix: str) -> dict[str, object]:
+    value = parent.get(key)
+    if not isinstance(value, dict):
+        raise ProvenanceError(f"{prefix}.{key} must be a table")
+    return value
+
+
+def require_string(parent: dict[str, object], key: str, prefix: str) -> str:
+    value = parent.get(key)
+    if not isinstance(value, str) or not value:
+        raise ProvenanceError(f"{prefix}.{key} must be a non-empty string")
+    return value
+
+
+def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
+    value = parent.get(key)
+    if not isinstance(value, int) or value <= 0:
+        raise ProvenanceError(f"{prefix}.{key} must be a positive integer")
+    return value
+
+
+def require_string_list(parent: dict[str, object], key: str, prefix: str) -> tuple[str, ...]:
+    value = parent.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ProvenanceError(f"{prefix}.{key} must be a non-empty string list")
+    return tuple(value)
+
+
+def load_toml(path: pathlib.Path) -> dict[str, object]:
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ProvenanceError(f"config missing: {path}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ProvenanceError(f"config is invalid TOML: {exc}") from exc
+    except OSError as exc:
+        raise ProvenanceError(f"config could not be read: {exc}") from exc
+
+
+def canonical_json_value(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: canonical_json_value(value[key])
+            for key in sorted(value)
+            if isinstance(key, str)
+        }
+    if isinstance(value, list):
+        return [canonical_json_value(item) for item in value]
+    return value
+
+
+def provenance_config_payload(path: pathlib.Path = DEFAULT_CONFIG) -> dict[str, object]:
+    data = load_toml(path)
+    ci_provenance = data.get("ci_provenance")
+    meter = data.get("meter")
+    if not isinstance(ci_provenance, dict):
+        raise ProvenanceError("missing [ci_provenance]")
+    if not isinstance(meter, dict):
+        raise ProvenanceError("missing [meter]")
+    fingerprint_source = ci_provenance.get("fingerprint_source")
+    if fingerprint_source != "meter":
+        raise ProvenanceError("ci_provenance.fingerprint_source must be meter")
+    return {
+        "ci_provenance": canonical_json_value(ci_provenance),
+        "meter": canonical_json_value(
+            {
+                "fingerprint_artifact_prefix": meter.get("fingerprint_artifact_prefix"),
+                "fingerprint_workflow": meter.get("fingerprint_workflow"),
+            }
+        ),
+    }
+
+
+def provenance_config_digest(path: pathlib.Path = DEFAULT_CONFIG) -> str:
+    payload = provenance_config_payload(path)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
+    data = load_toml(path)
+    meter = data.get("meter")
+    if not isinstance(meter, dict):
+        raise ProvenanceError("missing [meter]")
+    ci_provenance = data.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        raise ProvenanceError("missing [ci_provenance]")
+    if ci_provenance.get("schema_version") != 1:
+        raise ProvenanceError("ci_provenance.schema_version must be 1")
+
+    duplicated_fingerprint_keys = {
+        "fingerprint_artifact_prefix",
+        "fingerprint_workflow",
+    } & set(ci_provenance)
+    if duplicated_fingerprint_keys:
+        names = ", ".join(sorted(duplicated_fingerprint_keys))
+        raise ProvenanceError(f"[ci_provenance] must reference [meter] fingerprint keys, duplicated {names}")
+
+    artifact_name_template = require_string(
+        ci_provenance, "artifact_name_template", "ci_provenance"
+    )
+    if "{run_attempt}" not in artifact_name_template:
+        raise ProvenanceError("ci_provenance.artifact_name_template must include {run_attempt}")
+
+    full_ci = require_table(ci_provenance, "full_ci", "ci_provenance")
+    required_jobs = require_string_list(full_ci, "required_jobs", "ci_provenance.full_ci")
+    conditional_jobs = require_string_list(
+        full_ci, "conditional_jobs", "ci_provenance.full_ci"
+    )
+    conditional_job_outputs = full_ci.get("conditional_job_outputs")
+    if not isinstance(conditional_job_outputs, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in conditional_job_outputs.items()
+    ):
+        raise ProvenanceError("ci_provenance.full_ci.conditional_job_outputs must map strings")
+
+    job_tables = require_table(full_ci, "jobs", "ci_provenance.full_ci")
+    jobs: dict[str, JobConfig] = {}
+    for job in (*required_jobs, *conditional_jobs):
+        job_table = job_tables.get(job)
+        if not isinstance(job_table, dict):
+            raise ProvenanceError(f"ci_provenance.full_ci.jobs.{job} missing")
+        check_name = job_table.get("check_name")
+        check_name_template = job_table.get("check_name_template")
+        if check_name is not None and (not isinstance(check_name, str) or not check_name):
+            raise ProvenanceError(f"ci_provenance.full_ci.jobs.{job}.check_name must be a non-empty string")
+        if check_name_template is not None and (
+            not isinstance(check_name_template, str) or not check_name_template
+        ):
+            raise ProvenanceError(
+                f"ci_provenance.full_ci.jobs.{job}.check_name_template must be a non-empty string"
+            )
+        if check_name is None and check_name_template is None:
+            raise ProvenanceError(
+                f"ci_provenance.full_ci.jobs.{job} must define check_name or check_name_template"
+            )
+        shard_count = job_table.get("shard_count")
+        if check_name_template is not None:
+            if not isinstance(shard_count, int) or shard_count <= 0:
+                raise ProvenanceError(f"ci_provenance.full_ci.jobs.{job}.shard_count must be a positive integer")
+            if "{shard}" not in check_name_template:
+                raise ProvenanceError(
+                    f"ci_provenance.full_ci.jobs.{job}.check_name_template must include {{shard}}"
+                )
+        elif shard_count is not None:
+            raise ProvenanceError(f"ci_provenance.full_ci.jobs.{job}.shard_count requires check_name_template")
+        conditional = job_table.get("conditional")
+        if conditional is not None and (not isinstance(conditional, str) or not conditional):
+            raise ProvenanceError(f"ci_provenance.full_ci.jobs.{job}.conditional must be a non-empty string")
+        if job in conditional_jobs and conditional != conditional_job_outputs.get(job):
+            raise ProvenanceError(f"ci_provenance.full_ci.jobs.{job}.conditional must match conditional_job_outputs")
+        jobs[job] = JobConfig(
+            logical_name=job,
+            check_name=check_name,
+            check_name_template=check_name_template,
+            shard_count=shard_count if isinstance(shard_count, int) else None,
+            conditional=conditional,
+        )
+
+    deploy = require_table(ci_provenance, "deploy", "ci_provenance")
+    dispatch = require_table(ci_provenance, "dispatch", "ci_provenance")
+    api_limits = require_table(ci_provenance, "api_limits", "ci_provenance")
+    artifacts = require_table(ci_provenance, "artifacts", "ci_provenance")
+    policy_table = require_table(ci_provenance, "policy", "ci_provenance")
+    overrides = require_table(policy_table, "override", "ci_provenance.policy")
+
+    retention_days = require_positive_int(artifacts, "retention_days", "ci_provenance.artifacts")
+    max_lookback_age_seconds = require_positive_int(
+        api_limits, "max_lookback_age_seconds", "ci_provenance.api_limits"
+    )
+    if max_lookback_age_seconds > retention_days * 24 * 60 * 60:
+        raise ProvenanceError("max lookback age must not exceed artifact retention")
+
+    policy: dict[str, str] = {}
+    for row in POLICY_ROWS:
+        value = policy_table.get(row)
+        if value not in POLICY_VALUES:
+            raise ProvenanceError(f"ci_provenance.policy.{row} must be full, defer, or tag_reuse")
+        policy[row] = value
+
+    force_full_ci = overrides.get("force_full_ci")
+    ignore_emit_failure = overrides.get("ignore_emit_failure")
+    if force_full_ci is not False:
+        raise ProvenanceError("ci_provenance.policy.override.force_full_ci must default to false")
+    if ignore_emit_failure is not False:
+        raise ProvenanceError("ci_provenance.policy.override.ignore_emit_failure must default to false")
+
+    return ProvenanceConfig(
+        schema_version=1,
+        artifact_name_template=artifact_name_template,
+        workflow_key=require_string(ci_provenance, "workflow_key", "ci_provenance"),
+        workflow_name=require_string(ci_provenance, "workflow_name", "ci_provenance"),
+        workflow_path=require_string(ci_provenance, "workflow_path", "ci_provenance"),
+        fingerprint_source=require_string(ci_provenance, "fingerprint_source", "ci_provenance"),
+        fingerprint_artifact_prefix=require_string(meter, "fingerprint_artifact_prefix", "meter"),
+        fingerprint_workflow=require_string(meter, "fingerprint_workflow", "meter"),
+        required_jobs=required_jobs,
+        conditional_jobs=conditional_jobs,
+        conditional_job_outputs=dict(conditional_job_outputs),
+        jobs=jobs,
+        deploy_artifact_name=require_string(deploy, "artifact_name", "ci_provenance.deploy"),
+        deploy_source_event=require_string(deploy, "require_source_event", "ci_provenance.deploy"),
+        deploy_source_branch=require_string(deploy, "require_source_branch", "ci_provenance.deploy"),
+        deploy_require_gate_check=deploy.get("require_gate_check") is True,
+        dispatch_workflow_input=require_string(dispatch, "workflow_input", "ci_provenance.dispatch"),
+        workflow_runs_per_page=require_positive_int(
+            api_limits, "workflow_runs_per_page", "ci_provenance.api_limits"
+        ),
+        run_jobs_per_page=require_positive_int(
+            api_limits, "run_jobs_per_page", "ci_provenance.api_limits"
+        ),
+        run_artifacts_per_page=require_positive_int(
+            api_limits, "run_artifacts_per_page", "ci_provenance.api_limits"
+        ),
+        max_lookback_pages=require_positive_int(
+            api_limits, "max_lookback_pages", "ci_provenance.api_limits"
+        ),
+        max_lookback_age_seconds=max_lookback_age_seconds,
+        artifact_retention_days=retention_days,
+        policy=policy,
+        force_full_ci=force_full_ci,
+        ignore_emit_failure=ignore_emit_failure,
+    )
+
+
+def load_json(path: pathlib.Path) -> dict[str, object]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ProvenanceError(f"record missing: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ProvenanceError(f"record is invalid JSON: {exc}") from exc
+    except OSError as exc:
+        raise ProvenanceError(f"record could not be read: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ProvenanceError("record must be a JSON object")
+    return data
+
+
+def parse_timestamp(value: str) -> datetime.datetime:
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ProvenanceError(f"invalid timestamp {value!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def normalized_redirect_port(parsed: urllib.parse.ParseResult) -> int | None:
+    try:
+        explicit_port = parsed.port
+    except ValueError:
+        return None
+    if explicit_port is not None:
+        return explicit_port
+    if parsed.scheme == "https":
+        return 443
+    if parsed.scheme == "http":
+        return 80
+    return None
+
+
+def redirect_preserves_github_api_headers(old_url: str, new_url: str) -> bool:
+    old = urllib.parse.urlparse(old_url)
+    new = urllib.parse.urlparse(new_url)
+    old_host = (old.hostname or "").lower()
+    new_host = (new.hostname or "").lower()
+    return (
+        old.scheme == new.scheme == "https"
+        and old_host == new_host
+        and normalized_redirect_port(old) == normalized_redirect_port(new)
+        and old.username == new.username
+        and old.password == new.password
+    )
+
+
+class SafeGitHubRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+        if not redirect_preserves_github_api_headers(req.full_url, redirected.full_url):
+            for header in tuple(redirected.headers):
+                if header.lower() in GITHUB_API_REDIRECT_HEADERS:
+                    redirected.remove_header(header)
+        return redirected
+
+
+def open_github_api_request(request: urllib.request.Request, *, timeout: int):
+    opener = urllib.request.build_opener(SafeGitHubRedirectHandler())
+    return opener.open(request, timeout=timeout)
+
+
+def github_api_json(
+    repo: str,
+    token: str,
+    path: str,
+    query: dict[str, str] | None = None,
+) -> dict[str, object]:
+    url = f"https://api.github.com/repos/{repo}/{path}"
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            **GITHUB_API_HEADERS,
+        },
+    )
+    try:
+        with open_github_api_request(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise ProvenanceError(f"GitHub API request failed for {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ProvenanceError(f"GitHub API payload for {path} is malformed")
+    return payload
+
+
+def github_api_bytes(repo: str, token: str, url: str) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            **GITHUB_API_HEADERS,
+        },
+    )
+    try:
+        with open_github_api_request(request, timeout=30) as response:
+            return response.read()
+    except (urllib.error.URLError, urllib.error.HTTPError) as exc:
+        raise ProvenanceError(f"GitHub API download failed for {url}: {exc}") from exc
+
+
+def artifact_record_from_zip(payload: bytes) -> dict[str, object]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            names = [name for name in archive.namelist() if name == "ci-provenance.json"]
+            if len(names) != 1:
+                raise ProvenanceError("provenance artifact must contain exactly one ci-provenance.json")
+            record = json.loads(archive.read(names[0]).decode("utf-8"))
+    except zipfile.BadZipFile as exc:
+        raise ProvenanceError("provenance artifact archive is malformed") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProvenanceError("ci-provenance.json is invalid JSON") from exc
+    if not isinstance(record, dict):
+        raise ProvenanceError("ci-provenance.json must contain a JSON object")
+    return record
+
+
+def as_text(value: object) -> str:
+    return "" if value is None else str(value)
+
+
+def positive_int_value(value: object, field: str) -> int:
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str) and value.isdecimal() and int(value) > 0:
+        return int(value)
+    raise ProvenanceError(f"{field} must be a positive integer")
+
+
+def require_complete_first_page(
+    payload: dict[str, object],
+    items: list[object],
+    *,
+    per_page: int,
+    label: str,
+) -> None:
+    total_count = payload.get("total_count")
+    if total_count is None:
+        if len(items) >= per_page:
+            raise ProvenanceError(f"{label} page is saturated")
+        return
+    if type(total_count) is not int or total_count < len(items):
+        raise ProvenanceError(f"{label} total_count is malformed")
+    if total_count > len(items):
+        raise ProvenanceError(f"{label} page is saturated")
+
+
+def sha256_file(path: pathlib.Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError as exc:
+        raise ProvenanceError(f"file missing for digest: {path}") from exc
+    except OSError as exc:
+        raise ProvenanceError(f"file could not be read for digest: {path}: {exc}") from exc
+
+
+def workflow_file_digest(config: ProvenanceConfig) -> str:
+    return sha256_file(REPO_ROOT / config.workflow_path)
+
+
+def require_record_string(record: dict[str, object], key: str) -> str:
+    value = record.get(key)
+    if not isinstance(value, str) or not value:
+        raise ProvenanceError(f"record {key} must be a non-empty string")
+    return value
+
+
+def require_record_sha(record: dict[str, object], key: str) -> str:
+    value = require_record_string(record, key)
+    if SHA_RE.fullmatch(value) is None:
+        raise ProvenanceError(f"record {key} must be a 40-character lowercase hex SHA")
+    return value
+
+
+def require_record_digest(record: dict[str, object], key: str) -> str:
+    value = require_record_string(record, key)
+    if DIGEST_RE.fullmatch(value) is None:
+        raise ProvenanceError(f"record {key} must be a sha256 hex digest")
+    return value
+
+
+def require_positive_record_id(record: dict[str, object], key: str) -> None:
+    value = record.get(key)
+    if isinstance(value, int) and value > 0:
+        return
+    if isinstance(value, str) and value.isdecimal() and int(value) > 0:
+        return
+    raise ProvenanceError(f"record {key} must be a positive integer or numeric string")
+
+
+def validate_created_at(value: object) -> None:
+    if not isinstance(value, str) or not value:
+        raise ProvenanceError("record created_at must be a non-empty timestamp")
+    try:
+        datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ProvenanceError("record created_at must be ISO-8601") from exc
+
+
+def validate_pull_request_metadata(record: dict[str, object]) -> None:
+    pull_request = record.get("pull_request")
+    if not isinstance(pull_request, dict):
+        raise ProvenanceError("record pull_request must be an object")
+    number = pull_request.get("number")
+    base_sha = pull_request.get("base_sha")
+    if record.get("event") == "pull_request":
+        if not isinstance(number, int) or number <= 0:
+            raise ProvenanceError("record pull_request.number must be positive for pull_request events")
+        if not isinstance(base_sha, str) or SHA_RE.fullmatch(base_sha) is None:
+            raise ProvenanceError("record pull_request.base_sha must be a SHA for pull_request events")
+    elif number is not None or base_sha is not None:
+        raise ProvenanceError("record pull_request metadata must be null outside pull_request events")
+
+
+def validate_required_jobs(record: dict[str, object], config: ProvenanceConfig) -> None:
+    required_jobs = record.get("required_jobs")
+    if not isinstance(required_jobs, dict):
+        raise ProvenanceError("record required_jobs must be an object")
+    if set(required_jobs) != set(config.required_jobs):
+        raise ProvenanceError("record required_jobs must match configured full-CI jobs")
+    for job, conclusion in required_jobs.items():
+        if conclusion != "success":
+            raise ProvenanceError(f"record required_jobs.{job} must be success")
+
+
+def validate_conditional_jobs(record: dict[str, object], config: ProvenanceConfig) -> None:
+    conditional_jobs = record.get("conditional_jobs")
+    if not isinstance(conditional_jobs, dict):
+        raise ProvenanceError("record conditional_jobs must be an object")
+    if set(conditional_jobs) != set(config.conditional_jobs):
+        raise ProvenanceError("record conditional_jobs must match configured conditional jobs")
+    for job, payload in conditional_jobs.items():
+        if not isinstance(payload, dict):
+            raise ProvenanceError(f"record conditional_jobs.{job} must be an object")
+        if not isinstance(payload.get("required"), bool):
+            raise ProvenanceError(f"record conditional_jobs.{job}.required must be boolean")
+        result = payload.get("result")
+        if result is not None and not isinstance(result, str):
+            raise ProvenanceError(f"record conditional_jobs.{job}.result must be string or null")
+
+
+def validate_record_schema(
+    record: dict[str, object],
+    config: ProvenanceConfig,
+    *,
+    config_path: pathlib.Path = DEFAULT_CONFIG,
+    expected_workflow_digest: str | None = None,
+) -> None:
+    if record.get("schema_version") != config.schema_version:
+        raise ProvenanceError(f"unknown provenance schema {record.get('schema_version')!r}")
+    if record.get("kind") != "full-ci":
+        raise ProvenanceError("record kind must be full-ci")
+    require_record_string(record, "repository")
+    if require_record_string(record, "workflow_path") != config.workflow_path:
+        raise ProvenanceError("record workflow_path does not match config")
+    workflow_digest = require_record_digest(record, "workflow_digest")
+    if expected_workflow_digest is None:
+        expected_workflow_digest = workflow_file_digest(config)
+    if workflow_digest != expected_workflow_digest:
+        raise ProvenanceError("record workflow_digest does not match workflow bytes")
+    config_digest = require_record_digest(record, "provenance_config_digest")
+    if config_digest != provenance_config_digest(config_path):
+        raise ProvenanceError("record provenance_config_digest does not match config")
+    require_record_sha(record, "head_sha")
+    require_record_sha(record, "tested_sha")
+    require_positive_record_id(record, "run_id")
+    require_positive_record_id(record, "run_attempt")
+    require_positive_record_id(record, "check_suite_id")
+    event = require_record_string(record, "event")
+    head_branch = record.get("head_branch")
+    if head_branch is not None and not isinstance(head_branch, str):
+        raise ProvenanceError("record head_branch must be string or null")
+    if event == "push" and not head_branch:
+        raise ProvenanceError("record head_branch must be present for push events")
+    validate_pull_request_metadata(record)
+    validate_required_jobs(record, config)
+    validate_conditional_jobs(record, config)
+    nextest_fingerprint = record.get("nextest_fingerprint")
+    if nextest_fingerprint is not None and (
+        not isinstance(nextest_fingerprint, str) or not nextest_fingerprint
+    ):
+        raise ProvenanceError("record nextest_fingerprint must be string or null")
+    validate_created_at(record.get("created_at"))
+
+
+def validate_exact_sha_record(
+    record: dict[str, object],
+    config: ProvenanceConfig,
+    *,
+    requested_sha: str,
+    config_path: pathlib.Path = DEFAULT_CONFIG,
+    expected_workflow_digest: str | None = None,
+) -> None:
+    validate_record_schema(
+        record,
+        config,
+        config_path=config_path,
+        expected_workflow_digest=expected_workflow_digest,
+    )
+    if SHA_RE.fullmatch(requested_sha) is None:
+        raise ProvenanceError("requested_sha must be a 40-character lowercase hex SHA")
+    if record.get("event") == "pull_request":
+        raise ProvenanceError("pull_request provenance cannot validate exact-SHA reuse for a PR head")
+    if record.get("event") != config.deploy_source_event:
+        raise ProvenanceError(f"record event must be {config.deploy_source_event}")
+    if record.get("head_branch") != config.deploy_source_branch:
+        raise ProvenanceError(f"record head_branch must be {config.deploy_source_branch}")
+    if record.get("head_sha") != requested_sha or record.get("tested_sha") != requested_sha:
+        raise ProvenanceError("record head_sha and tested_sha must match requested exact SHA")
+
+
+def provenance_artifact_name(config: ProvenanceConfig, run_attempt: int) -> str:
+    try:
+        return config.artifact_name_template.format(run_attempt=run_attempt)
+    except KeyError as exc:
+        raise ProvenanceError("ci_provenance.artifact_name_template has unsupported placeholders") from exc
+
+
+def run_matches_exact_sha(
+    run: dict[str, object],
+    config: ProvenanceConfig,
+    requested_sha: str,
+    current_run_id: int | str | None,
+) -> bool:
+    if current_run_id is not None and as_text(run.get("id")) == as_text(current_run_id):
+        return False
+    return (
+        as_text(run.get("name")) == config.workflow_name
+        and as_text(run.get("path")) == config.workflow_path
+        and as_text(run.get("event")) == config.deploy_source_event
+        and as_text(run.get("head_branch")) == config.deploy_source_branch
+        and as_text(run.get("head_sha")) == requested_sha
+        and as_text(run.get("status")) == "completed"
+        and as_text(run.get("conclusion")) == "success"
+    )
+
+
+def workflow_digest_from_github(
+    repo: str,
+    token: str,
+    config: ProvenanceConfig,
+    tested_sha: str,
+    api_bytes,
+) -> str:
+    url = f"https://raw.githubusercontent.com/{repo}/{tested_sha}/{config.workflow_path}"
+    return hashlib.sha256(api_bytes(repo, token, url)).hexdigest()
+
+
+def validate_artifact_metadata(
+    artifact: dict[str, object],
+    run: dict[str, object],
+    config: ProvenanceConfig,
+    requested_sha: str,
+) -> None:
+    run_id = as_text(run.get("id"))
+    if artifact.get("expired") is not False:
+        raise ProvenanceError(f"source run {run_id} provenance artifact expired or has unknown expiry state")
+    workflow_run = artifact.get("workflow_run")
+    if not isinstance(workflow_run, dict):
+        raise ProvenanceError(f"source run {run_id} artifact workflow_run payload is malformed")
+    if as_text(workflow_run.get("id")) != run_id:
+        raise ProvenanceError(f"artifact run ID does not match source run {run_id}")
+    if as_text(workflow_run.get("head_branch")) != config.deploy_source_branch:
+        raise ProvenanceError(
+            f"artifact branch is {as_text(workflow_run.get('head_branch'))}, expected {config.deploy_source_branch}"
+        )
+    if as_text(workflow_run.get("head_sha")) != requested_sha:
+        raise ProvenanceError(
+            f"artifact SHA {as_text(workflow_run.get('head_sha'))} does not match expected {requested_sha}"
+        )
+
+
+def validate_record_matches_run(record: dict[str, object], run: dict[str, object]) -> None:
+    checks = (
+        ("run_id", "id"),
+        ("run_attempt", "run_attempt"),
+        ("check_suite_id", "check_suite_id"),
+        ("event", "event"),
+        ("head_branch", "head_branch"),
+        ("head_sha", "head_sha"),
+    )
+    for record_key, run_key in checks:
+        if as_text(record.get(record_key)) != as_text(run.get(run_key)):
+            raise ProvenanceError(f"record {record_key} does not match source run {run_key}")
+
+
+def expanded_check_names(config: ProvenanceConfig, logical_job: str) -> tuple[str, ...]:
+    job = config.jobs[logical_job]
+    if job.check_name is not None:
+        return (job.check_name,)
+    if job.check_name_template is None or job.shard_count is None:
+        raise ProvenanceError(f"ci_provenance.full_ci.jobs.{logical_job} has no check name mapping")
+    return tuple(
+        job.check_name_template.format(shard=shard, shard_count=job.shard_count)
+        for shard in range(1, job.shard_count + 1)
+    )
+
+
+def jobs_by_name(jobs_payload: dict[str, object]) -> dict[str, dict[str, object]]:
+    jobs = jobs_payload.get("jobs")
+    if not isinstance(jobs, list):
+        raise ProvenanceError("run jobs payload is malformed")
+    by_name: dict[str, dict[str, object]] = {}
+    for job in jobs:
+        if not isinstance(job, dict):
+            raise ProvenanceError("run jobs payload is malformed")
+        name = job.get("name")
+        if not isinstance(name, str) or not name:
+            raise ProvenanceError("run jobs payload has malformed job name")
+        if name in by_name:
+            raise ProvenanceError(f"run jobs payload has duplicate job name {name}")
+        by_name[name] = job
+    return by_name
+
+
+def require_job_success(by_name: dict[str, dict[str, object]], check_name: str) -> None:
+    job = by_name.get(check_name)
+    if job is None:
+        raise ProvenanceError(f"missing required job {check_name}")
+    status = job.get("status")
+    conclusion = job.get("conclusion")
+    if status != "completed" or conclusion != "success":
+        raise ProvenanceError(f"required job {check_name} was {status!r}/{conclusion!r}")
+
+
+def validate_job_evidence(
+    jobs_payload: dict[str, object],
+    config: ProvenanceConfig,
+    record: dict[str, object],
+    *,
+    deploy_reuse_requested: bool,
+) -> None:
+    by_name = jobs_by_name(jobs_payload)
+    for logical_job in config.required_jobs:
+        for check_name in expanded_check_names(config, logical_job):
+            require_job_success(by_name, check_name)
+
+    conditional_jobs = record.get("conditional_jobs")
+    if not isinstance(conditional_jobs, dict):
+        raise ProvenanceError("record conditional_jobs must be an object")
+    for logical_job in config.conditional_jobs:
+        job_config = config.jobs[logical_job]
+        if job_config.check_name is None:
+            raise ProvenanceError(f"ci_provenance.full_ci.jobs.{logical_job}.check_name missing")
+        payload = conditional_jobs.get(logical_job)
+        if not isinstance(payload, dict):
+            raise ProvenanceError(f"record conditional_jobs.{logical_job} must be an object")
+        required = payload.get("required")
+        if not isinstance(required, bool):
+            raise ProvenanceError(f"record conditional_jobs.{logical_job}.required must be boolean")
+        job = by_name.get(job_config.check_name)
+        if required:
+            require_job_success(by_name, job_config.check_name)
+            continue
+        if deploy_reuse_requested:
+            if job is None:
+                raise ProvenanceError(f"missing required job {job_config.check_name}")
+            if job.get("status") != "completed" or job.get("conclusion") != "success":
+                raise ProvenanceError("deploy reuse requires build success")
+            continue
+        if job is None:
+            continue
+        conclusion = job.get("conclusion")
+        status = job.get("status")
+        if status != "completed" or conclusion not in {"success", "skipped"}:
+            raise ProvenanceError(
+                f"conditional job {job_config.check_name} was {status!r}/{conclusion!r}"
+            )
+
+
+def resolve_exact_sha_evidence(
+    *,
+    repo: str,
+    token: str,
+    requested_sha: str,
+    config: ProvenanceConfig,
+    config_path: pathlib.Path = DEFAULT_CONFIG,
+    current_run_id: int | str | None = None,
+    api_json=github_api_json,
+    api_bytes=github_api_bytes,
+    now: datetime.datetime | None = None,
+) -> ResolvedEvidence:
+    if SHA_RE.fullmatch(requested_sha) is None:
+        raise ProvenanceError("requested_sha must be a 40-character lowercase hex SHA")
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(seconds=config.max_lookback_age_seconds)
+    candidates: list[dict[str, object]] = []
+    last_page_len = 0
+
+    for page in range(1, config.max_lookback_pages + 1):
+        runs_payload = api_json(
+            repo,
+            token,
+            "actions/runs",
+            {
+                "event": config.deploy_source_event,
+                "branch": config.deploy_source_branch,
+                "head_sha": requested_sha,
+                "per_page": str(config.workflow_runs_per_page),
+                "page": str(page),
+                "sort": "created",
+                "direction": "desc",
+            },
+        )
+        runs = runs_payload.get("workflow_runs")
+        if not isinstance(runs, list):
+            raise ProvenanceError("workflow runs payload is malformed")
+        last_page_len = len(runs)
+        if not runs:
+            break
+        # Scan the whole page before applying the age cutoff so a stale item
+        # cannot hide a fresh candidate when API ordering is imperfect.
+        page_has_fresh_run = False
+        page_has_old_run = False
+        for run in runs:
+            if not isinstance(run, dict):
+                raise ProvenanceError("workflow runs payload is malformed")
+            created_at = run.get("created_at")
+            if not isinstance(created_at, str):
+                raise ProvenanceError("workflow run created_at must be a string")
+            if parse_timestamp(created_at) < cutoff:
+                page_has_old_run = True
+                continue
+            page_has_fresh_run = True
+            if run_matches_exact_sha(run, config, requested_sha, current_run_id):
+                candidates.append(run)
+        if page_has_old_run and not page_has_fresh_run and not candidates:
+            raise ProvenanceError("lookback age limit exhausted before candidate evidence was found")
+        if candidates or len(runs) < config.workflow_runs_per_page:
+            break
+
+    if not candidates:
+        if last_page_len >= config.workflow_runs_per_page:
+            raise ProvenanceError("lookback page limit exhausted before candidate evidence was found")
+        raise ProvenanceError(f"no candidate provenance evidence found for exact SHA {requested_sha}")
+
+    candidates.sort(
+        key=lambda run: (
+            positive_int_value(run.get("run_attempt"), "workflow run run_attempt"),
+            as_text(run.get("updated_at")),
+            positive_int_value(run.get("id"), "workflow run id"),
+        ),
+        reverse=True,
+    )
+
+    artifact_by_attempt: dict[int, dict[str, object]] = {}
+    run_by_attempt: dict[int, dict[str, object]] = {}
+    for run in candidates:
+        run_id = positive_int_value(run.get("id"), "workflow run id")
+        run_attempt = positive_int_value(run.get("run_attempt"), "workflow run run_attempt")
+        artifacts_payload = api_json(
+            repo,
+            token,
+            f"actions/runs/{run_id}/artifacts",
+            {"per_page": str(config.run_artifacts_per_page)},
+        )
+        artifacts = artifacts_payload.get("artifacts")
+        if not isinstance(artifacts, list):
+            raise ProvenanceError(f"source run {run_id} artifacts payload is malformed")
+        require_complete_first_page(
+            artifacts_payload,
+            artifacts,
+            per_page=config.run_artifacts_per_page,
+            label=f"source run {run_id} artifacts",
+        )
+        expected_name = provenance_artifact_name(config, run_attempt)
+        matches = [
+            artifact
+            for artifact in artifacts
+            if isinstance(artifact, dict) and as_text(artifact.get("name")) == expected_name
+        ]
+        if len(matches) > 1:
+            raise ProvenanceError(f"source run {run_id} has ambiguous provenance artifacts for attempt {run_attempt}")
+        if not matches:
+            continue
+        if run_attempt in artifact_by_attempt:
+            raise ProvenanceError(f"multiple provenance artifacts for attempt {run_attempt}")
+        artifact_by_attempt[run_attempt] = matches[0]
+        run_by_attempt[run_attempt] = run
+
+    if not artifact_by_attempt:
+        raise ProvenanceError(f"no candidate provenance artifact found for exact SHA {requested_sha}")
+
+    for run_attempt in sorted(artifact_by_attempt, reverse=True):
+        artifact = artifact_by_attempt[run_attempt]
+        run = run_by_attempt[run_attempt]
+        validate_artifact_metadata(artifact, run, config, requested_sha)
+        archive_url = require_record_string(artifact, "archive_download_url")
+        record = artifact_record_from_zip(api_bytes(repo, token, archive_url))
+        if positive_int_value(record.get("run_attempt"), "record run_attempt") != run_attempt:
+            raise ProvenanceError("record run_attempt does not match source run attempt")
+        tested_sha = require_record_sha(record, "tested_sha")
+        expected_workflow_digest = workflow_digest_from_github(
+            repo, token, config, tested_sha, api_bytes
+        )
+        validate_exact_sha_record(
+            record,
+            config,
+            requested_sha=requested_sha,
+            config_path=config_path,
+            expected_workflow_digest=expected_workflow_digest,
+        )
+        validate_record_matches_run(record, run)
+        run_id = positive_int_value(run.get("id"), "workflow run id")
+        jobs_payload = api_json(
+            repo,
+            token,
+            f"actions/runs/{run_id}/jobs",
+            {"per_page": str(config.run_jobs_per_page)},
+        )
+        jobs = jobs_payload.get("jobs")
+        if not isinstance(jobs, list):
+            raise ProvenanceError(f"source run {run_id} jobs payload is malformed")
+        require_complete_first_page(
+            jobs_payload,
+            jobs,
+            per_page=config.run_jobs_per_page,
+            label=f"source run {run_id} jobs",
+        )
+        validate_job_evidence(jobs_payload, config, record, deploy_reuse_requested=True)
+        return ResolvedEvidence(run=run, artifact=artifact, record=record)
+
+    raise ProvenanceError(f"no valid provenance evidence found for exact SHA {requested_sha}")
+
+
+def require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise ProvenanceError(f"missing required environment variable {name}")
+    return value
+
+
+def parse_key_value(value: str) -> tuple[str, str]:
+    if "=" not in value:
+        raise ProvenanceError(f"expected key=value, got {value!r}")
+    key, parsed_value = value.split("=", 1)
+    if not key:
+        raise ProvenanceError(f"expected non-empty key in {value!r}")
+    return key, parsed_value
+
+
+def parse_bool(value: str) -> bool:
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    raise ProvenanceError(f"expected boolean true/false, got {value!r}")
+
+
+def parse_required_job_results(values: list[str], config: ProvenanceConfig) -> dict[str, str]:
+    results = dict(parse_key_value(value) for value in values)
+    expected = set(config.required_jobs)
+    if set(results) != expected:
+        missing = sorted(expected - set(results))
+        extra = sorted(set(results) - expected)
+        raise ProvenanceError(f"required job result keys mismatch; missing={missing} extra={extra}")
+    for job, result in results.items():
+        if result != "success":
+            raise ProvenanceError(f"required job {job} did not succeed: {result}")
+    return results
+
+
+def parse_conditional_job_results(values: list[str], config: ProvenanceConfig) -> dict[str, dict[str, object]]:
+    parsed = dict(parse_key_value(value) for value in values)
+    conditional_jobs: dict[str, dict[str, object]] = {}
+    for job in config.conditional_jobs:
+        required_key = f"{job}.required"
+        result_key = f"{job}.result"
+        if required_key not in parsed or result_key not in parsed:
+            raise ProvenanceError(f"conditional job {job} must provide required and result")
+        required = parse_bool(parsed[required_key])
+        result = parsed[result_key]
+        if required and result != "success":
+            raise ProvenanceError(f"conditional job {job} did not succeed while required: {result}")
+        if not required and result not in {"success", "skipped"}:
+            raise ProvenanceError(f"conditional job {job} had unexpected result while not required: {result}")
+        conditional_jobs[job] = {"required": required, "result": result}
+    expected_keys = {f"{job}.required" for job in config.conditional_jobs} | {
+        f"{job}.result" for job in config.conditional_jobs
+    }
+    extra = sorted(set(parsed) - expected_keys)
+    if extra:
+        raise ProvenanceError(f"unexpected conditional job keys: {extra}")
+    return conditional_jobs
+
+
+def read_nextest_fingerprint(path: pathlib.Path | None) -> str | None:
+    if path is None or not path.is_file():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return value or None
+
+
+def pull_request_metadata_from_env(event_name: str) -> dict[str, object]:
+    if event_name != "pull_request":
+        return {"number": None, "base_sha": None}
+    number = os.environ.get("PR_NUMBER")
+    base_sha = os.environ.get("PR_BASE_SHA")
+    if not number or not number.isdecimal():
+        raise ProvenanceError("PR_NUMBER must be set for pull_request provenance")
+    if base_sha is None or SHA_RE.fullmatch(base_sha) is None:
+        raise ProvenanceError("PR_BASE_SHA must be set for pull_request provenance")
+    return {"number": int(number), "base_sha": base_sha}
+
+
+def emit_full_ci_record(
+    *,
+    config: ProvenanceConfig,
+    config_path: pathlib.Path,
+    required_job_values: list[str],
+    conditional_job_values: list[str],
+    nextest_fingerprint_path: pathlib.Path | None,
+    api_json=github_api_json,
+) -> dict[str, object]:
+    repo = require_env("GITHUB_REPOSITORY")
+    token = require_env("GITHUB_TOKEN")
+    run_id = require_env("GITHUB_RUN_ID")
+    run_attempt = require_env("GITHUB_RUN_ATTEMPT")
+    tested_sha = require_env("GITHUB_SHA")
+    event_name = require_env("GITHUB_EVENT_NAME")
+    run_payload = api_json(repo, token, f"actions/runs/{run_id}", None)
+    head_sha = as_text(run_payload.get("head_sha"))
+    if SHA_RE.fullmatch(head_sha) is None:
+        raise ProvenanceError("current workflow run head_sha is malformed")
+    check_suite_id = run_payload.get("check_suite_id")
+    positive_int_value(check_suite_id, "current workflow run check_suite_id")
+    head_branch = run_payload.get("head_branch")
+    if head_branch is not None and not isinstance(head_branch, str):
+        raise ProvenanceError("current workflow run head_branch is malformed")
+
+    record = {
+        "schema_version": config.schema_version,
+        "kind": "full-ci",
+        "repository": repo,
+        "workflow_path": config.workflow_path,
+        "workflow_digest": workflow_file_digest(config),
+        "provenance_config_digest": provenance_config_digest(config_path),
+        "head_sha": head_sha,
+        "tested_sha": tested_sha,
+        "run_id": positive_int_value(run_id, "GITHUB_RUN_ID"),
+        "run_attempt": positive_int_value(run_attempt, "GITHUB_RUN_ATTEMPT"),
+        "check_suite_id": positive_int_value(check_suite_id, "current workflow run check_suite_id"),
+        "event": event_name,
+        "head_branch": head_branch,
+        "pull_request": pull_request_metadata_from_env(event_name),
+        "required_jobs": parse_required_job_results(required_job_values, config),
+        "conditional_jobs": parse_conditional_job_results(conditional_job_values, config),
+        "nextest_fingerprint": read_nextest_fingerprint(nextest_fingerprint_path),
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    validate_record_schema(record, config, config_path=config_path)
+    return record
+
+
+def parser_for_mode(mode: str) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=f"ci_provenance.py {mode}")
+    parser.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
+    if mode == "emit-full-ci":
+        parser.add_argument("--output", type=pathlib.Path)
+        parser.add_argument("--required-job", action="append", default=[])
+        parser.add_argument("--conditional-job", action="append", default=[])
+        parser.add_argument("--nextest-fingerprint-path", type=pathlib.Path)
+    if mode == "validate-record":
+        parser.add_argument("--record", type=pathlib.Path, required=True)
+    if mode == "resolve-exact-sha":
+        parser.add_argument("--repo")
+        parser.add_argument("--token")
+        parser.add_argument("--sha")
+        parser.add_argument("--current-run-id")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv or argv[0] in {"-h", "--help"}:
+        modes = ", ".join(sorted(SUPPORTED_MODES))
+        print(f"Usage: ci_provenance.py <mode> [options]\nSupported modes: {modes}", file=sys.stderr)
+        return 2
+    mode, rest = argv[0], argv[1:]
+    if mode == "resolve-fingerprint":
+        print("ERROR: resolve-fingerprint is not supported in Slice 2", file=sys.stderr)
+        return 2
+    if mode not in SUPPORTED_MODES:
+        print(f"ERROR: unknown mode {mode!r}", file=sys.stderr)
+        return 2
+
+    parser = parser_for_mode(mode)
+    try:
+        args = parser.parse_args(rest)
+        config = load_config(args.config)
+        if mode == "emit-full-ci":
+            record = emit_full_ci_record(
+                config=config,
+                config_path=args.config,
+                required_job_values=args.required_job,
+                conditional_job_values=args.conditional_job,
+                nextest_fingerprint_path=args.nextest_fingerprint_path,
+            )
+            encoded = json.dumps(record, sort_keys=True, indent=2) + "\n"
+            if args.output is None:
+                print(encoded, end="")
+            else:
+                args.output.write_text(encoded, encoding="utf-8")
+                print(f"wrote {args.output}")
+        elif mode == "validate-record":
+            validate_record_schema(load_json(args.record), config, config_path=args.config)
+            print("record valid")
+        elif mode == "resolve-exact-sha":
+            evidence = resolve_exact_sha_evidence(
+                repo=args.repo or require_env("GITHUB_REPOSITORY"),
+                token=args.token or require_env("GITHUB_TOKEN"),
+                requested_sha=args.sha or require_env("GITHUB_SHA"),
+                config=config,
+                config_path=args.config,
+                current_run_id=args.current_run_id or os.environ.get("GITHUB_RUN_ID"),
+            )
+            print(json.dumps(evidence.record, sort_keys=True))
+        return 0
+    except ProvenanceError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

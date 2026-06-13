@@ -26,6 +26,7 @@ test-archive = "managed_heavy"
 test-shards = "managed_heavy"
 test = "github_hosted"
 build = "managed_heavy"
+ci-provenance-emit = "github_hosted"
 same-sha-main-evidence = "github_hosted"
 gate = "github_hosted"
 deploy = "github_hosted"
@@ -75,6 +76,96 @@ run_jobs_per_page = 100
 run_artifacts_per_page = 100
 branch_pull_requests_per_page = 20
 draft_timeline_items = 100
+
+[ci_provenance]
+schema_version = 1
+artifact_name_template = "ci-provenance-attempt-{run_attempt}"
+workflow_key = "ci"
+workflow_name = "CI"
+workflow_path = ".github/workflows/ci.yml"
+fingerprint_source = "meter"
+
+[ci_provenance.full_ci]
+required_jobs = [
+  "detector",
+  "fmt-check",
+  "deny",
+  "clippy",
+  "check-aarch64",
+  "source-fence",
+  "test-archive",
+  "test-shards",
+  "test",
+]
+conditional_jobs = ["build"]
+conditional_job_outputs = { build = "detector.build_required" }
+
+[ci_provenance.full_ci.jobs.detector]
+check_name = "detector"
+
+[ci_provenance.full_ci.jobs.fmt-check]
+check_name = "fmt-check"
+
+[ci_provenance.full_ci.jobs.deny]
+check_name = "deny"
+
+[ci_provenance.full_ci.jobs.clippy]
+check_name = "clippy"
+
+[ci_provenance.full_ci.jobs.check-aarch64]
+check_name = "check-aarch64"
+
+[ci_provenance.full_ci.jobs.source-fence]
+check_name = "source-fence"
+
+[ci_provenance.full_ci.jobs.test-archive]
+check_name = "nextest archive"
+
+[ci_provenance.full_ci.jobs.test-shards]
+check_name_template = "nextest shard {shard} of {shard_count}"
+shard_count = 4
+
+[ci_provenance.full_ci.jobs.test]
+check_name = "test"
+
+[ci_provenance.full_ci.jobs.build]
+check_name = "build"
+conditional = "detector.build_required"
+
+[ci_provenance.deploy]
+artifact_name = "bolt-v2-binary"
+require_source_event = "push"
+require_source_branch = "main"
+require_gate_check = true
+
+[ci_provenance.dispatch]
+workflow_input = "full_ci"
+
+[ci_provenance.api_limits]
+workflow_runs_per_page = 100
+run_jobs_per_page = 100
+run_artifacts_per_page = 100
+max_lookback_pages = 10
+max_lookback_age_seconds = 2592000
+
+[ci_provenance.artifacts]
+retention_days = 30
+
+[ci_provenance.policy]
+draft_pr_synchronize = "defer"
+draft_pr_opened = "defer"
+draft_pr_reopened = "defer"
+converted_to_draft = "defer"
+ready_pr = "full"
+ready_for_review = "full"
+workflow_dispatch = "full"
+main_push = "full"
+tag = "tag_reuse"
+unknown_event = "full"
+
+[ci_provenance.policy.override]
+force_full_ci = false
+ignore_emit_failure = false
 
 [ci_runner_debug]
 ssh_wait_minutes_variable = "CI_DEBUG_SSH_WAIT_MINUTES"

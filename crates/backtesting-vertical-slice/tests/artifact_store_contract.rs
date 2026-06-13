@@ -2,10 +2,10 @@ use object_store::{ObjectStoreExt, memory::InMemory};
 
 use backtesting_vertical_slice::{
     artifact_store::{
-        ArtifactIndexCommitState, ArtifactIndexEvent, ArtifactIndexPointer, ArtifactIndexSnapshot,
-        ArtifactIndexSnapshotRow, ArtifactIndexWriter, ArtifactKind, ArtifactLineageRef,
-        ArtifactStoreConfig, CatalogDispatchConfig, CatalogProjectionBinding,
-        CreateOnlyArtifactWriter, StoredArtifactIndexPointer,
+        ArtifactIndexCommitPlan, ArtifactIndexCommitState, ArtifactIndexEvent,
+        ArtifactIndexPointer, ArtifactIndexSnapshot, ArtifactIndexSnapshotRow, ArtifactIndexWriter,
+        ArtifactKind, ArtifactLineageRef, ArtifactStoreConfig, CatalogDispatchConfig,
+        CatalogProjectionBinding, CreateOnlyArtifactWriter, StoredArtifactIndexPointer,
     },
     run_manifest::MarketStructureFixture,
 };
@@ -158,6 +158,22 @@ fn backtest_event(root_uri: String, event_id: &str, artifact_id: &str) -> Artifa
     }
 }
 
+fn commit_plan(
+    event: ArtifactIndexEvent,
+    snapshot_ids: &[&str],
+    audit_epoch_id: &str,
+) -> ArtifactIndexCommitPlan {
+    ArtifactIndexCommitPlan {
+        event,
+        snapshot_ids: snapshot_ids
+            .iter()
+            .map(|snapshot_id| (*snapshot_id).to_string())
+            .collect(),
+        audit_epoch_ids: vec![audit_epoch_id.to_string()],
+        writer_id: "backtesting-engine-writer".to_string(),
+    }
+}
+
 #[tokio::test]
 async fn artifact_index_writes_events_snapshots_and_latest_pointer_conditionally() {
     let root = artifact_config().resolve().expect("valid artifact root");
@@ -294,4 +310,121 @@ async fn artifact_index_reader_rejects_hash_invalid_latest_pointer() {
         .await
         .expect_err("hash-invalid latest pointer must fail closed");
     assert!(err.to_string().contains("snapshot hash"), "{err}");
+}
+
+#[tokio::test]
+async fn artifact_index_commit_rebases_after_stale_observed_latest() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let writer = ArtifactIndexWriter::new(&store);
+    let first = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::BinaryOption, "run-010"),
+        "event-010",
+        "run-010",
+    );
+    writer
+        .commit_event(
+            &root,
+            commit_plan(first, &["snapshot-010"], "2026-06-13T00:00:00Z"),
+        )
+        .await
+        .expect("initial commit succeeds");
+    let stale_observed = writer
+        .read_latest_pointer(&root, ArtifactKind::Backtests)
+        .await
+        .expect("latest pointer reads")
+        .expect("latest pointer exists");
+
+    let concurrent = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::BinaryOption, "run-011"),
+        "event-011",
+        "run-011",
+    );
+    writer
+        .commit_event(
+            &root,
+            commit_plan(concurrent, &["snapshot-011"], "2026-06-13T00:00:01Z"),
+        )
+        .await
+        .expect("concurrent commit succeeds");
+
+    let rebased = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::BinaryOption, "run-012"),
+        "event-012",
+        "run-012",
+    );
+    let outcome = writer
+        .commit_event_from_observed_latest(
+            &root,
+            commit_plan(
+                rebased,
+                &["snapshot-012-stale", "snapshot-012-rebased"],
+                "2026-06-13T00:00:02Z",
+            ),
+            Some(stale_observed),
+        )
+        .await
+        .expect("stale observed latest rebases");
+
+    assert_eq!(outcome.snapshot_id, "snapshot-012-rebased");
+    assert_eq!(outcome.pointer_attempts, 2);
+    assert_eq!(outcome.prior_snapshot_id.as_deref(), Some("snapshot-011"));
+
+    let latest = writer
+        .read_verified_latest_snapshot(&root, ArtifactKind::Backtests)
+        .await
+        .expect("latest snapshot verifies");
+    let artifact_ids = latest
+        .rows
+        .iter()
+        .map(|row| row.artifact_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(artifact_ids, vec!["run-010", "run-011", "run-012"]);
+}
+
+#[tokio::test]
+async fn artifact_index_commit_appends_audit_epoch() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let writer = ArtifactIndexWriter::new(&store);
+    let event = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::PerpsSpot, "run-020"),
+        "event-020",
+        "run-020",
+    );
+    let outcome = writer
+        .commit_event(
+            &root,
+            commit_plan(event, &["snapshot-020"], "2026-06-13T00:00:03Z"),
+        )
+        .await
+        .expect("commit succeeds");
+
+    assert_eq!(
+        outcome.audit_epoch_uri,
+        "s3://bolt-ra-artifacts/prod/artifact-index/v1/audit/epochs/2026-06-13T00:00:03Z.json"
+    );
+    let audit_path = root
+        .object_path_for_uri(&outcome.audit_epoch_uri)
+        .expect("audit epoch is under artifact root");
+    let audit = store
+        .get(&audit_path)
+        .await
+        .expect("audit epoch object")
+        .bytes()
+        .await
+        .expect("audit epoch bytes");
+    let audit: serde_json::Value =
+        serde_json::from_slice(audit.as_ref()).expect("audit epoch json");
+    assert_eq!(audit["artifact_kind"], "backtests");
+    assert_eq!(audit["new_snapshot_id"], "snapshot-020");
+    assert_eq!(audit["writer_id"], "backtesting-engine-writer");
+
+    let mut conflicting_audit = outcome.audit_epoch.clone();
+    conflicting_audit.writer_id = "different-writer".to_string();
+    let err = writer
+        .append_audit_epoch(&root, &conflicting_audit)
+        .await
+        .expect_err("audit epoch create-only write rejects different payload");
+    assert!(err.to_string().contains("different payload"), "{err}");
 }

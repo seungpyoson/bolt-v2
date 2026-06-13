@@ -406,16 +406,6 @@ fn parse_optional_ustr(value: Option<&str>, label: &str) -> Result<Option<Ustr>>
         .transpose()
 }
 
-fn parse_optional_money(
-    value: Option<&str>,
-    currency: Currency,
-    label: &str,
-) -> Result<Option<Money>> {
-    value
-        .map(|value| parse_money(value, currency, label))
-        .transpose()
-}
-
 fn parse_price(value: &str, label: &str) -> Result<Price> {
     Price::from_str(value).map_err(|error| anyhow::anyhow!("invalid {label} {value:?}: {error}"))
 }

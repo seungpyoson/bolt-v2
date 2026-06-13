@@ -572,7 +572,12 @@ fn time_window_gate_admits_by_ts_init_receipt_clock() {
                 .to_string(),
         },
     });
-    let error = rejected.expect_err("window before the receipt instant must be rejected");
+    // `let Err(..) else` extracts the error without requiring the Ok type
+    // (`BacktestRunOutput`, which holds NT's non-Debug `BacktestResult`) to
+    // implement `Debug` as `Result::expect_err` would.
+    let Err(error) = rejected else {
+        panic!("window before the receipt instant must be rejected");
+    };
     let message = format!("{error:#}");
     assert!(
         message.contains("end_time") && message.contains("excludes all accepted data"),

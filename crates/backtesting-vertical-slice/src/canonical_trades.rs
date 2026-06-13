@@ -746,6 +746,54 @@ pub fn require_registered_quote_converter_for_table_family(
     Ok(adapter)
 }
 
+/// Resolve the registered index-price source adapter for the table family.
+///
+/// # Errors
+///
+/// Returns an error if no adapter is registered for the identity/version, the
+/// adapter does not serve the table family, or the adapter is not an
+/// index-price converter.
+pub fn require_registered_index_converter_for_table_family(
+    identity: &str,
+    version: &str,
+    table_family: &str,
+) -> Result<&'static SourceAdapterDefinition> {
+    let adapter =
+        require_registered_source_adapter_for_table_family(identity, version, table_family)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::IndexPrices,
+        "adapter {:?} version {:?} is {:?}, not an index-price converter",
+        adapter.identity,
+        adapter.version,
+        adapter.kind
+    );
+    Ok(adapter)
+}
+
+/// Resolve the registered mark-price source adapter for the table family.
+///
+/// # Errors
+///
+/// Returns an error if no adapter is registered for the identity/version, the
+/// adapter does not serve the table family, or the adapter is not a mark-price
+/// converter.
+pub fn require_registered_mark_converter_for_table_family(
+    identity: &str,
+    version: &str,
+    table_family: &str,
+) -> Result<&'static SourceAdapterDefinition> {
+    let adapter =
+        require_registered_source_adapter_for_table_family(identity, version, table_family)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::MarkPrices,
+        "adapter {:?} version {:?} is {:?}, not a mark-price converter",
+        adapter.identity,
+        adapter.version,
+        adapter.kind
+    );
+    Ok(adapter)
+}
+
 /// Aggressor side of a native trade print.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -1923,6 +1971,76 @@ pub fn normalize_registered_quote_converter(
             bail!("test fixture adapter cannot normalize top-of-book quotes")
         }
     }
+}
+
+/// Registered-seam entry point for the index-price source normalizer.
+///
+/// Symmetric with [`normalize_registered_quote_converter`]: raw index-price wire
+/// acquisition from source bytes into a [`CanonicalIndexPricesTable`] lands in a
+/// FOLLOW-UP slice (bolt-v2 #685). This entry point validates that the converter
+/// is a real registered index-price adapter for the table family, then fails
+/// loud naming the follow-up — a registered seam that fails loud is not a
+/// debt/TODO, and the canonical table + its NT `IndexPriceUpdate` projection are
+/// proven by the synthetic round-trip test in [`super::catalog_projection`].
+///
+/// # Errors
+///
+/// Returns an error if the converter is not a registered index-price converter
+/// for the table family, or — until the follow-up acquisition slice — always
+/// (naming that follow-up).
+pub fn normalize_registered_index_converter(
+    converter_config: &ConverterConfig,
+    accepted: &AcceptedDataset,
+    _identity: &CanonicalInstrumentIdentity,
+    _text: &str,
+    _capture_time_nanos: i64,
+    _ingest_run_id: &str,
+) -> Result<Vec<super::canonical_market_data::CanonicalIndexPricesTable>> {
+    let _adapter = require_registered_index_converter_for_table_family(
+        &converter_config.identity,
+        &converter_config.version,
+        &accepted.table_family,
+    )?;
+    bail!(
+        "index-price wire normalizer is a registered seam but its raw acquisition \
+         path lands in a follow-up slice (bolt-v2 #685); the CanonicalIndexPricesTable \
+         contract and its catalog projection are proven by the synthetic round-trip test"
+    )
+}
+
+/// Registered-seam entry point for the mark-price source normalizer.
+///
+/// Symmetric with [`normalize_registered_quote_converter`]: raw mark-price wire
+/// acquisition from source bytes into a [`CanonicalMarkPricesTable`] lands in a
+/// FOLLOW-UP slice (bolt-v2 #685). This entry point validates that the converter
+/// is a real registered mark-price adapter for the table family, then fails loud
+/// naming the follow-up — a registered seam that fails loud is not a debt/TODO,
+/// and the canonical table + its NT `MarkPriceUpdate` projection are proven by
+/// the synthetic round-trip test in [`super::catalog_projection`].
+///
+/// # Errors
+///
+/// Returns an error if the converter is not a registered mark-price converter
+/// for the table family, or — until the follow-up acquisition slice — always
+/// (naming that follow-up).
+pub fn normalize_registered_mark_converter(
+    converter_config: &ConverterConfig,
+    accepted: &AcceptedDataset,
+    _identity: &CanonicalInstrumentIdentity,
+    _text: &str,
+    _capture_time_nanos: i64,
+    _ingest_run_id: &str,
+) -> Result<Vec<super::canonical_market_data::CanonicalMarkPricesTable>> {
+    let _adapter = require_registered_mark_converter_for_table_family(
+        &converter_config.identity,
+        &converter_config.version,
+        &accepted.table_family,
+    )?;
+    bail!(
+        "mark-price wire normalizer is a registered seam but its raw acquisition \
+         path lands in a follow-up slice (bolt-v2 #685); the CanonicalMarkPricesTable \
+         contract and its catalog projection are proven by the synthetic round-trip test"
+    )
 }
 
 pub(crate) fn column_index(header_columns: &[String], column_name: &str) -> Result<usize> {

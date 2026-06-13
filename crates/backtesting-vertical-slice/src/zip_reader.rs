@@ -437,8 +437,8 @@ pub fn extract_csv_from_zip(zip_bytes: &[u8]) -> Result<String> {
 mod tests {
     use super::{
         ZIP_CENTRAL_HEADER_SIG, ZIP_EOCD_SIG, ZIP_FLAG_DATA_DESCRIPTOR, ZIP_LOCAL_HEADER_SIG,
-        ZIP_METHOD_DEFLATE, ZIP_METHOD_STORED, ZIP32_SIZE_SENTINEL, ZIP64_EXTRA_ID,
-        extract_csv_from_zip, zip_member_reader, zip64_sizes,
+        ZIP_METHOD_STORED, ZIP32_SIZE_SENTINEL, ZIP64_EXTRA_ID, extract_csv_from_zip,
+        zip_member_reader, zip64_sizes,
     };
     use flate2::Crc;
 

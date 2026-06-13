@@ -539,7 +539,7 @@ fn paged_json_bars_run_spec_end_to_end_single_table() {
         registry_path,
         proof,
         object,
-        RunSpecInstrumentSpecs::Single(CatalogInstrumentSpec::Spot(spot_spec())),
+        RunSpecInstrumentSpecs::Single(Box::new(CatalogInstrumentSpec::Spot(spot_spec()))),
         converter,
         manifest,
     );

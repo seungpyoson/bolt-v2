@@ -36,9 +36,9 @@ use crate::{
         DELTAS_TABLE_FAMILY, INDEX_PRICES_TABLE_FAMILY, MARK_PRICES_TABLE_FAMILY,
         QUOTE_TABLE_FAMILY, RawPayloadConfig, RawPayloadContainer, SourceAdapterKind,
         TRADE_TABLE_FAMILY, normalize_registered_bar_converter,
-        normalize_registered_event_stream_delta_converter,
+        normalize_registered_event_stream_delta_converter, normalize_registered_index_converter,
         normalize_registered_jsonl_multi_interval_bar_converter,
-        normalize_registered_order_book_delta_converter,
+        normalize_registered_mark_converter, normalize_registered_order_book_delta_converter,
         normalize_registered_paged_json_bar_converter, normalize_registered_quote_converter,
         normalize_registered_tar_order_book_delta_converter, require_registered_source_adapter,
         require_registered_source_adapter_for_table_family,
@@ -127,7 +127,11 @@ pub struct RunSpec {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum RunSpecInstrumentSpecs {
-    Single(CatalogInstrumentSpec),
+    // Boxed: `CatalogInstrumentSpec` is ~480 bytes while the keyed map is ~24,
+    // so an unboxed `Single` would bloat every `RunSpecInstrumentSpecs` to the
+    // larger size (clippy::large_enum_variant). The box keeps both variants
+    // small; serde deserializes `Box<T>` transparently for the untagged form.
+    Single(Box<CatalogInstrumentSpec>),
     Keyed(BTreeMap<String, CatalogInstrumentSpec>),
 }
 
@@ -139,7 +143,7 @@ impl RunSpecInstrumentSpecs {
     /// Returns an error when the run-spec carries a keyed spec map.
     pub fn single(&self) -> Result<&CatalogInstrumentSpec> {
         match self {
-            Self::Single(spec) => Ok(spec),
+            Self::Single(spec) => Ok(&**spec),
             Self::Keyed(specs) => anyhow::bail!(
                 "run-spec instrument_spec is keyed ({} entries); this path requires a single spec",
                 specs.len()
@@ -150,7 +154,7 @@ impl RunSpecInstrumentSpecs {
     #[cfg(test)]
     pub(crate) fn single_mut(&mut self) -> Option<&mut CatalogInstrumentSpec> {
         match self {
-            Self::Single(spec) => Some(spec),
+            Self::Single(spec) => Some(&mut **spec),
             Self::Keyed(_) => None,
         }
     }
@@ -1624,32 +1628,50 @@ fn normalize_tables_for_kind(
             .collect()
         }
         SourceAdapterKind::IndexPrices => {
-            // The index-price raw normalizer (data acquisition) is OUT OF SCOPE
-            // for this slice — tracked in bolt-v2 #685. This is the single
-            // fail-loud touchpoint to raw acquisition: an asserted, explicit
-            // boundary, not a TODO/debt. The canonical->NT projection path is
-            // fully wired (project_canonical_index_to_catalog / read_back_index /
-            // logical hash / dispatch) and proven by the synthetic round-trip
-            // tests in catalog_projection.
-            anyhow::bail!(
-                "index-price source normalizer is not yet implemented (data acquisition \
-                 tracked in bolt-v2 #685); the index canonical->NT projection path is \
-                 available via project_canonical_index_to_catalog"
-            )
+            let DecodedPayload::Text(text) = payload else {
+                anyhow::bail!("index-price adapter requires a text payload container");
+            };
+            // The index-price wire normalizer (raw acquisition) is a registered
+            // seam; its parsing path lands in a follow-up slice (bolt-v2 #685,
+            // failing loud naming that follow-up). The canonical index table +
+            // canonical->NT projection + read-back are proven by the synthetic
+            // round-trip tests in catalog_projection. Dispatching through the
+            // seam keeps NormalizedTable::Index on the one normalization path
+            // (no parallel admittance logic).
+            normalize_registered_index_converter(
+                &spec.converter,
+                accepted,
+                spec.identity.single()?,
+                &text,
+                capture_time_nanos,
+                run_id,
+            )?
+            .into_iter()
+            .map(NormalizedTable::Index)
+            .collect()
         }
         SourceAdapterKind::MarkPrices => {
-            // The mark-price raw normalizer (data acquisition) is OUT OF SCOPE
-            // for this slice — tracked in bolt-v2 #685. This is the single
-            // fail-loud touchpoint to raw acquisition: an asserted, explicit
-            // boundary, not a TODO/debt. The canonical->NT projection path is
-            // fully wired (project_canonical_mark_to_catalog / read_back_mark /
-            // logical hash / dispatch) and proven by the synthetic round-trip
-            // tests in catalog_projection.
-            anyhow::bail!(
-                "mark-price source normalizer is not yet implemented (data acquisition \
-                 tracked in bolt-v2 #685); the mark canonical->NT projection path is \
-                 available via project_canonical_mark_to_catalog"
-            )
+            let DecodedPayload::Text(text) = payload else {
+                anyhow::bail!("mark-price adapter requires a text payload container");
+            };
+            // The mark-price wire normalizer (raw acquisition) is a registered
+            // seam; its parsing path lands in a follow-up slice (bolt-v2 #685,
+            // failing loud naming that follow-up). The canonical mark table +
+            // canonical->NT projection + read-back are proven by the synthetic
+            // round-trip tests in catalog_projection. Dispatching through the
+            // seam keeps NormalizedTable::Mark on the one normalization path
+            // (no parallel admittance logic).
+            normalize_registered_mark_converter(
+                &spec.converter,
+                accepted,
+                spec.identity.single()?,
+                &text,
+                capture_time_nanos,
+                run_id,
+            )?
+            .into_iter()
+            .map(NormalizedTable::Mark)
+            .collect()
         }
         SourceAdapterKind::CsvNativeTrades => {
             anyhow::bail!(
@@ -1723,7 +1745,7 @@ fn resolve_instrument_spec<'a>(
                 "run-spec instrument_spec is a single spec but the object produced \
                  {table_count} tables; key specs by canonical_instrument_key"
             );
-            Ok(spec)
+            Ok(&**spec)
         }
         RunSpecInstrumentSpecs::Keyed(specs) => {
             let key = planned.table.canonical_instrument_key()?;

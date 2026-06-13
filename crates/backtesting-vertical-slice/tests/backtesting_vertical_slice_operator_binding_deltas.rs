@@ -535,10 +535,10 @@ fn jsonl_snapshot_deltas_run_spec_end_to_end() {
         registry_path,
         proof,
         object,
-        RunSpecInstrumentSpecs::Single(CatalogInstrumentSpec::Spot(spot_spec(
+        RunSpecInstrumentSpecs::Single(Box::new(CatalogInstrumentSpec::Spot(spot_spec(
             NT_INSTRUMENT_ID,
             INSTRUMENT_ID,
-        ))),
+        )))),
         RunSpecInstrumentIdentities::Single(identity(INSTRUMENT_ID, NT_INSTRUMENT_ID)),
         converter,
         manifest,
@@ -604,10 +604,10 @@ fn tar_jsonl_snapshot_deltas_run_spec_end_to_end_multi_member() {
         registry_path,
         proof,
         object,
-        RunSpecInstrumentSpecs::Single(CatalogInstrumentSpec::Spot(spot_spec(
+        RunSpecInstrumentSpecs::Single(Box::new(CatalogInstrumentSpec::Spot(spot_spec(
             NT_INSTRUMENT_ID,
             INSTRUMENT_ID,
-        ))),
+        )))),
         RunSpecInstrumentIdentities::Single(identity(INSTRUMENT_ID, NT_INSTRUMENT_ID)),
         converter,
         manifest,

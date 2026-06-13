@@ -1438,7 +1438,7 @@ impl BacktestingRunManifest {
                         surface,
                         NtSurfaceClassification::CustomOwned,
                         nt_field,
-                        &format!("operator_catalog_binding:{}", bound_bar_specs.join(",")),
+                        format!("operator_catalog_binding:{}", bound_bar_specs.join(",")),
                     )
                 } else {
                     resolved_surface(
@@ -2182,7 +2182,7 @@ struct AdmittanceRow {
 /// streams (each its own primary fidelity class, per the v3 tier map: Tier A
 /// quotes/index_prices/mark_prices). Their canonical tables and canonical->NT
 /// projections landed in S3 (`project_canonical_{quotes,index,mark}_to_catalog`
-/// + `read_back_{quotes,index,mark}`); the raw venue-wire normalizers that
+/// and `read_back_{quotes,index,mark}`); the raw venue-wire normalizers that
 /// populate those tables from source bytes remain a follow-up slice (bolt-v2
 /// #685). Auxiliary status/close pairing for the three new classes is
 /// deliberately omitted here — each new class carries a single primary row.

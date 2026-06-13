@@ -361,6 +361,28 @@ def provenance_artifact(**overrides: object) -> dict[str, object]:
     return payload
 
 
+def job_payload(name: str, conclusion: object = "success", status: object = "completed") -> dict[str, object]:
+    return {"name": name, "status": status, "conclusion": conclusion}
+
+
+def required_job_payloads(build_conclusion: object = "success") -> list[dict[str, object]]:
+    return [
+        job_payload("detector"),
+        job_payload("fmt-check"),
+        job_payload("deny"),
+        job_payload("clippy"),
+        job_payload("check-aarch64"),
+        job_payload("source-fence"),
+        job_payload("nextest archive"),
+        job_payload("nextest shard 1 of 4"),
+        job_payload("nextest shard 2 of 4"),
+        job_payload("nextest shard 3 of 4"),
+        job_payload("nextest shard 4 of 4"),
+        job_payload("test"),
+        job_payload("build", conclusion=build_conclusion),
+    ]
+
+
 def artifact_zip(record: dict[str, object]) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -373,10 +395,12 @@ class FakeGitHub:
         self,
         *,
         runs_pages: list[list[dict[str, object]]] | object,
+        jobs_by_run_id: dict[int, dict[str, object]] | None = None,
         artifacts_by_run_id: dict[int, dict[str, object]] | None = None,
         records_by_artifact_id: dict[int, dict[str, object]] | None = None,
     ) -> None:
         self.runs_pages = runs_pages
+        self.jobs_by_run_id = jobs_by_run_id or {}
         self.artifacts_by_run_id = artifacts_by_run_id or {}
         self.records_by_artifact_id = records_by_artifact_id or {}
 
@@ -396,6 +420,9 @@ class FakeGitHub:
         if path.startswith("actions/runs/") and path.endswith("/artifacts"):
             run_id = int(path.split("/")[2])
             return self.artifacts_by_run_id.get(run_id, {"artifacts": []})
+        if path.startswith("actions/runs/") and path.endswith("/jobs"):
+            run_id = int(path.split("/")[2])
+            return self.jobs_by_run_id.get(run_id, {"jobs": required_job_payloads()})
         raise AssertionError(f"unexpected JSON request {path} {query}")
 
     def bytes(self, repo: str, token: str, url: str) -> bytes:
@@ -653,6 +680,87 @@ def assert_malformed_api_payload_rejected() -> None:
         assert_raises("workflow runs payload is malformed", lambda: resolve_with_fake(module, config, fake))
 
 
+def assert_job_evidence_success_passes() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        loaded = module.load_config(config)
+        record = valid_record(module, config)
+        module.validate_job_evidence(
+            {"jobs": required_job_payloads()},
+            loaded,
+            record,
+            deploy_reuse_requested=True,
+        )
+
+
+def assert_shard_job_failures_rejected() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        loaded = module.load_config(config)
+        record = valid_record(module, config)
+        missing_shard = [job for job in required_job_payloads() if job["name"] != "nextest shard 4 of 4"]
+        assert_raises(
+            "missing required job nextest shard 4 of 4",
+            lambda: module.validate_job_evidence({"jobs": missing_shard}, loaded, record, deploy_reuse_requested=True),
+        )
+        failed_shard = required_job_payloads()
+        failed_shard[8] = job_payload("nextest shard 2 of 4", "failure")
+        assert_raises(
+            "nextest shard 2 of 4",
+            lambda: module.validate_job_evidence({"jobs": failed_shard}, loaded, record, deploy_reuse_requested=True),
+        )
+        neutral_shard = required_job_payloads()
+        neutral_shard[8] = job_payload("nextest shard 2 of 4", "neutral")
+        assert_raises(
+            "neutral",
+            lambda: module.validate_job_evidence({"jobs": neutral_shard}, loaded, record, deploy_reuse_requested=True),
+        )
+        null_shard = required_job_payloads()
+        null_shard[8] = job_payload("nextest shard 2 of 4", None)
+        assert_raises(
+            "None",
+            lambda: module.validate_job_evidence({"jobs": null_shard}, loaded, record, deploy_reuse_requested=True),
+        )
+
+
+def assert_test_archive_and_build_rules() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        loaded = module.load_config(config)
+        record = valid_record(module, config)
+        missing_archive = [job for job in required_job_payloads() if job["name"] != "nextest archive"]
+        assert_raises(
+            "missing required job nextest archive",
+            lambda: module.validate_job_evidence({"jobs": missing_archive}, loaded, record, deploy_reuse_requested=True),
+        )
+        missing_build = [job for job in required_job_payloads() if job["name"] != "build"]
+        assert_raises(
+            "missing required job build",
+            lambda: module.validate_job_evidence({"jobs": missing_build}, loaded, record, deploy_reuse_requested=True),
+        )
+
+        build_skipped_record = valid_record(module, config)
+        build_skipped_record["conditional_jobs"] = {"build": {"required": False, "result": "skipped"}}
+        module.validate_job_evidence(
+            {"jobs": required_job_payloads(build_conclusion="skipped")},
+            loaded,
+            build_skipped_record,
+            deploy_reuse_requested=False,
+        )
+        assert_raises(
+            "deploy reuse requires build success",
+            lambda: module.validate_job_evidence(
+                {"jobs": required_job_payloads(build_conclusion="skipped")},
+                loaded,
+                build_skipped_record,
+                deploy_reuse_requested=True,
+            ),
+        )
+
+
 def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
@@ -670,6 +778,9 @@ def main() -> int:
     assert_latest_successful_attempt_selected()
     assert_record_attempt_mismatch_rejected()
     assert_malformed_api_payload_rejected()
+    assert_job_evidence_success_passes()
+    assert_shard_job_failures_rejected()
+    assert_test_archive_and_build_rules()
     print("OK: CI provenance self-tests passed.")
     return 0
 

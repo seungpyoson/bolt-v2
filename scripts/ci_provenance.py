@@ -653,6 +653,90 @@ def validate_record_matches_run(record: dict[str, object], run: dict[str, object
             raise ProvenanceError(f"record {record_key} does not match source run {run_key}")
 
 
+def expanded_check_names(config: ProvenanceConfig, logical_job: str) -> tuple[str, ...]:
+    job = config.jobs[logical_job]
+    if job.check_name is not None:
+        return (job.check_name,)
+    if job.check_name_template is None or job.shard_count is None:
+        raise ProvenanceError(f"ci_provenance.full_ci.jobs.{logical_job} has no check name mapping")
+    return tuple(
+        job.check_name_template.format(shard=shard, shard_count=job.shard_count)
+        for shard in range(1, job.shard_count + 1)
+    )
+
+
+def jobs_by_name(jobs_payload: dict[str, object]) -> dict[str, dict[str, object]]:
+    jobs = jobs_payload.get("jobs")
+    if not isinstance(jobs, list):
+        raise ProvenanceError("run jobs payload is malformed")
+    by_name: dict[str, dict[str, object]] = {}
+    for job in jobs:
+        if not isinstance(job, dict):
+            raise ProvenanceError("run jobs payload is malformed")
+        name = job.get("name")
+        if not isinstance(name, str) or not name:
+            raise ProvenanceError("run jobs payload has malformed job name")
+        if name in by_name:
+            raise ProvenanceError(f"run jobs payload has duplicate job name {name}")
+        by_name[name] = job
+    return by_name
+
+
+def require_job_success(by_name: dict[str, dict[str, object]], check_name: str) -> None:
+    job = by_name.get(check_name)
+    if job is None:
+        raise ProvenanceError(f"missing required job {check_name}")
+    status = job.get("status")
+    conclusion = job.get("conclusion")
+    if status != "completed" or conclusion != "success":
+        raise ProvenanceError(f"required job {check_name} was {status!r}/{conclusion!r}")
+
+
+def validate_job_evidence(
+    jobs_payload: dict[str, object],
+    config: ProvenanceConfig,
+    record: dict[str, object],
+    *,
+    deploy_reuse_requested: bool,
+) -> None:
+    by_name = jobs_by_name(jobs_payload)
+    for logical_job in config.required_jobs:
+        for check_name in expanded_check_names(config, logical_job):
+            require_job_success(by_name, check_name)
+
+    conditional_jobs = record.get("conditional_jobs")
+    if not isinstance(conditional_jobs, dict):
+        raise ProvenanceError("record conditional_jobs must be an object")
+    for logical_job in config.conditional_jobs:
+        job_config = config.jobs[logical_job]
+        if job_config.check_name is None:
+            raise ProvenanceError(f"ci_provenance.full_ci.jobs.{logical_job}.check_name missing")
+        payload = conditional_jobs.get(logical_job)
+        if not isinstance(payload, dict):
+            raise ProvenanceError(f"record conditional_jobs.{logical_job} must be an object")
+        required = payload.get("required")
+        if not isinstance(required, bool):
+            raise ProvenanceError(f"record conditional_jobs.{logical_job}.required must be boolean")
+        job = by_name.get(job_config.check_name)
+        if required:
+            require_job_success(by_name, job_config.check_name)
+            continue
+        if deploy_reuse_requested:
+            if job is None:
+                raise ProvenanceError(f"missing required job {job_config.check_name}")
+            if job.get("status") != "completed" or job.get("conclusion") != "success":
+                raise ProvenanceError("deploy reuse requires build success")
+            continue
+        if job is None:
+            continue
+        conclusion = job.get("conclusion")
+        status = job.get("status")
+        if status != "completed" or conclusion not in {"success", "skipped"}:
+            raise ProvenanceError(
+                f"conditional job {job_config.check_name} was {status!r}/{conclusion!r}"
+            )
+
+
 def resolve_exact_sha_evidence(
     *,
     repo: str,
@@ -771,6 +855,14 @@ def resolve_exact_sha_evidence(
             expected_workflow_digest=expected_workflow_digest,
         )
         validate_record_matches_run(record, run)
+        run_id = positive_int_value(run.get("id"), "workflow run id")
+        jobs_payload = api_json(
+            repo,
+            token,
+            f"actions/runs/{run_id}/jobs",
+            {"per_page": str(config.run_jobs_per_page)},
+        )
+        validate_job_evidence(jobs_payload, config, record, deploy_reuse_requested=True)
         return ResolvedEvidence(run=run, artifact=artifact, record=record)
 
     raise ProvenanceError(f"no valid provenance evidence found for exact SHA {requested_sha}")

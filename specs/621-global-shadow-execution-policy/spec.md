@@ -2,7 +2,7 @@
 
 **Feature Branch**: `codex/621-global-shadow-mode`
 **Created**: 2026-06-13
-**Status**: Draft, blocked on internal and external adversarial review
+**Status**: Implemented; review gate passed and exact-head PR CI passed
 **Input**: User request to review merged PR #621 and make the shadow/no-submit behavior global, shared, and no longer bound to `binary_oracle_edge_taker`.
 
 ## User Scenarios & Testing

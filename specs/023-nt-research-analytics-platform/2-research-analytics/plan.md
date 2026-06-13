@@ -180,9 +180,13 @@ optional optimization.
 ## Verdict And Re-Measurement Rules
 
 RA owns the subjective verdict; the BTE emits objective results only. There is no
-promotion machine, no Artifact Index commit ceremony, no multi-state package
-enum, no proof-pin/run-purpose enum threading, and no lifecycle-metadata
-slotting.
+standing promotion machine, no multi-state package enum, no proof-pin/run-purpose
+enum threading, and no promotion-package-specific Artifact Index or lifecycle
+layer. The verdict is an ordinary field on the RA `experiment-results` artifact,
+which commits into the shared `research-analytics` Artifact Index snapshot and
+records its lifecycle state like every other RA artifact (see
+`../reference/data-model.md` and `../reference/contracts.md`) — there is simply no
+second, promotion-only index or lifecycle machine layered on top of that.
 
 - The BTE emits an objective `BacktestResult` — the in-process NT object the
   persisted `BacktestResultContract` is built from. RA, out-of-process, reads the

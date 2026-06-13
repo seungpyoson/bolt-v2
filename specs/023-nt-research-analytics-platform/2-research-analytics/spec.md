@@ -192,8 +192,10 @@ not fully cover research analytics, alpha exploration, or findings.
 - No provider recorder or data-lake capture expansion.
 - No custom PnL/account truth.
 - No standing promotion machine (6-state enum, approved-for-config checklist,
-  lifecycle/Artifact-Index ceremony); a promotion gate exists only when a real
-  finding needs one.
+  promotion-package-specific lifecycle/Artifact-Index layer); a promotion gate
+  exists only when a real finding needs one. The verdict itself still rides on the
+  ordinary RA `experiment-results` artifact and the shared `research-analytics`
+  Artifact Index (see `../reference/data-model.md`).
 
 ## Acceptance
 

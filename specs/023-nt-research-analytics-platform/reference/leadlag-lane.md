@@ -8,8 +8,8 @@ Related: #676 (RA rearchitecture), #677 (converter capture-timestamp sunset).
 
 `scripts/leadlag_*.py` is a read-only research lane that produced a real
 GO/NO-GO trading verdict (issues #617 / #626 / #631) with a defined
-re-measurement cadence — no ceremony, no Artifact Index, no promotion
-machinery.
+re-measurement cadence — no promotion ceremony, no promotion package, no
+lifecycle state machine.
 
 Key properties:
 
@@ -42,10 +42,15 @@ The lane demonstrates the correct RA shape:
    parallel runner. RA must never import NT's Cython/Python backtest engine
    (`nautilus_trader.backtest.engine` / `.node`) — see `../2-research-analytics/spec.md` Single-Engine
    Invariant.
-2. **Verdict over artifact index.** The lead-lag lane shipped a trading decision
-   with a markdown report and a re-run script. No index file tracked the
-   artifact. This is the pattern: lightweight provenance (content hash +
-   report path) not a lifecycle state machine.
+2. **Lightweight verdict, not a promotion machine.** The lead-lag lane shipped a
+   trading decision with a markdown report and a re-run script — no 6-state
+   promotion package, no proof-pin enum, no lifecycle state machine. That
+   lightweight spirit is the template, not the absence of provenance: in the
+   productionized RA the same verdict is stored as a field on the
+   `experiment-results` artifact, which commits into the shared
+   `research-analytics` Artifact Index and records lifecycle state like every
+   other RA artifact (see `../reference/data-model.md`). There is no separate
+   promotion-package index or lifecycle layer on top of it.
 3. **Cadence over gates.** Re-measurement is scheduled (cadence policy in
    docstring) not gated on a `promotion_state` transition. Add a gate only when
    a real finding exists to gate on.

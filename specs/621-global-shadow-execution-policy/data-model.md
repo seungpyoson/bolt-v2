@@ -56,7 +56,9 @@ Shared result of routing a compiled order through policy and admission.
 Values:
 
 - `Submitted`: live mode admitted and called NT submit
-- `SkippedByPolicy`: shadow mode admitted or rejected consistently with submit admission, then suppressed NT submit
+- `SkippedByPolicy`: shadow mode admitted the submit request, then suppressed NT submit
+
+Admission rejection is not a `SubmitRoutingOutcome`: the shared submit helper returns the existing admission error and does not call NT submit. This preserves strategy error handling that clears pending state after rejected shadow submits.
 
 The Rust outcome names are `BoltV3SubmitRoutingOutcome::Submitted` and `BoltV3SubmitRoutingOutcome::SkippedByPolicy`. Tests must distinguish live submit from shadow skip without reading strategy config.
 

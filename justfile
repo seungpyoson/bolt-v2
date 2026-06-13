@@ -264,6 +264,9 @@ ci-lint-workflow:
     if ! python3 scripts/test_verify_ci_workflow_hygiene.py; then
         failed=1
     fi
+    if ! python3 scripts/test_ci_provenance.py; then
+        failed=1
+    fi
     if ! python3 scripts/test_find_same_sha_main_evidence.py; then
         failed=1
     fi

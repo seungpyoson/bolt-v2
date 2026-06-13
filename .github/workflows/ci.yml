@@ -3,6 +3,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
     # paths-ignore is intentionally narrow: only explicitly-listed root-level
     # agent docs and pure-config dirs whose contents are NOT consumed by any
     # build/test/lint script. Do NOT add '**.md' or 'docs/**' — both contain
@@ -30,13 +31,28 @@ on:
     # defense-in-depth against direct-to-main commits.
     branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      full_ci:
+        description: "Run full CI for the selected ref"
+        required: false
+        default: "true"
 
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && format('pr-{0}-deferred', github.event.number)
+        || github.event_name == 'pull_request'
+        && format('pr-{0}-full', github.event.number)
+        || github.event_name == 'workflow_dispatch'
+        && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) }}
 
 env:
   JUST_VERSION: "1.49.0"
@@ -49,6 +65,33 @@ permissions:
   actions: read
 
 jobs:
+  ci-policy:
+    name: ci-policy
+    outputs:
+      ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
+      full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
+      full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}
+      reason: ${{ steps.policy.outputs.reason }}
+      ignore_emit_failure: ${{ steps.policy.outputs.ignore_emit_failure }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Compute CI policy
+        id: policy
+        shell: bash
+        run: >
+          python3 scripts/ci_provenance.py ci-policy
+          --event-name "${{ github.event_name }}"
+          --event-action "${{ github.event.action || '' }}"
+          --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --ref "${{ github.ref }}"
+          | tee -a "$GITHUB_OUTPUT"
+
   detector:
     name: detector
     outputs:
@@ -88,6 +131,8 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
           elif [[ "${{ steps.build_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
@@ -185,7 +230,8 @@ jobs:
 
   check-aarch64:
     name: check-aarch64
-    needs: detector
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'tag_reuse' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -237,8 +283,8 @@ jobs:
 
   source-fence:
     name: source-fence
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -294,8 +340,8 @@ jobs:
   # `gate` job below.
   test-archive:
     name: nextest archive
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
@@ -371,8 +417,8 @@ jobs:
 
   test-shards:
     name: nextest shard ${{ matrix.shard }} of 4
-    needs: test-archive
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, test-archive]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     strategy:
       fail-fast: false
@@ -416,8 +462,8 @@ jobs:
 
   test:
     name: test
-    needs: test-shards
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}
+    needs: [ci-policy, test-shards]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - name: Check test shards
@@ -430,8 +476,8 @@ jobs:
 
   build:
     name: build
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.outputs.build_required == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -502,8 +548,8 @@ jobs:
 
   ci-provenance-emit:
     name: ci-provenance-emit
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]
-    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -573,20 +619,31 @@ jobs:
         run: python3 scripts/find_same_sha_main_evidence.py
 
   gate:
-    name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]
+    name: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == true
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && 'gate-deferred'
+          || 'gate' }}
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - name: Check required lanes
         shell: bash
         run: |
-          tag_ref="${{ startsWith(github.ref, 'refs/tags/v') }}"
+          policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
+          full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
+          ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"
+          if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
+            echo "ci-policy did not succeed"
+            exit 1
+          fi
           if [[ "${{ needs.detector.result }}" != "success" ]]; then
             echo "detector did not succeed"
             exit 1
           fi
-          if [[ "$tag_ref" == "true" ]]; then
+          if [[ "$policy_path" == "tag_reuse" ]]; then
             if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
               echo "same-sha-main-evidence did not succeed"
               exit 1
@@ -631,9 +688,28 @@ jobs:
             echo "same-sha-main-evidence unexpectedly ran outside tag reuse"
             exit 1
           fi
-          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
-            echo "ci-provenance-emit did not succeed"
+          defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}"
+          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
+            if [[ "$defer_run_context" != "true" ]]; then
+              echo "deferred CI policy outside deferred draft PR context"
+              exit 1
+            fi
+            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
+            exit 0
+          fi
+          if [[ "$policy_path" == "full" ]]; then
+            echo "full CI required"
+          else
+            echo "unknown CI policy path '$policy_path'"
             exit 1
+          fi
+          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
+            if [[ "$ignore_emit_failure" == "true" ]]; then
+              echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
+            else
+              echo "ci-provenance-emit did not succeed"
+              exit 1
+            fi
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
             echo "fmt-check did not succeed"

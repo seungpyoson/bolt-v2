@@ -90,6 +90,15 @@ FORBIDDEN_RULES: tuple[Rule, ...] = (
             r"|(?<![A-Za-z0-9_])flatten_all_positions(?![A-Za-z0-9_])"
         ),
     ),
+    Rule(
+        "global kill-switch flatten supervisor policy",
+        re.compile(
+            r"(?<![A-Za-z0-9_])bolt_v3_kill_switch_flatten(?![A-Za-z0-9_])"
+            r"|(?<![A-Za-z0-9_])BoltV3KillSwitchFlatten[A-Za-z0-9_]*"
+            r"|(?<![A-Za-z0-9_])flatten_supervisor(?![A-Za-z0-9_])"
+            r"|(?<![A-Za-z0-9_])plan_flatten(?![A-Za-z0-9_])"
+        ),
+    ),
 )
 
 

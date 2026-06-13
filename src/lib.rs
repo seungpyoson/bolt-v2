@@ -11,6 +11,7 @@ pub mod bolt_v3_instrument_filters;
 pub mod bolt_v3_kill_switch;
 pub mod bolt_v3_kill_switch_action_router;
 pub mod bolt_v3_kill_switch_cancel;
+pub mod bolt_v3_kill_switch_flatten;
 pub mod bolt_v3_kill_switch_store;
 pub mod bolt_v3_live_node;
 pub mod bolt_v3_loss_governor;

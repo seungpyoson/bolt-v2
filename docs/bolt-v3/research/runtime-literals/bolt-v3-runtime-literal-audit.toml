@@ -10367,3 +10367,19 @@ literal = '''"accepted-but-not-terminal"'''
 context = '''"accepted-but-not-terminal" => {'''
 classification = '''kill_switch_cancel_surface_config_token'''
 reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch_flatten.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''for right in candidates.iter().skip(index + 1) {'''
+classification = '''kill_switch_flatten_pairwise_scan_offset'''
+reason = '''Loop offset used to compare each NT position-proof candidate pair exactly once when detecting conflicting cache/report evidence; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"order_template"'''
+context = '''"order_template",'''
+classification = '''kill_switch_flatten_order_template_diagnostic_field'''
+reason = '''Field label passed to the shared NT order-template validator for TOML validation diagnostics; not a runtime trading value.'''

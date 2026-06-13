@@ -422,7 +422,12 @@ impl CsvTimestampUnit {
         let value: i64 = raw.parse().context("timestamp is not an integer")?;
         let multiplier = match self {
             Self::Seconds => NANOS_PER_SECOND,
-            Self::DecimalSeconds => unreachable!("decimal seconds handled before integer parsing"),
+            // DecimalSeconds returns via decimal_seconds_to_nanos above before any
+            // integer parse; reaching this arm is an internal invariant breach, so
+            // fail loud instead of panicking.
+            Self::DecimalSeconds => {
+                bail!("internal: decimal seconds must be handled before integer parsing")
+            }
             Self::Milliseconds => 1_000_000,
             Self::Microseconds => 1_000,
             Self::Nanoseconds => 1,
@@ -950,7 +955,7 @@ pub fn normalize_registered_bar_converter(
                 csv_text,
                 capture_time_nanos,
                 ingest_run_id,
-                super::canonical_bars::BAR_TRANSFORM_IDENTITY,
+                BAR_TRANSFORM_IDENTITY,
             )
         }
         SourceAdapterKind::CsvNativeTrades => {

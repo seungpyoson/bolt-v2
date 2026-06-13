@@ -375,7 +375,9 @@ def github_api_bytes(repo: str, token: str, url: str) -> bytes:
             old_host = urllib.parse.urlparse(req.full_url).netloc
             new_host = urllib.parse.urlparse(redirected.full_url).netloc
             if old_host != new_host:
-                redirected.remove_header("Authorization")
+                for header in tuple(redirected.headers):
+                    if header.lower() in {"authorization", "accept", "x-github-api-version"}:
+                        redirected.remove_header(header)
             return redirected
 
     opener = urllib.request.build_opener(SafeRedirectHandler())
@@ -788,7 +790,9 @@ def resolve_exact_sha_evidence(
             if not isinstance(run, dict):
                 raise ProvenanceError("workflow runs payload is malformed")
             created_at = run.get("created_at")
-            if isinstance(created_at, str) and parse_timestamp(created_at) < cutoff:
+            if not isinstance(created_at, str):
+                raise ProvenanceError("workflow run created_at must be a string")
+            if parse_timestamp(created_at) < cutoff:
                 if not candidates:
                     raise ProvenanceError("lookback age limit exhausted before candidate evidence was found")
                 break
@@ -825,6 +829,8 @@ def resolve_exact_sha_evidence(
         artifacts = artifacts_payload.get("artifacts")
         if not isinstance(artifacts, list):
             raise ProvenanceError(f"source run {run_id} artifacts payload is malformed")
+        if len(artifacts) >= config.run_artifacts_per_page:
+            raise ProvenanceError(f"source run {run_id} artifacts page is saturated")
         expected_name = provenance_artifact_name(config, run_attempt)
         matches = [
             artifact
@@ -870,6 +876,11 @@ def resolve_exact_sha_evidence(
             f"actions/runs/{run_id}/jobs",
             {"per_page": str(config.run_jobs_per_page)},
         )
+        jobs = jobs_payload.get("jobs")
+        if not isinstance(jobs, list):
+            raise ProvenanceError(f"source run {run_id} jobs payload is malformed")
+        if len(jobs) >= config.run_jobs_per_page:
+            raise ProvenanceError(f"source run {run_id} jobs page is saturated")
         validate_job_evidence(jobs_payload, config, record, deploy_reuse_requested=True)
         return ResolvedEvidence(run=run, artifact=artifact, record=record)
 

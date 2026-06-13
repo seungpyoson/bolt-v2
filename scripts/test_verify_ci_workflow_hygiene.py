@@ -4681,6 +4681,38 @@ def main() -> int:
         ),
     )
     assert_error(
+        "ci-provenance-emit must pass detector result from needs.detector.result",
+        replace_once(
+            BASE_WORKFLOW,
+            "--required-job detector=${{ needs.detector.result }}",
+            "--required-job detector=success\n          printf '%s\\n' '${{ needs.detector.result }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must pass build.required from needs.detector.outputs.build_required",
+        replace_once(
+            BASE_WORKFLOW,
+            "--conditional-job build.required=${{ needs.detector.outputs.build_required }}",
+            "--conditional-job build.required=true\n          printf '%s\\n' '${{ needs.detector.outputs.build_required }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must pass build.result from needs.build.result",
+        replace_once(
+            BASE_WORKFLOW,
+            "--conditional-job build.result=${{ needs.build.result }}",
+            "--conditional-job build.result=success\n          printf '%s\\n' '${{ needs.build.result }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            BASE_WORKFLOW,
+            "--nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
+            "--nextest-fingerprint-path .ci-provenance/wrong/cache-key.txt",
+        ),
+    )
+    assert_error(
         "actions/upload-artifact must be pinned to a 40-character SHA",
         replace_once(
             BASE_WORKFLOW,

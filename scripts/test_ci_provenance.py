@@ -573,6 +573,10 @@ def assert_github_api_bytes_strips_authorization_on_cross_host_redirect() -> Non
     redirected_headers = seen_headers.get(timeout=5)
     if "Authorization" in redirected_headers:
         raise AssertionError(f"redirected request leaked authorization: {redirected_headers}")
+    if "Accept" in redirected_headers:
+        raise AssertionError(f"redirected request leaked GitHub Accept header: {redirected_headers}")
+    if "X-GitHub-Api-Version" in redirected_headers:
+        raise AssertionError(f"redirected request leaked GitHub API version header: {redirected_headers}")
 
 
 def assert_record_schema_requires_head_and_tested_sha() -> None:
@@ -686,6 +690,14 @@ def assert_lookback_age_exhaustion_fails() -> None:
         assert_raises("lookback age limit exhausted", lambda: resolve_with_fake(module, config, fake))
 
 
+def assert_missing_created_at_fails_closed() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        fake = FakeGitHub(runs_pages=[[run_payload(created_at=None)]])
+        assert_raises("workflow run created_at must be a string", lambda: resolve_with_fake(module, config, fake))
+
+
 def assert_artifact_rejections() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -719,6 +731,36 @@ def assert_artifact_rejections() -> None:
             "multiple provenance artifacts for attempt 1",
             lambda: resolve_with_fake(module, config, multi_same_attempt),
         )
+
+
+def assert_artifact_page_saturation_fails_closed() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        artifacts = [provenance_artifact(id=index, name=f"unrelated-{index}") for index in range(100)]
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={RUN_ID: {"artifacts": artifacts}},
+        )
+        assert_raises("artifacts page is saturated", lambda: resolve_with_fake(module, config, fake))
+
+
+def assert_jobs_page_saturation_fails_closed() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = valid_record(module, config)
+        jobs = required_job_payloads() + [
+            job_payload(f"extra-{index}") for index in range(100 - len(required_job_payloads()))
+        ]
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact(id=1)]}},
+            records_by_artifact_id={1: record},
+            jobs_by_run_id={RUN_ID: {"jobs": jobs}},
+        )
+        assert_raises("jobs page is saturated", lambda: resolve_with_fake(module, config, fake))
 
 
 def assert_latest_successful_attempt_selected() -> None:
@@ -870,7 +912,10 @@ def main() -> int:
     assert_no_candidate_evidence_fails()
     assert_lookback_exhaustion_fails()
     assert_lookback_age_exhaustion_fails()
+    assert_missing_created_at_fails_closed()
     assert_artifact_rejections()
+    assert_artifact_page_saturation_fails_closed()
+    assert_jobs_page_saturation_fails_closed()
     assert_latest_successful_attempt_selected()
     assert_record_attempt_mismatch_rejected()
     assert_malformed_api_payload_rejected()

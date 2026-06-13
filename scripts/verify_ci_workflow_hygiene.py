@@ -5473,13 +5473,21 @@ def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
 
 def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]) -> list[str]:
     text = uncommented_text(job_lines)
-    missing = []
+    errors = []
     for need in needs:
-        if f"needs.{need}.result" not in text:
-            missing.append(need)
-    if "needs.detector.outputs.build_required" not in text:
-        missing.append("detector.build_required")
-    return missing
+        if need == "build":
+            expected = "--conditional-job build.result=${{ needs.build.result }}"
+            if expected not in text:
+                errors.append("ci-provenance-emit must pass build.result from needs.build.result")
+            continue
+        expected = f"--required-job {need}=${{{{ needs.{need}.result }}}}"
+        if expected not in text:
+            errors.append(f"ci-provenance-emit must pass {need} result from needs.{need}.result")
+    if "--conditional-job build.required=${{ needs.detector.outputs.build_required }}" not in text:
+        errors.append("ci-provenance-emit must pass build.required from needs.detector.outputs.build_required")
+    if "--nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt" not in text:
+        errors.append("ci-provenance-emit fingerprint download path must match emitter argument")
+    return errors
 
 
 def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) -> list[str]:
@@ -6103,10 +6111,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("ci-provenance-emit must skip tag reuse")
         if not ci_provenance_emit_runs_emitter(emit_lines):
             errors.append("ci-provenance-emit must run provenance emitter")
-        for missing in ci_provenance_emit_checks_needs(
-            emit_lines, (*CI_PROVENANCE_REQUIRED_JOBS, "build")
-        ):
-            errors.append(f"ci-provenance-emit must evaluate needs.{missing}.result")
+        errors.extend(ci_provenance_emit_checks_needs(emit_lines, (*CI_PROVENANCE_REQUIRED_JOBS, "build")))
         errors.extend(
             ci_provenance_emit_upload_errors(
                 emit_lines,

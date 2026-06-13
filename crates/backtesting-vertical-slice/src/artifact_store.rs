@@ -15,8 +15,16 @@ use crate::run_manifest::MarketStructureFixture;
 #[serde(deny_unknown_fields)]
 pub struct ArtifactStoreConfig {
     pub artifact_root: String,
+    pub create_only_probe: CreateOnlyProbeConfig,
     pub subpaths: ArtifactSubpaths,
     pub lifecycle: ArtifactLifecycleConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateOnlyProbeConfig {
+    pub prefix: String,
+    pub object_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +101,7 @@ pub enum ArtifactKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedArtifactRoot {
     artifact_root: String,
+    create_only_probe: CreateOnlyProbeConfig,
     subpaths: ArtifactSubpaths,
     lifecycle: ArtifactLifecyclePolicy,
 }
@@ -104,6 +113,13 @@ impl ArtifactStoreConfig {
     /// valid artifact-store paths.
     pub fn resolve(&self) -> Result<ResolvedArtifactRoot> {
         let artifact_root = normalize_artifact_root(&self.artifact_root)?;
+        let create_only_probe = CreateOnlyProbeConfig {
+            prefix: normalize_subpath("create_only_probe.prefix", &self.create_only_probe.prefix)?,
+            object_name: normalize_subpath(
+                "create_only_probe.object_name",
+                &self.create_only_probe.object_name,
+            )?,
+        };
         let subpaths = ArtifactSubpaths {
             raw: normalize_subpath("subpaths.raw", &self.subpaths.raw)?,
             nt_catalog: normalize_subpath("subpaths.nt_catalog", &self.subpaths.nt_catalog)?,
@@ -122,8 +138,10 @@ impl ArtifactStoreConfig {
             )?,
         };
         ensure_unique_subpaths(&subpaths)?;
+        ensure_probe_prefix_is_private(&create_only_probe, &subpaths)?;
         Ok(ResolvedArtifactRoot {
             artifact_root,
+            create_only_probe,
             subpaths,
             lifecycle: self.lifecycle.resolve()?,
         })
@@ -170,6 +188,15 @@ impl ResolvedArtifactRoot {
             "pointers",
             &format!("kind={}", kind.index_label()),
             "latest.json",
+        ])
+    }
+
+    #[must_use]
+    pub fn create_only_probe_uri(&self, probe_id: &str) -> String {
+        self.join([
+            self.create_only_probe.prefix.as_str(),
+            &format!("probe={probe_id}"),
+            self.create_only_probe.object_name.as_str(),
         ])
     }
 
@@ -377,6 +404,13 @@ pub struct PersistedCatalogProjection {
     pub objects: Vec<PersistedCatalogProjectionObject>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateOnlyProbeTranscript {
+    pub probe_uri: String,
+    pub first_create_succeeded: bool,
+    pub duplicate_create_rejected: bool,
+}
+
 impl CatalogDispatchConfig {
     /// # Errors
     ///
@@ -530,6 +564,36 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
             .await
             .with_context(|| format!("create-only put {path}"))?;
         Ok(())
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the probe object cannot be created once or if the
+    /// store accepts a duplicate create to the same object.
+    pub async fn probe_create_only(
+        &self,
+        artifact_root: &ResolvedArtifactRoot,
+        probe_id: &str,
+    ) -> Result<CreateOnlyProbeTranscript> {
+        ensure_path_token("create_only_probe_id", probe_id, PathTokenMode::AllowEquals)?;
+        let probe_uri = artifact_root.create_only_probe_uri(probe_id);
+        let path = artifact_root.object_path_for_uri(&probe_uri)?;
+        let payload = probe_id.as_bytes().to_vec();
+        self.put_create(&path, payload.clone())
+            .await
+            .with_context(|| format!("create-only probe first write {probe_uri}"))?;
+
+        match self.put_create(&path, payload).await {
+            Ok(()) => bail!("create-only probe accepted duplicate write to {probe_uri}"),
+            Err(err) if is_create_only_conflict(&err) => Ok(CreateOnlyProbeTranscript {
+                probe_uri,
+                first_create_succeeded: true,
+                duplicate_create_rejected: true,
+            }),
+            Err(err) => Err(err).with_context(|| {
+                format!("create-only probe duplicate write failed unexpectedly for {probe_uri}")
+            }),
+        }
     }
 
     /// # Errors
@@ -1461,6 +1525,10 @@ fn build_rebased_snapshot(
 }
 
 fn is_pointer_commit_conflict(err: &anyhow::Error) -> bool {
+    is_create_only_conflict(err)
+}
+
+fn is_create_only_conflict(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         cause
             .downcast_ref::<object_store::Error>()
@@ -1516,6 +1584,25 @@ fn ensure_unique_subpaths(subpaths: &ArtifactSubpaths) -> Result<()> {
     ensure!(
         unique.len() == values.len(),
         "artifact subpaths must be unique"
+    );
+    Ok(())
+}
+
+fn ensure_probe_prefix_is_private(
+    create_only_probe: &CreateOnlyProbeConfig,
+    subpaths: &ArtifactSubpaths,
+) -> Result<()> {
+    let values = [
+        subpaths.raw.as_str(),
+        subpaths.nt_catalog.as_str(),
+        subpaths.source_proofs.as_str(),
+        subpaths.backtests.as_str(),
+        subpaths.artifact_index.as_str(),
+        subpaths.research_analytics.as_str(),
+    ];
+    ensure!(
+        !values.contains(&create_only_probe.prefix.as_str()),
+        "create_only_probe.prefix must not reuse an artifact subpath"
     );
     Ok(())
 }

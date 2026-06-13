@@ -33,6 +33,17 @@ def write_file(root: Path, rel: str, text: str) -> Path:
 
 def compliant_artifact_store() -> str:
     return """
+pub struct CreateOnlyProbeConfig;
+pub struct CreateOnlyProbeTranscript { pub duplicate_create_rejected: bool }
+
+fn create_only_probe_uri() {}
+
+impl CreateOnlyArtifactWriter {
+    pub async fn probe_create_only() {
+        let _duplicate_create_rejected = true;
+    }
+}
+
 pub async fn persist_catalog_projection_for_source_binding() {
     let _dispatch: CatalogDispatchConfig;
     let _root = dispatch.catalog_root_for(source_binding, artifact_root)?;
@@ -50,9 +61,11 @@ use crate::artifact_store::{{ArtifactStoreConfig, CatalogDispatchConfig}};
 pub struct RunSpec {{
     pub artifact_store: ArtifactStoreConfig,
     pub catalog_dispatch: CatalogDispatchConfig,
+    pub create_only_probe_id: String,
 }}
 
 pub fn run_from_run_spec_with_artifact_store() {{
+    let create_only_probe_transcript = writer.probe_create_only();
     persist_catalog_projection_for_source_binding();
 }}
 """
@@ -60,6 +73,10 @@ pub fn run_from_run_spec_with_artifact_store() {{
 
 def compliant_test() -> str:
     return """
+fn create_only_probe_requires_duplicate_create_rejection() {
+    let _store = InMemory::new();
+}
+
 fn persists_catalog_projection_directory_with_create_only_dispatch() {
     let _store = InMemory::new();
     persist_catalog_projection_for_source_binding();
@@ -89,6 +106,20 @@ def write_compliant_tree(root: Path) -> None:
         root,
         "justfile",
         "verify-ra-gate0-catalog-persistence:\n    python3 scripts/verify_ra_gate0_catalog_persistence.py\n",
+    )
+    write_file(
+        root,
+        (
+            "specs/023-nt-research-analytics-platform/reference/"
+            "backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
+        ),
+        """
+create_only_probe_id = "probe-run"
+
+[artifact_store.create_only_probe]
+prefix = ".writer-probe"
+object_name = "sentinel"
+""",
     )
 
 

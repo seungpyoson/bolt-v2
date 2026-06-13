@@ -14,6 +14,7 @@ capture_time_utc = "2026-06-02T04:27:02Z"   # ingest manifest completed_at
 created_at_utc = "2026-06-02T00:00:00Z"
 accepted_by = "backtesting-vertical-slice-operator"
 accepted_at_utc = "2026-06-02T00:00:00Z"
+create_only_probe_id = "backtesting-vertical-slice-bnbusdc-2026-03-01"
 
 [accepted_object]
 s3_uri = "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BNBUSDC/object=d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598.csv.gz"
@@ -149,6 +150,10 @@ nt_instrument_id = "BNBUSDC.BYBIT"
 
 [artifact_store]
 artifact_root = "s3://bolt-parquet/nt-research-analytics"
+
+[artifact_store.create_only_probe]
+prefix = ".writer-probe"
+object_name = "sentinel"
 
 [artifact_store.subpaths]
 raw = "raw"

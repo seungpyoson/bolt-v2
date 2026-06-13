@@ -22,7 +22,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     artifact_store::{
-        ArtifactStoreConfig, CatalogDispatchConfig, PersistedCatalogProjectionObject,
+        ArtifactStoreConfig, CatalogDispatchConfig, CreateOnlyArtifactWriter,
+        CreateOnlyProbeTranscript, PersistedCatalogProjectionObject,
         persist_catalog_projection_for_source_binding,
     },
     canonical_trades::CanonicalInstrumentIdentity,
@@ -62,6 +63,7 @@ pub struct RunSpec {
     pub manifest: BacktestingRunManifest,
     pub artifact_store: ArtifactStoreConfig,
     pub catalog_dispatch: CatalogDispatchConfig,
+    pub create_only_probe_id: String,
 }
 
 /// Artifacts produced by an operator run.
@@ -75,6 +77,7 @@ pub struct RunArtifacts {
     pub proof_path: PathBuf,
     pub contract_path: PathBuf,
     pub canonical_catalog_uri: Option<String>,
+    pub create_only_probe_transcript: Option<CreateOnlyProbeTranscript>,
     pub persisted_catalog_objects: Vec<PersistedCatalogProjectionObject>,
     pub output: BacktestRunOutput,
 }
@@ -215,6 +218,7 @@ pub fn run_from_run_spec(
         proof_path,
         contract_path,
         canonical_catalog_uri: None,
+        create_only_probe_transcript: None,
         persisted_catalog_objects: Vec::new(),
         output,
     })
@@ -236,6 +240,10 @@ pub async fn run_from_run_spec_with_artifact_store(
 ) -> Result<RunArtifacts> {
     let mut artifacts = run_from_run_spec(spec, gz_bytes, output_dir)?;
     let artifact_root = spec.artifact_store.resolve()?;
+    let writer = CreateOnlyArtifactWriter::new(store);
+    let create_only_probe_transcript = writer
+        .probe_create_only(&artifact_root, &spec.create_only_probe_id)
+        .await?;
     let persisted = persist_catalog_projection_for_source_binding(
         store,
         &artifact_root,
@@ -253,6 +261,7 @@ pub async fn run_from_run_spec_with_artifact_store(
     )
     .with_context(|| format!("write {}", artifacts.contract_path.display()))?;
     artifacts.canonical_catalog_uri = Some(persisted.catalog_root_uri);
+    artifacts.create_only_probe_transcript = Some(create_only_probe_transcript);
     artifacts.persisted_catalog_objects = persisted.objects;
     Ok(artifacts)
 }

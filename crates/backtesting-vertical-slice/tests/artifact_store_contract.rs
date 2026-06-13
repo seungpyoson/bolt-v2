@@ -26,6 +26,10 @@ fn artifact_config_toml() -> &'static str {
     r#"
 artifact_root = "s3://bolt-ra-artifacts/prod"
 
+[create_only_probe]
+prefix = ".writer-probe"
+object_name = "sentinel"
+
 [subpaths]
 raw = "raw"
 nt_catalog = "nt-catalog"
@@ -246,6 +250,36 @@ fn dispatches_source_bindings_to_catalog_projection_roots_without_venue_paths() 
     assert!(!binary.contains("official"));
     assert!(!perps.contains("official"));
     assert!(dispatch.catalog_root_for("missing-binding", &root).is_err());
+}
+
+#[tokio::test]
+async fn create_only_probe_requires_duplicate_create_rejection() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let writer = CreateOnlyArtifactWriter::new(&store);
+
+    let transcript = writer
+        .probe_create_only(&root, "probe-run-123")
+        .await
+        .expect("create-only probe");
+
+    assert_eq!(
+        transcript.probe_uri,
+        "s3://bolt-ra-artifacts/prod/.writer-probe/probe=probe-run-123/sentinel"
+    );
+    assert!(transcript.first_create_succeeded);
+    assert!(transcript.duplicate_create_rejected);
+    let probe_path = root
+        .object_path_for_uri(&transcript.probe_uri)
+        .expect("probe uri under artifact root");
+    let stored = store
+        .get(&probe_path)
+        .await
+        .expect("created probe object")
+        .bytes()
+        .await
+        .expect("probe object bytes");
+    assert_eq!(stored.as_ref(), b"probe-run-123");
 }
 
 #[tokio::test]

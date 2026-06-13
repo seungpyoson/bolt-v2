@@ -13,9 +13,18 @@ ARTIFACT_STORE = Path("crates/backtesting-vertical-slice/src/artifact_store.rs")
 OPERATOR = Path("crates/backtesting-vertical-slice/src/operator.rs")
 CONTRACT_TEST = Path("crates/backtesting-vertical-slice/tests/artifact_store_contract.rs")
 JUSTFILE = Path("justfile")
+RUN_SPEC = Path(
+    "specs/023-nt-research-analytics-platform/reference/"
+    "backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
+)
 
 ARTIFACT_STORE_REQUIRED = (
+    "pub struct CreateOnlyProbeConfig",
+    "pub struct CreateOnlyProbeTranscript",
     "pub async fn persist_catalog_projection_for_source_binding",
+    "pub async fn probe_create_only",
+    "duplicate_create_rejected",
+    "create_only_probe_uri",
     "CatalogDispatchConfig",
     ".catalog_root_for(",
     "CreateOnlyArtifactWriter::new",
@@ -27,14 +36,24 @@ OPERATOR_REQUIRED = (
     "CatalogDispatchConfig",
     "pub artifact_store: ArtifactStoreConfig",
     "pub catalog_dispatch: CatalogDispatchConfig",
+    "pub create_only_probe_id: String",
+    "create_only_probe_transcript",
     "run_from_run_spec_with_artifact_store",
+    ".probe_create_only(",
     "persist_catalog_projection_for_source_binding",
 )
 TEST_REQUIRED = (
+    "create_only_probe_requires_duplicate_create_rejection",
     "persists_catalog_projection_directory_with_create_only_dispatch",
     "rejects_duplicate_catalog_projection_bytes",
     "InMemory::new",
     "persist_catalog_projection_for_source_binding",
+)
+RUN_SPEC_REQUIRED = (
+    "create_only_probe_id",
+    "[artifact_store.create_only_probe]",
+    "prefix",
+    "object_name",
 )
 
 
@@ -75,6 +94,14 @@ def scan_root(root: Path) -> list[str]:
                 test_file.read_text(encoding="utf-8"),
                 TEST_REQUIRED,
             )
+        )
+
+    run_spec = root / RUN_SPEC
+    if not run_spec.exists():
+        findings.append(f"{RUN_SPEC}: committed run spec is missing")
+    else:
+        findings.extend(
+            missing_snippets(RUN_SPEC, run_spec.read_text(encoding="utf-8"), RUN_SPEC_REQUIRED)
         )
 
     justfile = root / JUSTFILE

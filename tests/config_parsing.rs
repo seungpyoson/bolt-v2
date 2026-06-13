@@ -4658,6 +4658,30 @@ fn shipped_binary_oracle_configs_do_not_canonicalize_one_reference_market_or_ven
 }
 
 #[test]
+fn shipped_binary_oracle_configs_carry_sizing_ev_reference_for_deploy() {
+    for relative_path in SHIPPED_BINARY_ORACLE_STRATEGY_FILES {
+        let source =
+            std::fs::read_to_string(support::repo_path(relative_path)).expect("source should read");
+        let document = source
+            .parse::<toml::Value>()
+            .unwrap_or_else(|error| panic!("{relative_path} should parse: {error}"));
+        let runtime = document
+            .get("parameters")
+            .and_then(|parameters| parameters.get("runtime"))
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| panic!("{relative_path} must define [parameters.runtime]"));
+        let sizing_ev_reference_bps = runtime
+            .get("sizing_ev_reference_bps")
+            .and_then(toml::Value::as_integer)
+            .unwrap_or_else(|| panic!("{relative_path} must ship runtime.sizing_ev_reference_bps"));
+        assert!(
+            (1..=10_000).contains(&sizing_ev_reference_bps),
+            "{relative_path} must deploy with sizing_ev_reference_bps inside the load-validated range"
+        );
+    }
+}
+
+#[test]
 fn binary_oracle_archetype_exposes_provider_neutral_gate_requirements() {
     use std::collections::BTreeSet;
 

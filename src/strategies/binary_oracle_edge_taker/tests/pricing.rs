@@ -1047,6 +1047,101 @@ fn sized_acceptance_rejects_notional_unsupported_by_final_repriced_edge() {
 }
 
 #[test]
+fn sized_acceptance_keeps_first_pass_size_when_repriced_resize_is_within_tolerance() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.order_notional_target = 10.0;
+    strategy.config.maximum_position_notional = 10.0;
+    strategy.config.risk_lambda = 0.5;
+    strategy.config.sizing_ev_reference_bps = 500;
+    strategy.config.vwap_depth_limit_bps = 5_000;
+    strategy.config.book_impact_cap_bps = 5_000;
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+
+    let up_instrument_id = strategy
+        .instrument_id_for_side(OutcomeSide::Up)
+        .expect("UP instrument should be configured");
+    let down_instrument_id = strategy
+        .instrument_id_for_side(OutcomeSide::Down)
+        .expect("DOWN instrument should be configured");
+    assert!(strategy.active.books.update_from_deltas(&book_deltas(
+        up_instrument_id,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 100.0),
+        ],
+    )));
+    assert!(strategy.active.books.update_from_deltas(&book_deltas(
+        down_instrument_id,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.48, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.48, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.90, 100.0),
+        ],
+    )));
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert!(
+        evaluation.pricing_blocked_by.is_empty(),
+        "fixed-point sized re-evaluation should remain executable: {evaluation:#?}"
+    );
+    assert_eq!(evaluation.selected_side, Some(OutcomeSide::Up));
+    assert!(
+        evaluation
+            .sized_executable_edge
+            .as_ref()
+            .is_some_and(|edge| edge.trade_allowed),
+        "accepted entry must include tradeable sized edge evidence: {evaluation:#?}"
+    );
+    let sized_notional = evaluation
+        .sized_notional
+        .expect("fixed-point acceptance should retain sized notional");
+    let impact_cap_notional = evaluation
+        .book_impact_cap_notional
+        .expect("fixed-point acceptance should expose the impact cap");
+    let preliminary_ev_per_notional = evaluation
+        .up_worst_case_ev_bps
+        .expect("selected side should expose preliminary EV")
+        / BPS_DENOMINATOR;
+    let preliminary_supported_notional = choose_robust_size(&RobustSizingInputs {
+        expected_ev_per_notional: preliminary_ev_per_notional,
+        ev_reference_per_notional: strategy.config.sizing_ev_reference_bps as f64 / BPS_DENOMINATOR,
+        risk_lambda: strategy.config.risk_lambda,
+        order_notional_target: strategy.config.order_notional_target,
+        maximum_position_notional: strategy.config.maximum_position_notional,
+        impact_cap_notional,
+    });
+    assert!(
+        (sized_notional - preliminary_supported_notional).abs()
+            <= notional_float_tolerance(preliminary_supported_notional),
+        "accepted notional should keep the first-pass robust size when repricing converges: {evaluation:#?}"
+    );
+    let final_ev_per_notional = evaluation
+        .expected_ev_per_notional
+        .expect("accepted entry should expose final EV");
+    let final_supported_notional = choose_robust_size(&RobustSizingInputs {
+        expected_ev_per_notional: final_ev_per_notional,
+        ev_reference_per_notional: strategy.config.sizing_ev_reference_bps as f64 / BPS_DENOMINATOR,
+        risk_lambda: strategy.config.risk_lambda,
+        order_notional_target: strategy.config.order_notional_target,
+        maximum_position_notional: strategy.config.maximum_position_notional,
+        impact_cap_notional,
+    });
+    assert!(
+        (final_supported_notional - sized_notional).abs()
+            <= notional_float_tolerance(sized_notional),
+        "final re-priced EV should support the retained first-pass notional within tolerance: {evaluation:#?}"
+    );
+}
+
+#[test]
 fn executable_edge_fee_uses_exact_size_vwap_price_not_limit_price() {
     let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
     strategy.config.order_notional_target = 5.0;

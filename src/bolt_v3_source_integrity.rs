@@ -264,8 +264,10 @@ mod tests {
     // with #623's shared sizing and taker up/down signal source roots.
     // Re-derived after external-review cleanup aligned direct builder validation
     // and entry-evaluation sizing-input observability with the archetype path.
+    // Re-derived after adding coverage for the within-tolerance sized
+    // re-evaluation acceptance branch.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "d145d999b5754e7f2556d62052d5aec097f5d88ecffb3989dab8abc7960b389a";
+        "1ad5babbee2a00448759ed7bf6dc6c7b3a4412f06c9ee73b1ad32ecd30579ef6";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

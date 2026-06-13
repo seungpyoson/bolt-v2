@@ -1713,6 +1713,30 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         "s3 stdout written to active target through subshell redirection": """
             ( aws s3 cp s3://bolt-v2-active-cache/target.tar - ) > target/cache.tar
         """,
+        "active target moved through local staging before S3 upload": """
+            mv target my_cache
+            aws s3 cp my_cache s3://bolt-v2-active-cache/target.tar
+        """,
+        "s3 download moved from local staging into active target": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar my_cache
+            mv my_cache target
+        """,
+        "active target archived locally before S3 upload": """
+            tar -cf cache.tar target
+            aws s3 cp cache.tar s3://bolt-v2-active-cache/target.tar
+        """,
+        "active target zipped locally before S3 upload": """
+            zip -r cache.zip target
+            aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
+        """,
+        "s3 archive downloaded locally before active target extraction": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
+            tar -xf cache.tar -C target
+        """,
+        "s3 zip downloaded locally before active target extraction": """
+            aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
+            unzip cache.zip -d target
+        """,
     }
     misses: list[str] = []
     for name, script in workflows.items():

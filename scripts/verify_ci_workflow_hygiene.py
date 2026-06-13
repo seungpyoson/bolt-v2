@@ -3962,20 +3962,54 @@ def command_operand_roles(
     )
 
 
-def record_active_copy_paths(
+def operand_has_s3_path_role(operand: str, s3_paths: set[str]) -> bool:
+    return storage_path_is_inside_active_path(storage_without_trailing_current_dir(operand), s3_paths)
+
+
+def local_transfer_operands(tokens: list[str], index: int) -> tuple[list[str], str] | None:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    operands = [token for token in tail if token != "--" and not token.startswith("-")]
+    if len(operands) < 2:
+        return None
+    return operands[:-1], operands[-1]
+
+
+def command_copies_s3_path_to_active_target(
     tokens: list[str],
     index: int,
     variable_roles: dict[str, set[str]],
     active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    operands = local_transfer_operands(tokens, index)
+    if operands is None:
+        return False
+    sources, destination = operands
+    if not any(operand_has_s3_path_role(source, s3_paths) for source in sources):
+        return False
+    return STORAGE_ROLE_ACTIVE_TARGET in storage_value_roles(
+        destination,
+        variable_roles,
+        cwd_is_active_target=cwd_is_active_target,
+        active_paths=active_paths,
+    )
+
+
+def record_local_transfer_paths(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
     *,
     cwd_is_active_target: bool,
 ) -> None:
-    tail = command_tail_until_boundary(tokens, index + 1)
-    operands = [token for token in tail if not token.startswith("-")]
-    if len(operands) < 2:
+    operands = local_transfer_operands(tokens, index)
+    if operands is None:
         return
-    sources = operands[:-1]
-    destination = operands[-1]
+    sources, destination = operands
     if any(
         STORAGE_ROLE_ACTIVE_TARGET
         in command_operand_roles(
@@ -3987,6 +4021,8 @@ def record_active_copy_paths(
         for source in sources
     ):
         active_paths.add(storage_path_key(destination))
+    if any(operand_has_s3_path_role(source, s3_paths) for source in sources):
+        s3_paths.add(storage_path_key(destination))
 
 
 def tar_writes_archive_to_stdout(tail: list[str]) -> bool:
@@ -4020,6 +4056,198 @@ def tar_writes_archive_to_stdout(tail: list[str]) -> bool:
                 return suffix == "-"
             return index + 1 < len(tail) and tail[index + 1] == "-"
     return creates_archive
+
+
+def tar_file_argument(token: str, tail: list[str], index: int, flag: str) -> tuple[str | None, bool]:
+    if token in {f"-{flag}", "--file"}:
+        return (tail[index + 1], True) if index + 1 < len(tail) else (None, False)
+    if token.startswith("--file="):
+        return token.split("=", 1)[1], False
+    if token and not token.startswith("-") and flag in token and all(char.isalnum() or char == "-" for char in token):
+        suffix = token.split(flag, 1)[1]
+        if suffix:
+            return suffix, False
+        return (tail[index + 1], True) if index + 1 < len(tail) else (None, False)
+    if token.startswith("-") and not token.startswith("--") and flag in token[1:]:
+        suffix = token[1:].split(flag, 1)[1]
+        if suffix:
+            return suffix, False
+        return (tail[index + 1], True) if index + 1 < len(tail) else (None, False)
+    return None, False
+
+
+def tar_archive_creation(tail: list[str]) -> tuple[str | None, list[str]]:
+    creates_archive = False
+    archive: str | None = None
+    sources: list[str] = []
+    skip_next = False
+    for index, token in enumerate(tail):
+        if skip_next:
+            skip_next = False
+            continue
+        if token in {"c", "-c", "--create"}:
+            creates_archive = True
+            continue
+        if token and not token.startswith("-") and "c" in token and all(char.isalnum() or char == "-" for char in token):
+            creates_archive = True
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            creates_archive = True
+        file_arg, consumed_next = tar_file_argument(token, tail, index, "f")
+        if file_arg is not None:
+            archive = file_arg
+            skip_next = consumed_next
+            continue
+        if token == "--" or token.startswith("-"):
+            continue
+        sources.append(token)
+    return (archive, sources) if creates_archive else (None, [])
+
+
+def tar_archive_inputs(tail: list[str]) -> list[str]:
+    archives: list[str] = []
+    skip_next = False
+    for index, token in enumerate(tail):
+        if skip_next:
+            skip_next = False
+            continue
+        if token in {"-C", "--directory"}:
+            skip_next = index + 1 < len(tail)
+            continue
+        if token.startswith("--directory="):
+            continue
+        file_arg, consumed_next = tar_file_argument(token, tail, index, "f")
+        if file_arg is not None and file_arg != "-":
+            archives.append(file_arg)
+            skip_next = consumed_next
+            continue
+        if token == "--" or token.startswith("-") or token in {"x", "c"}:
+            continue
+        archives.append(token)
+    return archives
+
+
+def record_tar_archive_paths(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> None:
+    archive, sources = tar_archive_creation(command_tail_until_boundary(tokens, index + 1))
+    if archive is None or archive == "-":
+        return
+    if any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in command_operand_roles(
+            source,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for source in sources
+    ):
+        active_paths.add(storage_path_key(archive))
+    if any(operand_has_s3_path_role(source, s3_paths) for source in sources):
+        s3_paths.add(storage_path_key(archive))
+
+
+def tar_extracts_s3_archive_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    if not tar_extracts_to_active_target(
+        tokens,
+        index,
+        variable_roles,
+        active_paths,
+        cwd_is_active_target=cwd_is_active_target,
+    ):
+        return False
+    return any(operand_has_s3_path_role(archive, s3_paths) for archive in tar_archive_inputs(tail))
+
+
+def zip_archive_operands(tokens: list[str], index: int) -> tuple[str, list[str]] | None:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    operands = [token for token in tail if token != "--" and not token.startswith("-")]
+    if len(operands) < 2:
+        return None
+    return operands[0], operands[1:]
+
+
+def record_zip_archive_paths(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> None:
+    operands = zip_archive_operands(tokens, index)
+    if operands is None:
+        return
+    archive, sources = operands
+    if any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in command_operand_roles(
+            source,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for source in sources
+    ):
+        active_paths.add(storage_path_key(archive))
+    if any(operand_has_s3_path_role(source, s3_paths) for source in sources):
+        s3_paths.add(storage_path_key(archive))
+
+
+def unzip_extracts_s3_archive_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    archives: list[str] = []
+    destination: str | None = None
+    cursor = 0
+    while cursor < len(tail):
+        token = tail[cursor]
+        if token in {"-d", "--directory"} and cursor + 1 < len(tail):
+            destination = tail[cursor + 1]
+            cursor += 2
+            continue
+        if token.startswith("--directory="):
+            destination = token.split("=", 1)[1]
+            cursor += 1
+            continue
+        if token == "--" or token.startswith("-"):
+            cursor += 1
+            continue
+        archives.append(token)
+        cursor += 1
+    if not any(operand_has_s3_path_role(archive, s3_paths) for archive in archives):
+        return False
+    if cwd_is_active_target and destination is None:
+        return True
+    return destination is not None and STORAGE_ROLE_ACTIVE_TARGET in storage_value_roles(
+        destination,
+        variable_roles,
+        cwd_is_active_target=cwd_is_active_target,
+        active_paths=active_paths,
+    )
 
 
 def command_streams_active_target_to_stdout(
@@ -4441,6 +4669,49 @@ def aws_s3_transfer_streams_s3_to_stdout(
     )
 
 
+def record_aws_s3_download_paths(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> None:
+    service_index = aws_service_index(tokens, index)
+    if service_index is None or tokens[service_index] != "s3":
+        return
+    op_index = service_index + 1
+    if op_index >= len(tokens) or tokens[op_index] in SHELL_COMMAND_BOUNDARIES:
+        return
+    operation = tokens[op_index]
+    if operation not in {"cp", "mv", "sync"}:
+        return
+    operands = aws_s3_operands(command_tail_until_boundary(tokens, op_index + 1))
+    if len(operands) < 2:
+        return
+    sources = operands[:-1]
+    destination = operands[-1]
+    if destination == "-" or STORAGE_ROLE_S3 in storage_value_roles(
+        destination,
+        variable_roles,
+        cwd_is_active_target=cwd_is_active_target,
+        active_paths=active_paths,
+    ):
+        return
+    if any(
+        STORAGE_ROLE_S3
+        in storage_value_roles(
+            source,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for source in sources
+    ):
+        s3_paths.add(storage_path_key(destination))
+
+
 def command_prefix_before_token(tokens: list[str], index: int) -> list[str]:
     cursor = index - 1
     while cursor >= 0 and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
@@ -4648,6 +4919,7 @@ def storage_transfer_policy_errors_from_tokens(
     depth: int = 0,
     initial_cwd_is_active_target: bool = False,
     initial_active_paths: set[str] | None = None,
+    initial_s3_paths: set[str] | None = None,
     initial_pipe_stdin_is_active_target: bool = False,
     initial_pipe_stdin_is_s3: bool = False,
 ) -> list[str]:
@@ -4656,6 +4928,7 @@ def storage_transfer_policy_errors_from_tokens(
     cursor = 0
     cwd_is_active_target = initial_cwd_is_active_target
     active_paths: set[str] = set(initial_active_paths or set())
+    s3_paths: set[str] = set(initial_s3_paths or set())
     pipe_stdout_is_active_target = False
     pipe_stdin_is_active_target = initial_pipe_stdin_is_active_target
     pipe_stdout_is_s3 = False
@@ -4678,6 +4951,7 @@ def storage_transfer_policy_errors_from_tokens(
                 depth=depth + 1,
                 initial_cwd_is_active_target=cwd_is_active_target,
                 initial_active_paths=active_paths,
+                initial_s3_paths=s3_paths,
                 initial_pipe_stdin_is_active_target=pipe_stdin_is_active_target,
                 initial_pipe_stdin_is_s3=pipe_stdin_is_s3,
             )
@@ -4725,6 +4999,7 @@ def storage_transfer_policy_errors_from_tokens(
                     depth=depth + 1,
                     initial_cwd_is_active_target=cwd_is_active_target,
                     initial_active_paths=active_paths,
+                    initial_s3_paths=s3_paths,
                 )
                 if nested_errors:
                     return nested_errors
@@ -4739,6 +5014,7 @@ def storage_transfer_policy_errors_from_tokens(
                     depth=depth + 1,
                     initial_cwd_is_active_target=cwd_is_active_target,
                     initial_active_paths=active_paths,
+                    initial_s3_paths=s3_paths,
                 )
                 if nested_errors:
                     return nested_errors
@@ -4759,6 +5035,7 @@ def storage_transfer_policy_errors_from_tokens(
                     depth=depth + 1,
                     initial_cwd_is_active_target=STORAGE_ROLE_ACTIVE_TARGET in chdir_roles,
                     initial_active_paths=active_paths,
+                    initial_s3_paths=s3_paths,
                 )
                 if nested_errors:
                     return nested_errors
@@ -4778,14 +5055,60 @@ def storage_transfer_policy_errors_from_tokens(
             cwd_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in target_roles
             cursor = next_cursor
             continue
-        if name in {"cp", "rsync"}:
-            record_active_copy_paths(
+        if name in {"cp", "rsync", "mv"}:
+            if command_copies_s3_path_to_active_target(
                 tokens,
                 cursor,
                 variable_roles,
                 active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            ):
+                return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
+            record_local_transfer_paths(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
                 cwd_is_active_target=cwd_is_active_target,
             )
+        if name == "tar":
+            if tar_extracts_s3_archive_to_active_target(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            ):
+                return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
+            record_tar_archive_paths(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            )
+        if name == "zip":
+            record_zip_archive_paths(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            )
+        if name == "unzip" and unzip_extracts_s3_archive_to_active_target(
+            tokens,
+            cursor,
+            variable_roles,
+            active_paths,
+            s3_paths,
+            cwd_is_active_target=cwd_is_active_target,
+        ):
+            return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
         if name in ACTIVE_TARGET_STDOUT_COMMANDS:
             pipe_stdout_is_active_target = pipe_stdin_is_active_target or command_streams_active_target_to_stdout(
                 tokens,
@@ -4816,6 +5139,14 @@ def storage_transfer_policy_errors_from_tokens(
         ):
             return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
         if name == "aws":
+            record_aws_s3_download_paths(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            )
             pipe_stdout_is_s3 = aws_s3_transfer_streams_s3_to_stdout(
                 tokens,
                 cursor,

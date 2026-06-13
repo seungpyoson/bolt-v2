@@ -146,3 +146,36 @@ starting_balances = ["1_000_000 USDC"]
 catalog_path = "overridden-by-binary-at-runtime"
 data_type = "TradeTick"
 nt_instrument_id = "BNBUSDC.BYBIT"
+
+[artifact_store]
+artifact_root = "s3://bolt-parquet/nt-research-analytics"
+
+[artifact_store.subpaths]
+raw = "raw"
+nt_catalog = "nt-catalog"
+source_proofs = "source-proofs"
+backtests = "backtests"
+artifact_index = "artifact-index"
+research_analytics = "research-analytics"
+
+[artifact_store.lifecycle]
+retention = "forever"
+default_delete_expiration = "disabled"
+storage_profiles = ["active", "archive", "deep_archive"]
+
+[artifact_store.lifecycle.quiet_window_seconds]
+raw = 7200
+nt_catalog = 7200
+source_proofs = 7200
+backtests = 3600
+artifact_index = 0
+research_analytics = 7200
+
+[artifact_store.lifecycle.hot_index]
+latest_pointer_storage_profile = "active"
+current_snapshot_storage_profile = "active"
+
+[[catalog_dispatch.bindings]]
+source_binding = "bybit-spot-tick-trades"
+market_structure_fixture = "perps-spot"
+catalog_projection_id = "backtesting-vertical-slice-bnbusdc-2026-03-01"

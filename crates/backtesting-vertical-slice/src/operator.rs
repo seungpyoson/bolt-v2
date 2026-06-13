@@ -16,10 +16,15 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
+use object_store::ObjectStore;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    artifact_store::{
+        ArtifactStoreConfig, CatalogDispatchConfig, PersistedCatalogProjectionObject,
+        persist_catalog_projection_for_source_binding,
+    },
     canonical_trades::CanonicalInstrumentIdentity,
     catalog_projection::SpotInstrumentSpec,
     result_contract::ResultArtifactUris,
@@ -55,6 +60,8 @@ pub struct RunSpec {
     pub instrument_spec: SpotInstrumentSpec,
     pub identity: CanonicalInstrumentIdentity,
     pub manifest: BacktestingRunManifest,
+    pub artifact_store: ArtifactStoreConfig,
+    pub catalog_dispatch: CatalogDispatchConfig,
 }
 
 /// Artifacts produced by an operator run.
@@ -67,6 +74,8 @@ pub struct RunArtifacts {
     pub catalog_root: PathBuf,
     pub proof_path: PathBuf,
     pub contract_path: PathBuf,
+    pub canonical_catalog_uri: Option<String>,
+    pub persisted_catalog_objects: Vec<PersistedCatalogProjectionObject>,
     pub output: BacktestRunOutput,
 }
 
@@ -205,8 +214,47 @@ pub fn run_from_run_spec(
         catalog_root,
         proof_path,
         contract_path,
+        canonical_catalog_uri: None,
+        persisted_catalog_objects: Vec::new(),
         output,
     })
+}
+
+/// Run the operator path and persist the projected NT catalog to the configured
+/// artifact store through source-binding dispatch.
+///
+/// # Errors
+///
+/// Returns an error if the base run fails, artifact-store config is invalid, the
+/// source binding cannot dispatch to one catalog root, or any create-only write
+/// is rejected.
+pub async fn run_from_run_spec_with_artifact_store(
+    spec: &RunSpec,
+    gz_bytes: &[u8],
+    output_dir: &Path,
+    store: &dyn ObjectStore,
+) -> Result<RunArtifacts> {
+    let mut artifacts = run_from_run_spec(spec, gz_bytes, output_dir)?;
+    let artifact_root = spec.artifact_store.resolve()?;
+    let persisted = persist_catalog_projection_for_source_binding(
+        store,
+        &artifact_root,
+        &spec.catalog_dispatch,
+        &spec.source_proof.source_binding,
+        &artifacts.catalog_root,
+    )
+    .await?;
+
+    artifacts.output.contract.artifact_uris.nt_catalog_uri = persisted.catalog_root_uri.clone();
+    fs::write(
+        &artifacts.contract_path,
+        serde_json::to_string_pretty(&artifacts.output.contract)
+            .context("serialize durable result contract")?,
+    )
+    .with_context(|| format!("write {}", artifacts.contract_path.display()))?;
+    artifacts.canonical_catalog_uri = Some(persisted.catalog_root_uri);
+    artifacts.persisted_catalog_objects = persisted.objects;
+    Ok(artifacts)
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use object_store::{
     ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult,
     Result as ObjectStoreResult, memory::InMemory, path::Path as ObjectPath,
 };
-use std::fmt;
+use std::{fmt, fs};
 
 use backtesting_vertical_slice::{
     artifact_store::{
@@ -13,6 +13,7 @@ use backtesting_vertical_slice::{
         ArtifactIndexWriteAuthority, ArtifactIndexWriter, ArtifactKind, ArtifactLifecycleState,
         ArtifactLineageRef, ArtifactStorageProfile, ArtifactStoreConfig, CatalogDispatchConfig,
         CatalogProjectionBinding, CreateOnlyArtifactWriter, StoredArtifactIndexPointer,
+        persist_catalog_projection_for_source_binding,
     },
     run_manifest::MarketStructureFixture,
 };
@@ -245,6 +246,105 @@ fn dispatches_source_bindings_to_catalog_projection_roots_without_venue_paths() 
     assert!(!binary.contains("official"));
     assert!(!perps.contains("official"));
     assert!(dispatch.catalog_root_for("missing-binding", &root).is_err());
+}
+
+#[tokio::test]
+async fn persists_catalog_projection_directory_with_create_only_dispatch() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = CatalogDispatchConfig {
+        bindings: vec![CatalogProjectionBinding {
+            source_binding: "binary-official".to_string(),
+            market_structure_fixture: MarketStructureFixture::BinaryOption,
+            catalog_projection_id: "projection-run-123".to_string(),
+        }],
+    };
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let nested_dir = temp
+        .path()
+        .join("data/trade_tick/instrument=BTC-USD.BINARY");
+    fs::create_dir_all(&nested_dir).expect("catalog directory");
+    fs::write(temp.path().join("metadata.json"), br#"{"schema":"nt"}"#).expect("metadata");
+    fs::write(nested_dir.join("part-000.parquet"), b"trade-ticks").expect("catalog data");
+
+    let store = InMemory::new();
+    let persisted = persist_catalog_projection_for_source_binding(
+        &store,
+        &root,
+        &dispatch,
+        "binary-official",
+        temp.path(),
+    )
+    .await
+    .expect("catalog persisted");
+
+    assert_eq!(
+        persisted.catalog_root_uri,
+        "s3://bolt-ra-artifacts/prod/nt-catalog/v1/projection=projection-run-123/"
+    );
+    assert_eq!(persisted.objects.len(), 2);
+    assert!(
+        persisted
+            .objects
+            .iter()
+            .any(|object| object.uri.ends_with("/metadata.json"))
+    );
+    let catalog_object = persisted
+        .objects
+        .iter()
+        .find(|object| object.uri.ends_with("/part-000.parquet"))
+        .expect("catalog parquet object");
+    let object_path = root
+        .object_path_for_uri(&catalog_object.uri)
+        .expect("uri under artifact root");
+    let stored = store
+        .get(&object_path)
+        .await
+        .expect("created catalog object")
+        .bytes()
+        .await
+        .expect("catalog object bytes");
+    assert_eq!(stored.as_ref(), b"trade-ticks");
+    assert_eq!(catalog_object.byte_len, b"trade-ticks".len());
+}
+
+#[tokio::test]
+async fn rejects_duplicate_catalog_projection_bytes() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = CatalogDispatchConfig {
+        bindings: vec![CatalogProjectionBinding {
+            source_binding: "binary-official".to_string(),
+            market_structure_fixture: MarketStructureFixture::BinaryOption,
+            catalog_projection_id: "projection-run-123".to_string(),
+        }],
+    };
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let catalog_file = temp.path().join("data/trade_tick/part-000.parquet");
+    fs::create_dir_all(catalog_file.parent().expect("parent")).expect("catalog directory");
+    fs::write(&catalog_file, b"first").expect("first catalog data");
+
+    let store = InMemory::new();
+    persist_catalog_projection_for_source_binding(
+        &store,
+        &root,
+        &dispatch,
+        "binary-official",
+        temp.path(),
+    )
+    .await
+    .expect("first catalog persist");
+    fs::write(&catalog_file, b"second").expect("second catalog data");
+
+    let err = persist_catalog_projection_for_source_binding(
+        &store,
+        &root,
+        &dispatch,
+        "binary-official",
+        temp.path(),
+    )
+    .await
+    .expect_err("duplicate projection bytes must be rejected");
+
+    assert!(err.to_string().contains("differs"), "{err}");
 }
 
 #[tokio::test]

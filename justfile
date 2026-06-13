@@ -93,6 +93,10 @@ verify-ra-bte-phase-prerequisite: check-workspace
     python3 scripts/test_verify_ra_bte_phase_prerequisite.py
     python3 scripts/verify_ra_bte_phase_prerequisite.py
 
+verify-ra-gate0-catalog-persistence: check-workspace
+    python3 scripts/test_verify_ra_gate0_catalog_persistence.py
+    python3 scripts/verify_ra_gate0_catalog_persistence.py
+
 verify-dashboard-customer-jobs: check-workspace
     python3 scripts/test_verify_dashboard_customer_jobs.py
     python3 scripts/verify_dashboard_customer_jobs.py
@@ -219,6 +223,8 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_ra_point_in_time_leakage.py
     python3 scripts/test_verify_ra_thin_reader_helper.py
     python3 scripts/verify_ra_thin_reader_helper.py
+    python3 scripts/test_verify_ra_gate0_catalog_persistence.py
+    python3 scripts/verify_ra_gate0_catalog_persistence.py
     python3 scripts/test_verify_ra_bte_phase_prerequisite.py
     python3 scripts/verify_ra_bte_phase_prerequisite.py
     python3 scripts/test_verify_dashboard_customer_jobs.py

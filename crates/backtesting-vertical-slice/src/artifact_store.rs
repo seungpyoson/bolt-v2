@@ -1,4 +1,8 @@
-use std::collections::BTreeSet;
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Component, Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, UpdateVersion, path::Path as ObjectPath};
@@ -360,6 +364,19 @@ pub struct CatalogProjectionBinding {
     pub catalog_projection_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistedCatalogProjectionObject {
+    pub uri: String,
+    pub sha256: String,
+    pub byte_len: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistedCatalogProjection {
+    pub catalog_root_uri: String,
+    pub objects: Vec<PersistedCatalogProjectionObject>,
+}
+
 impl CatalogDispatchConfig {
     /// # Errors
     ///
@@ -388,6 +405,109 @@ impl CatalogDispatchConfig {
         )?;
         Ok(artifact_root.nt_catalog_projection_root(&binding.catalog_projection_id))
     }
+}
+
+/// # Errors
+///
+/// Returns an error if the source binding does not dispatch to one configured
+/// catalog root, the local projection is empty or unreadable, or any create-only
+/// write is rejected.
+pub async fn persist_catalog_projection_for_source_binding(
+    store: &dyn ObjectStore,
+    artifact_root: &ResolvedArtifactRoot,
+    dispatch: &CatalogDispatchConfig,
+    source_binding: &str,
+    local_catalog_root: &Path,
+) -> Result<PersistedCatalogProjection> {
+    ensure!(
+        local_catalog_root.is_dir(),
+        "local catalog projection root {} is not a directory",
+        local_catalog_root.display()
+    );
+    let catalog_root_uri = dispatch.catalog_root_for(source_binding, artifact_root)?;
+    let mut file_paths = Vec::new();
+    collect_regular_files(local_catalog_root, local_catalog_root, &mut file_paths)?;
+    ensure!(
+        !file_paths.is_empty(),
+        "local catalog projection root {} contains no files",
+        local_catalog_root.display()
+    );
+
+    let writer = CreateOnlyArtifactWriter::new(store);
+    let mut objects = Vec::with_capacity(file_paths.len());
+    for file_path in file_paths {
+        let relative_path = file_path
+            .strip_prefix(local_catalog_root)
+            .with_context(|| format!("derive catalog relative path for {}", file_path.display()))?;
+        let relative_key = relative_catalog_object_key(relative_path)?;
+        let uri = format!(
+            "{}/{}",
+            catalog_root_uri.trim_end_matches('/'),
+            relative_key
+        );
+        let object_path = artifact_root.object_path_for_uri(&uri)?;
+        let payload =
+            fs::read(&file_path).with_context(|| format!("read {}", file_path.display()))?;
+        let sha256 = sha256_bytes(&payload);
+        let byte_len = payload.len();
+        writer
+            .put_create_idempotent(&object_path, payload)
+            .await
+            .with_context(|| format!("persist catalog object {uri}"))?;
+        objects.push(PersistedCatalogProjectionObject {
+            uri,
+            sha256,
+            byte_len,
+        });
+    }
+    objects.sort_by(|left, right| left.uri.cmp(&right.uri));
+    Ok(PersistedCatalogProjection {
+        catalog_root_uri,
+        objects,
+    })
+}
+
+fn collect_regular_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("read directory {}", dir.display()))? {
+        let entry =
+            entry.with_context(|| format!("read directory entry under {}", dir.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("read file type for {}", path.display()))?;
+        if file_type.is_dir() {
+            collect_regular_files(root, &path, files)?;
+        } else if file_type.is_file() {
+            files.push(path);
+        } else {
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            bail!(
+                "catalog projection contains non-regular file {}",
+                relative.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn relative_catalog_object_key(path: &Path) -> Result<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let Component::Normal(part) = component else {
+            bail!("catalog object path must be relative: {}", path.display());
+        };
+        let part = part.to_str().with_context(|| {
+            format!("catalog object path is not valid UTF-8: {}", path.display())
+        })?;
+        ensure_path_token("catalog_object_path", part, PathTokenMode::AllowEquals)?;
+        parts.push(part.to_string());
+    }
+    ensure!(
+        !parts.is_empty(),
+        "catalog object path must not be empty for {}",
+        path.display()
+    );
+    Ok(parts.join("/"))
 }
 
 pub struct CreateOnlyArtifactWriter<'a> {

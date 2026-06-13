@@ -46,8 +46,9 @@ use super::{
         CanonicalBarRow, CanonicalBarSpec, CanonicalBarsTable, NORMALIZED_SCHEMA_VERSION,
     },
     canonical_trades::{
-        BAR_TRANSFORM_IDENTITY, CanonicalInstrumentIdentity, CsvTimestampUnit, TradesPartition,
-        column_index,
+        BAR_TRANSFORM_IDENTITY, CanonicalInstrumentIdentity, CsvTimestampUnit,
+        JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY, PAGED_JSON_BARS_TRANSFORM_IDENTITY,
+        TradesPartition, column_index,
     },
     source_proof::AcceptedDataset,
 };
@@ -650,6 +651,7 @@ pub fn normalize_csv_native_bars(
             .remove(instrument_key)
             .expect("group order entry has a populated group");
         let table = assemble_bar_table(
+            BAR_TRANSFORM_IDENTITY,
             accepted,
             identity,
             bar_spec,
@@ -851,6 +853,7 @@ pub fn normalize_paged_json_bars(
     let interval_nanos = bar_interval_nanos_for_spec(declared_spec)?;
 
     let table = assemble_bar_table(
+        PAGED_JSON_BARS_TRANSFORM_IDENTITY,
         accepted,
         identity,
         declared_spec,
@@ -1292,6 +1295,7 @@ pub fn normalize_jsonl_multi_interval_bars(
             .remove(key)
             .expect("group order entry has a populated group");
         let table = assemble_bar_table(
+            JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY,
             accepted,
             identity,
             bar_spec,
@@ -1311,7 +1315,10 @@ pub fn normalize_jsonl_multi_interval_bars(
 /// The single source of truth for bar-table assembly across every format family:
 /// it sorts + dedups the rows ([`dedup_sorted_bar_rows`]), derives each missing
 /// `close_time` from `interval_nanos`, stamps the identity/provenance header from
-/// `accepted`, builds the [`CanonicalBarsTable`] with the supplied `bar_spec`, and
+/// `accepted`, stamps each row's `transform_hash` from the caller's
+/// `transform_identity` (so each format family — CSV, paged-JSON, JSONL
+/// multi-interval — records its OWN provenance rather than a single hardcoded
+/// one), builds the [`CanonicalBarsTable`] with the supplied `bar_spec`, and
 /// validates it through the table contract.
 ///
 /// `interval_nanos` is the fixed nanosecond length of one bar period when known.
@@ -1326,6 +1333,7 @@ pub fn normalize_jsonl_multi_interval_bars(
 /// overflows, a row needs a derived `close_time` but `interval_nanos` is `None`,
 /// or the assembled table fails its contract.
 fn assemble_bar_table(
+    transform_identity: &str,
     accepted: &AcceptedDataset,
     identity: &CanonicalInstrumentIdentity,
     bar_spec: CanonicalBarSpec,
@@ -1338,7 +1346,7 @@ fn assemble_bar_table(
         "{}/{}/{}",
         accepted.venue, accepted.product_family, identity.instrument_id
     );
-    let transform_hash = bar_transform_hash();
+    let transform_hash = compute_bar_transform_hash(transform_identity);
     let parsed_rows = dedup_sorted_bar_rows(parsed_rows)?;
 
     let mut rows = Vec::with_capacity(parsed_rows.len());
@@ -2132,6 +2140,11 @@ table_families = ["bars"]
             table.rows[0].canonical_instrument_key,
             "testvenue/prediction-market/BASEQUOTE"
         );
+        // Provenance: paged-JSON rows stamp their OWN identity, not the CSV one.
+        assert_eq!(
+            table.rows[0].transform_hash,
+            compute_bar_transform_hash(PAGED_JSON_BARS_TRANSFORM_IDENTITY)
+        );
     }
 
     #[test]
@@ -2388,6 +2401,11 @@ table_families = ["bars"]
         // Each table is sorted ascending by open_time.
         assert!(tables[0].rows[0].open_time < tables[0].rows[1].open_time);
         assert!(tables[1].rows[0].open_time < tables[1].rows[1].open_time);
+        // Provenance: JSONL multi-interval rows stamp their OWN identity, not CSV.
+        assert_eq!(
+            tables[0].rows[0].transform_hash,
+            compute_bar_transform_hash(JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY)
+        );
     }
 
     #[test]
@@ -2746,6 +2764,40 @@ table_families = ["bars"]
         assert_eq!(
             via_wrapper, "03abb9c288a4f54881aab0e60d6ca8e28c6872023dbbbc54cc2577fb5c5cdd75",
             "BAR_TRANSFORM_IDENTITY hash changed — update this pin or revert the identity change"
+        );
+    }
+
+    /// Pin the two JSON bar adapters' `transform_hash` byte values and prove all
+    /// three bar adapters stamp DISTINCT provenance identities.
+    ///
+    /// `assemble_bar_table` derives each row's `transform_hash` from the caller's
+    /// own identity constant. A regression that reverts to one hardcoded identity
+    /// (the prior defect, where paged-JSON and JSONL rows carried the CSV hash)
+    /// collapses these three values to one and is caught here, alongside the
+    /// per-adapter row-stamp assertions in the happy-path tests.
+    #[test]
+    fn json_bar_adapters_pin_distinct_transform_identities() {
+        let csv = compute_bar_transform_hash(BAR_TRANSFORM_IDENTITY);
+        let paged = compute_bar_transform_hash(PAGED_JSON_BARS_TRANSFORM_IDENTITY);
+        let jsonl = compute_bar_transform_hash(JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY);
+        // Computed from: sha256("paged-json-bars-to-canonical-bars.v1")
+        assert_eq!(
+            paged, "757b787a41dad91affcfd2abc57b4f36b649bbbb9cd26481b213ea1792de9219",
+            "PAGED_JSON_BARS_TRANSFORM_IDENTITY hash changed — update this pin or revert the identity change"
+        );
+        // Computed from: sha256("jsonl-multi-interval-bars-to-canonical-bars.v1")
+        assert_eq!(
+            jsonl, "40ded09a46e7143c1759d93576fcee7d8a54267f726c87ff3337ec143d746822",
+            "JSONL_MULTI_INTERVAL_BARS_TRANSFORM_IDENTITY hash changed — update this pin or revert the identity change"
+        );
+        assert_ne!(
+            csv, paged,
+            "CSV and paged-JSON bar identities must not collide"
+        );
+        assert_ne!(csv, jsonl, "CSV and JSONL bar identities must not collide");
+        assert_ne!(
+            paged, jsonl,
+            "paged-JSON and JSONL bar identities must not collide"
         );
     }
 }

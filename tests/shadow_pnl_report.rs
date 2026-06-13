@@ -161,6 +161,63 @@ fn shadow_pnl_report_rejects_unrecognized_winning_side() {
 }
 
 #[test]
+fn shadow_pnl_report_rejects_unrecognized_selected_side() {
+    // selected_side is strategy-written evidence, not operator input. Any token
+    // outside the canonical binary side vocabulary means the evidence chain is
+    // corrupted and must fail loud before it can collapse to a loss.
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("order-intents.jsonl");
+    let settlements_path = temp.path().join("shadow-settlements.jsonl");
+    let mut lines = Vec::new();
+    push_trade_lines(
+        &mut lines,
+        TradeFixture {
+            recorded_at_utc_ns: 1,
+            client_order_id: "client-order-bad-selected-side",
+            market_id: "market-btc",
+            instrument_id: "BTC-UP.POLYMARKET",
+            selected_side: "sideways",
+            expected_edge_basis_points: "150",
+            fee_rate_basis_points: "100",
+            price: "0.40",
+            quantity: "10",
+        },
+    );
+    std::fs::write(&evidence_path, lines.join("\n") + "\n").expect("fixture evidence should write");
+    std::fs::write(
+        &settlements_path,
+        serde_json::to_string(&serde_json::json!({
+            "settlement_date": "2026-06-10",
+            "asset": "BTC",
+            "market_id": "market-btc",
+            "instrument_id": "BTC-UP.POLYMARKET",
+            "winning_side": "up",
+            "settlement_price": "0.00"
+        }))
+        .expect("settlement fixture should serialize")
+            + "\n",
+    )
+    .expect("fixture settlements should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .args([
+            "--evidence-jsonl",
+            evidence_path.to_str().expect("utf-8 path"),
+            "--settlements-jsonl",
+            settlements_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("shadow_pnl_report should run");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(
+        stderr.contains("not a recognized binary outcome side"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn shadow_pnl_report_matches_unique_settlement_without_settlement_market_id() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("order-intents.jsonl");

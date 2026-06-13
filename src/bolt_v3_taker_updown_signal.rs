@@ -1,10 +1,18 @@
-//! Crate-internal decision-math helpers extracted from the binary-oracle taker
-//! strategy (slice A1 of #522).
+//! Taker-family entry-decision math for BINARY UP/DOWN markets, extracted from
+//! the binary-oracle taker strategy (slice A1 of #522): worst-case EV,
+//! entry-side selection, theta scaling, and uncertainty bands.
+//!
+//! Scope contract: bound to the up/down market family (sides are
+//! [`OutcomeSide`], worst-case EV is binary-contract arithmetic) and to the
+//! taker role ("cross the spread now? which side?"); NOT bound to any venue,
+//! underlying asset, or concrete strategy. A taker for a different market
+//! family needs its own signal module; strategy-agnostic dollar intent sizing
+//! lives in [`crate::bolt_v3_sizing`], not here.
 
 use crate::bolt_v3_market_families::OutcomeSide;
 use crate::bolt_v3_numeric::{
-    BPS_DENOMINATOR, POWER_OF_TWO, QUADRATIC_RISK_DIVISOR, UNIT_F64, ZERO_F64, clamp_probability,
-    is_non_negative_finite, is_positive_finite, sanitize_non_negative, sanitize_probability,
+    BPS_DENOMINATOR, POWER_OF_TWO, UNIT_F64, ZERO_F64, clamp_probability, is_non_negative_finite,
+    is_positive_finite, sanitize_probability,
 };
 
 pub(crate) fn price_agreement_corr(observed_price: f64, anchor_price: f64) -> Option<f64> {
@@ -63,37 +71,6 @@ pub(crate) fn compute_theta_scaler(inputs: &ThetaScalerInputs) -> Option<f64> {
     let ratio =
         clamp_probability(inputs.seconds_to_market_end as f64 / inputs.cadence_seconds as f64);
     Some(UNIT_F64 + inputs.theta_decay_factor * (UNIT_F64 - ratio).powi(POWER_OF_TWO))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct RobustSizingInputs {
-    pub(crate) expected_ev_per_notional: f64,
-    pub(crate) risk_lambda: f64,
-    pub(crate) order_notional_target: f64,
-    pub(crate) maximum_position_notional: f64,
-    pub(crate) impact_cap_notional: f64,
-}
-
-pub(crate) fn choose_robust_size(inputs: &RobustSizingInputs) -> f64 {
-    if !is_positive_finite(inputs.expected_ev_per_notional) {
-        return ZERO_F64;
-    }
-
-    let cap = sanitize_non_negative(inputs.order_notional_target)
-        .min(sanitize_non_negative(inputs.maximum_position_notional))
-        .min(sanitize_non_negative(inputs.impact_cap_notional));
-    if cap <= ZERO_F64 {
-        return ZERO_F64;
-    }
-
-    if !is_non_negative_finite(inputs.risk_lambda) {
-        return ZERO_F64;
-    }
-    if inputs.risk_lambda == ZERO_F64 {
-        return cap;
-    }
-
-    (inputs.expected_ev_per_notional / (QUADRATIC_RISK_DIVISOR * inputs.risk_lambda)).min(cap)
 }
 
 pub(crate) fn outcome_side_evidence_label(side: OutcomeSide) -> &'static str {
@@ -286,64 +263,6 @@ mod tests {
                 fee_uncertainty_probability: 0.20,
             }),
             None
-        );
-    }
-
-    #[test]
-    fn task4_robust_sizing_shrinks_with_risk_and_respects_caps() {
-        let low_risk = choose_robust_size(&RobustSizingInputs {
-            expected_ev_per_notional: 2.0,
-            risk_lambda: 0.1,
-            order_notional_target: 100.0,
-            maximum_position_notional: 100.0,
-            impact_cap_notional: 100.0,
-        });
-        let high_risk = choose_robust_size(&RobustSizingInputs {
-            expected_ev_per_notional: 2.0,
-            risk_lambda: 2.0,
-            order_notional_target: 100.0,
-            maximum_position_notional: 100.0,
-            impact_cap_notional: 100.0,
-        });
-        let capped = choose_robust_size(&RobustSizingInputs {
-            expected_ev_per_notional: 2.0,
-            risk_lambda: 0.1,
-            order_notional_target: 100.0,
-            maximum_position_notional: 12.0,
-            impact_cap_notional: 7.5,
-        });
-
-        assert!(high_risk < low_risk);
-        assert_eq!(capped, 7.5);
-        assert_eq!(
-            choose_robust_size(&RobustSizingInputs {
-                expected_ev_per_notional: 0.0,
-                risk_lambda: 0.1,
-                order_notional_target: 100.0,
-                maximum_position_notional: 100.0,
-                impact_cap_notional: 100.0,
-            }),
-            0.0
-        );
-        assert_eq!(
-            choose_robust_size(&RobustSizingInputs {
-                expected_ev_per_notional: 2.0,
-                risk_lambda: 0.0,
-                order_notional_target: 100.0,
-                maximum_position_notional: 100.0,
-                impact_cap_notional: 100.0,
-            }),
-            100.0
-        );
-        assert_eq!(
-            choose_robust_size(&RobustSizingInputs {
-                expected_ev_per_notional: 2.0,
-                risk_lambda: -0.1,
-                order_notional_target: 100.0,
-                maximum_position_notional: 100.0,
-                impact_cap_notional: 100.0,
-            }),
-            0.0
         );
     }
 

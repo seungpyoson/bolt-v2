@@ -42,7 +42,6 @@ pub mod canonical_order_book_deltas;
 pub mod canonical_trades;
 pub mod catalog_projection;
 pub mod conversion_boundary;
-pub mod convert_driver;
 pub mod first_proof_selector;
 pub mod hashing;
 pub mod io_safety;

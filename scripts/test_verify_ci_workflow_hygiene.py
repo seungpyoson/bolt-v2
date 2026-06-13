@@ -19,7 +19,7 @@ VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 SYNC_CI_DEBUG_SSH_PATH = REPO_ROOT / "scripts" / "sync_ci_debug_ssh_secret.py"
 DEBUG_WORKFLOW_PATH = ".github/workflows/ci-runner-debug.yml"
 SSH_RUNNER_ACTION = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
-GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]"
+GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]"
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
@@ -495,6 +495,42 @@ jobs:
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
 
+  ci-provenance-emit:
+    name: ci-provenance-emit
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]
+    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          pattern: nextest-archive-fingerprint-*
+          path: .ci-provenance/fingerprint
+          merge-multiple: true
+      - name: Emit CI provenance
+        run: >
+          python3 scripts/ci_provenance.py emit-full-ci
+          --output ci-provenance.json
+          --required-job detector=${{ needs.detector.result }}
+          --required-job fmt-check=${{ needs.fmt-check.result }}
+          --required-job deny=${{ needs.deny.result }}
+          --required-job clippy=${{ needs.clippy.result }}
+          --required-job check-aarch64=${{ needs.check-aarch64.result }}
+          --required-job source-fence=${{ needs.source-fence.result }}
+          --required-job test-archive=${{ needs.test-archive.result }}
+          --required-job test-shards=${{ needs.test-shards.result }}
+          --required-job test=${{ needs.test.result }}
+          --conditional-job build.required=${{ needs.detector.outputs.build_required }}
+          --conditional-job build.result=${{ needs.build.result }}
+          --nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt
+      - name: Upload CI provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-provenance-attempt-${{ github.run_attempt }}
+          path: ci-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
   same-sha-main-evidence:
     name: same-sha-main-evidence
     needs: detector
@@ -512,7 +548,7 @@ jobs:
 
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -546,9 +582,15 @@ jobs:
             if [[ "${{ needs.build.result }}" != "skipped" ]]; then
               exit 1
             fi
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+              exit 1
+            fi
             exit 0
           fi
           if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
+            exit 1
+          fi
+          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
             exit 1
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
@@ -4620,6 +4662,46 @@ def main() -> int:
             ),
             "      - uses: ./.github/actions/setup-environment",
             "      - if: needs.detector.outputs.build_required == 'true'\n        uses: ./.github/actions/setup-environment",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit needs source-fence",
+        replace_once(
+            BASE_WORKFLOW,
+            "    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
+            "    needs: [detector, fmt-check, deny, clippy, check-aarch64, test-archive, test-shards, test, build]",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must use always()",
+        replace_once(
+            BASE_WORKFLOW,
+            "    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
+            "    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}",
+        ),
+    )
+    assert_error(
+        "actions/upload-artifact must be pinned to a 40-character SHA",
+        replace_once(
+            BASE_WORKFLOW,
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "uses: actions/upload-artifact@v7",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit retention-days must match TOML",
+        replace_once(
+            BASE_WORKFLOW,
+            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 30",
+            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 7",
+        ),
+    )
+    assert_error(
+        "gate must not read nextest_fingerprint",
+        replace_once(
+            BASE_WORKFLOW,
+            '          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then\n',
+            '          if [[ "${{ needs.ci-provenance-emit.outputs.nextest_fingerprint }}" != "" ]]; then\n',
         ),
     )
     assert_error("same-sha-main-evidence needs detector", replace_once(BASE_WORKFLOW, "    needs: detector\n    if: startsWith(github.ref, 'refs/tags/v')", "    if: startsWith(github.ref, 'refs/tags/v')"))

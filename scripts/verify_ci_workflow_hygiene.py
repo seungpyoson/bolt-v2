@@ -94,11 +94,22 @@ REQUIRED_JOBS = (
     "test-shards",
     "test",
     "build",
+    "ci-provenance-emit",
     "same-sha-main-evidence",
     "gate",
     "deploy",
 )
-GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build")
+GATE_REQUIRED = (
+    "detector",
+    "fmt-check",
+    "deny",
+    "clippy",
+    "check-aarch64",
+    "source-fence",
+    "test",
+    "build",
+    "ci-provenance-emit",
+)
 DEPLOY_REQUIRED_NEEDS = (
     "gate",
     "same-sha-main-evidence",
@@ -135,7 +146,7 @@ CI_PROVENANCE_POLICY_ROWS = (
     "tag",
     "unknown_event",
 )
-TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build")
+TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build", "ci-provenance-emit")
 TAG_SKIP_REQUIRED_JOBS = (
     "fmt-check",
     "deny",
@@ -144,6 +155,7 @@ TAG_SKIP_REQUIRED_JOBS = (
     "test-archive",
     "test-shards",
     "test",
+    "ci-provenance-emit",
 )
 TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-shards", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
@@ -5454,6 +5466,51 @@ def same_sha_job_runs_resolver(job_lines: list[str]) -> bool:
     return "id: evidence" in text and "python3 scripts/find_same_sha_main_evidence.py" in text
 
 
+def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return "python3 scripts/ci_provenance.py emit-full-ci" in text and "--output ci-provenance.json" in text
+
+
+def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]) -> list[str]:
+    text = uncommented_text(job_lines)
+    missing = []
+    for need in needs:
+        if f"needs.{need}.result" not in text:
+            missing.append(need)
+    if "needs.detector.outputs.build_required" not in text:
+        missing.append("detector.build_required")
+    return missing
+
+
+def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) -> list[str]:
+    errors: list[str] = []
+    upload_blocks = [
+        block
+        for block in action_blocks(job_lines, "actions/upload-artifact@")
+        if block_has_input(block, "name", "ci-provenance-attempt-${{ github.run_attempt }}")
+    ]
+    if not upload_blocks:
+        errors.append("ci-provenance-emit must upload configured provenance artifact")
+        return errors
+    if not any(block_has_input(block, "path", "ci-provenance.json") for block in upload_blocks):
+        errors.append("ci-provenance-emit must upload ci-provenance.json")
+    if retention_days > 0 and not any(
+        block_has_input(block, "retention-days", str(retention_days)) for block in upload_blocks
+    ):
+        errors.append("ci-provenance-emit retention-days must match TOML")
+    return errors
+
+
+def ci_provenance_emit_downloads_fingerprint(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return (
+        "actions/download-artifact@" in text
+        and "pattern: nextest-archive-fingerprint-*" in text
+        and "continue-on-error: true" in text
+        and "--nextest-fingerprint-path" in text
+    )
+
+
 def clippy_installs_aarch64_toolchain(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "gcc-aarch64-linux-gnu" in text or "libc6-dev-arm64-cross" in text
@@ -5667,6 +5724,21 @@ def job_permission_has(job_lines: list[str], permission: str, value: str) -> boo
 
 def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+actions:\s+read\s*$", workflow_text) is not None
+
+
+def configured_ci_provenance_retention_days() -> int:
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
+        return -1
+    ci_provenance = config.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        return -1
+    artifacts = ci_provenance.get("artifacts")
+    if not isinstance(artifacts, dict):
+        return -1
+    retention_days = artifacts.get("retention_days")
+    return retention_days if isinstance(retention_days, int) else -1
 
 
 def branch_body(gate_text: str, keyword: str, condition: str) -> str | None:
@@ -6017,6 +6089,33 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if not has_line_matching(jobs["build"], BUILD_IF_RE):
             errors.append("build must gate on needs.detector.outputs.build_required and skip tag reuse")
 
+    if "ci-provenance-emit" in jobs:
+        emit_lines = jobs["ci-provenance-emit"]
+        emit_needs = extract_needs(emit_lines)
+        for job in (*CI_PROVENANCE_REQUIRED_JOBS, "build"):
+            if job not in emit_needs:
+                errors.append(f"ci-provenance-emit needs {job}")
+        if "gate" in emit_needs:
+            errors.append("ci-provenance-emit must not need gate")
+        if not job_if_uses_always(emit_lines):
+            errors.append("ci-provenance-emit must use always()")
+        if not job_skips_tag_reuse(emit_lines):
+            errors.append("ci-provenance-emit must skip tag reuse")
+        if not ci_provenance_emit_runs_emitter(emit_lines):
+            errors.append("ci-provenance-emit must run provenance emitter")
+        for missing in ci_provenance_emit_checks_needs(
+            emit_lines, (*CI_PROVENANCE_REQUIRED_JOBS, "build")
+        ):
+            errors.append(f"ci-provenance-emit must evaluate needs.{missing}.result")
+        errors.extend(
+            ci_provenance_emit_upload_errors(
+                emit_lines,
+                configured_ci_provenance_retention_days(),
+            )
+        )
+        if not ci_provenance_emit_downloads_fingerprint(emit_lines):
+            errors.append("ci-provenance-emit must record nextest fingerprint when present")
+
     if "same-sha-main-evidence" in jobs:
         if "detector" not in extract_needs(jobs["same-sha-main-evidence"]):
             errors.append("same-sha-main-evidence needs detector")
@@ -6046,6 +6145,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.extend(gate_checks_same_sha_reuse(gate_text))
         if not has_line_matching(jobs["gate"], GATE_IF_RE):
             errors.append("gate must use always()")
+        if "nextest_fingerprint" in gate_text:
+            errors.append("gate must not read nextest_fingerprint")
 
     if "deploy" in jobs:
         deploy_needs = extract_needs(jobs["deploy"])

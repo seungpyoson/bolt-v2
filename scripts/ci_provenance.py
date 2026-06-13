@@ -868,18 +868,6 @@ def resolve_exact_sha_evidence(
     raise ProvenanceError(f"no valid provenance evidence found for exact SHA {requested_sha}")
 
 
-def emit_full_ci(config: ProvenanceConfig) -> dict[str, object]:
-    return {
-        "schema_version": config.schema_version,
-        "kind": "full-ci",
-        "required_jobs": {job: None for job in config.required_jobs},
-        "conditional_jobs": {
-            job: {"required": None, "result": None} for job in config.conditional_jobs
-        },
-        "nextest_fingerprint": None,
-    }
-
-
 def require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
@@ -887,9 +875,137 @@ def require_env(name: str) -> str:
     return value
 
 
+def parse_key_value(value: str) -> tuple[str, str]:
+    if "=" not in value:
+        raise ProvenanceError(f"expected key=value, got {value!r}")
+    key, parsed_value = value.split("=", 1)
+    if not key:
+        raise ProvenanceError(f"expected non-empty key in {value!r}")
+    return key, parsed_value
+
+
+def parse_bool(value: str) -> bool:
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    raise ProvenanceError(f"expected boolean true/false, got {value!r}")
+
+
+def parse_required_job_results(values: list[str], config: ProvenanceConfig) -> dict[str, str]:
+    results = dict(parse_key_value(value) for value in values)
+    expected = set(config.required_jobs)
+    if set(results) != expected:
+        missing = sorted(expected - set(results))
+        extra = sorted(set(results) - expected)
+        raise ProvenanceError(f"required job result keys mismatch; missing={missing} extra={extra}")
+    for job, result in results.items():
+        if result != "success":
+            raise ProvenanceError(f"required job {job} did not succeed: {result}")
+    return results
+
+
+def parse_conditional_job_results(values: list[str], config: ProvenanceConfig) -> dict[str, dict[str, object]]:
+    parsed = dict(parse_key_value(value) for value in values)
+    conditional_jobs: dict[str, dict[str, object]] = {}
+    for job in config.conditional_jobs:
+        required_key = f"{job}.required"
+        result_key = f"{job}.result"
+        if required_key not in parsed or result_key not in parsed:
+            raise ProvenanceError(f"conditional job {job} must provide required and result")
+        required = parse_bool(parsed[required_key])
+        result = parsed[result_key]
+        if required and result != "success":
+            raise ProvenanceError(f"conditional job {job} did not succeed while required: {result}")
+        if not required and result not in {"success", "skipped"}:
+            raise ProvenanceError(f"conditional job {job} had unexpected result while not required: {result}")
+        conditional_jobs[job] = {"required": required, "result": result}
+    expected_keys = {f"{job}.required" for job in config.conditional_jobs} | {
+        f"{job}.result" for job in config.conditional_jobs
+    }
+    extra = sorted(set(parsed) - expected_keys)
+    if extra:
+        raise ProvenanceError(f"unexpected conditional job keys: {extra}")
+    return conditional_jobs
+
+
+def read_nextest_fingerprint(path: pathlib.Path | None) -> str | None:
+    if path is None or not path.exists():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return value or None
+
+
+def pull_request_metadata_from_env(event_name: str) -> dict[str, object]:
+    if event_name != "pull_request":
+        return {"number": None, "base_sha": None}
+    number = os.environ.get("PR_NUMBER")
+    base_sha = os.environ.get("PR_BASE_SHA")
+    if not number or not number.isdecimal():
+        raise ProvenanceError("PR_NUMBER must be set for pull_request provenance")
+    if base_sha is None or SHA_RE.fullmatch(base_sha) is None:
+        raise ProvenanceError("PR_BASE_SHA must be set for pull_request provenance")
+    return {"number": int(number), "base_sha": base_sha}
+
+
+def emit_full_ci_record(
+    *,
+    config: ProvenanceConfig,
+    config_path: pathlib.Path,
+    required_job_values: list[str],
+    conditional_job_values: list[str],
+    nextest_fingerprint_path: pathlib.Path | None,
+    api_json=github_api_json,
+) -> dict[str, object]:
+    repo = require_env("GITHUB_REPOSITORY")
+    token = require_env("GITHUB_TOKEN")
+    run_id = require_env("GITHUB_RUN_ID")
+    run_attempt = require_env("GITHUB_RUN_ATTEMPT")
+    tested_sha = require_env("GITHUB_SHA")
+    event_name = require_env("GITHUB_EVENT_NAME")
+    run_payload = api_json(repo, token, f"actions/runs/{run_id}", None)
+    head_sha = as_text(run_payload.get("head_sha"))
+    if SHA_RE.fullmatch(head_sha) is None:
+        raise ProvenanceError("current workflow run head_sha is malformed")
+    check_suite_id = run_payload.get("check_suite_id")
+    positive_int_value(check_suite_id, "current workflow run check_suite_id")
+    head_branch = run_payload.get("head_branch")
+    if head_branch is not None and not isinstance(head_branch, str):
+        raise ProvenanceError("current workflow run head_branch is malformed")
+
+    record = {
+        "schema_version": config.schema_version,
+        "kind": "full-ci",
+        "repository": repo,
+        "workflow_path": config.workflow_path,
+        "workflow_digest": workflow_file_digest(config),
+        "provenance_config_digest": provenance_config_digest(config_path),
+        "head_sha": head_sha,
+        "tested_sha": tested_sha,
+        "run_id": positive_int_value(run_id, "GITHUB_RUN_ID"),
+        "run_attempt": positive_int_value(run_attempt, "GITHUB_RUN_ATTEMPT"),
+        "check_suite_id": positive_int_value(check_suite_id, "current workflow run check_suite_id"),
+        "event": event_name,
+        "head_branch": head_branch,
+        "pull_request": pull_request_metadata_from_env(event_name),
+        "required_jobs": parse_required_job_results(required_job_values, config),
+        "conditional_jobs": parse_conditional_job_results(conditional_job_values, config),
+        "nextest_fingerprint": read_nextest_fingerprint(nextest_fingerprint_path),
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    validate_record_schema(record, config, config_path=config_path)
+    return record
+
+
 def parser_for_mode(mode: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=f"ci_provenance.py {mode}")
     parser.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
+    if mode == "emit-full-ci":
+        parser.add_argument("--output", type=pathlib.Path)
+        parser.add_argument("--required-job", action="append", default=[])
+        parser.add_argument("--conditional-job", action="append", default=[])
+        parser.add_argument("--nextest-fingerprint-path", type=pathlib.Path)
     if mode == "validate-record":
         parser.add_argument("--record", type=pathlib.Path, required=True)
     if mode == "resolve-exact-sha":
@@ -919,7 +1035,19 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(rest)
         config = load_config(args.config)
         if mode == "emit-full-ci":
-            print(json.dumps(emit_full_ci(config), sort_keys=True))
+            record = emit_full_ci_record(
+                config=config,
+                config_path=args.config,
+                required_job_values=args.required_job,
+                conditional_job_values=args.conditional_job,
+                nextest_fingerprint_path=args.nextest_fingerprint_path,
+            )
+            encoded = json.dumps(record, sort_keys=True, indent=2) + "\n"
+            if args.output is None:
+                print(encoded, end="")
+            else:
+                args.output.write_text(encoded, encoding="utf-8")
+                print(f"wrote {args.output}")
         elif mode == "validate-record":
             validate_record_schema(load_json(args.record), config, config_path=args.config)
             print("record valid")

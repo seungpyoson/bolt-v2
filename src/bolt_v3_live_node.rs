@@ -64,8 +64,9 @@ use nautilus_model::{
     identifiers::InstrumentId,
 };
 use nautilus_model::{
-    enums::{BarIntervalType, TradingState},
+    enums::{BarIntervalType, OrderSide, OrderType, TradingState},
     identifiers::{ClientId, StrategyId},
+    orders::{Order, OrderAny},
 };
 use nautilus_system::trader::Trader;
 use rust_decimal::Decimal;
@@ -94,7 +95,8 @@ use crate::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
-        JsonlBoltV3DecisionEvidenceWriter,
+        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
+        read_submit_reservation_recovery_evidence,
     },
     bolt_v3_loss_governor::{LossGovernorPolicy, evaluate_loss_admission},
     bolt_v3_loss_halt_actions::{
@@ -131,8 +133,10 @@ use crate::{
         BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
     },
     bolt_v3_submit_admission::{
-        BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState,
-        BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingNtComponents,
+        BoltV3CompiledOrderSide, BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState,
+        BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingMissingNtAccountCacheBalance,
+        BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderEvidence,
+        BoltV3SubmitPositionSizingOpenOrderSnapshot, BoltV3SubmitPositionSizingRebuildDecision,
     },
     bolt_v3_validate::parse_decimal_string,
     nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
@@ -160,6 +164,7 @@ pub struct BoltV3LiveNodeRuntime {
     position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
     position_sizer_venue_spendability_source:
         Option<BoltV3PositionSizerVenueSpendabilitySourceConfig>,
+    submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -171,6 +176,16 @@ struct BoltV3PositionSizerVenueSpendabilitySourceConfig {
     venue_id: String,
     account_id: String,
     collateral_currency: String,
+}
+
+/// Startup reservation-recovery source: the decision-evidence file the
+/// live-node boot driver reads to recover known submit-reservation
+/// metadata after a restart, plus the byte cap from
+/// [`crate::bolt_v3_config::DecisionEvidenceBlock::recovery_evidence_max_bytes`].
+#[derive(Debug, Clone)]
+struct BoltV3SubmitReservationRecoveryConfig {
+    path: PathBuf,
+    max_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -1091,6 +1106,7 @@ struct BoltV3LiveNodeRuntimeFeeds {
     position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
     position_sizer_venue_spendability_source:
         Option<BoltV3PositionSizerVenueSpendabilitySourceConfig>,
+    submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
 }
 
 impl BoltV3LiveNodeRuntime {
@@ -1112,6 +1128,7 @@ impl BoltV3LiveNodeRuntime {
                 .position_sizer_runtime_feed_subscription,
             position_sizer_venue_spendability_source: feeds
                 .position_sizer_venue_spendability_source,
+            submit_reservation_recovery: feeds.submit_reservation_recovery,
             redaction_values,
         }
     }
@@ -1207,6 +1224,216 @@ impl BoltV3LiveNodeRuntime {
     pub fn position_sizer_reconciled(&self) -> Option<bool> {
         self.submit_admission.position_sizer_reconciled()
     }
+
+    /// Rebuild the position sizer's capital-reservation ledger from the
+    /// live NT cache at startup so a restart cannot double-allocate capital
+    /// against orders/positions that already exist. Reads open orders,
+    /// the configured collateral balance, and open positions for the
+    /// configured account, seeds the runtime feed's portfolio/cache
+    /// snapshot from that same observation, then attributes each open order
+    /// to recovered reservation metadata (when configured) before handing a
+    /// single coherent snapshot to submit admission. If any open order
+    /// cannot be attributed, the snapshot is marked not-all-attributed so
+    /// the caller fails closed rather than arming with an unreconciled
+    /// ledger.
+    pub fn rebuild_position_sizer_from_nt_cache(
+        &self,
+        now_ns: u64,
+    ) -> BoltV3SubmitPositionSizingRebuildDecision {
+        let (account_id, binary_instrument_ids, collateral_currency) =
+            match self.position_sizer_runtime_feed.as_ref() {
+                Some(feed) => {
+                    let feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    (
+                        Some(feed.configured_account_id()),
+                        feed.configured_binary_instrument_ids(),
+                        Some(feed.configured_collateral_currency()),
+                    )
+                }
+                None => (None, None, None),
+            };
+        let cache = self.node.kernel().cache();
+        let cache = cache.borrow();
+        let open_order_snapshots = match account_id.as_ref() {
+            Some(account_id) => cache
+                .orders_open(None, None, None, Some(account_id), None)
+                .into_iter()
+                .map(|order| order.cloned())
+                .collect::<Vec<_>>(),
+            None => cache
+                .orders_open(None, None, None, None, None)
+                .into_iter()
+                .map(|order| order.cloned())
+                .collect::<Vec<_>>(),
+        };
+        let open_client_order_ids = open_order_snapshots
+            .iter()
+            .map(|order| order.client_order_id().to_string())
+            .collect::<Vec<_>>();
+        let cached_account_balances = match (account_id.as_ref(), collateral_currency.as_deref()) {
+            (Some(account_id), Some(collateral_currency)) => {
+                cache.account_owned(account_id).and_then(|account| {
+                    let balances = account.balances();
+                    balances
+                        .values()
+                        .find(|balance| balance.currency.code.as_str() == collateral_currency)
+                        .map(|balance| (balance.free.as_decimal(), balance.total.as_decimal()))
+                })
+            }
+            _ => None,
+        };
+        let missing_nt_account_cache_balance = match (
+            account_id.as_ref(),
+            collateral_currency.as_deref(),
+        ) {
+            (Some(account_id), Some(collateral_currency)) if cached_account_balances.is_none() => {
+                let missing = BoltV3SubmitPositionSizingMissingNtAccountCacheBalance {
+                    account_id: account_id.to_string(),
+                    collateral_currency: collateral_currency.to_string(),
+                };
+                log::warn!(
+                    "bolt-v3 position sizer startup rebuild could not seed account portfolio snapshot because NT cache is missing account_id={} collateral_currency={}",
+                    missing.account_id,
+                    missing.collateral_currency
+                );
+                Some(missing)
+            }
+            _ => None,
+        };
+        let (yes_position, no_position) =
+            match (account_id.as_ref(), binary_instrument_ids.as_ref()) {
+                (Some(account_id), Some((yes_instrument_id, no_instrument_id))) => {
+                    let mut yes_position = Decimal::ZERO;
+                    let mut no_position = Decimal::ZERO;
+                    for position in cache.positions_open(None, None, None, Some(account_id), None) {
+                        let instrument_id = position.instrument_id.to_string();
+                        if instrument_id == *yes_instrument_id {
+                            yes_position += position.signed_decimal_qty();
+                        } else if instrument_id == *no_instrument_id {
+                            no_position += position.signed_decimal_qty();
+                        }
+                    }
+                    (yes_position, no_position)
+                }
+                _ => (Decimal::ZERO, Decimal::ZERO),
+            };
+        drop(cache);
+
+        // Seed live NT order and position state before rebuilding reservations from the same snapshot.
+        if let Some(feed) = self.position_sizer_runtime_feed.as_ref() {
+            let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some((free_collateral, total_equity)) = cached_account_balances {
+                feed.seed_account_portfolio_snapshot(free_collateral, total_equity, now_ns);
+            }
+            feed.seed_cache_snapshot(
+                open_client_order_ids.clone(),
+                yes_position,
+                no_position,
+                now_ns,
+            );
+        }
+
+        let recovered_reservations = if open_order_snapshots.is_empty() {
+            None
+        } else {
+            self.submit_reservation_recovery
+                .as_ref()
+                .and_then(|config| {
+                    match read_submit_reservation_recovery_evidence(&config.path, config.max_bytes)
+                    {
+                        Ok(recovery) => Some(recovery),
+                        Err(error) => {
+                            log::warn!(
+                                "bolt-v3 submit admission could not recover Bolt reservation metadata from decision evidence: {error:#}"
+                            );
+                            None
+                        }
+                    }
+                })
+        };
+        let mut reservations = Vec::with_capacity(open_order_snapshots.len());
+        let mut all_open_orders_attributed =
+            open_order_snapshots.is_empty() || recovered_reservations.is_some();
+        for order in &open_order_snapshots {
+            let Some(recovered_reservations) = recovered_reservations.as_ref() else {
+                all_open_orders_attributed = false;
+                break;
+            };
+            let Some(evidence) = nt_open_order_evidence_from_order(order, now_ns) else {
+                all_open_orders_attributed = false;
+                break;
+            };
+            let Some(recovered) = recovered_reservations
+                .metadata_by_client_order_id
+                .get(&evidence.client_order_id)
+            else {
+                all_open_orders_attributed = false;
+                break;
+            };
+            let Some(reservation) = self
+                .submit_admission
+                .position_sizing_open_order_reservation_from_known_metadata(evidence, recovered)
+            else {
+                all_open_orders_attributed = false;
+                break;
+            };
+            reservations.push(reservation);
+        }
+        if !all_open_orders_attributed {
+            reservations.clear();
+        }
+
+        let mut rebuild = self
+            .submit_admission
+            .rebuild_position_sizing_open_order_snapshot(
+                BoltV3SubmitPositionSizingOpenOrderSnapshot {
+                    observed_at_ns: now_ns,
+                    evidence_label: "nt_open_order_cache".to_string(),
+                    observed_open_order_count: open_order_snapshots.len(),
+                    all_open_orders_attributed,
+                    reservations,
+                },
+                now_ns,
+            );
+        if let Some(missing) = missing_nt_account_cache_balance {
+            rebuild = rebuild.with_missing_nt_account_cache_balance(
+                missing.account_id,
+                missing.collateral_currency,
+            );
+        }
+        rebuild
+    }
+}
+
+fn nt_open_order_evidence_from_order(
+    order: &OrderAny,
+    observed_at_ns: u64,
+) -> Option<BoltV3SubmitPositionSizingOpenOrderEvidence> {
+    if order.order_type() != OrderType::Limit {
+        return None;
+    }
+    let side = match order.order_side() {
+        OrderSide::Buy => BoltV3CompiledOrderSide::Buy,
+        OrderSide::Sell => BoltV3CompiledOrderSide::Sell,
+        _ => return None,
+    };
+    let limit_price = order.price()?.as_decimal();
+    if !(Decimal::ZERO..=Decimal::ONE).contains(&limit_price) {
+        return None;
+    }
+    let open_quantity = order.leaves_qty().as_decimal();
+    if open_quantity <= Decimal::ZERO {
+        return None;
+    }
+    Some(BoltV3SubmitPositionSizingOpenOrderEvidence {
+        client_order_id: order.client_order_id().to_string(),
+        instrument_id: order.instrument_id().to_string(),
+        side,
+        open_quantity,
+        limit_price,
+        observed_at_ns,
+        evidence_label: "nt_open_order_cache".to_string(),
+    })
 }
 
 impl std::fmt::Debug for BoltV3LiveNodeRuntime {
@@ -1356,6 +1583,17 @@ pub enum BoltV3LiveNodeError {
     },
     StrategyFreeStopTimeoutOverflow,
     StrategyFreeStopFailed(anyhow::Error),
+    /// The startup position-sizer rebuild from the NT cache could not
+    /// attribute one or more pre-existing open orders to recovered
+    /// submit-reservation metadata, so submit admission would arm with an
+    /// unreconciled capital-reservation ledger. The live runner refuses to
+    /// enter NT's loop in this state to avoid double-allocating capital
+    /// against orders it cannot account for. The wrapped decision carries
+    /// the attempted/rebuilt reservation counts and rejection reason
+    /// captured at boot. This is intentionally outside the removed start
+    /// gate: it is a fail-closed reconciliation guard, not the live-canary
+    /// arm gate, so it never reintroduces a gate-report/arm sequence.
+    StartupPositionSizerRebuild(BoltV3SubmitPositionSizingRebuildDecision),
 }
 
 impl std::fmt::Display for BoltV3LiveNodeError {
@@ -1480,6 +1718,10 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::StrategyFreeStopFailed(error) => {
                 write!(f, "bolt-v3 strategy-free controlled-stop failed: {error}")
             }
+            BoltV3LiveNodeError::StartupPositionSizerRebuild(decision) => write!(
+                f,
+                "bolt-v3 startup position-sizer rebuild rejected runtime start: {decision:?}"
+            ),
         }
     }
 }
@@ -1514,7 +1756,8 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::StrategyFreeReferenceProbeFailed { .. }
             | BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed { .. }
             | BoltV3LiveNodeError::StrategyFreeStopTimeout { .. }
-            | BoltV3LiveNodeError::StrategyFreeStopTimeoutOverflow => None,
+            | BoltV3LiveNodeError::StrategyFreeStopTimeoutOverflow
+            | BoltV3LiveNodeError::StartupPositionSizerRebuild(..) => None,
             BoltV3LiveNodeError::DisconnectFailed(error)
             | BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(error)
             | BoltV3LiveNodeError::StrategyFreeStartFailed(error)
@@ -1831,6 +2074,23 @@ pub async fn run_bolt_v3_live_node(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
+    let startup_rebuild_observed_at_ns =
+        current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
+    let startup_rebuild =
+        runtime.rebuild_position_sizer_from_nt_cache(startup_rebuild_observed_at_ns);
+    // A no-open-order startup may legitimately recover nothing: NT only
+    // populates the account/portfolio cache once its runner loop performs
+    // startup reconciliation, and the live runtime feed re-seeds the
+    // portfolio from on_account events after entry. Pre-existing open orders
+    // are different: if they cannot be attributed to recovered reservation
+    // metadata, submit admission would start with an unreconciled ledger and
+    // could double-allocate capital, so fail closed before entering NT's
+    // loop. This is a reconciliation guard, not the removed start gate.
+    if !startup_rebuild.accepted && startup_rebuild.attempted_reservation_count > 0 {
+        return Err(BoltV3LiveNodeError::StartupPositionSizerRebuild(
+            startup_rebuild,
+        ));
+    }
     let node = &mut runtime.node;
     let node_handle = node.handle();
     let mut capture_guards = wire_bolt_v3_runtime_capture(node, node_handle, loaded)
@@ -2025,6 +2285,11 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         position_sizer_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
     let position_sizer_venue_spendability_source =
         position_sizer_venue_spendability_source_config_from_loaded(loaded)?;
+    let submit_reservation_recovery = if position_sizer_runtime_feed_config.is_some() {
+        submit_reservation_recovery_config_from_loaded(loaded)?
+    } else {
+        None
+    };
     let submit_admission = Arc::new(
         BoltV3SubmitAdmissionState::new_with_live_submit_limits_and_optional_controls(
             decision_evidence.clone(),
@@ -2108,6 +2373,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             position_sizer_runtime_feed,
             position_sizer_runtime_feed_subscription,
             position_sizer_venue_spendability_source,
+            submit_reservation_recovery,
         },
         resolved.redaction_values(),
     );
@@ -2187,6 +2453,28 @@ fn position_sizer_venue_spendability_source_config_from_loaded(
         venue_id: pool.venue_id.clone(),
         account_id: pool.account_id.to_string(),
         collateral_currency: pool.collateral_currency.clone(),
+    }))
+}
+
+/// Resolve the startup reservation-recovery source from the loaded config.
+/// The recovery driver reads the decision-evidence file, so the path comes
+/// from [`decision_evidence_path`] and the read bound from
+/// `persistence.decision_evidence.recovery_evidence_max_bytes`. Returns
+/// `None` (recovery disabled) when the byte cap is not configured.
+fn submit_reservation_recovery_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<BoltV3SubmitReservationRecoveryConfig>, BoltV3LiveNodeError> {
+    let Some(max_bytes) = loaded
+        .root
+        .persistence
+        .decision_evidence
+        .recovery_evidence_max_bytes
+    else {
+        return Ok(None);
+    };
+    Ok(Some(BoltV3SubmitReservationRecoveryConfig {
+        path: decision_evidence_path(loaded).map_err(BoltV3LiveNodeError::Build)?,
+        max_bytes,
     }))
 }
 
@@ -2783,6 +3071,7 @@ pub async fn disconnect_bolt_v3_clients(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bolt_v3_capital_reservation::ReservationRejectionReason;
     use crate::bolt_v3_config::{
         BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeMarketDataKind,
         DataClientReadinessProbeQuoteTargetBlock, DataClientReadinessProbeQuoteTargetSource,
@@ -2795,12 +3084,496 @@ mod tests {
         HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
         HyperliquidProductSubmitProofBinding, write_hyperliquid_live_submit_approval_artifact,
     };
+    use nautilus_core::{UUID4, UnixNanos};
     use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
-    use nautilus_model::enums::{BookAction, OrderSide};
-    use nautilus_model::identifiers::TraderId;
-    use nautilus_model::types::{Price, Quantity};
+    use nautilus_model::enums::{AccountType, BookAction, CurrencyType, OrderSide, TimeInForce};
+    use nautilus_model::events::{AccountState, OrderAccepted, OrderEventAny, OrderSubmitted};
+    use nautilus_model::identifiers::{AccountId, ClientOrderId, TraderId, VenueOrderId};
+    use nautilus_model::orders::{LimitOrder, MarketOrder, OrderAny};
+    use nautilus_model::types::{AccountBalance, Currency, Money, Price, Quantity};
     use rust_decimal::Decimal;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn startup_rebuild_recovers_known_submit_reservation_from_nt_cache() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let metadata = fixture_submit_reservation_metadata(
+            "startup-known-client-order",
+            "condition-fixture-yes.POLYMARKET",
+            "buy",
+            "10",
+            "0.4",
+            "0.3",
+            "4.3",
+        );
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+        write_submit_reservation_metadata(&loaded, &metadata);
+        seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+        seed_accepted_open_limit_order(
+            &runtime,
+            generic_limit_order(
+                "startup-known-client-order",
+                "condition-fixture-yes.POLYMARKET",
+                OrderSide::Buy,
+                Quantity::from(6),
+                Price::from("0.40"),
+            ),
+            "POLYMARKET-001",
+        );
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(
+            rebuild,
+            BoltV3SubmitPositionSizingRebuildDecision {
+                accepted: true,
+                reason: None,
+                attempted_reservation_count: 1,
+                rebuilt_reservation_count: 1,
+                live_reserved_liability: Decimal::new(27, 1),
+                missing_nt_account_cache_balance: None,
+            }
+        );
+        assert_eq!(runtime.position_sizer_reconciled(), Some(true));
+        assert_eq!(
+            runtime
+                .submit_admission
+                .position_sizer_live_reserved_liability(),
+            Some(Decimal::new(27, 1))
+        );
+        assert!(
+            runtime
+                .submit_admission
+                .position_sizer_has_live_reservation("startup-known-client-order"),
+            "startup rebuild must install the recovered reservation for later fill/cancel release"
+        );
+    }
+
+    #[test]
+    fn startup_rebuild_stays_closed_for_unknown_nt_cache_order() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+        seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+        seed_accepted_open_limit_order(
+            &runtime,
+            generic_limit_order(
+                "startup-unknown-client-order",
+                "condition-fixture-yes.POLYMARKET",
+                OrderSide::Buy,
+                Quantity::from(6),
+                Price::from("0.40"),
+            ),
+            "POLYMARKET-001",
+        );
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(
+            rebuild,
+            BoltV3SubmitPositionSizingRebuildDecision {
+                accepted: false,
+                reason: Some(ReservationRejectionReason::MissingEvidence),
+                attempted_reservation_count: 1,
+                rebuilt_reservation_count: 0,
+                live_reserved_liability: Decimal::ZERO,
+                missing_nt_account_cache_balance: None,
+            }
+        );
+        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+        assert!(
+            !runtime
+                .submit_admission
+                .position_sizer_has_live_reservation("startup-unknown-client-order")
+        );
+    }
+
+    #[test]
+    fn startup_rebuild_reports_missing_nt_account_cache_balance() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(
+            rebuild.missing_nt_account_cache_balance,
+            Some(BoltV3SubmitPositionSizingMissingNtAccountCacheBalance {
+                account_id: "POLYMARKET-001".to_string(),
+                collateral_currency: "PUSD".to_string(),
+            })
+        );
+        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+    }
+
+    #[test]
+    fn startup_rebuild_seeds_nt_cached_free_collateral_when_balance_has_locked_amount() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        // Helper writes NT AccountBalance as (total, locked, free): total=100, locked=40, free=60.
+        seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 60.0);
+        {
+            let account_id = AccountId::from("POLYMARKET-001");
+            let cache = runtime.node.kernel().cache();
+            let cache = cache.borrow();
+            let account = cache
+                .account_owned(&account_id)
+                .expect("seeded account should be present in NT cache");
+            let balances = account.balances();
+            let balance = balances
+                .values()
+                .find(|balance| balance.currency.code.as_str() == "PUSD")
+                .expect("seeded collateral balance should be present in NT cache");
+            assert_eq!(balance.total.as_decimal(), Decimal::new(100, 0));
+            assert_eq!(balance.locked.as_decimal(), Decimal::new(40, 0));
+            assert_eq!(balance.free.as_decimal(), Decimal::new(60, 0));
+        }
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(rebuild.missing_nt_account_cache_balance, None);
+        assert_eq!(runtime.position_sizer_reconciled(), Some(true));
+        let state = runtime
+            .submit_admission
+            .position_sizer_state_snapshot()
+            .expect("startup rebuild should seed position sizing state");
+        assert_eq!(state.portfolio.free_collateral, Decimal::new(60, 0));
+        assert_eq!(state.portfolio.total_equity, Decimal::new(100, 0));
+        assert_ne!(
+            state.portfolio.free_collateral, state.portfolio.total_equity,
+            "fixture must prove locked collateral is not treated as spendable"
+        );
+        match state.product_state {
+            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+                assert_eq!(snapshot.collateral_allowance, Decimal::new(60, 0));
+            }
+        }
+    }
+
+    #[test]
+    fn startup_rebuild_rejects_known_metadata_when_open_quantity_exceeds_submitted() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let metadata = fixture_submit_reservation_metadata(
+            "startup-overopen-client-order",
+            "condition-fixture-yes.POLYMARKET",
+            "buy",
+            "10",
+            "0.4",
+            "0.3",
+            "4.3",
+        );
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        write_submit_reservation_metadata(&loaded, &metadata);
+        seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+        seed_accepted_open_limit_order(
+            &runtime,
+            generic_limit_order(
+                "startup-overopen-client-order",
+                "condition-fixture-yes.POLYMARKET",
+                OrderSide::Buy,
+                Quantity::from(11),
+                Price::from("0.40"),
+            ),
+            "POLYMARKET-001",
+        );
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(
+            rebuild,
+            BoltV3SubmitPositionSizingRebuildDecision {
+                accepted: false,
+                reason: Some(ReservationRejectionReason::MissingEvidence),
+                attempted_reservation_count: 1,
+                rebuilt_reservation_count: 0,
+                live_reserved_liability: Decimal::ZERO,
+                missing_nt_account_cache_balance: None,
+            }
+        );
+        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+        assert!(
+            !runtime
+                .submit_admission
+                .position_sizer_has_live_reservation("startup-overopen-client-order")
+        );
+    }
+
+    #[test]
+    fn nt_limit_order_snapshot_maps_to_generic_open_order_evidence() {
+        let order = generic_limit_order(
+            "client-order-1",
+            "instrument-yes.VENUE-A",
+            OrderSide::Buy,
+            Quantity::from(10),
+            Price::from("0.40"),
+        );
+
+        let evidence = nt_open_order_evidence_from_order(&order, 1_000)
+            .expect("bounded NT limit order should produce generic open-order evidence");
+
+        assert_eq!(evidence.client_order_id, "client-order-1");
+        assert_eq!(evidence.instrument_id, "instrument-yes.VENUE-A");
+        assert_eq!(evidence.side, BoltV3CompiledOrderSide::Buy);
+        assert_eq!(evidence.open_quantity, Decimal::new(10, 0));
+        assert_eq!(evidence.limit_price, Decimal::new(4, 1));
+        assert_eq!(evidence.observed_at_ns, 1_000);
+        assert_eq!(evidence.evidence_label, "nt_open_order_cache");
+    }
+
+    #[test]
+    fn nt_non_limit_order_snapshot_is_not_sizing_evidence() {
+        let order = generic_market_order(
+            "client-order-1",
+            "instrument-yes.VENUE-A",
+            OrderSide::Buy,
+            Quantity::from(10),
+        );
+
+        assert!(nt_open_order_evidence_from_order(&order, 1_000).is_none());
+    }
+
+    fn loaded_config_with_submit_sizer_recovery(temp_path: &std::path::Path) -> LoadedBoltV3Config {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        loaded.strategies.clear();
+        loaded
+            .root
+            .risk
+            .capital_pools
+            .as_mut()
+            .expect("fixture should configure capital pools")[0]
+            .enforce_submit_admission = true;
+        loaded.root.persistence.catalog_directory = temp_path.to_string_lossy().to_string();
+        loaded
+            .root
+            .persistence
+            .decision_evidence
+            .recovery_evidence_max_bytes = Some(100_000);
+        loaded
+    }
+
+    fn fixture_submit_reservation_metadata(
+        client_order_id: &str,
+        instrument_id: &str,
+        side: &str,
+        submitted_quantity: &str,
+        liability_factor: &str,
+        additive_liability: &str,
+        reserved_liability: &str,
+    ) -> BoltV3SubmitReservationMetadataEvidence {
+        BoltV3SubmitReservationMetadataEvidence {
+            client_order_id: client_order_id.to_string(),
+            submit_reservation_id: format!("{client_order_id}#submit"),
+            venue_id: "POLYMARKET".to_string(),
+            account_id: "POLYMARKET-001".to_string(),
+            product_kind: "prediction_market_binary".to_string(),
+            collateral_currency: "PUSD".to_string(),
+            capital_pool_id: "polymarket-prediction-live".to_string(),
+            collateral_group_id: "condition-fixture".to_string(),
+            instrument_id: instrument_id.to_string(),
+            side: side.to_string(),
+            submitted_quantity: submitted_quantity.to_string(),
+            liability_factor: liability_factor.to_string(),
+            additive_liability: additive_liability.to_string(),
+            reserved_liability: reserved_liability.to_string(),
+            observed_at_ns: 1_000,
+            source: "submit_admission".to_string(),
+        }
+    }
+
+    fn write_submit_reservation_metadata(
+        loaded: &LoadedBoltV3Config,
+        metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) {
+        let writer = JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded)
+            .expect("decision evidence writer should open");
+        writer
+            .record_submit_reservation_metadata(metadata)
+            .expect("submit reservation metadata should write");
+    }
+
+    fn fake_bolt_v3_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
+        match path {
+            "/bolt/polymarket_main/private_key" => Ok(
+                "0x4242424242424242424242424242424242424242424242424242424242424242".to_string(),
+            ),
+            "/bolt/polymarket_main/api_key" => Ok("polymarket-api-key".to_string()),
+            "/bolt/polymarket_main/api_secret" => Ok("YWJj".to_string()),
+            "/bolt/polymarket_main/passphrase" => Ok("polymarket-passphrase".to_string()),
+            "/bolt/binance_reference/api_key" => Ok("binance-api-key".to_string()),
+            "/bolt/binance_reference/api_secret" => {
+                Ok("MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f".to_string())
+            }
+            _ => Err("unexpected SSM path requested by bolt-v3 fake resolver"),
+        }
+    }
+
+    fn seed_cached_account_state(
+        runtime: &BoltV3LiveNodeRuntime,
+        account_id: &str,
+        currency_code: &str,
+        total: f64,
+        free: f64,
+    ) {
+        let currency = test_currency(currency_code);
+        let account_state = AccountState::new(
+            AccountId::from(account_id),
+            AccountType::Cash,
+            vec![AccountBalance::new(
+                Money::new(total, currency),
+                Money::new(total - free, currency),
+                Money::new(free, currency),
+            )],
+            vec![],
+            true,
+            UUID4::default(),
+            UnixNanos::from(1),
+            UnixNanos::from(1),
+            Some(currency),
+        );
+        runtime
+            .node
+            .kernel()
+            .cache()
+            .borrow_mut()
+            .update_account_state(&account_state)
+            .expect("NT cache should apply account state");
+    }
+
+    fn test_currency(currency_code: &str) -> Currency {
+        if currency_code == "PUSD" {
+            return Currency::new("PUSD", 2, 0, "Test PUSD", CurrencyType::Fiat);
+        }
+        Currency::from(currency_code)
+    }
+
+    fn seed_accepted_open_limit_order(
+        runtime: &BoltV3LiveNodeRuntime,
+        order: OrderAny,
+        account_id: &str,
+    ) {
+        let cache = runtime.node.kernel().cache();
+        let mut cache = cache.borrow_mut();
+        cache
+            .add_order(
+                order.clone(),
+                None,
+                Some(ClientId::from("polymarket_main")),
+                false,
+            )
+            .expect("NT cache should accept initialized order");
+        cache
+            .update_order(&OrderEventAny::Submitted(OrderSubmitted::new(
+                order.trader_id(),
+                order.strategy_id(),
+                order.instrument_id(),
+                order.client_order_id(),
+                AccountId::from(account_id),
+                UUID4::default(),
+                UnixNanos::from(1),
+                UnixNanos::from(1),
+            )))
+            .expect("NT cache should apply submitted event");
+        cache
+            .update_order(&OrderEventAny::Accepted(OrderAccepted::new(
+                order.trader_id(),
+                order.strategy_id(),
+                order.instrument_id(),
+                order.client_order_id(),
+                VenueOrderId::from("venue-order-startup"),
+                AccountId::from(account_id),
+                UUID4::default(),
+                UnixNanos::from(2),
+                UnixNanos::from(2),
+                false,
+            )))
+            .expect("NT cache should apply accepted event");
+    }
+
+    fn generic_limit_order(
+        client_order_id: &str,
+        instrument_id: &str,
+        order_side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+    ) -> OrderAny {
+        OrderAny::Limit(
+            LimitOrder::new_checked(
+                TraderId::from("TRADER-001"),
+                StrategyId::from("strategy-a"),
+                InstrumentId::from(instrument_id),
+                ClientOrderId::from(client_order_id),
+                order_side,
+                quantity,
+                price,
+                TimeInForce::Gtc,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                UUID4::default(),
+                UnixNanos::from(1),
+            )
+            .expect("generic limit order should be valid"),
+        )
+    }
+
+    fn generic_market_order(
+        client_order_id: &str,
+        instrument_id: &str,
+        order_side: OrderSide,
+        quantity: Quantity,
+    ) -> OrderAny {
+        OrderAny::Market(
+            MarketOrder::new_checked(
+                TraderId::from("TRADER-001"),
+                StrategyId::from("strategy-a"),
+                InstrumentId::from(instrument_id),
+                ClientOrderId::from(client_order_id),
+                order_side,
+                quantity,
+                TimeInForce::Ioc,
+                UUID4::default(),
+                UnixNanos::from(1),
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("generic market order should be valid"),
+        )
+    }
 
     #[test]
     fn live_node_adapter_mapping_consumes_hyperliquid_live_submit_approval_artifact() {

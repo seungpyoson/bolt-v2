@@ -885,6 +885,14 @@ classification = "live_node_fail_closed_diagnostic_template"
 reason = "This is fail-closed diagnostic text for a strategy referencing client ids absent from the loaded TOML; it does not configure runtime behavior."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"nt_open_order_cache"'''
+context = '''evidence_label: "nt_open_order_cache".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels open-order reservation evidence rebuilt from NT cache state; the open orders and account facts come from NT."
+
+[[allowed]]
 path = "src/bolt_v3_market_families/mod.rs"
 kind = "string"
 literal = '''"strategy `{}`"'''

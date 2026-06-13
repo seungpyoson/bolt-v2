@@ -157,25 +157,28 @@ findings.
   validation status.
 - `ExperimentRun`: parameters, code/artifact refs, dataset refs, metrics,
   result hashes, consumed `BacktestResultContract` refs, fidelity class, and
-  claim limits.
+  claim limits. When a finding is recorded it also carries the RA-owned verdict;
+  the verdict field set and the persistence/index/lifecycle behavior are defined
+  in `../reference/data-model.md` (`experiment-results`), not restated here.
 - `FeatureDefinition`: source fields, join keys, event time, availability time,
   and leakage checks.
 
 ## Findings & Promotion
 
-Findings are recorded with the lead-lag lane's GO / NO-GO verdict model and a
-re-measurement cadence — see `../reference/leadlag-lane.md` as the seed RA model.
-BTE emits the OBJECTIVE results; RA owns the SUBJECTIVE verdict: a finding is
-GO, NO-GO, or conditional-GO over a stated venue/instrument scope, tied to the
-evidence rows and fidelity class it was measured under, with a re-measurement
-cadence so a verdict cannot silently go stale.
+Findings are recorded with the lead-lag lane's GO / NO-GO verdict model — see
+`../reference/leadlag-lane.md` as the seed RA model. The BTE emits the OBJECTIVE
+results; RA owns the SUBJECTIVE verdict: a finding is GO, NO-GO, or conditional-GO
+over a stated scope, recorded with a re-measurement cadence so it cannot silently
+go stale. The verdict's exact field set and how it is persisted, indexed, and
+lifecycle-tracked are defined once in `../reference/data-model.md`
+(ResearchAnalyticsArtifact / `experiment-results`) and `../reference/contracts.md`
+(Artifact Index Contract); this spec does not restate them.
 
 A promotion gate (typed TOML/NT-compatible config for the Backtesting Engine) is
-added only WHEN a real GO finding exists to promote. There is no standing
-promotion machine: promotion produces a typed config artifact for later
-implementation/review, never a Python strategy runtime path, and never
-auto-merges, auto-enables a strategy, schedules live trading, touches SSM
-credentials, or mutates production runtime config.
+added only WHEN a real GO finding exists to promote — never a Python strategy
+runtime path, an auto-merge, an auto-enabled strategy, a live-trading schedule, an
+SSM credential touch, or a production-runtime mutation. There is no standing
+promotion machine; see `../reference/contracts.md` Result And Promotion Boundary.
 
 ## Issue Dependencies
 
@@ -195,7 +198,7 @@ not fully cover research analytics, alpha exploration, or findings.
   promotion-package-specific lifecycle/Artifact-Index layer); a promotion gate
   exists only when a real finding needs one. The verdict itself still rides on the
   ordinary RA `experiment-results` artifact and the shared `research-analytics`
-  Artifact Index (see `../reference/data-model.md`).
+  Artifact Index (see `../reference/data-model.md` and `../reference/contracts.md`).
 
 ## Acceptance
 

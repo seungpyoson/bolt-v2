@@ -46,11 +46,10 @@ The lane demonstrates the correct RA shape:
    trading decision with a markdown report and a re-run script — no 6-state
    promotion package, no proof-pin enum, no lifecycle state machine. That
    lightweight spirit is the template, not the absence of provenance: in the
-   productionized RA the same verdict is stored as a field on the
-   `experiment-results` artifact, which commits into the shared
-   `research-analytics` Artifact Index and records lifecycle state like every
-   other RA artifact (see `../reference/data-model.md`). There is no separate
-   promotion-package index or lifecycle layer on top of it.
+   productionized RA the same verdict rides on the `experiment-results` artifact
+   and the shared Artifact Index like every other RA artifact, with no separate
+   promotion-package layer. Those mechanics are defined in `data-model.md`, not
+   restated here.
 3. **Cadence over gates.** Re-measurement is scheduled (cadence policy in
    docstring) not gated on a `promotion_state` transition. Add a gate only when
    a real finding exists to gate on.

@@ -149,13 +149,22 @@ Research Analytics may write only these derived families under the
   verdict (scope, evidence/fidelity refs, re-measurement cadence).
 
 There is no standing `promotion-packages` family: there is no standing
-PromotionPackage machine. A typed promotion-config artifact is produced only
-when a real GO finding exists to promote (see `contracts.md` Result
-And Promotion Boundary and `evidence.md` E-041).
+PromotionPackage machine, and promotion introduces no separate promotion-only
+Artifact Index layer and no separate promotion-only lifecycle layer. A typed
+promotion-config artifact is produced only when a real GO finding exists to
+promote, and when it is, it rides on the existing `research-analytics` kind
+snapshot, index-commit path, and Artifact Lifecycle Contract like any other RA
+artifact (see `contracts.md` Result And Promotion Boundary and `evidence.md`
+E-041).
 
 Every RA-owned artifact records owner, schema version, source refs, source
-hashes, content hash, lifecycle state, and Artifact Index event behavior. RA
-does not write upstream raw, NT catalog, source-proof, or backtest records.
+hashes, content hash, and lifecycle state, and commits into the
+`research-analytics` kind snapshot per the Artifact Index Contract in
+`contracts.md` (the verdict-bearing `experiment-results` artifact included). This
+file and `contracts.md` are the single home for the verdict field set and the
+index/lifecycle mechanics; the project specs/plans/tasks reference them rather
+than restate them. RA does not write upstream raw, NT catalog, source-proof, or
+backtest records.
 
 ## IssueSlice
 

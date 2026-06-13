@@ -240,11 +240,12 @@ Content hash algorithm is `sha256` for every artifact kind. S3 ETag is never
 treated as content hash.
 
 It must not carry a subjective promotion recommendation such as "use this
-strategy" or "escalate this strategy." Strategy review status belongs to a
-Research Analytics review artifact that consumes one or more backtest result
-contracts as evidence. Promotion gates are added only when a real finding exists
-to promote; the proven lead-lag lane's GO/NO-GO verdict + re-measurement cadence
-is the reference model.
+strategy" or "escalate this strategy." Strategy review status belongs to the
+Research Analytics `experiment-results` artifact, which consumes one or more
+backtest result contracts as evidence and commits into the `research-analytics`
+kind snapshot per the Artifact Index Contract above (see `data-model.md`).
+Promotion gates are added only when a real finding exists to promote; the proven
+lead-lag lane's GO/NO-GO verdict + re-measurement cadence is the reference model.
 
 Reproduction, audit, regression, or migration results are historical/mechanical
 artifacts. They must not be presented as normal current performance.

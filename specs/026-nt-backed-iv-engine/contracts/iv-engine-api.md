@@ -114,6 +114,7 @@ Projection:
 - must identify input products and selector fingerprints
 - must record basis, convention, timestamp, source eligibility, and evidence mapping
 - must enforce the configured `max_projection_input_skew_ns` across all input points, smiles, surfaces, aggregate products with aggregate IV values, or IV evidence
+- must enforce the configured projection `output_bounds` before returning the projected scalar IV
 - must reject if required interpolation, fallback, or quorum policies are absent or fail
 
 ## Derived Input Contract

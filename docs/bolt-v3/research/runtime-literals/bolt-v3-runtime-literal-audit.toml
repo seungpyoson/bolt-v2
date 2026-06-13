@@ -9994,22 +9994,6 @@ reason = "This is a stable helper input-set provenance ID format assembled from 
 
 [[allowed]]
 path = "src/bolt_v3_iv/policy.rs"
-kind = "number"
-literal = '''0'''
-context = '''basis: inputs[0].basis.clone(),'''
-classification = "iv_policy_algorithm_literal"
-reason = "IV projection records the common basis from the first already-validated input after non-empty and same-basis checks; policy values remain typed/config-owned."
-
-[[allowed]]
-path = "src/bolt_v3_iv/policy.rs"
-kind = "number"
-literal = '''0'''
-context = '''convention: inputs[0].convention.clone(),'''
-classification = "iv_policy_algorithm_literal"
-reason = "IV projection records the common convention from the first already-validated input after non-empty and same-convention checks; policy values remain typed/config-owned."
-
-[[allowed]]
-path = "src/bolt_v3_iv/policy.rs"
 kind = "string"
 literal = '''"candidate_not_eligible"'''
 context = '''reason: "candidate_not_eligible".to_string(),'''
@@ -11104,6 +11088,102 @@ literal = '''"{context}.derived_input_policies.{}.field_sources.{}"'''
 context = '''"{context}.derived_input_policies.{}.field_sources.{}",'''
 classification = "iv_config_schema_literal"
 reason = "IV profile validation diagnostic context for a derived-input field source; policy IDs and field names come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{context}.helper_policies.{}.output_bounds"'''
+context = '''"{context}.helper_policies.{}.output_bounds",'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic context for helper output bounds; helper policy IDs and numeric bounds come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{context}.derived_input_policies.{}.bounds.{}"'''
+context = '''"{context}.derived_input_policies.{}.bounds.{}",'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic context for derived-input numeric bounds; input policy IDs, field names, and numeric bounds come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"inclusive_min"'''
+context = '''("inclusive_min", bounds.inclusive_min),'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"inclusive_min"'''
+context = '''"inclusive_min",'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"inclusive_max"'''
+context = '''("inclusive_max", bounds.inclusive_max),'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"inclusive_max"'''
+context = '''"inclusive_max",'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"exclusive_min"'''
+context = '''("exclusive_min", bounds.exclusive_min),'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"exclusive_min"'''
+context = '''"exclusive_min",'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"exclusive_max"'''
+context = '''("exclusive_max", bounds.exclusive_max),'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"exclusive_max"'''
+context = '''"exclusive_max",'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"<="'''
+context = '''let relation = if allow_equal { "<=" } else { "<" };'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation emits the comparison operator in bound-order diagnostics; the compared bound values come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"<"'''
+context = '''let relation = if allow_equal { "<=" } else { "<" };'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation emits the comparison operator in bound-order diagnostics; the compared bound values come from TOML config."
 
 [[allowed]]
 path = "src/bolt_v3_iv/config.rs"

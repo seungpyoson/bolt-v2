@@ -3,7 +3,8 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    error::IvRejectReason, provenance::IvPolicyDecision, store::IvSmilePoint, time::UnixNanos,
+    bounds::IvNumericBounds, error::IvRejectReason, provenance::IvPolicyDecision,
+    store::IvSmilePoint, time::UnixNanos, types::IvConvention,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -119,7 +120,7 @@ impl IvQuorumTieBreak {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IvProjectionPolicy {
     pub policy_id: String,
@@ -131,6 +132,7 @@ pub struct IvProjectionPolicy {
     pub evidence_mapping: IvEvidenceMapping,
     pub minimum_points: usize,
     pub max_projection_input_skew_ns: u64,
+    pub output_bounds: IvNumericBounds,
     pub fallback_policy_ref: Option<String>,
     pub interpolation_policy_ref: Option<String>,
     pub quorum_policy_ref: Option<String>,
@@ -191,33 +193,47 @@ pub fn project_scalar(
             IvRejectReason::ProjectionRejected,
         ));
     }
+    let first_input = inputs
+        .first()
+        .ok_or_else(|| rejected(policy.policy_id.clone(), IvRejectReason::ProjectionRejected))?;
 
     match policy.projection_kind {
-        IvProjectionKind::Mean => Ok(IvPolicyOutput {
-            value: average(inputs.iter().map(|input| input.value)).ok_or_else(|| {
+        IvProjectionKind::Mean => {
+            let value = average(inputs.iter().map(|input| input.value)).ok_or_else(|| {
                 rejected(policy.policy_id.clone(), IvRejectReason::ProjectionRejected)
-            })?,
-            policy_decisions: vec![IvPolicyDecision::ProjectionDecision {
-                policy_id: policy.policy_id.clone(),
-                input_product_ids: inputs
-                    .iter()
-                    .map(|input| input.product_id.clone())
-                    .collect(),
-                selector_fingerprints: inputs
-                    .iter()
-                    .map(|input| input.selector_fingerprint.clone())
-                    .collect(),
-                projection_kind: policy.projection_kind.as_str().to_string(),
-                basis: inputs[0].basis.clone(),
-                convention: inputs[0].convention.clone(),
-                max_projection_input_skew_ns: policy.max_projection_input_skew_ns,
-                accepted_input_ids: inputs
-                    .iter()
-                    .map(|input| input.product_id.clone())
-                    .collect(),
-                rejected_input_ids: Vec::new(),
-            }],
-        }),
+            })?;
+            let convention = IvConvention::Named(first_input.convention.clone());
+            if !policy.output_bounds.accepts(value, &convention) {
+                return Err(rejected(
+                    policy.policy_id.clone(),
+                    IvRejectReason::ProjectionRejected,
+                ));
+            }
+
+            Ok(IvPolicyOutput {
+                value,
+                policy_decisions: vec![IvPolicyDecision::ProjectionDecision {
+                    policy_id: policy.policy_id.clone(),
+                    input_product_ids: inputs
+                        .iter()
+                        .map(|input| input.product_id.clone())
+                        .collect(),
+                    selector_fingerprints: inputs
+                        .iter()
+                        .map(|input| input.selector_fingerprint.clone())
+                        .collect(),
+                    projection_kind: policy.projection_kind.as_str().to_string(),
+                    basis: first_input.basis.clone(),
+                    convention: first_input.convention.clone(),
+                    max_projection_input_skew_ns: policy.max_projection_input_skew_ns,
+                    accepted_input_ids: inputs
+                        .iter()
+                        .map(|input| input.product_id.clone())
+                        .collect(),
+                    rejected_input_ids: Vec::new(),
+                }],
+            })
+        }
     }
 }
 

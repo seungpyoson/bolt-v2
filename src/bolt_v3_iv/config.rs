@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     audit::IvAuditPolicy,
     authz::{IvAuthorizationMode, IvSelectorAuthorization},
+    bounds::{IvBoundUnit, IvNumericBounds},
     derive::{IvDerivedInputPolicy, IvDerivedInputSet, IvHelperOutput, IvHelperPolicy},
     policy::{IvFallbackPolicy, IvInterpolationPolicy, IvProjectionPolicy, IvQuorumPolicy},
     selector::IvSelector,
@@ -34,6 +35,7 @@ pub struct IvProfile {
     pub max_derived_points: usize,
     pub max_source_health_events: usize,
     pub max_source_event_age_ns: Option<u64>,
+    pub input_bounds: IvNumericBounds,
     pub audit_policy: IvAuditPolicy,
     pub projection_policies: Vec<IvProjectionPolicy>,
     pub interpolation_policies: Vec<IvInterpolationPolicy>,
@@ -218,6 +220,12 @@ fn validate_profile(profile: &IvProfile) -> Vec<String> {
             max_source_event_age_ns,
         );
     }
+    validate_iv_numeric_bounds(
+        &mut errors,
+        &format!("{profile_context}.input_bounds"),
+        &profile.input_bounds,
+        true,
+    );
     if profile.sources.is_empty() {
         errors.push(format!(
             "{profile_context}.sources must contain at least one source"
@@ -609,23 +617,15 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.helper_policy_id
             ));
         }
-        if !policy.output_bounds.finite_required || !policy.output_bounds.positive_required {
-            errors.push(format!(
-                "{context}.helper_policies.{}.output_bounds must require finite and positive IV outputs",
+        validate_iv_numeric_bounds(
+            &mut errors,
+            &format!(
+                "{context}.helper_policies.{}.output_bounds",
                 policy.helper_policy_id
-            ));
-        }
-        if policy
-            .output_bounds
-            .allowed_conventions
-            .allowed_conventions
-            .is_empty()
-        {
-            errors.push(format!(
-                "{context}.helper_policies.{}.output_bounds.allowed_conventions must be non-empty",
-                policy.helper_policy_id
-            ));
-        }
+            ),
+            &policy.output_bounds,
+            true,
+        );
         if policy.convention_policy.allowed_conventions.is_empty() {
             errors.push(format!(
                 "{context}.helper_policies.{}.convention_policy.allowed_conventions must be non-empty",
@@ -855,6 +855,17 @@ fn validate_derived_input_policy_bounds(
             ));
         }
     }
+    for (field, bounds) in policy.bounds.numeric_bounds() {
+        validate_numeric_bound_shape(
+            errors,
+            &format!(
+                "{context}.derived_input_policies.{}.bounds.{}",
+                policy.input_policy_id,
+                field.as_str()
+            ),
+            bounds,
+        );
+    }
 }
 
 fn validate_unique_policy_ids<'a>(
@@ -935,6 +946,12 @@ fn validate_projection_policies(context: &str, profile: &IvProfile) -> Vec<Strin
                 policy.policy_id
             ));
         }
+        validate_iv_numeric_bounds(
+            &mut errors,
+            &format!("{policy_context}.{}.output_bounds", policy.policy_id),
+            &policy.output_bounds,
+            true,
+        );
         if policy
             .source_eligibility
             .iter()
@@ -989,6 +1006,95 @@ fn validate_positive_bound(errors: &mut Vec<String>, context: &str, field: &str,
 fn validate_positive_u64_bound(errors: &mut Vec<String>, context: &str, field: &str, value: u64) {
     if value == 0 {
         errors.push(format!("{context}.{field} must be positive"));
+    }
+}
+
+fn validate_iv_numeric_bounds(
+    errors: &mut Vec<String>,
+    context: &str,
+    bounds: &IvNumericBounds,
+    require_conventions: bool,
+) {
+    validate_numeric_bound_shape(errors, context, bounds);
+    if !bounds.finite_required || !bounds.positive_required {
+        errors.push(format!(
+            "{context} must require finite and positive IV values"
+        ));
+    }
+    if bounds.unit != IvBoundUnit::Unitless {
+        errors.push(format!("{context}.unit must be unitless for IV values"));
+    }
+    if require_conventions && bounds.allowed_conventions.allowed_conventions.is_empty() {
+        errors.push(format!("{context}.allowed_conventions must be non-empty"));
+    }
+}
+
+fn validate_numeric_bound_shape(errors: &mut Vec<String>, context: &str, bounds: &IvNumericBounds) {
+    for (field, value) in [
+        ("inclusive_min", bounds.inclusive_min),
+        ("inclusive_max", bounds.inclusive_max),
+        ("exclusive_min", bounds.exclusive_min),
+        ("exclusive_max", bounds.exclusive_max),
+    ] {
+        if value.is_some_and(|value| !value.is_finite()) {
+            errors.push(format!("{context}.{field} must be finite when set"));
+        }
+    }
+    validate_bound_pair(
+        errors,
+        context,
+        "inclusive_min",
+        bounds.inclusive_min,
+        "inclusive_max",
+        bounds.inclusive_max,
+        true,
+    );
+    validate_bound_pair(
+        errors,
+        context,
+        "inclusive_min",
+        bounds.inclusive_min,
+        "exclusive_max",
+        bounds.exclusive_max,
+        false,
+    );
+    validate_bound_pair(
+        errors,
+        context,
+        "exclusive_min",
+        bounds.exclusive_min,
+        "inclusive_max",
+        bounds.inclusive_max,
+        false,
+    );
+    validate_bound_pair(
+        errors,
+        context,
+        "exclusive_min",
+        bounds.exclusive_min,
+        "exclusive_max",
+        bounds.exclusive_max,
+        false,
+    );
+}
+
+fn validate_bound_pair(
+    errors: &mut Vec<String>,
+    context: &str,
+    lower_field: &str,
+    lower: Option<f64>,
+    upper_field: &str,
+    upper: Option<f64>,
+    allow_equal: bool,
+) {
+    let (Some(lower), Some(upper)) = (lower, upper) else {
+        return;
+    };
+    if (allow_equal && lower > upper) || (!allow_equal && lower >= upper) {
+        let relation = if allow_equal { "<=" } else { "<" };
+        errors.push(format!(
+            "{context}.{lower_field} must be {relation} {upper_field}"
+        ));
     }
 }
 

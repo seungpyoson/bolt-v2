@@ -197,6 +197,7 @@ impl IvRuntimeEngine {
                     );
                 }
                 state.set_projection_policies(profile.projection_policies.clone());
+                state.set_input_bounds(profile.input_bounds.clone());
                 state.set_interpolation_policies(profile.interpolation_policies.clone());
                 state.set_fallback_policies(profile.fallback_policies.clone());
                 state.set_quorum_policies(profile.quorum_policies.clone());
@@ -951,7 +952,7 @@ impl IvRuntimeEngine {
 }
 
 fn query_state_from_profile(profile: &IvProfile) -> IvQueryState {
-    IvQueryState::new(IvStore::empty())
+    IvQueryState::new(IvStore::with_input_bounds(profile.input_bounds.clone()))
         .with_projection_policies(profile.projection_policies.clone())
         .with_interpolation_policies(profile.interpolation_policies.clone())
         .with_fallback_policies(profile.fallback_policies.clone())

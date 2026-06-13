@@ -4636,6 +4636,7 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
 projection_policies = []
 interpolation_policies = []
 fallback_policies = []
@@ -4711,6 +4712,7 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
 projection_policies = []
 interpolation_policies = []
 fallback_policies = []
@@ -4807,6 +4809,7 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
 projection_policies = []
 interpolation_policies = []
 fallback_policies = []
@@ -5393,6 +5396,7 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
 projection_policies = []
 interpolation_policies = []
 fallback_policies = []

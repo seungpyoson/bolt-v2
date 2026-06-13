@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use super::{
+    bounds::IvNumericBounds,
     error::IvRejectReason,
     ingest::{
         IvAggregateGreeksPayload, IvCustomIvPayload, IvIngestEvent, IvOptionChainSlicePayload,
@@ -124,6 +125,7 @@ pub enum IvStoreError {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IvStore {
+    input_bounds: Option<IvNumericBounds>,
     raw_events: Vec<IvRawEvent>,
     raw_events_start: usize,
     iv_points: Vec<IvPoint>,
@@ -151,6 +153,7 @@ struct IvStoreIndexCheckpoint {
 impl IvStore {
     pub fn empty() -> Self {
         Self {
+            input_bounds: None,
             raw_events: Vec::new(),
             raw_events_start: EMPTY_RETENTION_START,
             iv_points: Vec::new(),
@@ -165,6 +168,16 @@ impl IvStore {
             iv_evidence_start: EMPTY_RETENTION_START,
             next_ingest_sequence: u64::MIN,
         }
+    }
+
+    pub fn with_input_bounds(input_bounds: IvNumericBounds) -> Self {
+        let mut store = Self::empty();
+        store.input_bounds = Some(input_bounds);
+        store
+    }
+
+    pub fn set_input_bounds(&mut self, input_bounds: IvNumericBounds) {
+        self.input_bounds = Some(input_bounds);
     }
 
     /// Preserves the raw event before indexing. An `Err` means indexed products were rolled
@@ -359,7 +372,7 @@ impl IvStore {
             return Err(IvStoreError::InvalidIvValue);
         }
         for basis_value in &payload.basis_values {
-            if !valid_iv(basis_value.iv) {
+            if !self.accepts_iv(basis_value.iv, &payload.convention) {
                 return Err(IvStoreError::InvalidIvValue);
             }
 
@@ -430,7 +443,7 @@ impl IvStore {
                 continue;
             };
             for basis_value in &greeks.basis_values {
-                if !valid_iv(basis_value.iv) {
+                if !self.accepts_iv(basis_value.iv, &greeks.convention) {
                     continue;
                 }
                 points_by_basis_and_convention
@@ -469,11 +482,9 @@ impl IvStore {
         raw_event: &IvRawEvent,
         payload: &IvAggregateGreeksPayload,
     ) -> Result<(), IvStoreError> {
-        if payload
-            .aggregate_iv
-            .as_ref()
-            .is_some_and(|aggregate_iv| !valid_iv(aggregate_iv.value))
-            || payload.greeks.has_non_finite_value()
+        if payload.aggregate_iv.as_ref().is_some_and(|aggregate_iv| {
+            !self.accepts_iv(aggregate_iv.value, &aggregate_iv.convention)
+        }) || payload.greeks.has_non_finite_value()
         {
             return Err(IvStoreError::InvalidIvValue);
         }
@@ -498,7 +509,7 @@ impl IvStore {
         raw_event: &IvRawEvent,
         payload: &IvCustomIvPayload,
     ) -> Result<(), IvStoreError> {
-        if !valid_iv(payload.value) {
+        if !self.accepts_iv(payload.value, &custom_iv_convention(raw_event)) {
             return Err(IvStoreError::InvalidIvValue);
         }
 
@@ -514,10 +525,22 @@ impl IvStore {
 
         Ok(())
     }
+
+    fn accepts_iv(&self, value: f64, convention: &IvConvention) -> bool {
+        valid_iv(value)
+            && self
+                .input_bounds
+                .as_ref()
+                .is_none_or(|bounds| bounds.accepts(value, convention))
+    }
 }
 
 fn valid_iv(value: f64) -> bool {
     value.is_finite() && value > 0.0
+}
+
+fn custom_iv_convention(raw_event: &IvRawEvent) -> IvConvention {
+    IvConvention::Named(raw_event.provenance.nt_symbol.clone())
 }
 
 fn valid_optional_finite(value: Option<f64>) -> bool {

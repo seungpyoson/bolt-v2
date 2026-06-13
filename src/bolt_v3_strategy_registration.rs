@@ -153,6 +153,8 @@ pub fn build_iv_query_handle_registry_for_root(
 
     let mut handles = BTreeMap::new();
     for profile in &iv.profiles {
+        let mut profile_store = store.clone();
+        profile_store.set_input_bounds(profile.input_bounds.clone());
         for authorization in profile.strategy_authorizations() {
             let current_generations = profile
                 .sources
@@ -166,7 +168,7 @@ pub fn build_iv_query_handle_registry_for_root(
             if handles
                 .insert(
                     key.clone(),
-                    IvQueryHandle::new(&profile.profile_id, authorization, store.clone())
+                    IvQueryHandle::new(&profile.profile_id, authorization, profile_store.clone())
                         .with_projection_policies(profile.projection_policies.clone())
                         .with_interpolation_policies(profile.interpolation_policies.clone())
                         .with_fallback_policies(profile.fallback_policies.clone())

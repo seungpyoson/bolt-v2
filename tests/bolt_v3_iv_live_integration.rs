@@ -109,6 +109,9 @@ max_smiles = 4
 max_surfaces = 4
 max_derived_points = 4
 max_source_health_events = 4
+
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 interpolation_policies = []
 fallback_policies = []
 quorum_policies = []
@@ -136,6 +139,9 @@ tenor_selection = "all_configured_tenors"
 evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
+
+output_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 
 [[iv.profiles.strategy_authorizations]]
 strategy_id = "configured-strategy"
@@ -387,6 +393,9 @@ max_smiles = 4
 max_surfaces = 4
 max_derived_points = 4
 max_source_health_events = 4
+
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 projection_policies = []
 interpolation_policies = []
 fallback_policies = []
@@ -1037,6 +1046,9 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 interpolation_policies = []
 fallback_policies = []
 quorum_policies = []
@@ -1064,6 +1076,9 @@ tenor_selection = "all_configured_tenors"
 evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
+
+output_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 
 [[iv.profiles.strategy_authorizations]]
 strategy_id = "configured-strategy"
@@ -1124,6 +1139,9 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 interpolation_policies = []
 fallback_policies = []
 quorum_policies = []
@@ -1151,6 +1169,9 @@ tenor_selection = "all_configured_tenors"
 evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
+
+output_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 
 [[iv.profiles.strategy_authorizations]]
 strategy_id = "configured-strategy"
@@ -1316,6 +1337,9 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 interpolation_policies = []
 fallback_policies = []
 quorum_policies = []
@@ -1343,6 +1367,9 @@ tenor_selection = "all_configured_tenors"
 evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
+
+output_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 
 [[iv.profiles.strategy_authorizations]]
 strategy_id = "configured-strategy"
@@ -1424,6 +1451,9 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 interpolation_policies = []
 fallback_policies = []
 quorum_policies = []
@@ -1451,6 +1481,9 @@ tenor_selection = "all_configured_tenors"
 evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
+
+output_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 
 [[iv.profiles.strategy_authorizations]]
 strategy_id = "configured-strategy"
@@ -1548,6 +1581,9 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 projection_policies = []
 interpolation_policies = []
 fallback_policies = []
@@ -1642,6 +1678,9 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 interpolation_policies = []
 fallback_policies = []
 quorum_policies = []
@@ -1669,6 +1708,9 @@ tenor_selection = "all_configured_tenors"
 evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
+
+output_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 
 [[iv.profiles.strategy_authorizations]]
 strategy_id = "missing-strategy"
@@ -1736,6 +1778,9 @@ max_smiles = 4
 max_surfaces = 4
 max_derived_points = 4
 max_source_health_events = 4
+
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 projection_policies = []
 interpolation_policies = []
 fallback_policies = []
@@ -1917,6 +1962,9 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 interpolation_policies = []
 fallback_policies = []
 quorum_policies = []
@@ -1944,6 +1992,9 @@ tenor_selection = "all_configured_tenors"
 evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
+
+output_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredCustomIvEvent", "ConfiguredAggregateGreeksEvent", "ConfiguredNtSymbol"] } }
+
 
 [[iv.profiles.strategy_authorizations]]
 strategy_id = "configured-strategy"

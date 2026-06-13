@@ -37,6 +37,16 @@ helper_policies = []
 derived_inputs = []
 derived_input_policies = []
 
+[iv.profiles.input_bounds]
+finite_required = true
+positive_required = true
+inclusive_min = operator_min_iv
+inclusive_max = operator_max_iv
+unit = "unitless"
+
+[iv.profiles.input_bounds.allowed_conventions]
+allowed_conventions = ["operator_iv_convention"]
+
 [iv.profiles.audit_policy]
 enabled_raw_products = ["operator_raw_product_kind"]
 authorized_audit_handles = ["operator_audit_handle"]
@@ -60,6 +70,16 @@ max_projection_input_skew_ns = operator_positive_integer
 fallback_policy_ref = "operator_fallback_policy"
 interpolation_policy_ref = "operator_interpolation_policy"
 quorum_policy_ref = "operator_quorum_policy"
+
+[iv.profiles.projection_policies.output_bounds]
+finite_required = true
+positive_required = true
+inclusive_min = operator_min_iv
+inclusive_max = operator_max_iv
+unit = "unitless"
+
+[iv.profiles.projection_policies.output_bounds.allowed_conventions]
+allowed_conventions = ["operator_iv_convention"]
 
 [[iv.profiles.strategy_authorizations]]
 strategy_id = "operator_strategy"

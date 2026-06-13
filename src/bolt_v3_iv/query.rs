@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     authz::IvSelectorAuthorization,
+    bounds::IvNumericBounds,
     derive::{
         IvDeriveError, IvDerivedInputPolicy, IvDerivedInputSet, IvDerivedOutput, IvHelperPolicy,
         derive_iv, resolve_derived_input_policy, select_helper_policy,
@@ -620,6 +621,10 @@ impl IvQueryStateHandle {
 
     pub fn set_projection_policies(&self, projection_policies: Vec<IvProjectionPolicy>) {
         self.write_state().projection_policies = projection_policies;
+    }
+
+    pub fn set_input_bounds(&self, input_bounds: IvNumericBounds) {
+        self.write_state().store.set_input_bounds(input_bounds);
     }
 
     pub fn set_helper_policies(&self, helper_policies: Vec<IvHelperPolicy>) {
@@ -3172,12 +3177,33 @@ mod tests {
     };
 
     use crate::bolt_v3_iv::authz::IvAuthorizationMode;
+    use crate::bolt_v3_iv::bounds::{IvBoundUnit, IvConventionBounds};
     use crate::bolt_v3_iv::health::IvSourceHealthState;
     use crate::bolt_v3_iv::policy::{
         IvBasisSelection, IvEvidenceMapping, IvProjectionKind, IvTenorSelection,
     };
 
     use super::*;
+
+    fn test_projection_bounds() -> IvNumericBounds {
+        IvNumericBounds {
+            finite_required: true,
+            positive_required: true,
+            inclusive_min: Some(0.0),
+            inclusive_max: Some(1.0),
+            exclusive_min: None,
+            exclusive_max: None,
+            unit: IvBoundUnit::Unitless,
+            allowed_conventions: IvConventionBounds {
+                allowed_conventions: [
+                    IvConvention::Named("configured-convention".to_string()),
+                    IvConvention::Named("test_convention".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+            },
+        }
+    }
 
     #[test]
     fn query_state_handle_recovers_from_poisoned_lock() {
@@ -3298,6 +3324,7 @@ mod tests {
             evidence_mapping: IvEvidenceMapping::PreserveEvidenceKind,
             minimum_points: 3,
             max_projection_input_skew_ns: 100,
+            output_bounds: test_projection_bounds(),
             fallback_policy_ref: Some("test_fallback_policy".to_string()),
             interpolation_policy_ref: None,
             quorum_policy_ref: None,

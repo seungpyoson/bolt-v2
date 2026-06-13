@@ -25,6 +25,7 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredDuplicateOptionGreeks"] } }
 derived_inputs = []
 
 [profiles.audit_policy]
@@ -47,6 +48,7 @@ tenor_selection = "all_configured_tenors"
 evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
+output_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv"] } }
 fallback_policy_ref = "configured-fallback-policy"
 interpolation_policy_ref = "configured-interpolation-policy"
 quorum_policy_ref = "configured-quorum-policy"
@@ -908,6 +910,54 @@ fn helper_policy_minimum_valid_iv_output_must_exceed_helper_failure_floor() {
         message.contains("helper_policies.configured-helper-policy.minimum_valid_iv_output")
             && message.contains("failure floor")
     }));
+}
+
+#[test]
+fn profile_input_bounds_must_be_finite_positive_and_convention_scoped() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0]
+        .input_bounds
+        .allowed_conventions
+        .allowed_conventions
+        .clear();
+    config.profiles[0].input_bounds.inclusive_max = Some(f64::NAN);
+
+    let errors = validate_iv_root_config(&config);
+    let message = errors.join("\n");
+
+    assert!(
+        message.contains("profiles.configured-profile.input_bounds.inclusive_max"),
+        "expected finite input-bound rejection, got {errors:?}"
+    );
+    assert!(
+        message.contains("profiles.configured-profile.input_bounds.allowed_conventions"),
+        "expected convention-scoped input-bound rejection, got {errors:?}"
+    );
+}
+
+#[test]
+fn projection_output_bounds_must_be_ordered_and_convention_scoped() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    let bounds = &mut config.profiles[0].projection_policies[0].output_bounds;
+    bounds.exclusive_min = Some(1.0);
+    bounds.inclusive_max = Some(1.0);
+    bounds.allowed_conventions.allowed_conventions.clear();
+
+    let errors = validate_iv_root_config(&config);
+    let message = errors.join("\n");
+
+    assert!(
+        message.contains(
+            "projection_policies.configured-projection-policy.output_bounds.exclusive_min"
+        ),
+        "expected ordered projection-bound rejection, got {errors:?}"
+    );
+    assert!(
+        message.contains(
+            "projection_policies.configured-projection-policy.output_bounds.allowed_conventions"
+        ),
+        "expected convention-scoped projection-bound rejection, got {errors:?}"
+    );
 }
 
 #[test]

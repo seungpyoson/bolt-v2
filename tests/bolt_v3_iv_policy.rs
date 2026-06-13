@@ -1,4 +1,5 @@
 use bolt_v2::bolt_v3_iv::{
+    bounds::{IvBoundUnit, IvConventionBounds, IvNumericBounds},
     error::IvRejectReason,
     policy::{
         IvBasisSelection, IvEvidenceMapping, IvExtrapolationPolicy, IvFallbackCandidate,
@@ -10,6 +11,7 @@ use bolt_v2::bolt_v3_iv::{
     provenance::{IvPolicyDecision, IvRejectedCandidate},
     store::IvSmilePoint,
     time::UnixNanos,
+    types::IvConvention,
 };
 
 fn input(product_id: &str, value: f64, ts: u64) -> IvPolicyInput {
@@ -38,9 +40,27 @@ fn projection_policy(
         evidence_mapping: IvEvidenceMapping::PreserveEvidenceKind,
         minimum_points,
         max_projection_input_skew_ns,
+        output_bounds: projection_output_bounds(1.0),
         fallback_policy_ref: None,
         interpolation_policy_ref: None,
         quorum_policy_ref: None,
+    }
+}
+
+fn projection_output_bounds(inclusive_max: f64) -> IvNumericBounds {
+    IvNumericBounds {
+        finite_required: true,
+        positive_required: true,
+        inclusive_min: Some(0.0),
+        inclusive_max: Some(inclusive_max),
+        exclusive_min: None,
+        exclusive_max: None,
+        unit: IvBoundUnit::Unitless,
+        allowed_conventions: IvConventionBounds {
+            allowed_conventions: [IvConvention::Named("configured-convention".to_string())]
+                .into_iter()
+                .collect(),
+        },
     }
 }
 
@@ -54,6 +74,20 @@ fn interpolation_policy(extrapolation: IvExtrapolationPolicy) -> IvInterpolation
         eligible_sources: vec!["configured-source".to_string()],
         extrapolation,
     }
+}
+
+#[test]
+fn projection_policy_rejects_output_outside_configured_bounds() {
+    let mut policy = projection_policy(1, 5);
+    policy.output_bounds = projection_output_bounds(0.30);
+
+    assert_eq!(
+        project_scalar(&policy, &[input("a", 0.42, 1_000)]),
+        Err(IvPolicyError::Rejected {
+            reason: IvRejectReason::ProjectionRejected,
+            policy_id: "configured-projection".to_string(),
+        })
+    );
 }
 
 #[test]

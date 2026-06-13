@@ -357,7 +357,11 @@ fn bounds() -> IvNumericBounds {
         exclusive_max: None,
         unit: IvBoundUnit::Unitless,
         allowed_conventions: IvConventionBounds {
-            allowed_conventions: BTreeSet::from([convention()]),
+            allowed_conventions: BTreeSet::from([
+                convention(),
+                IvConvention::Named("ConfiguredCustomIvEvent".to_string()),
+                IvConvention::Named("ConfiguredAggregateGreeksEvent".to_string()),
+            ]),
         },
     }
 }
@@ -607,6 +611,7 @@ fn projection_policy_with_refs(
         evidence_mapping: IvEvidenceMapping::PreserveEvidenceKind,
         minimum_points,
         max_projection_input_skew_ns: 10,
+        output_bounds: bounds(),
         fallback_policy_ref: fallback_policy_ref.map(str::to_string),
         interpolation_policy_ref: interpolation_policy_ref.map(str::to_string),
         quorum_policy_ref: quorum_policy_ref.map(str::to_string),
@@ -3120,6 +3125,7 @@ fn projected_scalar_query_uses_configured_projection_policy() {
             evidence_mapping: IvEvidenceMapping::PreserveEvidenceKind,
             minimum_points: 1,
             max_projection_input_skew_ns: 10,
+            output_bounds: bounds(),
             fallback_policy_ref: None,
             interpolation_policy_ref: None,
             quorum_policy_ref: None,

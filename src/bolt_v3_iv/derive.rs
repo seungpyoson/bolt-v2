@@ -233,6 +233,26 @@ impl IvDerivedInputBounds {
             IvDerivedInputField::OptionSide => None,
         }
     }
+
+    pub fn numeric_bounds(&self) -> impl Iterator<Item = (IvDerivedInputField, &IvNumericBounds)> {
+        [
+            (IvDerivedInputField::OptionPrice, self.option_price.as_ref()),
+            (
+                IvDerivedInputField::UnderlyingPrice,
+                self.underlying_price.as_ref(),
+            ),
+            (IvDerivedInputField::Strike, self.strike.as_ref()),
+            (
+                IvDerivedInputField::TimeToExpiryYears,
+                self.time_to_expiry_years.as_ref(),
+            ),
+            (IvDerivedInputField::Rate, self.rate.as_ref()),
+            (IvDerivedInputField::Carry, self.carry.as_ref()),
+            (IvDerivedInputField::InitialVol, self.initial_vol.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(field, bounds)| bounds.map(|bounds| (field, bounds)))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

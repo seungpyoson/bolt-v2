@@ -1,4 +1,5 @@
 use bolt_v2::bolt_v3_iv::{
+    bounds::{IvBoundUnit, IvConventionBounds, IvNumericBounds},
     health::IvSourceHealthState,
     ingest::{
         IvAggregateGreeksPayload, IvBasisValue, IvCustomIvPayload, IvGreekValues, IvIngestEvent,
@@ -10,6 +11,25 @@ use bolt_v2::bolt_v3_iv::{
     time::UnixNanos,
     types::{IvBasis, IvConvention, IvSourceKind},
 };
+
+fn configured_convention() -> IvConvention {
+    IvConvention::Named("configured-convention".to_string())
+}
+
+fn input_bounds(inclusive_max: f64) -> IvNumericBounds {
+    IvNumericBounds {
+        finite_required: true,
+        positive_required: true,
+        inclusive_min: Some(0.0),
+        inclusive_max: Some(inclusive_max),
+        exclusive_min: None,
+        exclusive_max: None,
+        unit: IvBoundUnit::Unitless,
+        allowed_conventions: IvConventionBounds {
+            allowed_conventions: [configured_convention()].into_iter().collect(),
+        },
+    }
+}
 
 fn base_event(source_kind: IvSourceKind, payload: IvRawPayload) -> IvIngestEvent {
     IvIngestEvent {
@@ -32,7 +52,7 @@ fn base_event(source_kind: IvSourceKind, payload: IvRawPayload) -> IvIngestEvent
 fn greeks_payload() -> IvOptionGreeksPayload {
     IvOptionGreeksPayload {
         instrument_id: "configured-option-instrument".to_string(),
-        convention: IvConvention::Named("configured-convention".to_string()),
+        convention: configured_convention(),
         basis_values: vec![
             IvBasisValue {
                 basis: IvBasis::Mark,
@@ -62,7 +82,7 @@ fn greeks_payload() -> IvOptionGreeksPayload {
 fn chain_greeks_payload(instrument_id: &str, mark_iv: f64) -> IvOptionGreeksPayload {
     IvOptionGreeksPayload {
         instrument_id: instrument_id.to_string(),
-        convention: IvConvention::Named("configured-convention".to_string()),
+        convention: configured_convention(),
         basis_values: vec![IvBasisValue {
             basis: IvBasis::Mark,
             iv: mark_iv,
@@ -89,6 +109,27 @@ fn chain_quote_payload(instrument_id: &str) -> IvOptionChainQuotePayload {
         ts_event_ns: UnixNanos::new(950),
         ts_init_ns: Some(UnixNanos::new(960)),
     }
+}
+
+#[test]
+fn option_greeks_ingest_rejects_values_outside_configured_input_bounds() {
+    let mut payload = greeks_payload();
+    payload.basis_values[0].iv = 0.61;
+    let mut store = IvStore::with_input_bounds(input_bounds(0.60));
+
+    let result = store.ingest_event(base_event(
+        IvSourceKind::OptionGreeks,
+        IvRawPayload::OptionGreeks(payload.clone()),
+    ));
+
+    assert_eq!(result, Err(IvStoreError::InvalidIvValue));
+    assert_eq!(store.raw_events().len(), 1);
+    assert_eq!(
+        store.raw_events()[0].payload,
+        IvRawPayload::OptionGreeks(payload)
+    );
+    assert!(store.iv_points().is_empty());
+    assert!(store.greeks_points().is_empty());
 }
 
 #[test]

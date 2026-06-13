@@ -41,6 +41,7 @@ Fields:
 - `max_derived_points`
 - `max_source_health_events`
 - `max_source_event_age_ns` (optional)
+- `input_bounds`
 - `sources`
 - `audit_policy`
 - `interpolation_policies`
@@ -57,6 +58,7 @@ Validation:
 - Unknown or unsupported root schema versions reject at startup; this slice accepts only `schema_version = 1` and does not ship an automatic migrator.
 - Strategy authorization, sources, source lifecycle, enabled products, memory bounds, numeric bounds, and query policies live in this profile boundary.
 - Each strategy authorization carries its own strategy ID, product allowlist, source allowlist, and selector-fingerprint allowlist so two strategies in the same profile can use different configured selectors.
+- `input_bounds` references `IvNumericBounds` and is enforced before NT-ingested IV values are indexed.
 - Bounds reference named `IvNumericBounds` and convention-bound policies used by ingestion, projection, helper inputs, helper outputs, quorum agreement bands, and configured operator values.
 - Swapping, renaming, adding, or removing a source requires editing only this profile.
 - A profile with no source and no derived-input policy rejects at startup.
@@ -557,6 +559,7 @@ Fields:
 - `evidence_mapping`
 - `minimum_points`
 - `max_projection_input_skew_ns`
+- `output_bounds`
 - `fallback_policy_ref`
 - `interpolation_policy_ref`
 - `quorum_policy_ref`
@@ -567,6 +570,7 @@ Validation:
 - Projection cannot silently change basis, convention, source eligibility, timestamp, product kind, or evidence semantics.
 - Projection rejects when fewer than `minimum_points` eligible inputs are available.
 - Projection rejects when input products exceed `max_projection_input_skew_ns`.
+- Projection rejects when the computed scalar IV is outside `output_bounds`.
 - Unknown projection kinds reject at startup.
 - Every projection records input products and policy decisions in provenance.
 
@@ -661,7 +665,7 @@ Fields:
 
 Validation:
 
-- Bounds are TOML-owned and referenced by policy ID.
+- Bounds are TOML-owned and referenced by the owning profile or policy.
 - Unit-ambiguous values reject at config load.
 - IV, rate, carry, time-to-expiry, strike, price, skew, and agreement-band fields each reference an explicit bound policy.
 - Convention eligibility is validated before a value can be indexed, projected, or passed to an NT helper.

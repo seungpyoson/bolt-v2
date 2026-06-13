@@ -1,6 +1,6 @@
 # Implementation Plan: Global Shadow Execution Policy
 
-**Branch**: `codex/621-global-shadow-mode` | **Date**: 2026-06-13 | **Spec**: `specs/621-global-shadow-execution-policy/spec.md`  
+**Branch**: `codex/621-global-shadow-mode` | **Date**: 2026-06-13 | **Spec**: `specs/621-global-shadow-execution-policy/spec.md`
 **Input**: Follow-up to merged PR #621, making shadow/no-submit behavior global and shared.
 
 ## Summary
@@ -9,13 +9,13 @@ Move PR #621's strategy-local `parameters.submit_orders` behavior into a root-le
 
 ## Technical Context
 
-**Language/Version**: Rust, repository toolchain  
-**Primary Dependencies**: NautilusTrader Rust crates pinned in `Cargo.toml` at rev `7c2aafb30fb143069c915a3f2057bb12174405f6`  
-**Storage**: TOML config, JSONL decision evidence, Spec Kit docs  
-**Testing**: Red-green focused Rust tests, local non-compile gates, remote-first compile/test/clippy proof  
-**Target Platform**: bolt-v3 pure Rust `LiveNode` path  
-**Project Type**: Rust trading runtime and config parser  
-**Performance Goals**: No new hot-path polling or adapter simulation; routing decisions are per venue-action and constant time  
+**Language/Version**: Rust, repository toolchain
+**Primary Dependencies**: NautilusTrader Rust crates pinned in `Cargo.toml` at rev `7c2aafb30fb143069c915a3f2057bb12174405f6`
+**Storage**: TOML config, JSONL decision evidence, Spec Kit docs
+**Testing**: Red-green focused Rust tests, local non-compile gates, remote-first compile/test/clippy proof
+**Target Platform**: bolt-v3 pure Rust `LiveNode` path
+**Project Type**: Rust trading runtime and config parser
+**Performance Goals**: No new hot-path polling or adapter simulation; routing decisions are per venue-action and constant time
 **Constraints**: No hardcoded runtime values, no dual submit path, no strategy-owned execution gating, no direct strategy-to-NT venue mutation bypass, no live submit without approval, no NT lifecycle reimplementation
 **Scale/Scope**: One global runtime policy, one production strategy migration, reusable by future strategies through `StrategyBuildContext`
 

@@ -1,6 +1,6 @@
 # Tasks: Global Shadow Execution Policy
 
-**Input**: `spec.md`, `plan.md`, `research.md`, `contracts/order-execution-policy.md`  
+**Input**: `spec.md`, `plan.md`, `research.md`, `contracts/order-execution-policy.md`
 **Gate**: Do not begin implementation tasks until all four adversarial reviews approve.
 
 ## Phase 1: Review Gate
@@ -61,4 +61,4 @@
 - [X] T039 Run local non-compile verification listed in `quickstart.md`
 - [X] T040 Commit implementation
 - [X] T041 Push branch and open or update a draft PR
-- [ ] T042 Run `just verify-remote` and record exact-head CI evidence
+- [X] T042 Run `just verify-remote` and record exact-head CI evidence

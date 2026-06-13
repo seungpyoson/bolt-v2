@@ -14,7 +14,7 @@
 
 ### B1 - Contract example used the wrong casing for existing `runtime.mode`
 
-**Severity**: Blocking before external review  
+**Severity**: Blocking before external review
 **Status**: Fixed
 
 The first contract draft showed:

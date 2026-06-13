@@ -1,7 +1,7 @@
 # Specification Quality Checklist: Global Shadow Execution Policy
 
-**Purpose**: Validate specification completeness and quality before adversarial review  
-**Created**: 2026-06-13  
+**Purpose**: Validate specification completeness and quality before adversarial review
+**Created**: 2026-06-13
 **Feature**: `specs/621-global-shadow-execution-policy/spec.md`
 
 ## Content Quality

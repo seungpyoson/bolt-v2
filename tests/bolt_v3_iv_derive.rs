@@ -61,6 +61,7 @@ fn input_bounds() -> IvDerivedInputBounds {
         time_to_expiry_years: Some(input_bound(true, 0.0, 100.0, IvBoundUnit::TimeToExpiry)),
         rate: Some(input_bound(false, -1.0, 1.0, IvBoundUnit::Rate)),
         carry: Some(input_bound(false, -1.0, 1.0, IvBoundUnit::Carry)),
+        initial_vol: Some(input_bound(true, 0.0, 5.0, IvBoundUnit::Unitless)),
     }
 }
 
@@ -191,6 +192,15 @@ fn complete_inputs() -> IvDerivedInputSet {
         time_to_expiry_years: Some(timed(0.5, 999)),
         rate: Some(operator(0.01, 994, 1_050)),
         carry: Some(operator(0.0, 993, 1_050)),
+        initial_vol: None,
+    }
+}
+
+fn refine_helper_policy() -> IvHelperPolicy {
+    IvHelperPolicy {
+        nt_helper_symbol: IvNtHelperSymbol::RefineVolAndGreeks,
+        parameter_signature: "s,r,b,is_call,k,t,target_price,initial_vol".to_string(),
+        ..helper_policy()
     }
 }
 
@@ -212,6 +222,24 @@ fn helper_policy_selection_uses_configured_nt_symbol() {
     assert_eq!(
         selected.nt_helper_symbol.nt_symbol(),
         "nautilus_model::data::imply_vol_and_greeks"
+    );
+}
+
+#[test]
+fn refine_helper_policy_selects_nt_refine_symbol_and_signature() {
+    let policy = refine_helper_policy();
+
+    assert_eq!(
+        policy.nt_helper_symbol,
+        IvNtHelperSymbol::RefineVolAndGreeks
+    );
+    assert_eq!(
+        policy.nt_helper_symbol.nt_symbol(),
+        "nautilus_model::data::refine_vol_and_greeks"
+    );
+    assert_eq!(
+        policy.nt_helper_symbol.parameter_signature(),
+        "s,r,b,is_call,k,t,target_price,initial_vol"
     );
 }
 
@@ -254,6 +282,41 @@ fn complete_inputs_derive_iv_with_nt_helper_and_helper_provenance() {
         }]
     );
     validate_iv_provenance(&output.provenance).unwrap();
+}
+
+#[test]
+fn refine_helper_uses_configured_initial_vol_input() {
+    let mut inputs = complete_inputs();
+    inputs.initial_vol = Some(timed(0.24, 992));
+    let expected = nautilus_model::data::refine_vol_and_greeks(
+        100.0,
+        0.01,
+        0.0,
+        true,
+        100.0,
+        0.5,
+        inputs.option_price.as_ref().unwrap().value,
+        0.24,
+    );
+
+    let output = derive_iv(&refine_helper_policy(), inputs).unwrap();
+
+    assert!((output.point.iv - expected.vol).abs() < 0.001);
+    assert!((output.greeks.vega.unwrap() - expected.vega).abs() < 0.001);
+    assert_eq!(
+        output.helper_identity.nt_symbol,
+        "nautilus_model::data::refine_vol_and_greeks"
+    );
+}
+
+#[test]
+fn refine_helper_rejects_missing_initial_vol() {
+    assert_eq!(
+        derive_iv(&refine_helper_policy(), complete_inputs()),
+        Err(IvDeriveError::MissingInput {
+            field: IvDerivedInputField::InitialVol,
+        })
+    );
 }
 
 #[test]

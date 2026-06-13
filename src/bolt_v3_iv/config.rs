@@ -652,13 +652,15 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.input_policy_id
             ));
         }
-        for required_field in super::derive::IvDerivedInputField::required_fields() {
-            if !policy.required_fields.contains(&required_field) {
-                errors.push(format!(
-                    "{context}.derived_input_policies.{}.required_fields must include {}",
-                    policy.input_policy_id,
-                    required_field.as_str()
-                ));
+        if let Some(helper_policy) = helper_policy_by_id.get(policy.helper_policy_ref.as_str()) {
+            for required_field in helper_policy.nt_helper_symbol.required_fields() {
+                if !policy.required_fields.contains(required_field) {
+                    errors.push(format!(
+                        "{context}.derived_input_policies.{}.required_fields must include {}",
+                        policy.input_policy_id,
+                        required_field.as_str()
+                    ));
+                }
             }
         }
         if policy.field_sources.is_empty() {

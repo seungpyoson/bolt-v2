@@ -1251,6 +1251,7 @@ fn live_root_registry_stamps_derived_inputs_with_cargo_pinned_nt_revision() {
         time_to_expiry_years: None,
         rate: None,
         carry: None,
+        initial_vol: None,
     }];
 
     let registry = build_iv_query_handle_registry_for_root(&root, IvStore::empty()).unwrap();

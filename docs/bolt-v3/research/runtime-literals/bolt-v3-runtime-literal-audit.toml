@@ -9498,9 +9498,41 @@ reason = "IV derivation uses typed helper/input/provenance labels and numeric va
 
 [[allowed]]
 path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"nautilus_model::data::refine_vol_and_greeks"'''
+context = '''Self::RefineVolAndGreeks => "nautilus_model::data::refine_vol_and_greeks",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "number"
+literal = '''7'''
+context = '''const IMPLY_VOL_AND_GREEKS_REQUIRED_FIELDS: [IvDerivedInputField; 7] = ['''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
 kind = "number"
 literal = '''7'''
 context = '''pub fn required_fields() -> [Self; 7] {'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "number"
+literal = '''8'''
+context = '''const REFINE_VOL_AND_GREEKS_REQUIRED_FIELDS: [IvDerivedInputField; 8] = ['''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"s,r,b,is_call,k,t,target_price,initial_vol"'''
+context = '''Self::RefineVolAndGreeks => "s,r,b,is_call,k,t,target_price,initial_vol",'''
 classification = "iv_helper_contract_literal"
 reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
 
@@ -9557,6 +9589,14 @@ path = "src/bolt_v3_iv/derive.rs"
 kind = "string"
 literal = '''"carry"'''
 context = '''Self::Carry => "carry",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"initial_vol"'''
+context = '''Self::InitialVol => "initial_vol",'''
 classification = "iv_helper_contract_literal"
 reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
 

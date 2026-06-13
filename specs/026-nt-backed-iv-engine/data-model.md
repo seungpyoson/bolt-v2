@@ -489,7 +489,7 @@ Allowed field source kinds:
 
 Validation:
 
-- Required fields include option price, underlying price, strike, option side, time-to-expiry, rate, carry, source timestamps, and convention.
+- Required fields include the selected helper's required inputs: option price, underlying price, strike, option side, time-to-expiry, rate, and carry for implied-vol helpers; plus `initial_vol` for refine helpers. Source timestamps and convention remain required metadata.
 - Operator-configured values are TOML-owned and provenance-recorded.
 - Operator-configured rate and carry values include freshness or validity metadata; expired operator values reject instead of silently reusing stale inputs.
 - No rate, carry, time convention, or fallback input is guessed in code.
@@ -508,6 +508,7 @@ Fields:
 - `time_to_expiry`
 - `rate`
 - `carry`
+- `initial_vol`
 - `input_timestamps_ns`
 - `convention`
 - `input_provenance`

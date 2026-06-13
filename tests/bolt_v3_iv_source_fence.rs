@@ -37,10 +37,11 @@ fn strategy_owned_subscription(node: &mut LiveNode) {
 #[test]
 fn source_fence_rejects_strategy_local_nt_helper_derivation() {
     let source = r#"
-use nautilus_model::data::imply_vol_and_greeks;
+use nautilus_model::data::{imply_vol_and_greeks, refine_vol_and_greeks};
 
 fn strategy_owned_derived_iv() {
     let _ = imply_vol_and_greeks;
+    let _ = refine_vol_and_greeks;
 }
 "#;
 
@@ -133,6 +134,10 @@ fn iv_strategy_source_fence_violations(_source: &str) -> Vec<String> {
         ("subscribe_custom_data", "strategy-owned NT IV subscription"),
         (
             "imply_vol_and_greeks",
+            "strategy-local NT helper derivation",
+        ),
+        (
+            "refine_vol_and_greeks",
             "strategy-local NT helper derivation",
         ),
         (

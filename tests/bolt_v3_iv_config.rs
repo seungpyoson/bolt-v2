@@ -3,7 +3,7 @@ use bolt_v2::bolt_v3_iv::{
     config::{IvConfigError, IvRootConfig, load_iv_config_from_toml, validate_iv_root_config},
     derive::{
         IvDeriveError, IvDerivedInputField, IvDerivedInputSet, IvDerivedInputSourceKind,
-        IvHelperOutput, IvOptionSide, IvTimedInput, resolve_derived_input_policy,
+        IvHelperOutput, IvNtHelperSymbol, IvOptionSide, IvTimedInput, resolve_derived_input_policy,
     },
     error::IvRejectReason,
     health::IvSourceHealthState,
@@ -325,6 +325,7 @@ fn derived_config_inputs() -> IvDerivedInputSet {
             993,
             IvDerivedInputSourceKind::OperatorConfigured,
         )),
+        initial_vol: None,
     }
 }
 
@@ -859,6 +860,21 @@ fn helper_policy_parameter_signature_must_match_selected_nt_helper() {
         message.contains("helper_policies.configured-helper-policy.parameter_signature")
             && message.contains("nautilus_model::data::imply_vol_and_greeks")
             && message.contains("s,r,b,is_call,k,t,price")
+    }));
+}
+
+#[test]
+fn refine_helper_policy_requires_initial_vol_input_field() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0].helper_policies[0].nt_helper_symbol = IvNtHelperSymbol::RefineVolAndGreeks;
+    config.profiles[0].helper_policies[0].parameter_signature =
+        "s,r,b,is_call,k,t,target_price,initial_vol".to_string();
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("derived_input_policies.configured-derived-input-policy.required_fields")
+            && message.contains("initial_vol")
     }));
 }
 

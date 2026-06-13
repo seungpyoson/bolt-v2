@@ -148,6 +148,7 @@ fn derived_input_set(nt_revision: &str) -> IvDerivedInputSet {
         time_to_expiry_years: Some(timed_input(0.5, 1_999)),
         rate: Some(timed_input(0.01, 2_000)),
         carry: Some(timed_input(0.0, 2_001)),
+        initial_vol: None,
     }
 }
 

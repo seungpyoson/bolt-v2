@@ -115,7 +115,7 @@ NT aggregate greeks events are preserved raw and indexed into `IvAggregateGreeks
 
 ## Decision: Derived IV uses NT helpers only with complete configured inputs and helper policy
 
-Derived IV is available when `IvHelperPolicy` selects a ledger-supported NT helper and the request supplies or resolves an `IvDerivedInputSet` under `IvDerivedInputPolicy`: option price, underlying price, strike, option side, time-to-expiry, rate, carry, source timestamps, and accepted convention. Missing helper policy, incompatible helper signature, expired operator-configured values, or invalid inputs reject.
+Derived IV is available when `IvHelperPolicy` selects a ledger-supported NT helper and the request supplies or resolves an `IvDerivedInputSet` under `IvDerivedInputPolicy`: option price, underlying price, strike, option side, time-to-expiry, rate, carry, helper-specific inputs such as `initial_vol` for refine helpers, source timestamps, and accepted convention. Missing helper policy, incompatible helper signature, expired operator-configured values, or invalid inputs reject.
 
 **Rationale**: NT helpers are part of the capability set, but IV derivation is invalid if required assumptions are guessed.
 

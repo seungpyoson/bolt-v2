@@ -388,6 +388,7 @@ fn input_bounds() -> IvDerivedInputBounds {
         time_to_expiry_years: Some(input_bound(true, 0.0, 100.0, IvBoundUnit::TimeToExpiry)),
         rate: Some(input_bound(false, -1.0, 1.0, IvBoundUnit::Rate)),
         carry: Some(input_bound(false, -1.0, 1.0, IvBoundUnit::Carry)),
+        initial_vol: Some(input_bound(true, 0.0, 5.0, IvBoundUnit::Unitless)),
     }
 }
 
@@ -470,6 +471,7 @@ fn complete_inputs() -> IvDerivedInputSet {
             source_kind: IvDerivedInputSourceKind::OperatorConfigured,
             expires_at_ns: Some(UnixNanos::new(2_050)),
         }),
+        initial_vol: None,
     }
 }
 
@@ -551,7 +553,9 @@ fn query_supplied_derived_input_policy(input_policy_id: &str) -> IvDerivedInputP
     policy.input_policy_id = input_policy_id.to_string();
     for field_source in &mut policy.field_sources {
         match field_source.field {
-            IvDerivedInputField::Rate | IvDerivedInputField::Carry => {}
+            IvDerivedInputField::Rate
+            | IvDerivedInputField::Carry
+            | IvDerivedInputField::InitialVol => {}
             _ => {
                 field_source.allowed_source_kinds =
                     BTreeSet::from([IvDerivedInputSourceKind::QuerySupplied]);

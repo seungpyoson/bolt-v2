@@ -280,6 +280,14 @@ fn fixture_maps_seed_surfaces_to_specific_engine_owners() {
         IvCapabilityEngineMappingKind::Helper
     );
     assert_eq!(greeks_helper.target, "iv_derived_helper");
+    let refine_helper = fixture
+        .engine_mapping_for("nt.crates.model.src.data.greeks.refine_vol_and_greeks")
+        .unwrap();
+    assert_eq!(
+        refine_helper.mapping_kind,
+        IvCapabilityEngineMappingKind::Helper
+    );
+    assert_eq!(refine_helper.target, "iv_derived_helper");
 
     let option_chain = fixture
         .engine_mapping_for("nt.crates.model.src.data.option_chain.option_chain_slice")

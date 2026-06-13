@@ -17,21 +17,52 @@ use super::{
 #[serde(rename_all = "snake_case")]
 pub enum IvNtHelperSymbol {
     ImplyVolAndGreeks,
+    RefineVolAndGreeks,
 }
 
 impl IvNtHelperSymbol {
     pub fn nt_symbol(self) -> &'static str {
         match self {
             Self::ImplyVolAndGreeks => "nautilus_model::data::imply_vol_and_greeks",
+            Self::RefineVolAndGreeks => "nautilus_model::data::refine_vol_and_greeks",
         }
     }
 
     pub fn parameter_signature(self) -> &'static str {
         match self {
             Self::ImplyVolAndGreeks => "s,r,b,is_call,k,t,price",
+            Self::RefineVolAndGreeks => "s,r,b,is_call,k,t,target_price,initial_vol",
+        }
+    }
+
+    pub fn required_fields(self) -> &'static [IvDerivedInputField] {
+        match self {
+            Self::ImplyVolAndGreeks => &IMPLY_VOL_AND_GREEKS_REQUIRED_FIELDS,
+            Self::RefineVolAndGreeks => &REFINE_VOL_AND_GREEKS_REQUIRED_FIELDS,
         }
     }
 }
+
+const IMPLY_VOL_AND_GREEKS_REQUIRED_FIELDS: [IvDerivedInputField; 7] = [
+    IvDerivedInputField::OptionPrice,
+    IvDerivedInputField::UnderlyingPrice,
+    IvDerivedInputField::Strike,
+    IvDerivedInputField::OptionSide,
+    IvDerivedInputField::TimeToExpiryYears,
+    IvDerivedInputField::Rate,
+    IvDerivedInputField::Carry,
+];
+
+const REFINE_VOL_AND_GREEKS_REQUIRED_FIELDS: [IvDerivedInputField; 8] = [
+    IvDerivedInputField::OptionPrice,
+    IvDerivedInputField::UnderlyingPrice,
+    IvDerivedInputField::Strike,
+    IvDerivedInputField::OptionSide,
+    IvDerivedInputField::TimeToExpiryYears,
+    IvDerivedInputField::Rate,
+    IvDerivedInputField::Carry,
+    IvDerivedInputField::InitialVol,
+];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,19 +104,12 @@ pub enum IvDerivedInputField {
     TimeToExpiryYears,
     Rate,
     Carry,
+    InitialVol,
 }
 
 impl IvDerivedInputField {
     pub fn required_fields() -> [Self; 7] {
-        [
-            Self::OptionPrice,
-            Self::UnderlyingPrice,
-            Self::Strike,
-            Self::OptionSide,
-            Self::TimeToExpiryYears,
-            Self::Rate,
-            Self::Carry,
-        ]
+        IMPLY_VOL_AND_GREEKS_REQUIRED_FIELDS
     }
 
     pub fn as_str(self) -> &'static str {
@@ -97,6 +121,7 @@ impl IvDerivedInputField {
             Self::TimeToExpiryYears => "time_to_expiry_years",
             Self::Rate => "rate",
             Self::Carry => "carry",
+            Self::InitialVol => "initial_vol",
         }
     }
 }
@@ -172,6 +197,7 @@ pub struct IvDerivedInputBounds {
     pub time_to_expiry_years: Option<IvNumericBounds>,
     pub rate: Option<IvNumericBounds>,
     pub carry: Option<IvNumericBounds>,
+    pub initial_vol: Option<IvNumericBounds>,
 }
 
 impl IvDerivedInputBounds {
@@ -183,6 +209,7 @@ impl IvDerivedInputBounds {
             IvDerivedInputField::TimeToExpiryYears => self.time_to_expiry_years.as_ref(),
             IvDerivedInputField::Rate => self.rate.as_ref(),
             IvDerivedInputField::Carry => self.carry.as_ref(),
+            IvDerivedInputField::InitialVol => self.initial_vol.as_ref(),
             IvDerivedInputField::OptionSide => None,
         }
     }
@@ -218,6 +245,7 @@ pub struct IvDerivedInputSet {
     pub time_to_expiry_years: Option<IvTimedInput<f64>>,
     pub rate: Option<IvTimedInput<f64>>,
     pub carry: Option<IvTimedInput<f64>>,
+    pub initial_vol: Option<IvTimedInput<f64>>,
 }
 
 impl IvDerivedInputSet {
@@ -230,6 +258,7 @@ impl IvDerivedInputSet {
             IvDerivedInputField::TimeToExpiryYears => self.time_to_expiry_years = None,
             IvDerivedInputField::Rate => self.rate = None,
             IvDerivedInputField::Carry => self.carry = None,
+            IvDerivedInputField::InitialVol => self.initial_vol = None,
         }
     }
 }
@@ -295,15 +324,29 @@ pub fn derive_iv(
     }
 
     let resolved = ResolvedDerivedInputs::resolve(policy, &inputs)?;
-    let helper_result = nautilus_model::data::imply_vol_and_greeks(
-        resolved.underlying_price,
-        resolved.rate,
-        resolved.carry,
-        resolved.option_side.is_call(),
-        resolved.strike,
-        resolved.time_to_expiry_years,
-        resolved.option_price,
-    );
+    let helper_result = match policy.nt_helper_symbol {
+        IvNtHelperSymbol::ImplyVolAndGreeks => nautilus_model::data::imply_vol_and_greeks(
+            resolved.underlying_price,
+            resolved.rate,
+            resolved.carry,
+            resolved.option_side.is_call(),
+            resolved.strike,
+            resolved.time_to_expiry_years,
+            resolved.option_price,
+        ),
+        IvNtHelperSymbol::RefineVolAndGreeks => nautilus_model::data::refine_vol_and_greeks(
+            resolved.underlying_price,
+            resolved.rate,
+            resolved.carry,
+            resolved.option_side.is_call(),
+            resolved.strike,
+            resolved.time_to_expiry_years,
+            resolved.option_price,
+            resolved.initial_vol.ok_or(IvDeriveError::MissingInput {
+                field: IvDerivedInputField::InitialVol,
+            })?,
+        ),
+    };
 
     if helper_result.vol <= policy.minimum_valid_iv_output {
         return Err(IvDeriveError::Rejected {
@@ -422,7 +465,8 @@ pub fn resolve_derived_input_policy(
             | IvDerivedInputField::Strike
             | IvDerivedInputField::TimeToExpiryYears
             | IvDerivedInputField::Rate
-            | IvDerivedInputField::Carry => {
+            | IvDerivedInputField::Carry
+            | IvDerivedInputField::InitialVol => {
                 resolve_number_field(*field, Some(field_policy), &mut request, profile_inputs)?;
             }
             IvDerivedInputField::OptionSide => {
@@ -570,7 +614,8 @@ fn timed_input_refresh_metadata(
         | IvDerivedInputField::Strike
         | IvDerivedInputField::TimeToExpiryYears
         | IvDerivedInputField::Rate
-        | IvDerivedInputField::Carry => {
+        | IvDerivedInputField::Carry
+        | IvDerivedInputField::InitialVol => {
             number_field(inputs, field).map(|input| (input.source_kind, input.expires_at_ns))
         }
         IvDerivedInputField::OptionSide => inputs
@@ -680,6 +725,7 @@ fn number_field(
         IvDerivedInputField::TimeToExpiryYears => inputs.time_to_expiry_years,
         IvDerivedInputField::Rate => inputs.rate,
         IvDerivedInputField::Carry => inputs.carry,
+        IvDerivedInputField::InitialVol => inputs.initial_vol,
         IvDerivedInputField::OptionSide => None,
     }
 }
@@ -696,6 +742,7 @@ fn set_number_field(
         IvDerivedInputField::TimeToExpiryYears => inputs.time_to_expiry_years = Some(input),
         IvDerivedInputField::Rate => inputs.rate = Some(input),
         IvDerivedInputField::Carry => inputs.carry = Some(input),
+        IvDerivedInputField::InitialVol => inputs.initial_vol = Some(input),
         IvDerivedInputField::OptionSide => {}
     }
 }
@@ -714,7 +761,8 @@ fn timed_input_metadata(
         | IvDerivedInputField::Strike
         | IvDerivedInputField::TimeToExpiryYears
         | IvDerivedInputField::Rate
-        | IvDerivedInputField::Carry => {
+        | IvDerivedInputField::Carry
+        | IvDerivedInputField::InitialVol => {
             number_field(inputs, field).map(|input| (input.source_kind, input.ts_ns))
         }
         IvDerivedInputField::OptionSide => inputs
@@ -856,6 +904,7 @@ struct ResolvedDerivedInputs {
     time_to_expiry_years: f64,
     rate: f64,
     carry: f64,
+    initial_vol: Option<f64>,
 }
 
 impl ResolvedDerivedInputs {
@@ -873,7 +922,14 @@ impl ResolvedDerivedInputs {
         )?;
         let rate = required(inputs.rate, IvDerivedInputField::Rate)?;
         let carry = required(inputs.carry, IvDerivedInputField::Carry)?;
-        let timed_values = [
+        let initial_vol = match policy.nt_helper_symbol {
+            IvNtHelperSymbol::ImplyVolAndGreeks => None,
+            IvNtHelperSymbol::RefineVolAndGreeks => Some(required(
+                inputs.initial_vol,
+                IvDerivedInputField::InitialVol,
+            )?),
+        };
+        let mut timed_values = vec![
             (
                 IvDerivedInputField::OptionPrice,
                 option_price.source_kind,
@@ -902,6 +958,13 @@ impl ResolvedDerivedInputs {
             (IvDerivedInputField::Rate, rate.source_kind, rate.ts_ns),
             (IvDerivedInputField::Carry, carry.source_kind, carry.ts_ns),
         ];
+        if let Some(initial_vol) = initial_vol {
+            timed_values.push((
+                IvDerivedInputField::InitialVol,
+                initial_vol.source_kind,
+                initial_vol.ts_ns,
+            ));
+        }
 
         validate_numeric(option_price.value, IvDerivedInputField::OptionPrice, true)?;
         validate_numeric(
@@ -917,6 +980,9 @@ impl ResolvedDerivedInputs {
         )?;
         validate_numeric(rate.value, IvDerivedInputField::Rate, false)?;
         validate_numeric(carry.value, IvDerivedInputField::Carry, false)?;
+        if let Some(initial_vol) = initial_vol {
+            validate_numeric(initial_vol.value, IvDerivedInputField::InitialVol, true)?;
+        }
         validate_timestamp_skew(policy, inputs.as_of_ns, &timed_values)?;
         validate_operator_input(
             policy,
@@ -950,6 +1016,14 @@ impl ResolvedDerivedInputs {
         )?;
         validate_operator_input(policy, inputs.as_of_ns, IvDerivedInputField::Rate, &rate)?;
         validate_operator_input(policy, inputs.as_of_ns, IvDerivedInputField::Carry, &carry)?;
+        if let Some(initial_vol) = initial_vol {
+            validate_operator_input(
+                policy,
+                inputs.as_of_ns,
+                IvDerivedInputField::InitialVol,
+                &initial_vol,
+            )?;
+        }
 
         Ok(Self {
             option_price: option_price.value,
@@ -959,6 +1033,7 @@ impl ResolvedDerivedInputs {
             time_to_expiry_years: time_to_expiry_years.value,
             rate: rate.value,
             carry: carry.value,
+            initial_vol: initial_vol.map(|initial_vol| initial_vol.value),
         })
     }
 }

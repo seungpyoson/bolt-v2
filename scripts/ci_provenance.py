@@ -234,10 +234,6 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
                 raise ProvenanceError(
                     f"ci_provenance.full_ci.jobs.{job}.check_name_template must include {{shard}}"
                 )
-            if "{shard_count}" not in check_name_template:
-                raise ProvenanceError(
-                    f"ci_provenance.full_ci.jobs.{job}.check_name_template must include {{shard_count}}"
-                )
         elif shard_count is not None:
             raise ProvenanceError(f"ci_provenance.full_ci.jobs.{job}.shard_count requires check_name_template")
         conditional = job_table.get("conditional")
@@ -371,6 +367,18 @@ def github_api_json(
 
 
 def github_api_bytes(repo: str, token: str, url: str) -> bytes:
+    class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if redirected is None:
+                return None
+            old_host = urllib.parse.urlparse(req.full_url).netloc
+            new_host = urllib.parse.urlparse(redirected.full_url).netloc
+            if old_host != new_host:
+                redirected.remove_header("Authorization")
+            return redirected
+
+    opener = urllib.request.build_opener(SafeRedirectHandler())
     request = urllib.request.Request(
         url,
         headers={
@@ -380,7 +388,7 @@ def github_api_bytes(repo: str, token: str, url: str) -> bytes:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with opener.open(request, timeout=30) as response:
             return response.read()
     except (urllib.error.URLError, urllib.error.HTTPError) as exc:
         raise ProvenanceError(f"GitHub API download failed for {url}: {exc}") from exc
@@ -931,7 +939,7 @@ def parse_conditional_job_results(values: list[str], config: ProvenanceConfig) -
 
 
 def read_nextest_fingerprint(path: pathlib.Path | None) -> str | None:
-    if path is None or not path.exists():
+    if path is None or not path.is_file():
         return None
     value = path.read_text(encoding="utf-8").strip()
     return value or None
@@ -1019,8 +1027,9 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-    if not argv:
-        print(f"ERROR: unknown mode; expected one of {', '.join(sorted(SUPPORTED_MODES))}", file=sys.stderr)
+    if not argv or argv[0] in {"-h", "--help"}:
+        modes = ", ".join(sorted(SUPPORTED_MODES))
+        print(f"Usage: ci_provenance.py <mode> [options]\nSupported modes: {modes}", file=sys.stderr)
         return 2
     mode, rest = argv[0], argv[1:]
     if mode == "resolve-fingerprint":

@@ -4,13 +4,18 @@
 from __future__ import annotations
 
 import contextlib
+import http.server
 import importlib.util
 import io
 import hashlib
 import json
 import pathlib
+import queue
+import socketserver
 import sys
 import tempfile
+import threading
+import urllib.request
 import zipfile
 
 
@@ -450,6 +455,26 @@ def assert_invalid_shard_count_fails() -> None:
         assert_fails("shard_count", ["emit-full-ci", "--config", str(config)])
 
 
+def assert_literal_shard_count_template_loads() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config_text = CONFIG_TOML.replace(
+            'check_name_template = "nextest shard {shard} of {shard_count}"',
+            'check_name_template = "nextest shard {shard} of 4"',
+        )
+        config = write_config(pathlib.Path(tmp), config_text)
+        module = load_script()
+        loaded = module.load_config(config)
+        names = module.expanded_check_names(loaded, "test-shards")
+        expected = (
+            "nextest shard 1 of 4",
+            "nextest shard 2 of 4",
+            "nextest shard 3 of 4",
+            "nextest shard 4 of 4",
+        )
+        if names != expected:
+            raise AssertionError(f"unexpected expanded shard names: {names}")
+
+
 def assert_unknown_record_schema_fails() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -464,6 +489,17 @@ def assert_unknown_record_schema_fails() -> None:
 
 def assert_resolve_fingerprint_is_rejected() -> None:
     assert_fails("resolve-fingerprint is not supported", ["resolve-fingerprint"])
+
+
+def assert_top_level_help_is_supported() -> None:
+    code, stdout, stderr = run_cli(["--help"])
+    if code != 2:
+        raise AssertionError(f"expected help to exit 2, got {code}")
+    combined = stdout + stderr
+    if "Usage: ci_provenance.py <mode> [options]" not in combined:
+        raise AssertionError(f"expected top-level usage output, got {combined!r}")
+    if "resolve-exact-sha" not in combined:
+        raise AssertionError(f"expected supported modes in help output, got {combined!r}")
 
 
 def assert_config_digest_is_canonical() -> None:
@@ -489,6 +525,54 @@ def assert_config_digest_is_canonical() -> None:
         unrelated = write_config(tmp_path, CONFIG_TOML + "\n[unrelated]\nvalue = 1\n", "unrelated.toml")
         if module.provenance_config_digest(base_config) != module.provenance_config_digest(unrelated):
             raise AssertionError("unrelated TOML tables must not affect provenance config digest")
+
+
+def assert_github_api_bytes_strips_authorization_on_cross_host_redirect() -> None:
+    module = load_script()
+    seen_headers: queue.Queue[dict[str, str]] = queue.Queue()
+
+    class ArtifactHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen_headers.put(dict(self.headers))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"artifact")
+
+        def log_message(self, _format: str, *args: object) -> None:
+            pass
+
+    class RedirectHandler(http.server.BaseHTTPRequestHandler):
+        redirect_target = ""
+
+        def do_GET(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", self.redirect_target)
+            self.end_headers()
+
+        def log_message(self, _format: str, *args: object) -> None:
+            pass
+
+    artifact_server = socketserver.TCPServer(("127.0.0.1", 0), ArtifactHandler)
+    redirect_server = socketserver.TCPServer(("127.0.0.1", 0), RedirectHandler)
+    artifact_thread = threading.Thread(target=artifact_server.serve_forever, daemon=True)
+    redirect_thread = threading.Thread(target=redirect_server.serve_forever, daemon=True)
+    try:
+        artifact_thread.start()
+        redirect_thread.start()
+        RedirectHandler.redirect_target = f"http://127.0.0.1:{artifact_server.server_address[1]}/artifact"
+        start_url = f"http://localhost:{redirect_server.server_address[1]}/artifact"
+        payload = module.github_api_bytes("owner/repo", "secret-token", start_url)
+    finally:
+        redirect_server.shutdown()
+        artifact_server.shutdown()
+        redirect_server.server_close()
+        artifact_server.server_close()
+
+    if payload != b"artifact":
+        raise AssertionError(f"unexpected payload: {payload!r}")
+    redirected_headers = seen_headers.get(timeout=5)
+    if "Authorization" in redirected_headers:
+        raise AssertionError(f"redirected request leaked authorization: {redirected_headers}")
 
 
 def assert_record_schema_requires_head_and_tested_sha() -> None:
@@ -761,13 +845,25 @@ def assert_test_archive_and_build_rules() -> None:
         )
 
 
+def assert_directory_nextest_fingerprint_is_ignored() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = pathlib.Path(tmp) / "cache-key.txt"
+        directory.mkdir()
+        if module.read_nextest_fingerprint(directory) is not None:
+            raise AssertionError("directory fingerprint path should be ignored")
+
+
 def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
     assert_invalid_shard_count_fails()
+    assert_literal_shard_count_template_loads()
     assert_unknown_record_schema_fails()
     assert_resolve_fingerprint_is_rejected()
+    assert_top_level_help_is_supported()
     assert_config_digest_is_canonical()
+    assert_github_api_bytes_strips_authorization_on_cross_host_redirect()
     assert_record_schema_requires_head_and_tested_sha()
     assert_pr_event_record_cannot_validate_for_pr_head_reuse()
     assert_digest_mismatches_fail()
@@ -781,6 +877,7 @@ def main() -> int:
     assert_job_evidence_success_passes()
     assert_shard_job_failures_rejected()
     assert_test_archive_and_build_rules()
+    assert_directory_nextest_fingerprint_is_ignored()
     print("OK: CI provenance self-tests passed.")
     return 0
 

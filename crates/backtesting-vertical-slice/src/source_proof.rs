@@ -218,7 +218,9 @@ pub enum FixtureType {
 /// This is the source-proof fidelity vocabulary from
 /// `backfill-source-proof.v1`. Native trade prints map to [`Self::TradeReplay`],
 /// which caps results to trade/price-path replay and forbids execution-quality,
-/// queue-position, and order-book-liquidity claims.
+/// queue-position, and order-book-liquidity claims. [`Self::QuoteReplay`],
+/// [`Self::IndexReplay`], and [`Self::MarkReplay`] are the point/quote replay
+/// classes for NT quote, index-price, and mark-price streams respectively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SourceProofFidelityClass {
@@ -226,6 +228,9 @@ pub enum SourceProofFidelityClass {
     SnapshotReplay,
     TradeReplay,
     TradeBarReplay,
+    QuoteReplay,
+    IndexReplay,
+    MarkReplay,
     MetadataOnly,
     SignalOnly,
     ForwardCapturePending,

@@ -400,6 +400,24 @@ fn source_fidelity_supports_claim(
                 | SourceProofFidelityClass::SignalOnly
                 | SourceProofFidelityClass::MetadataOnly
         ),
+        SourceProofFidelityClass::QuoteReplay => matches!(
+            requested,
+            SourceProofFidelityClass::QuoteReplay
+                | SourceProofFidelityClass::SignalOnly
+                | SourceProofFidelityClass::MetadataOnly
+        ),
+        SourceProofFidelityClass::IndexReplay => matches!(
+            requested,
+            SourceProofFidelityClass::IndexReplay
+                | SourceProofFidelityClass::SignalOnly
+                | SourceProofFidelityClass::MetadataOnly
+        ),
+        SourceProofFidelityClass::MarkReplay => matches!(
+            requested,
+            SourceProofFidelityClass::MarkReplay
+                | SourceProofFidelityClass::SignalOnly
+                | SourceProofFidelityClass::MetadataOnly
+        ),
         SourceProofFidelityClass::SignalOnly => matches!(
             requested,
             SourceProofFidelityClass::SignalOnly | SourceProofFidelityClass::MetadataOnly
@@ -409,6 +427,86 @@ fn source_fidelity_supports_claim(
         }
         SourceProofFidelityClass::ForwardCapturePending => {
             matches!(requested, SourceProofFidelityClass::ForwardCapturePending)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quote_replay_supports_self_signal_and_metadata_only() {
+        // A QuoteReplay source backs QuoteReplay, SignalOnly, and MetadataOnly
+        // claims; it must not back any foreign replay class.
+        for requested in [
+            SourceProofFidelityClass::QuoteReplay,
+            SourceProofFidelityClass::SignalOnly,
+            SourceProofFidelityClass::MetadataOnly,
+        ] {
+            assert!(source_fidelity_supports_claim(
+                SourceProofFidelityClass::QuoteReplay,
+                requested,
+            ));
+        }
+        for requested in [
+            SourceProofFidelityClass::TradeReplay,
+            SourceProofFidelityClass::IndexReplay,
+            SourceProofFidelityClass::MarkReplay,
+            SourceProofFidelityClass::L2Replay,
+        ] {
+            assert!(!source_fidelity_supports_claim(
+                SourceProofFidelityClass::QuoteReplay,
+                requested,
+            ));
+        }
+    }
+
+    #[test]
+    fn index_replay_supports_self_signal_and_metadata_only() {
+        for requested in [
+            SourceProofFidelityClass::IndexReplay,
+            SourceProofFidelityClass::SignalOnly,
+            SourceProofFidelityClass::MetadataOnly,
+        ] {
+            assert!(source_fidelity_supports_claim(
+                SourceProofFidelityClass::IndexReplay,
+                requested,
+            ));
+        }
+        for requested in [
+            SourceProofFidelityClass::TradeReplay,
+            SourceProofFidelityClass::QuoteReplay,
+            SourceProofFidelityClass::MarkReplay,
+        ] {
+            assert!(!source_fidelity_supports_claim(
+                SourceProofFidelityClass::IndexReplay,
+                requested,
+            ));
+        }
+    }
+
+    #[test]
+    fn mark_replay_supports_self_signal_and_metadata_only() {
+        for requested in [
+            SourceProofFidelityClass::MarkReplay,
+            SourceProofFidelityClass::SignalOnly,
+            SourceProofFidelityClass::MetadataOnly,
+        ] {
+            assert!(source_fidelity_supports_claim(
+                SourceProofFidelityClass::MarkReplay,
+                requested,
+            ));
+        }
+        for requested in [
+            SourceProofFidelityClass::TradeReplay,
+            SourceProofFidelityClass::QuoteReplay,
+            SourceProofFidelityClass::IndexReplay,
+        ] {
+            assert!(!source_fidelity_supports_claim(
+                SourceProofFidelityClass::MarkReplay,
+                requested,
+            ));
         }
     }
 }

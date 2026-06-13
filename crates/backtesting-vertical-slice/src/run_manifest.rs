@@ -1805,18 +1805,7 @@ fn catalog_input_to_nt_data_config(
         .end_time
         .map(|value| manifest_time_to_nanos("catalog_inputs.end_time", value))
         .transpose()?;
-    let data_type = match input.data_type.as_str() {
-        "TradeTick" => NautilusDataType::TradeTick,
-        "OrderBookDelta" => NautilusDataType::OrderBookDelta,
-        "Bar" => NautilusDataType::Bar,
-        "InstrumentStatus" => NautilusDataType::InstrumentStatus,
-        "InstrumentClose" => NautilusDataType::InstrumentClose,
-        other => {
-            return Err(ManifestError::UnsupportedDataType {
-                data_type: other.to_string(),
-            });
-        }
-    };
+    let data_type = parse_data_type_str(input.data_type.as_str())?;
     let (nt_instrument_id, instrument_ids) =
         parse_and_validate_catalog_input_instrument_ids(input)?;
     let requires_unfiltered_catalog_query =
@@ -2160,13 +2149,173 @@ fn ensure_unsupported_nt_catalog_query_surfaces_absent(
     Ok(())
 }
 
-fn ensure_supported_data_type(value: &str) -> Result<(), ManifestError> {
-    match value {
-        "TradeTick" | "OrderBookDelta" | "Bar" | "InstrumentStatus" | "InstrumentClose" => Ok(()),
-        other => Err(ManifestError::UnsupportedDataType {
-            data_type: other.to_string(),
-        }),
+/// Role a data type plays in a fidelity class's admittance set.
+///
+/// `Primary` means the type satisfies the fidelity class's mandatory-presence
+/// requirement (a run under that class must carry at least one input of the
+/// primary type). `Auxiliary` means the type is admissible alongside a primary
+/// but does not by itself satisfy the fidelity class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdmittanceRole {
+    Primary,
+    Auxiliary,
+}
+
+/// One admissible (NT data type, fidelity class) pairing and its role.
+struct AdmittanceRow {
+    data_type: NautilusDataType,
+    fidelity: SourceProofFidelityClass,
+    role: AdmittanceRole,
+}
+
+/// Single source of truth for bolt's catalog-input admittance.
+///
+/// Every admittance decision in this module (supported-type check, type-string
+/// parsing, per-input fidelity match, and the per-fidelity must-have-primary
+/// check) derives from this table. There is no parallel admittance logic: a
+/// `(data_type, fidelity)` pairing is admissible iff a row lists it, and a type
+/// is supported iff any row names it. NT data types are the keys; every
+/// data-type string flows through `NautilusDataType` `Display`/`FromStr`, so
+/// there are no data-type string literals outside test bodies.
+///
+/// The `QuoteTick`/`IndexPriceUpdate`/`MarkPriceUpdate` primary rows make the
+/// gate capable of admitting those streams (each its own primary fidelity
+/// class, per the v3 tier map: Tier A quotes/index_prices/mark_prices). Their
+/// canonical tables and projections land in S3; until then a manifest declaring
+/// one of these passes `validate()` but fails loud at projection time (no
+/// `NormalizedTable` variant / `read_back_*` fn). Auxiliary status/close pairing
+/// for the three new classes is deliberately omitted here — it is an S3 concern
+/// when those projections exist; S2 keeps each new class to a single primary row.
+const ADMITTANCE_TABLE: &[AdmittanceRow] = &[
+    // TradeReplay: native trade prints are primary; status/close auxiliary.
+    AdmittanceRow {
+        data_type: NautilusDataType::TradeTick,
+        fidelity: SourceProofFidelityClass::TradeReplay,
+        role: AdmittanceRole::Primary,
+    },
+    AdmittanceRow {
+        data_type: NautilusDataType::InstrumentStatus,
+        fidelity: SourceProofFidelityClass::TradeReplay,
+        role: AdmittanceRole::Auxiliary,
+    },
+    AdmittanceRow {
+        data_type: NautilusDataType::InstrumentClose,
+        fidelity: SourceProofFidelityClass::TradeReplay,
+        role: AdmittanceRole::Auxiliary,
+    },
+    // L2Replay: order-book deltas primary; trades + status/close auxiliary.
+    AdmittanceRow {
+        data_type: NautilusDataType::OrderBookDelta,
+        fidelity: SourceProofFidelityClass::L2Replay,
+        role: AdmittanceRole::Primary,
+    },
+    AdmittanceRow {
+        data_type: NautilusDataType::TradeTick,
+        fidelity: SourceProofFidelityClass::L2Replay,
+        role: AdmittanceRole::Auxiliary,
+    },
+    AdmittanceRow {
+        data_type: NautilusDataType::InstrumentStatus,
+        fidelity: SourceProofFidelityClass::L2Replay,
+        role: AdmittanceRole::Auxiliary,
+    },
+    AdmittanceRow {
+        data_type: NautilusDataType::InstrumentClose,
+        fidelity: SourceProofFidelityClass::L2Replay,
+        role: AdmittanceRole::Auxiliary,
+    },
+    // TradeBarReplay: externally-aggregated bars primary; trades + status/close auxiliary.
+    AdmittanceRow {
+        data_type: NautilusDataType::Bar,
+        fidelity: SourceProofFidelityClass::TradeBarReplay,
+        role: AdmittanceRole::Primary,
+    },
+    AdmittanceRow {
+        data_type: NautilusDataType::TradeTick,
+        fidelity: SourceProofFidelityClass::TradeBarReplay,
+        role: AdmittanceRole::Auxiliary,
+    },
+    AdmittanceRow {
+        data_type: NautilusDataType::InstrumentStatus,
+        fidelity: SourceProofFidelityClass::TradeBarReplay,
+        role: AdmittanceRole::Auxiliary,
+    },
+    AdmittanceRow {
+        data_type: NautilusDataType::InstrumentClose,
+        fidelity: SourceProofFidelityClass::TradeBarReplay,
+        role: AdmittanceRole::Auxiliary,
+    },
+    // QuoteReplay/IndexReplay/MarkReplay: gate-capable in S2; projection lands
+    // in S3 (normalization-catalog-plan.v3.md Tier A quotes/index_prices/mark_prices).
+    AdmittanceRow {
+        data_type: NautilusDataType::QuoteTick,
+        fidelity: SourceProofFidelityClass::QuoteReplay,
+        role: AdmittanceRole::Primary,
+    },
+    AdmittanceRow {
+        data_type: NautilusDataType::IndexPriceUpdate,
+        fidelity: SourceProofFidelityClass::IndexReplay,
+        role: AdmittanceRole::Primary,
+    },
+    AdmittanceRow {
+        data_type: NautilusDataType::MarkPriceUpdate,
+        fidelity: SourceProofFidelityClass::MarkReplay,
+        role: AdmittanceRole::Primary,
+    },
+];
+
+/// True if any admittance row names this data type (bolt-supported type filter).
+fn supported_data_type(data_type: NautilusDataType) -> bool {
+    ADMITTANCE_TABLE
+        .iter()
+        .any(|row| row.data_type == data_type)
+}
+
+/// True if a `(data_type, fidelity)` pairing has an admittance row.
+fn data_type_admissible_under(
+    data_type: NautilusDataType,
+    fidelity: SourceProofFidelityClass,
+) -> bool {
+    ADMITTANCE_TABLE
+        .iter()
+        .any(|row| row.data_type == data_type && row.fidelity == fidelity)
+}
+
+/// The data type whose presence is mandatory for a fidelity class, if any.
+///
+/// Returns `None` for fidelity classes with no primary row (e.g. `SignalOnly`,
+/// `MetadataOnly`, `SnapshotReplay`, `ForwardCapturePending`), which keeps them
+/// unrunnable as catalog-input fidelity classes.
+fn fidelity_primary_type(fidelity: SourceProofFidelityClass) -> Option<NautilusDataType> {
+    ADMITTANCE_TABLE
+        .iter()
+        .find(|row| row.fidelity == fidelity && row.role == AdmittanceRole::Primary)
+        .map(|row| row.data_type)
+}
+
+/// Parse a catalog-input data-type string into a bolt-admitted [`NautilusDataType`].
+///
+/// String boundary for the admittance table: `NautilusDataType::from_str` admits
+/// all nine NT variants, then the table filters to bolt-supported types. A type
+/// NT knows but the table omits (e.g. `OrderBookDepth10`) and pure junk both
+/// surface the same [`ManifestError::UnsupportedDataType`] with the original
+/// string payload.
+fn parse_data_type_str(value: &str) -> Result<NautilusDataType, ManifestError> {
+    let data_type =
+        NautilusDataType::from_str(value).map_err(|_| ManifestError::UnsupportedDataType {
+            data_type: value.to_string(),
+        })?;
+    if supported_data_type(data_type) {
+        Ok(data_type)
+    } else {
+        Err(ManifestError::UnsupportedDataType {
+            data_type: value.to_string(),
+        })
     }
+}
+
+fn ensure_supported_data_type(value: &str) -> Result<(), ManifestError> {
+    parse_data_type_str(value).map(|_| ())
 }
 
 fn parse_catalog_fs_protocol(value: &str) -> Result<Option<String>, ManifestError> {
@@ -2385,103 +2534,69 @@ where
         .map_err(|source| ManifestError::ArtifactStoreSecretResolution { field, source })
 }
 
+/// The single per-input admittance predicate: a data-type string is admissible
+/// under a fidelity class iff [`ADMITTANCE_TABLE`] holds a matching row.
+///
+/// The error preserves the caller-supplied string: for NT-known types the
+/// `Display` round-trips to the same name, and for table-unsupported types
+/// `parse_data_type_str` already emits [`ManifestError::UnsupportedDataType`]
+/// (so a fidelity mismatch only fires for supported-but-wrong-class types).
 fn ensure_data_type_matches_fidelity(
     data_type: &str,
     fidelity_class: SourceProofFidelityClass,
 ) -> Result<(), ManifestError> {
-    match (data_type, fidelity_class) {
-        ("TradeTick", SourceProofFidelityClass::TradeReplay) => Ok(()),
-        ("OrderBookDelta", SourceProofFidelityClass::L2Replay) => Ok(()),
-        ("Bar", SourceProofFidelityClass::TradeBarReplay) => Ok(()),
-        ("InstrumentStatus" | "InstrumentClose", SourceProofFidelityClass::TradeReplay)
-        | ("InstrumentStatus" | "InstrumentClose", SourceProofFidelityClass::L2Replay) => Ok(()),
-        (data_type, fidelity_class) => Err(ManifestError::DataTypeFidelityMismatch {
+    let parsed = parse_data_type_str(data_type)?;
+    if data_type_admissible_under(parsed, fidelity_class) {
+        Ok(())
+    } else {
+        Err(ManifestError::DataTypeFidelityMismatch {
             data_type: data_type.to_string(),
             fidelity_class,
-        }),
+        })
     }
 }
 
+/// Fully table-driven catalog-input fidelity gate.
+///
+/// Derived entirely from [`ADMITTANCE_TABLE`] — no per-class arms:
+/// 1. The fidelity class must have a primary type ([`fidelity_primary_type`]).
+///    A class with no primary (e.g. `SignalOnly`, `MetadataOnly`,
+///    `SnapshotReplay`, `ForwardCapturePending`) is unrunnable as a
+///    catalog-input class — this replaces the former catch-all `other =>` arm.
+/// 2. At least one input must carry that primary type (must-have-presence).
+/// 3. Every input must be admissible under the class, via the single per-input
+///    predicate [`ensure_data_type_matches_fidelity`].
+///
+/// The must-have-presence error preserves the original "first input or `<none>`"
+/// string payload so existing assertions hold. The presence probe parses each
+/// input leniently (an unparseable/unsupported type is simply "not the primary");
+/// the precise [`ManifestError::UnsupportedDataType`] for such an input is then
+/// surfaced by the per-input predicate in step 3.
 fn ensure_catalog_inputs_match_fidelity(
     inputs: &[ManifestCatalogInput],
     fidelity_class: SourceProofFidelityClass,
 ) -> Result<(), ManifestError> {
-    match fidelity_class {
-        SourceProofFidelityClass::TradeReplay => {
-            if !inputs.iter().any(|input| input.data_type == "TradeTick") {
-                return Err(ManifestError::DataTypeFidelityMismatch {
-                    data_type: inputs
-                        .first()
-                        .map(|input| input.data_type.clone())
-                        .unwrap_or_else(|| "<none>".to_string()),
-                    fidelity_class,
-                });
-            }
-            for input in inputs {
-                ensure_data_type_matches_fidelity(&input.data_type, fidelity_class)?;
-            }
-            Ok(())
-        }
-        SourceProofFidelityClass::L2Replay => {
-            if !inputs
-                .iter()
-                .any(|input| input.data_type == "OrderBookDelta")
-            {
-                return Err(ManifestError::DataTypeFidelityMismatch {
-                    data_type: inputs
-                        .first()
-                        .map(|input| input.data_type.clone())
-                        .unwrap_or_else(|| "<none>".to_string()),
-                    fidelity_class,
-                });
-            }
-            for input in inputs {
-                match input.data_type.as_str() {
-                    "OrderBookDelta" | "TradeTick" | "InstrumentStatus" | "InstrumentClose" => {}
-                    other => {
-                        return Err(ManifestError::DataTypeFidelityMismatch {
-                            data_type: other.to_string(),
-                            fidelity_class,
-                        });
-                    }
-                }
-            }
-            Ok(())
-        }
-        SourceProofFidelityClass::TradeBarReplay => {
-            if !inputs.iter().any(|input| input.data_type == "Bar") {
-                return Err(ManifestError::DataTypeFidelityMismatch {
-                    data_type: inputs
-                        .first()
-                        .map(|input| input.data_type.clone())
-                        .unwrap_or_else(|| "<none>".to_string()),
-                    fidelity_class,
-                });
-            }
-            for input in inputs {
-                match input.data_type.as_str() {
-                    "Bar" | "TradeTick" | "InstrumentStatus" | "InstrumentClose" => {}
-                    other => {
-                        return Err(ManifestError::DataTypeFidelityMismatch {
-                            data_type: other.to_string(),
-                            fidelity_class,
-                        });
-                    }
-                }
-            }
-            Ok(())
-        }
-        other => {
-            let data_type = inputs
+    let primary_data_type = fidelity_primary_type(fidelity_class);
+    let has_primary = primary_data_type.is_some_and(|primary| {
+        inputs.iter().any(|input| {
+            parse_data_type_str(&input.data_type)
+                .map(|parsed| parsed == primary)
+                .unwrap_or(false)
+        })
+    });
+    if !has_primary {
+        return Err(ManifestError::DataTypeFidelityMismatch {
+            data_type: inputs
                 .first()
                 .map(|input| input.data_type.clone())
-                .unwrap_or_else(|| "<none>".to_string());
-            Err(ManifestError::DataTypeFidelityMismatch {
-                data_type,
-                fidelity_class: other,
-            })
-        }
+                .unwrap_or_else(|| "<none>".to_string()),
+            fidelity_class,
+        });
     }
+    for input in inputs {
+        ensure_data_type_matches_fidelity(&input.data_type, fidelity_class)?;
+    }
+    Ok(())
 }
 
 fn parse_oms_type(value: &str) -> Result<OmsType, ManifestError> {
@@ -4177,12 +4292,130 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_data_type() {
+        // Two rejection paths must both surface UnsupportedDataType with the
+        // original string payload:
+        //   1. NT-known but bolt-unadmitted: OrderBookDepth10 is a valid
+        //      NautilusDataType variant but has no ADMITTANCE_TABLE row.
+        //   2. Pure junk: a string NT's FromStr rejects outright.
+        let mut nt_known = valid_manifest();
+        nt_known.catalog_inputs[0].data_type = "OrderBookDepth10".to_string();
+        assert_eq!(
+            nt_known.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedDataType {
+                data_type: "OrderBookDepth10".to_string(),
+            }
+        );
+
+        let mut junk = valid_manifest();
+        junk.catalog_inputs[0].data_type = "Nonsense".to_string();
+        assert_eq!(
+            junk.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedDataType {
+                data_type: "Nonsense".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn quote_replay_admits_quote_tick_data_config() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "QuoteTick".to_string();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::QuoteReplay;
+
+        manifest
+            .validate(&accepted)
+            .expect("QuoteReplay source proof should allow QuoteTick catalog input");
+        let data = manifest.to_nt_data_config().expect("data config");
+
+        assert_eq!(data.data_type(), NautilusDataType::QuoteTick);
+    }
+
+    #[test]
+    fn index_replay_admits_index_price_update() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "IndexPriceUpdate".to_string();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::IndexReplay;
+
+        manifest
+            .validate(&accepted)
+            .expect("IndexReplay source proof should allow IndexPriceUpdate catalog input");
+        let data = manifest.to_nt_data_config().expect("data config");
+
+        assert_eq!(data.data_type(), NautilusDataType::IndexPriceUpdate);
+    }
+
+    #[test]
+    fn mark_replay_admits_mark_price_update() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "MarkPriceUpdate".to_string();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::MarkReplay;
+
+        manifest
+            .validate(&accepted)
+            .expect("MarkReplay source proof should allow MarkPriceUpdate catalog input");
+        let data = manifest.to_nt_data_config().expect("data config");
+
+        assert_eq!(data.data_type(), NautilusDataType::MarkPriceUpdate);
+    }
+
+    #[test]
+    fn quote_tick_rejected_under_trade_replay() {
+        // The table must not over-admit across fidelity classes: a QuoteTick
+        // input under the default TradeReplay proof has no admittance row.
         let mut manifest = valid_manifest();
         manifest.catalog_inputs[0].data_type = "QuoteTick".to_string();
         assert_eq!(
             manifest.validate(&accepted_dataset()).unwrap_err(),
-            ManifestError::UnsupportedDataType {
+            ManifestError::DataTypeFidelityMismatch {
                 data_type: "QuoteTick".to_string(),
+                fidelity_class: SourceProofFidelityClass::TradeReplay,
+            }
+        );
+    }
+
+    #[test]
+    fn index_price_update_rejected_under_trade_replay() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "IndexPriceUpdate".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::DataTypeFidelityMismatch {
+                data_type: "IndexPriceUpdate".to_string(),
+                fidelity_class: SourceProofFidelityClass::TradeReplay,
+            }
+        );
+    }
+
+    #[test]
+    fn mark_price_update_rejected_under_trade_replay() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "MarkPriceUpdate".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::DataTypeFidelityMismatch {
+                data_type: "MarkPriceUpdate".to_string(),
+                fidelity_class: SourceProofFidelityClass::TradeReplay,
+            }
+        );
+    }
+
+    #[test]
+    fn quote_replay_rejects_when_no_quote() {
+        // The must-have-primary check must still fire for the new classes: a
+        // QuoteReplay proof carrying only a TradeTick input must fail closed.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "TradeTick".to_string();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::QuoteReplay;
+
+        assert_eq!(
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::DataTypeFidelityMismatch {
+                data_type: "TradeTick".to_string(),
+                fidelity_class: SourceProofFidelityClass::QuoteReplay,
             }
         );
     }

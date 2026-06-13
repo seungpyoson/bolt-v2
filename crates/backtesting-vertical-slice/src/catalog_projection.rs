@@ -2552,11 +2552,11 @@ mod tests {
         assert_eq!(option.min_notional, None);
         assert_eq!(option.max_price(), None);
         assert_eq!(option.min_price(), None);
-        assert_eq!(option.margin_init, None);
-        assert_eq!(option.margin_maint, None);
+        assert_eq!(option.margin_init, Decimal::ZERO);
+        assert_eq!(option.margin_maint, Decimal::ZERO);
         // Distinct maker/taker so a fee swap would fail.
-        assert_eq!(option.maker_fee, Some(Decimal::from_str("0.001").unwrap()));
-        assert_eq!(option.taker_fee, Some(Decimal::from_str("0.002").unwrap()));
+        assert_eq!(option.maker_fee, Decimal::from_str("0.001").unwrap());
+        assert_eq!(option.taker_fee, Decimal::from_str("0.002").unwrap());
     }
 
     #[test]
@@ -3058,12 +3058,12 @@ max_notional = "200000"
         );
         assert_eq!(
             option.maker_fee,
-            Some(Decimal::from_str("0.001").unwrap()),
+            Decimal::from_str("0.001").unwrap(),
             "maker_fee must survive catalog round-trip"
         );
         assert_eq!(
             option.taker_fee,
-            Some(Decimal::from_str("0.002").unwrap()),
+            Decimal::from_str("0.002").unwrap(),
             "taker_fee must survive catalog round-trip"
         );
         // These six are rejected by build_binary_option (and therefore can never
@@ -3072,8 +3072,8 @@ max_notional = "200000"
         assert_eq!(option.min_notional, None);
         assert_eq!(option.max_price(), None);
         assert_eq!(option.min_price(), None);
-        assert_eq!(option.margin_init, None);
-        assert_eq!(option.margin_maint, None);
+        assert_eq!(option.margin_init, Decimal::ZERO);
+        assert_eq!(option.margin_maint, Decimal::ZERO);
     }
 
     #[test]

@@ -1934,7 +1934,7 @@ pub fn run_multi_table_from_run_spec(
         multi_selector_provenance(spec, &planned)?;
 
     // Gate 5: ONE BacktestNode run over the N-input manifest.
-    let nt_result = run_nt_backtest_node(&local_manifest)?;
+    let nt_result = run_nt_backtest_node(&local_manifest)?.result;
     let expected = planned
         .iter()
         .map(|table| {
@@ -2232,7 +2232,7 @@ fn run_multi_from_completed_output(
     let (event_count_ledger_hash, selected_asset_ids_hash) =
         multi_selector_provenance(spec, &planned)?;
 
-    let nt_result = run_nt_backtest_node(&local_manifest)?;
+    let nt_result = run_nt_backtest_node(&local_manifest)?.result;
     let expected = planned
         .iter()
         .map(|table| {

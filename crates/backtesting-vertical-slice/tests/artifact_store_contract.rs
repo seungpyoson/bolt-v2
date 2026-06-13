@@ -372,6 +372,27 @@ async fn artifact_index_writes_events_snapshots_and_latest_pointer_conditionally
 }
 
 #[tokio::test]
+async fn artifact_index_snapshot_rejects_staged_rows() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let event = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::BinaryOption, "run-002-staged"),
+        "event-002-staged",
+        "run-002-staged",
+    );
+    let err = ArtifactIndexSnapshot::new(
+        "snapshot-002-staged",
+        ArtifactKind::Backtests,
+        vec![ArtifactIndexSnapshotRow::from_event(
+            &event,
+            ArtifactIndexCommitState::Staged,
+        )],
+    )
+    .expect_err("committed snapshot must reject staged rows");
+
+    assert!(err.to_string().contains("committed rows"), "{err}");
+}
+
+#[tokio::test]
 async fn artifact_index_reader_rejects_hash_invalid_latest_pointer() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let store = InMemory::new();

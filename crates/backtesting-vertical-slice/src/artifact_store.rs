@@ -621,6 +621,10 @@ impl ArtifactIndexSnapshot {
                 "snapshot row kind does not match snapshot kind"
             );
             ensure!(
+                row.commit_state == ArtifactIndexCommitState::Committed,
+                "snapshot must contain committed rows"
+            );
+            ensure!(
                 unique.insert(row.artifact_id.as_str()),
                 "snapshot rows must be unique by artifact_id"
             );
@@ -648,6 +652,10 @@ impl ArtifactIndexSnapshot {
         let mut unique = BTreeSet::new();
         for row in &self.rows {
             row.validate(self.artifact_kind, artifact_root)?;
+            ensure!(
+                row.commit_state == ArtifactIndexCommitState::Committed,
+                "snapshot must contain committed rows"
+            );
             ensure!(
                 unique.insert(row.artifact_id.as_str()),
                 "snapshot rows must be unique by artifact_id"

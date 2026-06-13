@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use nautilus_trading::Strategy;
 
 pub(super) const TEST_TRADE_PRICE_PRECISION: u8 = 2;
 pub(super) const TEST_TRADE_SIZE_PRECISION: u8 = 0;

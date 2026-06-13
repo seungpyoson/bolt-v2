@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use nautilus_trading::Strategy;
 
 #[test]
 fn position_events_update_live_position_state() {

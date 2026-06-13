@@ -4841,6 +4841,7 @@ strategy_files = ["strategies/binary_oracle.toml"]
 
 [runtime]
 mode = "Live"
+order_execution_mode = "live"
 
 [nautilus]
 load_state = true
@@ -5270,6 +5271,7 @@ strategy_files = ["strategies/binary_oracle.toml"]
 
 [runtime]
 mode = "Live"
+order_execution_mode = "live"
 
 [nautilus]
 load_state = true

@@ -248,7 +248,7 @@ fn flatten_plan_commands_bind_metadata_and_nt_position_identity() {
 }
 
 #[test]
-fn flatten_plan_route_kinds_remain_no_submit_proof_only() {
+fn flatten_plan_route_kinds_remain_dry_run_proof_only() {
     for route_kind in [
         BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter,
         BoltV3KillSwitchFlattenRouteKind::PerStrategyActionPort,

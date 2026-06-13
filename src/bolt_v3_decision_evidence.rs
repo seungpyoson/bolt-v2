@@ -639,9 +639,6 @@ pub fn read_latest_entry_decision_evidence_chain(
             serde_json::from_slice(line).with_context(|| {
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
-        if is_pre_position_sizer_recovery_non_recovery_record(&header) {
-            continue;
-        }
         match header.kind.as_str() {
             "strategy_input_snapshot" => {
                 header.validate(
@@ -801,6 +798,9 @@ pub fn read_submit_reservation_recovery_evidence(
             serde_json::from_slice(line).with_context(|| {
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
+        if is_pre_position_sizer_recovery_non_recovery_record(&header) {
+            continue;
+        }
         match header.kind.as_str() {
             "strategy_input_snapshot" => {
                 header.validate(

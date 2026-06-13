@@ -1294,6 +1294,27 @@ fn terminal_nt_order_event_releases_committed_submit_reservation() {
 }
 
 #[test]
+fn configured_submit_sizer_rejects_stale_venue_spendability_before_nt_submit() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut components = fresh_components(900);
+    components.venue_spendability.observed_at_ns = 100;
+    admission.update_position_sizing_nt_components(components);
+    rebuild_empty_position_sizer(&admission);
+
+    let error = admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect_err("stale venue spendability evidence must reject");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::PositionSizingRejected {
+            reason: BoltV3PositionSizerRejectReason::StaleNtState
+        }
+    ));
+}
+
+#[test]
 fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);

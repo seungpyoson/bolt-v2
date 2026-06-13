@@ -5359,6 +5359,19 @@ fn replace_in_fixture_section(section_header: &str, replacements: &[(&str, &str)
     rewritten.join("\n")
 }
 
+fn root_with_venue_spendability_source_binding(path: &str, sha256: &str, max_bytes: u64) -> String {
+    replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    )
+    .replace(
+        "max_snapshot_age_ns = 5000000000\n\n[risk.capital_pools.prediction_market_binary]",
+        &format!(
+            "max_snapshot_age_ns = 5000000000\nvenue_spendability_source_path = \"{path}\"\nvenue_spendability_source_sha256 = \"{sha256}\"\nvenue_spendability_source_max_bytes = {max_bytes}\n\n[risk.capital_pools.prediction_market_binary]"
+        ),
+    )
+}
+
 #[test]
 fn parses_loss_governor_market_exit_actions_from_root_fixture() {
     use bolt_v2::{
@@ -5484,6 +5497,74 @@ fn disabled_loss_governor_market_exit_does_not_require_loaded_strategies() {
             .iter()
             .all(|message| !message.contains("market_exit=all_registered_strategies")),
         "disabled loss governor should not require market-exit strategy coverage: {messages:#?}"
+    );
+}
+
+#[test]
+fn enforced_submit_admission_uses_nt_account_spendability_without_source_binding() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("enforced submit-admission fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("venue_spendability_source")),
+        "enforced submit admission should use NT account spendability without requiring a source binding: {messages:#?}"
+    );
+}
+
+#[test]
+fn enforced_submit_admission_rejects_invalid_venue_spendability_source_sha256() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = root_with_venue_spendability_source_binding(
+        "/var/lib/bolt/operator-evidence/venue-spendability.json",
+        "ABC",
+        16_384,
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("source-binding fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains(
+                "risk.capital_pools[polymarket-prediction-live].venue_spendability_source_sha256",
+            ) && message.contains("lowercase sha256")
+        }),
+        "invalid venue spendability source sha256 must fail at config load: {messages:#?}"
+    );
+}
+
+#[test]
+fn enforced_submit_admission_rejects_incomplete_venue_spendability_source_binding() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    )
+    .replace(
+        "max_snapshot_age_ns = 5000000000\n\n[risk.capital_pools.prediction_market_binary]",
+        "max_snapshot_age_ns = 5000000000\nvenue_spendability_source_path = \"/var/lib/bolt/operator-evidence/venue-spendability.json\"\nvenue_spendability_source_sha256 = \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\n\n[risk.capital_pools.prediction_market_binary]",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("incomplete source-binding fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.capital_pools[polymarket-prediction-live].venue_spendability_source_max_bytes")
+                && message.contains("must be positive")
+        }),
+        "source binding must require positive max bytes with path and sha: {messages:#?}"
     );
 }
 

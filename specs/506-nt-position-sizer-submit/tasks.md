@@ -41,13 +41,14 @@
 - [x] Prove live-node startup rebuild stays fail-closed for unknown open orders and known metadata whose open quantity exceeds the submitted quantity.
 - [x] Prove runtime-feed release/revalue behavior for rebuilt reservations from known Bolt metadata on authoritative NT fill and terminal events.
 - [x] Add a configured NT-owned active market-exit path for loss halts through `Trader::market_exit_strategy`, with validation requiring `TradingState::Reducing` when market exit is enabled.
+- [x] Add optional hash-checked venue spendability source binding on the enforced capital pool and seed/refresh the position-sizer runtime feed from it when configured.
 
 ## Remaining For Production Grade
 
 - [ ] Wire the operator clear-to-Active live command surface with caller-side evidence file/content-hash verification, operator authorization, separate evidence max-age policy, command serialization, durable audit evidence, fresh reconciliation against the observed trading state, and the NT `RiskEngine::set_trading_state(Active)` call.
 - [ ] Document and implement a safe replace-submit model before enabling `ReplaceSubmit`.
 - [ ] Replace static configured prediction-market metadata with dynamic market-selection metadata when rotating markets.
-- [ ] Add adapter/venue evidence for collateral spendability and venue/instrument allowance.
+- [ ] Add adapter-produced live venue evidence for collateral spendability and venue/instrument allowance.
 - [ ] Add maker/post-only quote-set reservation metadata before enabling maker submit enforcement.
 - [ ] Add non-binary product calculators before enabling spot leverage, futures/perps, or options.
 - [ ] Add reconnect/runtime tests against the actual NT path beyond unit-level cache entrypoint coverage.

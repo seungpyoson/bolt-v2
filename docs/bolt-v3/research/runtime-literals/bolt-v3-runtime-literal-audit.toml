@@ -10263,3 +10263,19 @@ literal = '''"explicit_clip_to_available"'''
 context = '''"explicit_clip_to_available" => SizingMode::ExplicitClipToAvailable,'''
 classification = "capital_pool_config_enum_value"
 reason = "Supported TOML sizing-policy discriminator mapped into the runtime position-sizer policy; the selected policy remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"position sizer venue spendability source configured without runtime feed"'''
+context = '''"position sizer venue spendability source configured without runtime feed"'''
+classification = "position_sizer_source_diagnostic"
+reason = "Fail-closed diagnostic when a TOML-configured venue spendability source has no runtime feed; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''64'''
+context = '''value.len() == 64'''
+classification = "sha256_hex_length"
+reason = "Canonical SHA-256 hex digest length used while validating venue spendability source binding shape, not an operator runtime value."

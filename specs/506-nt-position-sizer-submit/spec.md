@@ -42,7 +42,7 @@ This slice is not production-grade by itself. It adds the live NT component feed
 
 - residual liability for rebuilt pre-existing orders is attributable to known Bolt reservation metadata;
 - non-empty pre-existing NT/exchange open orders can be rebuilt only when their liability is attributable to known Bolt reservations;
-- collateral spendability and venue/instrument allowance are proven by adapter/venue evidence instead of approximated from NT account free balance;
+- adapter-produced live collateral spendability and venue/instrument allowance evidence exists beyond the optional configured source binding and NT account free-balance fallback;
 - safe replace/amend transitions are implemented before `ReplaceSubmit` is enabled;
 - maker quote sets reserve simultaneous adverse fills;
 - operator clear-to-Active recovery and flat-position proof are implemented for configured loss halts.

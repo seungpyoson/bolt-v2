@@ -1418,6 +1418,7 @@ fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
                 "{label}.max_snapshot_age_ns must be a positive integer"
             ));
         }
+        validate_venue_spendability_source_binding(pool, &label, &mut errors);
         if !matches!(
             pool.sizing_policy.mode.as_str(),
             "reject_only" | "explicit_clip_to_available"
@@ -1470,6 +1471,42 @@ fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
     errors
 }
 
+fn validate_venue_spendability_source_binding(
+    pool: &CapitalPoolBlock,
+    label: &str,
+    errors: &mut Vec<String>,
+) {
+    let has_binding = pool.venue_spendability_source_path.is_some()
+        || pool.venue_spendability_source_sha256.is_some()
+        || pool.venue_spendability_source_max_bytes.is_some();
+    if !has_binding {
+        return;
+    }
+    if !pool.enforce_submit_admission {
+        errors.push(format!(
+            "{label}.venue_spendability_source_path requires enforce_submit_admission = true"
+        ));
+    }
+    match pool.venue_spendability_source_path.as_deref() {
+        Some(path) if !path.trim().is_empty() => {}
+        _ => errors.push(format!(
+            "{label}.venue_spendability_source_path must be a non-empty string"
+        )),
+    }
+    match pool.venue_spendability_source_sha256.as_deref() {
+        Some(sha256) if is_lowercase_sha256_hex(sha256) => {}
+        _ => errors.push(format!(
+            "{label}.venue_spendability_source_sha256 must be a lowercase sha256 hex string"
+        )),
+    }
+    match pool.venue_spendability_source_max_bytes {
+        Some(max_bytes) if max_bytes > 0 => {}
+        _ => errors.push(format!(
+            "{label}.venue_spendability_source_max_bytes must be positive"
+        )),
+    }
+}
+
 fn validate_prediction_market_binary_product_metadata(
     pool: &CapitalPoolBlock,
     label: &str,
@@ -1515,6 +1552,13 @@ fn validate_positive_decimal(label: &str, value: &str, errors: &mut Vec<String>)
             ));
         }
     }
+}
+
+fn is_lowercase_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {

@@ -48,8 +48,8 @@ The lane demonstrates the correct RA shape:
    lightweight spirit is the template, not the absence of provenance: in the
    productionized RA the same verdict rides on the `experiment-results` artifact
    and the shared Artifact Index like every other RA artifact, with no separate
-   promotion-package layer. Those mechanics are defined in `data-model.md`, not
-   restated here.
+   promotion-package layer. Those mechanics are defined in `data-model.md` and
+   `contracts.md`, not restated here.
 3. **Cadence over gates.** Re-measurement is scheduled (cadence policy in
    docstring) not gated on a `promotion_state` transition. Add a gate only when
    a real finding exists to gate on.

@@ -145,17 +145,19 @@ Research Analytics may write only these derived families under the
 - `datasets`: point-in-time research datasets.
 - `feature-tables`: point-in-time feature tables.
 - `experiment-results`: experiment metadata, metrics pointers, consumed BTE
-  result ids, leakage reports, and the RA-owned GO / NO-GO / conditional-GO
-  verdict (scope, evidence/fidelity refs, re-measurement cadence).
+  result ids, leakage reports, the RA-owned GO / NO-GO / conditional-GO
+  verdict (scope, evidence/fidelity refs, re-measurement cadence), and — only
+  when a GO finding is promoted — a typed promotion-config field/URI (the
+  TOML/NT-compatible config produced for later implementation/review).
 
 There is no standing `promotion-packages` family: there is no standing
 PromotionPackage machine, and promotion introduces no separate promotion-only
-Artifact Index layer and no separate promotion-only lifecycle layer. A typed
-promotion-config artifact is produced only when a real GO finding exists to
-promote, and when it is, it rides on the existing `research-analytics` kind
-snapshot, index-commit path, and Artifact Lifecycle Contract like any other RA
-artifact (see `contracts.md` Result And Promotion Boundary and `evidence.md`
-E-041).
+Artifact Index layer and no separate promotion-only lifecycle layer. The typed
+promotion-config produced when a real GO finding is promoted is not a standalone
+artifact family but the field/URI on the verdict-bearing `experiment-results`
+artifact named above, so it is committed, indexed, and lifecycle-tracked with
+that artifact and needs no separate subfamily, index, or lifecycle layer (see
+`contracts.md` Result And Promotion Boundary and `evidence.md` E-041).
 
 Every RA-owned artifact records owner, schema version, source refs, source
 hashes, content hash, and lifecycle state, and commits into the

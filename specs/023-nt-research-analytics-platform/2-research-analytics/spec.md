@@ -167,12 +167,11 @@ findings.
 
 Findings are recorded with the lead-lag lane's GO / NO-GO verdict model — see
 `../reference/leadlag-lane.md` as the seed RA model. The BTE emits the OBJECTIVE
-results; RA owns the SUBJECTIVE verdict: a finding is GO, NO-GO, or conditional-GO
-over a stated scope, recorded with a re-measurement cadence so it cannot silently
-go stale. The verdict's exact field set and how it is persisted, indexed, and
-lifecycle-tracked are defined once in `../reference/data-model.md`
-(ResearchAnalyticsArtifact / `experiment-results`) and `../reference/contracts.md`
-(Artifact Index Contract); this spec does not restate them.
+results; RA owns the SUBJECTIVE verdict: a finding is GO, NO-GO, or conditional-GO.
+The verdict's field set and how it is persisted, indexed, and lifecycle-tracked
+are defined once in `../reference/data-model.md` (ResearchAnalyticsArtifact /
+`experiment-results`) and `../reference/contracts.md` (Artifact Index Contract +
+Artifact Lifecycle Contract); this spec does not restate them.
 
 A promotion gate (typed TOML/NT-compatible config for the Backtesting Engine) is
 added only WHEN a real GO finding exists to promote — never a Python strategy

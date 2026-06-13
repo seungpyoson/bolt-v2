@@ -246,6 +246,9 @@ backtest result contracts as evidence and commits into the `research-analytics`
 kind snapshot per the Artifact Index Contract above (see `data-model.md`).
 Promotion gates are added only when a real finding exists to promote; the proven
 lead-lag lane's GO/NO-GO verdict + re-measurement cadence is the reference model.
+When promotion occurs, the typed config output is a field/URI on that
+`experiment-results` artifact — not a separate artifact family — and commits and
+indexes with it.
 
 Reproduction, audit, regression, or migration results are historical/mechanical
 artifacts. They must not be presented as normal current performance.

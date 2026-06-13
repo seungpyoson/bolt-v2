@@ -938,8 +938,13 @@ fn helper_floor_output_rejects_as_invalid_iv() {
     let mut inputs = complete_inputs();
     inputs.option_price.as_mut().unwrap().value = 1.0e-12;
 
+    let policy = IvHelperPolicy {
+        minimum_valid_iv_output: 1.0e-12,
+        ..helper_policy()
+    };
+
     assert_eq!(
-        derive_iv(&helper_policy(), inputs),
+        derive_iv(&policy, inputs),
         Err(IvDeriveError::Rejected {
             reason: IvRejectReason::InvalidIvValue,
             field: "iv".to_string(),

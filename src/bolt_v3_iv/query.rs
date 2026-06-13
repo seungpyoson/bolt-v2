@@ -676,7 +676,10 @@ impl IvQueryStateHandle {
                     && health.source_id == *source_id
                     && health.subscription_generation == *subscription_generation
             }) {
-                existing.subscription_state = super::health::IvSourceHealthState::Removed;
+                transition_source_health_state(
+                    existing,
+                    super::health::IvSourceHealthState::Removed,
+                );
             } else {
                 state.source_health.push(removed_health);
             }
@@ -865,17 +868,21 @@ impl IvQueryHandle {
                     Ok(product)
                 }
                 Err(IvQueryError::RetentionMiss) => {
-                    if let Some(miss) = retention_miss_for_query(&state, query)
-                        && self.authorization.authorizes(
+                    if let Some(miss) = retention_miss_for_query(&state, query) {
+                        if self.authorization.authorizes(
                             &query.strategy_id,
                             query.product_kind,
                             Some(&miss.source_id),
                             &miss.selector_fingerprint,
-                        )
-                    {
-                        side_effects.record_retention_miss(miss);
+                        ) {
+                            side_effects.record_retention_miss(miss);
+                            Err(IvQueryError::RetentionMiss)
+                        } else {
+                            Err(IvQueryError::StrategyNotAuthorized)
+                        }
+                    } else {
+                        Err(IvQueryError::RetentionMiss)
                     }
-                    Err(IvQueryError::RetentionMiss)
                 }
                 Err(error) => Err(error),
             };
@@ -3033,12 +3040,18 @@ fn apply_source_rejection_flags(
     mark_rejected: bool,
 ) {
     if mark_rejected {
-        health.subscription_state = IvSourceHealthState::Rejected;
+        transition_source_health_state(health, IvSourceHealthState::Rejected);
     } else if reject_reason == IvRejectReason::StaleData {
-        health.subscription_state = IvSourceHealthState::Stale;
+        transition_source_health_state(health, IvSourceHealthState::Stale);
     }
     health.stale_state |= reject_reason == IvRejectReason::StaleData;
     health.retention_state |= reject_reason == IvRejectReason::RetentionMiss;
+}
+
+fn transition_source_health_state(health: &mut IvSourceHealth, next: IvSourceHealthState) {
+    if health.subscription_state.can_transition_to(next) {
+        health.subscription_state = next;
+    }
 }
 
 fn rejection_health_state(reject_reason: IvRejectReason) -> IvSourceHealthState {
@@ -3106,6 +3119,12 @@ fn merge_source_health_update(existing: &mut IvSourceHealth, mut incoming: IvSou
         incoming.stale_state |= existing.stale_state;
     }
     incoming.retention_state |= existing.retention_state;
+    if !existing
+        .subscription_state
+        .can_transition_to(incoming.subscription_state)
+    {
+        incoming.subscription_state = existing.subscription_state;
+    }
     *existing = incoming;
 }
 
@@ -3475,6 +3494,69 @@ mod tests {
             health.reject_counts.get(&IvRejectReason::InvalidIvValue),
             Some(&1)
         );
+    }
+
+    #[test]
+    fn record_source_rejection_does_not_replace_removed_generation_state() {
+        let handle = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+        handle
+            .write_state()
+            .current_subscription_generations
+            .insert("test-source".to_string(), 2);
+        handle.upsert_source_health(source_health_with_generation(
+            "test-source",
+            IvSourceHealthState::Removed,
+            2,
+        ));
+
+        handle.record_source_rejection(
+            "test-profile".to_string(),
+            "test-source".to_string(),
+            2,
+            UnixNanos::new(42),
+            IvRejectReason::SourceNotConfigured,
+            true,
+        );
+
+        let health = handle
+            .source_health_for("test-profile", "test-source")
+            .unwrap();
+        assert_eq!(health.subscription_state, IvSourceHealthState::Removed);
+        assert_eq!(
+            health.last_reject_reason,
+            Some(IvRejectReason::SourceNotConfigured)
+        );
+        assert_eq!(
+            health
+                .reject_counts
+                .get(&IvRejectReason::SourceNotConfigured),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn upsert_source_health_does_not_reactivate_removed_generation_state() {
+        let handle = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+        handle
+            .write_state()
+            .current_subscription_generations
+            .insert("test-source".to_string(), 2);
+        handle.upsert_source_health(source_health_with_generation(
+            "test-source",
+            IvSourceHealthState::Removed,
+            2,
+        ));
+
+        handle.upsert_source_health(source_health_with_generation(
+            "test-source",
+            IvSourceHealthState::Active,
+            2,
+        ));
+
+        let health = handle
+            .source_health_for("test-profile", "test-source")
+            .unwrap();
+        assert_eq!(health.subscription_state, IvSourceHealthState::Removed);
     }
 
     #[test]

@@ -13,6 +13,10 @@ use super::{
     types::{IvBasis, IvConvention, IvSourceKind},
 };
 
+const NT_IMPLY_VOL_FAILURE_FLOOR: f64 = 1.0e-8;
+const NT_REFINE_VOL_FAILURE_FLOOR: f64 = 1.0e-6;
+const NT_REFINE_VOL_FAILURE_CEILING: f64 = 10.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IvNtHelperSymbol {
@@ -39,6 +43,22 @@ impl IvNtHelperSymbol {
         match self {
             Self::ImplyVolAndGreeks => &IMPLY_VOL_AND_GREEKS_REQUIRED_FIELDS,
             Self::RefineVolAndGreeks => &REFINE_VOL_AND_GREEKS_REQUIRED_FIELDS,
+        }
+    }
+
+    pub fn minimum_valid_output_floor(self) -> f64 {
+        match self {
+            Self::ImplyVolAndGreeks => NT_IMPLY_VOL_FAILURE_FLOOR,
+            Self::RefineVolAndGreeks => NT_REFINE_VOL_FAILURE_FLOOR,
+        }
+    }
+
+    fn is_failure_sentinel(self, vol: f64) -> bool {
+        match self {
+            Self::ImplyVolAndGreeks => vol <= NT_IMPLY_VOL_FAILURE_FLOOR,
+            Self::RefineVolAndGreeks => {
+                vol <= NT_REFINE_VOL_FAILURE_FLOOR || vol >= NT_REFINE_VOL_FAILURE_CEILING
+            }
         }
     }
 }
@@ -348,7 +368,11 @@ pub fn derive_iv(
         ),
     };
 
-    if helper_result.vol <= policy.minimum_valid_iv_output {
+    if policy
+        .nt_helper_symbol
+        .is_failure_sentinel(helper_result.vol)
+        || helper_result.vol <= policy.minimum_valid_iv_output
+    {
         return Err(IvDeriveError::Rejected {
             reason: IvRejectReason::InvalidIvValue,
             field: "iv".to_string(),

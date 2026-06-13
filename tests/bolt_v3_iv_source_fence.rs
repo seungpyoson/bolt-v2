@@ -49,6 +49,21 @@ fn strategy_owned_derived_iv() {
 }
 
 #[test]
+fn source_fence_rejects_strategy_local_iv_engine_derivation() {
+    let source = r#"
+use crate::bolt_v3_iv::derive::{derive_iv, resolve_derived_input_policy, select_helper_policy};
+
+fn strategy_owned_derived_iv() {
+    let _ = derive_iv;
+    let _ = resolve_derived_input_policy;
+    let _ = select_helper_policy;
+}
+"#;
+
+    assert_strategy_source_fence_rejects(source, "IV engine derivation bypass");
+}
+
+#[test]
 fn source_fence_rejects_raw_audit_reader_and_raw_dto_strategy_imports() {
     let source = r#"
 use crate::bolt_v3_iv::raw_access::read_raw_event;
@@ -144,6 +159,12 @@ fn iv_strategy_source_fence_violations(_source: &str) -> Vec<String> {
             "black_scholes_greeks",
             "strategy-local NT helper derivation",
         ),
+        ("derive_iv", "IV engine derivation bypass"),
+        (
+            "resolve_derived_input_policy",
+            "IV engine derivation bypass",
+        ),
+        ("select_helper_policy", "IV engine derivation bypass"),
         ("read_raw_event", "raw IV payload bypass"),
         ("IvRawAuditRequest", "raw IV payload bypass"),
         ("IvRawEvent", "raw IV payload bypass"),

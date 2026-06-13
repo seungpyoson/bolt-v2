@@ -601,9 +601,11 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.helper_policy_id
             ));
         }
-        if policy.minimum_valid_iv_output <= 0.0 || !policy.minimum_valid_iv_output.is_finite() {
+        if policy.minimum_valid_iv_output <= policy.nt_helper_symbol.minimum_valid_output_floor()
+            || !policy.minimum_valid_iv_output.is_finite()
+        {
             errors.push(format!(
-                "{context}.helper_policies.{}.minimum_valid_iv_output must be finite and positive",
+                "{context}.helper_policies.{}.minimum_valid_iv_output must be finite and above the selected NT helper failure floor",
                 policy.helper_policy_id
             ));
         }

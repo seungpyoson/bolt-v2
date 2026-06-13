@@ -898,16 +898,15 @@ fn helper_policy_output_bounds_must_require_finite_positive_iv() {
 }
 
 #[test]
-fn helper_policy_minimum_valid_iv_output_must_be_finite_positive() {
+fn helper_policy_minimum_valid_iv_output_must_exceed_helper_failure_floor() {
     let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
-    config.profiles[0].helper_policies[0].minimum_valid_iv_output = 0.0;
+    config.profiles[0].helper_policies[0].minimum_valid_iv_output = 1.0e-9;
 
     let errors = validate_iv_root_config(&config);
 
     assert!(errors.iter().any(|message| {
         message.contains("helper_policies.configured-helper-policy.minimum_valid_iv_output")
-            && message.contains("finite")
-            && message.contains("positive")
+            && message.contains("failure floor")
     }));
 }
 

@@ -21,8 +21,14 @@ impl IvSourceHealthState {
     pub fn can_transition_to(self, next: Self) -> bool {
         use IvSourceHealthState::*;
 
+        if self == next {
+            return true;
+        }
+        if self == Removed || self == Rejected {
+            return false;
+        }
         if next == Rejected {
-            return self != Removed && self != Rejected;
+            return true;
         }
 
         matches!(
@@ -43,10 +49,6 @@ impl IvSourceHealthState {
                 | (SubscriptionFailed, Subscribing)
                 | (SubscriptionFailed, Unsubscribing)
                 | (SubscriptionFailed, Removed)
-                | (Removed, Subscribing)
-                | (Rejected, Subscribing)
-                | (Rejected, Unsubscribing)
-                | (Rejected, Removed)
                 | (Configured, Unsubscribing)
                 | (Configured, Removed)
         )

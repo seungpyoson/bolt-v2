@@ -93,13 +93,15 @@ fn source_health_transitions_follow_the_data_model() {
     );
     assert!(IvSourceHealthState::Configured.can_transition_to(IvSourceHealthState::Unsubscribing));
     assert!(IvSourceHealthState::Configured.can_transition_to(IvSourceHealthState::Removed));
-    assert!(IvSourceHealthState::Removed.can_transition_to(IvSourceHealthState::Subscribing));
-    assert!(IvSourceHealthState::Rejected.can_transition_to(IvSourceHealthState::Subscribing));
-    assert!(IvSourceHealthState::Rejected.can_transition_to(IvSourceHealthState::Unsubscribing));
-    assert!(IvSourceHealthState::Rejected.can_transition_to(IvSourceHealthState::Removed));
+    assert!(!IvSourceHealthState::Removed.can_transition_to(IvSourceHealthState::Subscribing));
+    assert!(!IvSourceHealthState::Rejected.can_transition_to(IvSourceHealthState::Subscribing));
+    assert!(!IvSourceHealthState::Rejected.can_transition_to(IvSourceHealthState::Unsubscribing));
+    assert!(!IvSourceHealthState::Rejected.can_transition_to(IvSourceHealthState::Removed));
     assert!(IvSourceHealthState::Active.can_transition_to(IvSourceHealthState::Rejected));
     assert!(!IvSourceHealthState::Removed.can_transition_to(IvSourceHealthState::Active));
     assert!(!IvSourceHealthState::Rejected.can_transition_to(IvSourceHealthState::Active));
+    assert!(IvSourceHealthState::Removed.can_transition_to(IvSourceHealthState::Removed));
+    assert!(IvSourceHealthState::Rejected.can_transition_to(IvSourceHealthState::Rejected));
 
     let health = IvSourceHealth {
         profile_id: bolt_v3_iv_support::profile_id(),

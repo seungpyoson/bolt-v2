@@ -1319,7 +1319,7 @@ fn retention_miss_tombstones_are_bounded_by_profile_retention() {
 }
 
 #[test]
-fn unauthorized_retention_miss_query_does_not_mutate_source_health() {
+fn unauthorized_retention_miss_query_does_not_leak_or_mutate_source_health() {
     let mut store = IvStore::empty();
     for ts in [2_000, 2_010] {
         store
@@ -1359,7 +1359,7 @@ fn unauthorized_retention_miss_query_does_not_mutate_source_health() {
 
     assert_eq!(
         scoped.query(&point_query(None, 2_000)),
-        Err(IvQueryError::RetentionMiss)
+        Err(IvQueryError::StrategyNotAuthorized)
     );
 
     let after = observer

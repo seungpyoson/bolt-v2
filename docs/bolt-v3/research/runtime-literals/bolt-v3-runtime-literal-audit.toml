@@ -9498,6 +9498,30 @@ reason = "IV derivation uses typed helper/input/provenance labels and numeric va
 
 [[allowed]]
 path = "src/bolt_v3_iv/derive.rs"
+kind = "number"
+literal = '''1.0e-8'''
+context = '''const NT_IMPLY_VOL_FAILURE_FLOOR: f64 = 1.0e-8;'''
+classification = "iv_helper_contract_literal"
+reason = "Pinned NautilusTrader imply_vol_and_greeks clamps failed solves to this helper sentinel; the engine rejects the sentinel and still requires TOML-owned helper output policy for accepted IV values."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "number"
+literal = '''1.0e-6'''
+context = '''const NT_REFINE_VOL_FAILURE_FLOOR: f64 = 1.0e-6;'''
+classification = "iv_helper_contract_literal"
+reason = "Pinned NautilusTrader refine_vol_and_greeks clamps diverged solves to this helper sentinel floor; the engine rejects the sentinel and still requires TOML-owned helper output policy for accepted IV values."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "number"
+literal = '''10.0'''
+context = '''const NT_REFINE_VOL_FAILURE_CEILING: f64 = 10.0;'''
+classification = "iv_helper_contract_literal"
+reason = "Pinned NautilusTrader refine_vol_and_greeks clamps diverged solves to this helper sentinel ceiling; the engine rejects the sentinel and still requires TOML-owned helper output policy for accepted IV values."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
 kind = "string"
 literal = '''"nautilus_model::data::refine_vol_and_greeks"'''
 context = '''Self::RefineVolAndGreeks => "nautilus_model::data::refine_vol_and_greeks",'''
@@ -11224,14 +11248,6 @@ literal = '''"s,r,b,is_call,k,t,price"'''
 context = '''Self::ImplyVolAndGreeks => "s,r,b,is_call,k,t,price",'''
 classification = "iv_helper_contract_literal"
 reason = "IV derivation validates the configured helper parameter signature against the pinned NT helper ABI; operator helper selection remains policy/config-owned."
-
-[[allowed]]
-path = "src/bolt_v3_iv/config.rs"
-kind = "number"
-literal = '''0.0'''
-context = '''if policy.minimum_valid_iv_output <= 0.0 || !policy.minimum_valid_iv_output.is_finite() {'''
-classification = "iv_helper_contract_literal"
-reason = "IV config validation rejects disabled or non-positive configured helper-output floors; the effective threshold is supplied by TOML policy."
 
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"

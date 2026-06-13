@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -74,6 +75,42 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
 
         self.assertEqual({violation.line for violation in violations}, {2, 3, 4, 5})
 
+    def test_detects_raw_identifier_lifecycle_calls(self) -> None:
+        violations = VERIFIER.find_violations_in_text(
+            "src/probe.rs",
+            """
+            self.r#market_exit()?;
+            Strategy::r#market_exit(self)?;
+            """,
+        )
+
+        self.assertEqual({violation.line for violation in violations}, {2, 3})
+
+    def test_detects_function_item_lifecycle_references(self) -> None:
+        violations = VERIFIER.find_violations_in_text(
+            "src/probe.rs",
+            """
+            let strategy_exit = Strategy::market_exit;
+            let trader_exit = Trader::market_exit_strategy;
+            let closer = Strategy::close_all_positions;
+            """,
+        )
+
+        self.assertEqual({violation.line for violation in violations}, {2, 3, 4})
+
+    def test_detects_other_nt_venue_mutating_apis(self) -> None:
+        violations = VERIFIER.find_violations_in_text(
+            "src/probe.rs",
+            """
+            self.submit_order_list(order_list)?;
+            self.cancel_orders(client_order_ids, None)?;
+            self.modify_order(client_order_id, params)?;
+            Strategy::submit_order_list(self, order_list)?;
+            """,
+        )
+
+        self.assertEqual({violation.line for violation in violations}, {2, 3, 4, 5})
+
     def test_identifier_rules_do_not_match_substrings_or_comments(self) -> None:
         violations = VERIFIER.find_violations_in_text(
             "src/probe.rs",
@@ -91,6 +128,36 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
         )
 
         self.assertEqual(violations, [])
+
+    def test_collect_scan_strips_cfg_test_items_before_matching(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            probe = Path(temp_dir) / "probe.rs"
+            probe.write_text(
+                """
+                #[cfg(test)]
+                mod tests {
+                    fn helper() {
+                        self.market_exit().unwrap();
+                    }
+                }
+
+                fn production() {
+                    self.close_position(position_id, None)?;
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            violations = VERIFIER.find_violations_in_text(
+                "src/probe.rs",
+                VERIFIER.production_text(probe),
+            )
+
+        self.assertEqual({violation.line for violation in violations}, {10})
+
+    def test_empty_source_file_set_fails_closed(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "no Rust source files"):
+            VERIFIER.collect_violations_from_files([])
 
     def test_current_bolt_src_has_no_exit_market_command_senders(self) -> None:
         self.assertEqual(VERIFIER.collect_violations(), [])

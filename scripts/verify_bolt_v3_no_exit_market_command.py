@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Verify Bolt does not wire NautilusTrader market-exit control paths.
+"""Verify Bolt does not wire NautilusTrader venue-mutating control paths.
 
 Shadow mode forbids venue mutation under `submit_orders=false`. The NT
 `StrategyCommand::ExitMarket` control endpoint can route to `market_exit()`,
 which is outside Bolt's submit/cancel chokepoints, so Bolt production source
 must not wire a sender for that command or call equivalent market-exit/close
-APIs directly.
+APIs directly. The fence also rejects other NT venue-mutating APIs that would
+bypass Bolt's shadow-mode submit/cancel chokepoints.
 """
 
 from __future__ import annotations
@@ -42,11 +43,11 @@ FORBIDDEN_RULES = (
         re.compile(r"(?<![A-Za-z0-9_])ExitMarket(?![A-Za-z0-9_])"),
     ),
     Rule(
-        "NT market-exit lifecycle API",
+        "NT venue-mutating lifecycle API",
         re.compile(
-            r"(?:\.|::)\s*"
-            r"(?:market_exit_strategy|exit_market|market_exit|cancel_all_orders|close_all_positions|close_position)"
-            r"\s*\("
+            r"(?:\.|::)\s*(?:r#)?"
+            r"(?:market_exit_strategy|submit_order_list|close_all_positions|cancel_all_orders|close_position|cancel_orders|modify_order|exit_market|market_exit)"
+            r"(?![A-Za-z0-9_])"
         ),
     ),
 )
@@ -88,12 +89,22 @@ def bolt_src_files() -> list[Path]:
     return files
 
 
-def collect_violations() -> list[Violation]:
+def collect_violations_from_files(files: list[Path]) -> list[Violation]:
+    if not files:
+        raise RuntimeError("no Rust source files found under src")
+
     violations: list[Violation] = []
-    for path in bolt_src_files():
-        rel = str(path.relative_to(REPO_ROOT))
+    for path in files:
+        try:
+            rel = str(path.relative_to(REPO_ROOT))
+        except ValueError:
+            rel = str(path)
         violations.extend(find_violations_in_text(rel, production_text(path)))
     return violations
+
+
+def collect_violations() -> list[Violation]:
+    return collect_violations_from_files(bolt_src_files())
 
 
 def main() -> int:

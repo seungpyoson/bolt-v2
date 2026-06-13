@@ -53,7 +53,8 @@ All via `just` (must be installed). The justfile is the single source of truth �
 ## Watch out for
 
 - **`just` is the entry point** — never call `cargo build` / `cargo test` directly in CI or recipes; the justfile validates workspace boundaries and runs verification checks.
+- **Remote-first Rust verification** — agent sessions use the workflow in `AGENTS.md`; standard PATH `cargo ...` is guarded by the machine-level cargo shim, whose source and installer are tracked at `scripts/cargo-shim` and `scripts/install-cargo-shim`; `ci/rust-verification.toml` remains the policy source.
 - **Release builds require Zig** — `cargo-zigbuild` + Zig 0.15.2 are needed for cross-compilation to `aarch64-unknown-linux-gnu`.
-- **Python verification layer** — several lint/check commands go through `rust_verification.py` which wraps cargo; running cargo directly bypasses those checks.
+- **Python verification layer** — several lint/check commands go through `rust_verification.py` which wraps cargo; absolute-path cargo, cross-repo `--manifest-path` / `-C` invocations, daemon-managed PATHs without the shim directory, and toolchain-manager bypasses remain outside the accidental-use guard.
 - **`config/live.toml` and `config/live.local.toml` are gitignored** — the example template is `config/live.local.example.toml`.
 - **Reasonix context** — `REASONIX.md` is repo-shared agent context at the same level as `AGENTS.md` / `CLAUDE.md`; local AI tool config dirs (`.claude/`, `.gemini/`, `.opencode/`, `.codex/`, `.pi/`, `.agents/`, `.factory/`, etc.) are local state, not project docs.

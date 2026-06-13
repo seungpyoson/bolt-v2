@@ -259,7 +259,8 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 relative_roots: &[
                     "src/strategies/binary_oracle_edge_taker",
                     "src/bolt_v3_book_sizing.rs",
-                    "src/bolt_v3_executable_edge.rs",
+                    "src/bolt_v3_binary_outcome_edge.rs",
+                    "src/bolt_v3_executable_cost.rs",
                 ],
             },
             GatedSourceRoot {
@@ -428,4 +429,7 @@ def production_text_from_string(source: str) -> str:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     unittest.main()

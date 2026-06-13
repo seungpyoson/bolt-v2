@@ -242,6 +242,10 @@ mod tests {
     // Re-derived after follow-up cleanup separated sized executable-edge
     // evidence, probed executable fees at VWAP, coupled slippage/depth config,
     // labeled executable-edge Debug output, and named notional tolerance.
+    // Re-derived after splitting executable cost from binary outcome edge math
+    // and moving entry limit-notional guarding into shared submit admission.
+    // Re-derived after review cleanup single-sourced the cents-per-share unit
+    // conversion in shared numeric helpers.
     // Re-derived after adding the TOML-owned shadow-mode submit switch and
     // preserving decision evidence before skipped NT submits.
     // Re-derived after the shadow-submit test started seeding admission
@@ -251,6 +255,8 @@ mod tests {
     // Re-derived after skipped shadow exits retained the exit-pending latch.
     // Re-derived after shadow skipped submits stopped consuming live admission
     // capacity while still recording admission evidence.
+    // Re-derived after merging main's executable-edge module split and
+    // cents-per-share single-sourcing into the shadow-mode submit switch.
     const GOLDEN_STRATEGY_DIGEST: &str =
         "38c6703c997d928bfd2d2106c4aa1686ee9232e49799a15ed3c903e590397d40";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
@@ -261,8 +267,12 @@ mod tests {
     // Re-derived again after removing vestigial retired gate arming constructor
     // terminology from submit-admission construction.
     // Re-derived again after adding checked fee-inclusive admission arithmetic.
+    // Re-derived after moving entry limit-notional guarding into shared submit
+    // admission.
     // Re-derived again after adding observed admission decisions for shadow
     // submit skips that must not consume live capacity.
+    // Re-derived after merging main's shared submit-admission changes into the
+    // shadow-mode submit switch.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "a599017321ab11710d598bde5b3da95f5a43f861744f3ff9f0c8a6f78d30ef96";
 
@@ -375,7 +385,8 @@ mod tests {
             &[
                 "src/strategies/binary_oracle_edge_taker",
                 "src/bolt_v3_book_sizing.rs",
-                "src/bolt_v3_executable_edge.rs",
+                "src/bolt_v3_binary_outcome_edge.rs",
+                "src/bolt_v3_executable_cost.rs",
             ]
         );
     }

@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""Install the cargo policy shim and make zsh start with it first in PATH."""
+
+from __future__ import annotations
+
+import os
+import plistlib
+import shutil
+import stat
+import sys
+from pathlib import Path
+
+
+BEGIN = "# BEGIN bolt cargo guard"
+END = "# END bolt cargo guard"
+LEGACY_START = "_rust_verification_env_unset_args() {"
+LEGACY_CARGO_START = "cargo() {"
+NO_MISTAKES_LAUNCH_AGENT_GLOB = "com.kunchenguid.no-mistakes.daemon.*.plist"
+
+
+def quote(value: Path) -> str:
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
+    return f'"{escaped}"'
+
+
+def zshenv_path(home: Path | None = None) -> Path:
+    zdotdir = os.environ.get("ZDOTDIR")
+    if zdotdir:
+        return Path(zdotdir).expanduser() / ".zshenv"
+    if home is not None:
+        return home / ".zshenv"
+    try:
+        return Path.home() / ".zshenv"
+    except (RuntimeError, KeyError):
+        return Path("~/.zshenv").expanduser()
+
+
+def guard_block(install_dir: Path) -> str:
+    return "\n".join(
+        [
+            BEGIN,
+            "unfunction cargo 2>/dev/null || true",
+            f"export BOLT_CARGO_SHIM_DIR={quote(install_dir)}",
+            'case ":$PATH:" in',
+            '  *":$BOLT_CARGO_SHIM_DIR:"*) ;;',
+            '  *) export PATH="$BOLT_CARGO_SHIM_DIR:$PATH" ;;',
+            "esac",
+            END,
+            "",
+        ]
+    )
+
+
+def without_legacy_function_block(text: str) -> str:
+    lines = text.splitlines()
+    kept: list[str] = []
+    i = 0
+    while i < len(lines):
+        if lines[i] == LEGACY_START:
+            temp_i = i + 1
+            saw_cargo = False
+            found_end = False
+            while temp_i < len(lines):
+                line = lines[temp_i]
+                if line == LEGACY_CARGO_START:
+                    saw_cargo = True
+                temp_i += 1
+                if saw_cargo and line == "}":
+                    while temp_i < len(lines) and lines[temp_i] == "":
+                        temp_i += 1
+                    found_end = True
+                    break
+            if found_end:
+                i = temp_i
+                continue
+        kept.append(lines[i])
+        i += 1
+    stripped = "\n".join(kept).rstrip()
+    return f"{stripped}\n" if stripped else ""
+
+
+def without_existing_block(text: str) -> str:
+    lines = without_legacy_function_block(text).splitlines()
+    kept: list[str] = []
+    skipping = False
+    for line in lines:
+        if line == BEGIN:
+            skipping = True
+            continue
+        if skipping and line == END:
+            skipping = False
+            continue
+        if not skipping:
+            kept.append(line)
+    stripped = "\n".join(kept).rstrip()
+    return f"{stripped}\n\n" if stripped else ""
+
+
+def install_shim(source: Path, install_dir: Path) -> Path:
+    install_dir.mkdir(parents=True, exist_ok=True)
+    target = install_dir / "cargo"
+    shutil.copy2(source, target)
+    target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return target
+
+
+def atomic_write_bytes(path: Path, content: bytes) -> None:
+    try:
+        mode = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        mode = 0o644
+    temp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        with temp_path.open("wb") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        temp_path.chmod(mode)
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            temp_path.unlink()
+        except Exception:
+            pass
+        raise
+
+
+def update_zshenv(path: Path, install_dir: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_path = path.resolve() if path.is_symlink() else path
+    write_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing = write_path.read_text(encoding="utf-8")
+        mode = write_path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        existing = ""
+        mode = 0o644
+    content = without_existing_block(existing) + guard_block(install_dir)
+    temp_path = write_path.with_name(f".{write_path.name}.tmp-{os.getpid()}")
+    try:
+        with temp_path.open("w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        temp_path.chmod(mode)
+        os.replace(temp_path, write_path)
+    except Exception:
+        try:
+            temp_path.unlink()
+        except Exception:
+            pass
+        raise
+
+
+def launch_agents_dir(home: Path) -> Path:
+    return home / "Library" / "LaunchAgents"
+
+
+def no_mistakes_launch_agents(home: Path) -> list[Path]:
+    return sorted(launch_agents_dir(home).glob(NO_MISTAKES_LAUNCH_AGENT_GLOB))
+
+
+def path_with_shim_first(existing_path: str, install_dir: Path) -> str:
+    shim_dir = str(install_dir)
+    entries = [entry for entry in existing_path.split(os.pathsep) if entry and entry != shim_dir]
+    return os.pathsep.join([shim_dir, *entries])
+
+
+def update_no_mistakes_launch_agents(home: Path, install_dir: Path) -> list[Path]:
+    configured: list[Path] = []
+    for plist_path in no_mistakes_launch_agents(home):
+        try:
+            payload = plistlib.loads(plist_path.read_bytes())
+            env = payload.setdefault("EnvironmentVariables", {})
+            if not isinstance(env, dict):
+                raise ValueError("EnvironmentVariables must be a dictionary")
+            current_path = env.get("PATH")
+            if current_path is None or current_path == "":
+                print(
+                    f"Skipping no-mistakes LaunchAgent PATH update for {plist_path}: "
+                    "EnvironmentVariables.PATH is missing or empty.",
+                    file=sys.stderr,
+                )
+                continue
+            if not isinstance(current_path, str):
+                raise ValueError("EnvironmentVariables.PATH must be a string")
+            next_path = path_with_shim_first(current_path, install_dir)
+            if next_path != current_path:
+                env["PATH"] = next_path
+                atomic_write_bytes(plist_path, plistlib.dumps(payload))
+            configured.append(plist_path)
+        except Exception as exc:
+            raise ValueError(f"Failed to update no-mistakes LaunchAgent PATH for {plist_path}: {exc}") from None
+    return configured
+
+
+def main() -> int:
+    root = Path(__file__).resolve().parents[1]
+    source = root / "scripts" / "cargo-shim"
+    install_dir = Path(os.environ.get("BOLT_CARGO_SHIM_DIR", "~/.local/bin/bolt-cargo-shim")).expanduser()
+    try:
+        target = install_shim(source, install_dir)
+    except OSError as exc:
+        print(f"Failed to install cargo shim: {exc}", file=sys.stderr)
+        return 1
+    try:
+        home = Path.home()
+    except (RuntimeError, KeyError) as exc:
+        print(f"Failed to resolve home directory: {exc}", file=sys.stderr)
+        return 1
+    zshenv = zshenv_path(home)
+    try:
+        update_zshenv(zshenv, install_dir)
+    except OSError as exc:
+        print(f"Failed to update zsh startup: {exc}", file=sys.stderr)
+        return 1
+    try:
+        no_mistakes_plists = update_no_mistakes_launch_agents(home, install_dir)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"Installed cargo shim: {target}")
+    print(f"Updated zsh startup: {zshenv}")
+    for plist_path in no_mistakes_plists:
+        print(f"Updated no-mistakes LaunchAgent PATH: {plist_path}")
+    print("Restart or reconfigure long-running agent daemons after install; existing processes keep their old PATH.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

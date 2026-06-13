@@ -1,6 +1,6 @@
 //! Public API invariants for the backtesting vertical slice.
 
-use std::{fs, process::Command};
+use std::{fs, path::Path, process::Command};
 
 #[test]
 fn accepted_dataset_cannot_be_constructed_outside_source_proof_gate() {
@@ -68,10 +68,21 @@ backtesting-vertical-slice = {{ path = "{}" }}
     )
     .expect("write Cargo.toml");
     fs::write(temp.path().join("src/lib.rs"), source).expect("write lib.rs");
+    // Seed the probe with the crate's lockfile and resolve offline so the
+    // probe compiles the exact dependency tree the crate itself pins.
+    // Without this the probe re-resolves against live registry state, and an
+    // incompatible upstream release fails compilation before the gate under
+    // test is ever reached.
+    fs::copy(
+        Path::new(&crate_dir).join("Cargo.lock"),
+        temp.path().join("Cargo.lock"),
+    )
+    .expect("copy Cargo.lock");
 
     let output = Command::new(env!("CARGO"))
         .arg("check")
         .arg("--quiet")
+        .arg("--offline")
         .current_dir(temp.path())
         .env("CARGO_TARGET_DIR", temp.path().join("target"))
         .output()

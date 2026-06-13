@@ -160,7 +160,13 @@ bte-build: check-workspace require-rust-verification-owner
 check-aarch64: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- check --target {{target}} --locked
 
-source-fence: check-workspace require-rust-verification-owner
+verify-remote: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" verify-remote --repo "{{repo_root}}"
+
+ci-runner-minutes *args:
+    python3 scripts/ubicloud_runner_minutes.py {{args}}
+
+source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/test_verify_bolt_v3_runtime_literals.py
     python3 scripts/verify_bolt_v3_runtime_literals.py
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
@@ -171,8 +177,6 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_naming.py
     python3 scripts/test_verify_bolt_v3_dependency_direction.py
     python3 scripts/verify_bolt_v3_dependency_direction.py
-    git fetch -q origin main 2>/dev/null
-    python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
     python3 scripts/test_verify_bolt_v3_status_map_current.py
     python3 scripts/verify_bolt_v3_status_map_current.py
     python3 scripts/test_verify_bolt_v3_schema_current.py
@@ -184,12 +188,23 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/test_verify_runtime_capture_yaml.py
+    python3 scripts/test_lane_governor.py
+    python3 scripts/test_verify_lane_governance.py
+    python3 scripts/verify_lane_governance.py
+
+source-fence: source-fence-static
+    git fetch -q origin main 2>/dev/null
+    python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
     # Fresh CI runners need the pinned NT checkout before source-capture checks.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
     python3 scripts/verify_runtime_capture_yaml.py
     # #342 owns these canonical source-fence checks. Until #332 changes full
     # nextest ownership, `test` intentionally still duplicates them under `gate`.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_controlled_connect --test bolt_v3_production_entrypoint -- --nocapture
+
+# Cargo shim guard tests (pytest-based, unlike the self-running script tests)
+cargo-shim-tests:
+    python3 -m pytest scripts/test_cargo_shim.py -q
 
 require-live-root: check-workspace
     #!/usr/bin/env bash
@@ -225,7 +240,9 @@ ci-lint-workflow:
     [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
 
     github_automation_files=("${workflow_files[@]}" "${action_files[@]}")
-    rust_invocation_files=(justfile scripts/*.sh tests/*.sh "${github_automation_files[@]}")
+    repo_governance_files=()
+    [ -f .no-mistakes.yaml ] && repo_governance_files+=(.no-mistakes.yaml)
+    rust_invocation_files=(justfile "${repo_governance_files[@]}" scripts/*.sh tests/*.sh "${github_automation_files[@]}")
 
     if [ "${#github_automation_files[@]}" -eq 0 ]; then
         echo "No workflow or action files found — skipping"
@@ -245,10 +262,16 @@ ci-lint-workflow:
     if ! python3 scripts/test_find_same_sha_main_evidence.py; then
         failed=1
     fi
+    if ! python3 scripts/test_ubicloud_runner_minutes.py; then
+        failed=1
+    fi
     if ! python3 scripts/test_verify_ci_path_filters.py; then
         failed=1
     fi
     if ! python3 scripts/test_rust_verification.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_verify_remote.py; then
         failed=1
     fi
     if ! python3 scripts/test_command_understanding.py; then
@@ -373,3 +396,11 @@ setup:
     echo "Zig {{zig_version}} already installed"
 
     echo "Setup complete."
+
+# Create the CI runner debug SSH key in 1Password and publish SSH_PUBLIC_KEY to GitHub.
+ci-debug-ssh-bootstrap:
+    python3 scripts/sync_ci_debug_ssh_secret.py bootstrap
+
+# Publish the CI runner debug SSH public key from 1Password to GitHub Actions.
+ci-debug-ssh-sync:
+    python3 scripts/sync_ci_debug_ssh_secret.py sync

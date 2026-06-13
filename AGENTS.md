@@ -28,6 +28,17 @@ These repo-level rules are in addition to any higher-level agent instructions.
 8. **DO NOT REFERENCE BOLT V1** — `~/Projects/Claude/bolt/` is the old repo. Do not read from it, import from it, or depend on it. NT source is in the git cache at `~/.cargo/git/checkouts/nautilus_trader-*/` or on GitHub.
 9. **STRATEGIES PRODUCE INTENT ONLY** — strategy files may produce order intent and strategy-local signal state only. Execution admissibility, venue rules, fillability, rounding, minimum order size, fee-adjusted sizing, and submit gating must live in shared execution/admission modules built on NT APIs. Any change under `src/strategies/*` that handles submit mechanics is rejected unless explicitly approved as strategy-local signal logic.
 
+## Remote-First Rust Verification
+
+- Do not run local compile-heavy Rust verification by default: no local managed Rust test/build/clippy recipes through `just`, and no raw cargo subcommands refused by `ci/rust-verification.toml` `[local_compile_policy]`.
+- Use local non-compile gates for fast feedback: `just fmt-check`, `just deny`, `just ci-lint-workflow`, Python verifiers, and `just source-fence-static`.
+- For compile/test/clippy proof: commit, push, ensure the branch has an open or draft PR, then run `just verify-remote` and use exact-head PR CI evidence from Ubicloud/GitHub Actions.
+- `just verify-remote` waits for all reported PR checks on the exact head SHA, not a local subset of workflow jobs.
+- Human operator break-glass exists for exceptional local repro and live/operator lanes only. Agents must not use it as a normal verification path.
+- Enforcement boundary: repo tooling gates cooperative paths through `just`, `scripts/rust_verification.py`, and `.no-mistakes.yaml`; standard PATH `cargo ...` is guarded by the machine-level cargo shim, whose source and installer are tracked in this repo at `scripts/cargo-shim` and `scripts/install-cargo-shim`. The shim reads this repo's `ci/rust-verification.toml` `[local_compile_policy]`.
+- CPU-heavy local verifier lanes self-serialize: every `scripts/verify_*.py` / `scripts/test_*.py` entry point acquires the per-repo machine-level lane lock declared in `ci/rust-verification.toml` `[local_lane_policy]` before doing work. Concurrent local runs queue with stderr heartbeats and fail loud at the policy timeout; CI (`allowed_ci_env`) bypasses the lock; a holder that is a process ancestor passes through. Coverage drift is a CI failure via `scripts/verify_lane_governance.py` in `source-fence-static`.
+- Residual local bypasses remain outside the accidental-use guard: absolute-path cargo invocation, `rustup run <toolchain> cargo ...`, cross-repo invocations issued outside this repo such as `cargo --manifest-path <repo>/Cargo.toml ...` or `cargo -C <repo> ...`, already-running daemons with old environments, non-no-mistakes daemon managers whose `PATH` does not include the shim directory, processes that never load shell startup files, and direct `rustc` execution.
+
 ## Review Bar
 
 - Every unique substantive issue counts as a finding regardless of severity. Do not downgrade real issues into “just notes” or treat “tracked” as “resolved” unless the finding is actually fixed or the user explicitly waives it.

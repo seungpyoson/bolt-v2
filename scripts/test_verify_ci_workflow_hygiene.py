@@ -271,6 +271,17 @@ jobs:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           if-no-files-found: error
           retention-days: 1
+      - name: Publish nextest archive fingerprint
+        run: |
+          mkdir -p .nextest-archive-fingerprint
+          printf '%s\\n' "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}" > .nextest-archive-fingerprint/cache-key.txt
+      - name: Upload nextest archive fingerprint
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          path: .nextest-archive-fingerprint/cache-key.txt
+          if-no-files-found: error
+          retention-days: 30
 
   test-shards:
     name: nextest shard ${{ matrix.shard }} of 4
@@ -385,7 +396,7 @@ jobs:
           )
           echo "stage_dir=$stage_dir" >> "$GITHUB_OUTPUT"
       - name: Upload artifact
-        uses: actions/upload-artifact@example
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bolt-v2-binary
           path: |
@@ -643,12 +654,23 @@ refused_managed_commands = ["test", "clippy", "build"]
 refused_cargo_subcommands = ["b", "bench", "build", "c", "check", "clippy", "d", "doc", "fetch", "install", "nextest", "r", "run", "rustc", "t", "test", "zigbuild"]
 """
 
+LOCAL_LANE_POLICY_TOML = """
+[local_lane_policy]
+enabled = true
+allowed_ci_env = "GITHUB_ACTIONS"
+lock_dir = "/tmp/rust-verification-lanes"
+acquire_timeout_seconds = 1800
+heartbeat_seconds = 15
+poll_interval_seconds = 1
+"""
+
 BASE_RUST_VERIFICATION_POLICY = f"""
 schema_version = 2
 project_id = "bolt-v2"
 target_namespace = "bolt-v2"
 
 {LOCAL_COMPILE_POLICY_TOML}
+{LOCAL_LANE_POLICY_TOML}
 
 [remote_verification]
 poll_interval_seconds = 15
@@ -662,6 +684,7 @@ project_id = "backtesting-vertical-slice"
 target_namespace = "backtesting-vertical-slice"
 
 {LOCAL_COMPILE_POLICY_TOML}
+{LOCAL_LANE_POLICY_TOML}
 """
 
 
@@ -775,6 +798,61 @@ def assert_runner_contract_rejects_unmapped_workflow_jobs() -> None:
     errors = verifier.verify_github_actions_runner_contract({workflow_name: rogue})
     if not any("rogue" in error and "ci/github-actions-runners.toml" in error for error in errors):
         raise AssertionError(f"runner contract must reject unmapped workflow jobs, got: {errors}")
+
+
+def assert_runner_contract_requires_meter_workflows_for_managed_workflows() -> None:
+    verifier = load_verifier()
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
+        config_text = original_config.read_text()
+        config_path.write_text(
+            config_text.replace(
+                'included_workflows = ["ci", "backtester_ci", "ci_runner_debug"]',
+                'included_workflows = ["ci", "ci_runner_debug"]',
+            ),
+            encoding="utf-8",
+        )
+        verifier.DEFAULT_RUNNERS_CONFIG = config_path
+        try:
+            errors = verifier.verify_github_actions_runner_contract(
+                {".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml")}
+            )
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    if not any("meter.included_workflows" in error and "backtester_ci" in error for error in errors):
+        raise AssertionError(f"runner contract must reject unmanaged meter workflow drift, got: {errors}")
+
+
+def assert_runner_contract_requires_meter_api_limits() -> None:
+    verifier = load_verifier()
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
+        config_text = original_config.read_text()
+        config_path.write_text(
+            config_text.replace(
+                """
+[meter.api_limits]
+workflow_runs_per_page = 100
+run_jobs_per_page = 100
+run_artifacts_per_page = 100
+branch_pull_requests_per_page = 20
+draft_timeline_items = 100
+""",
+                "",
+            ),
+            encoding="utf-8",
+        )
+        verifier.DEFAULT_RUNNERS_CONFIG = config_path
+        try:
+            errors = verifier.verify_github_actions_runner_contract(
+                {".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml")}
+            )
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    if not any("meter.api_limits" in error for error in errors):
+        raise AssertionError(f"runner contract must reject missing meter api limits, got: {errors}")
 
 
 def assert_debug_workflow_rejects_non_manual_trigger() -> None:
@@ -943,6 +1021,9 @@ source-fence-static:
     # cargo fetch and scripts/verify_runtime_capture_yaml.py stay in source-fence
     # python3 scripts/rust_verification.py cargo --repo . -- test stays remote-only
     python3 scripts/test_verify_runtime_capture_yaml.py
+    python3 scripts/test_lane_governor.py
+    python3 scripts/test_verify_lane_governance.py
+    python3 scripts/verify_lane_governance.py
 
 source-fence: source-fence-static
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
@@ -959,6 +1040,19 @@ source-fence: source-fence-static
     bad_errors = verifier.verify_source_fence_static_recipe(active_bad)
     if not any("must not invoke wrapper-routed Cargo" in error for error in bad_errors):
         raise AssertionError(f"source-fence-static active wrapper cargo must still fail, got: {bad_errors}")
+
+    missing_lane_check = justfile_text.replace("    python3 scripts/verify_lane_governance.py\n", "")
+    missing_errors = verifier.verify_source_fence_static_recipe(missing_lane_check)
+    if not any("must run python3 scripts/verify_lane_governance.py" in error for error in missing_errors):
+        raise AssertionError(f"source-fence-static must require lane governance meta-check, got: {missing_errors}")
+
+    commented_lane_test = justfile_text.replace(
+        "    python3 scripts/test_lane_governor.py",
+        "    # python3 scripts/test_lane_governor.py",
+    )
+    commented_errors = verifier.verify_source_fence_static_recipe(commented_lane_test)
+    if not any("must run python3 scripts/test_lane_governor.py" in error for error in commented_errors):
+        raise AssertionError(f"source-fence-static comments must not satisfy lane test wiring, got: {commented_errors}")
 
 
 def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
@@ -3513,6 +3607,21 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"s3api get-object raw-storage drift was silent: {repo_errors!r}")
 
 
+def assert_cargo_named_just_recipe_headers_are_not_raw_cargo_commands() -> None:
+    verifier = load_verifier()
+    errors = verifier.verify_repo_automation_texts(
+        {
+            "justfile": (
+                "cargo-shim-tests:\n"
+                "    python3 -m pytest scripts/test_cargo_shim.py -q\n"
+            )
+        }
+    )
+    expected = "repo automation raw Cargo must use managed rust_verification wrapper"
+    if any(expected in error for error in errors):
+        raise AssertionError(f"cargo-named just recipe header was treated as raw cargo: {errors!r}")
+
+
 def assert_ci_lint_runs_rust_verification_cache_retention_tests() -> None:
     justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     expected = "python3 scripts/test_rust_verification_cache_retention.py"
@@ -3561,6 +3670,7 @@ def main() -> int:
     assert_pin_consistency_rejects_mismatched_quotes()
     assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action()
     assert_v6_red_raw_storage_checks_all_ci_automation()
+    assert_cargo_named_just_recipe_headers_are_not_raw_cargo_commands()
     assert_v6_red_yaml_anchor_jobs_do_not_hide_raw_storage()
     assert_v6_red_yaml_anchor_steps_do_not_hide_raw_storage()
     assert_v6_red_yaml_steps_aliases_are_rejected()
@@ -4098,6 +4208,71 @@ def main() -> int:
             BASE_WORKFLOW,
             "      - name: Upload nextest archive\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n",
             "",
+        ),
+    )
+    assert_error(
+        "actions/upload-artifact must be pinned to a 40-character SHA",
+        replace_once(
+            BASE_WORKFLOW,
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "uses: actions/upload-artifact@v7",
+        ),
+    )
+    assert_error(
+        "actions/upload-artifact must be pinned to a 40-character SHA",
+        replace_once(
+            BASE_WORKFLOW,
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "uses: actions/upload-artifact@v7",
+        )
+        .replace(
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "PINNED_UPLOAD_ARTIFACT_PLACEHOLDER",
+            1,
+        )
+        .replace(
+            "uses: actions/upload-artifact@v7",
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            1,
+        )
+        .replace(
+            "PINNED_UPLOAD_ARTIFACT_PLACEHOLDER",
+            "uses: actions/upload-artifact@v7",
+            1,
+        ),
+    )
+    assert_error(
+        "actions/upload-artifact must be pinned to a 40-character SHA",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Upload artifact\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "      - name: Upload artifact\n        uses: actions/upload-artifact@v7",
+        ),
+    )
+    assert_error(
+        "test-archive must publish nextest archive fingerprint",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Publish nextest archive fingerprint
+        run: |
+          mkdir -p .nextest-archive-fingerprint
+          printf '%s\\n' "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}" > .nextest-archive-fingerprint/cache-key.txt
+      - name: Upload nextest archive fingerprint
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          path: .nextest-archive-fingerprint/cache-key.txt
+          if-no-files-found: error
+          retention-days: 30
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive cache and fingerprint keys must match",
+        BASE_WORKFLOW.replace(
+            "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock'",
+            "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('extra-input.txt', 'Cargo.lock'",
         ),
     )
     assert_error(
@@ -5483,6 +5658,8 @@ def main() -> int:
     assert_v6_red_workflow_policy_gaps()
     assert_runner_contract_rejects_missing_and_extra_jobs()
     assert_runner_contract_rejects_unmapped_workflow_jobs()
+    assert_runner_contract_requires_meter_workflows_for_managed_workflows()
+    assert_runner_contract_requires_meter_api_limits()
     assert_debug_workflow_rejects_non_manual_trigger()
     assert_debug_workflow_checks_each_ssh_runner_step()
     assert_bootstrap_uses_onepassword_key_generation()
@@ -5512,4 +5689,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     sys.exit(main())

@@ -59,6 +59,19 @@ clippy = "github_hosted"
 test = "github_hosted"
 gate = "github_hosted"
 
+[meter]
+fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
+fingerprint_workflow = "ci"
+debug_workflow = "ci_runner_debug"
+included_workflows = ["ci", "backtester_ci", "ci_runner_debug"]
+
+[meter.api_limits]
+workflow_runs_per_page = 100
+run_jobs_per_page = 100
+run_artifacts_per_page = 100
+branch_pull_requests_per_page = 20
+draft_timeline_items = 100
+
 [ci_runner_debug]
 ssh_wait_minutes_variable = "CI_DEBUG_SSH_WAIT_MINUTES"
 ssh_public_key_secret = "SSH_PUBLIC_KEY"

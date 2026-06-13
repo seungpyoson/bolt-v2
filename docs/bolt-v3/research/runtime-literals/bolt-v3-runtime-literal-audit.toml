@@ -519,6 +519,14 @@ reason = "This is an existing taker strategy config schema field name; the value
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"sizing_ev_reference_bps"'''
+context = '''"sizing_ev_reference_bps",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name; the EV sizing reference value comes from bolt-v3 TOML (#618)."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"rotating_market_family"'''
 context = '''"rotating_market_family",'''
 classification = "strategy_runtime_schema_field"
@@ -2749,20 +2757,20 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the fair-probability formula, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_taker_signal.rs"
+path = "src/bolt_v3_taker_updown_signal.rs"
 kind = "string"
 literal = '''"down"'''
 context = '''OutcomeSide::Down => "down",'''
 classification = "strategy_evidence_outcome_side_label"
-reason = "This is a stable evidence label for the binary outcome side, emitted by the shared taker-signal decision math (bolt_v3_taker_signal::outcome_side_evidence_label); it records provenance and does not configure trading behavior."
+reason = "This is a stable evidence label for the binary outcome side, emitted by the shared taker-signal decision math (bolt_v3_taker_updown_signal::outcome_side_evidence_label); it records provenance and does not configure trading behavior."
 
 [[allowed]]
-path = "src/bolt_v3_taker_signal.rs"
+path = "src/bolt_v3_taker_updown_signal.rs"
 kind = "string"
 literal = '''"up"'''
 context = '''OutcomeSide::Up => "up",'''
 classification = "strategy_evidence_outcome_side_label"
-reason = "This is a stable evidence label for the binary outcome side, emitted by the shared taker-signal decision math (bolt_v3_taker_signal::outcome_side_evidence_label); it records provenance and does not configure trading behavior."
+reason = "This is a stable evidence label for the binary outcome side, emitted by the shared taker-signal decision math (bolt_v3_taker_updown_signal::outcome_side_evidence_label); it records provenance and does not configure trading behavior."
 
 [[allowed]]
 path = "src/venue_contract.rs"
@@ -8195,6 +8203,22 @@ literal = '''"src/bolt_v3_executable_cost.rs"'''
 context = '''"src/bolt_v3_executable_cost.rs",'''
 classification = '''gated_source_registry_relative_root'''
 reason = '''Repo-relative root path of the shared executable-cost source included in the binary-oracle strategy source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"src/bolt_v3_sizing.rs"'''
+context = '''"src/bolt_v3_sizing.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared strategy-agnostic sizing source included in the binary-oracle strategy source set by the #623 review round; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"src/bolt_v3_taker_updown_signal.rs"'''
+context = '''"src/bolt_v3_taker_updown_signal.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the taker up/down signal source included in the binary-oracle strategy source set by the #623 review round; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''

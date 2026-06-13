@@ -30,6 +30,8 @@ STRATEGY_SOURCE_ROOTS = (
     "src/bolt_v3_book_sizing.rs",
     "src/bolt_v3_binary_outcome_edge.rs",
     "src/bolt_v3_executable_cost.rs",
+    "src/bolt_v3_sizing.rs",
+    "src/bolt_v3_taker_updown_signal.rs",
 )
 STRATEGY_SOURCE_ROOT = STRATEGY_SOURCE_ROOTS[0]
 SUBMIT_ADMISSION_SOURCE_ROOTS = ("src/bolt_v3_submit_admission.rs",)

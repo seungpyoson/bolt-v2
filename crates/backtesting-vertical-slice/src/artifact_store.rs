@@ -58,6 +58,7 @@ pub struct CreateOnlyProbeConfig {
 pub struct ArtifactSubpaths {
     pub raw: String,
     pub nt_catalog: String,
+    pub nt_catalog_synthetic_proof: String,
     pub source_proofs: String,
     pub backtests: String,
     pub artifact_index: String,
@@ -159,6 +160,10 @@ impl ArtifactStoreConfig {
         let subpaths = ArtifactSubpaths {
             raw: normalize_subpath("subpaths.raw", &self.subpaths.raw)?,
             nt_catalog: normalize_subpath("subpaths.nt_catalog", &self.subpaths.nt_catalog)?,
+            nt_catalog_synthetic_proof: normalize_subpath(
+                "subpaths.nt_catalog_synthetic_proof",
+                &self.subpaths.nt_catalog_synthetic_proof,
+            )?,
             source_proofs: normalize_subpath(
                 "subpaths.source_proofs",
                 &self.subpaths.source_proofs,
@@ -254,6 +259,23 @@ impl ResolvedArtifactRoot {
             &format!("projection={catalog_projection_id}"),
             "",
         ])
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if `proof_run_id` is not a valid artifact path token.
+    pub fn nt_catalog_synthetic_proof_root(&self, proof_run_id: &str) -> Result<String> {
+        ensure_path_token(
+            "nt_catalog_synthetic_proof_run_id",
+            proof_run_id,
+            PathTokenMode::NoEquals,
+        )?;
+        Ok(self.join([
+            self.subpaths.nt_catalog_synthetic_proof.as_str(),
+            "v1",
+            &format!("proof={proof_run_id}"),
+            "",
+        ]))
     }
 
     #[must_use]
@@ -1742,6 +1764,7 @@ fn ensure_unique_subpaths(subpaths: &ArtifactSubpaths) -> Result<()> {
     let values = [
         subpaths.raw.as_str(),
         subpaths.nt_catalog.as_str(),
+        subpaths.nt_catalog_synthetic_proof.as_str(),
         subpaths.source_proofs.as_str(),
         subpaths.backtests.as_str(),
         subpaths.artifact_index.as_str(),
@@ -1762,6 +1785,7 @@ fn ensure_probe_prefix_is_private(
     let values = [
         subpaths.raw.as_str(),
         subpaths.nt_catalog.as_str(),
+        subpaths.nt_catalog_synthetic_proof.as_str(),
         subpaths.source_proofs.as_str(),
         subpaths.backtests.as_str(),
         subpaths.artifact_index.as_str(),

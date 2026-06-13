@@ -165,6 +165,7 @@ copy_dest_object_name = "copy-dest"
 [artifact_store.subpaths]
 raw = "raw"
 nt_catalog = "nt-catalog"
+nt_catalog_synthetic_proof = "nt-catalog-synthetic-proof"
 source_proofs = "source-proofs"
 backtests = "backtests"
 artifact_index = "artifact-index"

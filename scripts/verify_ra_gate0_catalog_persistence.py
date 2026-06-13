@@ -39,6 +39,9 @@ ARTIFACT_STORE_REQUIRED = (
     "pub struct CreateOnlyProbeTranscript",
     "copy_source_object_name",
     "copy_dest_object_name",
+    "nt_catalog_synthetic_proof",
+    "nt_catalog_synthetic_proof_root",
+    "subpaths.nt_catalog_synthetic_proof",
     "pub async fn persist_catalog_projection_for_source_binding",
     "pub async fn probe_create_only",
     "duplicate_create_rejected",
@@ -67,6 +70,7 @@ TEST_REQUIRED = (
     "persists_catalog_projection_directory_with_create_only_dispatch",
     "rejects_duplicate_catalog_projection_bytes",
     "operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri",
+    "resolves_synthetic_nt_catalog_proof_root_outside_canonical_catalog",
     "run_from_run_spec_with_artifact_store",
     "canonical_catalog_uri",
     "persisted_catalog_objects",
@@ -86,6 +90,8 @@ RUN_SPEC_REQUIRED = (
     "object_name",
     "copy_source_object_name",
     "copy_dest_object_name",
+    "nt_catalog_synthetic_proof",
+    "nt-catalog-synthetic-proof",
 )
 
 

@@ -48,6 +48,10 @@ pub struct CreateOnlyProbeTranscript {
 
 pub struct ArtifactStoreConfig {
     pub s3: S3ArtifactStoreConfig,
+    pub subpaths: ArtifactSubpaths,
+}
+pub struct ArtifactSubpaths {
+    pub nt_catalog_synthetic_proof: String,
 }
 
 impl ArtifactStoreConfig {
@@ -74,6 +78,10 @@ impl S3ArtifactStoreConfig {
 }
 
 fn create_only_probe_uri() {}
+
+fn nt_catalog_synthetic_proof_root() {
+    let _root = subpaths.nt_catalog_synthetic_proof;
+}
 
 impl CreateOnlyArtifactWriter {
     pub async fn probe_create_only() {
@@ -131,6 +139,8 @@ fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
     let _create_only_probe_transcript = artifacts.create_only_probe_transcript;
     let _nt_catalog_uri = artifacts.output.contract.artifact_uris.nt_catalog_uri;
 }
+
+fn resolves_synthetic_nt_catalog_proof_root_outside_canonical_catalog() {}
 """
 
 
@@ -179,6 +189,9 @@ prefix = ".writer-probe"
 object_name = "sentinel"
 copy_source_object_name = "copy-source"
 copy_dest_object_name = "copy-dest"
+
+[artifact_store.subpaths]
+nt_catalog_synthetic_proof = "nt-catalog-synthetic-proof"
 """,
     )
 

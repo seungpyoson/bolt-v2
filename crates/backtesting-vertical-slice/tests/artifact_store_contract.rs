@@ -72,6 +72,7 @@ copy_dest_object_name = "copy-dest"
 [subpaths]
 raw = "raw"
 nt_catalog = "nt-catalog"
+nt_catalog_synthetic_proof = "nt-catalog-synthetic-proof"
 source_proofs = "source-proofs"
 backtests = "backtests"
 artifact_index = "artifact-index"
@@ -223,6 +224,33 @@ fn resolves_nt_catalog_projection_root_from_single_toml_artifact_root() {
     assert_eq!(
         root.latest_pointer(ArtifactKind::Backtests),
         "s3://bolt-ra-artifacts/prod/artifact-index/v1/pointers/kind=backtests/latest.json"
+    );
+}
+
+#[test]
+fn resolves_synthetic_nt_catalog_proof_root_outside_canonical_catalog() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+
+    let synthetic = root
+        .nt_catalog_synthetic_proof_root("s3-proof-run-123")
+        .expect("valid synthetic proof root");
+
+    assert_eq!(
+        synthetic,
+        "s3://bolt-ra-artifacts/prod/nt-catalog-synthetic-proof/v1/proof=s3-proof-run-123/"
+    );
+    let canonical_catalog_root = root.typed_root(ArtifactKind::NtCatalog);
+    assert!(
+        !synthetic.starts_with(canonical_catalog_root.as_str()),
+        "{synthetic}"
+    );
+    assert!(
+        !synthetic.contains("/nt-catalog/v1/"),
+        "synthetic proof root must be disjoint from canonical catalog roots: {synthetic}"
+    );
+    assert!(
+        root.nt_catalog_synthetic_proof_root("bad/proof").is_err(),
+        "synthetic proof ids must be path tokens"
     );
 }
 

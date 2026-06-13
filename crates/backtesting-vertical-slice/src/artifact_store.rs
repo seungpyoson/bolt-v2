@@ -1108,6 +1108,66 @@ impl<'a> ArtifactIndexWriter<'a> {
 
     /// # Errors
     ///
+    /// Returns an error if the event object exists but cannot be read, decoded,
+    /// or validated against the requested kind and event id.
+    pub async fn read_event(
+        &self,
+        artifact_root: &ResolvedArtifactRoot,
+        kind: ArtifactKind,
+        event_id: &str,
+    ) -> Result<Option<ArtifactIndexEvent>> {
+        ensure_path_token("event_id", event_id, PathTokenMode::AllowEquals)?;
+        let uri = artifact_root.index_event_uri(kind, event_id);
+        let path = artifact_root.object_path_for_uri(&uri)?;
+        let object = match self.store.get(&path).await {
+            Ok(object) => object,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
+            Err(err) => {
+                return Err(err).with_context(|| format!("read artifact index event {path}"));
+            }
+        };
+        let bytes = object
+            .bytes()
+            .await
+            .with_context(|| format!("read artifact index event bytes {path}"))?;
+        let event: ArtifactIndexEvent =
+            serde_json::from_slice(bytes.as_ref()).context("decode artifact index event")?;
+        ensure!(
+            event.artifact_kind == kind,
+            "artifact index event kind does not match requested kind"
+        );
+        ensure!(
+            event.event_id == event_id,
+            "artifact index event id does not match requested id"
+        );
+        event.validate(artifact_root)?;
+        Ok(Some(event))
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the latest snapshot cannot be read or verified.
+    pub async fn read_committed_row(
+        &self,
+        artifact_root: &ResolvedArtifactRoot,
+        kind: ArtifactKind,
+        artifact_id: &str,
+    ) -> Result<Option<ArtifactIndexSnapshotRow>> {
+        validate_artifact_id(artifact_id)?;
+        let Some(latest) = self.read_latest_pointer(artifact_root, kind).await? else {
+            return Ok(None);
+        };
+        let snapshot = self
+            .read_snapshot_for_pointer(artifact_root, &latest.pointer)
+            .await?;
+        Ok(snapshot
+            .rows
+            .into_iter()
+            .find(|row| row.artifact_id == artifact_id))
+    }
+
+    /// # Errors
+    ///
     /// Returns an error if latest is missing, hash-invalid, or points outside
     /// the configured artifact root.
     pub async fn read_verified_latest_snapshot(

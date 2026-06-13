@@ -508,6 +508,70 @@ async fn artifact_index_commit_appends_audit_epoch() {
 }
 
 #[tokio::test]
+async fn artifact_index_keeps_uncommitted_events_out_of_normal_discovery() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let writer = ArtifactIndexWriter::new(&store);
+    let committed = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::BinaryOption, "run-040"),
+        "event-040",
+        "run-040",
+    );
+    writer
+        .commit_event(
+            &root,
+            commit_plan(committed, &["snapshot-040"], "2026-06-13T00:00:05Z"),
+        )
+        .await
+        .expect("committed event reaches latest snapshot");
+
+    let staged = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::BinaryOption, "run-041"),
+        "event-041",
+        "run-041",
+    );
+    writer
+        .put_event(&root, &staged)
+        .await
+        .expect("staged event can be written as audit input");
+
+    let stored_event = writer
+        .read_event(&root, ArtifactKind::Backtests, "event-041")
+        .await
+        .expect("staged event read succeeds")
+        .expect("staged event exists");
+    assert_eq!(stored_event.commit_state, ArtifactIndexCommitState::Staged);
+
+    assert!(
+        writer
+            .read_committed_row(&root, ArtifactKind::Backtests, "run-041")
+            .await
+            .expect("committed row lookup succeeds")
+            .is_none()
+    );
+    let committed_row = writer
+        .read_committed_row(&root, ArtifactKind::Backtests, "run-040")
+        .await
+        .expect("committed row lookup succeeds")
+        .expect("committed row exists");
+    assert_eq!(
+        committed_row.commit_state,
+        ArtifactIndexCommitState::Committed
+    );
+
+    let latest = writer
+        .read_verified_latest_snapshot(&root, ArtifactKind::Backtests)
+        .await
+        .expect("latest snapshot verifies");
+    let artifact_ids = latest
+        .rows
+        .iter()
+        .map(|row| row.artifact_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(artifact_ids, vec!["run-040"]);
+}
+
+#[tokio::test]
 async fn artifact_index_writer_rejects_consumer_mutation_for_unowned_kind() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let store = InMemory::new();

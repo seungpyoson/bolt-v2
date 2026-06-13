@@ -537,6 +537,7 @@ pub struct PersistedCatalogProjectionObject {
     pub uri: String,
     pub sha256: String,
     pub byte_len: usize,
+    pub create_only_write: CreateOnlyWriteDisposition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -544,6 +545,13 @@ pub struct PersistedCatalogProjection {
     pub catalog_root_uri: String,
     pub binding: CatalogProjectionBinding,
     pub objects: Vec<PersistedCatalogProjectionObject>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CreateOnlyWriteDisposition {
+    Created,
+    AlreadyExistedSamePayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -637,14 +645,15 @@ pub async fn persist_catalog_projection_for_source_binding(
             fs::read(&file_path).with_context(|| format!("read {}", file_path.display()))?;
         let sha256 = sha256_bytes(&payload);
         let byte_len = payload.len();
-        writer
-            .put_create_idempotent(&object_path, payload)
+        let (_version, create_only_write) = writer
+            .put_create_idempotent_with_disposition(&object_path, payload)
             .await
             .with_context(|| format!("persist catalog object {uri}"))?;
         objects.push(PersistedCatalogProjectionObject {
             uri,
             sha256,
             byte_len,
+            create_only_write,
         });
     }
     objects.sort_by(|left, right| left.uri.cmp(&right.uri));
@@ -793,12 +802,27 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         path: &ObjectPath,
         payload: Vec<u8>,
     ) -> Result<UpdateVersion> {
+        let (version, _disposition) = self
+            .put_create_idempotent_with_disposition(path, payload)
+            .await?;
+        Ok(version)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the object exists with different bytes or the object
+    /// store rejects create-only semantics.
+    pub async fn put_create_idempotent_with_disposition(
+        &self,
+        path: &ObjectPath,
+        payload: Vec<u8>,
+    ) -> Result<(UpdateVersion, CreateOnlyWriteDisposition)> {
         match self
             .store
             .put_opts(path, payload.clone().into(), PutMode::Create.into())
             .await
         {
-            Ok(result) => Ok(result.into()),
+            Ok(result) => Ok((result.into(), CreateOnlyWriteDisposition::Created)),
             Err(object_store::Error::AlreadyExists { .. }) => {
                 let existing = self
                     .store
@@ -817,7 +841,10 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
                     existing_bytes.as_ref() == payload.as_slice(),
                     "create-only object {path} already exists with different payload"
                 );
-                Ok(version)
+                Ok((
+                    version,
+                    CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
+                ))
             }
             Err(err) => Err(err).with_context(|| format!("create-only put {path}")),
         }

@@ -87,6 +87,15 @@ impl CatalogDispatchConfig {
     pub fn catalog_root_for(&self) {}
 }
 
+pub enum CreateOnlyWriteDisposition {
+    Created,
+    AlreadyExistedSamePayload,
+}
+
+pub struct PersistedCatalogProjectionObject {
+    pub create_only_write: CreateOnlyWriteDisposition,
+}
+
 impl CreateOnlyArtifactWriter {
     pub async fn probe_create_only() {
         let _duplicate_create_rejected = true;
@@ -101,10 +110,15 @@ pub async fn persist_catalog_projection_for_source_binding() {
     pub binding: CatalogProjectionBinding,
     let _persisted = PersistedCatalogProjection {
         binding,
+        objects: vec![PersistedCatalogProjectionObject {
+            create_only_write: CreateOnlyWriteDisposition::Created,
+        }],
     };
     let writer = CreateOnlyArtifactWriter::new(store);
     let bytes = fs::read(path)?;
-    writer.put_create_idempotent(path, bytes).await?;
+    writer.put_create_idempotent(path, bytes.clone()).await?;
+    writer.put_create_idempotent_with_disposition(path, bytes).await?;
+    let _already_exists = CreateOnlyWriteDisposition::AlreadyExistedSamePayload;
 }
 """
 
@@ -282,6 +296,9 @@ fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
     let _persisted_source_binding = persisted.binding.source_binding;
     let _persisted_market_structure = persisted.binding.market_structure_fixture;
     let _persisted_projection_id = persisted.binding.catalog_projection_id;
+    let _created = CreateOnlyWriteDisposition::Created;
+    let _already_existed = CreateOnlyWriteDisposition::AlreadyExistedSamePayload;
+    let _create_only_write = persisted.objects[0].create_only_write;
     let _create_only_probe_transcript = artifacts.create_only_probe_transcript;
     let _nt_catalog_uri = artifacts.output.contract.artifact_uris.nt_catalog_uri;
 }

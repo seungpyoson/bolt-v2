@@ -13,7 +13,7 @@ use backtesting_vertical_slice::{
         ArtifactIndexWriteAuthority, ArtifactIndexWriter, ArtifactKind, ArtifactLifecycleState,
         ArtifactLineageRef, ArtifactStorageProfile, ArtifactStoreConfig, CatalogDispatchConfig,
         CatalogProjectionBinding, CreateOnlyArtifactWriter, CreateOnlyProbeTranscript,
-        ResolvedArtifactRoot, StoredArtifactIndexPointer,
+        CreateOnlyWriteDisposition, ResolvedArtifactRoot, StoredArtifactIndexPointer,
         persist_catalog_projection_for_source_binding,
     },
     nt_catalog_capability::{
@@ -671,6 +671,13 @@ async fn persists_catalog_projection_directory_with_create_only_dispatch() {
         persisted
             .objects
             .iter()
+            .all(|object| object.create_only_write == CreateOnlyWriteDisposition::Created),
+        "first catalog projection persist must record create-only object creation"
+    );
+    assert!(
+        persisted
+            .objects
+            .iter()
             .any(|object| object.uri.ends_with("/metadata.json"))
     );
     let catalog_object = persisted
@@ -690,6 +697,10 @@ async fn persists_catalog_projection_directory_with_create_only_dispatch() {
         .expect("catalog object bytes");
     assert_eq!(stored.as_ref(), b"trade-ticks");
     assert_eq!(catalog_object.byte_len, b"trade-ticks".len());
+    assert_eq!(
+        catalog_object.create_only_write,
+        CreateOnlyWriteDisposition::Created
+    );
 }
 
 #[tokio::test]
@@ -717,6 +728,23 @@ async fn rejects_duplicate_catalog_projection_bytes() {
     )
     .await
     .expect("first catalog persist");
+    let idempotent = persist_catalog_projection_for_source_binding(
+        &store,
+        &root,
+        &dispatch,
+        "binary-official",
+        temp.path(),
+    )
+    .await
+    .expect("same catalog bytes are idempotent");
+    assert!(
+        idempotent
+            .objects
+            .iter()
+            .all(|object| object.create_only_write
+                == CreateOnlyWriteDisposition::AlreadyExistedSamePayload),
+        "same-payload create-only conflicts must be recorded as idempotent, not rewritten"
+    );
     fs::write(&catalog_file, b"second").expect("second catalog data");
 
     let err = persist_catalog_projection_for_source_binding(
@@ -792,6 +820,13 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     assert!(
         !artifacts.persisted_catalog_objects.is_empty(),
         "operator must persist projected catalog objects through artifact-store dispatch"
+    );
+    assert!(
+        artifacts
+            .persisted_catalog_objects
+            .iter()
+            .all(|object| object.create_only_write == CreateOnlyWriteDisposition::Created),
+        "fresh operator artifact-store run must record create-only object creation"
     );
 
     let contract_json = fs::read_to_string(&artifacts.contract_path).expect("read contract");

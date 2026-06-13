@@ -5790,6 +5790,8 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
 GATE_TAG_REUSE_CONDITION = '"$policy_path" == "tag_reuse"'
 GATE_FULL_CONDITION = '"$policy_path" == "full"'
 GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
+GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}\""""
+GATE_DEFER_CONTEXT_FAILURE_CONDITION = '"$defer_run_context" != "true"'
 GATE_DEFERRED_NAME_EXPRESSION = """name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
@@ -5921,15 +5923,20 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
         errors.append("gate must read ci_policy_path")
     if 'full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"' not in gate_text:
         errors.append("gate must read full_ci_deferred")
+    if GATE_DEFER_RUN_CONTEXT_ASSIGNMENT not in gate_text:
+        errors.append("gate must compute deferred draft PR run context")
     if 'ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"' not in gate_text:
         errors.append("gate must read ignore_emit_failure only for ci-provenance-emit")
     if not branch_exits_reachable(gate_text, "if", '"${{ needs.ci-policy.result }}" != "success"'):
         errors.append("gate must check needs.ci-policy.result")
     if not branch_exists(gate_text, "if", GATE_TAG_REUSE_CONDITION):
         errors.append("gate must branch on ci_policy_path tag_reuse")
-    defer_body = branch_body(gate_text, "if", GATE_DEFER_CONDITION)
+    defer_sections = top_level_if_body_and_remainder(gate_text, GATE_DEFER_CONDITION)
+    defer_body = defer_sections[0] if defer_sections is not None else None
     if defer_body is None or "full CI deferred for draft PR" not in defer_body or not body_exits_zero(defer_body):
         errors.append("gate must pass deferred full CI without failing stale draft checks")
+    if defer_body is None or not branch_exits_reachable(defer_body, "if", GATE_DEFER_CONTEXT_FAILURE_CONDITION):
+        errors.append("gate must fail deferred policy outside deferred draft PR context")
     if not branch_exists(gate_text, "if", GATE_FULL_CONDITION):
         errors.append("gate must branch on ci_policy_path full")
     emit_failure_body = branch_body(

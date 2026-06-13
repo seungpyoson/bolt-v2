@@ -26,6 +26,17 @@ GATE_NAME = """name: >-
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
           && 'gate-deferred'
           || 'gate' }}"""
+GATE_DEFER_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}\""""
+GATE_DEFER_CONTEXT_GUARD = """            if [[ "$defer_run_context" != "true" ]]; then
+              echo "deferred CI policy outside deferred draft PR context"
+              exit 1
+            fi
+"""
+GATE_DEFER_BLOCK = f"""          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
+{GATE_DEFER_CONTEXT_GUARD}            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
+            exit 0
+          fi
+"""
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
@@ -669,7 +680,12 @@ jobs:
           if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
             exit 1
           fi
+          defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}"
           if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
+            if [[ "$defer_run_context" != "true" ]]; then
+              echo "deferred CI policy outside deferred draft PR context"
+              exit 1
+            fi
             echo "full CI deferred for draft PR; run just verify-remote or mark ready"
             exit 0
           fi
@@ -1347,19 +1363,23 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
         ),
         (
             "gate must pass deferred full CI without failing stale draft checks",
-            replace_once(
-                workflow,
-                '          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then\n            echo "full CI deferred for draft PR; run just verify-remote or mark ready"\n            exit 0\n          fi\n',
-                "",
-            ),
+            replace_once(workflow, GATE_DEFER_BLOCK, ""),
         ),
         (
             "gate must pass deferred full CI without failing stale draft checks",
-            replace_once(
-                workflow,
-                '          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then\n            echo "full CI deferred for draft PR; run just verify-remote or mark ready"\n            exit 0\n          fi\n',
-                '          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then\n            echo "full CI deferred for draft PR; run just verify-remote or mark ready"\n            exit 1\n          fi\n',
-            ),
+            replace_once(workflow, GATE_DEFER_BLOCK, GATE_DEFER_BLOCK.replace("            exit 0\n", "            exit 1\n")),
+        ),
+        (
+            "gate must compute deferred draft PR run context",
+            replace_once(workflow, f"          {GATE_DEFER_CONTEXT_ASSIGNMENT}\n", ""),
+        ),
+        (
+            "gate must fail deferred policy outside deferred draft PR context",
+            replace_once(workflow, GATE_DEFER_CONTEXT_GUARD, ""),
+        ),
+        (
+            "gate must fail deferred policy outside deferred draft PR context",
+            replace_once(workflow, '"$defer_run_context" != "true"', '"$defer_run_context" == "true"'),
         ),
         (
             "gate must branch on ci_policy_path full",

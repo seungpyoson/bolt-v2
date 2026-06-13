@@ -1124,6 +1124,13 @@ check_name = "test"
             "ci_provenance.policy.unknown_event must be full",
             valid.replace('unknown_event = "full"', 'unknown_event = "defer"'),
         ),
+        (
+            "ci_provenance.policy has unexpected keys",
+            valid.replace(
+                "[ci_provenance.policy.override]",
+                'unexpected_policy_row = "defer"\n\n[ci_provenance.policy.override]',
+            ),
+        ),
     ]
     for fragment, config_text in cases:
         error = runner_config_load_error(config_text)

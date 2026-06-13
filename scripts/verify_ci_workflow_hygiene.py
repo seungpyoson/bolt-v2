@@ -7037,6 +7037,11 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
         )
 
     policy = require_config_table(ci_provenance, "policy", "ci_provenance")
+    unexpected_policy_keys = set(policy) - set(CI_PROVENANCE_POLICY_ROWS) - {"override"}
+    if unexpected_policy_keys:
+        raise ValueError(
+            f"ci_provenance.policy has unexpected keys: {sorted(unexpected_policy_keys)!r}"
+        )
     for row in CI_PROVENANCE_POLICY_ROWS:
         value = policy.get(row)
         if value not in CI_PROVENANCE_POLICY_VALUES:

@@ -40,6 +40,7 @@ ustr = "1.1.0"
 zip = { version = "=0.6.6", default-features = false, features = ["deflate"] }
 
 nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c", features = ["streaming", "examples"] }
+nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-model = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-persistence = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c", features = ["cloud"] }

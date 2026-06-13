@@ -16,8 +16,9 @@ use anyhow::{Context, Result, bail, ensure};
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
 use nautilus_model::{
     data::{Bar, BarSpecification, OrderBookDelta, TradeTick},
-    enums::{AggregationSource, AggressorSide, BookAction, OrderSide, PriceType},
+    enums::{AggregationSource, AggressorSide, BookAction, OrderSide, OrderStatus, PriceType},
     identifiers::InstrumentId,
+    orders::Order,
     types::Quantity,
 };
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
@@ -35,11 +36,13 @@ use super::{
     conversion_boundary::{
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
     },
+    mechanical_probe_strategy::{MechanicalTradeReplayProbe, MechanicalTradeReplayProbeConfig},
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
     run_manifest::{
         BacktestingRunManifest, NtSurfaceClassification, STRATEGY_HURST_VPIN_DIRECTIONAL,
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
     },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
 };
@@ -48,6 +51,12 @@ use super::{
 const PARAM_BAR_TYPE: &str = "bar_type";
 /// Strategy parameter key for the trade size.
 const PARAM_TRADE_SIZE: &str = "trade_size";
+/// Strategy parameter key for the number of delivered trades before the entry order.
+const PARAM_ENTRY_AFTER_TRADES: &str = "entry_after_trades";
+/// Strategy parameter key for the number of further delivered trades before the close.
+const PARAM_EXIT_AFTER_TRADES: &str = "exit_after_trades";
+/// Strategy parameter key for the entry order side.
+const PARAM_SIDE: &str = "side";
 
 fn nt_surface_classification_label(classification: NtSurfaceClassification) -> &'static str {
     match classification {
@@ -144,6 +153,11 @@ pub struct BacktestRunOutput {
     pub conversion_manifest_hash: String,
     pub read_back_count: usize,
     pub nt_result: BacktestResult,
+    /// Terminal state of every order the engine produced, captured from the
+    /// post-run cache. Lets callers assert order-level outcomes (e.g. every
+    /// submitted order reached `Filled`) with the per-order event trail that
+    /// explains any non-fill terminal state.
+    pub order_terminals: Vec<OrderTerminalRecord>,
     pub contract: BacktestResultContract,
 }
 
@@ -183,11 +197,84 @@ fn add_manifest_strategy(
                 .add_strategy(HurstVpinDirectional::new(config))
                 .context("add HurstVpinDirectional strategy")
         }
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => {
+            let catalog_input = manifest.primary_catalog_input().map_err(|error| {
+                anyhow::anyhow!("strategy instrument requires catalog input: {error}")
+            })?;
+            let instrument_id: InstrumentId =
+                catalog_input.nt_instrument_id.parse().with_context(|| {
+                    format!("invalid instrument id {:?}", catalog_input.nt_instrument_id)
+                })?;
+            let trade_size_raw = strategy
+                .parameters
+                .get(PARAM_TRADE_SIZE)
+                .with_context(|| format!("strategy parameter {PARAM_TRADE_SIZE} is required"))?;
+            let trade_size = Quantity::from_str(trade_size_raw).map_err(|error| {
+                anyhow::anyhow!("invalid {PARAM_TRADE_SIZE} {trade_size_raw:?}: {error}")
+            })?;
+            let entry_after_trades = strategy
+                .parameters
+                .get(PARAM_ENTRY_AFTER_TRADES)
+                .with_context(|| {
+                    format!("strategy parameter {PARAM_ENTRY_AFTER_TRADES} is required")
+                })?
+                .parse::<u64>()
+                .with_context(|| format!("invalid {PARAM_ENTRY_AFTER_TRADES}"))?;
+            let exit_after_trades = strategy
+                .parameters
+                .get(PARAM_EXIT_AFTER_TRADES)
+                .with_context(|| {
+                    format!("strategy parameter {PARAM_EXIT_AFTER_TRADES} is required")
+                })?
+                .parse::<u64>()
+                .with_context(|| format!("invalid {PARAM_EXIT_AFTER_TRADES}"))?;
+            let side_raw = strategy
+                .parameters
+                .get(PARAM_SIDE)
+                .with_context(|| format!("strategy parameter {PARAM_SIDE} is required"))?;
+            let side = match side_raw.as_str() {
+                "buy" => OrderSide::Buy,
+                "sell" => OrderSide::Sell,
+                other => bail!("invalid {PARAM_SIDE} {other:?}"),
+            };
+            let config = MechanicalTradeReplayProbeConfig::new(
+                instrument_id,
+                trade_size,
+                entry_after_trades,
+                exit_after_trades,
+                side,
+            );
+            engine
+                .add_strategy(MechanicalTradeReplayProbe::new(config))
+                .context("add MechanicalTradeReplayProbe strategy")
+        }
         other => bail!("strategy {other:?} is not a registered compiled Rust strategy"),
     }
 }
 
-pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<BacktestResult> {
+/// Terminal state of one order the engine produced, captured from the post-run
+/// cache. Owned (not borrowed from the cache) so it survives the node lifetime,
+/// and carries each order event's `Debug` rendering so a non-`Filled` terminal
+/// state self-documents its denial/rejection/cancel reason in the failure output.
+#[derive(Debug, Clone)]
+pub struct OrderTerminalRecord {
+    pub client_order_id: String,
+    pub order_side: String,
+    pub order_type: String,
+    pub status: OrderStatus,
+    pub quantity: String,
+    pub filled_qty: String,
+    pub events_debug: Vec<String>,
+}
+
+/// Result of one `BacktestNode` run: the NautilusTrader summary plus the
+/// terminal state of every order in the post-run cache.
+pub struct NtBacktestNodeRun {
+    pub result: BacktestResult,
+    pub order_terminals: Vec<OrderTerminalRecord>,
+}
+
+pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<NtBacktestNodeRun> {
     let run_config = manifest
         .to_nt_run_config()
         .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
@@ -205,7 +292,42 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
         "expected exactly one backtest result, got {}",
         results.len()
     );
-    Ok(results.remove(0))
+    // The run config sets `dispose_on_completion(false)`, so the engine still
+    // holds its post-run cache here; capture each order's terminal state before
+    // the node is dropped. A run that disposed (NautilusTrader default) would
+    // leave this empty and the order-terminal proof would have nothing to check.
+    let order_terminals = {
+        let engine = node
+            .get_engine(&manifest.run_id)
+            .with_context(|| format!("no engine for run id {} after run", manifest.run_id))?;
+        capture_order_terminals(engine)
+    };
+    Ok(NtBacktestNodeRun {
+        result: results.remove(0),
+        order_terminals,
+    })
+}
+
+/// Capture the terminal state of every order in the engine's post-run cache.
+fn capture_order_terminals(engine: &BacktestEngine) -> Vec<OrderTerminalRecord> {
+    let cache = engine.kernel().cache.borrow();
+    cache
+        .orders(None, None, None, None, None)
+        .into_iter()
+        .map(|order| OrderTerminalRecord {
+            client_order_id: order.client_order_id().to_string(),
+            order_side: order.order_side().to_string(),
+            order_type: order.order_type().to_string(),
+            status: order.status(),
+            quantity: order.quantity().to_string(),
+            filled_qty: order.filled_qty().to_string(),
+            events_debug: order
+                .events()
+                .iter()
+                .map(|event| format!("{event:?}"))
+                .collect(),
+        })
+        .collect()
 }
 
 /// Run one minimal NautilusTrader `BacktestNode` backtest over accepted data and
@@ -296,7 +418,10 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     assert_time_window_overlaps_data(inputs.manifest, &canonical_table)?;
 
     // Gate 5: BacktestNode execution.
-    let nt_result = run_nt_backtest_node(inputs.manifest)?;
+    let NtBacktestNodeRun {
+        result: nt_result,
+        order_terminals,
+    } = run_nt_backtest_node(inputs.manifest)?;
     // The read-back proof above loads the catalog through one NautilusTrader code
     // path; the engine consumed it through another. Bind the two by asserting the
     // engine's own iteration count equals the number of accepted trades inside the
@@ -410,6 +535,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         conversion_manifest_hash,
         read_back_count: read_back.len(),
         nt_result,
+        order_terminals,
         contract,
     })
 }

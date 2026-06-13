@@ -20,6 +20,7 @@ create_only_probe_id = "backtesting-vertical-slice-bnbusdc-2026-03-01"
 proof_run_id = "synthetic-capability-proof"
 nt_revision = "6e059dcbb59ac1e582132fc431a581936c216c3c"
 credential_source = "ssm"
+proof_artifact_object_name = "nt-catalog-capability-proof.json"
 expected_storage_options_keys = ["region"]
 synthetic_fixture_coverage = ["binary-option", "perps-spot"]
 synthetic_source_proof_id = "synthetic-fixture"

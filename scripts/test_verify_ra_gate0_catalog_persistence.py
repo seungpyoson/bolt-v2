@@ -103,7 +103,10 @@ pub async fn persist_catalog_projection_for_source_binding() {
 
 def compliant_capability_proof() -> str:
     return """
-use crate::{artifact_store::ResolvedArtifactRoot, run_manifest::MarketStructureFixture};
+use crate::{
+    artifact_store::{CreateOnlyArtifactWriter, ResolvedArtifactRoot},
+    run_manifest::MarketStructureFixture,
+};
 
 pub const NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION: &str = "nt-catalog-capability-proof.v1";
 pub const SYNTHETIC_SOURCE_PROOF_ID: &str = "synthetic-fixture";
@@ -118,6 +121,7 @@ pub struct AmbientCredentialScrubPlan {
 }
 pub struct NtCatalogCapabilityRunSpec {
     pub credential_source: NtCatalogCredentialSource,
+    pub proof_artifact_object_name: String,
     pub expected_storage_options_keys: Vec<String>,
     pub synthetic_source_proof_id: String,
     pub provenance: String,
@@ -126,6 +130,10 @@ pub struct NtCatalogCapabilityRunSpec {
     pub ssm_parameter_refs: NtCatalogSsmParameterRefs,
 }
 pub struct NtCatalogCapabilityPlan;
+pub struct NtCatalogCapabilityProofArtifact {
+    pub proof_artifact_uri: String,
+    pub proof_artifact_sha256: String,
+}
 pub struct NtCatalogCapabilityControls {
     pub ambient_credentials_scrubbed: bool,
     pub invalid_credentials_write_failed: bool,
@@ -146,6 +154,13 @@ impl NtCatalogCapabilityProof {
         provenance: self.provenance.clone(),
         synthetic_fixture_coverage: self.synthetic_fixture_coverage.clone(),
     } }
+    pub async fn persist_completed_proof(&self, writer: &CreateOnlyArtifactWriter<'_>) -> NtCatalogCapabilityProofArtifact {
+        writer.put_create_idempotent(path, bytes).await.unwrap();
+        NtCatalogCapabilityProofArtifact {
+            proof_artifact_uri: "s3://bucket/nt-catalog-synthetic-proof/v1/proof=proof-run/nt-catalog-capability-proof.json".to_string(),
+            proof_artifact_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        }
+    }
 
     pub fn direct_s3_catalog_access_proven(&self, artifact_root: &ResolvedArtifactRoot) {
         let _root = artifact_root.nt_catalog_synthetic_proof_root("proof-run").unwrap();
@@ -204,6 +219,9 @@ fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
     let _imds = plan.imds_blocked;
     let _completed = plan.completed_proof();
     let proof = NtCatalogCapabilityProof {};
+    let persisted = proof.persist_completed_proof(&writer);
+    let _proof_uri = persisted.proof_artifact_uri;
+    let _proof_sha256 = persisted.proof_artifact_sha256;
     let _credential_source = NtCatalogCredentialSource::Ssm;
     proof.direct_s3_catalog_access_proven();
 }
@@ -259,6 +277,7 @@ create_only_probe_id = "probe-run"
 proof_run_id = "synthetic-capability-proof"
 nt_revision = "6e059dcbb59ac1e582132fc431a581936c216c3c"
 credential_source = "ssm"
+proof_artifact_object_name = "nt-catalog-capability-proof.json"
 expected_storage_options_keys = ["region"]
 synthetic_fixture_coverage = ["binary-option", "perps-spot"]
 synthetic_source_proof_id = "synthetic-fixture"

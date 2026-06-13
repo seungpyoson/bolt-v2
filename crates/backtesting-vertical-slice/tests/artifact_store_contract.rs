@@ -269,8 +269,8 @@ fn resolves_synthetic_nt_catalog_proof_root_outside_canonical_catalog() {
     );
 }
 
-#[test]
-fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
+#[tokio::test]
+async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
     let fixture = committed_capability_proof_fixture();
     let plan = fixture
         .nt_catalog_capability_proof
@@ -310,6 +310,46 @@ fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
     committed_proof
         .direct_s3_catalog_access_proven(&committed_root)
         .expect("committed proof controls validate");
+    let store = InMemory::new();
+    let writer = CreateOnlyArtifactWriter::new(&store);
+    let persisted = fixture
+        .nt_catalog_capability_proof
+        .persist_completed_proof(
+            &fixture.artifact_store,
+            &writer,
+            NtCatalogCapabilityControls {
+                no_cloud_feature_gate_failed: true,
+                ambient_credentials_scrubbed: true,
+                invalid_credentials_write_failed: true,
+                ssm_credentials_write_reopen_query_succeeded: true,
+                conditional_put_probe_succeeded: true,
+                copy_if_not_exists_probe_succeeded: true,
+            },
+        )
+        .await
+        .expect("proof artifact persists create-only");
+    assert!(persisted.proof_artifact_uri.ends_with(
+        "/nt-catalog-synthetic-proof/v1/proof=synthetic-capability-proof/nt-catalog-capability-proof.json"
+    ));
+    assert_eq!(persisted.proof_artifact_sha256.len(), 64);
+    persisted
+        .proof
+        .direct_s3_catalog_access_proven(&committed_root)
+        .expect("persisted proof validates");
+    let persisted_path = committed_root
+        .object_path_for_uri(&persisted.proof_artifact_uri)
+        .expect("proof artifact uri is under artifact root");
+    let persisted_bytes = store
+        .get(&persisted_path)
+        .await
+        .expect("proof artifact is readable")
+        .bytes()
+        .await
+        .expect("proof artifact bytes");
+    assert_eq!(
+        sha256_hex(persisted_bytes.as_ref()),
+        persisted.proof_artifact_sha256
+    );
 
     let root = artifact_config().resolve().expect("valid artifact root");
     let mut proof = NtCatalogCapabilityProof::synthetic_success(

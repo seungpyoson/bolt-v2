@@ -2,9 +2,10 @@ use std::collections::BTreeSet;
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
-    artifact_store::{ArtifactStoreConfig, ResolvedArtifactRoot},
+    artifact_store::{ArtifactStoreConfig, CreateOnlyArtifactWriter, ResolvedArtifactRoot},
     run_manifest::MarketStructureFixture,
 };
 
@@ -55,6 +56,7 @@ pub struct NtCatalogCapabilityRunSpec {
     pub proof_run_id: String,
     pub nt_revision: String,
     pub credential_source: NtCatalogCredentialSource,
+    pub proof_artifact_object_name: String,
     pub expected_storage_options_keys: Vec<String>,
     pub synthetic_fixture_coverage: Vec<MarketStructureFixture>,
     pub synthetic_source_proof_id: String,
@@ -70,6 +72,7 @@ pub struct NtCatalogCapabilityPlan {
     pub nt_revision: String,
     pub artifact_root_uri: String,
     pub synthetic_catalog_root_uri: String,
+    pub proof_artifact_uri: String,
     pub credential_source: NtCatalogCredentialSource,
     pub storage_options_keys: Vec<String>,
     pub synthetic_fixture_coverage: Vec<MarketStructureFixture>,
@@ -77,6 +80,14 @@ pub struct NtCatalogCapabilityPlan {
     pub provenance: String,
     pub ambient_credential_scrub: AmbientCredentialScrubPlan,
     pub ssm_parameter_refs: NtCatalogSsmParameterRefs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NtCatalogCapabilityProofArtifact {
+    pub proof_artifact_uri: String,
+    pub proof_artifact_sha256: String,
+    pub proof: NtCatalogCapabilityProof,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +190,7 @@ impl NtCatalogCapabilityRunSpec {
             "NT catalog capability run spec provenance must be synthetic"
         );
         ensure_required_fixture_coverage(&self.synthetic_fixture_coverage)?;
+        ensure_proof_artifact_object_name(&self.proof_artifact_object_name)?;
         self.ambient_credential_scrub.validate()?;
         self.ssm_parameter_refs.validate()?;
 
@@ -192,11 +204,17 @@ impl NtCatalogCapabilityRunSpec {
         );
         let synthetic_catalog_root_uri =
             artifact_root.nt_catalog_synthetic_proof_root(&self.proof_run_id)?;
+        let proof_artifact_uri = format!(
+            "{synthetic_catalog_root_uri}{}",
+            self.proof_artifact_object_name
+        );
+        artifact_root.object_path_for_uri(&proof_artifact_uri)?;
         let plan = NtCatalogCapabilityPlan {
             proof_run_id: self.proof_run_id.clone(),
             nt_revision: self.nt_revision.clone(),
             artifact_root_uri: artifact_root.artifact_root_uri().to_string(),
             synthetic_catalog_root_uri,
+            proof_artifact_uri,
             credential_source: self.credential_source,
             storage_options_keys,
             synthetic_fixture_coverage: self.synthetic_fixture_coverage.clone(),
@@ -223,6 +241,34 @@ impl NtCatalogCapabilityRunSpec {
         proof.validate(&artifact_root)?;
         Ok(proof)
     }
+
+    /// # Errors
+    ///
+    /// Returns an error if the run spec is invalid, the runtime controls are
+    /// incomplete, serialization fails, or create-only persistence fails.
+    pub async fn persist_completed_proof(
+        &self,
+        artifact_store: &ArtifactStoreConfig,
+        writer: &CreateOnlyArtifactWriter<'_>,
+        controls: NtCatalogCapabilityControls,
+    ) -> Result<NtCatalogCapabilityProofArtifact> {
+        let artifact_root = artifact_store.resolve()?;
+        let plan = self.proof_plan(artifact_store)?;
+        let proof_artifact_uri = plan.proof_artifact_uri.clone();
+        let proof = plan.completed_proof(controls);
+        proof.validate(&artifact_root)?;
+        let proof_bytes = serde_json::to_vec_pretty(&proof)?;
+        let proof_artifact_sha256 = sha256_bytes(&proof_bytes);
+        let proof_artifact_path = artifact_root.object_path_for_uri(&proof_artifact_uri)?;
+        writer
+            .put_create_idempotent(&proof_artifact_path, proof_bytes)
+            .await?;
+        Ok(NtCatalogCapabilityProofArtifact {
+            proof_artifact_uri,
+            proof_artifact_sha256,
+            proof,
+        })
+    }
 }
 
 impl NtCatalogCapabilityPlan {
@@ -235,6 +281,12 @@ impl NtCatalogCapabilityPlan {
         ensure!(
             self.credential_source == NtCatalogCredentialSource::Ssm,
             "NT catalog capability plan credential source must be SSM"
+        );
+        artifact_root.object_path_for_uri(&self.proof_artifact_uri)?;
+        ensure!(
+            self.proof_artifact_uri
+                .starts_with(&self.synthetic_catalog_root_uri),
+            "capability plan proof artifact URI must live under the synthetic catalog root"
         );
         ensure_storage_option_keys(&self.storage_options_keys)?;
         ensure_required_fixture_coverage(&self.synthetic_fixture_coverage)?;
@@ -389,6 +441,31 @@ fn ensure_valid_revision(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn ensure_proof_artifact_object_name(value: &str) -> Result<()> {
+    let trimmed = value.trim();
+    ensure!(
+        !trimmed.is_empty(),
+        "proof_artifact_object_name must not be empty"
+    );
+    ensure!(
+        trimmed == value,
+        "proof_artifact_object_name must not contain leading or trailing whitespace"
+    );
+    ensure!(
+        !value.contains("://"),
+        "proof_artifact_object_name must be a relative object name"
+    );
+    ensure!(
+        !value.contains('/'),
+        "proof_artifact_object_name must not contain path separators"
+    );
+    ensure!(
+        !matches!(value, "." | ".."),
+        "proof_artifact_object_name must not be current or parent path"
+    );
+    Ok(())
+}
+
 fn ensure_required_fixture_coverage(fixtures: &[MarketStructureFixture]) -> Result<()> {
     ensure!(
         fixtures.contains(&MarketStructureFixture::BinaryOption)
@@ -468,6 +545,10 @@ fn ensure_ssm_parameter_ref(field: &'static str, value: &str) -> Result<()> {
         "{field} must not contain current or parent path segments"
     );
     Ok(())
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn is_allowed_storage_option_key(key: &str) -> bool {

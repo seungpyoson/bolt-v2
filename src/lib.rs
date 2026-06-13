@@ -43,6 +43,7 @@ pub mod log_sweep;
 pub mod nt_runtime_capture;
 pub mod raw_types;
 pub mod secrets;
+pub mod shadow_pnl;
 pub mod source_canonicalization;
 pub mod strategies;
 pub mod venue_contract;

@@ -17,7 +17,7 @@ Build a Bolt-owned loss governor that consumes NT-derived loss/equity facts and 
 **Project Type**: Rust trading runtime and shared policy module
 **Performance Goals**: Bounded admission evaluation and bounded in-process rolling-window sample retention; no polling, adapter simulation, or venue calls
 **Constraints**: No hardcoded runtime thresholds, no alternate account truth, no Bolt-built cancel/flatten side effects, and no flat-position claim from submit-admission or NT risk-state
-**Scale/Scope**: Shared policy module, TOML config binding, capital reservation, NT-derived sizing-state validation, configured submit-admission enforcement, NT portfolio/position/account runtime feed, configured NT risk-state loss-halt actions, a live manual-recovery method, explicit rejection of active market-exit config, and focused tests; later slices must add Bolt-owned loss-halt exit execution, the external operator clear-to-Active command surface, and remaining production-grade position-sizer gaps
+**Scale/Scope**: Shared policy module, TOML config binding, capital reservation, NT-derived sizing-state validation, configured submit-admission enforcement, NT portfolio/position/account runtime feed, configured NT risk-state loss-halt actions, a live manual-recovery method, and focused tests; any later active market-exit slice must call NautilusTrader's owned `Trader::market_exit_strategy` primitive directly from a real live boundary, while the external operator clear-to-Active command surface and remaining production-grade position-sizer gaps stay separate follow-ups
 
 ## Constitution Check
 

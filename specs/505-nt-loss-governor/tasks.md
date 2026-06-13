@@ -91,10 +91,10 @@
 - [X] T048 [US3] Apply configured loss-halt actions through NT `RiskEngine::set_trading_state` with monotonic severity and no auto-clear
 - [X] T049 [US3] Document that NT `Halted`/`Reducing` do not cancel working orders or flatten positions
 - [X] T049A [US3] Wire live manual recovery to set NT `Active` only after fresh accepted loss evidence and bounded operator evidence
-- [X] T050 [US3] Require explicit loss-governor market-exit action config and reject active market-exit actions until they route through Bolt submit/cancel chokepoints
+- [X] T050 [US3] Keep active market exit out of the loss-governor config surface; future active exit must call NT `Trader::market_exit_strategy` directly
 - [ ] T051 [US3] Dispatch configured active market exit, if needed, by calling NautilusTrader's owned `Trader::market_exit_strategy` primitive from a real live boundary after setting the NT risk engine to `Reducing`
-- [ ] T052 [US3] Add a Bolt-owned idempotency latch so repeated breached snapshots do not repeatedly dispatch the same exit action
-- [X] T053 [US3] Add focused tests for market-exit decision policy, config validation, and live halt wiring
+- [ ] T052 [US3] If active market exit is later enabled, rely on NT strategy-control idempotency and add only caller-side evidence that the NT primitive was invoked
+- [X] T053 [US3] Add focused tests for NT trading-state halt wiring and the NT-first market-exit boundary
 
 ---
 
@@ -126,4 +126,4 @@
 
 ## MVP First
 
-MVP is Phases 1-3: pure module rejects per-trade, daily, and stale snapshot failures. Phase 4 adds rolling and drawdown limits. Phase 5 turns it into submit-admission protection. The market-exit follow-on adds NT risk-state and NT strategy-control dispatch without claiming flat-position proof.
+MVP is Phases 1-3: pure module rejects per-trade, daily, and stale snapshot failures. Phase 4 adds rolling and drawdown limits. Phase 5 turns it into submit-admission protection. A later active market-exit follow-on, if needed, must call NT strategy-control dispatch directly without claiming flat-position proof.

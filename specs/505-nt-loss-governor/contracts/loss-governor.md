@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Evaluate whether Bolt may admit new risk using only fresh NT-derived loss/equity facts and configured policy thresholds. PR #507 provides the pure evaluator, positional-sizing core, configured enforcement at the shared submit-admission boundary, a configured NT portfolio/account/position runtime feed that publishes loss snapshots to submit admission, configured NT trading-state actions, and live manual recovery guarded by fresh accepted loss evidence plus bounded operator evidence. Active market-exit config is rejected until loss-halt exits can route through a Bolt-owned submit/cancel chokepoint.
+Evaluate whether Bolt may admit new risk using only fresh NT-derived loss/equity facts and configured policy thresholds. PR #507 provides the pure evaluator, positional-sizing core, configured enforcement at the shared submit-admission boundary, a configured NT portfolio/account/position runtime feed that publishes loss snapshots to submit admission, configured NT trading-state actions, and live manual recovery guarded by fresh accepted loss evidence plus bounded operator evidence. Active market-exit config is not part of this slice; any later active market exit must call NautilusTrader's owned `Trader::market_exit_strategy` primitive directly from a real live boundary.
 
 ## Public Behavior
 

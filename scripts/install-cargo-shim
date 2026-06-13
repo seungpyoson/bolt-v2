@@ -198,14 +198,22 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     source = root / "scripts" / "cargo-shim"
     install_dir = Path(os.environ.get("BOLT_CARGO_SHIM_DIR", "~/.local/bin/bolt-cargo-shim")).expanduser()
-    target = install_shim(source, install_dir)
+    try:
+        target = install_shim(source, install_dir)
+    except OSError as exc:
+        print(f"Failed to install cargo shim: {exc}", file=sys.stderr)
+        return 1
     try:
         home = Path.home()
     except (RuntimeError, KeyError) as exc:
         print(f"Failed to resolve home directory: {exc}", file=sys.stderr)
         return 1
     zshenv = zshenv_path(home)
-    update_zshenv(zshenv, install_dir)
+    try:
+        update_zshenv(zshenv, install_dir)
+    except OSError as exc:
+        print(f"Failed to update zsh startup: {exc}", file=sys.stderr)
+        return 1
     try:
         no_mistakes_plists = update_no_mistakes_launch_agents(home, install_dir)
     except ValueError as exc:

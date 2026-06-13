@@ -150,6 +150,29 @@ def test_manifest_path_flag_does_not_hide_refused_subcommand(tmp_path):
     assert "real-cargo --manifest-path /tmp/Cargo.toml test" not in combined
 
 
+@pytest.mark.parametrize(
+    "args, real_cargo_line",
+    [
+        (("--target", "x86_64-unknown-linux-gnu", "test"), "real-cargo --target x86_64-unknown-linux-gnu test"),
+        (("--target=x86_64-unknown-linux-gnu", "test"), "real-cargo --target=x86_64-unknown-linux-gnu test"),
+        (("--profile", "dev", "test"), "real-cargo --profile dev test"),
+        (("--profile=dev", "test"), "real-cargo --profile=dev test"),
+    ],
+)
+def test_target_and_profile_flags_do_not_hide_refused_subcommand(tmp_path, args, real_cargo_line):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    real = _fake_real_cargo(tmp_path)
+
+    result = _run_cargo(repo, real, *args)
+
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "Local compile-heavy Rust is disabled" in combined
+    assert real_cargo_line not in combined
+
+
 def test_argument_separator_does_not_hide_refused_subcommand(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -893,6 +916,48 @@ def test_installer_reports_unavailable_home_without_traceback(tmp_path, monkeypa
     captured = capsys.readouterr()
     assert result == 1
     assert "Failed to resolve home directory: home unavailable" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_installer_reports_install_failure_without_traceback(tmp_path, monkeypatch, capsys):
+    installer = _load_installer_module()
+
+    def fail_install(_source, _install_dir):
+        raise PermissionError("install denied")
+
+    monkeypatch.setenv("BOLT_CARGO_SHIM_DIR", str(tmp_path / "shim-bin"))
+    monkeypatch.setattr(installer, "install_shim", fail_install)
+
+    result = installer.main()
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "Failed to install cargo shim: install denied" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_installer_reports_zshenv_update_failure_without_traceback(tmp_path, monkeypatch, capsys):
+    installer = _load_installer_module()
+    home = tmp_path / "home"
+    home.mkdir()
+    install_dir = tmp_path / "shim-bin"
+
+    def fake_install(_source, _install_dir):
+        return install_dir / "cargo"
+
+    def fail_update(_zshenv, _install_dir):
+        raise PermissionError("zshenv denied")
+
+    monkeypatch.setenv("BOLT_CARGO_SHIM_DIR", str(install_dir))
+    monkeypatch.setattr(installer.Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(installer, "install_shim", fake_install)
+    monkeypatch.setattr(installer, "update_zshenv", fail_update)
+
+    result = installer.main()
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "Failed to update zsh startup: zshenv denied" in captured.err
     assert "Traceback" not in captured.err
 
 

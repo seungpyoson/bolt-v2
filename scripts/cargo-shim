@@ -22,6 +22,8 @@ VALUE_TAKING_GLOBAL_FLAGS = {
     "--jobs",
     "--manifest-path",
     "--message-format",
+    "--profile",
+    "--target",
     "--target-dir",
     "-C",
     "-j",

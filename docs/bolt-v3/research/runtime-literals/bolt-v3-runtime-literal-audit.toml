@@ -10124,6 +10124,14 @@ reason = "Initial value for the in-memory submit-reservation sequence; it is a c
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''0'''
+context = '''&& components.order_lifecycle.open_order_count > 0'''
+classification = "position_sizer_non_empty_order_lifecycle_guard"
+reason = "Non-empty live-order count used to revoke reservation-ledger reconciliation when runtime components report unattributed open orders; it is an internal identity, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''0'''
 context = '''&& components.order_lifecycle.open_order_count == 0'''
 classification = "position_sizer_empty_order_lifecycle_guard"
 reason = "Empty live-order count used to reconcile an empty startup reservation ledger only after runtime components confirm there are no live orders; it is an internal identity, not an operator runtime value."

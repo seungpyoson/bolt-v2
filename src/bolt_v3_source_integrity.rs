@@ -287,8 +287,10 @@ mod tests {
     // to the shared submit admission module.
     // Re-derived after routing replace-submit through configured position
     // sizing.
+    // Re-derived after runtime order-lifecycle updates learned to re-close the
+    // position-sizer gate on unattributed live open orders.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "d2fc05371df51b91e4ac7d5e89d165e33cfdad8a6c6c31421246771c50f26c88";
+        "22ed4c020f33d32425faa3f17839bec07ee2d3e395df847164f4366a62297b56";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

@@ -578,6 +578,53 @@ fn account_state_after_unattributed_live_order_keeps_gate_unreconciled() {
 }
 
 #[test]
+fn unattributed_live_order_after_empty_reconcile_recloses_gate() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    seed_venue_spendability(&mut feed, 950);
+    assert!(
+        feed.seed_open_order_cache(Vec::<String>::new(), 1_000)
+            .is_none()
+    );
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+    assert!(!rebuild.accepted);
+    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert_eq!(admission.position_sizer_reconciled(), Some(true));
+
+    let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
+        "external-client-order",
+        1_200,
+        AccountId::from("ACCOUNT-001"),
+    )));
+
+    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("unattributed live order should publish unreconciled sizing state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+    assert!(!state.order_lifecycle.all_open_orders_attributed);
+    assert_eq!(
+        admission
+            .admit_at(&sized_submit_request("client-order-1"), 1_250)
+            .expect_err("unattributed live order must re-close submit admission"),
+        BoltV3SubmitAdmissionError::PositionSizingRejected {
+            reason: BoltV3PositionSizerRejectReason::ReconciliationRequired,
+        }
+    );
+}
+
+#[test]
 fn position_sizer_cache_seed_updates_configured_yes_no_inventory() {
     let admission = Arc::new(position_sized_admission());
     let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());

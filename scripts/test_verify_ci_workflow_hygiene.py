@@ -660,7 +660,7 @@ jobs:
           fi
           if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
             echo "full CI deferred for draft PR; run just verify-remote or mark ready"
-            exit 1
+            exit 0
           fi
           if [[ "$policy_path" == "full" ]]; then
             echo "full CI required"
@@ -1287,11 +1287,19 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
             ),
         ),
         (
-            "gate must fail closed when full CI is deferred",
+            "gate must pass deferred full CI without failing stale draft checks",
             replace_once(
                 workflow,
-                '          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then\n            echo "full CI deferred for draft PR; run just verify-remote or mark ready"\n            exit 1\n          fi\n',
+                '          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then\n            echo "full CI deferred for draft PR; run just verify-remote or mark ready"\n            exit 0\n          fi\n',
                 "",
+            ),
+        ),
+        (
+            "gate must pass deferred full CI without failing stale draft checks",
+            replace_once(
+                workflow,
+                '          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then\n            echo "full CI deferred for draft PR; run just verify-remote or mark ready"\n            exit 0\n          fi\n',
+                '          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then\n            echo "full CI deferred for draft PR; run just verify-remote or mark ready"\n            exit 1\n          fi\n',
             ),
         ),
         (

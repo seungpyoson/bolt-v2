@@ -5904,10 +5904,9 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
         errors.append("gate must check needs.ci-policy.result")
     if not branch_exists(gate_text, "if", GATE_TAG_REUSE_CONDITION):
         errors.append("gate must branch on ci_policy_path tag_reuse")
-    if not branch_exits_reachable(gate_text, "if", GATE_DEFER_CONDITION) or (
-        "full CI deferred for draft PR" not in gate_text
-    ):
-        errors.append("gate must fail closed when full CI is deferred")
+    defer_body = branch_body(gate_text, "if", GATE_DEFER_CONDITION)
+    if defer_body is None or "full CI deferred for draft PR" not in defer_body or not body_exits_zero(defer_body):
+        errors.append("gate must pass deferred full CI without failing stale draft checks")
     if not branch_exists(gate_text, "if", GATE_FULL_CONDITION):
         errors.append("gate must branch on ci_policy_path full")
     emit_failure_body = branch_body(
@@ -6096,6 +6095,14 @@ def branch_exits_reachable(gate_text: str, keyword: str, condition: str) -> bool
 
 
 def body_exits(body: str) -> bool:
+    return body_exits_with_code(body, "1")
+
+
+def body_exits_zero(body: str) -> bool:
+    return body_exits_with_code(body, "0")
+
+
+def body_exits_with_code(body: str, code: str) -> bool:
     exit_codes: list[str | None] = []
     depth = 0
     for line in shell_logical_lines(body):
@@ -6123,7 +6130,7 @@ def body_exits(body: str) -> bool:
         if clean.startswith("echo "):
             continue
         return False
-    return exit_codes == ["1"]
+    return exit_codes == [code]
 
 
 def extract_action_input_block(action_text: str, input_name: str) -> list[str]:

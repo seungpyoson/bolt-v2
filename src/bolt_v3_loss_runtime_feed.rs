@@ -1,11 +1,11 @@
 use std::{cell::RefCell, collections::VecDeque, fmt, rc::Rc, sync::Arc};
 
 use nautilus_common::msgbus::{
-    TypedHandler, subscribe_portfolio_snapshot, subscribe_position_events,
-    unsubscribe_portfolio_snapshot, unsubscribe_position_events,
+    TypedHandler, subscribe_account_state, subscribe_portfolio_snapshot, subscribe_position_events,
+    unsubscribe_account_state, unsubscribe_portfolio_snapshot, unsubscribe_position_events,
 };
 use nautilus_model::{
-    events::{PortfolioSnapshot, PositionEvent},
+    events::{AccountState, PortfolioSnapshot, PositionEvent},
     identifiers::AccountId,
     types::{Currency, Money},
 };
@@ -15,7 +15,9 @@ use crate::{
     bolt_v3_loss_governor::LossSnapshot,
     bolt_v3_loss_halt_actions::LossGovernorHaltActionHandler,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
-    nt_runtime_capture::{portfolio_snapshots_pattern, position_events_pattern},
+    nt_runtime_capture::{
+        account_states_pattern, portfolio_snapshots_pattern, position_events_pattern,
+    },
 };
 
 const LOSS_RUNTIME_FEED_SOURCE: &str = stringify!(nt_loss_runtime_feed);
@@ -35,6 +37,7 @@ pub struct LossGovernorRuntimeFeed {
 
 pub struct LossGovernorRuntimeFeedSubscription {
     position_events: Option<TypedHandler<PositionEvent>>,
+    account_states: Option<TypedHandler<AccountState>>,
     portfolio_snapshots: Option<TypedHandler<PortfolioSnapshot>>,
 }
 
@@ -50,6 +53,8 @@ struct LossGovernorRuntimeFeedState {
     per_trade_pnl_source: Option<PerTradePnlSource>,
     current_equity: Option<TimedDecimal>,
     peak_equity: Option<TimedDecimal>,
+    account_state_equity_baseline: Option<TimedDecimal>,
+    portfolio_pnl_observed: bool,
     latest_snapshot: Option<LossSnapshot>,
 }
 
@@ -105,6 +110,26 @@ pub fn subscribe_loss_governor_runtime_feed(
     });
     subscribe_position_events(position_events_pattern(), position_events.clone(), None);
 
+    let account_feed = Rc::clone(&feed);
+    let account_states = TypedHandler::from(move |state: &AccountState| {
+        let now_ns = state.ts_init.as_u64();
+        let (loss_snapshot, handler, should_invoke) = {
+            let mut feed = account_feed.borrow_mut();
+            let should_invoke = state.account_id == feed.config.account_id;
+            (
+                should_invoke
+                    .then(|| feed.on_account_state_without_halt_action(state))
+                    .flatten(),
+                feed.halt_action_handler.clone(),
+                should_invoke,
+            )
+        };
+        if should_invoke {
+            invoke_loss_halt_action(handler, loss_snapshot.as_ref(), now_ns);
+        }
+    });
+    subscribe_account_state(account_states_pattern(), account_states.clone(), None);
+
     let portfolio_feed = Rc::clone(&feed);
     let portfolio_snapshots = TypedHandler::from(move |snapshot: &PortfolioSnapshot| {
         let now_ns = snapshot.ts_init.as_u64();
@@ -131,6 +156,7 @@ pub fn subscribe_loss_governor_runtime_feed(
 
     LossGovernorRuntimeFeedSubscription {
         position_events: Some(position_events),
+        account_states: Some(account_states),
         portfolio_snapshots: Some(portfolio_snapshots),
     }
 }
@@ -139,6 +165,9 @@ impl LossGovernorRuntimeFeedSubscription {
     pub fn unsubscribe_all(&mut self) {
         if let Some(position_events) = self.position_events.take() {
             unsubscribe_position_events(position_events_pattern(), &position_events);
+        }
+        if let Some(account_states) = self.account_states.take() {
+            unsubscribe_account_state(account_states_pattern(), &account_states);
         }
         if let Some(portfolio_snapshots) = self.portfolio_snapshots.take() {
             unsubscribe_portfolio_snapshot(portfolio_snapshots_pattern(), &portfolio_snapshots);
@@ -198,6 +227,69 @@ impl LossGovernorRuntimeFeed {
         let observed_at_ns = snapshot.ts_event.as_u64();
         let daily_pnl = daily_pnl(snapshot, currency)?;
         let current_equity = total_equity(snapshot, currency)?;
+        self.state.portfolio_pnl_observed = true;
+        let peak_equity_action = self.state.update_rolling_pnl(
+            daily_pnl,
+            current_equity,
+            observed_at_ns,
+            self.config.rolling_window_ns,
+        );
+        self.state.daily_pnl = Some(TimedDecimal::new(daily_pnl, observed_at_ns));
+        if self.state.per_trade_pnl_source != Some(PerTradePnlSource::PositionEvent) {
+            self.state.per_trade_pnl = Some(TimedDecimal::new(Decimal::ZERO, observed_at_ns));
+            self.state.per_trade_pnl_source = Some(PerTradePnlSource::PortfolioBaseline);
+        }
+
+        self.state.current_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
+        match (peak_equity_action, self.state.peak_equity) {
+            (PeakEquityAction::RebaselineToCurrent, _) => {
+                self.state.peak_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
+            }
+            (PeakEquityAction::Preserve, Some(peak)) if peak.value > current_equity => {}
+            (PeakEquityAction::Preserve, _) => {
+                self.state.peak_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
+            }
+        }
+
+        self.publish_if_complete()
+    }
+
+    pub fn on_account_state(&mut self, state: &AccountState) -> Option<LossSnapshot> {
+        if state.account_id != self.config.account_id {
+            return None;
+        }
+        let now_ns = state.ts_init.as_u64();
+        let snapshot = self.on_account_state_without_halt_action(state);
+        self.invoke_halt_action(snapshot.as_ref(), now_ns);
+        snapshot
+    }
+
+    fn on_account_state_without_halt_action(
+        &mut self,
+        state: &AccountState,
+    ) -> Option<LossSnapshot> {
+        if state.account_id != self.config.account_id {
+            return None;
+        }
+
+        let currency = account_currency(state)?;
+        if !self.state.accept_currency(currency) {
+            return None;
+        }
+
+        let observed_at_ns = state.ts_event.as_u64();
+        let current_equity = account_total_equity(state, currency)?;
+        let daily_pnl = if self.state.portfolio_pnl_observed {
+            self.state
+                .daily_pnl
+                .map_or(Decimal::ZERO, |daily_pnl| daily_pnl.value)
+        } else {
+            let baseline = self
+                .state
+                .account_state_equity_baseline
+                .get_or_insert(TimedDecimal::new(current_equity, observed_at_ns));
+            current_equity - baseline.value
+        };
         let peak_equity_action = self.state.update_rolling_pnl(
             daily_pnl,
             current_equity,
@@ -334,6 +426,8 @@ impl LossGovernorRuntimeFeedState {
             per_trade_pnl_source: None,
             current_equity: None,
             peak_equity: None,
+            account_state_equity_baseline: None,
+            portfolio_pnl_observed: false,
             latest_snapshot: None,
         }
     }
@@ -473,6 +567,24 @@ fn portfolio_currency(snapshot: &PortfolioSnapshot) -> Option<Currency> {
         .or_else(|| single_money_currency(snapshot))
 }
 
+fn account_currency(state: &AccountState) -> Option<Currency> {
+    state
+        .base_currency
+        .or_else(|| single_account_balance_currency(state))
+}
+
+fn single_account_balance_currency(state: &AccountState) -> Option<Currency> {
+    let mut currency = None;
+    for balance in &state.balances {
+        match currency {
+            Some(existing) if existing != balance.total.currency => return None,
+            Some(_) => {}
+            None => currency = Some(balance.total.currency),
+        }
+    }
+    currency
+}
+
 fn single_money_currency(snapshot: &PortfolioSnapshot) -> Option<Currency> {
     let mut currency = None;
     for money in snapshot
@@ -502,6 +614,20 @@ fn daily_pnl(snapshot: &PortfolioSnapshot, currency: Currency) -> Option<Decimal
 
 fn total_equity(snapshot: &PortfolioSnapshot, currency: Currency) -> Option<Decimal> {
     sum_money(snapshot.total_equity.iter(), currency)
+}
+
+fn account_total_equity(state: &AccountState, currency: Currency) -> Option<Decimal> {
+    let mut found = false;
+    let mut total = Decimal::ZERO;
+    for balance in state
+        .balances
+        .iter()
+        .filter(|balance| balance.total.currency == currency)
+    {
+        found = true;
+        total += balance.total.as_decimal();
+    }
+    found.then_some(total)
 }
 
 fn sum_money<'a>(values: impl Iterator<Item = &'a Money>, currency: Currency) -> Option<Decimal> {

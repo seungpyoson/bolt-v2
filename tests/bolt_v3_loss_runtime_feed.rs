@@ -1,22 +1,24 @@
 mod support;
 
-use bolt_v2::bolt_v3_loss_governor::LossGovernorPolicy;
+use bolt_v2::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason};
 use bolt_v2::bolt_v3_loss_halt_actions::LossGovernorHaltActionHandler;
 use bolt_v2::bolt_v3_loss_runtime_feed::{
     LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig, subscribe_loss_governor_runtime_feed,
 };
 use bolt_v2::bolt_v3_submit_admission::{
-    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-    BoltV3SubmitLifecyclePolicy,
+    BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
+    BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
 };
-use nautilus_common::msgbus::publish_portfolio_snapshot;
+use nautilus_common::msgbus::{publish_account_state, publish_portfolio_snapshot};
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::enums::{AccountType, OrderSide, PositionAdjustmentType, PositionSide};
-use nautilus_model::events::{PortfolioSnapshot, PositionAdjusted, PositionChanged, PositionEvent};
+use nautilus_model::events::{
+    AccountState, PortfolioSnapshot, PositionAdjusted, PositionChanged, PositionEvent,
+};
 use nautilus_model::identifiers::{
     AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId,
 };
-use nautilus_model::types::{Currency, Money, Price, Quantity};
+use nautilus_model::types::{AccountBalance, Currency, Money, Price, Quantity};
 use rust_decimal::Decimal;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -87,6 +89,132 @@ fn subscribed_nt_events_update_submit_admission_loss_snapshot() {
     admission
         .admit_at(&submit_request(Decimal::new(1, 0)), 2_100)
         .expect("subscribed NT-derived snapshot should admit entry submit");
+}
+
+#[test]
+fn subscribed_account_state_without_portfolio_snapshot_updates_loss_snapshot() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-ACCOUNT");
+    let feed = Rc::new(RefCell::new(LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 500,
+        },
+        admission.clone(),
+    )));
+    let mut subscription = subscribe_loss_governor_runtime_feed(feed.clone());
+
+    publish_account_state(
+        "events.account.SIM-LOSS-ACCOUNT".into(),
+        &account_state(account_id, 2_000, 1_000.0),
+    );
+    subscription.unsubscribe_all();
+
+    let snapshot =
+        feed.borrow().latest_snapshot().cloned().expect(
+            "subscribed account state should publish a loss snapshot without portfolio timer",
+        );
+    assert_eq!(snapshot.observed_at_ns, 2_000);
+    assert_eq!(snapshot.per_trade_pnl, Some(Decimal::ZERO));
+    assert_eq!(snapshot.daily_pnl, Some(Decimal::ZERO));
+    assert_eq!(snapshot.rolling_pnl, Some(Decimal::ZERO));
+    assert_eq!(snapshot.current_equity, Some(Decimal::new(1_000, 0)));
+    assert_eq!(snapshot.peak_equity, Some(Decimal::new(1_000, 0)));
+    admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 2_100)
+        .expect("account-state-derived loss snapshot should admit entry submit");
+}
+
+#[test]
+fn account_state_equity_drop_updates_daily_and_rolling_loss() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-ACCOUNT-DROP");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 500,
+        },
+        admission.clone(),
+    );
+
+    feed.on_account_state(&account_state(account_id, 1_000, 1_000.0))
+        .expect("account state baseline should publish");
+    let snapshot = feed
+        .on_account_state(&account_state(account_id, 1_100, 960.0))
+        .expect("lower account equity should publish account-state loss snapshot");
+
+    assert_eq!(snapshot.observed_at_ns, 1_100);
+    assert_eq!(snapshot.per_trade_pnl, Some(Decimal::ZERO));
+    assert_eq!(snapshot.daily_pnl, Some(Decimal::new(-40, 0)));
+    assert_eq!(snapshot.rolling_pnl, Some(Decimal::new(-40, 0)));
+    assert_eq!(snapshot.current_equity, Some(Decimal::new(960, 0)));
+    assert_eq!(snapshot.peak_equity, Some(Decimal::new(1_000, 0)));
+
+    let error = admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 1_150)
+        .expect_err("account-state loss beyond policy should halt entry submit");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }
+            if reasons == vec![
+                LossHaltReason::DailyLossLimit,
+                LossHaltReason::RollingLossLimit,
+                LossHaltReason::MaxDrawdownLimit,
+            ]
+    ));
+}
+
+#[test]
+fn account_state_heartbeat_preserves_portfolio_loss_components() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-ACCOUNT-PRESERVE");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 500,
+        },
+        admission.clone(),
+    );
+
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, 0.0, 0.0, 1_000.0))
+        .expect("portfolio baseline should publish");
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_100, -20.0, -20.0, 960.0))
+        .expect("portfolio loss should publish");
+    let snapshot = feed
+        .on_account_state(&account_state(account_id, 1_200, 960.0))
+        .expect("account heartbeat should refresh without erasing portfolio loss evidence");
+
+    assert_eq!(snapshot.observed_at_ns, 1_200);
+    assert_eq!(snapshot.per_trade_pnl, Some(Decimal::ZERO));
+    assert_eq!(snapshot.daily_pnl, Some(Decimal::new(-40, 0)));
+    assert_eq!(snapshot.rolling_pnl, Some(Decimal::new(-40, 0)));
+    assert_eq!(snapshot.current_equity, Some(Decimal::new(960, 0)));
+    assert_eq!(snapshot.peak_equity, Some(Decimal::new(1_000, 0)));
+
+    let error = admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 1_250)
+        .expect_err("account heartbeat must not clear portfolio-proven loss halt");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }
+            if reasons == vec![
+                LossHaltReason::DailyLossLimit,
+                LossHaltReason::RollingLossLimit,
+                LossHaltReason::MaxDrawdownLimit,
+            ]
+    ));
 }
 
 #[test]
@@ -298,6 +426,24 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         kill_switch_forced_reduction: None,
         position_sizing: None,
     }
+}
+
+fn account_state(account_id: AccountId, ts_event: u64, total_equity: f64) -> AccountState {
+    AccountState::new(
+        account_id,
+        AccountType::Cash,
+        vec![AccountBalance::new(
+            Money::new(total_equity, Currency::USD()),
+            Money::new(0.0, Currency::USD()),
+            Money::new(total_equity, Currency::USD()),
+        )],
+        vec![],
+        true,
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+        Some(Currency::USD()),
+    )
 }
 
 fn portfolio_snapshot(

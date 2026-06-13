@@ -642,3 +642,81 @@ blocking_issues = [
         Some(&1)
     );
 }
+
+/// Regression for the selected-conversion-manifest completion-proof gate: a
+/// manifest that parses but does not attest a *finalized* conversion (zero
+/// canonical rows, or a blank catalog hash) must be rejected. Without the gate,
+/// such a stub satisfied the Converted coverage requirement through the
+/// planned == 0 path on parseability alone — the same false-positive class the
+/// ledger path closes via `status == "ready"`.
+#[test]
+fn converted_universe_via_selected_manifest_rejects_unfinalized_manifest() {
+    fn spec_for(manifest_path: &Path, output_dir: &Path) -> String {
+        format!(
+            r#"ledger_id = "venue-scale-conversion-acceptance-ledger-degenerate"
+output_dir = "{output_dir}"
+
+[[venue]]
+venue_id = "pmxt-current-reference"
+venue = "pmxt"
+
+[[venue.universe]]
+universe_id = "pmxt-degenerate-converted"
+scope_label = "degenerate converted universe"
+status = "converted"
+selected_conversion_manifest_path = "{manifest_path}"
+"#,
+            output_dir = output_dir.display(),
+            manifest_path = manifest_path.display(),
+        )
+    }
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_dir = temp_dir.path().join("acceptance-ledger");
+
+    // Zero canonical rows: parses (all required fields present) but is not a
+    // finalized conversion.
+    let zero_rows_manifest = temp_dir.path().join("zero-rows-manifest.json");
+    fs::write(
+        &zero_rows_manifest,
+        r#"{
+  "canonical_rows": 0,
+  "catalog_rows_by_nt_data_type": {},
+  "catalog_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "output_catalog_uri": "file:///tmp/none",
+  "completed_at": "2026-06-10T14:30:00Z"
+}"#,
+    )
+    .expect("write zero-rows manifest");
+    let zero_spec = temp_dir.path().join("zero-rows-spec.toml");
+    fs::write(&zero_spec, spec_for(&zero_rows_manifest, &output_dir)).expect("write zero spec");
+    let error = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&zero_spec)
+        .expect_err("zero-canonical-row manifest must be rejected as a completion proof");
+    assert!(
+        format!("{error:#}").contains("zero canonical rows"),
+        "expected zero-canonical-rows rejection, got: {error:#}"
+    );
+
+    // Blank catalog hash: a manifest with rows but no catalog hash never wrote a
+    // catalog and is not a finalized conversion.
+    let blank_hash_manifest = temp_dir.path().join("blank-hash-manifest.json");
+    fs::write(
+        &blank_hash_manifest,
+        r#"{
+  "canonical_rows": 42,
+  "catalog_rows_by_nt_data_type": {"TradeTick": 42},
+  "catalog_hash": "   ",
+  "output_catalog_uri": "file:///tmp/none",
+  "completed_at": "2026-06-10T14:30:00Z"
+}"#,
+    )
+    .expect("write blank-hash manifest");
+    let blank_spec = temp_dir.path().join("blank-hash-spec.toml");
+    fs::write(&blank_spec, spec_for(&blank_hash_manifest, &output_dir)).expect("write blank spec");
+    let error = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&blank_spec)
+        .expect_err("blank-catalog-hash manifest must be rejected as a completion proof");
+    assert!(
+        format!("{error:#}").contains("catalog hash"),
+        "expected missing-catalog-hash rejection, got: {error:#}"
+    );
+}

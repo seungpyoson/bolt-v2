@@ -279,8 +279,13 @@ struct SelectedConversionManifestSummary {
     canonical_rows: u64,
     #[serde(default)]
     catalog_rows_by_nt_data_type: BTreeMap<String, u64>,
-    catalog_hash: Option<String>,
+    // `catalog_hash` and `completed_at` are required, not optional: a manifest is
+    // a completion proof only when it attests a finalized conversion that actually
+    // wrote a catalog. A stub manifest that omits them must fail to parse here
+    // rather than be accepted as coverage evidence.
+    catalog_hash: String,
     output_catalog_uri: Option<String>,
+    completed_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -811,6 +816,28 @@ fn evaluate_universe(
         let path = resolve_existing_path(base_dir, path);
         artifact_refs.push(artifact_ref("selected_conversion_manifest", &path)?);
         let conversion: SelectedConversionManifestSummary = read_json(&path)?;
+        // A selected conversion manifest is accepted as a completion proof only
+        // when it attests a *finalized* conversion that actually produced catalog
+        // output, mirroring the completion-ledger `status == "ready"` gate above.
+        // Parseability alone is not proof: a stub manifest with zero canonical
+        // rows, no catalog hash, or no completion timestamp must be rejected so it
+        // cannot satisfy the Converted coverage requirement through the
+        // planned == 0 path.
+        ensure!(
+            conversion.canonical_rows > 0,
+            "selected conversion manifest {} reports zero canonical rows and is not a finalized conversion",
+            path.display()
+        );
+        ensure!(
+            !conversion.catalog_hash.trim().is_empty(),
+            "selected conversion manifest {} is missing a catalog hash and is not a finalized conversion",
+            path.display()
+        );
+        ensure!(
+            !conversion.completed_at.trim().is_empty(),
+            "selected conversion manifest {} is missing a completion timestamp and is not a finalized conversion",
+            path.display()
+        );
         converted_completion_proof_seen = true;
         converted_record_count += 1;
         converted_canonical_rows += conversion.canonical_rows;
@@ -822,7 +849,7 @@ fn evaluate_universe(
         for (data_type, rows) in conversion.catalog_rows_by_nt_data_type {
             *catalog_rows_by_nt_data_type.entry(data_type).or_insert(0) += rows;
         }
-        catalog_hash = conversion.catalog_hash;
+        catalog_hash = Some(conversion.catalog_hash);
         output_catalog_uri = conversion.output_catalog_uri;
     }
 

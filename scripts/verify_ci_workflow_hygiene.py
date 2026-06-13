@@ -2273,6 +2273,10 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
             token = tokens[index]
             if token in {"-c", "--command"} and index + 1 < len(tokens):
                 return command_tokens(tokens[index + 1])
+            if token.startswith("--command="):
+                return command_tokens(token.split("=", 1)[1])
+            if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+                return command_tokens(token[2:])
             index += 1
         return None
     if executable == "runuser":
@@ -2283,6 +2287,10 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
                 return tokens[index + 1 :]
             if token in {"-c", "--command"} and index + 1 < len(tokens):
                 return command_tokens(tokens[index + 1])
+            if token.startswith("--command="):
+                return command_tokens(token.split("=", 1)[1])
+            if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+                return command_tokens(token[2:])
             if token in {"-u", "--user", "-g", "--group", "-G", "--supp-group", "-s", "--shell"} and index + 1 < len(tokens):
                 index += 2
                 continue
@@ -2522,6 +2530,8 @@ def flock_inner_tokens(tokens: list[str]) -> list[str] | None:
             return command_tokens(tokens[index + 1])
         if token.startswith("--command="):
             return command_tokens(token.split("=", 1)[1])
+        if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+            return command_tokens(token[2:])
         if token in ("-E", "--conflict-exit-code", "-w", "--wait", "--timeout") and index + 1 < len(tokens):
             index += 2
             continue
@@ -2547,6 +2557,8 @@ def flock_command_option_tokens(tokens: list[str]) -> list[str] | None:
             return command_tokens(tokens[index + 1])
         if token.startswith("--command="):
             return command_tokens(token.split("=", 1)[1])
+        if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+            return command_tokens(token[2:])
         if token.startswith("-") and not token.startswith("--") and "c" in token[1:] and index + 1 < len(tokens):
             return command_tokens(tokens[index + 1])
         index += 1
@@ -3980,6 +3992,10 @@ def local_transfer_operands(tokens: list[str], index: int) -> tuple[list[str], s
             target_directory = tail[cursor + 1]
             cursor += 2
             continue
+        if token.startswith("-t") and not token.startswith("--") and len(token) > 2:
+            target_directory = token[2:]
+            cursor += 1
+            continue
         if token.startswith("--target-directory="):
             target_directory = token.split("=", 1)[1]
             cursor += 1
@@ -4198,7 +4214,27 @@ def tar_extracts_s3_archive_to_active_target(
 
 def zip_archive_operands(tokens: list[str], index: int) -> tuple[str, list[str]] | None:
     tail = command_tail_until_boundary(tokens, index + 1)
-    operands = [token for token in tail if token != "--" and not token.startswith("-")]
+    operands: list[str] = []
+    cursor = 0
+    while cursor < len(tail):
+        token = tail[cursor]
+        if token == "--":
+            cursor += 1
+            continue
+        if token in {"-b", "--temp-path", "-P", "--password", "-n", "--suffixes", "-O", "--output-file"} and cursor + 1 < len(tail):
+            cursor += 2
+            continue
+        if token.startswith(("--temp-path=", "--password=", "--suffixes=", "--output-file=")):
+            cursor += 1
+            continue
+        if token.startswith(("-b", "-P", "-n", "-O")) and len(token) > 2:
+            cursor += 1
+            continue
+        if token.startswith("-"):
+            cursor += 1
+            continue
+        operands.append(token)
+        cursor += 1
     if len(operands) < 2:
         return None
     return operands[0], operands[1:]
@@ -4254,6 +4290,15 @@ def unzip_extracts_s3_archive_to_active_target(
             continue
         if token.startswith("--directory="):
             destination = token.split("=", 1)[1]
+            cursor += 1
+            continue
+        if token in {"-x", "--exclude", "-P", "--password"} and cursor + 1 < len(tail):
+            cursor += 2
+            continue
+        if token.startswith(("--exclude=", "--password=")):
+            cursor += 1
+            continue
+        if token.startswith(("-x", "-P")) and len(token) > 2:
             cursor += 1
             continue
         if token == "--" or token.startswith("-"):

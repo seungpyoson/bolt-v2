@@ -1729,6 +1729,10 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
             zip -r cache.zip target
             aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
         """,
+        "active target zipped with option argument before S3 upload": """
+            zip -b /tmp cache.zip target
+            aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
+        """,
         "s3 archive downloaded locally before active target extraction": """
             aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
             tar -xf cache.tar -C target
@@ -1745,19 +1749,40 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
             aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
             unzip cache.zip target/*
         """,
+        "s3 zip extraction skips option argument before archive": """
+            aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
+            unzip -x ignored cache.zip -d target
+        """,
         "s3 download moved to active target through mv target-directory option": """
             aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
             mv -t target s3_cache
+        """,
+        "s3 download moved to active target through concatenated mv target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            mv -ttarget s3_cache
         """,
         "s3 download copied to active target through cp target-directory option": """
             aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
             cp --target-directory=target s3_cache
         """,
+        "s3 download copied to active target through concatenated cp target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            cp -ttarget s3_cache
+        """,
         "s3 transfer hidden behind su command string": """
             su -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
         """,
+        "s3 transfer hidden behind su long command string": """
+            su --command="aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
         "s3 transfer hidden behind sg command string": """
             sg docker -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind sg concatenated command string": """
+            sg docker -c"aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind runuser long command string": """
+            runuser --command="aws s3 cp s3://bolt-v2-active-cache/target.tar target"
         """,
         "s3 transfer hidden behind rustup shell command string": """
             rustup run nightly sh -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"

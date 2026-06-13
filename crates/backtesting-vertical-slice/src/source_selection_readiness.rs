@@ -17,7 +17,7 @@ use crate::hashing::sha256_hex;
 use crate::source_proof::{
     FixtureType, NtMappingStatus, SourceBindingRegistry, SourceProofFidelityClass,
     SourceProofReport, SourceProofStatus, SourceProofUsageScope, SourceSelectionStatus,
-    resolve_source_bindings_path,
+    read_source_binding_registry_from_path,
 };
 
 pub const SOURCE_SELECTION_READINESS_SCHEMA_VERSION: &str = "source-selection-readiness-report.v1";
@@ -124,7 +124,6 @@ pub enum SourceSelectionReadinessError {
     ReadSpec { path: String, error: String },
     ParseSpecToml { path: String, error: String },
     ReadSourceBindings { path: String, error: String },
-    ParseSourceBindingsToml { path: String, error: String },
     ReadSourceProof { path: String, error: String },
     ParseSourceProofJson { path: String, error: String },
     CreateDir { path: String, error: String },
@@ -146,9 +145,6 @@ impl fmt::Display for SourceSelectionReadinessError {
             ),
             Self::ReadSourceBindings { path, error } => {
                 write!(f, "read source-bindings registry {path}: {error}")
-            }
-            Self::ParseSourceBindingsToml { path, error } => {
-                write!(f, "parse source-bindings registry TOML {path}: {error}")
             }
             Self::ReadSourceProof { path, error } => {
                 write!(f, "read source proof {path}: {error}")
@@ -333,22 +329,14 @@ pub fn write_source_selection_readiness_report_from_spec_file(
         }
     })?;
 
-    let resolved_source_bindings_path = resolve_source_bindings_path(&spec.source_bindings_path);
     let source_bindings_path = spec.source_bindings_path.display().to_string();
-    let source_bindings_text =
-        fs::read_to_string(&resolved_source_bindings_path).map_err(|error| {
+    let source_bindings_registry =
+        read_source_binding_registry_from_path(&spec.source_bindings_path).map_err(|error| {
             SourceSelectionReadinessError::ReadSourceBindings {
-                path: source_bindings_path.clone(),
+                path: source_bindings_path,
                 error: error.to_string(),
             }
         })?;
-    let source_bindings_registry = SourceBindingRegistry::from_toml_str(&source_bindings_text)
-        .map_err(
-            |error| SourceSelectionReadinessError::ParseSourceBindingsToml {
-                path: source_bindings_path,
-                error: error.to_string(),
-            },
-        )?;
 
     let source_proof_path = spec.source_proof_path.display().to_string();
     let source_proof_bytes = fs::read(&spec.source_proof_path).map_err(|error| {

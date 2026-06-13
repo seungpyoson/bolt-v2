@@ -17,7 +17,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::atomic_artifact_write::atomic_write;
-use crate::source_proof::{SourceBindingRegistry, SourceProofReport, resolve_source_bindings_path};
+use crate::source_proof::{
+    SourceBindingRegistry, SourceProofReport, read_source_binding_registry_from_path,
+};
 
 pub const SOURCE_PROOF_ADMISSIBILITY_SCHEMA_VERSION: &str = "source-proof-admissibility-report.v1";
 pub const SOURCE_PROOF_ADMISSIBILITY_REPORT_FILE: &str = "source-proof-admissibility-report.json";
@@ -223,10 +225,6 @@ pub enum SourceProofAdmissibilityFileError {
         path: String,
         error: String,
     },
-    ParseSourceBindingsToml {
-        path: String,
-        error: String,
-    },
     ReadSourceProof {
         proof_uri: String,
         path: String,
@@ -253,9 +251,6 @@ impl fmt::Display for SourceProofAdmissibilityFileError {
             ),
             Self::ReadSourceBindings { path, error } => {
                 write!(f, "read source-bindings registry {path}: {error}")
-            }
-            Self::ParseSourceBindingsToml { path, error } => {
-                write!(f, "parse source-bindings registry TOML {path}: {error}")
             }
             Self::ReadSourceProof {
                 proof_uri,
@@ -437,22 +432,14 @@ pub fn write_source_proof_admissibility_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
-    let resolved_source_bindings_path = resolve_source_bindings_path(&spec.source_bindings_path);
     let source_bindings_path = spec.source_bindings_path.display().to_string();
-    let source_bindings_text =
-        fs::read_to_string(&resolved_source_bindings_path).map_err(|error| {
+    let source_bindings_registry =
+        read_source_binding_registry_from_path(&spec.source_bindings_path).map_err(|error| {
             SourceProofAdmissibilityFileError::ReadSourceBindings {
-                path: source_bindings_path.clone(),
+                path: source_bindings_path,
                 error: error.to_string(),
             }
         })?;
-    let source_bindings_registry = SourceBindingRegistry::from_toml_str(&source_bindings_text)
-        .map_err(
-            |error| SourceProofAdmissibilityFileError::ParseSourceBindingsToml {
-                path: source_bindings_path,
-                error: error.to_string(),
-            },
-        )?;
     write_source_proof_admissibility_report_from_files(
         &spec.output_dir,
         spec.report_id,

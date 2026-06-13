@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::source_proof::{
     AcceptanceScope, SourceBindingRegistry, SourceProofReport, SourceProofStatus,
-    SourceProofUsageScope, resolve_source_bindings_path,
+    SourceProofUsageScope, read_source_binding_registry_from_path,
 };
 
 pub const BACKFILL_SOURCE_PROOF_SCOPE_SCHEMA_VERSION: &str =
@@ -110,7 +110,6 @@ pub enum BackfillSourceProofScopeError {
     ReadManifest { path: String, error: String },
     ParseManifestJson { path: String, error: String },
     ReadSourceBindings { path: String, error: String },
-    ParseSourceBindingsToml { path: String, error: String },
     CreateDir { path: String, error: String },
     ReadExisting { path: String, error: String },
     Write { path: String, error: String },
@@ -142,9 +141,6 @@ impl fmt::Display for BackfillSourceProofScopeError {
             }
             Self::ReadSourceBindings { path, error } => {
                 write!(f, "read source-bindings registry {path}: {error}")
-            }
-            Self::ParseSourceBindingsToml { path, error } => {
-                write!(f, "parse source-bindings registry TOML {path}: {error}")
             }
             Self::CreateDir { path, error } => write!(
                 f,
@@ -241,22 +237,14 @@ pub fn write_backfill_source_proof_scope_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
-    let resolved_source_bindings_path = resolve_source_bindings_path(&spec.source_bindings_path);
     let source_bindings_path = spec.source_bindings_path.display().to_string();
-    let source_bindings_text =
-        fs::read_to_string(&resolved_source_bindings_path).map_err(|error| {
+    let source_bindings_registry =
+        read_source_binding_registry_from_path(&spec.source_bindings_path).map_err(|error| {
             BackfillSourceProofScopeError::ReadSourceBindings {
-                path: source_bindings_path.clone(),
+                path: source_bindings_path,
                 error: error.to_string(),
             }
         })?;
-    let source_bindings_registry = SourceBindingRegistry::from_toml_str(&source_bindings_text)
-        .map_err(
-            |error| BackfillSourceProofScopeError::ParseSourceBindingsToml {
-                path: source_bindings_path,
-                error: error.to_string(),
-            },
-        )?;
     let source_proof_path = spec.source_proof_path.display().to_string();
     let source_proof_text = fs::read_to_string(&spec.source_proof_path).map_err(|error| {
         BackfillSourceProofScopeError::ReadSourceProof {

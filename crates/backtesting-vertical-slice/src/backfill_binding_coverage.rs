@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::backfill_coverage::{BackfillCoverageLedger, BackfillCoverageStatus};
-use crate::source_proof::SourceBindingRegistry;
+use crate::source_proof::{SourceBindingRegistry, read_source_binding_registry_from_path};
 
 pub const BACKFILL_BINDING_COVERAGE_SCHEMA_VERSION: &str = "backfill-binding-coverage-report.v1";
 pub const BACKFILL_BINDING_COVERAGE_REPORT_FILE: &str = "backfill-binding-coverage-report.json";
@@ -188,13 +188,14 @@ pub fn write_backfill_binding_coverage_report_from_spec_file(
         }
     })?;
     let source_bindings_path = spec.source_bindings_path.display().to_string();
-    let source_bindings_text = fs::read_to_string(&spec.source_bindings_path).map_err(|error| {
-        BackfillBindingCoverageError::ReadSourceBindings {
-            path: source_bindings_path.clone(),
-            error: error.to_string(),
-        }
-    })?;
-    let source_bindings = parse_source_bindings(&source_bindings_text, &source_bindings_path)?;
+    let registry =
+        read_source_binding_registry_from_path(&spec.source_bindings_path).map_err(|error| {
+            BackfillBindingCoverageError::ReadSourceBindings {
+                path: source_bindings_path.clone(),
+                error: error.to_string(),
+            }
+        })?;
+    let source_bindings = source_bindings_from_registry(&registry, &source_bindings_path)?;
     let ledger_path = spec.coverage_ledger_path.display().to_string();
     let ledger_bytes = fs::read(&spec.coverage_ledger_path).map_err(|error| {
         BackfillBindingCoverageError::ReadLedger {
@@ -433,6 +434,13 @@ fn parse_source_bindings(
             error: error.to_string(),
         }
     })?;
+    source_bindings_from_registry(&registry, path)
+}
+
+fn source_bindings_from_registry(
+    registry: &SourceBindingRegistry,
+    path: &str,
+) -> Result<Vec<SourceBinding>, BackfillBindingCoverageError> {
     registry
         .all_binding_metadata()
         .into_iter()

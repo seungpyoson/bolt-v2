@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    source_proof::{EvidenceState, SourceBindingRegistry, resolve_source_bindings_path},
+    source_proof::{EvidenceState, SourceBindingRegistry, read_source_binding_registry_from_path},
     source_proof_legacy_derivability::{
         SourceProofLegacyDerivabilityIssue, SourceProofLegacyDerivabilityRecord,
         SourceProofLegacyDerivabilityReport, SourceProofLegacyDerivableField,
@@ -106,7 +106,6 @@ pub enum SourceProofMigrationPreflightError {
     ReadSpec { path: String, error: String },
     ParseSpecToml { path: String, error: String },
     ReadSourceBindings { path: String, error: String },
-    ParseSourceBindingsToml { path: String, error: String },
     ReadDerivabilityReport { path: String, error: String },
     ParseDerivabilityReportJson { path: String, error: String },
     CreateDir { path: String, error: String },
@@ -131,9 +130,6 @@ impl fmt::Display for SourceProofMigrationPreflightError {
             ),
             Self::ReadSourceBindings { path, error } => {
                 write!(f, "read source-bindings registry {path}: {error}")
-            }
-            Self::ParseSourceBindingsToml { path, error } => {
-                write!(f, "parse source-bindings registry TOML {path}: {error}")
             }
             Self::ReadDerivabilityReport { path, error } => {
                 write!(f, "read source-proof derivability report {path}: {error}")
@@ -297,22 +293,14 @@ pub fn write_source_proof_migration_preflight_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
-    let resolved_source_bindings_path = resolve_source_bindings_path(&spec.source_bindings_path);
     let source_bindings_path = spec.source_bindings_path.display().to_string();
-    let source_bindings_text =
-        fs::read_to_string(&resolved_source_bindings_path).map_err(|error| {
+    let source_bindings_registry =
+        read_source_binding_registry_from_path(&spec.source_bindings_path).map_err(|error| {
             SourceProofMigrationPreflightError::ReadSourceBindings {
-                path: source_bindings_path.clone(),
+                path: source_bindings_path,
                 error: error.to_string(),
             }
         })?;
-    let source_bindings_registry = SourceBindingRegistry::from_toml_str(&source_bindings_text)
-        .map_err(
-            |error| SourceProofMigrationPreflightError::ParseSourceBindingsToml {
-                path: source_bindings_path,
-                error: error.to_string(),
-            },
-        )?;
     let report_path = spec.derivability_report_path.display().to_string();
     let report_bytes = fs::read(&spec.derivability_report_path).map_err(|error| {
         SourceProofMigrationPreflightError::ReadDerivabilityReport {

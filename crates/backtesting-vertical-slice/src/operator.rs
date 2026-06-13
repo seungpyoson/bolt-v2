@@ -75,7 +75,7 @@ use crate::{
     },
     source_proof::{
         AcceptedDataset, IngestManifestObjectRecord, SourceBindingRegistry,
-        SourceProofFidelityClass, SourceProofReport, resolve_source_bindings_path,
+        SourceProofFidelityClass, SourceProofReport, read_source_binding_registry_from_path,
         select_accepted_dataset_with_registry,
     },
 };
@@ -494,11 +494,8 @@ fn ensure_object_within_raw_payload_limit(
 }
 
 fn read_source_binding_registry(path: &Path) -> Result<SourceBindingRegistry> {
-    let resolved_path = resolve_source_bindings_path(path);
-    let text = fs::read_to_string(&resolved_path)
-        .with_context(|| format!("read source-bindings registry {}", path.display()))?;
-    SourceBindingRegistry::from_toml_str(&text)
-        .with_context(|| format!("parse source-bindings registry {}", path.display()))
+    read_source_binding_registry_from_path(path)
+        .with_context(|| format!("read source-bindings registry {}", path.display()))
 }
 
 fn accepted_dataset_for_run_spec_hash(

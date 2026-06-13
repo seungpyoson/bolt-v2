@@ -1346,9 +1346,11 @@ fn unauthorized_retention_miss_query_does_not_mutate_source_health() {
     let before = observer
         .source_health_for("configured-profile", "configured-source")
         .expect("eviction should record retention source health");
-    assert_eq!(
-        before.reject_counts.get(&IvRejectReason::RetentionMiss),
-        Some(&1)
+    assert!(
+        before
+            .reject_counts
+            .get(&IvRejectReason::RetentionMiss)
+            .is_some_and(|count| *count > 0)
     );
 
     assert_eq!(

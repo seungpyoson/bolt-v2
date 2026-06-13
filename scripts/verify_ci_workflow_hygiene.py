@@ -3653,13 +3653,21 @@ def verify_source_fence_static_recipe(justfile_text: str) -> list[str]:
     source_fence_dependencies, source_fence_body = recipes["source-fence"]
     if "source-fence-static" not in source_fence_dependencies:
         errors.append("justfile source-fence must depend on source-fence-static")
-    static_body = "\n".join(
+    static_lines = [
         line for line in (strip_comment(raw_line).strip() for raw_line in recipes["source-fence-static"][1]) if line
-    )
+    ]
+    static_body = "\n".join(static_lines)
     if command_has_managed_compile_heavy_invocation(static_body) or re.search(r"\brust_verification\.py\b[^\n]*\bcargo\b", static_body):
         errors.append("justfile source-fence-static must not invoke wrapper-routed Cargo")
     if "cargo fetch" in static_body or re.search(r"\bscripts/verify_runtime_capture_yaml\.py\b", static_body):
         errors.append("justfile source-fence-static must stop before cargo fetch and runtime capture verification")
+    for command in (
+        "python3 scripts/test_lane_governor.py",
+        "python3 scripts/test_verify_lane_governance.py",
+        "python3 scripts/verify_lane_governance.py",
+    ):
+        if command not in static_lines:
+            errors.append(f"justfile source-fence-static must run {command}")
     full_body = "\n".join(source_fence_body)
     if "verify_runtime_capture_yaml.py" not in full_body:
         errors.append("justfile source-fence must keep runtime capture verification in the full recipe")
@@ -6737,4 +6745,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     sys.exit(main())

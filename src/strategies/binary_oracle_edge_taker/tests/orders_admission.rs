@@ -17,6 +17,7 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -57,18 +58,13 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
         &order,
     );
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        strategy.submit_order_with_decision_evidence(
+    strategy
+        .submit_order_with_decision_evidence(
             intent,
             order,
             SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-    }));
-
-    assert!(
-        result.is_err(),
-        "test strategy is intentionally not registered with NT; ungated admission should reach NT submit"
-    );
+        .expect("ungated admission should reach NT submit");
     assert_eq!(submit_admission.admitted_order_count(), 1);
 }
 
@@ -80,13 +76,13 @@ fn provider_limited_submit_admission_allows_nt_submit_after_evidence() {
     );
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee keeps the notional (0.50) under the 1.0 cap so admission
-    // succeeds; the test then proves the submit reaches NT (and panics
-    // because the strategy is intentionally unregistered).
+    // succeeds; the test then proves the registered submit reaches NT.
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -127,18 +123,13 @@ fn provider_limited_submit_admission_allows_nt_submit_after_evidence() {
         &order,
     );
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        strategy.submit_order_with_decision_evidence(
+    strategy
+        .submit_order_with_decision_evidence(
             intent,
             order,
             SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-    }));
-
-    assert!(
-        result.is_err(),
-        "test strategy is intentionally not registered with NT; reaching NT submit should panic"
-    );
+        .expect("provider-limited admission should reach NT submit");
     assert_eq!(submit_admission.admitted_order_count(), 1);
 }
 
@@ -156,7 +147,7 @@ fn submit_context_routes_non_empty_nt_params_to_submit_order() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
-    let _cache = register_test_strategy(&mut strategy);
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let (risk_handler, risk_messages) =
         get_typed_into_message_saving_handler::<TradingCommand>(None);
     msgbus::register_trading_command_endpoint(
@@ -221,6 +212,7 @@ fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(2.0, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -835,6 +827,7 @@ fn over_notional_submit_admission_rejects_before_nt_submit() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(2.0, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -897,9 +890,7 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
     // 1.0 * (1 + 25/10000) = 1.0025, set EXACTLY equal to the cap. The
     // admission gate rejects only when notional STRICTLY exceeds the cap
     // (`request.notional > report.max_notional_per_order()`), so this must
-    // be ADMITTED. The strategy is intentionally unregistered, so reaching
-    // NT submit after a successful admission panics — proving admission
-    // passed.
+    // be ADMITTED and reach NT submit.
     //
     // NOTE: this is NOT a fee-discrimination test — with the cap set to the
     // fee-inclusive value, the raw 1.0 notional admits with OR without the
@@ -918,6 +909,7 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(1.0, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -958,18 +950,13 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
         &order,
     );
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        strategy.submit_order_with_decision_evidence(
+    strategy
+        .submit_order_with_decision_evidence(
             intent,
             order,
             SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-    }));
-
-    assert!(
-        result.is_err(),
-        "fee-inclusive notional exactly at the cap must be admitted and reach NT submit (which panics on the unregistered test strategy)"
-    );
+        .expect("fee-inclusive notional exactly at the cap must reach NT submit");
     assert_eq!(
         submit_admission.admitted_order_count(),
         1,
@@ -1003,6 +990,7 @@ fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(1.0, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -1068,9 +1056,7 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
     // (1.001) as the reject test, but the fee is ZERO so no scaling is
     // applied:
     //   admission notional = 1.0000 * (1 + 0/10000) = 1.0000 <= 1.001
-    // and the order is ADMITTED. The strategy is intentionally unregistered,
-    // so reaching NT submit after a successful admission panics — proving
-    // admission passed. Together with the reject test this pair proves the
+    // and the order is ADMITTED. Together with the reject test this pair proves the
     // rejection there is caused by the fee scaling specifically, not by the
     // raw notional (which admits at this cap when the fee is zero).
     let submit_admission = submit_admission_with_provider_cap(
@@ -1083,6 +1069,7 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(1.0, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -1123,18 +1110,13 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
         &order,
     );
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        strategy.submit_order_with_decision_evidence(
+    strategy
+        .submit_order_with_decision_evidence(
             intent,
             order,
             SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-    }));
-
-    assert!(
-        result.is_err(),
-        "zero-fee notional below the cap must be admitted and reach NT submit (which panics on the unregistered test strategy)"
-    );
+        .expect("zero-fee notional below the cap must reach NT submit");
     assert_eq!(
         submit_admission.admitted_order_count(),
         1,
@@ -1175,6 +1157,7 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
         Arc::new(RecordingDecisionEvidenceWriter),
         submit_admission.clone(),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -1250,11 +1233,11 @@ fn quote_quantity_entry_submission_is_unsupported_executable_shape() {
         vec![
             EntryPricingBlockReason::ExecutableEdgeUnavailable(
                 OutcomeSide::Up,
-                ExecutableEdgeBlockReason::UnsupportedOrderShape
+                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
             ),
             EntryPricingBlockReason::ExecutableEdgeUnavailable(
                 OutcomeSide::Down,
-                ExecutableEdgeBlockReason::UnsupportedOrderShape
+                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
             ),
         ]
     );

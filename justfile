@@ -162,6 +162,9 @@ check-aarch64: check-workspace require-rust-verification-owner
 verify-remote: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" verify-remote --repo "{{repo_root}}"
 
+ci-runner-minutes *args:
+    python3 scripts/ubicloud_runner_minutes.py {{args}}
+
 source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/test_verify_bolt_v3_runtime_literals.py
     python3 scripts/verify_bolt_v3_runtime_literals.py
@@ -249,6 +252,9 @@ ci-lint-workflow:
         failed=1
     fi
     if ! python3 scripts/test_find_same_sha_main_evidence.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_ubicloud_runner_minutes.py; then
         failed=1
     fi
     if ! python3 scripts/test_verify_ci_path_filters.py; then
@@ -382,3 +388,11 @@ setup:
     echo "Zig {{zig_version}} already installed"
 
     echo "Setup complete."
+
+# Create the CI runner debug SSH key in 1Password and publish SSH_PUBLIC_KEY to GitHub.
+ci-debug-ssh-bootstrap:
+    python3 scripts/sync_ci_debug_ssh_secret.py bootstrap
+
+# Publish the CI runner debug SSH public key from 1Password to GitHub Actions.
+ci-debug-ssh-sync:
+    python3 scripts/sync_ci_debug_ssh_secret.py sync

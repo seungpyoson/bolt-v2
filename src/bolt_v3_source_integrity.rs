@@ -242,8 +242,12 @@ mod tests {
     // Re-derived after follow-up cleanup separated sized executable-edge
     // evidence, probed executable fees at VWAP, coupled slippage/depth config,
     // labeled executable-edge Debug output, and named notional tolerance.
+    // Re-derived after splitting executable cost from binary outcome edge math
+    // and moving entry limit-notional guarding into shared submit admission.
+    // Re-derived after review cleanup single-sourced the cents-per-share unit
+    // conversion in shared numeric helpers.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "a24648f3e212b9d23495d7ee0dd50fa0f3a20805c0ddb73c155e7d31033e350b";
+        "3cea08f65a9051d70c86dcbc4379f8ae0410b00e4f8c0bb9f9b307e54a46f11b";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -252,8 +256,10 @@ mod tests {
     // Re-derived again after removing vestigial retired gate arming constructor
     // terminology from submit-admission construction.
     // Re-derived again after adding checked fee-inclusive admission arithmetic.
+    // Re-derived after moving entry limit-notional guarding into shared submit
+    // admission.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "986e4e99c865a9b742cdaa8d0a34cc8cadfcb6633012b4915042a0ac5c9d506a";
+        "765681e898d3e6ab3c957031b30d2aefe82722ff2dccabfe6bdd85b3ee0b9131";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -364,7 +370,8 @@ mod tests {
             &[
                 "src/strategies/binary_oracle_edge_taker",
                 "src/bolt_v3_book_sizing.rs",
-                "src/bolt_v3_executable_edge.rs",
+                "src/bolt_v3_binary_outcome_edge.rs",
+                "src/bolt_v3_executable_cost.rs",
             ]
         );
     }

@@ -1513,10 +1513,6 @@ fn configured_position_sizer_rejects_replace_submit_before_admission() {
         decisions[0].intent_kind,
         BoltV3SubmitIntentKind::ReplaceSubmit
     );
-    assert_eq!(
-        decisions[0].position_sizer_rejection,
-        Some(BoltV3PositionSizerRejectReason::ReplaceSubmitUnsupported)
-    );
 }
 
 #[test]

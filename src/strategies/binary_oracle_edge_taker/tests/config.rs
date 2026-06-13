@@ -361,6 +361,21 @@ fn runtime_config_parse_accepts_submit_orders_switch() {
 }
 
 #[test]
+fn runtime_config_parse_rejects_missing_submit_orders() {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .remove("submit_orders");
+
+    let mut errors = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+    assert!(
+        format!("{errors:?}").contains("submit_orders"),
+        "a config that omits submit_orders must fail validation (fail-closed, no default): {errors:#?}"
+    );
+}
+
+#[test]
 fn strategy_core_uses_explicit_configured_nt_strategy_fields() {
     let raw = valid_raw_config();
     let mut errors = Vec::new();

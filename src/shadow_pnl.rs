@@ -179,6 +179,24 @@ pub fn build_shadow_pnl_report(
             gross / notional * Decimal::from(SHADOW_PNL_BASIS_POINTS_DENOMINATOR)
         };
         let won = selected_side.eq_ignore_ascii_case(settlement.winning_side.as_str());
+        // winning_side (which side resolved) and settlement_price (the realized
+        // payout) describe the SAME settlement and must agree. Fail loud on operator
+        // data where they contradict, rather than emit a self-inconsistent row (a
+        // counted win with negative PnL, or a counted loss with positive PnL).
+        if won && settlement_price < entry_price {
+            return Err(anyhow!(
+                "settlement inconsistency for {}: winning_side {} marks a win but settlement_price {settlement_price} is below entry_price {entry_price}",
+                trade.intent.client_order_id,
+                settlement.winning_side
+            ));
+        }
+        if !won && settlement_price > entry_price {
+            return Err(anyhow!(
+                "settlement inconsistency for {}: winning_side {} marks a loss but settlement_price {settlement_price} is above entry_price {entry_price}",
+                trade.intent.client_order_id,
+                settlement.winning_side
+            ));
+        }
 
         let accumulator = accumulators
             .entry((settlement.settlement_date, settlement.asset.clone()))
@@ -238,14 +256,26 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
                 let snapshot = envelope.snapshot.ok_or_else(|| {
                     anyhow!("missing snapshot payload at decision evidence line {line_number}")
                 })?;
-                snapshots.insert(snapshot.client_order_id.clone(), snapshot);
+                insert_unique_evidence(
+                    &mut snapshots,
+                    snapshot.client_order_id.clone(),
+                    snapshot,
+                    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
+                    line_number,
+                )?;
             }
             BOLT_V3_ORDER_INTENT_RECORD_KIND => {
                 let intent = envelope.intent.ok_or_else(|| {
                     anyhow!("missing intent payload at decision evidence line {line_number}")
                 })?;
                 if intent.intent_kind == BoltV3OrderIntentKind::Entry {
-                    intents.insert(intent.client_order_id.clone(), intent);
+                    insert_unique_evidence(
+                        &mut intents,
+                        intent.client_order_id.clone(),
+                        intent,
+                        BOLT_V3_ORDER_INTENT_RECORD_KIND,
+                        line_number,
+                    )?;
                 }
             }
             BOLT_V3_ADMISSION_DECISION_RECORD_KIND => {
@@ -257,7 +287,13 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
                 if decision.intent_kind == BoltV3SubmitIntentKind::Entry
                     && decision.outcome == BoltV3AdmissionOutcome::Admitted
                 {
-                    admitted_entries.insert(decision.client_order_id.clone(), decision);
+                    insert_unique_evidence(
+                        &mut admitted_entries,
+                        decision.client_order_id.clone(),
+                        decision,
+                        BOLT_V3_ADMISSION_DECISION_RECORD_KIND,
+                        line_number,
+                    )?;
                 }
             }
             _ => {}
@@ -280,6 +316,28 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
             .cmp(&right.intent.client_order_id)
     });
     Ok(chains)
+}
+
+/// Insert decision evidence keyed by client_order_id, failing loud on a duplicate.
+///
+/// The settlement join treats client_order_id as the unique identity of a
+/// would-be trade. Decision evidence accumulates in append-mode JSONL across
+/// process runs, so a reused client_order_id (e.g. a non-UUID id scheme after a
+/// restart) would otherwise silently overwrite an earlier would-be trade. Reject
+/// the ambiguity instead of dropping a trade.
+fn insert_unique_evidence<V>(
+    map: &mut HashMap<String, V>,
+    client_order_id: String,
+    value: V,
+    record_kind: &str,
+    line_number: usize,
+) -> Result<()> {
+    if map.insert(client_order_id.clone(), value).is_some() {
+        return Err(anyhow!(
+            "duplicate {record_kind} decision evidence for client_order_id {client_order_id} at line {line_number}; cannot disambiguate would-be trades"
+        ));
+    }
+    Ok(())
 }
 
 fn read_settlements(path: &Path) -> Result<Vec<ShadowSettlementEvidence>> {
@@ -373,10 +431,10 @@ fn settlement_for_trade<'a>(
     .ok_or_else(|| anyhow!("missing settlement for {client_order_id}"))
 }
 
-fn single_settlement_match<'a>(
-    settlements: Vec<&'a ShadowSettlementEvidence>,
+fn single_settlement_match(
+    settlements: Vec<&ShadowSettlementEvidence>,
     ambiguous_message: String,
-) -> Result<Option<&'a ShadowSettlementEvidence>> {
+) -> Result<Option<&ShadowSettlementEvidence>> {
     match settlements.len() {
         0 => Ok(None),
         1 => Ok(Some(settlements[0])),

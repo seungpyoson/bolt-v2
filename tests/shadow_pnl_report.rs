@@ -304,6 +304,259 @@ fn shadow_pnl_report_escapes_csv_asset_fields() {
     );
 }
 
+#[test]
+fn shadow_pnl_report_rejects_trade_with_no_matching_settlement() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("order-intents.jsonl");
+    let settlements_path = temp.path().join("shadow-settlements.jsonl");
+    let mut lines = Vec::new();
+    push_trade_lines(
+        &mut lines,
+        TradeFixture {
+            recorded_at_utc_ns: 1,
+            client_order_id: "client-order-unsettled",
+            market_id: "market-btc",
+            instrument_id: "BTC-UP.POLYMARKET",
+            selected_side: "up",
+            expected_edge_basis_points: "150",
+            fee_rate_basis_points: "100",
+            price: "0.40",
+            quantity: "10",
+        },
+    );
+    std::fs::write(&evidence_path, lines.join("\n") + "\n").expect("fixture evidence should write");
+    // The only settlement is for a different instrument, so the BTC-UP trade has no match.
+    std::fs::write(
+        &settlements_path,
+        serde_json::to_string(&serde_json::json!({
+            "settlement_date": "2026-06-10",
+            "asset": "BTC",
+            "market_id": "market-btc",
+            "instrument_id": "BTC-DOWN.POLYMARKET",
+            "winning_side": "up",
+            "settlement_price": "0.00"
+        }))
+        .expect("settlement fixture should serialize")
+            + "\n",
+    )
+    .expect("fixture settlements should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .args([
+            "--evidence-jsonl",
+            evidence_path.to_str().expect("utf-8 path"),
+            "--settlements-jsonl",
+            settlements_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("shadow_pnl_report should run");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(
+        stderr.contains("missing settlement for client-order-unsettled"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn shadow_pnl_report_rejects_duplicate_exact_market_id_settlements() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("order-intents.jsonl");
+    let settlements_path = temp.path().join("shadow-settlements.jsonl");
+    let mut lines = Vec::new();
+    push_trade_lines(
+        &mut lines,
+        TradeFixture {
+            recorded_at_utc_ns: 1,
+            client_order_id: "client-order-dup-market",
+            market_id: "market-btc",
+            instrument_id: "BTC-UP.POLYMARKET",
+            selected_side: "up",
+            expected_edge_basis_points: "150",
+            fee_rate_basis_points: "100",
+            price: "0.40",
+            quantity: "10",
+        },
+    );
+    std::fs::write(&evidence_path, lines.join("\n") + "\n").expect("fixture evidence should write");
+    // Two settlements share the same instrument_id AND market_id: the exact-match
+    // branch cannot pick one and must fail instead of choosing by file order.
+    std::fs::write(
+        &settlements_path,
+        [
+            serde_json::json!({
+                "settlement_date": "2026-06-10",
+                "asset": "BTC",
+                "market_id": "market-btc",
+                "instrument_id": "BTC-UP.POLYMARKET",
+                "winning_side": "up",
+                "settlement_price": "1.00"
+            }),
+            serde_json::json!({
+                "settlement_date": "2026-06-10",
+                "asset": "BTC",
+                "market_id": "market-btc",
+                "instrument_id": "BTC-UP.POLYMARKET",
+                "winning_side": "up",
+                "settlement_price": "1.00"
+            }),
+        ]
+        .into_iter()
+        .map(|value| serde_json::to_string(&value).expect("settlement fixture should serialize"))
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n",
+    )
+    .expect("fixture settlements should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .args([
+            "--evidence-jsonl",
+            evidence_path.to_str().expect("utf-8 path"),
+            "--settlements-jsonl",
+            settlements_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("shadow_pnl_report should run");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(
+        stderr.contains("ambiguous settlement for client-order-dup-market: duplicate market_id match"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn shadow_pnl_report_rejects_settlement_inconsistent_with_winning_side() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("order-intents.jsonl");
+    let settlements_path = temp.path().join("shadow-settlements.jsonl");
+    let mut lines = Vec::new();
+    push_trade_lines(
+        &mut lines,
+        TradeFixture {
+            recorded_at_utc_ns: 1,
+            client_order_id: "client-order-inconsistent",
+            market_id: "market-btc",
+            instrument_id: "BTC-UP.POLYMARKET",
+            selected_side: "up",
+            expected_edge_basis_points: "150",
+            fee_rate_basis_points: "100",
+            price: "0.60",
+            quantity: "10",
+        },
+    );
+    std::fs::write(&evidence_path, lines.join("\n") + "\n").expect("fixture evidence should write");
+    // winning_side "up" marks a win for the "up" selection, but settlement_price 0.00
+    // is a loss: the two fields contradict and the report must fail loud.
+    std::fs::write(
+        &settlements_path,
+        serde_json::to_string(&serde_json::json!({
+            "settlement_date": "2026-06-10",
+            "asset": "BTC",
+            "market_id": "market-btc",
+            "instrument_id": "BTC-UP.POLYMARKET",
+            "winning_side": "up",
+            "settlement_price": "0.00"
+        }))
+        .expect("settlement fixture should serialize")
+            + "\n",
+    )
+    .expect("fixture settlements should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .args([
+            "--evidence-jsonl",
+            evidence_path.to_str().expect("utf-8 path"),
+            "--settlements-jsonl",
+            settlements_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("shadow_pnl_report should run");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(
+        stderr.contains("settlement inconsistency for client-order-inconsistent")
+            && stderr.contains("marks a win"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn shadow_pnl_report_rejects_duplicate_client_order_id() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("order-intents.jsonl");
+    let settlements_path = temp.path().join("shadow-settlements.jsonl");
+    let mut lines = Vec::new();
+    // Two distinct would-be entries reuse the same client_order_id; the join must
+    // refuse rather than silently overwrite one would-be trade.
+    push_trade_lines(
+        &mut lines,
+        TradeFixture {
+            recorded_at_utc_ns: 1,
+            client_order_id: "client-order-collision",
+            market_id: "market-btc",
+            instrument_id: "BTC-UP.POLYMARKET",
+            selected_side: "up",
+            expected_edge_basis_points: "150",
+            fee_rate_basis_points: "100",
+            price: "0.40",
+            quantity: "10",
+        },
+    );
+    push_trade_lines(
+        &mut lines,
+        TradeFixture {
+            recorded_at_utc_ns: 4,
+            client_order_id: "client-order-collision",
+            market_id: "market-btc",
+            instrument_id: "BTC-UP.POLYMARKET",
+            selected_side: "up",
+            expected_edge_basis_points: "150",
+            fee_rate_basis_points: "100",
+            price: "0.40",
+            quantity: "10",
+        },
+    );
+    std::fs::write(&evidence_path, lines.join("\n") + "\n").expect("fixture evidence should write");
+    std::fs::write(
+        &settlements_path,
+        serde_json::to_string(&serde_json::json!({
+            "settlement_date": "2026-06-10",
+            "asset": "BTC",
+            "market_id": "market-btc",
+            "instrument_id": "BTC-UP.POLYMARKET",
+            "winning_side": "up",
+            "settlement_price": "1.00"
+        }))
+        .expect("settlement fixture should serialize")
+            + "\n",
+    )
+    .expect("fixture settlements should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .args([
+            "--evidence-jsonl",
+            evidence_path.to_str().expect("utf-8 path"),
+            "--settlements-jsonl",
+            settlements_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("shadow_pnl_report should run");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(
+        stderr.contains(
+            "duplicate strategy_input_snapshot decision evidence for client_order_id client-order-collision"
+        ),
+        "{stderr}"
+    );
+}
+
 fn fixture_evidence_jsonl() -> String {
     let mut lines = Vec::new();
     push_trade_lines(

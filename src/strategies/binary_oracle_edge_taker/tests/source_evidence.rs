@@ -925,6 +925,49 @@ fn submit_orders_false_exit_keeps_pending_exit_between_would_be_exits() {
 }
 
 #[test]
+fn submit_orders_false_surfaces_admission_rejection_and_clears_pending_entry() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission.clone(),
+    );
+    strategy.config.submit_orders = false;
+    register_test_strategy_with_active_instruments(&mut strategy);
+
+    let error = strategy
+        .try_submit_entry_order(1_200)
+        .expect_err("a shadow admission rejection must still surface as Err via the non-consuming path");
+    assert!(
+        error.to_string().contains("notional cap is exceeded"),
+        "{error:#}"
+    );
+    assert_eq!(
+        strategy.exposure_occupancy(),
+        None,
+        "a rejected shadow entry must clear pending-entry exposure, not latch a phantom order"
+    );
+    assert_eq!(
+        submit_admission.admitted_order_count(),
+        0,
+        "a rejected shadow entry must not consume live submit capacity"
+    );
+    let admission_outcomes = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::AdmissionDecision(admission) => Some(admission.outcome),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        admission_outcomes,
+        vec![crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::RejectedNotionalCapExceeded],
+        "a rejected shadow entry must still record the rejected admission decision"
+    );
+}
+
+#[test]
 fn strategy_input_evidence_records_realized_volatility_unknown_source_rejections() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());

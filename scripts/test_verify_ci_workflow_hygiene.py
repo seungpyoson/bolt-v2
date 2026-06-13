@@ -4742,6 +4742,32 @@ def main() -> int:
         ),
     )
     assert_error(
+        "ci-provenance-emit must record nextest fingerprint when present",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                "          pattern: nextest-archive-fingerprint-*",
+                "          pattern: nextest-archive-fingerprint-backup-*",
+            ),
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+            "          printf '%s\\n' 'pattern: nextest-archive-fingerprint-*'\n"
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must record nextest fingerprint when present",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                "        continue-on-error: true",
+                "        continue-on-error: false",
+            ),
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+            "          printf '%s\\n' 'continue-on-error: true'\n"
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
         "actions/upload-artifact must be pinned to a 40-character SHA",
         replace_once(
             BASE_WORKFLOW,

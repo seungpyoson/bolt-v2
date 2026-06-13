@@ -594,6 +594,11 @@ def assert_sensitive_headers_only_survive_same_https_origin_redirects() -> None:
         "https://api.GITHUB.com/repos/owner/repo/runs",
     ):
         raise AssertionError("case-only host redirects and default HTTPS ports should preserve GitHub API headers")
+    if not preserve(
+        "https://user:pass@api.github.com/repos/owner/repo/actions",
+        "https://user:pass@api.github.com/repos/owner/repo/runs",
+    ):
+        raise AssertionError("unchanged same-origin userinfo should preserve GitHub API headers")
     if preserve(
         "https://api.github.com/repos/owner/repo/actions",
         "http://api.github.com/repos/owner/repo/runs",
@@ -910,7 +915,7 @@ def assert_complete_first_page_rejects_incomplete_or_malformed_counts() -> None:
             label="source run 1 jobs",
         ),
     )
-    for total_count in ("100", True, 99):
+    for total_count in ("100", True, 100.0, 99):
         assert_raises(
             "source run 1 jobs total_count is malformed",
             lambda total_count=total_count: module.require_complete_first_page(

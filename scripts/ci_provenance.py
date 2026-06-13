@@ -845,6 +845,8 @@ def resolve_exact_sha_evidence(
         last_page_len = len(runs)
         if not runs:
             break
+        # Scan the whole page before applying the age cutoff so a stale item
+        # cannot hide a fresh candidate when API ordering is imperfect.
         page_has_fresh_run = False
         page_has_old_run = False
         for run in runs:

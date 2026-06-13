@@ -38,6 +38,11 @@ POLICY_ROWS = (
 )
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+GITHUB_API_HEADERS = {
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+}
+GITHUB_API_REDIRECT_HEADERS = {"authorization", "accept", "x-github-api-version"}
 
 
 class ProvenanceError(RuntimeError):
@@ -339,6 +344,49 @@ def parse_timestamp(value: str) -> datetime.datetime:
     return parsed.astimezone(datetime.timezone.utc)
 
 
+def normalized_redirect_port(parsed: urllib.parse.ParseResult) -> int | None:
+    try:
+        explicit_port = parsed.port
+    except ValueError:
+        return None
+    if explicit_port is not None:
+        return explicit_port
+    if parsed.scheme == "https":
+        return 443
+    if parsed.scheme == "http":
+        return 80
+    return None
+
+
+def redirect_preserves_github_api_headers(old_url: str, new_url: str) -> bool:
+    old = urllib.parse.urlparse(old_url)
+    new = urllib.parse.urlparse(new_url)
+    old_host = (old.hostname or "").lower()
+    new_host = (new.hostname or "").lower()
+    return (
+        old.scheme == new.scheme == "https"
+        and old_host == new_host
+        and normalized_redirect_port(old) == normalized_redirect_port(new)
+    )
+
+
+class SafeGitHubRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+        if not redirect_preserves_github_api_headers(req.full_url, redirected.full_url):
+            for header in tuple(redirected.headers):
+                if header.lower() in GITHUB_API_REDIRECT_HEADERS:
+                    redirected.remove_header(header)
+        return redirected
+
+
+def open_github_api_request(request: urllib.request.Request, *, timeout: int):
+    opener = urllib.request.build_opener(SafeGitHubRedirectHandler())
+    return opener.open(request, timeout=timeout)
+
+
 def github_api_json(
     repo: str,
     token: str,
@@ -351,15 +399,19 @@ def github_api_json(
     request = urllib.request.Request(
         url,
         headers={
-            "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
-            "X-GitHub-Api-Version": "2022-11-28",
+            **GITHUB_API_HEADERS,
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with open_github_api_request(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as exc:
         raise ProvenanceError(f"GitHub API request failed for {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ProvenanceError(f"GitHub API payload for {path} is malformed")
@@ -367,30 +419,15 @@ def github_api_json(
 
 
 def github_api_bytes(repo: str, token: str, url: str) -> bytes:
-    class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, headers, newurl):
-            redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
-            if redirected is None:
-                return None
-            old_host = urllib.parse.urlparse(req.full_url).netloc
-            new_host = urllib.parse.urlparse(redirected.full_url).netloc
-            if old_host != new_host:
-                for header in tuple(redirected.headers):
-                    if header.lower() in {"authorization", "accept", "x-github-api-version"}:
-                        redirected.remove_header(header)
-            return redirected
-
-    opener = urllib.request.build_opener(SafeRedirectHandler())
     request = urllib.request.Request(
         url,
         headers={
-            "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
-            "X-GitHub-Api-Version": "2022-11-28",
+            **GITHUB_API_HEADERS,
         },
     )
     try:
-        with opener.open(request, timeout=30) as response:
+        with open_github_api_request(request, timeout=30) as response:
             return response.read()
     except (urllib.error.URLError, urllib.error.HTTPError) as exc:
         raise ProvenanceError(f"GitHub API download failed for {url}: {exc}") from exc
@@ -405,7 +442,7 @@ def artifact_record_from_zip(payload: bytes) -> dict[str, object]:
             record = json.loads(archive.read(names[0]).decode("utf-8"))
     except zipfile.BadZipFile as exc:
         raise ProvenanceError("provenance artifact archive is malformed") from exc
-    except json.JSONDecodeError as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ProvenanceError("ci-provenance.json is invalid JSON") from exc
     if not isinstance(record, dict):
         raise ProvenanceError("ci-provenance.json must contain a JSON object")
@@ -422,6 +459,24 @@ def positive_int_value(value: object, field: str) -> int:
     if isinstance(value, str) and value.isdecimal() and int(value) > 0:
         return int(value)
     raise ProvenanceError(f"{field} must be a positive integer")
+
+
+def require_complete_first_page(
+    payload: dict[str, object],
+    items: list[object],
+    *,
+    per_page: int,
+    label: str,
+) -> None:
+    total_count = payload.get("total_count")
+    if total_count is None:
+        if len(items) >= per_page:
+            raise ProvenanceError(f"{label} page is saturated")
+        return
+    if type(total_count) is not int or total_count < len(items):
+        raise ProvenanceError(f"{label} total_count is malformed")
+    if total_count > len(items):
+        raise ProvenanceError(f"{label} page is saturated")
 
 
 def sha256_file(path: pathlib.Path) -> str:
@@ -778,6 +833,8 @@ def resolve_exact_sha_evidence(
                 "head_sha": requested_sha,
                 "per_page": str(config.workflow_runs_per_page),
                 "page": str(page),
+                "sort": "created",
+                "direction": "desc",
             },
         )
         runs = runs_payload.get("workflow_runs")
@@ -829,8 +886,12 @@ def resolve_exact_sha_evidence(
         artifacts = artifacts_payload.get("artifacts")
         if not isinstance(artifacts, list):
             raise ProvenanceError(f"source run {run_id} artifacts payload is malformed")
-        if len(artifacts) >= config.run_artifacts_per_page:
-            raise ProvenanceError(f"source run {run_id} artifacts page is saturated")
+        require_complete_first_page(
+            artifacts_payload,
+            artifacts,
+            per_page=config.run_artifacts_per_page,
+            label=f"source run {run_id} artifacts",
+        )
         expected_name = provenance_artifact_name(config, run_attempt)
         matches = [
             artifact
@@ -879,8 +940,12 @@ def resolve_exact_sha_evidence(
         jobs = jobs_payload.get("jobs")
         if not isinstance(jobs, list):
             raise ProvenanceError(f"source run {run_id} jobs payload is malformed")
-        if len(jobs) >= config.run_jobs_per_page:
-            raise ProvenanceError(f"source run {run_id} jobs page is saturated")
+        require_complete_first_page(
+            jobs_payload,
+            jobs,
+            per_page=config.run_jobs_per_page,
+            label=f"source run {run_id} jobs",
+        )
         validate_job_evidence(jobs_payload, config, record, deploy_reuse_requested=True)
         return ResolvedEvidence(run=run, artifact=artifact, record=record)
 

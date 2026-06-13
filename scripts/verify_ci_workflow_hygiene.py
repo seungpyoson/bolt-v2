@@ -5474,6 +5474,8 @@ def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
 def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]) -> list[str]:
     text = uncommented_text(job_lines)
     errors = []
+    fingerprint_path = ".ci-provenance/fingerprint/cache-key.txt"
+    fingerprint_download_path = str(pathlib.PurePosixPath(fingerprint_path).parent)
     for need in needs:
         if need == "build":
             expected = "--conditional-job build.result=${{ needs.build.result }}"
@@ -5485,7 +5487,10 @@ def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]
             errors.append(f"ci-provenance-emit must pass {need} result from needs.{need}.result")
     if "--conditional-job build.required=${{ needs.detector.outputs.build_required }}" not in text:
         errors.append("ci-provenance-emit must pass build.required from needs.detector.outputs.build_required")
-    if "--nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt" not in text:
+    if (
+        f"--nextest-fingerprint-path {fingerprint_path}" not in text
+        or f"path: {fingerprint_download_path}" not in text
+    ):
         errors.append("ci-provenance-emit fingerprint download path must match emitter argument")
     return errors
 

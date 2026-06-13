@@ -408,6 +408,7 @@ class FakeGitHub:
         self.jobs_by_run_id = jobs_by_run_id or {}
         self.artifacts_by_run_id = artifacts_by_run_id or {}
         self.records_by_artifact_id = records_by_artifact_id or {}
+        self.queries: list[tuple[str, dict[str, str] | None]] = []
 
     def json(
         self,
@@ -416,6 +417,7 @@ class FakeGitHub:
         path: str,
         query: dict[str, str] | None = None,
     ) -> dict[str, object]:
+        self.queries.append((path, query))
         if path == "actions/runs":
             if not isinstance(self.runs_pages, list):
                 return {"workflow_runs": self.runs_pages}
@@ -579,6 +581,50 @@ def assert_github_api_bytes_strips_authorization_on_cross_host_redirect() -> Non
         raise AssertionError(f"redirected request leaked GitHub API version header: {redirected_headers}")
 
 
+def assert_sensitive_headers_only_survive_same_https_origin_redirects() -> None:
+    module = load_script()
+    preserve = module.redirect_preserves_github_api_headers
+    if not preserve(
+        "https://api.github.com/repos/owner/repo/actions",
+        "https://api.github.com/repos/owner/repo/runs",
+    ):
+        raise AssertionError("same HTTPS origin redirect should preserve GitHub API headers")
+    if preserve(
+        "https://api.github.com/repos/owner/repo/actions",
+        "http://api.github.com/repos/owner/repo/runs",
+    ):
+        raise AssertionError("same-netloc HTTPS downgrade must not preserve GitHub API headers")
+    if preserve(
+        "https://api.github.com/repos/owner/repo/actions",
+        "https://objects.githubusercontent.com/artifact",
+    ):
+        raise AssertionError("cross-host redirect must not preserve GitHub API headers")
+
+
+def assert_github_api_json_rejects_invalid_utf8_as_provenance_error() -> None:
+    module = load_script()
+
+    class BadUtf8Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return b"\xff"
+
+    original_open = module.open_github_api_request
+    module.open_github_api_request = lambda *args, **kwargs: BadUtf8Response()
+    try:
+        assert_raises(
+            "GitHub API request failed for actions/runs",
+            lambda: module.github_api_json("owner/repo", "token", "actions/runs"),
+        )
+    finally:
+        module.open_github_api_request = original_open
+
+
 def assert_record_schema_requires_head_and_tested_sha() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -659,6 +705,9 @@ def assert_no_candidate_evidence_fails() -> None:
         config = write_config(pathlib.Path(tmp))
         fake = FakeGitHub(runs_pages=[[]])
         assert_raises("no candidate provenance evidence", lambda: resolve_with_fake(module, config, fake))
+        _, query = fake.queries[0]
+        if query is None or query.get("sort") != "created" or query.get("direction") != "desc":
+            raise AssertionError(f"workflow run query must request explicit newest-first ordering, got {query}")
 
 
 def assert_lookback_exhaustion_fails() -> None:
@@ -745,6 +794,25 @@ def assert_artifact_page_saturation_fails_closed() -> None:
         assert_raises("artifacts page is saturated", lambda: resolve_with_fake(module, config, fake))
 
 
+def assert_artifact_page_total_count_boundary_is_accepted() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = valid_record(module, config)
+        artifacts = [provenance_artifact(id=1)] + [
+            provenance_artifact(id=index + 2, name=f"unrelated-{index}") for index in range(99)
+        ]
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={RUN_ID: {"total_count": 100, "artifacts": artifacts}},
+            records_by_artifact_id={1: record},
+        )
+        resolved = resolve_with_fake(module, config, fake)
+        if resolved.artifact.get("id") != 1:
+            raise AssertionError(f"expected provenance artifact 1, got {resolved.artifact}")
+
+
 def assert_jobs_page_saturation_fails_closed() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -761,6 +829,26 @@ def assert_jobs_page_saturation_fails_closed() -> None:
             jobs_by_run_id={RUN_ID: {"jobs": jobs}},
         )
         assert_raises("jobs page is saturated", lambda: resolve_with_fake(module, config, fake))
+
+
+def assert_jobs_page_total_count_boundary_is_accepted() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = valid_record(module, config)
+        jobs = required_job_payloads() + [
+            job_payload(f"extra-{index}") for index in range(100 - len(required_job_payloads()))
+        ]
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact(id=1)]}},
+            records_by_artifact_id={1: record},
+            jobs_by_run_id={RUN_ID: {"total_count": 100, "jobs": jobs}},
+        )
+        resolved = resolve_with_fake(module, config, fake)
+        if resolved.run.get("id") != RUN_ID:
+            raise AssertionError(f"expected run {RUN_ID}, got {resolved.run}")
 
 
 def assert_latest_successful_attempt_selected() -> None:
@@ -906,6 +994,8 @@ def main() -> int:
     assert_top_level_help_is_supported()
     assert_config_digest_is_canonical()
     assert_github_api_bytes_strips_authorization_on_cross_host_redirect()
+    assert_sensitive_headers_only_survive_same_https_origin_redirects()
+    assert_github_api_json_rejects_invalid_utf8_as_provenance_error()
     assert_record_schema_requires_head_and_tested_sha()
     assert_pr_event_record_cannot_validate_for_pr_head_reuse()
     assert_digest_mismatches_fail()
@@ -915,7 +1005,9 @@ def main() -> int:
     assert_missing_created_at_fails_closed()
     assert_artifact_rejections()
     assert_artifact_page_saturation_fails_closed()
+    assert_artifact_page_total_count_boundary_is_accepted()
     assert_jobs_page_saturation_fails_closed()
+    assert_jobs_page_total_count_boundary_is_accepted()
     assert_latest_successful_attempt_selected()
     assert_record_attempt_mismatch_rejected()
     assert_malformed_api_payload_rejected()

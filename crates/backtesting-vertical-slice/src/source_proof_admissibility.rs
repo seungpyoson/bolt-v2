@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::source_proof::{SourceBindingRegistry, SourceProofReport, resolve_source_bindings_path};
 
 pub const SOURCE_PROOF_ADMISSIBILITY_SCHEMA_VERSION: &str = "source-proof-admissibility-report.v1";
@@ -403,7 +404,7 @@ pub fn write_source_proof_admissibility_report(
             );
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| SourceProofAdmissibilityWriteError::Write {
+        atomic_write(&path, &bytes).map_err(|error| SourceProofAdmissibilityWriteError::Write {
             path: path.display().to_string(),
             error: error.to_string(),
         })?;

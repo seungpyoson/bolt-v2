@@ -109,7 +109,7 @@
     },
     "nt_mapping": {
       "outcome": "pending",
-      "evidence_ref": "pending NT Bar or TradeTick mapping plus ParquetDataCatalog projection/read-back for a staged Kalshi sample"
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-endpoint-inspection.kalshi-official-historical-api.2026-06-08.json candlestick_shape=end_period_ts,yes_bid,yes_ask,price,volume,open_interest; pending NT Bar or TradeTick mapping plus ParquetDataCatalog projection/read-back for a staged Kalshi sample"
     },
     "cost": {
       "outcome": "pending",

@@ -249,6 +249,47 @@ fn assert_nt_mapping_evidence_is_bounded(path: &PathBuf, report: &SourceProofRep
                 "trade-replay fixture report {path:?} must bind mapping evidence to NT TradeTick catalog readback"
             );
         }
+        (_, SourceProofFidelityClass::TradeBarReplay) => {
+            // Bar-replay sources (e.g. Kalshi official historical candlesticks) must carry
+            // a committed NT mapping inspection reference, not a free-form "pending" string.
+            // Accepted mappings must pass; pending mappings must point at a committed repo
+            // artifact so the gap is tracked, not silently accepted.
+            let evidence = report.required_checks.nt_mapping.evidence_ref.as_str();
+            match report.nt_mapping_status {
+                NtMappingStatus::Accepted => {
+                    assert_eq!(
+                        report.required_checks.nt_mapping.outcome,
+                        CheckOutcome::Passed,
+                        "accepted bar-replay fixture report {path:?} must pass NT mapping"
+                    );
+                    assert!(
+                        evidence.contains("Bar") || evidence.contains("TradeTick"),
+                        "accepted bar-replay fixture report {path:?} must bind NT Bar or TradeTick mapping evidence"
+                    );
+                    assert!(
+                        evidence.contains("ParquetDataCatalog"),
+                        "accepted bar-replay fixture report {path:?} must bind NT catalog readback evidence"
+                    );
+                }
+                NtMappingStatus::Pending => {
+                    assert_eq!(
+                        report.required_checks.nt_mapping.outcome,
+                        CheckOutcome::Pending,
+                        "pending bar-replay fixture report {path:?} must keep NT mapping pending"
+                    );
+                    assert!(
+                        evidence.starts_with("repo://"),
+                        "pending bar-replay fixture report {path:?} must bind a committed NT mapping \
+                         inspection (evidence_ref must start with \"repo://\"); \
+                         got: {evidence:?}"
+                    );
+                }
+                other => panic!(
+                    "bar-replay fixture report {path:?} must have accepted or pending NT mapping \
+                     status, got {other:?}"
+                ),
+            }
+        }
         (_, SourceProofFidelityClass::MetadataOnly) => {
             assert_eq!(
                 report.nt_mapping_status,
@@ -277,7 +318,13 @@ fn assert_nt_mapping_evidence_is_bounded(path: &PathBuf, report: &SourceProofRep
                 "metadata-only fixture report {path:?} must carry a no-overclaim mapping guard"
             );
         }
-        _ => {}
+        (table_family, fidelity_class) => {
+            panic!(
+                "fixture report {path:?} has unhandled (table_family, fidelity_class) combination \
+                 ({table_family:?}, {fidelity_class:?}); add an explicit arm to \
+                 assert_nt_mapping_evidence_is_bounded"
+            );
+        }
     }
 }
 

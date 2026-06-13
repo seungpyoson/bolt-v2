@@ -57,6 +57,8 @@ pub enum SourceProofLegacyDerivabilityIssue {
     SourceBindingProductFamilyMismatch,
     SourceBindingEvidenceStateMismatch,
     SourceBindingTableFamilyMismatch,
+    MissingRawPayloadFields,
+    AcceptedBytesFromS3Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -537,14 +539,26 @@ fn classify_legacy_source_proof_json(
     let raw_payloads = raw_payload_records(&proof);
     let mut s3_bound_raw_payload_records = 0_u64;
     let mut accepted_bytes_from_s3 = 0_u64;
+    let mut has_malformed_raw_payload = false;
+    let mut has_unknown_accepted_bytes = false;
     for payload in &raw_payloads {
-        let Some(record) =
-            s3_payloads.get(&(payload.source_binding.clone(), payload.payload_hash.clone()))
-        else {
+        // A malformed entry (missing source_binding or payload_hash) is counted in
+        // the denominator above but can never be S3-bound, so it stays out of the
+        // numerator and is flagged below.
+        let Some(key) = payload.s3_lookup_key() else {
+            has_malformed_raw_payload = true;
+            continue;
+        };
+        let Some(record) = s3_payloads.get(&key) else {
             continue;
         };
         s3_bound_raw_payload_records += 1;
-        accepted_bytes_from_s3 = accepted_bytes_from_s3.saturating_add(record.bytes);
+        match record.bytes {
+            Some(bytes) => {
+                accepted_bytes_from_s3 = accepted_bytes_from_s3.saturating_add(bytes);
+            }
+            None => has_unknown_accepted_bytes = true,
+        }
     }
 
     let table_families = string_array_field(&proof, "table_families");
@@ -558,8 +572,16 @@ fn classify_legacy_source_proof_json(
     if !has_source_time_range(&proof) {
         blocking_issues.push(SourceProofLegacyDerivabilityIssue::MissingSourceTimeRange);
     }
+    if has_malformed_raw_payload {
+        blocking_issues.push(SourceProofLegacyDerivabilityIssue::MissingRawPayloadFields);
+    }
     if raw_payloads.len() as u64 != s3_bound_raw_payload_records {
         blocking_issues.push(SourceProofLegacyDerivabilityIssue::RawPayloadNotFullyS3Bound);
+    }
+    if has_unknown_accepted_bytes {
+        // Informational diagnostic: the accepted-bytes counter has no downstream
+        // gate, but an absent/ill-typed S3 byte value must not be silently zeroed.
+        blocking_issues.push(SourceProofLegacyDerivabilityIssue::AcceptedBytesFromS3Unknown);
     }
     blocking_issues.extend(required_check_blockers(&proof));
 
@@ -591,13 +613,32 @@ fn classify_legacy_source_proof_json(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LegacyAcceptedPayload {
-    bytes: u64,
+    /// `None` when the matching S3 record carried no `bytes` field, or a value
+    /// that was not a non-negative integer. The byte counter it feeds is an
+    /// informational diagnostic, so an absent/ill-typed value must surface as a
+    /// diagnostic rather than silently zeroing the count.
+    bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LegacyRawPayload {
-    source_binding: String,
-    payload_hash: String,
+    /// Both fields are `Some` only for a fully-formed entry. A malformed entry
+    /// missing `source_binding` or `payload_hash` is retained (never dropped) so
+    /// the `raw_payloads.len()` denominator stays honest and its S3-boundedness
+    /// is still tested by the gate.
+    source_binding: Option<String>,
+    payload_hash: Option<String>,
+}
+
+impl LegacyRawPayload {
+    fn s3_lookup_key(&self) -> Option<(String, String)> {
+        match (&self.source_binding, &self.payload_hash) {
+            (Some(source_binding), Some(payload_hash)) => {
+                Some((source_binding.clone(), payload_hash.clone()))
+            }
+            _ => None,
+        }
+    }
 }
 
 fn s3_payloads_by_binding_hash(
@@ -611,7 +652,7 @@ fn s3_payloads_by_binding_hash(
         .filter_map(|record| {
             let source_binding = string_field(record, "source_binding")?;
             let payload_hash = string_field(record, "payload_hash")?;
-            let bytes = u64_field(record, "bytes").unwrap_or(0);
+            let bytes = u64_field(record, "bytes");
             Some((
                 (source_binding, payload_hash),
                 LegacyAcceptedPayload { bytes },
@@ -626,11 +667,9 @@ fn raw_payload_records(proof: &Value) -> Vec<LegacyRawPayload> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|record| {
-            Some(LegacyRawPayload {
-                source_binding: string_field(record, "source_binding")?,
-                payload_hash: string_field(record, "payload_hash")?,
-            })
+        .map(|record| LegacyRawPayload {
+            source_binding: string_field(record, "source_binding"),
+            payload_hash: string_field(record, "payload_hash"),
         })
         .collect()
 }
@@ -741,4 +780,110 @@ fn evidence_state_field(value: &Value) -> Option<EvidenceState> {
 
 fn u64_field(value: &Value, field: &str) -> Option<u64> {
     value.get(field)?.as_u64()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn classify(proof: Value, manifest: Value) -> SourceProofLegacyDerivabilityRecord {
+        let report = SourceProofLegacyDerivabilityReport::from_json_values(
+            "legacy-derivability-test",
+            &manifest,
+            vec![SourceProofLegacyDerivabilityJson {
+                proof_uri: "source-proof://legacy/test".to_string(),
+                proof,
+            }],
+        )
+        .expect("report builds");
+        report
+            .records
+            .into_iter()
+            .next()
+            .expect("one classified record")
+    }
+
+    #[test]
+    fn raw_payload_entry_missing_payload_hash_is_flagged_and_still_counted() {
+        let manifest = json!({
+            "s3_payload_records": [
+                {
+                    "source_binding": "venue-binding",
+                    "payload_hash": "hash-bound",
+                    "bytes": 7,
+                }
+            ]
+        });
+        // Two raw payload entries: one fully-formed and S3-bound, one missing
+        // payload_hash. The malformed entry must not be dropped — both the
+        // denominator and an explicit blocking issue must reflect it.
+        let proof = json!({
+            "raw_payload_records": [
+                { "source_binding": "venue-binding", "payload_hash": "hash-bound" },
+                { "source_binding": "venue-binding" }
+            ]
+        });
+
+        let record = classify(proof, manifest);
+
+        assert_eq!(
+            record.raw_payload_records, 2,
+            "malformed raw-payload entry must still be counted in the denominator"
+        );
+        assert_eq!(
+            record.s3_bound_raw_payload_records, 1,
+            "only the fully-formed entry is S3-bound"
+        );
+        assert!(
+            record
+                .blocking_issues
+                .contains(&SourceProofLegacyDerivabilityIssue::MissingRawPayloadFields),
+            "a raw-payload entry missing payload_hash must raise MissingRawPayloadFields: {:?}",
+            record.blocking_issues
+        );
+        assert!(
+            record
+                .blocking_issues
+                .contains(&SourceProofLegacyDerivabilityIssue::RawPayloadNotFullyS3Bound),
+            "the dropped denominator no longer hides an unbound payload: {:?}",
+            record.blocking_issues
+        );
+    }
+
+    #[test]
+    fn s3_record_with_absent_bytes_is_diagnosed_not_silently_zeroed() {
+        let manifest = json!({
+            "s3_payload_records": [
+                {
+                    "source_binding": "venue-binding",
+                    "payload_hash": "hash-bound"
+                }
+            ]
+        });
+        let proof = json!({
+            "raw_payload_records": [
+                { "source_binding": "venue-binding", "payload_hash": "hash-bound" }
+            ]
+        });
+
+        let record = classify(proof, manifest);
+
+        assert_eq!(
+            record.s3_bound_raw_payload_records, 1,
+            "the entry is still S3-bound even when its byte count is absent"
+        );
+        assert_eq!(
+            record.accepted_bytes_from_s3, 0,
+            "absent bytes contribute nothing to the informational counter"
+        );
+        assert!(
+            record
+                .blocking_issues
+                .contains(&SourceProofLegacyDerivabilityIssue::AcceptedBytesFromS3Unknown),
+            "an absent S3 byte count must surface as a diagnostic rather than a silent zero: {:?}",
+            record.blocking_issues
+        );
+    }
 }

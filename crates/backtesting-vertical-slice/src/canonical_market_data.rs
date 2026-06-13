@@ -955,9 +955,17 @@ impl CanonicalIndexPricesTable {
                     );
                 }
             }
-            row.value.parse::<Decimal>().map_err(|error| {
+            let value = row.value.parse::<Decimal>().map_err(|error| {
                 anyhow::anyhow!("row {index}: invalid value {:?}: {error}", row.value)
             })?;
+            // An index reference price is strictly positive, like the quote
+            // bid/ask; reject zero/negative so the projection never emits a
+            // non-positive NT `IndexPriceUpdate.value` (fail loud, same class
+            // of guard as `validate_quote_spread`).
+            ensure!(
+                value > Decimal::ZERO,
+                "row {index}: non-positive value {value}"
+            );
         }
         Ok(())
     }
@@ -1114,9 +1122,17 @@ impl CanonicalMarkPricesTable {
                     );
                 }
             }
-            row.value.parse::<Decimal>().map_err(|error| {
+            let value = row.value.parse::<Decimal>().map_err(|error| {
                 anyhow::anyhow!("row {index}: invalid value {:?}: {error}", row.value)
             })?;
+            // A mark reference price is strictly positive, like the quote
+            // bid/ask; reject zero/negative so the projection never emits a
+            // non-positive NT `MarkPriceUpdate.value` (fail loud, same class
+            // of guard as `validate_quote_spread`).
+            ensure!(
+                value > Decimal::ZERO,
+                "row {index}: non-positive value {value}"
+            );
         }
         Ok(())
     }
@@ -2533,6 +2549,14 @@ mod tests {
         assert!(error.to_string().contains("invalid value"), "{error}");
     }
 
+    #[test]
+    fn index_prices_validate_rejects_non_positive_value() {
+        let mut table = index_prices_table();
+        table.rows[0].value = "0".to_string();
+        let error = table.validate().expect_err("non-positive value rejected");
+        assert!(error.to_string().contains("non-positive value"), "{error}");
+    }
+
     fn mark_row(event_time: i64, value: &str) -> CanonicalMarkPriceRow {
         CanonicalMarkPriceRow {
             schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
@@ -2642,5 +2666,13 @@ mod tests {
         table.rows[0].value = "not-a-decimal".to_string();
         let error = table.validate().expect_err("unparseable value rejected");
         assert!(error.to_string().contains("invalid value"), "{error}");
+    }
+
+    #[test]
+    fn mark_prices_validate_rejects_non_positive_value() {
+        let mut table = mark_prices_table();
+        table.rows[0].value = "0".to_string();
+        let error = table.validate().expect_err("non-positive value rejected");
+        assert!(error.to_string().contains("non-positive value"), "{error}");
     }
 }

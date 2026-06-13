@@ -150,8 +150,8 @@ Research Analytics may write only these derived families under the
 
 There is no standing `promotion-packages` family: there is no standing
 PromotionPackage machine. A typed promotion-config artifact is produced only
-when a real GO finding exists to promote (see `reference/contracts.md` Result
-And Promotion Boundary and `reference/evidence.md` E-041).
+when a real GO finding exists to promote (see `contracts.md` Result
+And Promotion Boundary and `evidence.md` E-041).
 
 Every RA-owned artifact records owner, schema version, source refs, source
 hashes, content hash, lifecycle state, and Artifact Index event behavior. RA

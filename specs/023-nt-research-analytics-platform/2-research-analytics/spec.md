@@ -58,7 +58,7 @@ and builds only the named gap.
 
 | Layer | Stands on (NT facility) | WE BUILD (NT lacks) |
 |---|---|---|
-| L0 data | `ParquetDataCatalog` in S3 = single canonical input (`from_uri` S3, Tardis/CSV streamers + `EncodeToRecordBatch`). NT's own catalog write is non-atomic — a `head()` existence check then an unconditional `object_store.put` (overwrite-by-default; `parquet.rs` / `backend/catalog.rs`); NT names no `PutMode` at all (`grep PutMode` over NT crates returns zero hits). | Make the proven converters write to S3 DURABLY + IMMUTABLY (today reproduce-on-demand local only) via the conditional create-only writer over `object_store`'s `PutMode::Create` (S3 If-None-Match) per `reference/normalization-catalog-plan.v3.md`, plus config-driven venue dispatch. |
+| L0 data | `ParquetDataCatalog` in S3 = single canonical input (`from_uri` S3, Tardis/CSV streamers + `EncodeToRecordBatch`). NT's own catalog write is non-atomic — a `head()` existence check then an unconditional `object_store.put` (overwrite-by-default; `parquet.rs` / `backend/catalog.rs`); NT names no `PutMode` at all (`grep PutMode` over NT crates returns zero hits). | Make the proven converters write to S3 DURABLY + IMMUTABLY (today reproduce-on-demand local only) via the conditional create-only writer over `object_store`'s `PutMode::Create` (S3 If-None-Match) per `../reference/normalization-catalog-plan.v3.md`, plus config-driven venue dispatch. |
 | L1 read | NT typed `query<T>` (instrument + time + SQL where pushdown) + `DataBackendSession` (DataFusion SQL → Arrow). | A thin reader helper (~dozens LOC). |
 | L2 features | NT indicators (38 `impl Indicator for` in the Rust indicators crate; 47 public names in NT's Python `indicators` package), `BarAggregator` family, `Clock`/`TestClock`, `Cache`, and NT-native implied-vol / Black-Scholes greeks (`crates/model/src/data/greeks.rs`) as the offline-usable primitives. NT `DataActor` is a live actor-runtime Component (Clock/MessageBus/Cache-bound) — usable only for in-backtest / in-actor feature computation, NOT as an offline batch primitive over a catalog query result. | Point-in-time / leakage enforcement (the one research-validity invariant NT lacks). |
 | L3 backtest | THE ONE Rust `BacktestEngine` the BTE already wraps. RA NEVER owns a runner. | Sweep orchestration + Polymarket cost realism as `FeeModel` / `FillModel` / `LatencyModel` trait impls. |
@@ -164,7 +164,7 @@ findings.
 ## Findings & Promotion
 
 Findings are recorded with the lead-lag lane's GO / NO-GO verdict model and a
-re-measurement cadence — see `reference/leadlag-lane.md` as the seed RA model.
+re-measurement cadence — see `../reference/leadlag-lane.md` as the seed RA model.
 BTE emits the OBJECTIVE results; RA owns the SUBJECTIVE verdict: a finding is
 GO, NO-GO, or conditional-GO over a stated venue/instrument scope, tied to the
 evidence rows and fidelity class it was measured under, with a re-measurement

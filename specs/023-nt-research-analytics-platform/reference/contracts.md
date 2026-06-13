@@ -13,7 +13,7 @@
 
 ## NT Facility Backing
 
-Every RA analytical layer is backed by a named NT facility. See `spec.md`
+Every RA analytical layer is backed by a named NT facility. See `../2-research-analytics/spec.md`
 (issue #676) NT Facility Map for the full L0–L5 layer-to-NT-primitive mapping.
 Do not duplicate that mapping here.
 
@@ -424,7 +424,7 @@ architecture branches.
 - One no-hardcoded-venue test is required for the Research Analytics and
   Dashboard contract surfaces; multi-binding fixture theater is not. The
   Backtesting Engine keeps its own requirement of at least two TOML/registry-selected
-  binding fixtures (see `1-backtesting-engine/spec.md`).
+  binding fixtures (see `../1-backtesting-engine/spec.md`).
 
 ## Prohibited Claims
 

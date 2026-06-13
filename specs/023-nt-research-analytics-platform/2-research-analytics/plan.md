@@ -38,7 +38,7 @@ primitive.
   S3 *durably and immutably* (today they reproduce-on-demand into a local catalog
   only) via the conditional create-only writer over `object_store`'s
   `PutMode::Create` (S3 If-None-Match) per
-  `reference/normalization-catalog-plan.v3.md`, plus config-driven venue
+  `../reference/normalization-catalog-plan.v3.md`, plus config-driven venue
   dispatch. This is Gate 0 below.
 - **L1 — Read.** NT typed `query<T>` (instrument + time + SQL `where`
   pushdown) and `DataBackendSession` (DataFusion SQL to Arrow). WE BUILD: a thin

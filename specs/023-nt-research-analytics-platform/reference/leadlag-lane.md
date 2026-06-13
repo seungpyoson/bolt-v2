@@ -40,7 +40,7 @@ The lane demonstrates the correct RA shape:
    and produce statistics. The BTE (the one Rust `BacktestEngine`) is not
    touched; RA orchestrates it for strategy-level sweeps but does not own a
    parallel runner. RA must never import NT's Cython/Python backtest engine
-   (`nautilus_trader.backtest.engine` / `.node`) — see `spec.md` Single-Engine
+   (`nautilus_trader.backtest.engine` / `.node`) — see `../2-research-analytics/spec.md` Single-Engine
    Invariant.
 2. **Verdict over artifact index.** The lead-lag lane shipped a trading decision
    with a markdown report and a re-run script. No index file tracked the

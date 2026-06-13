@@ -27,35 +27,38 @@
 - [ ] T014 [US2] Write failing shared live-submit routing test in `tests/bolt_v3_order_execution.rs`
 - [ ] T015 [US2] Write failing shared shadow-submit routing test in `tests/bolt_v3_order_execution.rs`
 - [ ] T016 [US2] Write failing shared live-cancel and shadow-cancel routing tests in `tests/bolt_v3_order_execution.rs`
-- [ ] T017 [US2] Create `src/bolt_v3_order_execution.rs` with execution mode, policy, shared submit context, submit routing, and cancel routing
-- [ ] T018 [US2] Export `bolt_v3_order_execution` from `src/lib.rs`
+- [ ] T017 [US2] Write failing source-fence/static verifier tests rejecting direct strategy calls to NT venue mutation APIs outside `src/bolt_v3_order_execution.rs`
+- [ ] T018 [US2] Create `src/bolt_v3_order_execution.rs` with execution mode, policy, shared submit context, submit routing, and cancel routing
+- [ ] T019 [US2] Export `bolt_v3_order_execution` from `src/lib.rs`
 
 ## Phase 4: Strategy Migration
 
-- [ ] T019 [US2] Move `SubmitContext` usage from `src/strategies/binary_oracle_edge_taker/mod.rs` to the shared module
-- [ ] T020 [US2] Replace strategy-local submit gating with shared submit routing in `src/strategies/binary_oracle_edge_taker/mod.rs`
-- [ ] T021 [US2] Replace strategy-local cancel gating with shared cancel routing in `src/strategies/binary_oracle_edge_taker/mod.rs`
-- [ ] T022 [US1] Remove `submit_orders` from `src/strategies/binary_oracle_edge_taker/config.rs`
-- [ ] T023 [US1] Remove `submit_orders` from `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`
-- [ ] T024 [US1] Remove `submit_orders` from strategy TOML files under `config/strategies/` and `tests/fixtures/bolt_v3/strategies/`
-- [ ] T025 [US2] Add source-level guard test proving production strategy code does not read `submit_orders`
-- [ ] T026 [US4] Update existing shadow-mode evidence tests to configure shadow through `StrategyBuildContext`
+- [ ] T020 [US2] Move `SubmitContext` usage from `src/strategies/binary_oracle_edge_taker/mod.rs` to the shared module
+- [ ] T021 [US2] Replace strategy-local submit gating with shared submit routing in `src/strategies/binary_oracle_edge_taker/mod.rs`
+- [ ] T022 [US2] Replace strategy-local cancel gating with shared cancel routing in `src/strategies/binary_oracle_edge_taker/mod.rs`
+- [ ] T023 [US1] Remove `submit_orders` from `src/strategies/binary_oracle_edge_taker/config.rs`
+- [ ] T024 [US1] Remove `submit_orders` from `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`
+- [ ] T025 [US1] Remove `submit_orders` from strategy TOML files under `config/strategies/` and `tests/fixtures/bolt_v3/strategies/`
+- [ ] T026 [US2] Add source-level guard proving production strategy code neither reads `submit_orders` nor directly calls `submit_order`, `submit_order_list`, `modify_order`, `cancel_order`, `cancel_orders`, `cancel_all_orders`, `close_position`, or `close_all_positions`
+- [ ] T027 [US4] Add an integration-level shadow wiring test proving strategy evidence/admission reaches the shared path without invoking the NT submit closure
+- [ ] T028 [US4] Update existing shadow-mode evidence tests to configure shadow through `StrategyBuildContext`
 
 ## Phase 5: Managed Venue-Action Guard
 
-- [ ] T027 [US3] Write failing validation tests for shadow mode plus `manage_stop = true`
-- [ ] T028 [US3] Write failing validation tests for shadow mode plus `manage_gtd_expiry = true`
-- [ ] T029 [US3] Write failing validation tests for shadow mode plus `manage_contingent_orders = true`
-- [ ] T030 [US3] Write failing validation tests for shadow mode plus non-empty `external_order_claims`
-- [ ] T031 [US3] Implement shared validation in `src/bolt_v3_validate.rs`
+- [ ] T029 [US3] Write failing validation tests for shadow mode plus `manage_stop = true`
+- [ ] T030 [US3] Write failing validation tests for shadow mode plus `manage_gtd_expiry = true`
+- [ ] T031 [US3] Write failing validation tests for shadow mode plus `manage_contingent_orders = true`
+- [ ] T032 [US3] Write failing validation tests for shadow mode plus non-empty `external_order_claims`
+- [ ] T033 [US3] Document the pinned NT `StrategyConfig` audit proving other fields are not independent venue-mutation enablers
+- [ ] T034 [US3] Implement shared validation in `src/bolt_v3_validate.rs`
 
 ## Phase 6: Docs, Fences, Verification
 
-- [ ] T032 [US1] Update active schema docs in `docs/bolt-v3/2026-04-25-bolt-v3-schema.md`
-- [ ] T033 [US2] Update schema-current verifier tests in `scripts/test_verify_bolt_v3_schema_current.py`
-- [ ] T034 [US2] Update schema-current verifier in `scripts/verify_bolt_v3_schema_current.py`
-- [ ] T035 [US2] Update runtime-literal audit and verifier fixtures for new diagnostics
-- [ ] T036 Run local non-compile verification listed in `quickstart.md`
-- [ ] T037 Commit implementation
-- [ ] T038 Push branch and open or update a draft PR
-- [ ] T039 Run `just verify-remote` and record exact-head CI evidence
+- [ ] T035 [US1] Update active schema docs in `docs/bolt-v3/2026-04-25-bolt-v3-schema.md`
+- [ ] T036 [US2] Update schema-current verifier tests in `scripts/test_verify_bolt_v3_schema_current.py`
+- [ ] T037 [US2] Update schema-current verifier in `scripts/verify_bolt_v3_schema_current.py`
+- [ ] T038 [US2] Update runtime-literal audit and verifier fixtures for new diagnostics
+- [ ] T039 Run local non-compile verification listed in `quickstart.md`
+- [ ] T040 Commit implementation
+- [ ] T041 Push branch and open or update a draft PR
+- [ ] T042 Run `just verify-remote` and record exact-head CI evidence

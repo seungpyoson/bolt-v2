@@ -40,25 +40,40 @@ This conflicts with repo rules:
 
 **Decision**: Put live/shadow mode in root `[runtime]`, not in each strategy.
 
-**Rationale**: The mode has runtime lifecycle, not strategy lifecycle. It applies to every venue mutation the process may perform, and the operator should change it once.
+**Rationale**: The mode has runtime lifecycle, not strategy lifecycle. It applies to every Bolt-strategy-originated venue mutation and every loaded-strategy NT managed-action knob in this slice, and the operator should change it once.
 
 **Alternatives considered**:
 
 - Keep `parameters.submit_orders` but add helper methods. Rejected because lifecycle remains per-strategy and future strategies still need duplicated config.
-- Put mode under `[risk]`. Rejected because shadow mode is broader than risk limits: it suppresses submit/cancel venue mutation while preserving evidence.
+- Put mode under `[risk]`. Rejected because shadow mode is broader than risk limits: it suppresses Bolt-strategy-originated venue mutation while preserving evidence.
 - Put mode under each `[clients.<id>.execution]`. Rejected because the operator goal is process-wide shadow mode, and multiple execution clients would reintroduce multi-touch changes.
 
 ## Decision 2: Shared Order Execution Module
 
-**Decision**: Add `src/bolt_v3_order_execution.rs` to own execution mode, submit context, submit routing, and cancel routing.
+**Decision**: Add `src/bolt_v3_order_execution.rs` to own execution mode, submit context, submit routing, cancel routing, and the source-fenced strategy-originated venue-mutation chokepoint.
 
-**Rationale**: `src/bolt_v3_order_intent.rs` intentionally stops at NT `OrderFactory -> OrderAny`. `src/bolt_v3_submit_admission.rs` owns admission math and state. A separate execution-policy module can bridge evidence, admission, policy, and the final NT mutation without contaminating order construction.
+**Rationale**: `src/bolt_v3_order_intent.rs` intentionally stops at NT `OrderFactory -> OrderAny`. `src/bolt_v3_submit_admission.rs` owns admission math and state. A separate execution-policy module can bridge evidence, admission, policy, and the final NT mutation without contaminating order construction. The current production strategy only calls `submit_order(...)` and `cancel_order(...)`, but the policy boundary must also prevent future direct calls to other NT mutation methods.
 
 **Alternatives considered**:
 
 - Extend `bolt_v3_order_intent.rs`. Rejected because the existing order-intent spec explicitly keeps submit/admission/policy out of that module.
 - Extend only `bolt_v3_submit_admission.rs`. Rejected because cancel suppression is not submit admission, and combining them would blur admission with execution routing.
 - Wrap NT adapters or risk engine. Rejected because PR #621 needs decision evidence and would-be-trade admission evidence before suppression, and NT-managed cancel paths can bypass a submit-only guard.
+
+## Decision 2A: Source-Fence All Strategy-Originated NT Venue Mutations
+
+**Decision**: Add a source-fence/static verifier that rejects direct production strategy calls to NT strategy mutation APIs outside `src/bolt_v3_order_execution.rs`.
+
+**Pinned NT evidence**: NautilusTrader rev `7c2aafb30fb143069c915a3f2057bb12174405f6` exposes these strategy-callable mutation methods in `crates/trading/src/strategy/mod.rs`: `submit_order`, `submit_order_list`, `modify_order`, `cancel_order`, `cancel_orders`, `cancel_all_orders`, `close_position`, and `close_all_positions`.
+
+**Current Bolt evidence**: A repository search finds production strategy calls only at `src/strategies/binary_oracle_edge_taker/mod.rs`: `self.submit_order(...)` and `self.cancel_order(...)`. This slice therefore implements shared submit and cancel routing, but the verifier must already reject every listed method so future strategies cannot bypass the shared policy by using submit-list, modify, batch cancel, cancel-all, or close helpers directly.
+
+**Rationale**: A helper contract without a source-fence is convention-only. The repo already uses source-fence/static verification for architecture boundaries, so the durable enforcement belongs in that same verification layer.
+
+**Alternatives considered**:
+
+- Implement wrappers for all eight NT methods immediately. Rejected for this slice because six methods have no production call site; adding live behavior for unused paths would create speculative API surface.
+- Scope the invariant to current submit/cancel call sites only. Rejected because it would let the next strategy reintroduce strategy-bound execution policy through another NT mutation method.
 
 ## Decision 3: StrategyBuildContext Carries Policy
 
@@ -75,7 +90,23 @@ This conflicts with repo rules:
 
 **Decision**: When root execution mode is shadow, validate every loaded strategy and reject NT-managed venue-action knobs.
 
-**Rationale**: `manage_stop`, `manage_gtd_expiry`, `manage_contingent_orders`, and `external_order_claims` can cause NT to mutate venue state outside the explicit submit/cancel helpers. This is a process-wide shadow invariant, so validation must be shared.
+**Rationale**: `manage_stop`, `manage_gtd_expiry`, `manage_contingent_orders`, and `external_order_claims` can cause NT to mutate venue state outside the explicit shared helpers. This is a process-wide shadow invariant for loaded Bolt strategies, so validation must be shared.
+
+**Pinned NT `StrategyConfig` audit**: NautilusTrader rev `7c2aafb30fb143069c915a3f2057bb12174405f6` defines `StrategyConfig` in `crates/trading/src/strategy/config.rs`. The independent venue-mutation enablers are:
+
+- `external_order_claims`: associates external venue orders with the strategy and therefore can pull venue state into strategy ownership.
+- `manage_contingent_orders`: lets NT manage OTO/OCO/OUO open contingent orders automatically.
+- `manage_gtd_expiry`: reactivates GTD timers and can emit cancel behavior outside Bolt's shared helper.
+- `manage_stop`: triggers cancel-all and close-position market-exit behavior during stop.
+
+The remaining fields are not independent venue-mutation enablers for shadow validation:
+
+- `strategy_id`, `order_id_tag`, `use_uuid_client_order_ids`, and `use_hyphens_in_client_order_ids` affect identity and client-order-ID formatting only.
+- `oms_type` changes position accounting semantics in the execution engine but does not emit a venue command by itself.
+- `market_exit_interval_ms`, `market_exit_max_attempts`, `market_exit_time_in_force`, and `market_exit_reduce_only` only affect the market-exit path enabled by `manage_stop`; rejecting `manage_stop = true` disables their mutation path.
+- `log_events`, `log_commands`, and `log_rejected_due_post_only_as_warning` affect logging only.
+
+If NT adds a new `StrategyConfig` field in a future pinned revision, the schema-current/source-fence verifier must fail until this audit is updated and the field is classified.
 
 **Alternatives considered**:
 

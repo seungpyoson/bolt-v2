@@ -6,8 +6,8 @@ Root-TOML runtime mode for venue mutation.
 
 Values:
 
-- `live`: admitted submit and cancel actions may call NT venue mutation APIs.
-- `shadow`: strategies still produce evidence and admission decisions, but shared routing suppresses NT submit and cancel venue mutations.
+- `live`: admitted Bolt strategy actions may call NT venue mutation APIs through the shared execution module.
+- `shadow`: strategies still produce evidence and admission decisions, but shared routing suppresses Bolt-strategy-originated NT venue mutations.
 
 Validation:
 
@@ -24,6 +24,7 @@ Responsibilities:
 - expose whether venue mutation is allowed
 - route submit behavior through live or shadow outcome
 - route cancel behavior through live or shadow outcome
+- provide the only allowed strategy-to-NT venue mutation chokepoint
 
 Non-responsibilities:
 
@@ -68,6 +69,23 @@ Values:
 - `BoltV3CancelRoutingOutcome::Canceled`: live mode called NT cancel
 - `BoltV3CancelRoutingOutcome::SkippedByPolicy`: shadow mode suppressed NT cancel
 
+## VenueMutationFence
+
+Source-fence/static rule over production strategy code.
+
+Forbidden direct strategy calls outside `src/bolt_v3_order_execution.rs`:
+
+- `submit_order(...)`
+- `submit_order_list(...)`
+- `modify_order(...)`
+- `cancel_order(...)`
+- `cancel_orders(...)`
+- `cancel_all_orders(...)`
+- `close_position(...)`
+- `close_all_positions(...)`
+
+The current implementation slice only needs shared submit and cancel helpers because the current production strategy only calls `submit_order(...)` and `cancel_order(...)`. If a future strategy needs another NT mutation API, the fence must fail until that action is routed through `src/bolt_v3_order_execution.rs` with tests for live and shadow behavior.
+
 ## ManagedVenueActionGuard
 
 Config validation rule applied to every loaded strategy when root mode is shadow.
@@ -81,4 +99,4 @@ Rejected strategy fields:
 
 Reason:
 
-These NT-managed features can mutate the venue outside Bolt's explicit shared submit/cancel routing helpers.
+These NT-managed features can mutate the venue outside Bolt's explicit shared routing helpers. Other pinned NT `StrategyConfig` fields are not independent mutation enablers: identity fields only affect IDs, `oms_type` affects position accounting, market-exit tuning fields are only active when `manage_stop` is true, and logging flags do not emit venue commands.

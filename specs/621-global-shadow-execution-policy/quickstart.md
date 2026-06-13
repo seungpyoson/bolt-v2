@@ -43,6 +43,8 @@ The review packet is:
 specs/621-global-shadow-execution-policy/spec.md
 specs/621-global-shadow-execution-policy/plan.md
 specs/621-global-shadow-execution-policy/research.md
+specs/621-global-shadow-execution-policy/data-model.md
 specs/621-global-shadow-execution-policy/contracts/order-execution-policy.md
+specs/621-global-shadow-execution-policy/checklists/requirements.md
 specs/621-global-shadow-execution-policy/tasks.md
 ```

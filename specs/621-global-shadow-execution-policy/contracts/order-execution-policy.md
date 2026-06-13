@@ -17,6 +17,23 @@ Valid values:
 
 Invalid or missing values fail config loading. A `submit_orders` key under any strategy `[parameters]` block fails archetype parameter deserialization.
 
+## Strategy-Originated Venue Mutation Surface
+
+All Bolt strategy-originated NT venue mutation APIs must route through `src/bolt_v3_order_execution.rs`.
+
+The pinned NT strategy surface includes these strategy-callable mutation methods:
+
+- `submit_order(...)`
+- `submit_order_list(...)`
+- `modify_order(...)`
+- `cancel_order(...)`
+- `cancel_orders(...)`
+- `cancel_all_orders(...)`
+- `close_position(...)`
+- `close_all_positions(...)`
+
+The current implementation slice provides explicit submit and cancel routing because current production code only uses `submit_order(...)` and `cancel_order(...)`. A source-fence/static verifier must reject direct calls to any listed method from production strategy code outside `src/bolt_v3_order_execution.rs`. Adding support for another method requires adding a shared helper and live/shadow tests before any strategy may call it.
+
 ## Shared Submit Contract
 
 Inputs:
@@ -61,6 +78,10 @@ Shadow behavior:
 
 1. Do not call the NT cancel closure.
 2. Return skipped-by-policy outcome.
+
+## Source-Fence Contract
+
+Verification must fail if production strategy code directly calls any listed NT venue mutation method. The verifier should allow the shared execution module and tests, and should fail strategy modules until they use shared helpers.
 
 ## Boundary Contract
 

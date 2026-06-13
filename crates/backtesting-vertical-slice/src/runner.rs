@@ -15,7 +15,10 @@ use std::{path::Path, str::FromStr};
 use anyhow::{Context, Result, bail, ensure};
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
 use nautilus_model::{
-    data::TradeTick, enums::AggressorSide, identifiers::InstrumentId, types::Quantity,
+    data::{Bar, BarSpecification, OrderBookDelta, TradeTick},
+    enums::{AggregationSource, AggressorSide, BookAction, OrderSide, PriceType},
+    identifiers::InstrumentId,
+    types::Quantity,
 };
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
 use rust_decimal::Decimal;
@@ -452,7 +455,7 @@ fn direct_s3_catalog_access_proven(manifest: &BacktestingRunManifest) -> bool {
 /// read-back tick must carry the projected instrument id, and the set of trade
 /// ids must equal the canonical table's, so a projection that silently dropped,
 /// duplicated, or relabelled ticks cannot pass the gate.
-fn assert_read_back_matches(
+pub(crate) fn assert_read_back_matches(
     read_back: &[TradeTick],
     canonical_rows: &[CanonicalTradeRow],
     expected_instrument_id: &str,
@@ -529,6 +532,169 @@ fn aggressor_label(side: AggressorSide) -> &'static str {
     }
 }
 
+/// Prove a bar catalog read-back is value-faithful, mirroring
+/// [`assert_read_back_matches`] for the bar family: every read-back bar must
+/// carry the projected instrument id, the table's externally-aggregated bar
+/// specification, and value-equal OHLCV and close-time fields, element-wise in
+/// catalog order against the canonical rows (which `validate()` has already
+/// proven time-monotonic).
+pub(crate) fn assert_bar_read_back_matches(
+    read_back: &[Bar],
+    table: &super::canonical_market_data::CanonicalBarsTable,
+    expected_instrument_id: &str,
+) -> Result<()> {
+    ensure!(
+        read_back.len() == table.rows.len(),
+        "bar catalog read-back count {} does not match canonical rows {}",
+        read_back.len(),
+        table.rows.len()
+    );
+    let expected_spec = BarSpecification::new_checked(
+        table.bar_spec.step,
+        table.bar_spec.aggregation,
+        PriceType::Last,
+    )
+    .map_err(|error| anyhow::anyhow!("invalid canonical bar specification: {error}"))?;
+    for (index, (bar, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
+        ensure!(
+            bar.bar_type.instrument_id().to_string() == expected_instrument_id,
+            "bar read-back {index} instrument {} does not match projected {expected_instrument_id}",
+            bar.bar_type.instrument_id()
+        );
+        ensure!(
+            bar.bar_type.spec() == expected_spec,
+            "bar read-back {index} spec {:?} does not match canonical {:?}",
+            bar.bar_type.spec(),
+            expected_spec
+        );
+        ensure!(
+            bar.bar_type.aggregation_source() == AggregationSource::External,
+            "bar read-back {index} must be externally aggregated"
+        );
+        for (label, actual, expected) in [
+            ("open", bar.open.as_decimal(), &row.open),
+            ("high", bar.high.as_decimal(), &row.high),
+            ("low", bar.low.as_decimal(), &row.low),
+            ("close", bar.close.as_decimal(), &row.close),
+        ] {
+            let expected = Decimal::from_str(expected)
+                .with_context(|| format!("canonical {label} {expected:?}"))?;
+            ensure!(
+                actual == expected,
+                "bar read-back {index} {label} {actual} does not match canonical {expected}"
+            );
+        }
+        let expected_volume = Decimal::from_str(&row.volume)
+            .with_context(|| format!("canonical volume {:?}", row.volume))?;
+        ensure!(
+            bar.volume.as_decimal() == expected_volume,
+            "bar read-back {index} volume {} does not match canonical {expected_volume}",
+            bar.volume
+        );
+        let expected_ts = u64::try_from(row.close_time)
+            .with_context(|| format!("canonical close_time {}", row.close_time))?;
+        ensure!(
+            bar.ts_event.as_u64() == expected_ts,
+            "bar read-back {index} ts_event {} does not match canonical close_time {expected_ts}",
+            bar.ts_event.as_u64()
+        );
+    }
+    Ok(())
+}
+
+/// Prove an order-book-delta catalog read-back is value-faithful, mirroring
+/// [`assert_read_back_matches`] for the delta family: element-wise in catalog
+/// order, every read-back delta must carry the projected instrument id and the
+/// canonical action/side/price/size/order-id/flags/sequence/event-time values
+/// (the canonical rows are dense-sequence validated, so positional comparison
+/// plus sequence equality rejects drops, duplicates, and reorders).
+pub(crate) fn assert_delta_read_back_matches(
+    read_back: &[OrderBookDelta],
+    table: &super::canonical_market_data::CanonicalOrderBookDeltasTable,
+    expected_instrument_id: &str,
+) -> Result<()> {
+    use super::canonical_market_data::{DeltaAction, DeltaSide};
+    ensure!(
+        read_back.len() == table.rows.len(),
+        "delta catalog read-back count {} does not match canonical rows {}",
+        read_back.len(),
+        table.rows.len()
+    );
+    for (index, (delta, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
+        ensure!(
+            delta.instrument_id.to_string() == expected_instrument_id,
+            "delta read-back {index} instrument {} does not match projected {expected_instrument_id}",
+            delta.instrument_id
+        );
+        ensure!(
+            delta.sequence == row.sequence,
+            "delta read-back {index} sequence {} does not match canonical {}",
+            delta.sequence,
+            row.sequence
+        );
+        ensure!(
+            delta.flags == row.flags,
+            "delta read-back {index} flags {} does not match canonical {}",
+            delta.flags,
+            row.flags
+        );
+        let expected_ts = u64::try_from(row.event_time)
+            .with_context(|| format!("canonical event_time {}", row.event_time))?;
+        ensure!(
+            delta.ts_event.as_u64() == expected_ts,
+            "delta read-back {index} ts_event {} does not match canonical {expected_ts}",
+            delta.ts_event.as_u64()
+        );
+        let actual_action = match delta.action {
+            BookAction::Clear => DeltaAction::Clear.as_str(),
+            BookAction::Add => DeltaAction::Add.as_str(),
+            BookAction::Update => DeltaAction::Update.as_str(),
+            BookAction::Delete => DeltaAction::Delete.as_str(),
+        };
+        ensure!(
+            actual_action == row.action,
+            "delta read-back {index} action {actual_action} does not match canonical {}",
+            row.action
+        );
+        if row.action == DeltaAction::Clear.as_str() {
+            // CLEAR rows carry no side/price/size in the canonical vocabulary;
+            // NautilusTrader represents them with a null book order.
+            continue;
+        }
+        let actual_side = match delta.order.side {
+            OrderSide::Buy => DeltaSide::Buy.as_str(),
+            OrderSide::Sell => DeltaSide::Sell.as_str(),
+            OrderSide::NoOrderSide => "NO_ORDER_SIDE",
+        };
+        ensure!(
+            actual_side == row.side,
+            "delta read-back {index} side {actual_side} does not match canonical {}",
+            row.side
+        );
+        let expected_price = Decimal::from_str(&row.price)
+            .with_context(|| format!("canonical price {:?}", row.price))?;
+        ensure!(
+            delta.order.price.as_decimal() == expected_price,
+            "delta read-back {index} price {} does not match canonical {expected_price}",
+            delta.order.price
+        );
+        let expected_size = Decimal::from_str(&row.size)
+            .with_context(|| format!("canonical size {:?}", row.size))?;
+        ensure!(
+            delta.order.size.as_decimal() == expected_size,
+            "delta read-back {index} size {} does not match canonical {expected_size}",
+            delta.order.size
+        );
+        ensure!(
+            delta.order.order_id == row.order_id,
+            "delta read-back {index} order_id {} does not match canonical {}",
+            delta.order.order_id,
+            row.order_id
+        );
+    }
+    Ok(())
+}
+
 /// Reason the NautilusTrader engine did not process exactly the accepted data, or
 /// `None` when its iteration count equals the accepted-trade count. NautilusTrader
 /// increments `iterations` once per data point delivered to the engine loop.
@@ -598,7 +764,7 @@ pub(crate) fn assert_time_window_overlaps_data(
 /// Pure overlap test for a manifest `[start, end]` window against the accepted
 /// data's `[first, last]` event range. Returns the name of the bound that
 /// excludes all data, or `None` when the window admits at least one trade.
-fn time_window_excludes_all_data(
+pub(crate) fn time_window_excludes_all_data(
     start: Option<i64>,
     end: Option<i64>,
     first: i64,

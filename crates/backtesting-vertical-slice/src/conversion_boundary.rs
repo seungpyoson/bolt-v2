@@ -20,6 +20,10 @@ use sha2::{Digest, Sha256};
 pub const CONVERSION_MANIFEST_FILE: &str = "conversion-manifest.json";
 pub const CONVERSION_CHECKPOINT_FILE: &str = "conversion-checkpoint.json";
 pub const CATALOG_METADATA_FILE: &str = "catalog-metadata.json";
+/// Multi-table conversion index; written ONLY when one accepted object
+/// produced more than one projected catalog table. Single-table conversions
+/// never write it, so existing single-table outputs stay byte-identical.
+pub const CONVERSION_TABLES_FILE: &str = "conversion-tables.json";
 
 pub const CONVERSION_MANIFEST_VERSION: &str = "conversion-manifest.v1";
 pub const CONVERSION_CHECKPOINT_VERSION: &str = "conversion-checkpoint.v1";
@@ -472,6 +476,164 @@ impl ConversionCatalogMetadata {
     }
 }
 
+/// One projected catalog table of a multi-table conversion.
+///
+/// `subroot_uri` is the artifact-root-relative subroot path (joinable onto the
+/// local output directory for inspection and onto the published output prefix
+/// for the portable URI). `bar_spec` is the lowercase `<step><aggregation>`
+/// discriminant, present only for the bar family.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversionTableRecord {
+    pub table_family: String,
+    pub nt_instrument_id: String,
+    pub data_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_spec: Option<String>,
+    pub subroot_uri: String,
+    pub catalog_hash: String,
+    pub rows: usize,
+}
+
+impl ConversionTableRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (name, value) in [
+            ("table_family", &self.table_family),
+            ("nt_instrument_id", &self.nt_instrument_id),
+            ("data_type", &self.data_type),
+            ("subroot_uri", &self.subroot_uri),
+            ("catalog_hash", &self.catalog_hash),
+        ] {
+            ensure!(
+                !value.trim().is_empty(),
+                "conversion table record field {name} must not be empty"
+            );
+        }
+        if let Some(bar_spec) = &self.bar_spec {
+            ensure!(
+                !bar_spec.trim().is_empty(),
+                "conversion table record bar_spec must not be empty when present"
+            );
+        }
+        ensure!(
+            self.rows > 0,
+            "conversion table record rows must be positive"
+        );
+        ensure!(
+            !self.subroot_uri.starts_with('/'),
+            "conversion table record subroot_uri must be artifact-root-relative, got {:?}",
+            self.subroot_uri
+        );
+        ensure!(
+            self.subroot_uri
+                .split('/')
+                .all(|segment| !segment.is_empty() && segment != "." && segment != ".."),
+            "conversion table record subroot_uri must be a clean relative path, got {:?}",
+            self.subroot_uri
+        );
+        Ok(())
+    }
+}
+
+/// Write the multi-table conversion index. The caller must only invoke this
+/// for conversions that produced more than one table.
+pub fn write_conversion_tables_index(
+    output_dir: &Path,
+    records: &[ConversionTableRecord],
+) -> Result<PathBuf> {
+    ensure!(
+        records.len() > 1,
+        "conversion tables index is only written for multi-table conversions, got {} record(s)",
+        records.len()
+    );
+    for record in records {
+        record.validate()?;
+    }
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("create conversion output dir {}", output_dir.display()))?;
+    let path = output_dir.join(CONVERSION_TABLES_FILE);
+    write_json(&path, &records)?;
+    Ok(path)
+}
+
+/// Validate a completed conversion's optional multi-table index against the
+/// aggregate manifest and the on-disk catalog subroots.
+///
+/// Returns the parsed records when the index is present, `None` for a
+/// single-table conversion (no index file). Fails loud when the index exists
+/// but is inconsistent: fewer than two records, duplicate table identities,
+/// per-data-type row totals diverging from the manifest aggregate, a missing
+/// primary record, or any subroot whose recomputed logical catalog hash does
+/// not match the recorded one.
+pub fn validate_conversion_tables_index(
+    output_dir: &Path,
+    manifest: &ConversionManifest,
+) -> Result<Option<Vec<ConversionTableRecord>>> {
+    let path = output_dir.join(CONVERSION_TABLES_FILE);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let records: Vec<ConversionTableRecord> = read_json(&path)?;
+    ensure!(
+        records.len() > 1,
+        "conversion tables index {} must describe more than one table, got {}",
+        path.display(),
+        records.len()
+    );
+    let mut identities = std::collections::BTreeSet::new();
+    let mut rows_by_data_type: BTreeMap<String, usize> = BTreeMap::new();
+    for record in &records {
+        record.validate()?;
+        ensure!(
+            identities.insert((
+                record.table_family.clone(),
+                record.nt_instrument_id.clone(),
+                record.data_type.clone(),
+                record.bar_spec.clone(),
+            )),
+            "conversion tables index contains duplicate table identity {}/{}/{}",
+            record.table_family,
+            record.nt_instrument_id,
+            record.data_type
+        );
+        let total = rows_by_data_type
+            .entry(record.data_type.clone())
+            .or_insert(0);
+        *total = total
+            .checked_add(record.rows)
+            .context("conversion tables index row total overflow")?;
+        let subroot = output_dir.join(&record.subroot_uri);
+        let actual_hash = crate::catalog_projection::logical_catalog_hash(&subroot)
+            .with_context(|| format!("recompute catalog hash {}", subroot.display()))?;
+        ensure!(
+            actual_hash == record.catalog_hash,
+            "conversion tables index subroot {} hash mismatch: recorded {:?}, recomputed {:?}",
+            record.subroot_uri,
+            record.catalog_hash,
+            actual_hash
+        );
+    }
+    ensure!(
+        rows_by_data_type == manifest.effective_catalog_rows_by_nt_data_type(),
+        "conversion tables index per-data-type rows {:?} do not match conversion manifest {:?}",
+        rows_by_data_type,
+        manifest.effective_catalog_rows_by_nt_data_type()
+    );
+    let primary_matches = records
+        .iter()
+        .filter(|record| {
+            record.nt_instrument_id == manifest.nt_instrument_id
+                && record.data_type == manifest.nt_data_type
+                && record.catalog_hash == manifest.catalog_hash
+        })
+        .count();
+    ensure!(
+        primary_matches == 1,
+        "conversion tables index must contain exactly one primary record matching the \
+         conversion manifest, found {primary_matches}"
+    );
+    Ok(Some(records))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConversionOutputState {
     CleanNew,
@@ -543,6 +705,10 @@ pub fn inspect_conversion_output(
     );
     let metadata: ConversionCatalogMetadata = read_json(&metadata_path)?;
     metadata.validate_against(&manifest, &manifest_hash, &checkpoint_hash)?;
+    // Multi-table conversions additionally bind every projected subroot
+    // through the tables index; single-table conversions have no index file
+    // and stay byte-identical.
+    validate_conversion_tables_index(output_dir, &manifest)?;
 
     Ok(ConversionOutputState::Complete {
         manifest_hash,

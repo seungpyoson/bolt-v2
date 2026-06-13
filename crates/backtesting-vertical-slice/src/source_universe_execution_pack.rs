@@ -609,6 +609,8 @@ fn materialize_run_spec(
                 max_object_bytes: record.selected_object_bytes,
                 max_decoded_bytes: record.max_decoded_bytes,
                 zip_member: record.zip_member.clone(),
+                max_member_bytes: None,
+                member_suffix: None,
             },
             csv: converter_csv,
             bars: None,

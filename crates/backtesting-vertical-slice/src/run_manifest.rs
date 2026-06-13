@@ -1335,14 +1335,32 @@ impl BacktestingRunManifest {
                 "requests_rejected_before_nt_config",
             )
         }));
+        let bound_bar_specs = self
+            .catalog_inputs
+            .iter()
+            .filter_map(|input| input.bar_spec.as_deref())
+            .collect::<Vec<_>>();
         surfaces.extend(UNSUPPORTED_NT_CATALOG_QUERY_SURFACES.iter().map(
             |(surface, _, nt_field)| {
-                resolved_surface(
-                    surface,
-                    NtSurfaceClassification::UnsupportedForNow,
-                    nt_field,
-                    "requests_rejected_before_nt_config",
-                )
+                // `catalog.bar_spec` is dual-classified: absent it remains the
+                // rejected-before-NT-config surface (existing manifests stay
+                // byte-identical); present it is the bolt-owned operator
+                // catalog-binding surface that never reaches the NT config.
+                if *surface == "catalog.bar_spec" && !bound_bar_specs.is_empty() {
+                    resolved_surface(
+                        surface,
+                        NtSurfaceClassification::CustomOwned,
+                        nt_field,
+                        &format!("operator_catalog_binding:{}", bound_bar_specs.join(",")),
+                    )
+                } else {
+                    resolved_surface(
+                        surface,
+                        NtSurfaceClassification::UnsupportedForNow,
+                        nt_field,
+                        "requests_rejected_before_nt_config",
+                    )
+                }
             },
         ));
         Ok(surfaces)
@@ -2013,16 +2031,34 @@ fn ensure_unsupported_nt_catalog_query_surfaces_absent(
             catalog.metadata.is_some(),
         ),
         (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[2].1,
-            catalog.bar_spec.is_some(),
-        ),
-        (
             UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[3].1,
             catalog.bar_types.is_some(),
         ),
     ] {
         if present {
             return Err(ManifestError::UnsupportedNtSurface { field });
+        }
+    }
+    // `bar_spec` is an operator catalog-binding surface, not an NT query
+    // surface: the operator binds each declared bar input to the projected
+    // per-table catalog subroot that holds exactly one externally-aggregated
+    // bar type, so the NT data config never needs a bar filter. It is only
+    // admissible on `Bar` inputs and must name a concrete specification.
+    if let Some(bar_spec) = catalog.bar_spec.as_deref() {
+        if bar_spec.trim().is_empty() {
+            return Err(ManifestError::UnsupportedEnum {
+                field: "catalog_inputs.bar_spec",
+                value: "bar_spec must not be blank".to_string(),
+            });
+        }
+        if catalog.data_type != "Bar" {
+            return Err(ManifestError::UnsupportedEnum {
+                field: "catalog_inputs.bar_spec",
+                value: format!(
+                    "bar_spec is only admissible on Bar inputs, got data_type {:?}",
+                    catalog.data_type
+                ),
+            });
         }
     }
     Ok(())
@@ -4307,13 +4343,67 @@ mod tests {
     }
 
     #[test]
+    fn catalog_input_bar_spec_binds_for_operator_and_maps_to_nt_config() {
+        // Present `bar_spec` is the operator catalog-binding surface: it parses,
+        // passes validation on a Bar input, maps to an NT data config without a
+        // bar filter, and resolves as a bolt-owned surface.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "Bar".to_string();
+        manifest.catalog_inputs[0].bar_spec = Some("1minute".to_string());
+        manifest
+            .to_nt_data_configs()
+            .expect("bar_spec input maps to NT data config");
+        let surfaces = manifest.resolved_nt_surfaces().expect("resolved surfaces");
+        assert!(
+            surfaces.iter().any(|resolved| {
+                resolved.surface == "catalog.bar_spec"
+                    && resolved.classification == NtSurfaceClassification::CustomOwned
+                    && resolved.resolved_value == "operator_catalog_binding:1minute"
+            }),
+            "present bar_spec must resolve as the bolt-owned binding surface"
+        );
+    }
+
+    #[test]
+    fn catalog_input_bar_spec_on_non_bar_input_is_rejected() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].bar_spec = Some("1minute".to_string());
+        let err = manifest
+            .to_nt_data_configs()
+            .expect_err("bar_spec on a TradeTick input must be rejected");
+        assert!(
+            matches!(
+                &err,
+                ManifestError::UnsupportedEnum { field, .. } if *field == "catalog_inputs.bar_spec"
+            ),
+            "unexpected error {err}"
+        );
+    }
+
+    #[test]
+    fn catalog_input_blank_bar_spec_is_rejected() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "Bar".to_string();
+        manifest.catalog_inputs[0].bar_spec = Some(" ".to_string());
+        let err = manifest
+            .to_nt_data_configs()
+            .expect_err("blank bar_spec must be rejected");
+        assert!(
+            matches!(
+                &err,
+                ManifestError::UnsupportedEnum { field, .. } if *field == "catalog_inputs.bar_spec"
+            ),
+            "unexpected error {err}"
+        );
+    }
+
+    #[test]
     fn typed_unsupported_nt_catalog_query_surfaces_parse_then_fail_before_nt_config() {
         let serialized = toml::to_string(&valid_manifest()).expect("serialize");
         let bar_types = format!("[\"{TEST_BAR_TYPE}\"]");
         for (field, value) in [
             ("client_id", "\"TEST-CLIENT\""),
             ("metadata", "{ source = \"proof\" }"),
-            ("bar_spec", "\"1-MINUTE-LAST\""),
             ("bar_types", bar_types.as_str()),
         ] {
             let text = serialized.replace(

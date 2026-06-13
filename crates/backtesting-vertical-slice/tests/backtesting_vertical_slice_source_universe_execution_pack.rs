@@ -315,9 +315,17 @@ crypto_future = "MARGIN"
         Some(run_spec.accepted_at_utc.as_str())
     );
     assert_eq!(run_spec.converter.raw_payload.max_object_bytes, 100);
-    assert_eq!(run_spec.identity.instrument_id, "BTCUSDT");
+    let identity = run_spec
+        .identity
+        .single()
+        .expect("execution-pack run-specs carry a single instrument identity");
+    assert_eq!(identity.instrument_id, "BTCUSDT");
+    let instrument_spec = run_spec
+        .instrument_spec
+        .single()
+        .expect("execution-pack run-specs carry a single instrument spec");
     assert!(matches!(
-        run_spec.instrument_spec,
+        instrument_spec,
         CatalogInstrumentSpec::CryptoPerpetual(_)
     ));
     assert_eq!(run_spec.manifest.venue.account_type, "MARGIN");

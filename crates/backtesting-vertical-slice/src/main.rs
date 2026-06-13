@@ -24,8 +24,9 @@ use backtesting_vertical_slice::{
         BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
     },
     operator::{
-        PublishOptions, PublishedArtifact, PublishedCatalogProof, RunSpec, run_from_run_spec,
-        run_from_run_spec_and_publish_with_resolved_storage_options,
+        MultiTableRunArtifacts, OperatorRunArtifacts, PublishOptions, PublishedArtifact,
+        PublishedCatalogProof, RunArtifacts, RunSpec,
+        run_from_run_spec_and_publish_with_resolved_storage_options, run_operator_from_run_spec,
         validate_run_spec_manifest_for_object_hash,
     },
 };
@@ -129,11 +130,7 @@ where
     ensure_object_read_within_raw_payload_limit(&spec)?;
     let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
 
-    let (artifacts, published_artifacts, published_catalog_proof): (
-        _,
-        Option<Vec<PublishedArtifact>>,
-        Option<PublishedCatalogProof>,
-    ) = if cli.publish_output {
+    if cli.publish_output {
         let published = run_from_run_spec_and_publish_with_resolved_storage_options(
             &spec,
             &object_bytes,
@@ -141,20 +138,26 @@ where
             publish_options,
             resolved_publish_storage_options.as_ref(),
         )?;
-        (
-            published.run,
+        print_trade_run(
+            &published.run,
             Some(published.published_artifacts),
             published.published_catalog_proof,
-        )
+        );
     } else {
-        (
-            run_from_run_spec(&spec, &object_bytes, &cli.output_dir)?,
-            None,
-            None,
-        )
-    };
-    let output = &artifacts.output;
+        match run_operator_from_run_spec(&spec, &object_bytes, &cli.output_dir)? {
+            OperatorRunArtifacts::Trade(artifacts) => print_trade_run(&artifacts, None, None),
+            OperatorRunArtifacts::MultiTable(artifacts) => print_multi_table_run(&artifacts),
+        }
+    }
+    Ok(())
+}
 
+fn print_trade_run(
+    artifacts: &RunArtifacts,
+    published_artifacts: Option<Vec<PublishedArtifact>>,
+    published_catalog_proof: Option<PublishedCatalogProof>,
+) {
+    let output = &artifacts.output;
     println!("accepted_object_sha256 = {}", artifacts.verified_sha256);
     println!(
         "source_proof_id = {}",
@@ -217,7 +220,57 @@ where
             );
         }
     }
-    Ok(())
+}
+
+fn print_multi_table_run(artifacts: &MultiTableRunArtifacts) {
+    println!("accepted_object_sha256 = {}", artifacts.verified_sha256);
+    println!(
+        "source_proof_id = {}",
+        artifacts.accepted_source_proof.source_proof_id
+    );
+    println!("projected_tables = {}", artifacts.tables.len());
+    for table in &artifacts.tables {
+        println!(
+            "projected_table = family={} instrument={} data_type={} bar_spec={:?} rows={} \
+             subroot={} catalog_hash={}",
+            table.table_family,
+            table.nt_instrument_id,
+            table.data_type,
+            table.bar_spec,
+            table.rows,
+            table.subroot.display(),
+            table.catalog_hash
+        );
+    }
+    if let Some(path) = &artifacts.conversion_tables_path {
+        println!("conversion_tables_index = {}", path.display());
+    }
+    println!("nt_version = {}", artifacts.contract.nt_version);
+    println!(
+        "strategy_config_hash = {}",
+        artifacts.contract.strategy_config_hash
+    );
+    println!(
+        "backtest_run_config_id = {:?}",
+        artifacts.nt_result.run_config_id
+    );
+    println!(
+        "nt_iterations = {} (market-data points processed by the engine)",
+        artifacts.nt_result.iterations
+    );
+    println!(
+        "nt_backtest_start = {:?}, nt_backtest_end = {:?}",
+        artifacts.nt_result.backtest_start, artifacts.nt_result.backtest_end
+    );
+    println!(
+        "nt_total_events = {}, nt_total_orders = {}, nt_total_positions = {}",
+        artifacts.nt_result.total_events,
+        artifacts.nt_result.total_orders,
+        artifacts.nt_result.total_positions
+    );
+    println!("fidelity_class = {:?}", artifacts.contract.fidelity_class);
+    println!("result_contract = {}", artifacts.contract_path.display());
+    println!("accepted_source_proof = {}", artifacts.proof_path.display());
 }
 
 fn read_run_spec_with_hash(path: &Path) -> Result<(RunSpec, String)> {

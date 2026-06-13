@@ -216,11 +216,24 @@ pub struct RawPayloadConfig {
     pub container: RawPayloadContainer,
     /// Maximum accepted-object byte length allowed before local read/hash/decode.
     pub max_object_bytes: u64,
-    /// Maximum decoded CSV byte length allowed after container decoding.
+    /// Maximum decoded text byte length allowed after single-text container
+    /// decoding (CSV/JSONL). Per-member tar bounds use [`Self::max_member_bytes`]
+    /// instead; the Parquet passthrough is bounded only by
+    /// [`Self::max_object_bytes`].
     pub max_decoded_bytes: u64,
     /// Required for [`RawPayloadContainer::SingleCsvZip`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zip_member: Option<String>,
+    /// Per-member decoded byte bound for [`RawPayloadContainer::TarGzipJsonl`].
+    /// Mirrors the byte-stability mechanism of `zip_member`: optional, omitted
+    /// from serialization when absent, so existing single-text run-specs stay
+    /// byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_member_bytes: Option<u64>,
+    /// Required member-name suffix for [`RawPayloadContainer::TarGzipJsonl`]; only
+    /// members whose names end with this suffix are streamed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_suffix: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +242,18 @@ pub enum RawPayloadContainer {
     CsvGzip,
     CsvText,
     SingleCsvZip,
+    /// Plain UTF-8 line-delimited JSON (also single-envelope or pretty-printed
+    /// paged JSON), decoded to one text string bounded by `max_decoded_bytes`.
+    JsonlText,
+    /// Gzip-compressed `JsonlText`; decompressed and decoded to one text string
+    /// bounded by `max_decoded_bytes`.
+    JsonlGzip,
+    /// Gzip-compressed POSIX tar of JSONL members; members whose names end with
+    /// `member_suffix` are streamed, each bounded by `max_member_bytes`.
+    TarGzipJsonl,
+    /// Raw Parquet object bytes passed through after the `max_object_bytes` object
+    /// cap; read columnar downstream by the dual-emit event-stream adapter.
+    ParquetFile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

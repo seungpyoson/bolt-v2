@@ -15,11 +15,19 @@
 //! [`SourceProofFidelityClass::L2Replay`] and bars require
 //! [`SourceProofFidelityClass::TradeBarReplay`].
 
+use std::{fs::File, path::Path, sync::Arc};
+
 use anyhow::{Context, Result, ensure};
+use arrow::{
+    array::{ArrayRef, Int64Array, StringArray, UInt8Array, UInt64Array},
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+};
 use nautilus_model::{
     data::BarSpecification,
     enums::{BarAggregation, PriceType, RecordFlag},
 };
+use parquet::arrow::ArrowWriter;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -568,6 +576,246 @@ fn validate_bar_ohlcv(index: usize, row: &CanonicalBarRow) -> Result<()> {
         "row {index}: negative volume {volume}"
     );
     Ok(())
+}
+
+/// Write one canonical table record batch as a Parquet artifact.
+///
+/// Shared by the bar and order-book-delta canonical writers; mirrors the
+/// trades writer in [`super::canonical_trades::CanonicalTradesTable`].
+fn write_record_batch_parquet(batch: &RecordBatch, path: &Path) -> Result<()> {
+    let file = File::create(path)
+        .with_context(|| format!("failed to create canonical artifact {}", path.display()))?;
+    let mut writer = ArrowWriter::try_new(file, batch.schema(), None)
+        .context("failed to construct parquet writer")?;
+    writer.write(batch).context("failed to write batch")?;
+    writer.close().context("failed to finalize parquet")?;
+    Ok(())
+}
+
+impl CanonicalOrderBookDeltasTable {
+    /// Arrow schema for the canonical order-book-delta table.
+    #[must_use]
+    pub fn arrow_schema() -> Arc<Schema> {
+        let utf8 = |name: &str| Field::new(name, DataType::Utf8, false);
+        let utf8_nullable = |name: &str| Field::new(name, DataType::Utf8, true);
+        let int64 = |name: &str| Field::new(name, DataType::Int64, false);
+        let int64_nullable = |name: &str| Field::new(name, DataType::Int64, true);
+        Arc::new(Schema::new(vec![
+            utf8("schema_version"),
+            utf8("ingest_run_id"),
+            utf8("source_binding"),
+            utf8("venue"),
+            utf8("product_family"),
+            utf8("product_category"),
+            utf8("instrument_id"),
+            utf8("canonical_instrument_key"),
+            utf8("venue_symbol"),
+            utf8_nullable("nt_instrument_id"),
+            int64("event_time"),
+            int64("capture_time"),
+            int64_nullable("availability_time"),
+            utf8_nullable("source_sequence"),
+            utf8("raw_payload_id"),
+            utf8("source_proof_id"),
+            utf8("payload_hash"),
+            utf8("transform_hash"),
+            utf8("action"),
+            utf8("side"),
+            utf8("price"),
+            utf8("size"),
+            Field::new("order_id", DataType::UInt64, false),
+            Field::new("flags", DataType::UInt8, false),
+            Field::new("sequence", DataType::UInt64, false),
+        ]))
+    }
+
+    fn to_record_batch(&self) -> Result<RecordBatch> {
+        let utf8_col = |f: fn(&CanonicalOrderBookDeltaRow) -> &str| {
+            Arc::new(StringArray::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let int64_col = |f: fn(&CanonicalOrderBookDeltaRow) -> i64| {
+            Arc::new(Int64Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let opt_utf8_col = |f: fn(&CanonicalOrderBookDeltaRow) -> Option<&str>| {
+            Arc::new(StringArray::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let opt_int64_col = |f: fn(&CanonicalOrderBookDeltaRow) -> Option<i64>| {
+            Arc::new(Int64Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let uint64_col = |f: fn(&CanonicalOrderBookDeltaRow) -> u64| {
+            Arc::new(UInt64Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let uint8_col = |f: fn(&CanonicalOrderBookDeltaRow) -> u8| {
+            Arc::new(UInt8Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        RecordBatch::try_new(
+            Self::arrow_schema(),
+            vec![
+                utf8_col(|r| r.schema_version.as_str()),
+                utf8_col(|r| r.ingest_run_id.as_str()),
+                utf8_col(|r| r.source_binding.as_str()),
+                utf8_col(|r| r.venue.as_str()),
+                utf8_col(|r| r.product_family.as_str()),
+                utf8_col(|r| r.product_category.as_str()),
+                utf8_col(|r| r.instrument_id.as_str()),
+                utf8_col(|r| r.canonical_instrument_key.as_str()),
+                utf8_col(|r| r.venue_symbol.as_str()),
+                opt_utf8_col(|r| r.nt_instrument_id.as_deref()),
+                int64_col(|r| r.event_time),
+                int64_col(|r| r.capture_time),
+                opt_int64_col(|r| r.availability_time),
+                opt_utf8_col(|r| r.source_sequence.as_deref()),
+                utf8_col(|r| r.raw_payload_id.as_str()),
+                utf8_col(|r| r.source_proof_id.as_str()),
+                utf8_col(|r| r.payload_hash.as_str()),
+                utf8_col(|r| r.transform_hash.as_str()),
+                utf8_col(|r| r.action.as_str()),
+                utf8_col(|r| r.side.as_str()),
+                utf8_col(|r| r.price.as_str()),
+                utf8_col(|r| r.size.as_str()),
+                uint64_col(|r| r.order_id),
+                uint8_col(|r| r.flags),
+                uint64_col(|r| r.sequence),
+            ],
+        )
+        .context("failed to build canonical order-book-delta record batch")
+    }
+
+    /// Write the canonical normalized table as a Parquet artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table is invalid or the file cannot be written.
+    pub fn write_parquet(&self, path: &Path) -> Result<()> {
+        self.validate()?;
+        write_record_batch_parquet(&self.to_record_batch()?, path)
+    }
+}
+
+impl CanonicalBarsTable {
+    /// Arrow schema for the canonical bar table.
+    ///
+    /// `bar_step`/`bar_aggregation` repeat the table-level
+    /// [`CanonicalBarSpec`] on every row so the artifact is self-describing.
+    #[must_use]
+    pub fn arrow_schema() -> Arc<Schema> {
+        let utf8 = |name: &str| Field::new(name, DataType::Utf8, false);
+        let utf8_nullable = |name: &str| Field::new(name, DataType::Utf8, true);
+        let int64 = |name: &str| Field::new(name, DataType::Int64, false);
+        let int64_nullable = |name: &str| Field::new(name, DataType::Int64, true);
+        Arc::new(Schema::new(vec![
+            utf8("schema_version"),
+            utf8("ingest_run_id"),
+            utf8("source_binding"),
+            utf8("venue"),
+            utf8("product_family"),
+            utf8("product_category"),
+            utf8("instrument_id"),
+            utf8("canonical_instrument_key"),
+            utf8("venue_symbol"),
+            utf8_nullable("nt_instrument_id"),
+            int64("open_time"),
+            int64("close_time"),
+            int64("capture_time"),
+            int64_nullable("availability_time"),
+            utf8_nullable("source_sequence"),
+            utf8("raw_payload_id"),
+            utf8("source_proof_id"),
+            utf8("payload_hash"),
+            utf8("transform_hash"),
+            int64("bar_step"),
+            utf8("bar_aggregation"),
+            utf8("open"),
+            utf8("high"),
+            utf8("low"),
+            utf8("close"),
+            utf8("volume"),
+        ]))
+    }
+
+    fn to_record_batch(&self) -> Result<RecordBatch> {
+        let utf8_col = |f: fn(&CanonicalBarRow) -> &str| {
+            Arc::new(StringArray::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let int64_col = |f: fn(&CanonicalBarRow) -> i64| {
+            Arc::new(Int64Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let opt_utf8_col = |f: fn(&CanonicalBarRow) -> Option<&str>| {
+            Arc::new(StringArray::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let opt_int64_col = |f: fn(&CanonicalBarRow) -> Option<i64>| {
+            Arc::new(Int64Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let bar_step = i64::try_from(self.bar_spec.step).context("bar_spec step overflow")?;
+        let bar_step_col = Arc::new(Int64Array::from(vec![bar_step; self.rows.len()])) as ArrayRef;
+        let bar_aggregation = self.bar_spec.aggregation.to_string();
+        let bar_aggregation_col = Arc::new(StringArray::from(vec![
+            bar_aggregation.as_str();
+            self.rows.len()
+        ])) as ArrayRef;
+        RecordBatch::try_new(
+            Self::arrow_schema(),
+            vec![
+                utf8_col(|r| r.schema_version.as_str()),
+                utf8_col(|r| r.ingest_run_id.as_str()),
+                utf8_col(|r| r.source_binding.as_str()),
+                utf8_col(|r| r.venue.as_str()),
+                utf8_col(|r| r.product_family.as_str()),
+                utf8_col(|r| r.product_category.as_str()),
+                utf8_col(|r| r.instrument_id.as_str()),
+                utf8_col(|r| r.canonical_instrument_key.as_str()),
+                utf8_col(|r| r.venue_symbol.as_str()),
+                opt_utf8_col(|r| r.nt_instrument_id.as_deref()),
+                int64_col(|r| r.open_time),
+                int64_col(|r| r.close_time),
+                int64_col(|r| r.capture_time),
+                opt_int64_col(|r| r.availability_time),
+                opt_utf8_col(|r| r.source_sequence.as_deref()),
+                utf8_col(|r| r.raw_payload_id.as_str()),
+                utf8_col(|r| r.source_proof_id.as_str()),
+                utf8_col(|r| r.payload_hash.as_str()),
+                utf8_col(|r| r.transform_hash.as_str()),
+                bar_step_col,
+                bar_aggregation_col,
+                utf8_col(|r| r.open.as_str()),
+                utf8_col(|r| r.high.as_str()),
+                utf8_col(|r| r.low.as_str()),
+                utf8_col(|r| r.close.as_str()),
+                utf8_col(|r| r.volume.as_str()),
+            ],
+        )
+        .context("failed to build canonical bar record batch")
+    }
+
+    /// Write the canonical normalized table as a Parquet artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table is invalid or the file cannot be written.
+    pub fn write_parquet(&self, path: &Path) -> Result<()> {
+        self.validate()?;
+        write_record_batch_parquet(&self.to_record_batch()?, path)
+    }
 }
 
 #[cfg(test)]

@@ -62,6 +62,8 @@ fn converter_config() -> ConverterConfig {
             max_object_bytes: 4096,
             max_decoded_bytes: 4096,
             zip_member: None,
+            max_member_bytes: None,
+            member_suffix: None,
         },
         csv: csv_mapping(),
         bars: None,

@@ -5471,6 +5471,14 @@ def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
     return "python3 scripts/ci_provenance.py emit-full-ci" in text and "--output ci-provenance.json" in text
 
 
+def ci_provenance_emit_fingerprint_download_blocks(job_lines: list[str]) -> list[list[str]]:
+    return [
+        block
+        for block in action_blocks(job_lines, "actions/download-artifact@")
+        if block_has_input(block, "pattern", "nextest-archive-fingerprint-*")
+    ]
+
+
 def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]) -> list[str]:
     text = uncommented_text(job_lines)
     errors = []
@@ -5489,7 +5497,10 @@ def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]
         errors.append("ci-provenance-emit must pass build.required from needs.detector.outputs.build_required")
     if (
         f"--nextest-fingerprint-path {fingerprint_path}" not in text
-        or f"path: {fingerprint_download_path}" not in text
+        or not any(
+            block_has_input(block, "path", fingerprint_download_path)
+            for block in ci_provenance_emit_fingerprint_download_blocks(job_lines)
+        )
     ):
         errors.append("ci-provenance-emit fingerprint download path must match emitter argument")
     return errors
@@ -5517,8 +5528,7 @@ def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) 
 def ci_provenance_emit_downloads_fingerprint(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return (
-        "actions/download-artifact@" in text
-        and "pattern: nextest-archive-fingerprint-*" in text
+        bool(ci_provenance_emit_fingerprint_download_blocks(job_lines))
         and "continue-on-error: true" in text
         and "--nextest-fingerprint-path" in text
     )

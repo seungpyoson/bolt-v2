@@ -367,6 +367,8 @@ def redirect_preserves_github_api_headers(old_url: str, new_url: str) -> bool:
         old.scheme == new.scheme == "https"
         and old_host == new_host
         and normalized_redirect_port(old) == normalized_redirect_port(new)
+        and old.username == new.username
+        and old.password == new.password
     )
 
 
@@ -843,6 +845,8 @@ def resolve_exact_sha_evidence(
         last_page_len = len(runs)
         if not runs:
             break
+        page_has_fresh_run = False
+        page_has_old_run = False
         for run in runs:
             if not isinstance(run, dict):
                 raise ProvenanceError("workflow runs payload is malformed")
@@ -850,11 +854,13 @@ def resolve_exact_sha_evidence(
             if not isinstance(created_at, str):
                 raise ProvenanceError("workflow run created_at must be a string")
             if parse_timestamp(created_at) < cutoff:
-                if not candidates:
-                    raise ProvenanceError("lookback age limit exhausted before candidate evidence was found")
-                break
+                page_has_old_run = True
+                continue
+            page_has_fresh_run = True
             if run_matches_exact_sha(run, config, requested_sha, current_run_id):
                 candidates.append(run)
+        if page_has_old_run and not page_has_fresh_run and not candidates:
+            raise ProvenanceError("lookback age limit exhausted before candidate evidence was found")
         if candidates or len(runs) < config.workflow_runs_per_page:
             break
 

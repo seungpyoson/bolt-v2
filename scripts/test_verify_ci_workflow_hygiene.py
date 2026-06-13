@@ -4721,6 +4721,27 @@ def main() -> int:
         ),
     )
     assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            BASE_WORKFLOW,
+            "          path: .ci-provenance/fingerprint",
+            "          path: .ci-provenance/fingerprint-backup",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                "          path: .ci-provenance/fingerprint",
+                "          path: .ci-provenance/downloaded",
+            ),
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+            "          printf '%s\\n' 'path: .ci-provenance/fingerprint'\n"
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
         "actions/upload-artifact must be pinned to a 40-character SHA",
         replace_once(
             BASE_WORKFLOW,

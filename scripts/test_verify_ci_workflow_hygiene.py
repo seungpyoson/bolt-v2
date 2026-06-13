@@ -1161,6 +1161,19 @@ def assert_workflow_hygiene_reviewer_regressions() -> None:
         if expected not in errors:
             raise AssertionError(f"dynamic env alias did not classify {expected!r}: {errors!r}")
 
+    redirection_expected = "cargo --target-dir raw target override must be classified"
+    advanced_redirection_cases = [
+        "env &> out -u FOO cargo build --target-dir /tmp/raw",
+        "env &>> out -u FOO cargo build --target-dir /tmp/raw",
+        "env >& out -u FOO cargo build --target-dir /tmp/raw",
+        "env <& input -u FOO cargo build --target-dir /tmp/raw",
+        "env <<< input -u FOO cargo build --target-dir /tmp/raw",
+    ]
+    for script in advanced_redirection_cases:
+        errors = verifier.raw_rust_storage_errors(script)
+        if redirection_expected not in errors:
+            raise AssertionError(f"advanced redirection hid raw cargo target override: {script!r} -> {errors!r}")
+
     s3_expected = "S3 active mutable target cache must be rejected"
     s3_stdout_cases = {
         "aws stdout extracted into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | tar -x -C target",

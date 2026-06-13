@@ -2434,9 +2434,9 @@ def env_command_prefix_index(tokens: list[str], index: int) -> int | None:
 
 def shell_redirection_next_index(tokens: list[str], index: int) -> int | None:
     token = tokens[index]
-    if token in {">", ">>", "<", "<<", "<>", ">|"}:
+    if token in SHELL_REDIRECTION_OPERATORS:
         return min(index + 2, len(tokens))
-    if re.match(r"^\d?(?:>>?|<<?|<>|>\|).+", token):
+    if re.match(r"^(?:\d?(?:>>?|<<?|<>|>\||>&|<&)|&>>?|<<<).+", token):
         return index + 1
     return None
 

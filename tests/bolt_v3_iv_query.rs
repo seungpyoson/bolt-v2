@@ -7,7 +7,7 @@ use bolt_v2::bolt_v3_iv::{
         IvDerivedInputBounds, IvDerivedInputField, IvDerivedInputFieldPolicy, IvDerivedInputPolicy,
         IvDerivedInputSet, IvDerivedInputSourceKind, IvDerivedProfileSourceRef,
         IvHelperFailurePolicy, IvHelperOutput, IvHelperPolicy, IvNtHelperSymbol,
-        IvOperatorValueRefreshPolicy, IvOptionSide, IvTimedInput,
+        IvOperatorValueRefreshPolicy, IvOptionSide, IvTimedInput, derive_iv,
     },
     error::IvRejectReason,
     health::{IvSourceHealth, IvSourceHealthState},
@@ -3344,32 +3344,9 @@ fn selector_scoped_derived_accessors_filter_unauthorized_shared_state() {
     denied_inputs.input_event_ids = vec!["configured-denied-event".to_string()];
 
     let state = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
-    let producer = IvQueryHandle::from_state(
-        "configured-profile",
-        profile_wide_authorization(),
-        state.clone(),
-    )
-    .with_helper_policies(vec![helper_policy()])
-    .with_derived_input_policies(vec![query_supplied_derived_input_policy(
-        "configured-derived-input-policy",
-    )])
-    .with_derived_inputs(vec![allowed_inputs.clone(), denied_inputs.clone()]);
-
-    for inputs in [allowed_inputs, denied_inputs] {
-        producer
-            .query(&IvQuery::product(IvProductQuery {
-                strategy_id: "configured-strategy".to_string(),
-                profile_id: "configured-profile".to_string(),
-                product_kind: IvProductKind::DerivedIv,
-                selector: IvSelector::DerivedIvQuery {
-                    instrument_id: "configured-option-instrument".to_string(),
-                    helper_policy_id: "configured-helper-policy".to_string(),
-                    as_of_ns: UnixNanos::new(2_000),
-                    inputs: Some(Box::new(inputs)),
-                },
-            }))
-            .unwrap();
-    }
+    state.set_derived_inputs(vec![allowed_inputs.clone(), denied_inputs.clone()]);
+    state.record_derived_output(derive_iv(&helper_policy(), allowed_inputs).unwrap());
+    state.record_derived_output(derive_iv(&helper_policy(), denied_inputs).unwrap());
 
     let scoped = IvQueryHandle::from_state(
         "configured-profile",

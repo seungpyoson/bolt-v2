@@ -28,6 +28,98 @@ EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'scripts/command_understanding.py'",
 )
 
+CI_PROVENANCE_TOML = """
+[ci_provenance]
+schema_version = 1
+artifact_name_template = "ci-provenance-attempt-{run_attempt}"
+workflow_key = "ci"
+workflow_name = "CI"
+workflow_path = ".github/workflows/ci.yml"
+fingerprint_source = "meter"
+
+[ci_provenance.full_ci]
+required_jobs = [
+  "detector",
+  "fmt-check",
+  "deny",
+  "clippy",
+  "check-aarch64",
+  "source-fence",
+  "test-archive",
+  "test-shards",
+  "test",
+]
+conditional_jobs = ["build"]
+conditional_job_outputs = { build = "detector.build_required" }
+
+[ci_provenance.full_ci.jobs.detector]
+check_name = "detector"
+
+[ci_provenance.full_ci.jobs.fmt-check]
+check_name = "fmt-check"
+
+[ci_provenance.full_ci.jobs.deny]
+check_name = "deny"
+
+[ci_provenance.full_ci.jobs.clippy]
+check_name = "clippy"
+
+[ci_provenance.full_ci.jobs.check-aarch64]
+check_name = "check-aarch64"
+
+[ci_provenance.full_ci.jobs.source-fence]
+check_name = "source-fence"
+
+[ci_provenance.full_ci.jobs.test-archive]
+check_name = "nextest archive"
+
+[ci_provenance.full_ci.jobs.test-shards]
+check_name_template = "nextest shard {shard} of {shard_count}"
+shard_count = 4
+
+[ci_provenance.full_ci.jobs.test]
+check_name = "test"
+
+[ci_provenance.full_ci.jobs.build]
+check_name = "build"
+conditional = "detector.build_required"
+
+[ci_provenance.deploy]
+artifact_name = "bolt-v2-binary"
+require_source_event = "push"
+require_source_branch = "main"
+require_gate_check = true
+
+[ci_provenance.dispatch]
+workflow_input = "full_ci"
+
+[ci_provenance.api_limits]
+workflow_runs_per_page = 100
+run_jobs_per_page = 100
+run_artifacts_per_page = 100
+max_lookback_pages = 10
+max_lookback_age_seconds = 2592000
+
+[ci_provenance.artifacts]
+retention_days = 30
+
+[ci_provenance.policy]
+draft_pr_synchronize = "defer"
+draft_pr_opened = "defer"
+draft_pr_reopened = "defer"
+converted_to_draft = "defer"
+ready_pr = "full"
+ready_for_review = "full"
+workflow_dispatch = "full"
+main_push = "full"
+tag = "tag_reuse"
+unknown_event = "full"
+
+[ci_provenance.policy.override]
+force_full_ci = false
+ignore_emit_failure = false
+"""
+
 
 def load_verifier(
     path: pathlib.Path = VERIFIER_PATH, module_name: str = "verify_ci_workflow_hygiene"
@@ -762,6 +854,91 @@ def replace_once(text: str, old: str, new: str) -> str:
 
 def repo_workflow_text(path: str) -> str:
     return (REPO_ROOT / path).read_text()
+
+
+def strip_ci_provenance_config(config_text: str) -> str:
+    lines = config_text.splitlines()
+    kept: list[str] = []
+    skip = False
+    for line in lines:
+        if line.startswith("[ci_provenance"):
+            skip = True
+            continue
+        if skip and line.startswith("["):
+            skip = False
+        if not skip:
+            kept.append(line)
+    return "\n".join(kept).rstrip() + "\n"
+
+
+def ci_provenance_config_fixture() -> str:
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text()
+    return strip_ci_provenance_config(config_text) + "\n" + CI_PROVENANCE_TOML
+
+
+def runner_config_load_error(config_text: str) -> str:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
+        config_path.write_text(config_text, encoding="utf-8")
+        try:
+            verifier.load_github_actions_runners_config(config_path)
+        except Exception as exc:  # noqa: BLE001 - loader raises domain errors.
+            return str(exc)
+    return ""
+
+
+def assert_ci_provenance_config_contract() -> None:
+    valid = ci_provenance_config_fixture()
+    if runner_config_load_error(valid):
+        raise AssertionError("valid ci_provenance fixture must load")
+
+    cases = [
+        (
+            "ci/github-actions-runners.toml must define [ci_provenance]",
+            strip_ci_provenance_config(valid),
+        ),
+        (
+            "ci_provenance.full_ci.jobs.test missing",
+            valid.replace(
+                """
+[ci_provenance.full_ci.jobs.test]
+check_name = "test"
+""",
+                "",
+            ),
+        ),
+        (
+            "ci_provenance.full_ci.jobs.test-shards shard_count",
+            valid.replace("shard_count = 4", "shard_count = 3"),
+        ),
+        (
+            "ci_provenance.full_ci.jobs.test-shards template count",
+            valid.replace(
+                'check_name_template = "nextest shard {shard} of {shard_count}"',
+                'check_name_template = "nextest shard {shard} of 3"',
+            ),
+        ),
+        (
+            "must reference [meter] fingerprint keys",
+            valid.replace(
+                'fingerprint_source = "meter"',
+                'fingerprint_source = "meter"\nfingerprint_artifact_prefix = "nextest-archive-fingerprint-"',
+            ),
+        ),
+        (
+            "ci_provenance.policy.override.force_full_ci must default to false",
+            valid.replace("force_full_ci = false\n", ""),
+        ),
+        (
+            "ci_provenance.policy.override.ignore_emit_failure must default to false",
+            valid.replace("ignore_emit_failure = false\n", ""),
+        ),
+    ]
+    for fragment, config_text in cases:
+        error = runner_config_load_error(config_text)
+        if fragment not in error:
+            raise AssertionError(f"expected {fragment!r}, got {error!r}")
 
 
 def assert_runner_contract_rejects_missing_and_extra_jobs() -> None:
@@ -5656,6 +5833,7 @@ def main() -> int:
     )
     assert_v6_deploy_artifact_s3_stays_allowed()
     assert_v6_red_workflow_policy_gaps()
+    assert_ci_provenance_config_contract()
     assert_runner_contract_rejects_missing_and_extra_jobs()
     assert_runner_contract_rejects_unmapped_workflow_jobs()
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()

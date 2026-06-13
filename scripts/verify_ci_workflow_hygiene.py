@@ -111,6 +111,30 @@ DEPLOY_REQUIRED_NEEDS = (
     "source-fence",
     "test",
 )
+CI_PROVENANCE_REQUIRED_JOBS = (
+    "detector",
+    "fmt-check",
+    "deny",
+    "clippy",
+    "check-aarch64",
+    "source-fence",
+    "test-archive",
+    "test-shards",
+    "test",
+)
+CI_PROVENANCE_POLICY_VALUES = {"full", "defer", "tag_reuse"}
+CI_PROVENANCE_POLICY_ROWS = (
+    "draft_pr_synchronize",
+    "draft_pr_opened",
+    "draft_pr_reopened",
+    "converted_to_draft",
+    "ready_pr",
+    "ready_for_review",
+    "workflow_dispatch",
+    "main_push",
+    "tag",
+    "unknown_event",
+)
 TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build")
 TAG_SKIP_REQUIRED_JOBS = (
     "fmt-check",
@@ -6419,6 +6443,175 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
     return errors
 
 
+def require_config_table(parent: dict[str, object], key: str, prefix: str) -> dict[str, object]:
+    value = parent.get(key)
+    if not isinstance(value, dict):
+        raise ValueError(f"{prefix}.{key} must be a table")
+    return value
+
+
+def require_config_string(parent: dict[str, object], key: str, prefix: str) -> str:
+    value = parent.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{prefix}.{key} must be a non-empty string")
+    return value
+
+
+def require_config_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
+    value = parent.get(key)
+    if not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{prefix}.{key} must be a positive integer")
+    return value
+
+
+def require_config_string_list(parent: dict[str, object], key: str, prefix: str) -> list[str]:
+    value = parent.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"{prefix}.{key} must be a non-empty string list")
+    return value
+
+
+def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
+    ci_provenance = data.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [ci_provenance]")
+
+    duplicated_fingerprint_keys = {
+        "fingerprint_artifact_prefix",
+        "fingerprint_workflow",
+    } & set(ci_provenance)
+    if duplicated_fingerprint_keys:
+        raise ValueError(
+            "[ci_provenance] must reference [meter] fingerprint keys instead of duplicating "
+            + ", ".join(sorted(duplicated_fingerprint_keys))
+        )
+
+    if ci_provenance.get("schema_version") != 1:
+        raise ValueError("ci_provenance.schema_version must be 1")
+    artifact_name_template = require_config_string(
+        ci_provenance, "artifact_name_template", "ci_provenance"
+    )
+    if "{run_attempt}" not in artifact_name_template:
+        raise ValueError("ci_provenance.artifact_name_template must include {run_attempt}")
+    if require_config_string(ci_provenance, "workflow_key", "ci_provenance") != "ci":
+        raise ValueError("ci_provenance.workflow_key must be ci")
+    require_config_string(ci_provenance, "workflow_name", "ci_provenance")
+    require_config_string(ci_provenance, "workflow_path", "ci_provenance")
+    if require_config_string(ci_provenance, "fingerprint_source", "ci_provenance") != "meter":
+        raise ValueError("ci_provenance.fingerprint_source must be meter")
+
+    meter = data.get("meter")
+    if not isinstance(meter, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [meter]")
+    require_config_string(meter, "fingerprint_artifact_prefix", "meter")
+    require_config_string(meter, "fingerprint_workflow", "meter")
+
+    full_ci = require_config_table(ci_provenance, "full_ci", "ci_provenance")
+    required_jobs = require_config_string_list(full_ci, "required_jobs", "ci_provenance.full_ci")
+    if tuple(required_jobs) != CI_PROVENANCE_REQUIRED_JOBS:
+        raise ValueError(
+            "ci_provenance.full_ci.required_jobs must match the current full-CI logical jobs"
+        )
+    conditional_jobs = require_config_string_list(
+        full_ci, "conditional_jobs", "ci_provenance.full_ci"
+    )
+    if conditional_jobs != ["build"]:
+        raise ValueError("ci_provenance.full_ci.conditional_jobs must be ['build']")
+    conditional_outputs = full_ci.get("conditional_job_outputs")
+    if (
+        not isinstance(conditional_outputs, dict)
+        or conditional_outputs.get("build") != "detector.build_required"
+    ):
+        raise ValueError(
+            "ci_provenance.full_ci.conditional_job_outputs.build must be detector.build_required"
+        )
+    jobs = require_config_table(full_ci, "jobs", "ci_provenance.full_ci")
+    for job in (*CI_PROVENANCE_REQUIRED_JOBS, "build"):
+        if job not in jobs:
+            raise ValueError(f"ci_provenance.full_ci.jobs.{job} missing")
+        job_table = jobs[job]
+        if not isinstance(job_table, dict):
+            raise ValueError(f"ci_provenance.full_ci.jobs.{job} must be a table")
+        if job == "test-shards":
+            template = require_config_string(
+                job_table, "check_name_template", "ci_provenance.full_ci.jobs.test-shards"
+            )
+            shard_count = require_config_positive_int(
+                job_table, "shard_count", "ci_provenance.full_ci.jobs.test-shards"
+            )
+            if shard_count != 4:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards shard_count must match the ci.yml shard matrix"
+                )
+            if "{shard}" not in template:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards check_name_template must include {shard}"
+                )
+            literal_count = re.search(r"\bof\s+(\d+)\b", template)
+            if "{shard_count}" not in template and literal_count is None:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards check_name_template must include shard count"
+                )
+            if literal_count is not None and int(literal_count.group(1)) != shard_count:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards template count must match shard_count"
+                )
+        else:
+            require_config_string(job_table, "check_name", f"ci_provenance.full_ci.jobs.{job}")
+        if job == "build" and job_table.get("conditional") != "detector.build_required":
+            raise ValueError(
+                "ci_provenance.full_ci.jobs.build.conditional must be detector.build_required"
+            )
+
+    deploy = require_config_table(ci_provenance, "deploy", "ci_provenance")
+    require_config_string(deploy, "artifact_name", "ci_provenance.deploy")
+    if deploy.get("require_source_event") != "push":
+        raise ValueError("ci_provenance.deploy.require_source_event must be push")
+    if deploy.get("require_source_branch") != "main":
+        raise ValueError("ci_provenance.deploy.require_source_branch must be main")
+    if deploy.get("require_gate_check") is not True:
+        raise ValueError("ci_provenance.deploy.require_gate_check must be true")
+
+    dispatch = require_config_table(ci_provenance, "dispatch", "ci_provenance")
+    require_config_string(dispatch, "workflow_input", "ci_provenance.dispatch")
+
+    api_limits = require_config_table(ci_provenance, "api_limits", "ci_provenance")
+    for key in (
+        "workflow_runs_per_page",
+        "run_jobs_per_page",
+        "run_artifacts_per_page",
+        "max_lookback_pages",
+        "max_lookback_age_seconds",
+    ):
+        require_config_positive_int(api_limits, key, "ci_provenance.api_limits")
+
+    artifacts = require_config_table(ci_provenance, "artifacts", "ci_provenance")
+    retention_days = require_config_positive_int(
+        artifacts, "retention_days", "ci_provenance.artifacts"
+    )
+    if api_limits["max_lookback_age_seconds"] > retention_days * 24 * 60 * 60:
+        raise ValueError(
+            "ci_provenance.api_limits.max_lookback_age_seconds must not exceed artifact retention"
+        )
+
+    policy = require_config_table(ci_provenance, "policy", "ci_provenance")
+    for row in CI_PROVENANCE_POLICY_ROWS:
+        value = policy.get(row)
+        if value not in CI_PROVENANCE_POLICY_VALUES:
+            raise ValueError(
+                f"ci_provenance.policy.{row} must be one of {sorted(CI_PROVENANCE_POLICY_VALUES)!r}"
+            )
+    override = require_config_table(policy, "override", "ci_provenance.policy")
+    if override.get("force_full_ci") is not False:
+        raise ValueError("ci_provenance.policy.override.force_full_ci must default to false")
+    if override.get("ignore_emit_failure") is not False:
+        raise ValueError(
+            "ci_provenance.policy.override.ignore_emit_failure must default to false"
+        )
+
+    return ci_provenance
+
+
 def load_github_actions_runners_config(
     path: pathlib.Path | None = None,
 ) -> dict[str, object]:
@@ -6434,6 +6627,7 @@ def load_github_actions_runners_config(
         raise ValueError("ci/github-actions-runners.toml must define [runners] and [workflows]")
     if not isinstance(meter, dict):
         raise ValueError("ci/github-actions-runners.toml must define [meter]")
+    ci_provenance = validate_ci_provenance_config(data)
     meter_workflows = meter.get("included_workflows")
     if not isinstance(meter_workflows, list) or not all(
         isinstance(workflow, str) and workflow for workflow in meter_workflows
@@ -6478,6 +6672,7 @@ def load_github_actions_runners_config(
         "meter_included_workflows": sorted(set(meter_workflows)),
         "variables": sorted(tier_to_var.values()),
         "workflows": workflows,
+        "ci_provenance": ci_provenance,
     }
 
 

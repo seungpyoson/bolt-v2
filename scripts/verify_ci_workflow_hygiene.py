@@ -3169,10 +3169,11 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
         if is_justfile and not line[:1].isspace():
             if stripped.startswith("["):
                 continue
-            if ":" in stripped:
+            if ":" in stripped and ":=" not in stripped:
                 recipe = stripped.split(":", 1)[0].strip()
                 current_just_recipe = recipe.split()[0] if recipe else ""
                 managed_just_recipe = False
+                continue
         if (
             is_justfile
             and current_just_recipe in {"managed-build", "managed-clippy", "managed-test"}

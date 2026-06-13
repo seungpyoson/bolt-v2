@@ -3607,6 +3607,21 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"s3api get-object raw-storage drift was silent: {repo_errors!r}")
 
 
+def assert_cargo_named_just_recipe_headers_are_not_raw_cargo_commands() -> None:
+    verifier = load_verifier()
+    errors = verifier.verify_repo_automation_texts(
+        {
+            "justfile": (
+                "cargo-shim-tests:\n"
+                "    python3 -m pytest scripts/test_cargo_shim.py -q\n"
+            )
+        }
+    )
+    expected = "repo automation raw Cargo must use managed rust_verification wrapper"
+    if any(expected in error for error in errors):
+        raise AssertionError(f"cargo-named just recipe header was treated as raw cargo: {errors!r}")
+
+
 def assert_ci_lint_runs_rust_verification_cache_retention_tests() -> None:
     justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     expected = "python3 scripts/test_rust_verification_cache_retention.py"
@@ -3655,6 +3670,7 @@ def main() -> int:
     assert_pin_consistency_rejects_mismatched_quotes()
     assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action()
     assert_v6_red_raw_storage_checks_all_ci_automation()
+    assert_cargo_named_just_recipe_headers_are_not_raw_cargo_commands()
     assert_v6_red_yaml_anchor_jobs_do_not_hide_raw_storage()
     assert_v6_red_yaml_anchor_steps_do_not_hide_raw_storage()
     assert_v6_red_yaml_steps_aliases_are_rejected()

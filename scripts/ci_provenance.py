@@ -1133,6 +1133,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"full_ci_required={str(result.full_ci_required).lower()}")
             print(f"full_ci_deferred={str(result.full_ci_deferred).lower()}")
             print(f"reason={result.reason}")
+            print(f"ignore_emit_failure={str(config.ignore_emit_failure).lower()}")
         elif mode == "emit-full-ci":
             record = emit_full_ci_record(
                 config=config,

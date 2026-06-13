@@ -544,6 +544,8 @@ def assert_ci_policy_outputs_matrix() -> None:
                 raise AssertionError(f"full_ci_deferred must derive from {expected}: {output}")
             if not output.get("reason"):
                 raise AssertionError(f"ci-policy must include reason: {output}")
+            if output.get("ignore_emit_failure") != "false":
+                raise AssertionError(f"ci-policy must expose ignore_emit_failure: {output}")
 
         force_config = write_config(
             pathlib.Path(tmp),

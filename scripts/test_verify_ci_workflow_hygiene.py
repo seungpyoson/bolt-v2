@@ -19,7 +19,7 @@ VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 SYNC_CI_DEBUG_SSH_PATH = REPO_ROOT / "scripts" / "sync_ci_debug_ssh_secret.py"
 DEBUG_WORKFLOW_PATH = ".github/workflows/ci-runner-debug.yml"
 SSH_RUNNER_ACTION = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
-GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]"
+GATE_NEEDS = "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]"
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
@@ -193,6 +193,7 @@ jobs:
       full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
       full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}
       reason: ${{ steps.policy.outputs.reason }}
+      ignore_emit_failure: ${{ steps.policy.outputs.ignore_emit_failure }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -580,16 +581,21 @@ jobs:
 
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - run: |
-          tag_ref="${{ startsWith(github.ref, 'refs/tags/v') }}"
+          policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
+          full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
+          ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"
+          if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
+            exit 1
+          fi
           if [[ "${{ needs.detector.result }}" != "success" ]]; then
             exit 1
           fi
-          if [[ "$tag_ref" == "true" ]]; then
+          if [[ "$policy_path" == "tag_reuse" ]]; then
             if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
               exit 1
             fi
@@ -622,8 +628,21 @@ jobs:
           if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
             exit 1
           fi
-          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
+          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
+            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
             exit 1
+          fi
+          if [[ "$policy_path" == "full" ]]; then
+            echo "full CI required"
+          else
+            exit 1
+          fi
+          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
+            if [[ "$ignore_emit_failure" == "true" ]]; then
+              echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
+            else
+              exit 1
+            fi
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
             exit 1
@@ -1181,6 +1200,49 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
                 "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'tag_reuse' }}",
                 "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
             ),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_gate_policy_truth_table_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "gate needs ci-policy",
+            replace_once(workflow, GATE_NEEDS, without_inline_need(GATE_NEEDS, "ci-policy")),
+        ),
+        (
+            "gate must check needs.ci-policy.result",
+            replace_once(
+                workflow,
+                '"${{ needs.ci-policy.result }}" != "success"',
+                '"${{ omitted.ci-policy.result }}" != "success"',
+            ),
+        ),
+        (
+            "gate must fail closed when full CI is deferred",
+            replace_once(
+                workflow,
+                '          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then\n            echo "full CI deferred for draft PR; run just verify-remote or mark ready"\n            exit 1\n          fi\n',
+                "",
+            ),
+        ),
+        (
+            "gate must branch on ci_policy_path full",
+            replace_once(workflow, 'if [[ "$policy_path" == "full" ]]; then', 'if [[ "$policy_path" != "defer" ]]; then'),
+        ),
+        (
+            "gate must branch on ci_policy_path tag_reuse",
+            replace_once(workflow, 'if [[ "$policy_path" == "tag_reuse" ]]; then', 'if [[ "$tag_ref" == "true" ]]; then'),
+        ),
+        (
+            "gate must read ignore_emit_failure only for ci-provenance-emit",
+            replace_once(workflow, '            if [[ "$ignore_emit_failure" == "true" ]]; then\n', ""),
         ),
     ]
     for fragment, mutated_workflow in cases:
@@ -4936,8 +4998,8 @@ def main() -> int:
         "gate must check same-sha-main-evidence success",
         replace_once(
             BASE_WORKFLOW,
-            '          if [[ "$tag_ref" == "true" ]]; then\n',
-            '          if [[ "$tag_ref" == "true" ]]; then\n            exit 0\n',
+            '          if [[ "$policy_path" == "tag_reuse" ]]; then\n',
+            '          if [[ "$policy_path" == "tag_reuse" ]]; then\n            exit 0\n',
         ),
     )
     assert_error(
@@ -6131,6 +6193,7 @@ def main() -> int:
     assert_ci_policy_matrix()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
     assert_ci_policy_heavy_lane_gaps_are_reported()
+    assert_gate_policy_truth_table_gaps_are_reported()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

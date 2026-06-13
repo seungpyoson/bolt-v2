@@ -63,6 +63,7 @@ jobs:
       full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
       full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}
       reason: ${{ steps.policy.outputs.reason }}
+      ignore_emit_failure: ${{ steps.policy.outputs.ignore_emit_failure }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -627,19 +628,25 @@ jobs:
 
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - name: Check required lanes
         shell: bash
         run: |
-          tag_ref="${{ startsWith(github.ref, 'refs/tags/v') }}"
+          policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
+          full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
+          ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"
+          if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
+            echo "ci-policy did not succeed"
+            exit 1
+          fi
           if [[ "${{ needs.detector.result }}" != "success" ]]; then
             echo "detector did not succeed"
             exit 1
           fi
-          if [[ "$tag_ref" == "true" ]]; then
+          if [[ "$policy_path" == "tag_reuse" ]]; then
             if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
               echo "same-sha-main-evidence did not succeed"
               exit 1
@@ -684,9 +691,23 @@ jobs:
             echo "same-sha-main-evidence unexpectedly ran outside tag reuse"
             exit 1
           fi
-          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
-            echo "ci-provenance-emit did not succeed"
+          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
+            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
             exit 1
+          fi
+          if [[ "$policy_path" == "full" ]]; then
+            echo "full CI required"
+          else
+            echo "unknown CI policy path '$policy_path'"
+            exit 1
+          fi
+          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
+            if [[ "$ignore_emit_failure" == "true" ]]; then
+              echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
+            else
+              echo "ci-provenance-emit did not succeed"
+              exit 1
+            fi
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
             echo "fmt-check did not succeed"

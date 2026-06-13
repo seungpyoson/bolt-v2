@@ -118,7 +118,6 @@ GATE_REQUIRED = (
     "source-fence",
     "test",
     "build",
-    "ci-provenance-emit",
 )
 DEPLOY_REQUIRED_NEEDS = (
     "gate",
@@ -701,7 +700,13 @@ def workflow_dispatch_input_errors(workflow_text: str, input_name: str) -> list[
 def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
     text = uncommented_text(job_lines)
     errors: list[str] = []
-    for output in ("ci_policy_path", "full_ci_required", "full_ci_deferred", "reason"):
+    for output in (
+        "ci_policy_path",
+        "full_ci_required",
+        "full_ci_deferred",
+        "reason",
+        "ignore_emit_failure",
+    ):
         if f"{output}: ${{{{ steps.policy.outputs.{output} }}}}" not in text:
             errors.append(f"ci-policy must expose {output}")
     if 'tee -a "$GITHUB_OUTPUT"' not in text:
@@ -5728,7 +5733,9 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
     return errors
 
 
-GATE_TAG_REUSE_CONDITION = '"$tag_ref" == "true"'
+GATE_TAG_REUSE_CONDITION = '"$policy_path" == "tag_reuse"'
+GATE_FULL_CONDITION = '"$policy_path" == "full"'
+GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
 
 
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
@@ -5834,10 +5841,6 @@ def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
     errors: list[str] = []
     tag_body = gate_tag_reuse_body(gate_text)
     standard_body = gate_standard_body(gate_text)
-    if 'tag_ref="${{ startsWith(github.ref, \'refs/tags/v\') }}"' not in gate_text and (
-        'tag_ref="${{ startsWith(github.ref, "refs/tags/v") }}"' not in gate_text
-    ):
-        errors.append("gate must compute tag_ref")
     if not branch_exits_reachable(tag_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "success"'):
         errors.append("gate must check same-sha-main-evidence success")
     if not branch_exits_reachable(standard_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "skipped"'):
@@ -5847,6 +5850,34 @@ def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
             errors.append(f"gate must require {job} skipped on tag reuse")
     if not branch_exits_reachable(tag_body, "if", '"${{ needs.check-aarch64.result }}" != "success"'):
         errors.append("gate must require check-aarch64 success on tag reuse")
+    return errors
+
+
+def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
+    errors: list[str] = []
+    if 'policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"' not in gate_text:
+        errors.append("gate must read ci_policy_path")
+    if 'full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"' not in gate_text:
+        errors.append("gate must read full_ci_deferred")
+    if 'ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"' not in gate_text:
+        errors.append("gate must read ignore_emit_failure only for ci-provenance-emit")
+    if not branch_exits_reachable(gate_text, "if", '"${{ needs.ci-policy.result }}" != "success"'):
+        errors.append("gate must check needs.ci-policy.result")
+    if not branch_exists(gate_text, "if", GATE_TAG_REUSE_CONDITION):
+        errors.append("gate must branch on ci_policy_path tag_reuse")
+    if not branch_exits_reachable(gate_text, "if", GATE_DEFER_CONDITION) or (
+        "full CI deferred for draft PR" not in gate_text
+    ):
+        errors.append("gate must fail closed when full CI is deferred")
+    if not branch_exists(gate_text, "if", GATE_FULL_CONDITION):
+        errors.append("gate must branch on ci_policy_path full")
+    emit_failure_body = branch_body(
+        gate_text,
+        "if",
+        '"${{ needs.ci-provenance-emit.result }}" != "success"',
+    )
+    if emit_failure_body is None or '"$ignore_emit_failure" == "true"' not in emit_failure_body:
+        errors.append("gate must read ignore_emit_failure only for ci-provenance-emit")
     return errors
 
 
@@ -6351,6 +6382,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "gate" in jobs:
         gate_needs = extract_needs(jobs["gate"])
         gate_text = uncommented_text(jobs["gate"])
+        if "ci-policy" not in gate_needs:
+            errors.append("gate needs ci-policy")
         for job in GATE_REQUIRED:
             if job not in gate_needs:
                 errors.append(f"gate needs {job}")
@@ -6364,6 +6397,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"gate must check needs.{job}.result")
         if "same-sha-main-evidence" not in gate_needs:
             errors.append("gate needs same-sha-main-evidence")
+        errors.extend(gate_policy_truth_table_errors(gate_text))
         errors.extend(gate_checks_same_sha_reuse(gate_text))
         if not has_line_matching(jobs["gate"], GATE_IF_RE):
             errors.append("gate must use always()")

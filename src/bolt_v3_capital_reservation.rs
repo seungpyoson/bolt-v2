@@ -485,6 +485,44 @@ mod tests {
     }
 
     #[test]
+    fn reserve_against_overcommitted_pool_rejects_without_underflow_panic() {
+        // Reproduction for the gemini review claim that
+        // `max_pool_liability - committed_liability - reserved` would "panic in
+        // debug mode or underflow/wrap in release mode" when committed exceeds
+        // max. rust_decimal::Decimal is a SIGNED type, so the subtraction yields
+        // a valid negative value (no unsigned wrap, no panic), and a negative
+        // available budget fail-closes to an OverBudget rejection.
+        let pool = CapitalPoolSnapshot {
+            source: "nt_account_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            pool_id: "polymarket-live".to_string(),
+            max_pool_liability: Decimal::new(100, 0),
+            committed_liability: Decimal::new(150, 0),
+            max_snapshot_age_ns: 100,
+        };
+        let request = reservation_request("request-overcommitted");
+
+        let mut ledger = ReservationLedger::reconciled();
+        let decision = ledger.reserve(&pool, &request, 1_020, None);
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.reason,
+            Some(super::ReservationRejectionReason::OverBudget)
+        );
+        // The reported headroom is a valid signed negative (100 - 150 - 0):
+        // proof the subtraction neither panicked nor wrapped to a large
+        // unsigned value.
+        assert_eq!(decision.available_before, Decimal::new(-50, 0));
+        assert_eq!(decision.available_after, None);
+        // Fail-closed: the over-committed request mutated nothing.
+        assert_eq!(
+            ledger.live_reserved_liability("polymarket-live"),
+            Decimal::ZERO
+        );
+    }
+
+    #[test]
     fn reserve_rejects_fail_closed_contract_violations_without_mutating() {
         let base_pool = pool();
         let base_request = reservation_request("request-reserve-contract");

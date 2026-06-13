@@ -632,15 +632,14 @@ mod tests {
         // The extracted bytes are the payload = [PK\x01\x02] ++ content.
         // We verify that extraction succeeds and returns the full payload
         // (including the embedded sig bytes) — proving the real CD was found.
-        let mut reader = zip_member_reader(&zip).expect("should parse with EOCD-anchored scan");
-        reader.verify().expect("should verify correctly");
-
         let mut buf = Vec::new();
         use std::io::Read as _;
-        // Re-open to drain (verify consumes nothing on its own).
-        let mut reader2 = zip_member_reader(&zip).expect("second open");
-        reader2.read_to_end(&mut buf).expect("read");
-        reader2.verify().expect("verify after drain");
+        // Parse must succeed via the EOCD-anchored scan (not the embedded sig),
+        // then the member reads back intact and verifies (length + CRC). verify()
+        // checks accumulators populated by Read, so it must follow read_to_end.
+        let mut reader = zip_member_reader(&zip).expect("should parse with EOCD-anchored scan");
+        reader.read_to_end(&mut buf).expect("read");
+        reader.verify().expect("verify after drain");
 
         let mut expected = Vec::new();
         expected.extend_from_slice(&ZIP_CENTRAL_HEADER_SIG);

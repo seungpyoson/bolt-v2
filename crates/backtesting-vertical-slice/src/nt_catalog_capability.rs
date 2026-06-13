@@ -179,9 +179,13 @@ impl NtCatalogCapabilityControls {
 #[serde(deny_unknown_fields)]
 pub struct NtCatalogReadBackEvidence {
     pub query_files_succeeded: bool,
+    pub query_files_result_count: usize,
     pub query_instruments_succeeded: bool,
+    pub query_instruments_result_count: usize,
     pub binary_option_instrument_read_back: bool,
+    pub binary_option_instrument_id: String,
     pub perps_spot_instrument_read_back: bool,
+    pub perps_spot_instrument_id: String,
 }
 
 impl NtCatalogReadBackEvidence {
@@ -191,19 +195,48 @@ impl NtCatalogReadBackEvidence {
             "capability evidence must prove NT query_files read-back"
         );
         ensure!(
+            self.query_files_result_count > 0,
+            "capability evidence must include NT query_files result count"
+        );
+        ensure!(
             self.query_instruments_succeeded,
             "capability evidence must prove NT query_instruments read-back"
+        );
+        ensure!(
+            self.query_instruments_result_count > 0,
+            "capability evidence must include NT query_instruments result count"
         );
         ensure!(
             self.binary_option_instrument_read_back,
             "capability evidence must read back the binary-option synthetic instrument"
         );
+        validate_read_back_instrument_id(
+            "binary-option",
+            self.binary_option_instrument_id.as_str(),
+        )?;
         ensure!(
             self.perps_spot_instrument_read_back,
             "capability evidence must read back the perps-spot synthetic instrument"
         );
+        validate_read_back_instrument_id("perps-spot", self.perps_spot_instrument_id.as_str())?;
         Ok(())
     }
+}
+
+fn validate_read_back_instrument_id(label: &str, instrument_id: &str) -> Result<()> {
+    ensure!(
+        !instrument_id.trim().is_empty(),
+        "capability evidence must include the {label} synthetic instrument id"
+    );
+    ensure!(
+        instrument_id == instrument_id.trim(),
+        "capability evidence {label} synthetic instrument id must not include surrounding whitespace"
+    );
+    ensure!(
+        !instrument_id.chars().any(char::is_whitespace),
+        "capability evidence {label} synthetic instrument id must not contain whitespace"
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

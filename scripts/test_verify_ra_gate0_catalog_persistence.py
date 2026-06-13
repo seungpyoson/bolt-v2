@@ -145,9 +145,13 @@ pub struct NtCatalogCapabilityControls {
 }
 pub struct NtCatalogReadBackEvidence {
     pub query_files_succeeded: bool,
+    pub query_files_result_count: usize,
     pub query_instruments_succeeded: bool,
+    pub query_instruments_result_count: usize,
     pub binary_option_instrument_read_back: bool,
+    pub binary_option_instrument_id: String,
     pub perps_spot_instrument_read_back: bool,
+    pub perps_spot_instrument_id: String,
 }
 pub struct NtCatalogCapabilityEvidence {
     pub no_cloud_feature_gate_failed: bool,
@@ -271,9 +275,13 @@ fn successful_capability_evidence() -> NtCatalogCapabilityEvidence {
         ssm_credentials_write_reopen_query_succeeded: true,
         read_back: NtCatalogReadBackEvidence {
             query_files_succeeded: true,
+            query_files_result_count: 1,
             query_instruments_succeeded: true,
+            query_instruments_result_count: 2,
             binary_option_instrument_read_back: true,
+            binary_option_instrument_id: String::from("binary-option-synthetic"),
             perps_spot_instrument_read_back: true,
+            perps_spot_instrument_id: String::from("perps-spot-synthetic"),
         },
         create_only_probe: CreateOnlyProbeTranscript {
             first_create_succeeded: true,
@@ -292,6 +300,9 @@ fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
     let _imds = plan.imds_blocked;
     let _completed = plan.completed_proof_from_evidence(&evidence);
     evidence.read_back.query_instruments_succeeded = false;
+    evidence.read_back.query_files_result_count = 0;
+    evidence.read_back.binary_option_instrument_id
+        .clear();
     evidence.create_only_probe.duplicate_copy_rejected = false;
     let proof = NtCatalogCapabilityProof {};
     let persisted = proof.persist_completed_proof_from_evidence(&writer, &evidence);

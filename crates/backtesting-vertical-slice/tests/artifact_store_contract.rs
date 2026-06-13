@@ -80,9 +80,13 @@ fn successful_capability_evidence(root: &ResolvedArtifactRoot) -> NtCatalogCapab
         ssm_credentials_write_reopen_query_succeeded: true,
         read_back: NtCatalogReadBackEvidence {
             query_files_succeeded: true,
+            query_files_result_count: 1,
             query_instruments_succeeded: true,
+            query_instruments_result_count: 2,
             binary_option_instrument_read_back: true,
+            binary_option_instrument_id: String::from("binary-option-synthetic"),
             perps_spot_instrument_read_back: true,
+            perps_spot_instrument_id: String::from("perps-spot-synthetic"),
         },
         create_only_probe: CreateOnlyProbeTranscript {
             probe_uri: root.create_only_probe_uri(probe_id),
@@ -336,6 +340,29 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
             .completed_proof_from_evidence(&fixture.artifact_store, &missing_query_evidence)
             .is_err(),
         "capability proof must reject missing NT query evidence"
+    );
+    let mut missing_query_count_evidence = evidence.clone();
+    missing_query_count_evidence
+        .read_back
+        .query_files_result_count = 0;
+    assert!(
+        fixture
+            .nt_catalog_capability_proof
+            .completed_proof_from_evidence(&fixture.artifact_store, &missing_query_count_evidence)
+            .is_err(),
+        "capability proof must reject missing NT query_files result count evidence"
+    );
+    let mut missing_instrument_id_evidence = evidence.clone();
+    missing_instrument_id_evidence
+        .read_back
+        .binary_option_instrument_id
+        .clear();
+    assert!(
+        fixture
+            .nt_catalog_capability_proof
+            .completed_proof_from_evidence(&fixture.artifact_store, &missing_instrument_id_evidence)
+            .is_err(),
+        "capability proof must reject missing binary-option read-back instrument id"
     );
     let mut missing_duplicate_copy_evidence = evidence.clone();
     missing_duplicate_copy_evidence

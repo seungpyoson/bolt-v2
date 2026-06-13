@@ -559,6 +559,82 @@ fn shadow_pnl_report_rejects_duplicate_client_order_id() {
     );
 }
 
+#[test]
+fn shadow_pnl_report_rejects_admitted_entry_without_order_intent() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("order-intents.jsonl");
+    let settlements_path = temp.path().join("shadow-settlements.jsonl");
+
+    // An admitted entry whose order-intent line is missing (truncated or corrupted
+    // evidence log). The join is driven by the admitted entries, so a missing intent
+    // MUST fail loud rather than silently drop the would-be trade from the report.
+    let client_order_id = "client-order-no-intent";
+    let snapshot = serde_json::json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 1,
+        "gate_id": BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": "strategy_input_snapshot",
+        "snapshot": {
+            "selected_side": "up",
+            "expected_edge_basis_points": "150",
+            "fee_rate_basis_points": "100",
+            "client_order_id": client_order_id,
+            "market_id": "market-btc"
+        }
+    });
+    let admission = serde_json::json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 3,
+        "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": "admission_decision",
+        "decision": {
+            "client_order_id": client_order_id,
+            "intent_kind": "entry",
+            "outcome": "admitted"
+        }
+    });
+    let evidence = [snapshot, admission]
+        .iter()
+        .map(|value| serde_json::to_string(value).expect("evidence fixture should serialize"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    std::fs::write(&evidence_path, evidence).expect("fixture evidence should write");
+    std::fs::write(
+        &settlements_path,
+        serde_json::to_string(&serde_json::json!({
+            "settlement_date": "2026-06-10",
+            "asset": "BTC",
+            "market_id": "market-btc",
+            "instrument_id": "BTC-UP.POLYMARKET",
+            "winning_side": "up",
+            "settlement_price": "1.00"
+        }))
+        .expect("settlement fixture should serialize")
+            + "\n",
+    )
+    .expect("fixture settlements should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .args([
+            "--evidence-jsonl",
+            evidence_path.to_str().expect("utf-8 path"),
+            "--settlements-jsonl",
+            settlements_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("shadow_pnl_report should run");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(
+        stderr.contains("missing order intent for admitted entry client-order-no-intent"),
+        "{stderr}"
+    );
+}
+
 fn fixture_evidence_jsonl() -> String {
     let mut lines = Vec::new();
     push_trade_lines(

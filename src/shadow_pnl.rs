@@ -300,11 +300,16 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
         }
     }
 
+    // Drive reconstruction from the admitted entries: every admitted entry is a
+    // would-be trade and MUST carry both its order intent and its input snapshot.
+    // Iterating intents instead would silently drop an admitted entry whose intent
+    // line is missing or corrupted; here a missing intent or snapshot fails loud.
     let mut chains = Vec::new();
-    for (client_order_id, intent) in intents {
-        if !admitted_entries.contains_key(&client_order_id) {
-            continue;
-        }
+    for client_order_id in admitted_entries.into_keys() {
+        let intent = intents
+            .get(&client_order_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("missing order intent for admitted entry {client_order_id}"))?;
         let snapshot = snapshots.get(&client_order_id).cloned().ok_or_else(|| {
             anyhow!("missing strategy input snapshot for admitted entry {client_order_id}")
         })?;

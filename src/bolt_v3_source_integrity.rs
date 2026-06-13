@@ -277,8 +277,11 @@ mod tests {
     // capacity while still recording admission evidence.
     // Re-derived after merging #623's dollar-sizing strategy source roots into
     // the shadow-mode submit switch.
+    // Re-derived after adding the shadow-mode fail-closed config guard
+    // (submit_orders=false forbids NautilusTrader-managed venue actions) and its
+    // tests in config.rs.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "d74948aff407b49c031afbecd804414efd1e2b7740b839b191dc4e0dd5a640e9";
+        "2dca08bae2bddcc26a5fce4d72fe3f6ba3fbd23ef833427f76df2c900de7c21c";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

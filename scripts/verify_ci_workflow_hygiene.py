@@ -5775,6 +5775,12 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
 GATE_TAG_REUSE_CONDITION = '"$policy_path" == "tag_reuse"'
 GATE_FULL_CONDITION = '"$policy_path" == "full"'
 GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
+GATE_DEFERRED_NAME_EXPRESSION = """name: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == true
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && 'gate-deferred'
+          || 'gate' }}"""
 
 
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
@@ -5894,6 +5900,8 @@ def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
 
 def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
     errors: list[str] = []
+    if GATE_DEFERRED_NAME_EXPRESSION not in gate_text:
+        errors.append("gate must publish gate-deferred for deferred draft PR runs")
     if 'policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"' not in gate_text:
         errors.append("gate must read ci_policy_path")
     if 'full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"' not in gate_text:

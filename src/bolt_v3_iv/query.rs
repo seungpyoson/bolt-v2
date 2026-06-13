@@ -1062,21 +1062,15 @@ impl IvQueryHandle {
                     source_filter,
                     state_filter,
                 },
-            ) => {
-                let health = if let Some(source_id) = source_filter {
-                    select_source_health(state, &query.profile_id, source_id)
-                        .filter(|health| source_health_state_matches(health, state_filter))
-                } else {
-                    state.source_health.iter().find(|health| {
-                        health.profile_id == query.profile_id
-                            && source_health_state_matches(health, state_filter)
-                    })
-                };
-                health
-                    .cloned()
-                    .map(IvQueryProduct::SourceHealth)
-                    .ok_or(IvQueryError::ProductNotFound)
-            }
+            ) => matching_source_health_products(
+                state,
+                &query.profile_id,
+                source_filter,
+                state_filter,
+            )
+            .into_iter()
+            .next()
+            .ok_or(IvQueryError::ProductNotFound),
             (
                 IvProductKind::ProjectedScalarIv,
                 IvSelector::ProjectedScalarIvQuery {
@@ -1159,7 +1153,7 @@ impl IvQueryHandle {
         }
         let projection_products = deduplicate_projection_products(input_products.clone(), as_of_ns);
         let mut inputs = projection_inputs_from_products(&projection_products)?;
-        let mut fallback_inputs = all_inputs.clone();
+        let mut fallback_inputs = inputs.clone();
         let mut policy_decisions = Vec::new();
 
         let mut interpolation_rejected = false;
@@ -1934,14 +1928,26 @@ fn matching_source_health_products(
     source_filter: &Option<String>,
     state_filter: &[String],
 ) -> Vec<IvQueryProduct> {
-    state
+    if let Some(source_id) = source_filter {
+        return select_source_health(state, profile_id, source_id)
+            .filter(|health| source_health_state_matches(health, state_filter))
+            .cloned()
+            .map(IvQueryProduct::SourceHealth)
+            .into_iter()
+            .collect();
+    }
+
+    let source_ids = state
         .source_health
         .iter()
-        .filter(|health| {
-            health.profile_id == profile_id
-                && source_matches(&health.source_id, source_filter)
-                && source_health_state_matches(health, state_filter)
-        })
+        .filter(|health| health.profile_id == profile_id)
+        .map(|health| health.source_id.clone())
+        .collect::<BTreeSet<_>>();
+
+    source_ids
+        .into_iter()
+        .filter_map(|source_id| select_source_health(state, profile_id, &source_id))
+        .filter(|health| source_health_state_matches(health, state_filter))
         .cloned()
         .map(IvQueryProduct::SourceHealth)
         .collect()
@@ -2165,6 +2171,7 @@ struct SelectedProjectionInput {
     product_id: String,
     source_id: String,
     selector_fingerprint: String,
+    ts_event_ns: UnixNanos,
 }
 
 impl From<&IvPolicyInput> for SelectedProjectionInput {
@@ -2173,6 +2180,7 @@ impl From<&IvPolicyInput> for SelectedProjectionInput {
             product_id: input.product_id.clone(),
             source_id: input.source_id.clone(),
             selector_fingerprint: input.selector_fingerprint.clone(),
+            ts_event_ns: input.ts_event_ns,
         }
     }
 }
@@ -2259,6 +2267,7 @@ impl SelectedProjectionInput {
         self.product_id == input.product_id
             && self.source_id == input.source_id
             && self.selector_fingerprint == input.selector_fingerprint
+            && self.ts_event_ns == input.ts_event_ns
     }
 }
 
@@ -2442,8 +2451,12 @@ fn source_health_state_matches(health: &IvSourceHealth, state_filter: &[String])
 }
 
 fn product_satisfies_current_state(product: &IvQueryProduct, state: &IvQueryState) -> bool {
-    if matches!(product, IvQueryProduct::SourceHealth(_)) {
-        return true;
+    if let IvQueryProduct::SourceHealth(health) = product {
+        return select_source_health(state, &health.profile_id, &health.source_id).is_some_and(
+            |current_health| {
+                current_health.subscription_generation == health.subscription_generation
+            },
+        );
     }
 
     let Some(provenance) = product.provenance() else {
@@ -2702,14 +2715,12 @@ fn select_source_health<'a>(
     profile_id: &str,
     source_id: &str,
 ) -> Option<&'a IvSourceHealth> {
-    if let Some(current_generation) = state.current_subscription_generations.get(source_id)
-        && let Some(health) = state.source_health.iter().find(|health| {
+    if let Some(current_generation) = state.current_subscription_generations.get(source_id) {
+        return state.source_health.iter().find(|health| {
             health.profile_id == profile_id
                 && health.source_id == source_id
                 && health.subscription_generation == *current_generation
-        })
-    {
-        return Some(health);
+        });
     }
 
     state

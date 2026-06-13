@@ -1250,6 +1250,66 @@ fn projected_scalar_query_uses_configured_fallback_policy_when_primary_projectio
 }
 
 #[test]
+fn projected_scalar_fallback_skew_ignores_same_source_duplicates() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            1_992,
+            test_implied_volatility(40),
+        ))
+        .unwrap();
+    let selected_raw = store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            2_000,
+            test_implied_volatility(42),
+        ))
+        .unwrap();
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy_with_refs(
+            2,
+            Some("configured-fallback-policy"),
+            None,
+            None,
+        )])
+        .with_fallback_policies(vec![IvFallbackPolicy {
+            policy_id: "configured-fallback-policy".to_string(),
+            candidate_order: vec!["configured-option-instrument".to_string()],
+            eligible_sources: vec!["configured-source".to_string()],
+            maximum_timestamp_skew_ns: 5,
+            required_provenance_fields: vec!["raw_event_id".to_string()],
+        }]);
+
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(match point_query(None, 2_000) {
+                    IvQuery::Product(query) => query.selector,
+                    IvQuery::RawPayload(_) => panic!("expected product query"),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::ProjectedScalarIv(projected) = product else {
+        panic!("expected projected scalar IV product");
+    };
+    assert_eq!(projected.value, test_implied_volatility(42));
+    assert_eq!(
+        projected.provenance.raw_event_id,
+        Some(selected_raw.raw_event_id)
+    );
+}
+
+#[test]
 fn projected_scalar_fallback_accepts_nearby_input_inside_configured_timestamp_skew() {
     let mut store = IvStore::empty();
     store
@@ -2942,6 +3002,62 @@ fn source_health_query_prefers_current_generation_for_source_filter() {
     };
     assert_eq!(health.subscription_generation, 2);
     assert_eq!(health.subscription_state, IvSourceHealthState::Active);
+}
+
+#[test]
+fn source_health_query_prefers_current_generation_without_source_filter() {
+    let mut current_generations = BTreeMap::new();
+    current_generations.insert("configured-source".to_string(), 2);
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_current_subscription_generations(current_generations)
+    .with_source_health(vec![
+        source_health_with_generation("configured-source", IvSourceHealthState::Stale, 1),
+        source_health_with_generation("configured-source", IvSourceHealthState::Active, 2),
+    ]);
+
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::SourceHealth,
+            selector: IvSelector::SourceHealthQuery {
+                source_filter: None,
+                state_filter: Vec::new(),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::SourceHealth(health) = product else {
+        panic!("expected source health product");
+    };
+    assert_eq!(health.subscription_generation, 2);
+    assert_eq!(health.subscription_state, IvSourceHealthState::Active);
+}
+
+#[test]
+fn source_health_current_generation_lookup_does_not_fall_back_to_stale_history() {
+    let mut current_generations = BTreeMap::new();
+    current_generations.insert("configured-source".to_string(), 2);
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_current_subscription_generations(current_generations)
+    .with_source_health(vec![source_health_with_generation(
+        "configured-source",
+        IvSourceHealthState::Stale,
+        1,
+    )]);
+
+    assert_eq!(
+        handle.source_health_for("configured-profile", "configured-source"),
+        None
+    );
 }
 
 #[test]

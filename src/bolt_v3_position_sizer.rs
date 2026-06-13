@@ -13,16 +13,8 @@ use crate::bolt_v3_sizing_state::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SizingPolicy {
-    pub mode: SizingMode,
-    pub max_order_liability: Option<Decimal>,
     pub min_remaining_pool_balance: Option<Decimal>,
     pub fee_slippage_policy: Option<FeeSlippagePolicy>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SizingMode {
-    RejectOnly,
-    ExplicitClipToAvailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -390,7 +382,6 @@ pub enum SizedAdmissionReason {
     MissingNtState,
     StaleNtState(SizingStateEvidenceKind),
     UnattributedNtState(SizingStateEvidenceKind),
-    OverMaxOrderLiability,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -500,54 +491,6 @@ pub fn evaluate_position_sizing(inputs: PositionSizingInputs<'_>) -> SizedAdmiss
             );
         }
     };
-
-    match inputs.policy.max_order_liability {
-        Some(max_order_liability)
-            if liability_quote.liability_after_sizing > max_order_liability =>
-        {
-            match inputs.policy.mode {
-                SizingMode::RejectOnly => {
-                    return rejected_sizing_with_liability(
-                        original_quantity,
-                        pool_id,
-                        liability_quote.liability_before_sizing,
-                        liability_quote.liability_after_sizing,
-                        admission_evidence(
-                            &state_evidence,
-                            inputs.request.now_ns,
-                            &liability_quote,
-                        ),
-                        vec![SizedAdmissionReason::OverMaxOrderLiability],
-                    );
-                }
-                SizingMode::ExplicitClipToAvailable => {
-                    liability_quote = match clipped_liability_quote(
-                        inputs.request,
-                        inputs.policy,
-                        &liability_quote,
-                        max_order_liability,
-                    ) {
-                        Ok(clipped_quote) => clipped_quote,
-                        Err(reason) => {
-                            return rejected_sizing_with_liability(
-                                original_quantity,
-                                pool_id,
-                                liability_quote.liability_before_sizing,
-                                liability_quote.liability_after_sizing,
-                                admission_evidence(
-                                    &state_evidence,
-                                    inputs.request.now_ns,
-                                    &liability_quote,
-                                ),
-                                vec![reason],
-                            );
-                        }
-                    };
-                }
-            }
-        }
-        _ => {}
-    }
 
     let reservation_request = ReservationRequest {
         request_id: inputs.request.intent_id.clone(),
@@ -698,64 +641,6 @@ fn collateral_group_id(state: &ProductSizingSnapshot) -> String {
     }
 }
 
-fn clipped_liability_quote(
-    request: &PositionSizingRequest,
-    policy: &SizingPolicy,
-    quote: &LiabilityQuote,
-    max_order_liability: Decimal,
-) -> Result<LiabilityQuote, SizedAdmissionReason> {
-    let fee_policy = policy
-        .fee_slippage_policy
-        .as_ref()
-        .ok_or(SizedAdmissionReason::Liability(
-            LiabilityError::MissingFeePolicy,
-        ))?;
-    let additive_liability = fee_policy
-        .max_fee_liability
-        .checked_add(fee_policy.max_slippage_liability)
-        .ok_or(SizedAdmissionReason::OverMaxOrderLiability)?;
-    let available_base_liability = max_order_liability
-        .checked_sub(additive_liability)
-        .ok_or(SizedAdmissionReason::OverMaxOrderLiability)?;
-    if available_base_liability <= Decimal::ZERO {
-        return Err(SizedAdmissionReason::OverMaxOrderLiability);
-    }
-
-    let liability_factor = match request.side {
-        IntentSide::Buy => request.limit_price,
-        IntentSide::Sell => Decimal::ONE
-            .checked_sub(request.limit_price)
-            .ok_or(SizedAdmissionReason::OverMaxOrderLiability)?,
-    };
-    if liability_factor <= Decimal::ZERO {
-        return Err(SizedAdmissionReason::OverMaxOrderLiability);
-    }
-
-    let candidate_quantity = available_base_liability
-        .checked_div(liability_factor)
-        .ok_or(SizedAdmissionReason::OverMaxOrderLiability)?;
-    if candidate_quantity <= Decimal::ZERO {
-        return Err(SizedAdmissionReason::OverMaxOrderLiability);
-    }
-    let sized_quantity = if candidate_quantity > request.quantity {
-        request.quantity
-    } else {
-        candidate_quantity
-    };
-    let liability_after_sizing = sized_quantity
-        .checked_mul(liability_factor)
-        .and_then(|base_liability| base_liability.checked_add(additive_liability))
-        .ok_or(SizedAdmissionReason::OverMaxOrderLiability)?;
-
-    Ok(LiabilityQuote {
-        original_quantity: quote.original_quantity,
-        sized_quantity,
-        liability_before_sizing: quote.liability_before_sizing,
-        liability_after_sizing,
-        evidence_label: quote.evidence_label.clone(),
-    })
-}
-
 impl PredictionMarketBinaryLiabilityCalculator {
     pub fn worst_case_liability(
         &self,
@@ -869,13 +754,11 @@ mod tests {
         PositionSizingLifecycleAction, PositionSizingLifecycleKind, PositionSizingLifecycleUpdate,
         PositionSizingRequest, PredictionMarketBinaryLiabilityCalculator,
         PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot, SizedAdmissionReason,
-        SizingEvidenceKind, SizingMode, SizingPolicy, evaluate_position_sizing,
+        SizingEvidenceKind, SizingPolicy, evaluate_position_sizing,
     };
 
     fn policy() -> SizingPolicy {
         SizingPolicy {
-            mode: SizingMode::RejectOnly,
-            max_order_liability: None,
             min_remaining_pool_balance: None,
             fee_slippage_policy: Some(FeeSlippagePolicy {
                 max_fee_liability: Decimal::new(10, 2),
@@ -1324,106 +1207,6 @@ mod tests {
         );
         assert_eq!(decision.liability_after_sizing, Some(Decimal::new(430, 2)));
         assert_eq!(ledger.live_reserved_liability("pool-1"), Decimal::ZERO);
-    }
-
-    #[test]
-    fn reject_only_mode_does_not_silently_clip_order_size() {
-        let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
-            observed_at_ns: 1_000,
-            per_trade_pnl: Some(Decimal::new(-5, 0)),
-            daily_pnl: None,
-            rolling_pnl: None,
-            current_equity: None,
-            peak_equity: None,
-        };
-        let state = nt_state(Some(loss_snapshot));
-        let mut capped_policy = policy();
-        capped_policy.max_order_liability = Some(Decimal::new(4, 0));
-        let mut ledger = ReservationLedger::reconciled();
-
-        let decision = evaluate_position_sizing(PositionSizingInputs {
-            request: &request(IntentSide::Buy, IntentLiquidity::Taker),
-            state: Some(&state),
-            policy: &capped_policy,
-            loss_policy: Some(&loss_policy()),
-            capital_pool: &capital_pool(),
-            reservation_ledger: &mut ledger,
-        });
-
-        assert!(!decision.accepted);
-        assert_eq!(
-            decision.reasons,
-            vec![SizedAdmissionReason::OverMaxOrderLiability]
-        );
-        assert_eq!(decision.original_quantity, Decimal::new(10, 0));
-        assert_eq!(decision.sized_quantity, None);
-        assert_eq!(decision.liability_before_sizing, Some(Decimal::new(430, 2)));
-        assert_eq!(decision.liability_after_sizing, Some(Decimal::new(430, 2)));
-        assert_eq!(ledger.live_reserved_liability("pool-1"), Decimal::ZERO);
-    }
-
-    #[test]
-    fn explicit_clip_to_available_records_original_and_sized_quantity() {
-        let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
-            observed_at_ns: 1_000,
-            per_trade_pnl: Some(Decimal::new(-5, 0)),
-            daily_pnl: None,
-            rolling_pnl: None,
-            current_equity: None,
-            peak_equity: None,
-        };
-        let state = nt_state(Some(loss_snapshot));
-        let mut clipping_policy = policy();
-        clipping_policy.mode = SizingMode::ExplicitClipToAvailable;
-        clipping_policy.max_order_liability = Some(Decimal::new(4, 0));
-        let mut ledger = ReservationLedger::reconciled();
-
-        let decision = evaluate_position_sizing(PositionSizingInputs {
-            request: &request(IntentSide::Buy, IntentLiquidity::Taker),
-            state: Some(&state),
-            policy: &clipping_policy,
-            loss_policy: Some(&loss_policy()),
-            capital_pool: &capital_pool(),
-            reservation_ledger: &mut ledger,
-        });
-
-        assert!(decision.accepted);
-        assert!(decision.reasons.is_empty());
-        assert_eq!(decision.original_quantity, Decimal::new(10, 0));
-        assert_eq!(decision.sized_quantity, Some(Decimal::new(925, 2)));
-        assert_eq!(decision.liability_before_sizing, Some(Decimal::new(430, 2)));
-        assert_eq!(decision.liability_after_sizing, Some(Decimal::new(4, 0)));
-        assert_eq!(decision.evidence.original_quantity, Decimal::new(10, 0));
-        assert_eq!(decision.evidence.sized_quantity, Some(Decimal::new(925, 2)));
-        assert_eq!(ledger.live_reserved_liability("pool-1"), Decimal::new(4, 0));
-    }
-
-    #[test]
-    fn explicit_clip_rejects_decimal_division_overflow() {
-        let mut clipping_policy = policy();
-        clipping_policy.mode = SizingMode::ExplicitClipToAvailable;
-        let mut tiny_factor_request = request(IntentSide::Buy, IntentLiquidity::Taker);
-        tiny_factor_request.limit_price = Decimal::from_i128_with_scale(1, 28);
-        let quote = super::LiabilityQuote {
-            original_quantity: tiny_factor_request.quantity,
-            sized_quantity: tiny_factor_request.quantity,
-            liability_before_sizing: Decimal::MAX,
-            liability_after_sizing: Decimal::MAX,
-            evidence_label: "test_liability_quote".to_string(),
-        };
-
-        assert_eq!(
-            super::clipped_liability_quote(
-                &tiny_factor_request,
-                &clipping_policy,
-                &quote,
-                Decimal::MAX,
-            )
-            .expect_err("overflowing candidate quantity must fail closed"),
-            SizedAdmissionReason::OverMaxOrderLiability
-        );
     }
 
     #[test]

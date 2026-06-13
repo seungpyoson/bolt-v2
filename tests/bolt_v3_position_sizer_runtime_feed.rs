@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_position_sizer::{
     FeeSlippagePolicy, PositionSizingLifecycleAction, PredictionMarketSizingSnapshot, ProductKind,
-    ProductSizingSnapshot, SizingMode, SizingPolicy,
+    ProductSizingSnapshot, SizingPolicy,
 };
 use bolt_v2::bolt_v3_position_sizer_runtime_feed::{
     PositionSizerRuntimeFeed, PositionSizerRuntimeFeedConfig, subscribe_position_sizer_runtime_feed,
@@ -1688,8 +1688,6 @@ fn position_sized_admission() -> BoltV3SubmitAdmissionState {
                 max_snapshot_age_ns: 500,
             },
             policy: SizingPolicy {
-                mode: SizingMode::RejectOnly,
-                max_order_liability: Some(Decimal::new(10, 0)),
                 min_remaining_pool_balance: None,
                 fee_slippage_policy: Some(FeeSlippagePolicy {
                     max_fee_liability: Decimal::new(10, 2),

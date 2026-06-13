@@ -57,7 +57,6 @@ use crate::bolt_v3_config::{
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
-use crate::bolt_v3_loss_halt_actions::LossGovernorMarketExitAction;
 use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 
 #[derive(Debug)]
@@ -1241,14 +1240,6 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                     loss_governor.on_untrusted_snapshot_trading_state.is_some(),
                 ),
                 (
-                    "risk.loss_governor.on_loss_breach_market_exit",
-                    loss_governor.on_loss_breach_market_exit.is_some(),
-                ),
-                (
-                    "risk.loss_governor.on_untrusted_snapshot_market_exit",
-                    loss_governor.on_untrusted_snapshot_market_exit.is_some(),
-                ),
-                (
                     "risk.loss_governor.recovery_mode",
                     loss_governor.recovery_mode.is_some(),
                 ),
@@ -1272,14 +1263,6 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                         .to_string(),
                 );
             }
-            errors.extend(validate_loss_governor_market_exit_supported(
-                "risk.loss_governor.on_loss_breach",
-                loss_governor.on_loss_breach_market_exit,
-            ));
-            errors.extend(validate_loss_governor_market_exit_supported(
-                "risk.loss_governor.on_untrusted_snapshot",
-                loss_governor.on_untrusted_snapshot_market_exit,
-            ));
         }
         for (label, threshold) in [
             (
@@ -1423,27 +1406,6 @@ fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
             ));
         }
         validate_venue_spendability_source_binding(pool, &label, &mut errors);
-        if !matches!(
-            pool.sizing_policy.mode.as_str(),
-            "reject_only" | "explicit_clip_to_available"
-        ) {
-            errors.push(format!(
-                "{label}.sizing_policy.mode must be `reject_only` or `explicit_clip_to_available`"
-            ));
-        } else if pool.enforce_submit_admission
-            && pool.sizing_policy.mode == "explicit_clip_to_available"
-        {
-            errors.push(format!(
-                "{label}.sizing_policy.mode must be `reject_only` when submit admission enforcement is enabled"
-            ));
-        }
-        if let Some(max_order_liability) = pool.sizing_policy.max_order_liability.as_ref() {
-            validate_positive_decimal(
-                &format!("{label}.sizing_policy.max_order_liability"),
-                max_order_liability,
-                &mut errors,
-            );
-        }
         if let Some(min_remaining_pool_balance) =
             pool.sizing_policy.min_remaining_pool_balance.as_ref()
         {
@@ -2090,21 +2052,6 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
         }
     }
     errors
-}
-
-fn validate_loss_governor_market_exit_supported(
-    label_prefix: &str,
-    market_exit: Option<LossGovernorMarketExitAction>,
-) -> Vec<String> {
-    if !matches!(
-        market_exit,
-        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
-    ) {
-        return Vec::new();
-    }
-    vec![format!(
-        "{label_prefix}_market_exit=all_registered_strategies is disabled because NT market-exit commands bypass Bolt submit/cancel chokepoints; use none"
-    )]
 }
 
 pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy]) -> Vec<String> {

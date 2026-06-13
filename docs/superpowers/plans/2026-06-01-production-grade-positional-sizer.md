@@ -94,15 +94,8 @@ These interfaces are the intended public shape. Names can change during TDD only
 
 ```rust
 pub struct SizingPolicy {
-    pub mode: SizingMode,
-    pub max_order_liability: Option<Decimal>,
     pub min_remaining_pool_balance: Option<Decimal>,
     pub fee_slippage_policy: Option<FeeSlippagePolicy>,
-}
-
-pub enum SizingMode {
-    RejectOnly,
-    ExplicitClipToAvailable,
 }
 
 pub struct FeeSlippagePolicy {
@@ -248,8 +241,6 @@ pub enum SizedAdmissionReason {
     Liability(LiabilityError),
     MissingNtState,
     UnsupportedProduct,
-    OverMaxOrderLiability,
-    ClipDisabled,
 }
 
 pub enum SizingEvidenceKind {
@@ -610,27 +601,9 @@ Expected:
 
 - FAIL before sizing-mode handling exists.
 
-- [ ] **Step 8: GREEN reject-only sizing**
+- [ ] **Step 8: GREEN pool reservation rejects over-budget sizing**
 
-Implement `SizingMode::RejectOnly` so an over-budget intent is rejected with no `sized_quantity`.
-
-- [ ] **Step 9: RED explicit clipping mode is auditable**
-
-Add `explicit_clip_to_available_records_original_and_sized_quantity`.
-
-Run:
-
-```bash
-cargo test --locked --lib bolt_v3_position_sizer::tests::explicit_clip_to_available_records_original_and_sized_quantity
-```
-
-Expected:
-
-- FAIL before explicit clipping exists.
-
-- [ ] **Step 10: GREEN explicit clipping mode**
-
-Implement `SizingMode::ExplicitClipToAvailable` only when TOML policy explicitly enables it. Decision evidence must carry original quantity, sized quantity, liability before sizing, liability after sizing, pool id, and reason.
+Keep over-budget handling in the capital-pool reservation ledger. Per-instrument order notional caps belong in NautilusTrader `LiveRiskEngineConfig.max_notional_per_order`, not in a Bolt sizing-mode or per-order-liability knob.
 
 ## Task 7: Add TOML Config Binding And Validation
 

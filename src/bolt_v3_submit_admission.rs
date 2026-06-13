@@ -2856,7 +2856,7 @@ fn map_sized_rejection(
             reason,
             crate::bolt_v3_position_sizer::SizedAdmissionReason::Reservation(
                 crate::bolt_v3_capital_reservation::ReservationRejectionReason::OverBudget,
-            ) | crate::bolt_v3_position_sizer::SizedAdmissionReason::OverMaxOrderLiability
+            )
         )
     }) {
         return BoltV3PositionSizerRejectReason::OverBudget;

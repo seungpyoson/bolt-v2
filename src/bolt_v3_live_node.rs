@@ -101,8 +101,8 @@ use crate::{
     bolt_v3_loss_halt_actions::{
         LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy,
         LossGovernorManualRecoveryEvidence, LossGovernorManualRecoveryRequest,
-        LossGovernorMarketExitAction, LossGovernorRecoveryMode, LossGovernorTradingStateAction,
-        next_loss_governor_halt_action, next_loss_governor_manual_recovery_trading_state,
+        LossGovernorRecoveryMode, LossGovernorTradingStateAction,
+        next_loss_governor_manual_recovery_trading_state, next_loss_governor_trading_state,
     },
     bolt_v3_loss_runtime_feed::{
         LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
@@ -110,7 +110,7 @@ use crate::{
     },
     bolt_v3_position_sizer::{
         FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
-        SizingMode, SizingPolicy,
+        SizingPolicy,
     },
     bolt_v3_position_sizer_runtime_feed::{
         PositionSizerRuntimeFeed, PositionSizerRuntimeFeedConfig,
@@ -2565,11 +2565,6 @@ fn position_sizer_config_from_loaded(
 fn sizing_policy_from_pool(pool: &CapitalPoolBlock) -> Result<SizingPolicy, BoltV3LiveNodeError> {
     let sizing = &pool.sizing_policy;
     Ok(SizingPolicy {
-        mode: sizing_mode_from_block(sizing),
-        max_order_liability: optional_pool_decimal(
-            "risk.capital_pools.sizing_policy.max_order_liability",
-            sizing.max_order_liability.as_deref(),
-        )?,
         min_remaining_pool_balance: optional_pool_decimal(
             "risk.capital_pools.sizing_policy.min_remaining_pool_balance",
             sizing.min_remaining_pool_balance.as_deref(),
@@ -2585,13 +2580,6 @@ fn sizing_policy_from_pool(pool: &CapitalPoolBlock) -> Result<SizingPolicy, Bolt
             )?,
         }),
     })
-}
-
-fn sizing_mode_from_block(block: &CapitalPoolSizingPolicyBlock) -> SizingMode {
-    match block.mode.as_str() {
-        "explicit_clip_to_available" => SizingMode::ExplicitClipToAvailable,
-        _ => SizingMode::RejectOnly,
-    }
 }
 
 fn required_pool_decimal(label: &str, value: &str) -> Result<Decimal, BoltV3LiveNodeError> {
@@ -2659,14 +2647,6 @@ fn loss_governor_halt_action_policy_from_loaded(
             "risk.loss_governor.on_untrusted_snapshot_trading_state",
             block.on_untrusted_snapshot_trading_state,
         )?,
-        on_loss_breach_market_exit: required_loss_governor_market_exit_action(
-            "risk.loss_governor.on_loss_breach_market_exit",
-            block.on_loss_breach_market_exit,
-        )?,
-        on_untrusted_snapshot_market_exit: required_loss_governor_market_exit_action(
-            "risk.loss_governor.on_untrusted_snapshot_market_exit",
-            block.on_untrusted_snapshot_market_exit,
-        )?,
         recovery_mode: required_loss_governor_recovery_mode(
             "risk.loss_governor.recovery_mode",
             block.recovery_mode,
@@ -2682,13 +2662,6 @@ fn required_loss_governor_trading_state_action(
     label: &'static str,
     value: Option<LossGovernorTradingStateAction>,
 ) -> Result<LossGovernorTradingStateAction, BoltV3LiveNodeError> {
-    value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))
-}
-
-fn required_loss_governor_market_exit_action(
-    label: &'static str,
-    value: Option<LossGovernorMarketExitAction>,
-) -> Result<LossGovernorMarketExitAction, BoltV3LiveNodeError> {
     value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))
 }
 
@@ -2726,8 +2699,9 @@ fn loss_governor_halt_action_handler_from_node(
             return;
         }
 
-        let action = next_loss_governor_halt_action(&action_policy, current_state, &decision);
-        if let Some(target_state) = action.target_trading_state {
+        if let Some(target_state) =
+            next_loss_governor_trading_state(&action_policy, current_state, &decision)
+        {
             risk_engine.borrow_mut().set_trading_state(target_state);
         }
     })

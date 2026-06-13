@@ -5,7 +5,7 @@
 **Status**: Draft
 **Input**: Prompt `/Users/spson/Downloads/prompts/bolt-v2-circuit-breaker-goal.md`; GitHub issue #505.
 
-**PR #507 Scope Note**: PR #507 implemented the pure loss-governor and positional-sizing core, plus the configured loss-governor gate in shared submit admission. It wires `[risk.loss_governor]` into `bolt_v3_live_node`, subscribes a configured NT portfolio/position/account runtime feed that publishes loss snapshots to submit admission, rejects entry/replace risk before NT submit on missing/stale/breached loss facts, leaves risk-reducing exits eligible under existing caps, records schema-v6 halt evidence, applies configured loss-halt actions through NT `RiskEngine::set_trading_state`, and exposes a live runtime manual-recovery method that can return NT risk state to `Active` only with fresh accepted loss evidence and bounded operator evidence. The market-exit action fields remain explicit config, but active `all_registered_strategies` exits are rejected until loss-halt exits route through a Bolt-owned submit/cancel chokepoint. NT `Halted`/`Reducing` by itself does not prove the account is flat. The external operator clear-to-Active command surface remains later work.
+**PR #507 Scope Note**: PR #507 implemented the pure loss-governor and positional-sizing core, plus the configured loss-governor gate in shared submit admission. It wires `[risk.loss_governor]` into `bolt_v3_live_node`, subscribes a configured NT portfolio/position/account runtime feed that publishes loss snapshots to submit admission, rejects entry/replace risk before NT submit on missing/stale/breached loss facts, leaves risk-reducing exits eligible under existing caps, records schema-v6 halt evidence, applies configured loss-halt actions through NT `RiskEngine::set_trading_state`, and exposes a live runtime manual-recovery method that can return NT risk state to `Active` only with fresh accepted loss evidence and bounded operator evidence. Active market exit is not part of this slice; any future active market-exit path must call NautilusTrader's owned `Trader::market_exit_strategy` primitive directly from a real live boundary. NT `Halted`/`Reducing` by itself does not prove the account is flat. The external operator clear-to-Active command surface remains later work.
 
 ## User Scenarios & Testing
 
@@ -82,9 +82,9 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - **FR-012**: System MUST NOT implement Bolt-built cancel, flatten, or bespoke venue side effects in this slice.
 - **FR-013**: System MUST require every `[risk.loss_governor]` threshold when the governor is enabled.
 - **FR-014**: System MUST evaluate loss snapshots against a conservative NT-derived observation timestamp for the facts in the snapshot and MUST evict expired rolling-window samples on fresh portfolio heartbeats.
-- **FR-015**: System MUST validate explicit loss-governor trading-state, market-exit, and recovery-mode actions when the governor is enabled.
-- **FR-016**: System MUST reject configured active market exit until loss-halt exits can route through a Bolt-owned submit/cancel chokepoint.
-- **FR-017**: System MUST keep explicit market-exit action fields validated as `none` for this slice and fail config validation on `all_registered_strategies`.
+- **FR-015**: System MUST validate explicit loss-governor trading-state and recovery-mode actions when the governor is enabled.
+- **FR-016**: System MUST NOT add Bolt-owned active market-exit policy, config, or latch scaffolding in this slice.
+- **FR-017**: System MUST use NautilusTrader's owned `Trader::market_exit_strategy` primitive directly if a later slice enables active market exit.
 
 ### Key Entities
 

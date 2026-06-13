@@ -5,7 +5,7 @@
 
 ## Summary
 
-Build a Bolt-owned loss governor that consumes NT-derived loss/equity facts and evaluates admission against configured per-trade, daily/session, rolling-window, max-drawdown, and freshness policy. PR #507 implements the pure evaluator, positional-sizing core, configured shared submit-admission loss gate, configured NT portfolio/position/account runtime feed, and NT risk-state halt actions. The market-exit action fields remain explicit config, but active market exits are rejected until loss-halt exits can route through a Bolt-owned submit/cancel chokepoint.
+Build a Bolt-owned loss governor that consumes NT-derived loss/equity facts and evaluates admission against configured per-trade, daily/session, rolling-window, max-drawdown, and freshness policy. PR #507 implements the pure evaluator, positional-sizing core, configured shared submit-admission loss gate, configured NT portfolio/position/account runtime feed, and NT risk-state halt actions. Active market exit is not part of this slice; any later active market-exit path must call NautilusTrader's owned `Trader::market_exit_strategy` primitive directly from a real live boundary.
 
 ## Technical Context
 

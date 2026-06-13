@@ -67,15 +67,12 @@ Fields:
 
 - `on_loss_breach_trading_state`: NT trading-state action for threshold breaches.
 - `on_untrusted_snapshot_trading_state`: NT trading-state action for missing, stale, or unattributed snapshots.
-- `on_loss_breach_market_exit`: explicit market-exit action for threshold breaches; this slice accepts `none` only.
-- `on_untrusted_snapshot_market_exit`: explicit market-exit action for missing, stale, or unattributed snapshots; this slice accepts `none` only.
 - `recovery_mode`: recovery policy; currently manual only.
 - `manual_recovery_evidence_max_path_bytes`: config-owned bound for operator evidence path strings accepted by live manual recovery.
 
 Validation:
 
-- Enabled loss-governor configs must set every action field explicitly.
-- `market_exit = "all_registered_strategies"` fails validation because direct NT market-exit commands bypass Bolt submit/cancel chokepoints.
+- Enabled loss-governor configs must set every trading-state and recovery field explicitly.
 - Manual recovery evidence path bounds must be configured and positive.
 
 ## LossGovernorManualRecoveryEvidence
@@ -88,10 +85,6 @@ Rules:
 - The latest loss snapshot must be fresh, attributed, complete, and accepted by the configured loss policy.
 - Evidence must carry a non-empty operator id, relative bounded evidence path, canonical SHA-256, and non-zero observation timestamp.
 - The live method sets NT `RiskEngine::set_trading_state(Active)` only after the pure policy returns `Active`.
-
-## LossGovernorMarketExitLatch
-
-Reserved in-process idempotency guard for a future Bolt-owned loss-halt exit path. Active market-exit dispatch is not enabled in this slice.
 
 ## LossAdmissionDecision
 

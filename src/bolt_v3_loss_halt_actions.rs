@@ -1,10 +1,9 @@
 use std::{
-    collections::BTreeSet,
     path::{Component, Path},
     rc::Rc,
 };
 
-use nautilus_model::{enums::TradingState, identifiers::StrategyId};
+use nautilus_model::enums::TradingState;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -33,13 +32,6 @@ impl LossGovernorTradingStateAction {
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum LossGovernorMarketExitAction {
-    None,
-    AllRegisteredStrategies,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum LossGovernorRecoveryMode {
     Manual,
 }
@@ -48,49 +40,8 @@ pub enum LossGovernorRecoveryMode {
 pub struct LossGovernorHaltActionPolicy {
     pub on_loss_breach_trading_state: LossGovernorTradingStateAction,
     pub on_untrusted_snapshot_trading_state: LossGovernorTradingStateAction,
-    pub on_loss_breach_market_exit: LossGovernorMarketExitAction,
-    pub on_untrusted_snapshot_market_exit: LossGovernorMarketExitAction,
     pub recovery_mode: LossGovernorRecoveryMode,
     pub manual_recovery_evidence_max_path_bytes: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LossGovernorHaltActionDecision {
-    pub target_trading_state: Option<TradingState>,
-    pub market_exit_action: LossGovernorMarketExitAction,
-}
-
-#[derive(Debug)]
-pub struct LossGovernorMarketExitLatch {
-    succeeded_strategy_ids: BTreeSet<StrategyId>,
-}
-
-impl LossGovernorMarketExitLatch {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            succeeded_strategy_ids: BTreeSet::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn has_dispatch_succeeded(&self, strategy_id: &StrategyId) -> bool {
-        self.succeeded_strategy_ids.contains(strategy_id)
-    }
-
-    pub fn mark_dispatch_succeeded(&mut self, strategy_id: &StrategyId) -> bool {
-        self.succeeded_strategy_ids.insert(*strategy_id)
-    }
-
-    pub fn clear(&mut self) {
-        self.succeeded_strategy_ids.clear();
-    }
-}
-
-impl Default for LossGovernorMarketExitLatch {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,58 +176,22 @@ pub fn loss_governor_trading_state_action_for_reasons(
 }
 
 #[must_use]
-pub fn loss_governor_market_exit_action_for_reasons(
-    policy: &LossGovernorHaltActionPolicy,
-    halt_reasons: &[LossHaltReason],
-) -> LossGovernorMarketExitAction {
-    if halt_reasons.is_empty() {
-        return LossGovernorMarketExitAction::None;
-    }
-
-    halt_reasons
-        .iter()
-        .fold(LossGovernorMarketExitAction::None, |action, reason| {
-            let reason_action = match reason {
-                LossHaltReason::StaleLossSnapshot => policy.on_untrusted_snapshot_market_exit,
-                LossHaltReason::PerTradeLossLimit
-                | LossHaltReason::DailyLossLimit
-                | LossHaltReason::RollingLossLimit
-                | LossHaltReason::MaxDrawdownLimit => policy.on_loss_breach_market_exit,
-            };
-            strongest_market_exit_action(action, reason_action)
-        })
-}
-
-#[must_use]
 pub fn next_loss_governor_halt_action(
     policy: &LossGovernorHaltActionPolicy,
     current_state: TradingState,
     decision: &LossAdmissionDecision,
-) -> LossGovernorHaltActionDecision {
+) -> Option<TradingState> {
     if decision.accepted {
-        return LossGovernorHaltActionDecision {
-            target_trading_state: None,
-            market_exit_action: LossGovernorMarketExitAction::None,
-        };
+        return None;
     }
 
     match policy.recovery_mode {
         LossGovernorRecoveryMode::Manual => {}
     }
 
-    let target_trading_state =
-        loss_governor_trading_state_action_for_reasons(policy, &decision.halt_reasons)
-            .as_trading_state()
-            .filter(|target| {
-                trading_state_severity(*target) > trading_state_severity(current_state)
-            });
-    let market_exit_action =
-        loss_governor_market_exit_action_for_reasons(policy, &decision.halt_reasons);
-
-    LossGovernorHaltActionDecision {
-        target_trading_state,
-        market_exit_action,
-    }
+    loss_governor_trading_state_action_for_reasons(policy, &decision.halt_reasons)
+        .as_trading_state()
+        .filter(|target| trading_state_severity(*target) > trading_state_severity(current_state))
 }
 
 #[must_use]
@@ -285,7 +200,7 @@ pub fn next_loss_governor_trading_state(
     current_state: TradingState,
     decision: &LossAdmissionDecision,
 ) -> Option<TradingState> {
-    next_loss_governor_halt_action(policy, current_state, decision).target_trading_state
+    next_loss_governor_halt_action(policy, current_state, decision)
 }
 
 pub struct LossGovernorManualRecoveryRequest<'a> {
@@ -372,35 +287,16 @@ fn strongest_trading_state_action(
     }
 }
 
-const fn market_exit_action_enabled(action: LossGovernorMarketExitAction) -> bool {
-    match action {
-        LossGovernorMarketExitAction::None => false,
-        LossGovernorMarketExitAction::AllRegisteredStrategies => true,
-    }
-}
-
-fn strongest_market_exit_action(
-    current: LossGovernorMarketExitAction,
-    candidate: LossGovernorMarketExitAction,
-) -> LossGovernorMarketExitAction {
-    if market_exit_action_enabled(candidate) && !market_exit_action_enabled(current) {
-        candidate
-    } else {
-        current
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         LossGovernorHaltActionPolicy, LossGovernorManualRecoveryEvidence,
         LossGovernorManualRecoveryEvidenceError, LossGovernorManualRecoveryRequest,
-        LossGovernorMarketExitAction, LossGovernorMarketExitLatch, LossGovernorRecoveryMode,
-        LossGovernorTradingStateAction, next_loss_governor_halt_action,
+        LossGovernorRecoveryMode, LossGovernorTradingStateAction,
         next_loss_governor_manual_recovery_trading_state, next_loss_governor_trading_state,
     };
     use crate::bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshot};
-    use nautilus_model::{enums::TradingState, identifiers::StrategyId};
+    use nautilus_model::enums::TradingState;
     use rust_decimal::Decimal;
 
     fn policy(
@@ -410,24 +306,6 @@ mod tests {
         LossGovernorHaltActionPolicy {
             on_loss_breach_trading_state,
             on_untrusted_snapshot_trading_state,
-            on_loss_breach_market_exit: LossGovernorMarketExitAction::None,
-            on_untrusted_snapshot_market_exit: LossGovernorMarketExitAction::None,
-            recovery_mode: LossGovernorRecoveryMode::Manual,
-            manual_recovery_evidence_max_path_bytes: 128,
-        }
-    }
-
-    fn halt_policy(
-        on_loss_breach_trading_state: LossGovernorTradingStateAction,
-        on_untrusted_snapshot_trading_state: LossGovernorTradingStateAction,
-        on_loss_breach_market_exit: LossGovernorMarketExitAction,
-        on_untrusted_snapshot_market_exit: LossGovernorMarketExitAction,
-    ) -> LossGovernorHaltActionPolicy {
-        LossGovernorHaltActionPolicy {
-            on_loss_breach_trading_state,
-            on_untrusted_snapshot_trading_state,
-            on_loss_breach_market_exit,
-            on_untrusted_snapshot_market_exit,
             recovery_mode: LossGovernorRecoveryMode::Manual,
             manual_recovery_evidence_max_path_bytes: 128,
         }
@@ -489,78 +367,6 @@ mod tests {
             evidence,
             max_evidence_path_bytes: 128,
         })
-    }
-
-    #[test]
-    fn loss_breach_maps_to_market_exit_action() {
-        let policy = halt_policy(
-            LossGovernorTradingStateAction::Reducing,
-            LossGovernorTradingStateAction::None,
-            LossGovernorMarketExitAction::AllRegisteredStrategies,
-            LossGovernorMarketExitAction::None,
-        );
-        let decision = rejected(vec![LossHaltReason::DailyLossLimit]);
-
-        let action = next_loss_governor_halt_action(&policy, TradingState::Active, &decision);
-
-        assert_eq!(action.target_trading_state, Some(TradingState::Reducing));
-        assert_eq!(
-            action.market_exit_action,
-            LossGovernorMarketExitAction::AllRegisteredStrategies
-        );
-    }
-
-    #[test]
-    fn untrusted_snapshot_can_leave_market_exit_disabled() {
-        let policy = halt_policy(
-            LossGovernorTradingStateAction::Halted,
-            LossGovernorTradingStateAction::Reducing,
-            LossGovernorMarketExitAction::AllRegisteredStrategies,
-            LossGovernorMarketExitAction::None,
-        );
-        let decision = rejected(vec![LossHaltReason::StaleLossSnapshot]);
-
-        let action = next_loss_governor_halt_action(&policy, TradingState::Active, &decision);
-
-        assert_eq!(action.target_trading_state, Some(TradingState::Reducing));
-        assert_eq!(
-            action.market_exit_action,
-            LossGovernorMarketExitAction::None
-        );
-    }
-
-    #[test]
-    fn accepted_loss_decision_does_not_market_exit() {
-        let policy = halt_policy(
-            LossGovernorTradingStateAction::Halted,
-            LossGovernorTradingStateAction::Halted,
-            LossGovernorMarketExitAction::AllRegisteredStrategies,
-            LossGovernorMarketExitAction::AllRegisteredStrategies,
-        );
-
-        let action = next_loss_governor_halt_action(&policy, TradingState::Active, &accepted());
-
-        assert_eq!(action.target_trading_state, None);
-        assert_eq!(
-            action.market_exit_action,
-            LossGovernorMarketExitAction::None
-        );
-    }
-
-    #[test]
-    fn market_exit_latch_marks_success_once_and_clears_on_recovery() {
-        let strategy_id = StrategyId::from("STRATEGY-LATCH-001");
-        let mut latch = LossGovernorMarketExitLatch::new();
-
-        assert!(!latch.has_dispatch_succeeded(&strategy_id));
-        assert!(latch.mark_dispatch_succeeded(&strategy_id));
-        assert!(latch.has_dispatch_succeeded(&strategy_id));
-        assert!(!latch.mark_dispatch_succeeded(&strategy_id));
-
-        latch.clear();
-
-        assert!(!latch.has_dispatch_succeeded(&strategy_id));
-        assert!(latch.mark_dispatch_succeeded(&strategy_id));
     }
 
     #[test]

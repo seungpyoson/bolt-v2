@@ -113,8 +113,6 @@ max_snapshot_age_ns = 5000000000
 rolling_window_ns = 300000000000
 on_loss_breach_trading_state = "reducing"
 on_untrusted_snapshot_trading_state = "reducing"
-on_loss_breach_market_exit = "none"
-on_untrusted_snapshot_market_exit = "none"
 recovery_mode = "manual"
 manual_recovery_evidence_max_path_bytes = 256
 max_per_trade_loss = "2.50"
@@ -138,8 +136,6 @@ no_instrument_id = "condition-fixture-no.POLYMARKET"
 collateral_coupled_group_id = "condition-fixture"
 
 [risk.capital_pools.sizing_policy]
-mode = "reject_only"
-max_order_liability = "5.00"
 min_remaining_pool_balance = "1.00"
 
 [risk.capital_pools.sizing_policy.fee_slippage]

@@ -15,7 +15,7 @@
 - [x] Release matching account-less NT `OrderDenied` events by client order id.
 - [x] Block uncommitted permit rollback on admission-lock contention instead of skipping the rollback.
 - [x] Validate that only one pool can enable submit-admission enforcement.
-- [x] Reject submit-admission enforcement with `explicit_clip_to_available`.
+- [x] Remove Bolt-owned `explicit_clip_to_available` sizing mode; per-instrument order caps belong in NautilusTrader risk config.
 - [x] Start configured submit sizing unreconciled and reject entry reservations until explicit open-order rebuild succeeds.
 - [x] Add a submit-level open-order reservation rebuild API that atomically rebuilds the reservation ledger and client-order release index.
 - [x] Add configured prediction-market binary YES/NO product metadata for submit-enforced capital pools.
@@ -40,7 +40,7 @@
 - [x] Prove live-node startup rebuild recovers pre-existing NT cache open orders from durable known Bolt submit-reservation metadata and reserves residual liability.
 - [x] Prove live-node startup rebuild stays fail-closed for unknown open orders and known metadata whose open quantity exceeds the submitted quantity.
 - [x] Prove runtime-feed release/revalue behavior for rebuilt reservations from known Bolt metadata on authoritative NT fill and terminal events.
-- [x] Add a configured NT-owned active market-exit path for loss halts through `Trader::market_exit_strategy`, with validation requiring `TradingState::Reducing` when market exit is enabled.
+- [ ] Add an active loss-halt market-exit path only if needed by calling NautilusTrader's owned `Trader::market_exit_strategy` primitive directly from a real live boundary; do not add Bolt-owned market-exit policy or latch scaffolding.
 - [x] Add optional hash-checked venue spendability source binding on the enforced capital pool and seed/refresh the position-sizer runtime feed from it when configured.
 
 ## Remaining For Production Grade

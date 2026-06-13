@@ -10363,22 +10363,6 @@ reason = "Single-pool validation counter increment for TOML capital pools that e
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "string"
-literal = '''"reject_only"'''
-context = '''"reject_only" | "explicit_clip_to_available"'''
-classification = "capital_pool_config_enum_value"
-reason = "Supported TOML sizing-policy discriminator; the selected policy remains config-owned."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "string"
-literal = '''"explicit_clip_to_available"'''
-context = '''"reject_only" | "explicit_clip_to_available"'''
-classification = "capital_pool_config_enum_value"
-reason = "Supported TOML sizing-policy discriminator; the selected policy remains config-owned."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "string"
 literal = '''"prediction_market_binary"'''
 context = '''if pool.product_kind != "prediction_market_binary" {'''
 classification = "capital_pool_config_enum_value"
@@ -10391,22 +10375,6 @@ literal = '''"prediction_market_binary"'''
 context = '''if pool.enforce_submit_admission && pool.product_kind == "prediction_market_binary" {'''
 classification = "capital_pool_config_enum_value"
 reason = "Supported TOML product-kind discriminator that requires binary-product metadata when submit admission is enabled."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "string"
-literal = '''"explicit_clip_to_available"'''
-context = '''&& pool.sizing_policy.mode == "explicit_clip_to_available"'''
-classification = "capital_pool_config_enum_value"
-reason = "Supported TOML sizing-policy discriminator used to reject unsafe submit-admission enforcement with clipping."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "string"
-literal = '''"{label_prefix}_market_exit=all_registered_strategies is disabled because NT market-exit commands bypass Bolt submit/cancel chokepoints; use none"'''
-context = '''"{label_prefix}_market_exit=all_registered_strategies is disabled because NT market-exit commands bypass Bolt submit/cancel chokepoints; use none"'''
-classification = "loss_governor_validation_diagnostic"
-reason = "Fail-closed validation diagnostic for a loss-governor market-exit action that current Bolt source-fence policy forbids because it bypasses submit/cancel chokepoints."
 
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"
@@ -10423,14 +10391,6 @@ literal = '''"bolt_configured_binary_product"'''
 context = '''source: "bolt_configured_binary_product".to_string(),'''
 classification = "position_sizer_evidence_source_label"
 reason = "Evidence source label for configured binary product metadata used to seed the runtime feed before NT-derived state arrives."
-
-[[allowed]]
-path = "src/bolt_v3_live_node.rs"
-kind = "string"
-literal = '''"explicit_clip_to_available"'''
-context = '''"explicit_clip_to_available" => SizingMode::ExplicitClipToAvailable,'''
-classification = "capital_pool_config_enum_value"
-reason = "Supported TOML sizing-policy discriminator mapped into the runtime position-sizer policy; the selected policy remains config-owned."
 
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"

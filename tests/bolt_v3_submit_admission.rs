@@ -10,7 +10,7 @@ use bolt_v2::bolt_v3_decision_evidence::{
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
-use bolt_v2::bolt_v3_position_sizer::{FeeSlippagePolicy, ProductKind, SizingMode, SizingPolicy};
+use bolt_v2::bolt_v3_position_sizer::{FeeSlippagePolicy, ProductKind, SizingPolicy};
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
     BoltV3LiveSubmitApprovalLimits, BoltV3OrderLifecycleIntent, BoltV3PositionSizerRejectReason,
@@ -898,8 +898,6 @@ fn position_sized_admission_with_writer(
                 max_snapshot_age_ns: 1_000,
             },
             policy: SizingPolicy {
-                mode: SizingMode::RejectOnly,
-                max_order_liability: Some(Decimal::new(10, 0)),
                 min_remaining_pool_balance: None,
                 fee_slippage_policy: Some(FeeSlippagePolicy {
                     max_fee_liability: Decimal::new(10, 2),

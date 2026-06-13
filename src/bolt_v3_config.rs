@@ -21,9 +21,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    bolt_v3_loss_halt_actions::{
-        LossGovernorMarketExitAction, LossGovernorRecoveryMode, LossGovernorTradingStateAction,
-    },
+    bolt_v3_loss_halt_actions::{LossGovernorRecoveryMode, LossGovernorTradingStateAction},
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolCoarserGridPolicy, RealizedVolEngineConfig,
         RealizedVolEstimatorConfig, RealizedVolJumpConfig, RealizedVolJumpPolicy,
@@ -195,8 +193,6 @@ pub struct LossGovernorBlock {
     pub rolling_window_ns: u64,
     pub on_loss_breach_trading_state: Option<LossGovernorTradingStateAction>,
     pub on_untrusted_snapshot_trading_state: Option<LossGovernorTradingStateAction>,
-    pub on_loss_breach_market_exit: Option<LossGovernorMarketExitAction>,
-    pub on_untrusted_snapshot_market_exit: Option<LossGovernorMarketExitAction>,
     pub recovery_mode: Option<LossGovernorRecoveryMode>,
     pub manual_recovery_evidence_max_path_bytes: Option<usize>,
     pub max_per_trade_loss: Option<String>,
@@ -234,8 +230,6 @@ pub struct PredictionMarketBinaryProductBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CapitalPoolSizingPolicyBlock {
-    pub mode: String,
-    pub max_order_liability: Option<String>,
     pub min_remaining_pool_balance: Option<String>,
     pub fee_slippage: FeeSlippagePolicyBlock,
 }

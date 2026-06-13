@@ -5549,12 +5549,10 @@ fn root_with_venue_spendability_source_binding(path: &str, sha256: &str, max_byt
 }
 
 #[test]
-fn parses_loss_governor_market_exit_actions_from_root_fixture() {
+fn parses_loss_governor_halt_actions_from_root_fixture() {
     use bolt_v2::{
         bolt_v3_config::BoltV3RootConfig,
-        bolt_v3_loss_halt_actions::{
-            LossGovernorMarketExitAction, LossGovernorRecoveryMode, LossGovernorTradingStateAction,
-        },
+        bolt_v3_loss_halt_actions::{LossGovernorRecoveryMode, LossGovernorTradingStateAction},
     };
 
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
@@ -5575,14 +5573,6 @@ fn parses_loss_governor_market_exit_actions_from_root_fixture() {
         Some(LossGovernorTradingStateAction::Reducing)
     );
     assert_eq!(
-        loss_governor.on_loss_breach_market_exit,
-        Some(LossGovernorMarketExitAction::None)
-    );
-    assert_eq!(
-        loss_governor.on_untrusted_snapshot_market_exit,
-        Some(LossGovernorMarketExitAction::None)
-    );
-    assert_eq!(
         loss_governor.recovery_mode,
         Some(LossGovernorRecoveryMode::Manual)
     );
@@ -5596,17 +5586,17 @@ fn parses_loss_governor_market_exit_actions_from_root_fixture() {
 fn rejects_enabled_loss_governor_missing_halt_action_fields() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root("on_loss_breach_market_exit = \"none\"\n", "");
+    let mutated = replace_in_fixture_root("on_loss_breach_trading_state = \"reducing\"\n", "");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("missing action fixture should parse");
     let messages = validate_root_only(&root);
 
     assert!(
         messages.iter().any(|message| {
-            message.contains("risk.loss_governor.on_loss_breach_market_exit")
+            message.contains("risk.loss_governor.on_loss_breach_trading_state")
                 && message.contains("must be configured when enabled")
         }),
-        "enabled loss governor should require explicit market-exit action: {messages:#?}"
+        "enabled loss governor should require explicit trading-state action: {messages:#?}"
     );
 }
 
@@ -5646,47 +5636,6 @@ fn rejects_enabled_loss_governor_zero_manual_recovery_evidence_path_limit() {
                 && message.contains("positive integer")
         }),
         "enabled loss governor should reject zero manual recovery evidence path limit: {messages:#?}"
-    );
-}
-
-#[test]
-fn rejects_loss_governor_market_exit_all_registered_strategies() {
-    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
-
-    let mutated = replace_in_fixture_root(
-        "on_loss_breach_market_exit = \"none\"",
-        "on_loss_breach_market_exit = \"all_registered_strategies\"",
-    );
-    let root: BoltV3RootConfig =
-        toml::from_str(&mutated).expect("market exit fixture should parse");
-    let messages = validate_root_only(&root);
-
-    assert!(
-        messages.iter().any(|message| {
-            message.contains("on_loss_breach_market_exit=all_registered_strategies")
-                && message.contains("bypass Bolt submit/cancel chokepoints")
-        }),
-        "market exit should be disabled until it can route through Bolt submit/cancel chokepoints: {messages:#?}"
-    );
-}
-
-#[test]
-fn disabled_loss_governor_market_exit_does_not_require_loaded_strategies() {
-    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_strategies};
-
-    let root_toml = replace_in_fixture_section(
-        "[risk.loss_governor]",
-        &[("enabled = true", "enabled = false")],
-    );
-    let root: BoltV3RootConfig =
-        toml::from_str(&root_toml).expect("disabled loss governor fixture should parse");
-    let messages = validate_strategies(&root, &[]);
-
-    assert!(
-        messages
-            .iter()
-            .all(|message| !message.contains("market_exit=all_registered_strategies")),
-        "disabled loss governor should not require market-exit strategy coverage: {messages:#?}"
     );
 }
 

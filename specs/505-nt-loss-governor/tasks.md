@@ -74,7 +74,7 @@
 
 **Independent Test**: Submit-admission/live-node tests prove missing/breached loss snapshots reject new risk before NT submit, fresh below-limit snapshots admit, risk-reducing exits remain possible under existing caps, and live builds carry policy into submit admission.
 
-**PR #507 status**: PR #507 included configured submit-admission loss protection, live-node policy wiring, a configured NT portfolio/position/account runtime feed that publishes loss snapshots from subscribed NT events, configured NT `RiskEngine::set_trading_state` halt actions, and live manual recovery guarded by fresh accepted loss evidence plus bounded operator evidence. The market-exit action fields are explicit, but active `all_registered_strategies` exit config is rejected until loss-halt exits can route through a Bolt-owned submit/cancel chokepoint. It still does not include the external operator clear-to-Active command surface or flat-position proof.
+**PR #507 status**: PR #507 included configured submit-admission loss protection, live-node policy wiring, a configured NT portfolio/position/account runtime feed that publishes loss snapshots from subscribed NT events, configured NT `RiskEngine::set_trading_state` halt actions, and live manual recovery guarded by fresh accepted loss evidence plus bounded operator evidence. Active market exit is not part of this slice; any later active market-exit path must call NautilusTrader's owned `Trader::market_exit_strategy` primitive directly from a real live boundary. It still does not include the external operator clear-to-Active command surface or flat-position proof.
 
 - [X] T023 [US3] Add failing submit-admission test for configured loss governor rejecting new risk without a fresh snapshot
 - [X] T024 [US3] Implement `BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor`, `update_loss_snapshot`, deterministic loss halt evidence, and `admit_at`
@@ -92,7 +92,7 @@
 - [X] T049 [US3] Document that NT `Halted`/`Reducing` do not cancel working orders or flatten positions
 - [X] T049A [US3] Wire live manual recovery to set NT `Active` only after fresh accepted loss evidence and bounded operator evidence
 - [X] T050 [US3] Require explicit loss-governor market-exit action config and reject active market-exit actions until they route through Bolt submit/cancel chokepoints
-- [ ] T051 [US3] Dispatch configured active market exit through a Bolt-owned loss-halt exit path after setting the NT risk engine to `Reducing`
+- [ ] T051 [US3] Dispatch configured active market exit, if needed, by calling NautilusTrader's owned `Trader::market_exit_strategy` primitive from a real live boundary after setting the NT risk engine to `Reducing`
 - [ ] T052 [US3] Add a Bolt-owned idempotency latch so repeated breached snapshots do not repeatedly dispatch the same exit action
 - [X] T053 [US3] Add focused tests for market-exit decision policy, config validation, and live halt wiring
 

@@ -97,6 +97,17 @@ class StrategyPolicyFenceTests(unittest.TestCase):
 
         self.assertIn("global kill-switch flatten supervisor policy", labels)
 
+    def test_detects_global_cancel_supervisor_imports_and_calls(self) -> None:
+        labels = self.labels_for(
+            """
+            use crate::bolt_v3_kill_switch_cancel::BoltV3KillSwitchCancelSupervisor;
+            let cancel_supervisor = BoltV3KillSwitchCancelSupervisor;
+            let plan = cancel_supervisor.plan_cancel(request);
+            """
+        )
+
+        self.assertIn("global kill-switch cancel supervisor policy", labels)
+
     def test_current_strategy_has_no_policy_hardcode_violations(self) -> None:
         self.assertEqual(VERIFIER.collect_violations(), [])
 

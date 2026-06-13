@@ -1161,6 +1161,17 @@ def assert_workflow_hygiene_reviewer_regressions() -> None:
         if expected not in errors:
             raise AssertionError(f"dynamic env alias did not classify {expected!r}: {errors!r}")
 
+    rustflags_expected = "RUSTFLAGS raw output override must be classified"
+    rustflags_variable_cases = [
+        'OUT="--out-dir=/tmp/raw"; RUSTFLAGS="$OUT" cargo build',
+        'OUT="--artifact-dir=/tmp/raw"; env RUSTFLAGS="$OUT" cargo build',
+        'OUT="--out-dir=/tmp/raw"\nRUSTFLAGS="$OUT" cargo build',
+    ]
+    for script in rustflags_variable_cases:
+        errors = verifier.raw_rust_storage_errors(textwrap.dedent(script))
+        if rustflags_expected not in errors:
+            raise AssertionError(f"rustflags variable output override was not rejected: {script!r} -> {errors!r}")
+
     redirection_expected = "cargo --target-dir raw target override must be classified"
     advanced_redirection_cases = [
         "env &> out -u FOO cargo build --target-dir /tmp/raw",
@@ -1455,6 +1466,32 @@ def assert_pin_consistency_rejects_multi_line_mutable_tag() -> None:
         )
 
 
+def assert_pin_consistency_rejects_block_scalar_mutable_tag() -> None:
+    """Gemini follow-up: block-scalar `uses:` with mutable tag must not bypass."""
+    verifier = load_verifier()
+    cases = [
+        "uses: >\n          taiki-e/install-action@v2",
+        "uses: |-\n          taiki-e/install-action@v2",
+        "uses: # bypass\n          taiki-e/install-action@v2",
+    ]
+    for replacement in cases:
+        advisory = _replace_advisory_pin_with(replacement)
+        errors = verifier.verify_install_action_pin_consistency(
+            {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory}
+        )
+        matching = [
+            e
+            for e in errors
+            if "advisory.yml:" in e
+            and "40-hex-SHA" in e
+            and "taiki-e/install-action@v2" in e
+        ]
+        if not matching:
+            raise AssertionError(
+                f"expected block/comment scalar @v2 to be flagged with file:line and 40-hex-SHA wording, got: {errors!r}"
+            )
+
+
 def assert_pin_consistency_rejects_multi_line_valid_sha() -> None:
     """BLOCK 1: multi-line `uses:` with valid SHA still emits error AND does not bucket."""
     verifier = load_verifier()
@@ -1669,6 +1706,12 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         """,
         "active target streamed through fused input redirection": """
             cat <target/debug/libbolt_v2.rmeta | aws s3 cp - s3://bolt-v2-active-cache/cache
+        """,
+        "s3 stdout written to active target through shell group redirection": """
+            { aws s3 cp s3://bolt-v2-active-cache/target.tar - ; } > target/cache.tar
+        """,
+        "s3 stdout written to active target through subshell redirection": """
+            ( aws s3 cp s3://bolt-v2-active-cache/target.tar - ) > target/cache.tar
         """,
     }
     misses: list[str] = []
@@ -3727,6 +3770,7 @@ def main() -> int:
     assert_pin_consistency_accepts_uppercase_sha()
     assert_pin_consistency_intra_file_mismatch_uses_pin_drift_wording()
     assert_pin_consistency_rejects_multi_line_mutable_tag()
+    assert_pin_consistency_rejects_block_scalar_mutable_tag()
     assert_pin_consistency_rejects_multi_line_valid_sha()
     assert_pin_consistency_accepts_double_quoted_sha()
     assert_pin_consistency_accepts_single_quoted_sha()

@@ -351,7 +351,7 @@ TAIKI_INSTALL_ACTION_RE = re.compile(
 )
 TAIKI_INSTALL_ACTION_MENTION_RE = re.compile(r"\btaiki-e/install-action@")
 TAIKI_INSTALL_ACTION_USES_LINE_RE = re.compile(r"^\s*(?:-\s*)?uses\s*:")
-TAIKI_INSTALL_ACTION_BARE_USES_KEY_RE = re.compile(r"^\s*(?:-\s*)?uses\s*:\s*$")
+TAIKI_INSTALL_ACTION_BARE_USES_KEY_RE = re.compile(r"^\s*(?:-\s*)?uses\s*:\s*(?:[>|][0-9+-]*)?\s*$")
 SETUP_JUST_TOOL = "just@${{ inputs.just-version }}"
 CI_INSTALL_ACTION_TOOLS = {
     "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
@@ -2765,6 +2765,22 @@ def expand_known_shell_assignment_name(name: str, variables: dict[str, str]) -> 
     )
 
 
+def expand_known_shell_assignment_value(value: str, variables: dict[str, str]) -> str:
+    clean = storage_strip_quotes(value)
+
+    def replace_reference(match: re.Match[str]) -> str:
+        variable = match.group("bare") or match.group("braced")
+        if variable is None or variable not in variables:
+            return match.group(0)
+        return variables[variable]
+
+    return re.sub(
+        r"\$(?P<bare>[A-Za-z_][A-Za-z0-9_]*)|\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::?[-?+=][^}]*)?\}",
+        replace_reference,
+        clean,
+    )
+
+
 def merge_split_shell_parameter_assignment_tokens(tokens: list[str]) -> list[str]:
     merged: list[str] = []
     index = 0
@@ -4509,22 +4525,46 @@ def shell_directory_change_target(tokens: list[str], cursor: int) -> tuple[str |
     return tokens[index], index + 1
 
 
-def storage_transfer_policy_errors_from_tokens(
+def shell_group_end_index(tokens: list[str], cursor: int) -> int | None:
+    opener = tokens[cursor]
+    closer = "}" if opener == "{" else ")"
+    depth = 1
+    index = cursor + 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == opener:
+            depth += 1
+        elif token == closer:
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return None
+
+
+def skip_shell_redirections(tokens: list[str], cursor: int) -> int:
+    while cursor < len(tokens):
+        next_cursor = shell_redirection_next_index(tokens, cursor)
+        if next_cursor is None:
+            break
+        cursor = next_cursor
+    return cursor
+
+
+def storage_stdout_roles_from_tokens(
     tokens: list[str],
     variable_roles: dict[str, set[str]],
+    active_paths: set[str],
     *,
-    depth: int = 0,
-    initial_cwd_is_active_target: bool = False,
-    initial_active_paths: set[str] | None = None,
-) -> list[str]:
+    depth: int,
+    initial_cwd_is_active_target: bool,
+) -> set[str]:
     if depth > 6:
-        return []
+        return set()
+    roles: set[str] = set()
     cursor = 0
     cwd_is_active_target = initial_cwd_is_active_target
-    active_paths: set[str] = set(initial_active_paths or set())
-    pipe_stdout_is_active_target = False
     pipe_stdin_is_active_target = False
-    pipe_stdout_is_s3 = False
     pipe_stdin_is_s3 = False
     while cursor < len(tokens):
         assignment = shell_assignment_from_tokens(tokens, cursor)
@@ -4532,6 +4572,136 @@ def storage_transfer_policy_errors_from_tokens(
             cursor = assignment[2]
             continue
         token = tokens[cursor]
+        if token in {"{", "("}:
+            close_index = shell_group_end_index(tokens, cursor)
+            if close_index is None:
+                cursor += 1
+                continue
+            inner_roles = storage_stdout_roles_from_tokens(
+                tokens[cursor + 1 : close_index],
+                variable_roles,
+                active_paths,
+                depth=depth + 1,
+                initial_cwd_is_active_target=cwd_is_active_target,
+            )
+            roles.update(inner_roles)
+            cursor = skip_shell_redirections(tokens, close_index + 1)
+            continue
+        if token in SHELL_COMMAND_BOUNDARIES:
+            if token == "|":
+                pipe_stdin_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in roles
+                pipe_stdin_is_s3 = STORAGE_ROLE_S3 in roles
+            else:
+                pipe_stdin_is_active_target = False
+                pipe_stdin_is_s3 = False
+            cursor += 1
+            continue
+        name = executable_name(token)
+        if name in {"cd", "pushd"}:
+            directory_target, next_cursor = shell_directory_change_target(tokens, cursor)
+            if directory_target is None:
+                if name == "cd":
+                    cwd_is_active_target = False
+                cursor = next_cursor
+                continue
+            target_roles = storage_value_roles(
+                directory_target,
+                variable_roles,
+                cwd_is_active_target=cwd_is_active_target,
+                active_paths=active_paths,
+            )
+            cwd_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in target_roles
+            cursor = next_cursor
+            continue
+        if name in ACTIVE_TARGET_STDOUT_COMMANDS and (
+            pipe_stdin_is_active_target
+            or command_streams_active_target_to_stdout(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                cwd_is_active_target=cwd_is_active_target,
+                command_name=name,
+            )
+        ):
+            roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+        elif pipe_stdin_is_active_target and name != "aws":
+            roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+        if name == "aws" and aws_s3_transfer_streams_s3_to_stdout(
+            tokens,
+            cursor,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        ):
+            roles.add(STORAGE_ROLE_S3)
+        elif pipe_stdin_is_s3:
+            roles.add(STORAGE_ROLE_S3)
+        cursor += 1
+    return roles
+
+
+def storage_transfer_policy_errors_from_tokens(
+    tokens: list[str],
+    variable_roles: dict[str, set[str]],
+    *,
+    depth: int = 0,
+    initial_cwd_is_active_target: bool = False,
+    initial_active_paths: set[str] | None = None,
+    initial_pipe_stdin_is_active_target: bool = False,
+    initial_pipe_stdin_is_s3: bool = False,
+) -> list[str]:
+    if depth > 6:
+        return []
+    cursor = 0
+    cwd_is_active_target = initial_cwd_is_active_target
+    active_paths: set[str] = set(initial_active_paths or set())
+    pipe_stdout_is_active_target = False
+    pipe_stdin_is_active_target = initial_pipe_stdin_is_active_target
+    pipe_stdout_is_s3 = False
+    pipe_stdin_is_s3 = initial_pipe_stdin_is_s3
+    while cursor < len(tokens):
+        assignment = shell_assignment_from_tokens(tokens, cursor)
+        if assignment is not None:
+            cursor = assignment[2]
+            continue
+        token = tokens[cursor]
+        if token in {"{", "("}:
+            close_index = shell_group_end_index(tokens, cursor)
+            if close_index is None:
+                cursor += 1
+                continue
+            inner_tokens = tokens[cursor + 1 : close_index]
+            nested_errors = storage_transfer_policy_errors_from_tokens(
+                inner_tokens,
+                variable_roles,
+                depth=depth + 1,
+                initial_cwd_is_active_target=cwd_is_active_target,
+                initial_active_paths=active_paths,
+                initial_pipe_stdin_is_active_target=pipe_stdin_is_active_target,
+                initial_pipe_stdin_is_s3=pipe_stdin_is_s3,
+            )
+            if nested_errors:
+                return nested_errors
+            group_stdout_roles = storage_stdout_roles_from_tokens(
+                inner_tokens,
+                variable_roles,
+                active_paths,
+                depth=depth + 1,
+                initial_cwd_is_active_target=cwd_is_active_target,
+            )
+            if STORAGE_ROLE_S3 in group_stdout_roles and command_output_redirects_to_active_target(
+                tokens,
+                close_index,
+                variable_roles,
+                active_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            ):
+                return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
+            pipe_stdout_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in group_stdout_roles
+            pipe_stdout_is_s3 = STORAGE_ROLE_S3 in group_stdout_roles
+            cursor = skip_shell_redirections(tokens, close_index + 1)
+            continue
         if token in SHELL_COMMAND_BOUNDARIES:
             if token == "|":
                 pipe_stdin_is_active_target = pipe_stdout_is_active_target
@@ -4717,8 +4887,8 @@ RUSTFLAGS_OUTPUT_OVERRIDE_KEYS = {
 }
 
 
-def rustflags_value_has_output_override(value: str) -> bool:
-    clean = storage_strip_quotes(value)
+def rustflags_value_has_output_override(value: str, assignments: dict[str, str] | None = None) -> bool:
+    clean = expand_known_shell_assignment_value(value, assignments or {})
     return "--out-dir" in clean or "--artifact-dir" in clean
 
 
@@ -4733,7 +4903,7 @@ def dynamic_env_assignment_message(
     target_key = target_env_key_from_assignment_name(name, assignments, target_keys)
     if target_key is None:
         return None
-    if target_key in RUSTFLAGS_OUTPUT_OVERRIDE_KEYS and not rustflags_value_has_output_override(value):
+    if target_key in RUSTFLAGS_OUTPUT_OVERRIDE_KEYS and not rustflags_value_has_output_override(value, assignments):
         return None
     return target_keys[target_key]
 

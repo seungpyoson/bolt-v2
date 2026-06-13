@@ -22,7 +22,7 @@ import zipfile
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
-SUPPORTED_MODES = {"emit-full-ci", "resolve-exact-sha", "validate-record"}
+SUPPORTED_MODES = {"ci-policy", "emit-full-ci", "resolve-exact-sha", "validate-record"}
 POLICY_VALUES = {"full", "defer", "tag_reuse"}
 POLICY_ROWS = (
     "draft_pr_synchronize",
@@ -86,6 +86,14 @@ class ProvenanceConfig:
     policy: dict[str, str]
     force_full_ci: bool
     ignore_emit_failure: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class CiPolicyResult:
+    ci_policy_path: str
+    full_ci_required: bool
+    full_ci_deferred: bool
+    reason: str
 
 
 @dataclasses.dataclass(frozen=True)
@@ -277,10 +285,10 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
 
     force_full_ci = overrides.get("force_full_ci")
     ignore_emit_failure = overrides.get("ignore_emit_failure")
-    if force_full_ci is not False:
-        raise ProvenanceError("ci_provenance.policy.override.force_full_ci must default to false")
-    if ignore_emit_failure is not False:
-        raise ProvenanceError("ci_provenance.policy.override.ignore_emit_failure must default to false")
+    if not isinstance(force_full_ci, bool):
+        raise ProvenanceError("ci_provenance.policy.override.force_full_ci must be boolean")
+    if not isinstance(ignore_emit_failure, bool):
+        raise ProvenanceError("ci_provenance.policy.override.ignore_emit_failure must be boolean")
 
     return ProvenanceConfig(
         schema_version=1,
@@ -317,6 +325,71 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         policy=policy,
         force_full_ci=force_full_ci,
         ignore_emit_failure=ignore_emit_failure,
+    )
+
+
+def parse_bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ProvenanceError(f"expected boolean true or false, got {value!r}")
+
+
+def evaluate_ci_policy(
+    config: ProvenanceConfig,
+    *,
+    event_name: str,
+    event_action: str,
+    pull_request_draft: bool,
+    ref: str,
+) -> CiPolicyResult:
+    if event_name == "push" and ref.startswith("refs/tags/v"):
+        path = config.policy["tag"]
+        reason = "tag"
+    elif event_name == "workflow_dispatch":
+        path = config.policy["workflow_dispatch"]
+        reason = "workflow_dispatch"
+    elif event_name == "push" and ref == "refs/heads/main":
+        path = config.policy["main_push"]
+        reason = "main_push"
+    elif event_name == "pull_request":
+        if config.force_full_ci:
+            path = "full"
+            reason = "force_full_ci"
+        elif event_action == "ready_for_review":
+            path = config.policy["ready_for_review"]
+            reason = "ready_for_review"
+        elif not pull_request_draft:
+            path = config.policy["ready_pr"]
+            reason = "ready_pr"
+        elif event_action == "opened":
+            path = config.policy["draft_pr_opened"]
+            reason = "draft_pr_opened"
+        elif event_action == "synchronize":
+            path = config.policy["draft_pr_synchronize"]
+            reason = "draft_pr_synchronize"
+        elif event_action == "reopened":
+            path = config.policy["draft_pr_reopened"]
+            reason = "draft_pr_reopened"
+        elif event_action == "converted_to_draft":
+            path = config.policy["converted_to_draft"]
+            reason = "converted_to_draft"
+        else:
+            path = config.policy["unknown_event"]
+            reason = "unknown_event"
+    else:
+        path = config.policy["unknown_event"]
+        reason = "unknown_event"
+
+    if path not in POLICY_VALUES:
+        raise ProvenanceError(f"resolved invalid ci_policy_path {path!r}")
+    return CiPolicyResult(
+        ci_policy_path=path,
+        full_ci_required=path == "full",
+        full_ci_deferred=path == "defer",
+        reason=reason,
     )
 
 
@@ -1093,6 +1166,11 @@ def emit_full_ci_record(
 def parser_for_mode(mode: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=f"ci_provenance.py {mode}")
     parser.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
+    if mode == "ci-policy":
+        parser.add_argument("--event-name", required=True)
+        parser.add_argument("--event-action", default="")
+        parser.add_argument("--pull-request-draft", default="false")
+        parser.add_argument("--ref", required=True)
     if mode == "emit-full-ci":
         parser.add_argument("--output", type=pathlib.Path)
         parser.add_argument("--required-job", action="append", default=[])
@@ -1127,7 +1205,20 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parser.parse_args(rest)
         config = load_config(args.config)
-        if mode == "emit-full-ci":
+        if mode == "ci-policy":
+            result = evaluate_ci_policy(
+                config,
+                event_name=args.event_name,
+                event_action=args.event_action,
+                pull_request_draft=parse_bool(args.pull_request_draft),
+                ref=args.ref,
+            )
+            print(f"ci_policy_path={result.ci_policy_path}")
+            print(f"full_ci_required={str(result.full_ci_required).lower()}")
+            print(f"full_ci_deferred={str(result.full_ci_deferred).lower()}")
+            print(f"reason={result.reason}")
+            print(f"ignore_emit_failure={str(config.ignore_emit_failure).lower()}")
+        elif mode == "emit-full-ci":
             record = emit_full_ci_record(
                 config=config,
                 config_path=args.config,

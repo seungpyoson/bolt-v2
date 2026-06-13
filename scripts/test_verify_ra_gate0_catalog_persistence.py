@@ -238,14 +238,21 @@ impl NtCatalogCapabilityProof {
 def compliant_operator() -> str:
     return f"""
 use crate::artifact_store::{{ArtifactStoreConfig, CatalogDispatchConfig}};
+use crate::nt_catalog_capability::{{NtCatalogCapabilityPlan, NtCatalogCapabilityRunSpec}};
 
 pub struct RunSpec {{
     pub artifact_store: ArtifactStoreConfig,
     pub catalog_dispatch: CatalogDispatchConfig,
     pub create_only_probe_id: String,
+    pub nt_catalog_capability_proof: NtCatalogCapabilityRunSpec,
+}}
+
+pub struct RunArtifacts {{
+    pub nt_catalog_capability_plan: Option<NtCatalogCapabilityPlan>,
 }}
 
 pub fn run_from_run_spec_with_artifact_store() {{
+    let _plan = spec.nt_catalog_capability_proof.proof_plan(&spec.artifact_store)?;
     let create_only_probe_transcript = writer.probe_create_only();
     persist_catalog_projection_for_source_binding();
 }}
@@ -269,6 +276,8 @@ fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
     let _store = InMemory::new();
     let artifacts = run_from_run_spec_with_artifact_store();
     let _canonical_catalog_uri = artifacts.canonical_catalog_uri;
+    let _capability_plan = artifacts.nt_catalog_capability_plan;
+    let _capability_plan_expect = "NT catalog capability proof plan";
     let _persisted_catalog_objects = artifacts.persisted_catalog_objects;
     let _persisted_source_binding = persisted.binding.source_binding;
     let _persisted_market_structure = persisted.binding.market_structure_fixture;

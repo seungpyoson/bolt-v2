@@ -28,6 +28,7 @@ use crate::{
     },
     canonical_trades::CanonicalInstrumentIdentity,
     catalog_projection::SpotInstrumentSpec,
+    nt_catalog_capability::{NtCatalogCapabilityPlan, NtCatalogCapabilityRunSpec},
     result_contract::ResultArtifactUris,
     run_manifest::BacktestingRunManifest,
     runner::{BacktestRunInputs, BacktestRunOutput, run_backtest},
@@ -64,6 +65,7 @@ pub struct RunSpec {
     pub artifact_store: ArtifactStoreConfig,
     pub catalog_dispatch: CatalogDispatchConfig,
     pub create_only_probe_id: String,
+    pub nt_catalog_capability_proof: NtCatalogCapabilityRunSpec,
 }
 
 /// Artifacts produced by an operator run.
@@ -77,6 +79,7 @@ pub struct RunArtifacts {
     pub proof_path: PathBuf,
     pub contract_path: PathBuf,
     pub canonical_catalog_uri: Option<String>,
+    pub nt_catalog_capability_plan: Option<NtCatalogCapabilityPlan>,
     pub create_only_probe_transcript: Option<CreateOnlyProbeTranscript>,
     pub persisted_catalog_objects: Vec<PersistedCatalogProjectionObject>,
     pub output: BacktestRunOutput,
@@ -218,6 +221,7 @@ pub fn run_from_run_spec(
         proof_path,
         contract_path,
         canonical_catalog_uri: None,
+        nt_catalog_capability_plan: None,
         create_only_probe_transcript: None,
         persisted_catalog_objects: Vec::new(),
         output,
@@ -240,6 +244,9 @@ pub async fn run_from_run_spec_with_artifact_store(
 ) -> Result<RunArtifacts> {
     let mut artifacts = run_from_run_spec(spec, gz_bytes, output_dir)?;
     let artifact_root = spec.artifact_store.resolve()?;
+    let nt_catalog_capability_plan = spec
+        .nt_catalog_capability_proof
+        .proof_plan(&spec.artifact_store)?;
     let writer = CreateOnlyArtifactWriter::new(store);
     let create_only_probe_transcript = writer
         .probe_create_only(&artifact_root, &spec.create_only_probe_id)
@@ -261,6 +268,7 @@ pub async fn run_from_run_spec_with_artifact_store(
     )
     .with_context(|| format!("write {}", artifacts.contract_path.display()))?;
     artifacts.canonical_catalog_uri = Some(persisted.catalog_root_uri);
+    artifacts.nt_catalog_capability_plan = Some(nt_catalog_capability_plan);
     artifacts.create_only_probe_transcript = Some(create_only_probe_transcript);
     artifacts.persisted_catalog_objects = persisted.objects;
     Ok(artifacts)

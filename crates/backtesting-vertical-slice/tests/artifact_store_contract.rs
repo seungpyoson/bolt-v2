@@ -773,6 +773,22 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             .expect("create-only probe transcript")
             .duplicate_copy_rejected
     );
+    let nt_catalog_capability_plan = artifacts
+        .nt_catalog_capability_plan
+        .as_ref()
+        .expect("NT catalog capability proof plan");
+    assert_eq!(
+        nt_catalog_capability_plan.synthetic_catalog_root_uri,
+        "s3://bolt-parquet/nt-research-analytics/nt-catalog-synthetic-proof/v1/proof=synthetic-capability-proof/"
+    );
+    assert_eq!(
+        nt_catalog_capability_plan.proof_artifact_uri,
+        "s3://bolt-parquet/nt-research-analytics/nt-catalog-synthetic-proof/v1/proof=synthetic-capability-proof/nt-catalog-capability-proof.json"
+    );
+    assert_eq!(
+        nt_catalog_capability_plan.storage_options_keys,
+        vec!["region".to_string()]
+    );
     assert!(
         !artifacts.persisted_catalog_objects.is_empty(),
         "operator must persist projected catalog objects through artifact-store dispatch"

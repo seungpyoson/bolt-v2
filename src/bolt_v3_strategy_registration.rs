@@ -18,10 +18,25 @@ use crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime;
 pub struct StrategyRuntimeBinding {
     pub key: &'static str,
     pub strategy_kind: fn() -> &'static str,
-    pub register: for<'a> fn(
-        &mut LiveNode,
-        StrategyRegistrationContext<'a>,
-    ) -> Result<StrategyId, BoltV3StrategyRegistrationError>,
+    pub register:
+        for<'a> fn(
+            &mut LiveNode,
+            StrategyRegistrationContext<'a>,
+        )
+            -> Result<BoltV3RegisteredStrategyRuntime, BoltV3StrategyRegistrationError>,
+}
+
+/// Result of registering a single strategy on the node. Carries the NT
+/// [`StrategyId`] together with the strategy's `submit_orders` flag so the
+/// live node can honor the "no venue mutation in shadow mode" invariant at
+/// every venue-action site it owns directly (e.g. the loss-governor NT
+/// market-exit dispatch), not only at the strategy's own submit/cancel
+/// chokepoints. `submit_orders` is parsed exactly once, in the archetype
+/// binding, and flows from there — there is no second parse site.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoltV3RegisteredStrategyRuntime {
+    pub strategy_id: StrategyId,
+    pub submit_orders: bool,
 }
 
 #[derive(Clone)]
@@ -40,6 +55,10 @@ pub struct BoltV3RegisteredStrategy {
     pub strategy_instance_id: String,
     pub strategy_archetype: StrategyArchetypeKey,
     pub registered_strategy_id: String,
+    /// Whether this strategy submits live orders. `false` means shadow mode:
+    /// the strategy records what it would trade but mutates no venue state. The
+    /// live node must not dispatch NT market exits for shadow-mode strategies.
+    pub submit_orders: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -130,7 +149,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
             .ok_or_else(|| BoltV3StrategyRegistrationError::UnsupportedStrategy {
                 strategy_archetype: strategy.config.strategy_archetype.as_str().to_string(),
             })?;
-        let registered_strategy_id = (binding.register)(
+        let registered = (binding.register)(
             node,
             StrategyRegistrationContext {
                 loaded,
@@ -145,7 +164,8 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
         summary.registered.push(BoltV3RegisteredStrategy {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             strategy_archetype: strategy.config.strategy_archetype.clone(),
-            registered_strategy_id: registered_strategy_id.to_string(),
+            registered_strategy_id: registered.strategy_id.to_string(),
+            submit_orders: registered.submit_orders,
         });
     }
 

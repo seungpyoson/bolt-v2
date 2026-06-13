@@ -1681,7 +1681,6 @@ fn sized_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
         intent_kind: BoltV3SubmitIntentKind::Entry,
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         risk_reducing_exit_proof: None,
-        kill_switch_forced_reduction: None,
         position_sizing: Some(BoltV3CompiledOrderSizingEvidence {
             venue_id: "VENUE-A".to_string(),
             product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,

@@ -26,9 +26,9 @@ pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
 pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID: &str = "bolt_v3.strategy_input_snapshot";
-const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";
-const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";
-const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
+pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";
+pub const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";
+pub const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
 const BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";
 const BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND: &str = "submit_reservation_metadata";
 const BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND: &str = "submit_reservation_fill";
@@ -70,7 +70,6 @@ pub enum BoltV3SubmitIntentKind {
     Entry,
     RiskReducingExit,
     ReplaceSubmit,
-    KillSwitchForcedReduction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -412,8 +411,6 @@ pub enum BoltV3AdmissionOutcome {
     RejectedNotionalCapExceeded,
     RejectedInvalidRiskReducingExitProof,
     RejectedCountCapExhausted,
-    RejectedKillSwitchForcedReductionProofInvalid,
-    RejectedKillSwitchForcedReductionCapExceeded,
     RejectedPositionSizing,
 }
 
@@ -1783,8 +1780,6 @@ mod tests {
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
             BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
-            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid,
-            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded,
             BoltV3AdmissionOutcome::RejectedPositionSizing,
         ] {
             let decision = BoltV3AdmissionDecisionEvidence {
@@ -1850,12 +1845,6 @@ mod tests {
                     "rejected_invalid_risk_reducing_exit_proof"
                 }
                 BoltV3AdmissionOutcome::RejectedKillSwitchLatched => "rejected_kill_switch_latched",
-                BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
-                    "rejected_kill_switch_forced_reduction_proof_invalid"
-                }
-                BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
-                    "rejected_kill_switch_forced_reduction_cap_exceeded"
-                }
                 BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",
                 BoltV3AdmissionOutcome::RejectedPositionSizing => "rejected_position_sizing",
             };

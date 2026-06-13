@@ -374,6 +374,31 @@ fn runtime_mapping_emits_surface_id_and_signal_data_for_surfaced_mode() {
 }
 
 #[test]
+fn runtime_mapping_preserves_submit_orders_switch() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    insert_realized_volatility_surface(&mut loaded.root, valid_realized_volatility_surface());
+    loaded.strategies[0].config.realized_volatility_surface_id = Some("<surface_id>".to_string());
+    loaded.strategies[0]
+        .config
+        .parameters
+        .as_table_mut()
+        .expect("fixture parameters should be a table")
+        .insert("submit_orders".to_string(), toml::Value::Boolean(false));
+
+    let raw = binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[0], &loaded)
+        .expect("submit_orders should map into runtime config");
+
+    assert_eq!(
+        raw.as_table()
+            .expect("runtime config should be a table")
+            .get("submit_orders")
+            .and_then(toml::Value::as_bool),
+        Some(false)
+    );
+}
+
+#[test]
 fn surfaced_runtime_config_builds_without_legacy_realized_volatility_fields() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -405,8 +430,10 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     fn register_stub(
         node: &mut LiveNode,
         context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
-    ) -> Result<StrategyId, bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError>
-    {
+    ) -> Result<
+        bolt_v2::bolt_v3_strategy_registration::BoltV3RegisteredStrategyRuntime,
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError,
+    > {
         assert_eq!(context.strategy_kind, "stub_runtime_strategy");
         context
             .submit_admission
@@ -439,7 +466,12 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
                 message: source.to_string(),
             }
         })?;
-        Ok(strategy_id)
+        Ok(
+            bolt_v2::bolt_v3_strategy_registration::BoltV3RegisteredStrategyRuntime {
+                strategy_id,
+                submit_orders: false,
+            },
+        )
     }
 
     fn stub_strategy_kind() -> &'static str {
@@ -488,6 +520,15 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
         node.kernel().trader().borrow().strategy_ids(),
         vec![StrategyId::from("BOLT-V3-PHASE3-BINDING")]
     );
+    assert!(
+        summary
+            .registered
+            .iter()
+            .all(|registered| !registered.submit_orders),
+        "binding must thread submit_orders from registration into the summary \
+         (the stub returns submit_orders=false; a default-true regression would \
+         re-open the loss-governor shadow-mode market-exit suppression hole)"
+    );
 }
 
 #[test]
@@ -532,7 +573,6 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         intent_kind: BoltV3SubmitIntentKind::Entry,
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         risk_reducing_exit_proof: None,
-        kill_switch_forced_reduction: None,
         position_sizing: None,
     }
 }

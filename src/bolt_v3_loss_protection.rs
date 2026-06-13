@@ -14,7 +14,7 @@ use crate::{
         KillSwitchPendingHaltActionsSnapshot, KillSwitchRecoveryReason, KillSwitchRecoveryState,
         KillSwitchStore,
     },
-    bolt_v3_submit_admission::{BoltV3KillSwitchForcedReductionPolicy, BoltV3SubmitAdmissionState},
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
 const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;
@@ -30,8 +30,6 @@ pub struct KillSwitchLossProtectionConfig {
     pub max_utc_daily_realized_loss: Decimal,
     pub action_retry_interval_ms: u64,
     pub action_retry_timeout_ms: u64,
-    pub forced_reduction_policy: BoltV3KillSwitchForcedReductionPolicy,
-    pub policy_sha256: String,
     pub account_ids: Vec<String>,
     pub instrument_ids: Vec<String>,
 }
@@ -63,7 +61,6 @@ pub struct KillSwitchLossAction {
     pub kind: KillSwitchLossActionKind,
     pub halt_id: String,
     pub action_id: String,
-    pub policy_sha256: String,
     pub account_ids: Vec<String>,
     pub instrument_ids: Vec<String>,
 }
@@ -104,8 +101,6 @@ impl KillSwitchLossProtection {
         store: KillSwitchStore,
         action_sink: Rc<dyn KillSwitchLossActionSink>,
     ) -> anyhow::Result<Self> {
-        admission
-            .configure_kill_switch_forced_reduction_policy(config.forced_reduction_policy.clone());
         Ok(Self {
             config,
             admission,
@@ -392,7 +387,6 @@ impl KillSwitchLossProtection {
             kind: KillSwitchLossActionKind::FlattenPositions,
             halt_id: halt_id.to_string(),
             action_id: FLATTEN_ACTION_ID.to_string(),
-            policy_sha256: self.config.policy_sha256.clone(),
             account_ids: self.config.account_ids.clone(),
             instrument_ids: self.config.instrument_ids.clone(),
         })?;

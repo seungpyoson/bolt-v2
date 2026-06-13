@@ -144,9 +144,8 @@ use crate::{
         BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
     },
     bolt_v3_submit_admission::{
-        BoltV3KillSwitchForcedReductionPolicy, BoltV3LiveSubmitApprovalLimits,
-        BoltV3SubmitAdmissionState, BoltV3SubmitPositionSizerConfig,
-        BoltV3SubmitPositionSizingNtComponents,
+        BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState,
+        BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingNtComponents,
     },
     bolt_v3_validate::parse_decimal_string,
     nt_runtime_capture::{
@@ -2004,8 +2003,13 @@ fn wire_bolt_v3_loss_protection_runtime(
     }
 }
 
+/// Indirection over NT's `Trader::market_exit_strategy` so the loss-halt exit
+/// loop is unit-testable without a live NT `Trader`. The production impl
+/// (`NtTraderMarketExitDispatcher`) owns the single spec-sanctioned market-exit
+/// call site; every loss-halt path (soft loss governor and hard kill-switch)
+/// dispatches through this one trait method, not through a second direct call.
 trait MarketExitDispatcher {
-    fn market_exit_strategy(&self, strategy_id: &StrategyId) -> Result<()>;
+    fn exit_strategy(&self, strategy_id: &StrategyId) -> Result<()>;
 }
 
 struct NtTraderMarketExitDispatcher {
@@ -2013,33 +2017,136 @@ struct NtTraderMarketExitDispatcher {
 }
 
 impl MarketExitDispatcher for NtTraderMarketExitDispatcher {
-    fn market_exit_strategy(&self, strategy_id: &StrategyId) -> Result<()> {
+    fn exit_strategy(&self, strategy_id: &StrategyId) -> Result<()> {
+        // FR-017 sanctioned: sole NT market-exit dispatch
         Trader::market_exit_strategy(&self.trader, strategy_id)
+    }
+}
+
+/// Moves the NT risk engine to `Reducing` before a loss-halt market exit so the
+/// venue admits the reduce-only exit orders. Abstracted as a trait so the hard
+/// kill-switch sink is unit-testable without a live NT risk engine. The
+/// transition is venue-neutral (it applies to every strategy regardless of
+/// shadow mode); only the subsequent NT market exit is shadow-gated.
+trait TradingStateController {
+    fn enter_reducing(&self);
+}
+
+/// Closure-backed `TradingStateController`. The production caller captures the
+/// NT risk-engine handle (obtained from `kernel().risk_engine()`) in the
+/// closure so the concrete NT risk-engine type does not have to be named here;
+/// tests inject a recording controller instead.
+struct ClosureTradingStateController<F: Fn()> {
+    enter_reducing: F,
+}
+
+impl<F: Fn()> TradingStateController for ClosureTradingStateController<F> {
+    fn enter_reducing(&self) {
+        (self.enter_reducing)();
+    }
+}
+
+/// Per-strategy idempotency ledger for loss-halt market exits so a retried halt
+/// never re-exits a strategy that already exited. The soft loss governor clears
+/// its ledger when trading returns to `Active`; the hard kill-switch keeps one
+/// ledger per halt id. Abstracting it lets `dispatch_shadow_aware_market_exit`
+/// own the single exit loop for both paths.
+trait MarketExitIdempotency {
+    fn already_exited(&self, strategy_id: &StrategyId) -> bool;
+    fn record_exited(&mut self, strategy_id: &StrategyId);
+}
+
+impl MarketExitIdempotency for LossGovernorMarketExitLatch {
+    fn already_exited(&self, strategy_id: &StrategyId) -> bool {
+        self.has_dispatch_succeeded(strategy_id)
+    }
+
+    fn record_exited(&mut self, strategy_id: &StrategyId) {
+        self.mark_dispatch_succeeded(strategy_id);
+    }
+}
+
+impl MarketExitIdempotency for BTreeSet<String> {
+    fn already_exited(&self, strategy_id: &StrategyId) -> bool {
+        self.contains(&strategy_id.to_string())
+    }
+
+    fn record_exited(&mut self, strategy_id: &StrategyId) {
+        self.insert(strategy_id.to_string());
+    }
+}
+
+/// The single shadow-aware NT market-exit loop shared by both loss-halt paths.
+/// Shadow-mode strategies (`submit_orders = false`) mutate no venue state, so
+/// they are partitioned out and never exited; live strategies are exited
+/// exactly once (per the supplied idempotency ledger) through the sole
+/// sanctioned `MarketExitDispatcher`. The first dispatch error is returned
+/// after every eligible strategy has been attempted, so one failing strategy
+/// never blocks the others. Callers own the NT `TradingState` transition (it is
+/// venue-neutral) and the idempotency ledger lifecycle.
+fn dispatch_shadow_aware_market_exit(
+    dispatcher: &dyn MarketExitDispatcher,
+    market_exit_strategies: &[(StrategyId, bool)],
+    idempotency: &mut dyn MarketExitIdempotency,
+) -> Result<()> {
+    let (dispatch_targets, suppressed_targets) =
+        partition_market_exit_targets(market_exit_strategies);
+    for strategy_id in &suppressed_targets {
+        log::info!(
+            "loss-halt NT market exit suppressed for shadow-mode strategy {strategy_id} (submit_orders=false)"
+        );
+    }
+    let mut first_error: Option<anyhow::Error> = None;
+    for strategy_id in &dispatch_targets {
+        if idempotency.already_exited(strategy_id) {
+            continue;
+        }
+        match dispatcher.exit_strategy(strategy_id) {
+            Ok(()) => idempotency.record_exited(strategy_id),
+            Err(error) => {
+                log::error!("loss-halt NT market exit failed for strategy {strategy_id}: {error}");
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
 struct NtMarketExitLossActionSink {
     dispatcher: Rc<dyn MarketExitDispatcher>,
-    strategy_ids: Vec<StrategyId>,
+    trading_state: Rc<dyn TradingStateController>,
+    market_exit_strategies: Vec<(StrategyId, bool)>,
     dispatched_halts: RefCell<BTreeSet<String>>,
     dispatched_strategies_by_halt: RefCell<BTreeMap<String, BTreeSet<String>>>,
 }
 
 impl NtMarketExitLossActionSink {
-    fn new(trader: Rc<RefCell<Trader>>, strategy_ids: Vec<StrategyId>) -> Self {
+    fn new(
+        trader: Rc<RefCell<Trader>>,
+        trading_state: Rc<dyn TradingStateController>,
+        market_exit_strategies: Vec<(StrategyId, bool)>,
+    ) -> Self {
         Self::new_with_dispatcher(
             Rc::new(NtTraderMarketExitDispatcher { trader }),
-            strategy_ids,
+            trading_state,
+            market_exit_strategies,
         )
     }
 
     fn new_with_dispatcher(
         dispatcher: Rc<dyn MarketExitDispatcher>,
-        strategy_ids: Vec<StrategyId>,
+        trading_state: Rc<dyn TradingStateController>,
+        market_exit_strategies: Vec<(StrategyId, bool)>,
     ) -> Self {
         Self {
             dispatcher,
-            strategy_ids,
+            trading_state,
+            market_exit_strategies,
             dispatched_halts: RefCell::new(BTreeSet::new()),
             dispatched_strategies_by_halt: RefCell::new(BTreeMap::new()),
         }
@@ -2054,27 +2161,21 @@ impl KillSwitchLossActionSink for NtMarketExitLossActionSink {
         if self.dispatched_halts.borrow().contains(&action.halt_id) {
             return Ok(());
         }
-        let mut first_error = None;
+        // Move the NT risk engine to `Reducing` before any exit so the venue
+        // admits the reduce-only exits, mirroring the soft loss-governor path.
+        self.trading_state.enter_reducing();
         let mut succeeded = self
             .dispatched_strategies_by_halt
             .borrow()
             .get(&action.halt_id)
             .cloned()
-            .unwrap_or_else(BTreeSet::new);
-        for strategy_id in &self.strategy_ids {
-            let strategy_id_value = strategy_id.to_string();
-            if succeeded.contains(&strategy_id_value) {
-                continue;
-            }
-            match self.dispatcher.market_exit_strategy(strategy_id) {
-                Ok(()) => {
-                    succeeded.insert(strategy_id_value);
-                }
-                Err(error) if first_error.is_none() => first_error = Some(error),
-                Err(_) => {}
-            }
-        }
-        if let Some(error) = first_error {
+            .unwrap_or_default();
+        let result = dispatch_shadow_aware_market_exit(
+            self.dispatcher.as_ref(),
+            &self.market_exit_strategies,
+            &mut succeeded,
+        );
+        if let Err(error) = result {
             self.dispatched_strategies_by_halt
                 .borrow_mut()
                 .insert(action.halt_id, succeeded);
@@ -2094,7 +2195,7 @@ fn configure_bolt_v3_kill_switch_loss_protection(
     loaded: &LoadedBoltV3Config,
     node: &LiveNode,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
-    strategy_ids: Vec<StrategyId>,
+    market_exit_strategies: Vec<(StrategyId, bool)>,
 ) -> Result<Option<Rc<RefCell<KillSwitchLossProtection>>>, BoltV3LiveNodeError> {
     let Some(kill_switch) = loaded
         .root
@@ -2111,37 +2212,32 @@ fn configure_bolt_v3_kill_switch_loss_protection(
                 "risk.kill_switch.max_utc_daily_realized_loss parse failed: {reason}"
             ))
         })?;
-    let forced_reduction_max_notional = parse_decimal_string(
-        &kill_switch.forced_reduction_max_notional_per_order,
-    )
-    .map_err(|reason| {
-        BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
-            "risk.kill_switch.forced_reduction_max_notional_per_order parse failed: {reason}"
-        ))
-    })?;
-    let forced_reduction_policy = BoltV3KillSwitchForcedReductionPolicy::new(
-        kill_switch.forced_reduction_policy_sha256.clone(),
-        kill_switch.forced_reduction_max_live_order_count,
-        forced_reduction_max_notional,
-    )
-    .map_err(|error| {
-        BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
-            "risk.kill_switch forced-reduction policy is invalid: {error:?}"
-        ))
-    })?;
     let config = KillSwitchLossProtectionConfig {
         max_utc_daily_realized_loss,
         action_retry_interval_ms: kill_switch.action_retry_interval_ms,
         action_retry_timeout_ms: kill_switch.action_retry_timeout_ms,
-        forced_reduction_policy,
-        policy_sha256: kill_switch.forced_reduction_policy_sha256.clone(),
         account_ids: kill_switch.account_ids.clone(),
         instrument_ids: kill_switch.instrument_ids.clone(),
     };
     let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
+    // The hard kill-switch flattens through the SAME shadow-aware NT market-exit
+    // dispatch as the soft loss governor: it moves the NT risk engine to
+    // `Reducing` and exits only live (`submit_orders = true`) strategies through
+    // the sole sanctioned `Trader::market_exit_strategy` site. Passing the
+    // `(StrategyId, submit_orders)` pairs + the risk engine lets the sink reuse
+    // `dispatch_shadow_aware_market_exit` instead of a parallel exit path.
+    let risk_engine = node.kernel().risk_engine().clone();
+    let trading_state: Rc<dyn TradingStateController> = Rc::new(ClosureTradingStateController {
+        enter_reducing: move || {
+            risk_engine
+                .borrow_mut()
+                .set_trading_state(TradingState::Reducing);
+        },
+    });
     let action_sink = Rc::new(NtMarketExitLossActionSink::new(
         Rc::clone(node.kernel().trader()),
-        strategy_ids,
+        trading_state,
+        market_exit_strategies,
     ));
     let mut protection =
         KillSwitchLossProtection::new(config, submit_admission, store, action_sink)
@@ -2401,17 +2497,28 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             strategy.registered_strategy_id
         );
     }
-    let market_exit_strategy_ids = strategy_summary
+    // Pair each registered NT strategy id with its `submit_orders` flag so the
+    // loss-governor halt handler can suppress the NT market-exit dispatch for
+    // shadow-mode strategies (`submit_orders = false`). Calling
+    // `Trader::market_exit_strategy` mutates venue state, so it must be gated by
+    // the same "no venue mutation in shadow mode" invariant the strategy
+    // enforces at its own submit/cancel chokepoints.
+    let market_exit_strategies = strategy_summary
         .registered
         .iter()
-        .map(|strategy| StrategyId::from(strategy.registered_strategy_id.as_str()))
+        .map(|strategy| {
+            (
+                StrategyId::from(strategy.registered_strategy_id.as_str()),
+                strategy.submit_orders,
+            )
+        })
         .collect::<Vec<_>>();
     let loss_halt_action_handler = match (loss_policy.clone(), loss_halt_action_policy.as_ref()) {
         (Some(policy), Some(action_policy)) => Some(loss_governor_halt_action_handler_from_node(
             &node,
             policy,
             *action_policy,
-            market_exit_strategy_ids,
+            market_exit_strategies.clone(),
         )),
         _ => None,
     };
@@ -2432,16 +2539,11 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             }
             None => (None, None),
         };
-    let loss_protection_strategy_ids = strategy_summary
-        .registered
-        .iter()
-        .map(|strategy| StrategyId::from(strategy.registered_strategy_id.as_str()))
-        .collect::<Vec<_>>();
     let loss_protection = configure_bolt_v3_kill_switch_loss_protection(
         loaded,
         &node,
         submit_admission.clone(),
-        loss_protection_strategy_ids,
+        market_exit_strategies,
     )?;
     // Loss-protection recovery (`seed_from_store`) can fail closed and override
     // the kill-switch state established by `recover_kill_switch_state_before_live_node_build`
@@ -2742,10 +2844,12 @@ fn loss_governor_halt_action_handler_from_node(
     node: &LiveNode,
     loss_policy: LossGovernorPolicy,
     action_policy: LossGovernorHaltActionPolicy,
-    market_exit_strategy_ids: Vec<StrategyId>,
+    market_exit_strategies: Vec<(StrategyId, bool)>,
 ) -> LossGovernorHaltActionHandler {
     let risk_engine = node.kernel().risk_engine().clone();
-    let trader = node.kernel().trader().clone();
+    let dispatcher = NtTraderMarketExitDispatcher {
+        trader: node.kernel().trader().clone(),
+    };
     let market_exit_latch = Rc::new(RefCell::new(LossGovernorMarketExitLatch::new()));
     Rc::new(move |snapshot, now_ns| {
         let decision = evaluate_loss_admission(&loss_policy, snapshot, now_ns);
@@ -2765,24 +2869,43 @@ fn loss_governor_halt_action_handler_from_node(
             return;
         }
 
-        for strategy_id in &market_exit_strategy_ids {
-            if market_exit_latch
-                .borrow()
-                .has_dispatch_succeeded(strategy_id)
-            {
-                continue;
-            }
-            if let Err(error) = Trader::market_exit_strategy(&trader, strategy_id) {
-                log::error!(
-                    "loss-governor NT market exit failed for strategy {strategy_id}: {error}"
-                );
-                continue;
-            }
-            market_exit_latch
-                .borrow_mut()
-                .mark_dispatch_succeeded(strategy_id);
-        }
+        // Route through the single shadow-aware NT market-exit loop shared with
+        // the hard kill-switch sink. Shadow-mode strategies (`submit_orders =
+        // false`) mutate no venue state, so they are partitioned out and never
+        // exited; live strategies exit exactly once (per the latch) through the
+        // sole sanctioned `MarketExitDispatcher`. The NT risk-engine state set
+        // above is venue-neutral and already applied to every strategy. The
+        // helper logs each strategy's outcome, so the soft governor ignores the
+        // aggregate error and continues re-evaluating on the next snapshot.
+        let _ = dispatch_shadow_aware_market_exit(
+            &dispatcher,
+            &market_exit_strategies,
+            &mut *market_exit_latch.borrow_mut(),
+        );
     })
+}
+
+/// Split registered strategies into those eligible for an NT market-exit
+/// dispatch and those suppressed because they run in shadow mode
+/// (`submit_orders == false`). Shadow-mode strategies mutate no venue state, so
+/// the loss-governor must not issue an NT market exit on their behalf — the
+/// same "no venue mutation in shadow mode" invariant the strategy enforces at
+/// its own submit/cancel chokepoints. The NT risk-engine state transition is
+/// venue-neutral and is applied upstream regardless of this split. Returns
+/// `(dispatch_targets, suppressed_targets)`.
+fn partition_market_exit_targets(
+    market_exit_strategies: &[(StrategyId, bool)],
+) -> (Vec<StrategyId>, Vec<StrategyId>) {
+    let mut dispatch = Vec::new();
+    let mut suppressed = Vec::new();
+    for (strategy_id, submit_orders) in market_exit_strategies {
+        if *submit_orders {
+            dispatch.push(*strategy_id);
+        } else {
+            suppressed.push(*strategy_id);
+        }
+    }
+    (dispatch, suppressed)
 }
 
 fn required_loss_governor_decimal(
@@ -2817,10 +2940,9 @@ fn sync_nt_trading_state_for_kill_switch(node: &mut LiveNode, state: &KillSwitch
 fn nt_trading_state_for_kill_switch_state(state: &KillSwitchState) -> Option<TradingState> {
     match state {
         KillSwitchState::Armed => None,
-        KillSwitchState::Halting { .. }
-        | KillSwitchState::Halted { .. }
-        | KillSwitchState::Cancelling { .. }
-        | KillSwitchState::Flattening { .. } => Some(TradingState::Reducing),
+        KillSwitchState::Halting { .. } | KillSwitchState::Halted { .. } => {
+            Some(TradingState::Reducing)
+        }
         KillSwitchState::Flat { .. } | KillSwitchState::FailedManualIntervention { .. } => {
             Some(TradingState::Halted)
         }
@@ -3183,40 +3305,83 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn market_exit_loss_action_sink_retries_halt_until_all_strategies_exit() {
-        let dispatcher = Rc::new(RecordingMarketExitDispatcher::new("strategy-b"));
+    fn market_exit_loss_action_sink_suppresses_shadow_and_retries_until_live_strategies_exit() {
+        let dispatcher = Rc::new(RecordingMarketExitDispatcher::new("LIVE-B"));
+        let trading_state = Rc::new(RecordingTradingStateController::default());
+        // SHADOW-1 runs in shadow mode (submit_orders = false) and must never be
+        // exited; LIVE-A and LIVE-B are live and must be exited exactly once.
         let sink = NtMarketExitLossActionSink::new_with_dispatcher(
             dispatcher.clone(),
+            trading_state.clone(),
             vec![
-                StrategyId::from("strategy-a"),
-                StrategyId::from("strategy-b"),
+                (StrategyId::from("LIVE-A"), true),
+                (StrategyId::from("SHADOW-1"), false),
+                (StrategyId::from("LIVE-B"), true),
             ],
         );
         let action = KillSwitchLossAction {
             kind: KillSwitchLossActionKind::FlattenPositions,
             halt_id: "halt-1".to_string(),
             action_id: "flatten-positions".to_string(),
-            policy_sha256: "a".repeat(64),
             account_ids: vec!["POLYMARKET-001".to_string()],
             instrument_ids: vec!["BTC-USD.BINANCE".to_string()],
         };
 
+        // First emit moves the NT risk engine to Reducing, then attempts only the
+        // live strategies in order. LIVE-B fails once, so the halt is incomplete
+        // and returns an error; the shadow strategy is never attempted.
         assert!(sink.emit(action.clone()).is_err());
-        assert_eq!(dispatcher.attempts(), vec!["strategy-a", "strategy-b"]);
+        assert_eq!(dispatcher.attempts(), vec!["LIVE-A", "LIVE-B"]);
+        assert_eq!(trading_state.reducing_calls(), 1);
 
+        // Retry: LIVE-A already exited, so only LIVE-B is retried and succeeds.
         sink.emit(action.clone())
-            .expect("retry should succeed once every strategy exits");
-        assert_eq!(
-            dispatcher.attempts(),
-            vec!["strategy-a", "strategy-b", "strategy-b"]
-        );
+            .expect("retry should succeed once every live strategy exits");
+        assert_eq!(dispatcher.attempts(), vec!["LIVE-A", "LIVE-B", "LIVE-B"]);
 
+        // Completed halt: no further dispatch on re-emit.
         sink.emit(action)
             .expect("completed halt should not dispatch again");
-        assert_eq!(
-            dispatcher.attempts(),
-            vec!["strategy-a", "strategy-b", "strategy-b"]
+        assert_eq!(dispatcher.attempts(), vec!["LIVE-A", "LIVE-B", "LIVE-B"]);
+        assert!(
+            !dispatcher.attempts().iter().any(|id| id == "SHADOW-1"),
+            "shadow-mode strategy must never receive an NT market exit"
         );
+    }
+
+    #[test]
+    fn partition_market_exit_targets_suppresses_shadow_mode_strategies() {
+        let live_a = StrategyId::from("LIVE-A");
+        let shadow = StrategyId::from("SHADOW-1");
+        let live_b = StrategyId::from("LIVE-B");
+        let (dispatch, suppressed) = partition_market_exit_targets(&[
+            (live_a.clone(), true),
+            (shadow.clone(), false),
+            (live_b.clone(), true),
+        ]);
+        assert_eq!(
+            dispatch,
+            vec![live_a, live_b],
+            "only live (submit_orders=true) strategies are eligible for NT market exit"
+        );
+        assert_eq!(
+            suppressed,
+            vec![shadow],
+            "shadow-mode (submit_orders=false) strategies must be suppressed (no venue mutation)"
+        );
+    }
+
+    #[test]
+    fn partition_market_exit_targets_suppresses_all_when_fully_shadow() {
+        let (dispatch, suppressed) = partition_market_exit_targets(&[
+            (StrategyId::from("S1"), false),
+            (StrategyId::from("S2"), false),
+        ]);
+        assert!(
+            dispatch.is_empty(),
+            "no live strategy => no NT market exit dispatched in shadow mode"
+        );
+        assert_eq!(suppressed.len(), 2);
     }
 
     #[derive(Debug)]
@@ -3241,13 +3406,30 @@ mod tests {
     }
 
     impl MarketExitDispatcher for RecordingMarketExitDispatcher {
-        fn market_exit_strategy(&self, strategy_id: &StrategyId) -> Result<()> {
+        fn exit_strategy(&self, strategy_id: &StrategyId) -> Result<()> {
             let strategy = strategy_id.to_string();
             self.attempts.borrow_mut().push(strategy.clone());
             if strategy == self.fail_once_strategy_id && !self.failed.replace(true) {
                 return Err(anyhow::anyhow!("configured market exit failure"));
             }
             Ok(())
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingTradingStateController {
+        reducing_calls: Cell<u32>,
+    }
+
+    impl RecordingTradingStateController {
+        fn reducing_calls(&self) -> u32 {
+            self.reducing_calls.get()
+        }
+    }
+
+    impl TradingStateController for RecordingTradingStateController {
+        fn enter_reducing(&self) {
+            self.reducing_calls.set(self.reducing_calls.get() + 1);
         }
     }
 

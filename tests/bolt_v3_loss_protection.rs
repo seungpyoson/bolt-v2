@@ -17,9 +17,8 @@ use bolt_v2::{
         seed_admission_from_kill_switch_store,
     },
     bolt_v3_submit_admission::{
-        BoltV3KillSwitchForcedReductionPolicy, BoltV3SubmitAdmissionError,
-        BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-        BoltV3SubmitLifecyclePolicy,
+        BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
+        BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
     },
 };
 use nautilus_core::UUID4;
@@ -102,11 +101,6 @@ fn realized_loss_breach_latches_persists_and_emits_flatten_actions() {
         recorded
             .iter()
             .all(|action| action.halt_id == latched.halt_id())
-    );
-    assert!(
-        recorded
-            .iter()
-            .all(|action| action.policy_sha256 == loss_config(Decimal::new(50, 0)).policy_sha256)
     );
 }
 
@@ -894,14 +888,6 @@ fn loss_config(max_utc_daily_realized_loss: Decimal) -> KillSwitchLossProtection
         max_utc_daily_realized_loss,
         action_retry_interval_ms: TEST_ACTION_RETRY_INTERVAL_MS,
         action_retry_timeout_ms: TEST_ACTION_RETRY_TIMEOUT_MS,
-        forced_reduction_policy: BoltV3KillSwitchForcedReductionPolicy::new(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            4,
-            Decimal::new(100, 0),
-        )
-        .expect("forced-reduction policy should be valid"),
-        policy_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            .to_string(),
         account_ids: vec!["POLYMARKET-001".to_string()],
         instrument_ids: vec!["BTC-USD.BINANCE".to_string()],
     }
@@ -919,7 +905,6 @@ fn entry_request() -> BoltV3SubmitAdmissionRequest {
         intent_kind: BoltV3SubmitIntentKind::Entry,
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         risk_reducing_exit_proof: None,
-        kill_switch_forced_reduction: None,
         position_sizing: None,
     }
 }

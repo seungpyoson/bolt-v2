@@ -11,12 +11,28 @@
   analytics, dashboard UI/read-model, collectors, and runtime changes are future
   vertical project scopes.
 
+## NT Facility Backing
+
+Every RA analytical layer is backed by a named NT facility. See `spec.md`
+(issue #676) NT Facility Map for the full L0–L5 layer-to-NT-primitive mapping.
+Do not duplicate that mapping here.
+
+## Single-Engine Invariant
+
+RA orchestrates the ONE Rust BTE — write typed run-spec TOMLs, invoke the
+existing entrypoint (`operator::run_from_run_spec` / CLI binary), read
+`BacktestResultContract`. RA must never import NT's Cython/Python backtest
+engine (`nautilus_trader.backtest.engine` / `.node`); that is a second engine
+with different fill/PnL truth. Enforce mechanically: a notebook-boundary test
+that fails on importing the Cython engine.
+
 ## Source-Of-Truth Chain
 
 ```text
 Raw evidence record
   -> deterministic NT catalog projection
-  -> NT BacktestNode / NT reports / NT events / NT snapshots
+  -> NT Rust backtest engine (BacktestEngine) -> in-process BacktestResult / NT reports / NT events / NT snapshots
+  -> persisted BacktestResultContract + NT Arrow artifacts
   -> analytics read model
      -> read-only dashboard
      -> research notebooks (non-production)
@@ -40,6 +56,13 @@ Rules:
   Grafana for ops observability, Metabase/Preset/Superset for SQL BI, Retool
   for internal-tool workflows, and Plotly/Dash for custom visual apps. Product
   choice cannot change source truth.
+
+## Raw-Archive Latency Carve-Out
+
+Latency / lead-lag receive-offset research may read raw archives because the
+current converter drops capture/receipt time. This is a **temporary** fallback.
+Sunset is tied to issue #677 (fix converter to write `ts_init=capture_time`).
+It is not a permanent dual path.
 
 ## Artifact Storage Contract
 
@@ -65,10 +88,9 @@ sibling-project fallback path is allowed.
 ## Artifact Path Convention
 
 The path convention is a human-navigable and prefix-friendly envelope around
-artifact-local manifests and the Artifact Index. It is not the authority for
-venue/provider semantics. Full venue, provider, instrument, license, schema,
-hash, and time semantics live in the artifact manifest, source proof report, or
-Artifact Index record.
+artifact-local manifests. It is not the authority for venue/provider semantics.
+Full venue, provider, instrument, license, schema, hash, and time semantics
+live in the artifact manifest or source proof report.
 
 Path rules:
 
@@ -78,7 +100,7 @@ Path rules:
 - Use market-structure labels such as `binary-option` and `perps-spot`, not
   concrete venue names, as fixture path slots.
 - Use short normalized instrument/signal keys in Bolt-owned paths when needed.
-  Very long instrument lists stay in manifests/index metadata.
+  Very long instrument lists stay in manifests.
 - Partition high-volume raw data by event or batch date.
 - Do not rely on recursive S3 listing for normal discovery.
 
@@ -90,7 +112,7 @@ nt-catalog/v1/projection=<catalog_projection_id>/
 source-proofs/v1/source_binding=<key>/fixture=<binary-option|perps-spot>/proof=<source_proof_id>/version=<version>/
 backtests/v1/fixture=<binary-option|perps-spot>/run=<run_id>/
 artifact-index/v1/<events|snapshots|pointers>/...
-research-analytics/v1/<datasets|feature-tables|experiment-results|promotion-packages>/...
+research-analytics/v1/<datasets|feature-tables|experiment-results>/...
 ```
 
 The `nt-catalog/` path is special: Bolt stops at the catalog projection root and
@@ -116,8 +138,8 @@ pointers. The required logical pieces are:
 
 The top-level artifact kinds are `raw`, `nt-catalog`, `source-proofs`,
 `backtests`, `artifact-index`, and `research-analytics`. Research Analytics
-subfamilies (`datasets`, `feature-tables`, `experiment-results`, and
-`promotion-packages`) commit into the single `research-analytics` kind snapshot;
+subfamilies (`datasets`, `feature-tables`, and `experiment-results`) commit into
+the single `research-analytics` kind snapshot;
 they do not get separate latest pointers.
 
 The pointer path is:
@@ -214,10 +236,15 @@ carry NT result/report pointers, metrics artifact pointers, source proof ids,
 catalog/source hashes, strategy config hash, run purpose, fidelity class, claim
 limits, warnings, and mechanical blockers.
 
+Content hash algorithm is `sha256` for every artifact kind. S3 ETag is never
+treated as content hash.
+
 It must not carry a subjective promotion recommendation such as "use this
 strategy" or "escalate this strategy." Strategy review status belongs to a
-Research Analytics `PromotionPackage` or a later explicitly owned review
-artifact that consumes one or more backtest result contracts as evidence.
+Research Analytics review artifact that consumes one or more backtest result
+contracts as evidence. Promotion gates are added only when a real finding exists
+to promote; the proven lead-lag lane's GO/NO-GO verdict + re-measurement cadence
+is the reference model.
 
 Reproduction, audit, regression, or migration results are historical/mechanical
 artifacts. They must not be presented as normal current performance.
@@ -262,7 +289,7 @@ Run purpose:
 - `run_purpose = "normal" | "reproduction" | "audit" | "regression" | "migration"`
 - `normal` runs must use the latest accepted proof and cannot pin older proof.
 - Non-latest proof pins are allowed only for `reproduction`, `audit`,
-  `regression`, or `migration` runs with the matching structured reason fields.
+  `regression`, or `migration` runs.
 
 Allowed `proof_pin_reason_code` values:
 
@@ -350,28 +377,6 @@ Lifecycle state rule:
 - Future implementation sessions must define the exact quiet-window values and
   timestamp basis for each artifact kind.
 
-## Backtesting Extension Surface Contract
-
-- The future Backtesting Engine is NT-first, not NT-default-only.
-- Every relevant NT/custom surface must be classified before implementation as
-  `defaulted`, `pass_through`, `custom_owned`, or `unsupported_for_now`.
-- The classification must cover at minimum backtest engine config, venue
-  simulation config, run config, catalog storage/protocol options, strategy
-  selection, actor/execution-algorithm selection, risk, portfolio, execution,
-  cache, message bus, streaming, fill, fee, latency, margin, leverage, queue,
-  liquidity, settlement, and order-behavior surfaces.
-- `defaulted` surfaces must write the resolved NT/default value into the run
-  manifest and result claim limits.
-- `pass_through` surfaces must map from TOML/manifest to the NT config field
-  without venue/provider-specific branches.
-- `custom_owned` surfaces must prove an NT-compatible interface and must not
-  create independent execution, PnL, position, fill, account, or portfolio truth
-  unless explicitly labeled exploratory/non-trading-truth.
-- `unsupported_for_now` surfaces must fail fast if requested.
-- Contract fixtures must include at least one `defaulted`, one `pass_through`,
-  and one `custom_owned` or `unsupported_for_now` surface so the runner cannot
-  pass review through a single happy path.
-
 ## Venue Gates
 
 Venue/product/provider identity is selected through TOML-backed registry or
@@ -416,11 +421,10 @@ architecture branches.
 - Contract tests must fail if core runtime, admission, secret resolution,
   Backtesting Engine orchestration, catalog projection, analytics read model, or
   dashboard code branches on concrete venue or provider names.
-- The same test fixture must exercise at least two venue/provider bindings so a
-  single hardcoded happy path cannot satisfy the gate.
-- Backtesting extension-surface contract tests must fail when NT defaults,
-  custom-owned behavior, or unsupported surfaces are omitted from the run
-  manifest.
+- One no-hardcoded-venue test is required for the Research Analytics and
+  Dashboard contract surfaces; multi-binding fixture theater is not. The
+  Backtesting Engine keeps its own requirement of at least two TOML/registry-selected
+  binding fixtures (see `1-backtesting-engine/spec.md`).
 
 ## Prohibited Claims
 
@@ -460,6 +464,8 @@ architecture branches.
 | #385 | Existing live connectivity proof issue; live connectivity proof is not historical backtest proof. |
 | #407 | Existing controlled Polymarket broad-discovery mode issue; discovery breadth constraints must link rather than duplicate it. |
 | #409 | Existing `PortfolioSnapshot` capture issue; dashboard PnL completeness depends on it. |
+| #676 | NT-First RA Architecture — NT Facility Map (L0–L5) and single-engine invariant live there. |
+| #677 | Converter capture-time fix — sunset for the raw-archive latency carve-out. |
 
 ## Review Contract
 
@@ -474,7 +480,7 @@ Each future project must have its own spec/plan/tasks/issues. This package may
 stage them but must not merge them into one implementation project.
 
 | Future project | Project directory | Must prove before implementation |
-|---|---|
+|---|---|---|
 | Backtesting Engine | `1-backtesting-engine/` | NT crate/feature availability, manifest-to-NT config mapping, extension-surface classification, resolved default recording, catalog data classes, fill/fee model ownership, result truth, fidelity labels, and two market-structure fixtures with TOML/registry venue/provider bindings. |
 | Research Analytics | `2-research-analytics/` | Raw evidence schema, deterministic projection lineage, point-in-time correctness, experiment metadata, notebook boundary, claim gates, and promotion to typed TOML/NT-compatible runtime contract. |
 | Dashboard | `3-dashboard/` | Field-by-field source matrix, freshness/staleness rules, no-mutation controls, product selection gate, #409/#77/#36 disposition, and #369 non-closure context. |

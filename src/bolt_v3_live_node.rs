@@ -2559,9 +2559,9 @@ fn partition_market_exit_targets(
     let mut suppressed = Vec::new();
     for (strategy_id, submit_orders) in market_exit_strategies {
         if *submit_orders {
-            dispatch.push(strategy_id.clone());
+            dispatch.push(*strategy_id);
         } else {
-            suppressed.push(strategy_id.clone());
+            suppressed.push(*strategy_id);
         }
     }
     (dispatch, suppressed)

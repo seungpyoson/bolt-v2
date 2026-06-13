@@ -37,6 +37,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     path::Path,
+    str::FromStr,
 };
 
 use nautilus_model::{

@@ -18,6 +18,8 @@ use crate::bolt_v3_decision_evidence::{
     BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionOutcome, BoltV3OrderIntentKind,
     BoltV3SubmitIntentKind,
 };
+use crate::bolt_v3_market_families::OutcomeSide;
+use crate::bolt_v3_taker_updown_signal::outcome_side_evidence_label;
 
 const SHADOW_PNL_COUNT_INCREMENT: u64 = 1;
 const SHADOW_PNL_LINE_NUMBER_BASE: usize = 1;
@@ -178,6 +180,18 @@ pub fn build_shadow_pnl_report(
         } else {
             gross / notional * Decimal::from(SHADOW_PNL_BASIS_POINTS_DENOMINATOR)
         };
+        // winning_side is operator-prepared free text. Validate it names a legal
+        // binary outcome side BEFORE deriving won, so a malformed/typo'd value
+        // fails loud here instead of silently collapsing to won=false (and being
+        // counted as a loss) just because a garbage string never equals the
+        // selected side.
+        if !winning_side_is_recognized(&settlement.winning_side) {
+            return Err(anyhow!(
+                "settlement winning_side {:?} for {} is invalid: not a recognized binary outcome side",
+                settlement.winning_side,
+                trade.intent.client_order_id
+            ));
+        }
         let won = selected_side.eq_ignore_ascii_case(settlement.winning_side.as_str());
         // winning_side (which side resolved) and settlement_price (the realized
         // payout) describe the SAME settlement and must agree. Fail loud on operator
@@ -445,6 +459,17 @@ fn single_settlement_match(
         1 => Ok(Some(settlements[0])),
         _ => Err(anyhow!(ambiguous_message)),
     }
+}
+
+/// Whether an operator-provided `winning_side` token names a legal binary
+/// outcome side. The legal vocabulary is sourced from the canonical
+/// [`OutcomeSide`] enum via its evidence label (the same label the strategy
+/// writes into `selected_side`), so this report never re-defines the side
+/// strings and rejects any unrecognized token loudly.
+fn winning_side_is_recognized(winning_side: &str) -> bool {
+    [OutcomeSide::Up, OutcomeSide::Down]
+        .into_iter()
+        .any(|side| outcome_side_evidence_label(side).eq_ignore_ascii_case(winning_side))
 }
 
 fn report_row(day: NaiveDate, asset: String, accumulator: TradeAccumulator) -> ShadowPnlReportRow {

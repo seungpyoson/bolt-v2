@@ -52,7 +52,10 @@ day,asset,would_be_trades,win_rate,gross_pnl,fees,net_pnl,avg_edge_claimed_bps,a
 ```
 
 `would_be_trades` counts admitted entry intents, not deduplicated portfolio positions. Repeated admitted
-signals in one market window remain separate would-be trades in the report.
+signals in one market window remain separate would-be trades in the report. Because shadow mode never
+consumes the live per-execution-client order-count cap (see section 1), `would_be_trades` is an upper
+bound on the count a live run could actually fill once that cap would bind — it is not a simulation of
+live throughput under the cap. The per-order notional cap still applies identically in shadow and live.
 
 If shadow mode is run with a bootstrapped open position, a skipped exit keeps the live-mode
 `ExitPending` latch so the same exit intent is not emitted repeatedly. Without NT terminal events, that

@@ -8231,6 +8231,14 @@ reason = '''Repo-relative root path of the binary-oracle strategy source module 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
 kind = '''string'''
+literal = '''"src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"'''
+context = '''"src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the archetype config translator, brought into the binary-oracle strategy source set so the sole TOML->runtime-table mapping for the shadow-mode submit_orders kill switch and NT-managed venue-action knobs is tamper-evidenced alongside its validating consumer; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
 literal = '''"src/bolt_v3_book_sizing.rs"'''
 context = '''"src/bolt_v3_book_sizing.rs",'''
 classification = '''gated_source_registry_relative_root'''

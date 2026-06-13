@@ -280,8 +280,12 @@ mod tests {
     // Re-derived after adding the shadow-mode fail-closed config guard
     // (submit_orders=false forbids NautilusTrader-managed venue actions) and its
     // tests in config.rs.
+    // Re-derived after bringing the archetype config translator
+    // (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs) into the strategy
+    // source set, so the sole TOML->runtime-table mapping for the shadow-mode
+    // kill switch is now tamper-evidenced alongside its validating consumer.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "2dca08bae2bddcc26a5fce4d72fe3f6ba3fbd23ef833427f76df2c900de7c21c";
+        "c5ad6466a12fe43623769431d571e86a24366768508a1cdd991de952cd1ad036";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -407,6 +411,7 @@ mod tests {
             registry_relative_roots(STRATEGY_KEY),
             &[
                 "src/strategies/binary_oracle_edge_taker",
+                "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
                 "src/bolt_v3_book_sizing.rs",
                 "src/bolt_v3_binary_outcome_edge.rs",
                 "src/bolt_v3_executable_cost.rs",

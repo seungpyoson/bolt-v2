@@ -1,5 +1,6 @@
 mod support;
 
+use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
@@ -9,12 +10,14 @@ use bolt_v2::bolt_v3_decision_evidence::{
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
+use bolt_v2::bolt_v3_position_sizer::{FeeSlippagePolicy, ProductKind, SizingMode, SizingPolicy};
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
-    BoltV3LiveSubmitApprovalLimits, BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput,
-    BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
-    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState,
-    BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, build_submit_admission_request_from_order,
+    BoltV3LiveSubmitApprovalLimits, BoltV3OrderLifecycleIntent, BoltV3PositionSizerRejectReason,
+    BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof,
+    BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput,
+    BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+    BoltV3SubmitPositionSizerConfig, build_submit_admission_request_from_order,
     conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
     market_style_admission_ceiling_notional, rounded_order_admission_notional,
 };
@@ -876,6 +879,37 @@ fn limited_admission_with_writer(
     )
 }
 
+fn position_sized_admission_with_writer(
+    writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
+) -> BoltV3SubmitAdmissionState {
+    BoltV3SubmitAdmissionState::new_with_position_sizer(
+        writer,
+        BoltV3SubmitPositionSizerConfig {
+            venue_id: "POLYMARKET".to_string(),
+            account_id: "POLYMARKET-001".to_string(),
+            product_kind: ProductKind::PredictionMarketBinary,
+            collateral_currency: "PUSD".to_string(),
+            capital_pool: CapitalPoolSnapshot {
+                source: "bolt-submit-admission-test".to_string(),
+                observed_at_ns: 1_000,
+                pool_id: "polymarket-prediction-live".to_string(),
+                max_pool_liability: Decimal::new(10, 0),
+                committed_liability: Decimal::ZERO,
+                max_snapshot_age_ns: 1_000,
+            },
+            policy: SizingPolicy {
+                mode: SizingMode::RejectOnly,
+                max_order_liability: Some(Decimal::new(10, 0)),
+                min_remaining_pool_balance: None,
+                fee_slippage_policy: Some(FeeSlippagePolicy {
+                    max_fee_liability: Decimal::new(10, 2),
+                    max_slippage_liability: Decimal::new(20, 2),
+                }),
+            },
+        },
+    )
+}
+
 fn halted_kill_switch_state() -> KillSwitchState {
     KillSwitchState::Halted {
         halt_id: "halt-1".to_string(),
@@ -1448,6 +1482,41 @@ fn replace_submit_uses_replace_slot_after_entry_and_exit_slots_are_consumed() {
         .expect("replace-submit must use the independent replace slot");
 
     assert_eq!(admission.admitted_order_count(), 3);
+}
+
+#[test]
+fn configured_position_sizer_rejects_replace_submit_before_admission() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = position_sized_admission_with_writer(writer.clone());
+
+    let error = admission
+        .admit(&submit_request_with_kind(
+            Decimal::new(1, 0),
+            BoltV3SubmitIntentKind::ReplaceSubmit,
+        ))
+        .expect_err("replace-submit must enter the position-sizer reject path");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::PositionSizingRejected {
+            reason: BoltV3PositionSizerRejectReason::ReplaceSubmitUnsupported
+        }
+    ));
+    assert_eq!(admission.admitted_order_count(), 0);
+    let decisions = writer.admission_decisions();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(
+        decisions[0].outcome,
+        BoltV3AdmissionOutcome::RejectedPositionSizing
+    );
+    assert_eq!(
+        decisions[0].intent_kind,
+        BoltV3SubmitIntentKind::ReplaceSubmit
+    );
+    assert_eq!(
+        decisions[0].position_sizer_rejection,
+        Some(BoltV3PositionSizerRejectReason::ReplaceSubmitUnsupported)
+    );
 }
 
 #[test]

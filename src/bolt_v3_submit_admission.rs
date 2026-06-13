@@ -1377,7 +1377,9 @@ impl BoltV3SubmitAdmissionState {
         if inner.position_sizer.is_some()
             && matches!(
                 request.intent_kind,
-                BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit
+                BoltV3SubmitIntentKind::Entry
+                    | BoltV3SubmitIntentKind::RiskReducingExit
+                    | BoltV3SubmitIntentKind::ReplaceSubmit
             )
         {
             let decision = evaluate_position_sizer_submit(inner, request, now_ns);

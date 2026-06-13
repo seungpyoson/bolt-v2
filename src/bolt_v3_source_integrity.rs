@@ -262,8 +262,10 @@ mod tests {
     // admission.
     // Re-derived after adding position-sizer submit admission state and evidence
     // to the shared submit admission module.
+    // Re-derived after routing replace-submit through configured position
+    // sizing.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "d522f06088751957b9fad7872f90801ff27500c6a91480bef2b3c1e17ed04e18";
+        "7b064753f4677fdd506db5f5cdbd4baa70f76d58660b485a72704eb9ac6778a5";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

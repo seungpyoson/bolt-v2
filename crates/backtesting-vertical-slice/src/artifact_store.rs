@@ -487,22 +487,34 @@ pub struct ArtifactLineageRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactIndexEvent {
+    pub schema_version: String,
+    pub created_at: String,
     pub event_id: String,
     pub artifact_kind: ArtifactKind,
     pub artifact_id: String,
     pub artifact_uri: String,
     pub manifest_uri: String,
     pub producer_project: String,
+    pub owner_project: String,
     pub content_sha256: String,
+    pub lifecycle_state: ArtifactLifecycleState,
+    pub storage_profile: ArtifactStorageProfile,
     pub parent_lineage: Vec<ArtifactLineageRef>,
     pub commit_state: ArtifactIndexCommitState,
 }
 
 impl ArtifactIndexEvent {
     fn validate(&self, artifact_root: &ResolvedArtifactRoot) -> Result<()> {
+        ensure_path_token(
+            "schema_version",
+            &self.schema_version,
+            PathTokenMode::AllowEquals,
+        )?;
+        ensure_utc_timestamp("created_at", &self.created_at)?;
         ensure_path_token("event_id", &self.event_id, PathTokenMode::AllowEquals)?;
         validate_artifact_id(&self.artifact_id)?;
         validate_artifact_id(&self.producer_project)?;
+        validate_artifact_id(&self.owner_project)?;
         artifact_root.object_path_for_uri(&self.artifact_uri)?;
         artifact_root.object_path_for_uri(&self.manifest_uri)?;
         ensure_sha256("content_sha256", &self.content_sha256)?;
@@ -536,12 +548,17 @@ impl ArtifactLineageRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactIndexSnapshotRow {
+    pub schema_version: String,
+    pub created_at: String,
     pub artifact_kind: ArtifactKind,
     pub artifact_id: String,
     pub artifact_uri: String,
     pub manifest_uri: String,
     pub producer_project: String,
+    pub owner_project: String,
     pub content_sha256: String,
+    pub lifecycle_state: ArtifactLifecycleState,
+    pub storage_profile: ArtifactStorageProfile,
     pub parent_lineage: Vec<ArtifactLineageRef>,
     pub commit_state: ArtifactIndexCommitState,
 }
@@ -550,12 +567,17 @@ impl ArtifactIndexSnapshotRow {
     #[must_use]
     pub fn from_event(event: &ArtifactIndexEvent, commit_state: ArtifactIndexCommitState) -> Self {
         Self {
+            schema_version: event.schema_version.clone(),
+            created_at: event.created_at.clone(),
             artifact_kind: event.artifact_kind,
             artifact_id: event.artifact_id.clone(),
             artifact_uri: event.artifact_uri.clone(),
             manifest_uri: event.manifest_uri.clone(),
             producer_project: event.producer_project.clone(),
+            owner_project: event.owner_project.clone(),
             content_sha256: event.content_sha256.clone(),
+            lifecycle_state: event.lifecycle_state,
+            storage_profile: event.storage_profile,
             parent_lineage: event.parent_lineage.clone(),
             commit_state,
         }
@@ -570,8 +592,15 @@ impl ArtifactIndexSnapshotRow {
             self.artifact_kind == snapshot_kind,
             "snapshot row kind does not match snapshot kind"
         );
+        ensure_path_token(
+            "schema_version",
+            &self.schema_version,
+            PathTokenMode::AllowEquals,
+        )?;
+        ensure_utc_timestamp("created_at", &self.created_at)?;
         validate_artifact_id(&self.artifact_id)?;
         validate_artifact_id(&self.producer_project)?;
+        validate_artifact_id(&self.owner_project)?;
         artifact_root.object_path_for_uri(&self.artifact_uri)?;
         artifact_root.object_path_for_uri(&self.manifest_uri)?;
         ensure_sha256("content_sha256", &self.content_sha256)?;
@@ -1395,6 +1424,16 @@ fn ensure_path_token(field: &'static str, token: &str, mode: PathTokenMode) -> R
 
 fn validate_artifact_id(value: &str) -> Result<()> {
     ensure_path_token("artifact_id", value, PathTokenMode::AllowEquals)
+}
+
+fn ensure_utc_timestamp(field: &'static str, value: &str) -> Result<()> {
+    let timestamp = chrono::DateTime::parse_from_rfc3339(value)
+        .with_context(|| format!("{field} must be an RFC3339 timestamp"))?;
+    ensure!(
+        timestamp.offset().local_minus_utc() == 0,
+        "{field} must be UTC"
+    );
+    Ok(())
 }
 
 fn ensure_sha256(field: &'static str, value: &str) -> Result<()> {

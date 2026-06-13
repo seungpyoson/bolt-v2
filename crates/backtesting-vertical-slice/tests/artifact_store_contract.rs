@@ -295,13 +295,18 @@ fn sha256(ch: char) -> String {
 
 fn backtest_event(root_uri: String, event_id: &str, artifact_id: &str) -> ArtifactIndexEvent {
     ArtifactIndexEvent {
+        schema_version: "artifact-index-event-v1".to_string(),
+        created_at: "2026-06-13T00:00:00Z".to_string(),
         event_id: event_id.to_string(),
         artifact_kind: ArtifactKind::Backtests,
         artifact_id: artifact_id.to_string(),
         artifact_uri: format!("{root_uri}result.json"),
         manifest_uri: format!("{root_uri}manifest.json"),
         producer_project: "backtesting-engine".to_string(),
+        owner_project: "backtesting-engine".to_string(),
         content_sha256: sha256('a'),
+        lifecycle_state: ArtifactLifecycleState::Active,
+        storage_profile: ArtifactStorageProfile::Active,
         parent_lineage: vec![ArtifactLineageRef {
             artifact_kind: ArtifactKind::NtCatalog,
             artifact_id: "projection-001".to_string(),
@@ -319,13 +324,18 @@ fn nt_catalog_event(
     content_hash_char: char,
 ) -> ArtifactIndexEvent {
     ArtifactIndexEvent {
+        schema_version: "artifact-index-event-v1".to_string(),
+        created_at: "2026-06-13T00:00:00Z".to_string(),
         event_id: event_id.to_string(),
         artifact_kind: ArtifactKind::NtCatalog,
         artifact_id: artifact_id.to_string(),
         artifact_uri: format!("{root_uri}catalog-manifest.json"),
         manifest_uri: format!("{root_uri}manifest.json"),
         producer_project: "backtesting-engine".to_string(),
+        owner_project: "backtesting-engine".to_string(),
         content_sha256: sha256(content_hash_char),
+        lifecycle_state: ArtifactLifecycleState::Active,
+        storage_profile: ArtifactStorageProfile::Active,
         parent_lineage: vec![ArtifactLineageRef {
             artifact_kind: ArtifactKind::Raw,
             artifact_id: "raw-001".to_string(),
@@ -395,6 +405,16 @@ async fn artifact_index_writes_events_snapshots_and_latest_pointer_conditionally
         )],
     )
     .expect("snapshot is valid");
+    assert_eq!(snapshot.rows[0].schema_version, event.schema_version);
+    assert_eq!(snapshot.rows[0].owner_project, event.owner_project);
+    assert_eq!(
+        snapshot.rows[0].lifecycle_state,
+        ArtifactLifecycleState::Active
+    );
+    assert_eq!(
+        snapshot.rows[0].storage_profile,
+        ArtifactStorageProfile::Active
+    );
     writer
         .put_snapshot(&root, &snapshot)
         .await
@@ -480,6 +500,53 @@ async fn artifact_index_snapshot_rejects_staged_rows() {
     .expect_err("committed snapshot must reject staged rows");
 
     assert!(err.to_string().contains("committed rows"), "{err}");
+}
+
+#[test]
+fn artifact_index_event_serialization_requires_lifecycle_and_owner_metadata() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let run_root = root.backtest_run_root(MarketStructureFixture::BinaryOption, "run-002-legacy");
+    let legacy_event = serde_json::json!({
+        "event_id": "event-002-legacy",
+        "artifact_kind": "backtests",
+        "artifact_id": "run-002-legacy",
+        "artifact_uri": format!("{run_root}result.json"),
+        "manifest_uri": format!("{run_root}manifest.json"),
+        "producer_project": "backtesting-engine",
+        "content_sha256": sha256('a'),
+        "parent_lineage": [{
+            "artifact_kind": "nt-catalog",
+            "artifact_id": "projection-001",
+            "version": "v1",
+            "sha256": sha256('b')
+        }],
+        "commit_state": "staged"
+    });
+
+    let err = serde_json::from_value::<ArtifactIndexEvent>(legacy_event)
+        .expect_err("events without lifecycle and owner metadata must not deserialize");
+
+    assert!(err.to_string().contains("missing field"), "{err}");
+}
+
+#[tokio::test]
+async fn artifact_index_event_requires_utc_created_at() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let writer = ArtifactIndexWriter::new(&store);
+    let mut event = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::BinaryOption, "run-002-non-utc"),
+        "event-002-non-utc",
+        "run-002-non-utc",
+    );
+    event.created_at = "2026-06-13T09:00:00+09:00".to_string();
+
+    let err = writer
+        .put_event(&root, &event)
+        .await
+        .expect_err("non-UTC artifact index event timestamp must be rejected");
+
+    assert!(err.to_string().contains("created_at must be UTC"), "{err}");
 }
 
 #[tokio::test]

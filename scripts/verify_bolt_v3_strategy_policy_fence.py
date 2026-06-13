@@ -97,6 +97,12 @@ FORBIDDEN_RULES: tuple[Rule, ...] = (
     ),
 )
 
+ALLOWED_DIRECT_NT_MUTATION_PATHS = frozenset(
+    {
+        "src/bolt_v3_order_execution.rs",
+    }
+)
+
 
 def line_number(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
@@ -105,6 +111,11 @@ def line_number(text: str, pos: int) -> int:
 def find_violations_in_text(path: str, text: str) -> list[Violation]:
     violations: list[Violation] = []
     for rule in FORBIDDEN_RULES:
+        if (
+            rule.label == "direct NT venue mutation call"
+            and path in ALLOWED_DIRECT_NT_MUTATION_PATHS
+        ):
+            continue
         for match in rule.pattern.finditer(text):
             line_start = text.rfind("\n", 0, match.start()) + 1
             line_end = text.find("\n", match.end())

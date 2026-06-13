@@ -73,6 +73,13 @@ class StrategyPolicyFenceTests(unittest.TestCase):
 
         self.assertIn("direct NT venue mutation call", labels)
 
+    def test_source_roots_include_shared_order_execution_policy(self) -> None:
+        self.assertIn(
+            "src/bolt_v3_order_execution.rs",
+            VERIFIER.STRATEGY_SOURCE_ROOTS,
+            "shared order execution policy must stay in the strategy source fence set",
+        )
+
     def test_identifier_rules_do_not_match_substrings(self) -> None:
         labels = self.labels_for(
             """

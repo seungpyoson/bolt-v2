@@ -8231,6 +8231,14 @@ reason = '''Repo-relative root path of the archetype config translator, brought 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
 kind = '''string'''
+literal = '''"src/bolt_v3_order_execution.rs"'''
+context = '''"src/bolt_v3_order_execution.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared order-execution policy module, brought into the binary-oracle strategy source set so the live/shadow NT submit/cancel mutation boundary is tamper-evidenced alongside strategy code; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
 literal = '''"src/bolt_v3_book_sizing.rs"'''
 context = '''"src/bolt_v3_book_sizing.rs",'''
 classification = '''gated_source_registry_relative_root'''

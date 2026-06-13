@@ -566,6 +566,9 @@ pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
             // It is the sole producer of that table, so it belongs under the same
             // tamper-evidence as the consumer (`config.rs`) that validates them.
             "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+            // The shared policy is the only approved Bolt-v3 strategy-originated
+            // NT submit/cancel mutation boundary.
+            "src/bolt_v3_order_execution.rs",
             "src/bolt_v3_book_sizing.rs",
             "src/bolt_v3_binary_outcome_edge.rs",
             "src/bolt_v3_executable_cost.rs",

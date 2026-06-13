@@ -286,9 +286,10 @@ mod tests {
     // now tamper-evidenced alongside its validating consumer.
     // Re-derived after moving shadow submit/cancel gating from
     // binary-oracle-local `submit_orders` into the shared root-owned order
-    // execution policy and removing the stale strategy-local field.
+    // execution policy, removing the stale strategy-local field, and bringing
+    // the shared execution-policy boundary into the gated strategy source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "7b06cc3550bfc1c7afac1c12d836e08ec9ed2b7e16ab8bf99849b87594d20b2a";
+        "2b53fa3b9168ce65659ea50bb390c2a91225007f96921fe435565b6e14d67c1a";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -415,6 +416,7 @@ mod tests {
             &[
                 "src/strategies/binary_oracle_edge_taker",
                 "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+                "src/bolt_v3_order_execution.rs",
                 "src/bolt_v3_book_sizing.rs",
                 "src/bolt_v3_binary_outcome_edge.rs",
                 "src/bolt_v3_executable_cost.rs",

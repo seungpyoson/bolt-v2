@@ -18,7 +18,7 @@
 - [X] T008 [US1] Write failing config tests for required root execution mode in `tests/config_parsing.rs`
 - [X] T009 [US1] Write failing config tests rejecting stale strategy-local `parameters.submit_orders` in `tests/config_parsing.rs`
 - [X] T010 [US1] Add root execution-mode config type in `src/bolt_v3_config.rs`
-- [X] T011 [US1] Update root config fixtures in `config/root.toml`, `config/live.local.toml`, and `tests/fixtures/bolt_v3/root.toml`
+- [X] T011 [US1] Update root config fixtures in `config/root.toml` and `tests/fixtures/bolt_v3/root.toml`
 - [X] T012 [US2] Extend `StrategyBuildContext` with shared execution policy in `src/strategies/registry.rs`
 - [X] T013 [US2] Build the shared policy from loaded root config in `src/bolt_v3_live_node.rs` and `src/bolt_v3_strategy_registration.rs`
 

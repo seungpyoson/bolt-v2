@@ -22,7 +22,7 @@
       "universe_id": "backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments",
       "venue": "binance",
       "source": "data_vision",
-      "family": "trades",
+      "family": "native_trades",
       "table_family": "trades",
       "status": "partially_ready_for_conversion_execution",
       "source_gate_count": 2051,

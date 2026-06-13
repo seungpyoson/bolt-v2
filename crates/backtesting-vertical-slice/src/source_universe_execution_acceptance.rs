@@ -405,6 +405,46 @@ fn evaluate_universe(
         &mut artifact_refs,
     )?;
 
+    // spec.family is the declared source family for the universe; every loaded
+    // artifact that carries its own `family` must agree with it. This is the
+    // missing spec-vs-artifact leg of the existing artifact-vs-artifact identity
+    // checks below (gates/run_plan/operator_inputs), and catches spec drift on
+    // any venue/artifact, not just one instance.
+    for (role, artifact_family) in [
+        (
+            "source_universe_conversion_queue",
+            queue.as_ref().map(|artifact| artifact.family.as_str()),
+        ),
+        (
+            "source_universe_object_gates",
+            gates.as_ref().map(|artifact| artifact.family.as_str()),
+        ),
+        (
+            "source_universe_conversion_run_plan",
+            run_plan.as_ref().map(|artifact| artifact.family.as_str()),
+        ),
+        (
+            "source_universe_operator_inputs",
+            operator_inputs
+                .as_ref()
+                .map(|artifact| artifact.family.as_str()),
+        ),
+        (
+            "source_universe_execution_pack",
+            execution_pack
+                .as_ref()
+                .map(|artifact| artifact.family.as_str()),
+        ),
+    ] {
+        let Some(artifact_family) = artifact_family else {
+            continue;
+        };
+        if artifact_family != spec.family.as_str() {
+            blocking_reasons.push(format!("source_universe_spec_family_mismatch_{role}"));
+            has_non_operator_blocking_reasons = true;
+        }
+    }
+
     let mut table_family = None;
     let mut source_gate_count = 0;
     let mut source_conversion_batch_count = 0;

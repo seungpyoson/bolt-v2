@@ -64,7 +64,7 @@ This revision incorporates the blocking architecture review. The implementation 
 - Stateful single-order admission is not called once per leg as basket admission. Basket admission uses shared arithmetic helpers and owns one basket-level reservation.
 - Basket state is durable and reconciled against NT reports on restart.
 - Durable basket state reuses a promoted shared atomic-write helper; no second atomic-store implementation is allowed.
-- Polymarket `negRiskMarketID` recovery uses one Bolt-owned Gamma metadata cache keyed by native token/condition/market identifiers. The plan does not fork the pinned NT dependency and does not support a second runtime recovery path.
+- Polymarket `negRiskMarketID` recovery uses one provider-local Bolt-owned Gamma metadata cache keyed by native token/condition/market identifiers and used to emit NT filters. The plan does not fork the pinned NT dependency and does not support a second runtime recovery path.
 - Cross-venue matching requires operator-attested settlement contracts and remains fail-closed without them.
 - Runtime registration is implemented as a new archetype binding under `src/bolt_v3_archetypes`, plus the binding-list entry in `src/bolt_v3_archetypes/mod.rs`. The generic registration dispatcher is not the concrete-builder home.
 - Outcome-group provider support is explicit: every provider that may host outcome-group strategies must add `outcome_group::KEY` to `SUPPORTED_MARKET_FAMILIES` and prove adapter validation accepts it.
@@ -161,7 +161,7 @@ Rules:
 - Standard terminal-state rows are derived only from `OutcomeLegRole` and `terminal_state_convention`. Under `exactly_one_winner`, `PaysOnTerminalState(T)` pays `1` when the row state is `T` and `0` otherwise; `PaysUnlessTerminalState(T)` pays `0` when the row state is `T` and `1` otherwise. Matrix builders must not inspect `side_label` or `outcome_label` strings.
 - Void/refund/fallback rows must come from `SettlementRules.non_standard_terminal_payouts`, not from inferred labels. Each operator-attested vector must name the same columns as the payout matrix, match leg count exactly, declare its refund convention, use bounded settlement-currency values, and be covered by the settlement attestation hash.
 - Operator-attested vectors resolve config leg references to `OutcomeLegId` using a unique native leg id or a unique `(outcome_label, side_label)` tuple. Validation requires order equality with `PayoutMatrix.cols`, not just set equality or count equality, and rejects ambiguous or duplicate label resolution.
-- Attestation hashes are verified at validation time by hashing the canonical serialized settlement rules and attested payout vector payload, then comparing to the configured `attestation_sha256`.
+- Attestation hashes are verified at validation time by hashing the canonical attestation payload after removing every digest field, including `attestation_sha256` and any nested digest fields. Validation requires lowercase 64-character SHA-256 hex and rejects mismatches, reordered columns, or payloads whose digest changes only by adding or changing digest fields.
 - Square matrix dimensions are not enough. Validation must reject transposed, duplicate, missing, or unknown row/column mappings.
 - Outcome labels are metadata only after validation. Unknown labels, duplicate labels that map to different states, or labels that cannot be mapped to an attested terminal state reject the group.
 - Every `OutcomeGroup` must have one settlement asset. Every leg's `settlement_asset_id` must equal `OutcomeGroup.settlement_asset_id`; mixed-currency groups reject before scanning.
@@ -179,7 +179,7 @@ Rules:
 - Create `src/bolt_v3_outcome_group_polymarket.rs`: Polymarket Gamma/NT metadata normalizer into `OutcomeGroup`.
 - Create `src/bolt_v3_outcome_group_hyperliquid.rs`: Hyperliquid HIP-4 NT metadata normalizer into `OutcomeGroup`.
 - Create `src/bolt_v3_complete_set_scanner.rs`: shared payout-vector scanner that reuses `bolt_v3_executable_cost` for per-leg executable costs.
-- Create `src/bolt_v3_basket_admission.rs`: basket-level admission, risk caps, freshness checks, submit-approval cap integration, reservation release, and evidence payloads using existing submit-admission arithmetic helpers.
+- Create `src/bolt_v3_basket_admission.rs`: basket-level admission, risk caps, freshness checks, monotonic submit-approval cap integration, releasable exposure reservation, and evidence payloads using existing submit-admission arithmetic helpers.
 - Create `src/bolt_v3_basket_execution.rs`: shared durable multi-leg executor outside `src/strategies/*`; it owns fill/cancel-driven `Partial`/`Repair`/`Unwind`/`Stuck` state transitions.
 - Create `src/bolt_v3_basket_store.rs`: basket-state persistence using `bolt_v3_atomic_io`, not copied kill-switch private helpers.
 - Modify `src/bolt_v3_config.rs`: add `outcome_group_sources` to `BoltV3RootConfig`, add `risk.basket_execution`, and keep complete-set strategy settings in the per-strategy file's raw `[target]` and `[parameters]`.
@@ -422,7 +422,7 @@ State machine rules:
 - [ ] Enforce one terminal-state source of truth: `OutcomeGroup.terminal_states`.
 - [ ] Derive non-standard terminal rows only from explicit `SettlementRules.non_standard_terminal_payouts`; reject inferred void/refund/fallback rows.
 - [ ] Resolve attested payout-vector config legs to `OutcomeLegId` through unique native leg id or unique `(outcome_label, side_label)` tuples, then require exact order equality with `PayoutMatrix.cols`.
-- [ ] Verify settlement-rule and payout-vector `attestation_sha256` values against canonical serialized payloads.
+- [ ] Verify settlement-rule and payout-vector `attestation_sha256` values against canonical serialized payloads that exclude digest fields and use lowercase 64-character SHA-256 hex.
 - [ ] Reject mixed settlement assets across legs.
 - [ ] Canonically serialize metadata and proof fingerprints with deterministic ordering and normalized Decimal strings.
 - [ ] Keep fees out of `OutcomeLeg`; costs must be resolved through `FeeProvider` and existing instrument metadata at scan time.
@@ -461,7 +461,8 @@ State machine rules:
 - [ ] Add an `outcome_group` market-family binding so existing `target.rotating_market_family` dispatch remains the single target-routing path.
 - [ ] Define `outcome_group::TargetBlock` with `configured_target_id`, `kind = "static_outcome_group"`, `rotating_market_family = "outcome_group"`, and `group_sources`.
 - [ ] Define `outcome_group::RotatingMarketFamily { OutcomeGroup }` inside the new family module and register `outcome_group::KEY` in `src/bolt_v3_market_families/mod.rs` validation bindings.
-- [ ] For the existing `MarketFamilyValidationBinding` slots, support `validate_target`, `plan_strategy_target`, and `target_runtime_fields`; return typed unsupported errors only from Result-returning slots, and return `None` for Option-returning unsupported capabilities such as single-market selection, fair probability, and maker helpers.
+- [ ] For the existing `MarketFamilyValidationBinding` slots, support `validate_target` and `plan_strategy_target` only. Return typed unsupported errors from Result-returning single-market/updown slots including `target_runtime_fields`, `market_selection_candidate_windows`, and `selected_market_requirement`. Return `None` for Option-returning unsupported capabilities such as single-market selection, fair probability, and maker helpers.
+- [ ] Ensure complete-set target validation does not require `TargetRuntimeFields`, `target.gate_subscriptions`, dummy `underlying_asset`, cadence fields, slug tokens, market-selection rules, or realized-volatility target fields. Static outcome groups use `plan_strategy_target` plus source discovery, not the up/down runtime-field contract.
 - [ ] Treat `expected_neg_risk_market_id` and `terminal_state_labels` as expectations checked against proof metadata, never as proof.
 - [ ] Add a fail-closed source validator for `GateProviderFreshnessBlock` option fields and define evidence fields for local receive time, provider event time, and clock skew.
 - [ ] Move global realized-volatility-surface requiredness behind archetype validation; keep the requirement for binary-oracle taker and declare no RV requirement for complete-set arbitrage.
@@ -479,8 +480,8 @@ State machine rules:
 - [ ] Prove that event containers with unrelated markets are rejected unless all admitted markets share the same grouping key and terminal-state contract.
 - [ ] Prove that missing void/refund policy rejects the group.
 - [ ] Map Polymarket Gamma/NT metadata to `OutcomeGroup`.
-- [ ] Maintain one Bolt-owned Gamma metadata cache keyed by native token id, condition id, and market slug so the normalizer can recover `negRiskMarketID` that NT does not carry into `BinaryOption.info`.
-- [ ] Populate the Gamma metadata cache from the provider's NT/Gamma discovery path; do not add a second standalone Gamma HTTP client unless that becomes the single configured ingestion path.
+- [ ] Implement one provider-local outcome-group Gamma discovery/cache pipeline for Polymarket sources. The pipeline fetches each configured Gamma event, market slug, event query, or bounded Gamma query once; caches the raw response keyed by native token id, condition id, and market slug; recovers `negRiskMarketID`; and emits the exact NT discovery filters/market slugs from the same cached response.
+- [ ] Do not add a second independent Gamma HTTP path for outcome-group metadata. NT may still load instruments from the emitted filters, but the provider-local cache is the sole Bolt metadata source used for `negRiskMarketID` proof and conflict checks.
 - [ ] Fail closed when any leg lacks a non-null `negRiskMarketID`, when recovered metadata conflicts with the NT instrument, or when Gamma cache freshness exceeds the configured source freshness.
 - [ ] Add provider mapping for TOML-driven NT discovery filters: explicit event slugs, market slugs, event queries, and bounded Gamma queries.
 - [ ] Extend Polymarket `SUPPORTED_MARKET_FAMILIES` with `outcome_group::KEY` and add adapter-mapping tests proving outcome-group sources produce the expected NT filters for the configured `client_id`.
@@ -510,7 +511,7 @@ State machine rules:
 
 - [ ] Write tests for basket notional cap, max open basket cap, stale evidence rejection, stale submit re-check rejection, negative edge rejection, missing grouping proof rejection, missing settlement rules rejection, reservation release, and retry-budget rejection.
 - [ ] Implement basket-level admission that reserves the whole basket, not individual legs independently.
-- [ ] Integrate with `BoltV3SubmitAdmissionState` limits by counting the basket against live-submit approval limits by leg count for its single `execution_client_id`, or by introducing an explicit basket counter with equivalent configured caps.
+- [ ] Integrate with `BoltV3SubmitAdmissionState` as monotonic venue-order approval accounting: each submitted basket leg/order consumes one per-client admitted-order slot and is not decremented when the basket closes. Keep this separate from the releasable basket exposure/budget reservation, which releases only on terminal, abort, reject, or stuck transitions.
 - [ ] Reuse `bolt_v3_submit_admission` pure arithmetic helpers; do not call stateful single-order `BoltV3SubmitAdmissionState::admit()` once per basket leg.
 - [ ] Record evidence keyed by strategy id, basket id, group id, and leg instrument IDs.
 - [ ] Persist reservation state before any venue mutation.
@@ -581,7 +582,7 @@ State machine rules:
 3. Config parsing and validation that adds root `outcome_group_sources`, `risk.basket_execution`, complete-set-specific RV validation, the `outcome_group::TargetBlock`, provider market-family support, freshness rules, and checked expectations.
 4. Provider discovery mapping plus Polymarket normalizer with single-path Gamma metadata cache, `negRiskMarketID` grouping proof, and NT filter wiring.
 5. Read-only complete-set scanner that reuses `bolt_v3_executable_cost` and `FeeProvider`, with timestamped book snapshots, normalized price scale evidence, and Decimal/f64 conversion boundaries.
-6. Basket admission, evidence, submit-approval cap accounting, freshness re-check, reservation release, and durable reservation state.
+6. Basket admission, evidence, monotonic submit-approval cap accounting, freshness re-check, releasable exposure reservation, and durable reservation state.
 7. Basket execution state machine with `Stuck`, bounded repair/unwind, restart reconciliation, dedicated basket-stuck kill-switch trigger, and shared-executor ownership.
 8. Runtime strategy registration through `src/bolt_v3_archetypes/complete_set_arbitrage.rs`, `src/bolt_v3_archetypes/mod.rs`, and a node-binding proof.
 9. HIP-4 normalizer through existing Hyperliquid adapter and settlement-contract gates.
@@ -613,27 +614,29 @@ Context:
 - The plan is expected to reuse existing Bolt engines: bolt_v3_executable_cost, FeeProvider, bolt_v3_submit_admission arithmetic helpers, GateProviderFreshnessBlock, bolt_v3_market_families, and a shared atomic I/O helper promoted from the kill-switch store pattern.
 - Runtime strategy bindings live in src/bolt_v3_archetypes/mod.rs and per-archetype modules; src/bolt_v3_strategy_registration.rs is the generic binding-injected dispatcher.
 - Provider `SUPPORTED_MARKET_FAMILIES` and provider discovery mapping must be extended for outcome_group; otherwise adapter validation or instrument discovery fails before runtime.
+- Polymarket outcome-group Gamma discovery must use one provider-local cache pipeline that also emits the NT filters; a second independent Gamma metadata path is a dual path.
 - Core realized-volatility validation currently leaks up/down assumptions and must be made archetype-conditional.
 
 Review the plan for:
 1. Any hidden hardcoding to Polymarket, HIP-4, World Cup, moneyline, YES-only, NO-only, a venue client, a market slug, or a specific strategy.
 2. Any place where venue-specific metadata leaks past the normalizer into scanner, admission, execution, or strategy logic.
-3. Any unresolved either-or or deferred choice in the Polymarket negRiskMarketID recovery path; the intended path is one Bolt-owned Gamma metadata cache, not a pinned-NT fork.
+3. Any unresolved either-or or deferred choice in the Polymarket negRiskMarketID recovery path; the intended path is one provider-local Bolt-owned Gamma metadata cache that also projects NT filters, not a pinned-NT fork or second Gamma fetch path.
 4. Any grouping proof that accepts Polymarket event membership without one shared non-null negRiskMarketID, or accepts HIP-4 standalone outcomes without a parent settlement signal or attested settlement contract.
 5. Any terminal-state gap: missing standard row derivation from `OutcomeLegRole`, missing void/refund/fallback row, missing non-standard terminal payout vector, duplicate terminal-state source of truth, unrecognized outcome label, or payout-matrix row/column alignment bug.
 6. Any config value masquerading as proof rather than a checked expectation against venue metadata or operator attestation.
 7. Any cost-engine duplication instead of reusing bolt_v3_executable_cost, FeeProvider, submit-admission arithmetic helpers, GateProviderFreshnessBlock, market-family routing, and shared atomic I/O.
 8. Any freshness gap where max_age_ms/max_clock_skew_ms are absent, optional in live trading, use undefined clocks, or are checked only before a non-atomic submit rather than also at Reserved -> Submitting.
-9. Any provider support or discovery gap: missing `SUPPORTED_MARKET_FAMILIES`, missing `outcome_group::target_plans`, missing NT filter projection, or a second Gamma fetch path.
+9. Any provider support or discovery gap: missing `SUPPORTED_MARKET_FAMILIES`, missing `outcome_group::target_plans`, missing provider-local Gamma cache/filter projection, or a second Gamma fetch path.
 10. Any unsafe scan-all, stale-book, fee-unit, slippage, minimum-depth, book-adapter, normalized price scale, or liquidity assumption that could admit a basket that cannot fill atomically enough to preserve the payout floor.
 11. Any config-contract mismatch with Bolt's real root strategy_files plus per-strategy strategy_archetype/[target]/[reference_data]/[signal_data]/[parameters] shape, root `outcome_group_sources`, or `risk.basket_execution`.
-12. Any outcome_group target-family mismatch: missing TargetBlock shape, missing kind, missing per-family RotatingMarketFamily type, wrong unsupported-slot behavior for Option-returning functions, or missing binding-array registration.
+12. Any outcome_group target-family mismatch: missing TargetBlock shape, missing kind, missing per-family RotatingMarketFamily type, accidental `TargetRuntimeFields` support, wrong unsupported-slot behavior for Result-returning or Option-returning functions, or missing binding-array registration.
 13. Any missing runtime registration path, especially failure to add src/bolt_v3_archetypes/complete_set_arbitrage.rs and the src/bolt_v3_archetypes/mod.rs binding-list entries.
 14. Any global realized-volatility validation that would force complete_set_arbitrage to define dummy RV surfaces or up/down target fields.
-15. Any basket admission/execution gap: submit-approval cap accounting, basket state TOML contract, dedicated kill-switch trigger, partial-fill repair math, cancel-reject, repair-recursion, settled-market unwind, restart reconciliation, reservation release, or shared executor ownership.
+15. Any basket admission/execution gap: monotonic submit-approval cap accounting, separation from releasable exposure reservations, basket state TOML contract, dedicated kill-switch trigger, partial-fill repair math, cancel-reject, repair-recursion, settled-market unwind, restart reconciliation, reservation release, or shared executor ownership.
 16. Any cross-venue design mismatch where one live basket spans multiple source/execution clients despite the single-client model.
-17. Any architecture flaw that would prevent turning up Hyperliquid HIP-4 mostly through config once its OutcomeGroup normalizer exists.
-18. Any violation of the repo constraints: no hardcodes, no dual paths, no debts, no credential display, pure Rust, SSM-only secrets, and strategy-intent-only boundaries.
+17. Any attestation-hash gap: digest fields included in the hashed payload, non-canonical ordering, non-lowercase/non-64-character SHA-256 hex, or no mismatch/reorder tests.
+18. Any architecture flaw that would prevent turning up Hyperliquid HIP-4 mostly through config once its OutcomeGroup normalizer exists.
+19. Any violation of the repo constraints: no hardcodes, no dual paths, no debts, no credential display, pure Rust, SSM-only secrets, and strategy-intent-only boundaries.
 
 Return:
 - Blocking findings first, with severity.
@@ -645,6 +648,6 @@ Return:
 ## Self-Review
 
 - Spec coverage: covers basket arbitrage, cross-venue arbitrage, taker/maker integration path, non-updown Polymarket, and HIP-4 support.
-- Review corrections: standard payout derivation, grouping proof, provider support/discovery, root source parsing, Bolt-owned Gamma cache, same-client basket scope, void/refund/fallback terminal states, non-standard payout derivation, settlement attestation, freshness clocks, cost-engine reuse, shared atomic I/O, durable basket state config, submit-admission caps, dedicated Stuck kill-switch trigger, config shape, market-family binding shape, RV validation ownership, and archetype runtime registration are represented as explicit plan requirements.
+- Review corrections: standard payout derivation, grouping proof, provider support/discovery, root source parsing, provider-local Bolt-owned Gamma cache/filter projection, same-client basket scope, void/refund/fallback terminal states, non-standard payout derivation, digest-excluding settlement-attestation hashes, freshness clocks, cost-engine reuse, shared atomic I/O, durable basket state config, monotonic submit-admission caps separate from releasable exposure reservations, dedicated Stuck kill-switch trigger, config shape, market-family binding shape, unsupported `TargetRuntimeFields`, RV validation ownership, and archetype runtime registration are represented as explicit plan requirements.
 - Placeholder scan: no deferred implementation placeholders are used as accepted behavior; each task names files, tests, and implementation scope.
 - Type consistency: the shared model names are stable across normalizers, scanner, admission, execution, and review prompt.

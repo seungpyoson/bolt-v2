@@ -51,7 +51,8 @@ use super::{
         NORMALIZED_SCHEMA_VERSION,
     },
     canonical_trades::{
-        CanonicalInstrumentIdentity, CsvTimestampUnit, DELTAS_TRANSFORM_IDENTITY, TradesPartition,
+        CanonicalInstrumentIdentity, CsvTimestampUnit, DELTAS_TRANSFORM_IDENTITY,
+        TAR_DELTAS_TRANSFORM_IDENTITY, TradesPartition,
     },
     source_proof::AcceptedDataset,
     tar_reader::TarMember,
@@ -336,9 +337,13 @@ pub fn normalize_tar_jsonl_snapshot_deltas(
     )
 }
 
-/// The container the photos were parsed from, used only to fail loud with the
-/// right empty-input message and to decide whether per-group photos need a
-/// stable event-time sort before expansion.
+/// The container the photos were parsed from. It selects three container-bound
+/// behaviours: the empty-input failure noun, whether per-group photos need a
+/// stable event-time sort before expansion, and — because the container is the
+/// only thing that distinguishes the two transforms — the transform identity
+/// stamped onto every produced row. The single-object and tar containers share
+/// the photo-expansion core but are distinct provenance transforms, so each owns
+/// its own identity here rather than letting a caller pass a mismatched one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SnapshotContainer {
     /// One decoded JSONL object: photos already arrive in a single time-ordered
@@ -356,6 +361,19 @@ impl SnapshotContainer {
         match self {
             Self::SingleObject => "snapshot object",
             Self::TarArchive => "snapshot tar archive",
+        }
+    }
+
+    /// Transform identity stamped on produced rows, distinct per container.
+    ///
+    /// The single-object JSONL container and the streaming gzip-tar container
+    /// share the photo-expansion core but are separate provenance transforms (the
+    /// container differs), so each stamps its own identity. The tar container must
+    /// not reuse the single-object JSONL identity.
+    const fn transform_identity(self) -> &'static str {
+        match self {
+            Self::SingleObject => DELTAS_TRANSFORM_IDENTITY,
+            Self::TarArchive => TAR_DELTAS_TRANSFORM_IDENTITY,
         }
     }
 }
@@ -549,7 +567,7 @@ fn expand_groups_into_tables(
     );
 
     let canonical_instrument_key_prefix = format!("{}/{}", accepted.venue, accepted.product_family);
-    let transform_hash = delta_transform_hash(DELTAS_TRANSFORM_IDENTITY);
+    let transform_hash = delta_transform_hash(container.transform_identity());
 
     let mut tables = Vec::with_capacity(accumulator.order.len());
     for instrument_key in &accumulator.order {
@@ -1347,6 +1365,46 @@ table_families = ["order_book_snapshot_deltas"]
         assert_eq!(tables[0].rows.len(), 6);
         assert_eq!(tables[0].rows[0].event_time, 1_700_000_000_000_000_000);
         assert_eq!(tables[0].rows[3].event_time, 1_700_000_060_000_000_000);
+        // The tar container stamps its OWN transform identity, not the
+        // single-object JSONL identity it shares the expansion core with.
+        assert_eq!(
+            tables[0].transform_hash,
+            delta_transform_hash(TAR_DELTAS_TRANSFORM_IDENTITY)
+        );
+        assert_ne!(
+            tables[0].transform_hash,
+            delta_transform_hash(DELTAS_TRANSFORM_IDENTITY),
+            "tar path must not reuse the single-object JSONL transform identity"
+        );
+        assert_eq!(
+            tables[0].rows[0].transform_hash,
+            delta_transform_hash(TAR_DELTAS_TRANSFORM_IDENTITY)
+        );
+    }
+
+    /// Pin the tar snapshot adapter's `transform_hash` to its exact SHA-256 hex.
+    ///
+    /// The tar container is a distinct provenance transform from the single-object
+    /// JSONL container even though they share the expansion core. Any change to
+    /// [`TAR_DELTAS_TRANSFORM_IDENTITY`] will break this test, which is
+    /// intentional: the identity is part of the provenance contract and must be
+    /// changed deliberately. The pinned hex must also differ from the JSONL
+    /// identity's pinned hex, proving the two transforms are not conflated.
+    #[test]
+    fn tar_snapshot_delta_transform_hash_is_stable() {
+        // SHA-256("tar-jsonl-snapshot-deltas-to-canonical-order-book-deltas.v1")
+        let expected = "ce47520b2c136a91e7edbe7bf733e3b0217330801580a9f9aaf4636ab419e2f7";
+        assert_eq!(
+            delta_transform_hash(TAR_DELTAS_TRANSFORM_IDENTITY),
+            expected,
+            "TAR_DELTAS_TRANSFORM_IDENTITY hash changed — update the expected \
+             value and bump the transform version if this is intentional"
+        );
+        assert_ne!(
+            delta_transform_hash(TAR_DELTAS_TRANSFORM_IDENTITY),
+            delta_transform_hash(DELTAS_TRANSFORM_IDENTITY),
+            "tar and single-object JSONL transforms must hash distinctly"
+        );
     }
 
     #[test]

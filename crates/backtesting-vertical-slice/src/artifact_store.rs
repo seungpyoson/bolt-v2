@@ -75,7 +75,7 @@ pub enum ArtifactLifecycleState {
     Inactive,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ArtifactKind {
     Raw,
@@ -800,9 +800,59 @@ pub struct ArtifactIndexCommitOutcome {
     pub audit_epoch: ArtifactIndexAuditEpoch,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactIndexWriteAuthority {
+    writer_id: String,
+    owned_kinds: BTreeSet<ArtifactKind>,
+}
+
+impl ArtifactIndexWriteAuthority {
+    /// # Errors
+    ///
+    /// Returns an error if the writer id is invalid or no artifact kinds are
+    /// owned by the writer.
+    pub fn new(
+        writer_id: impl Into<String>,
+        owned_kinds: impl IntoIterator<Item = ArtifactKind>,
+    ) -> Result<Self> {
+        let writer_id = writer_id.into();
+        validate_artifact_id(&writer_id)?;
+        let owned_kinds = owned_kinds.into_iter().collect::<BTreeSet<_>>();
+        ensure!(
+            !owned_kinds.is_empty(),
+            "artifact index writer authority must own at least one kind"
+        );
+        Ok(Self {
+            writer_id,
+            owned_kinds,
+        })
+    }
+
+    fn authorize_kind(&self, kind: ArtifactKind) -> Result<()> {
+        ensure!(
+            self.owned_kinds.contains(&kind),
+            "artifact index writer {:?} is not authorized to write {kind:?}",
+            self.writer_id
+        );
+        Ok(())
+    }
+
+    fn authorize_commit(&self, writer_id: &str, kind: ArtifactKind) -> Result<()> {
+        self.authorize_kind(kind)?;
+        ensure!(
+            writer_id == self.writer_id,
+            "commit writer_id {:?} does not match configured artifact index writer {:?}",
+            writer_id,
+            self.writer_id
+        );
+        Ok(())
+    }
+}
+
 pub struct ArtifactIndexWriter<'a> {
     store: &'a dyn ObjectStore,
     create_only: CreateOnlyArtifactWriter<'a>,
+    authority: Option<ArtifactIndexWriteAuthority>,
 }
 
 impl<'a> ArtifactIndexWriter<'a> {
@@ -811,6 +861,19 @@ impl<'a> ArtifactIndexWriter<'a> {
         Self {
             store,
             create_only: CreateOnlyArtifactWriter::new(store),
+            authority: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_authority(
+        store: &'a dyn ObjectStore,
+        authority: ArtifactIndexWriteAuthority,
+    ) -> Self {
+        Self {
+            store,
+            create_only: CreateOnlyArtifactWriter::new(store),
+            authority: Some(authority),
         }
     }
 
@@ -823,6 +886,7 @@ impl<'a> ArtifactIndexWriter<'a> {
         artifact_root: &ResolvedArtifactRoot,
         event: &ArtifactIndexEvent,
     ) -> Result<UpdateVersion> {
+        self.authorize_kind(event.artifact_kind)?;
         let uri = event.event_uri(artifact_root)?;
         let path = artifact_root.object_path_for_uri(&uri)?;
         let payload = serde_json::to_vec(event).context("serialize artifact index event")?;
@@ -838,6 +902,7 @@ impl<'a> ArtifactIndexWriter<'a> {
         artifact_root: &ResolvedArtifactRoot,
         snapshot: &ArtifactIndexSnapshot,
     ) -> Result<UpdateVersion> {
+        self.authorize_kind(snapshot.artifact_kind)?;
         let uri = snapshot.snapshot_uri(artifact_root)?;
         let path = artifact_root.object_path_for_uri(&uri)?;
         self.create_only
@@ -872,6 +937,7 @@ impl<'a> ArtifactIndexWriter<'a> {
         observed: Option<StoredArtifactIndexPointer>,
     ) -> Result<ArtifactIndexCommitOutcome> {
         plan.validate(artifact_root)?;
+        self.authorize_commit(&plan.writer_id, plan.event.artifact_kind)?;
         self.put_event(artifact_root, &plan.event).await?;
         let mut observed = observed;
         for (attempt, snapshot_id) in plan.snapshot_ids.iter().enumerate() {
@@ -950,6 +1016,7 @@ impl<'a> ArtifactIndexWriter<'a> {
         artifact_root: &ResolvedArtifactRoot,
         audit_epoch: &ArtifactIndexAuditEpoch,
     ) -> Result<String> {
+        self.authorize_kind(audit_epoch.artifact_kind)?;
         let uri = audit_epoch.audit_uri(artifact_root)?;
         let path = artifact_root.object_path_for_uri(&uri)?;
         self.create_only
@@ -967,6 +1034,7 @@ impl<'a> ArtifactIndexWriter<'a> {
         artifact_root: &ResolvedArtifactRoot,
         pointer: &ArtifactIndexPointer,
     ) -> Result<UpdateVersion> {
+        self.authorize_kind(pointer.artifact_kind)?;
         pointer.validate(artifact_root)?;
         let path = latest_pointer_path(artifact_root, pointer.artifact_kind)?;
         let result = self
@@ -987,6 +1055,7 @@ impl<'a> ArtifactIndexWriter<'a> {
         pointer: &ArtifactIndexPointer,
         expected: UpdateVersion,
     ) -> Result<UpdateVersion> {
+        self.authorize_kind(pointer.artifact_kind)?;
         pointer.validate(artifact_root)?;
         let path = latest_pointer_path(artifact_root, pointer.artifact_kind)?;
         let result = self
@@ -1087,6 +1156,20 @@ impl<'a> ArtifactIndexWriter<'a> {
         );
         snapshot.validate(artifact_root)?;
         Ok(snapshot)
+    }
+
+    fn authorize_kind(&self, kind: ArtifactKind) -> Result<()> {
+        if let Some(authority) = &self.authority {
+            authority.authorize_kind(kind)?;
+        }
+        Ok(())
+    }
+
+    fn authorize_commit(&self, writer_id: &str, kind: ArtifactKind) -> Result<()> {
+        if let Some(authority) = &self.authority {
+            authority.authorize_commit(writer_id, kind)?;
+        }
+        Ok(())
     }
 }
 

@@ -3,10 +3,10 @@ use object_store::{ObjectStoreExt, memory::InMemory};
 use backtesting_vertical_slice::{
     artifact_store::{
         ArtifactIndexCommitPlan, ArtifactIndexCommitState, ArtifactIndexEvent,
-        ArtifactIndexPointer, ArtifactIndexSnapshot, ArtifactIndexSnapshotRow, ArtifactIndexWriter,
-        ArtifactKind, ArtifactLifecycleState, ArtifactLineageRef, ArtifactStorageProfile,
-        ArtifactStoreConfig, CatalogDispatchConfig, CatalogProjectionBinding,
-        CreateOnlyArtifactWriter, StoredArtifactIndexPointer,
+        ArtifactIndexPointer, ArtifactIndexSnapshot, ArtifactIndexSnapshotRow,
+        ArtifactIndexWriteAuthority, ArtifactIndexWriter, ArtifactKind, ArtifactLifecycleState,
+        ArtifactLineageRef, ArtifactStorageProfile, ArtifactStoreConfig, CatalogDispatchConfig,
+        CatalogProjectionBinding, CreateOnlyArtifactWriter, StoredArtifactIndexPointer,
     },
     run_manifest::MarketStructureFixture,
 };
@@ -227,6 +227,20 @@ fn commit_plan(
     snapshot_ids: &[&str],
     audit_epoch_id: &str,
 ) -> ArtifactIndexCommitPlan {
+    commit_plan_with_writer(
+        event,
+        snapshot_ids,
+        audit_epoch_id,
+        "backtesting-engine-writer",
+    )
+}
+
+fn commit_plan_with_writer(
+    event: ArtifactIndexEvent,
+    snapshot_ids: &[&str],
+    audit_epoch_id: &str,
+    writer_id: &str,
+) -> ArtifactIndexCommitPlan {
     ArtifactIndexCommitPlan {
         event,
         snapshot_ids: snapshot_ids
@@ -234,7 +248,7 @@ fn commit_plan(
             .map(|snapshot_id| (*snapshot_id).to_string())
             .collect(),
         audit_epoch_ids: vec![audit_epoch_id.to_string()],
-        writer_id: "backtesting-engine-writer".to_string(),
+        writer_id: writer_id.to_string(),
     }
 }
 
@@ -491,4 +505,43 @@ async fn artifact_index_commit_appends_audit_epoch() {
         .await
         .expect_err("audit epoch create-only write rejects different payload");
     assert!(err.to_string().contains("different payload"), "{err}");
+}
+
+#[tokio::test]
+async fn artifact_index_writer_rejects_consumer_mutation_for_unowned_kind() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let authority = ArtifactIndexWriteAuthority::new(
+        "research-analytics-writer",
+        [ArtifactKind::ResearchAnalytics],
+    )
+    .expect("authority config is valid");
+    let writer = ArtifactIndexWriter::with_authority(&store, authority);
+    let event = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::BinaryOption, "run-030"),
+        "event-030",
+        "run-030",
+    );
+
+    let err = writer
+        .commit_event(
+            &root,
+            commit_plan_with_writer(
+                event,
+                &["snapshot-030"],
+                "2026-06-13T00:00:04Z",
+                "research-analytics-writer",
+            ),
+        )
+        .await
+        .expect_err("consumer writer must not mutate upstream backtest records");
+
+    assert!(err.to_string().contains("not authorized"), "{err}");
+    assert!(
+        writer
+            .read_latest_pointer(&root, ArtifactKind::Backtests)
+            .await
+            .expect("latest pointer read succeeds")
+            .is_none()
+    );
 }

@@ -222,6 +222,30 @@ fn backtest_event(root_uri: String, event_id: &str, artifact_id: &str) -> Artifa
     }
 }
 
+fn nt_catalog_event(
+    root_uri: String,
+    event_id: &str,
+    artifact_id: &str,
+    content_hash_char: char,
+) -> ArtifactIndexEvent {
+    ArtifactIndexEvent {
+        event_id: event_id.to_string(),
+        artifact_kind: ArtifactKind::NtCatalog,
+        artifact_id: artifact_id.to_string(),
+        artifact_uri: format!("{root_uri}catalog-manifest.json"),
+        manifest_uri: format!("{root_uri}manifest.json"),
+        producer_project: "backtesting-engine".to_string(),
+        content_sha256: sha256(content_hash_char),
+        parent_lineage: vec![ArtifactLineageRef {
+            artifact_kind: ArtifactKind::Raw,
+            artifact_id: "raw-001".to_string(),
+            version: Some("v1".to_string()),
+            sha256: sha256('d'),
+        }],
+        commit_state: ArtifactIndexCommitState::Staged,
+    }
+}
+
 fn commit_plan(
     event: ArtifactIndexEvent,
     snapshot_ids: &[&str],
@@ -569,6 +593,94 @@ async fn artifact_index_keeps_uncommitted_events_out_of_normal_discovery() {
         .map(|row| row.artifact_id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(artifact_ids, vec!["run-040"]);
+}
+
+#[tokio::test]
+async fn artifact_index_parent_lookup_requires_declared_lineage() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let writer = ArtifactIndexWriter::new(&store);
+    let catalog_root = |artifact_id: &str| {
+        format!(
+            "{}/artifact={artifact_id}/",
+            root.typed_root(ArtifactKind::NtCatalog)
+        )
+    };
+
+    let declared_parent = nt_catalog_event(
+        catalog_root("projection-001"),
+        "event-050",
+        "projection-001",
+        'b',
+    );
+    writer
+        .commit_event(
+            &root,
+            commit_plan(
+                declared_parent,
+                &["snapshot-catalog-050"],
+                "2026-06-13T00:00:06Z",
+            ),
+        )
+        .await
+        .expect("declared parent commits");
+
+    let child = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::BinaryOption, "run-050"),
+        "event-051",
+        "run-050",
+    );
+    writer
+        .commit_event(
+            &root,
+            commit_plan(child, &["snapshot-backtest-050"], "2026-06-13T00:00:07Z"),
+        )
+        .await
+        .expect("child commit succeeds");
+
+    let independent_latest = nt_catalog_event(
+        catalog_root("projection-002"),
+        "event-052",
+        "projection-002",
+        'c',
+    );
+    writer
+        .commit_event(
+            &root,
+            commit_plan(
+                independent_latest,
+                &["snapshot-catalog-052"],
+                "2026-06-13T00:00:08Z",
+            ),
+        )
+        .await
+        .expect("independent parent commits");
+
+    let resolved = writer
+        .read_declared_parent_row(
+            &root,
+            ArtifactKind::Backtests,
+            "run-050",
+            ArtifactKind::NtCatalog,
+            "projection-001",
+        )
+        .await
+        .expect("declared parent lookup succeeds")
+        .expect("declared parent exists");
+    assert_eq!(resolved.artifact_id, "projection-001");
+    assert_eq!(resolved.content_sha256, sha256('b'));
+
+    let err = writer
+        .read_declared_parent_row(
+            &root,
+            ArtifactKind::Backtests,
+            "run-050",
+            ArtifactKind::NtCatalog,
+            "projection-002",
+        )
+        .await
+        .expect_err("undeclared independent latest parent must be rejected");
+    assert!(err.to_string().contains("declared lineage"), "{err}");
 }
 
 #[tokio::test]

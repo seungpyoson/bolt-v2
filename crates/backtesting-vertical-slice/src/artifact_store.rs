@@ -1168,6 +1168,48 @@ impl<'a> ArtifactIndexWriter<'a> {
 
     /// # Errors
     ///
+    /// Returns an error if the child row exists but does not declare the parent,
+    /// or if the declared parent is missing or hash-mismatched.
+    pub async fn read_declared_parent_row(
+        &self,
+        artifact_root: &ResolvedArtifactRoot,
+        child_kind: ArtifactKind,
+        child_artifact_id: &str,
+        parent_kind: ArtifactKind,
+        parent_artifact_id: &str,
+    ) -> Result<Option<ArtifactIndexSnapshotRow>> {
+        let Some(child) = self
+            .read_committed_row(artifact_root, child_kind, child_artifact_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let declared_parent = child
+            .parent_lineage
+            .iter()
+            .find(|parent| {
+                parent.artifact_kind == parent_kind && parent.artifact_id == parent_artifact_id
+            })
+            .with_context(|| {
+                format!(
+                    "artifact {child_artifact_id:?} does not declare lineage to {parent_kind:?}/{parent_artifact_id:?}"
+                )
+            })?;
+        let parent = self
+            .read_committed_row(artifact_root, parent_kind, parent_artifact_id)
+            .await?
+            .with_context(|| {
+                format!("declared parent {parent_kind:?}/{parent_artifact_id:?} is not committed")
+            })?;
+        ensure!(
+            parent.content_sha256 == declared_parent.sha256,
+            "declared parent content hash mismatch for {parent_kind:?}/{parent_artifact_id:?}"
+        );
+        Ok(Some(parent))
+    }
+
+    /// # Errors
+    ///
     /// Returns an error if latest is missing, hash-invalid, or points outside
     /// the configured artifact root.
     pub async fn read_verified_latest_snapshot(

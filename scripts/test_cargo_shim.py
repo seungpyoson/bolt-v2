@@ -1044,3 +1044,10 @@ def test_installer_preserves_zshenv_after_malformed_legacy_block(tmp_path):
     assert "_rust_verification_env_unset_args() {" in text
     assert "export AFTER_MALFORMED_BLOCK=1" in text
     assert text.count("# BEGIN bolt cargo guard") == 1
+
+
+if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
+    raise SystemExit(pytest.main([__file__]))

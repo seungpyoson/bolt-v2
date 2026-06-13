@@ -50,13 +50,15 @@ use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
     CapitalPoolBlock, ClientBlock, DataClientReadinessProbeQuoteTargetSource,
     GATE_PROVIDER_CAPABILITIES, GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock,
-    KillSwitchConfigBlock, LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock,
-    RealizedVolatilityAggregationBlock, RealizedVolatilityJumpPolicyBlock,
-    RealizedVolatilityNoiseMethodBlock, RealizedVolatilityPricingComponentBlock,
-    RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceClassBlock, RiskBlock,
-    SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
+    KillSwitchCancelConfigBlock, KillSwitchConfigBlock, LoadedStrategy, NautilusBlock,
+    PRICE_GATE_VALUE_KIND, PersistenceBlock, RealizedVolatilityAggregationBlock,
+    RealizedVolatilityJumpPolicyBlock, RealizedVolatilityNoiseMethodBlock,
+    RealizedVolatilityPricingComponentBlock, RealizedVolatilitySampleKindBlock,
+    RealizedVolatilitySourceClassBlock, RiskBlock, SSM_CREDENTIAL_PARAMETER_FIELD,
+    TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
+use crate::bolt_v3_kill_switch_cancel::BoltV3KillSwitchOutstandingOrderRiskSurface;
 use crate::bolt_v3_loss_halt_actions::{
     LossGovernorMarketExitAction, LossGovernorTradingStateAction,
 };
@@ -1664,7 +1666,73 @@ fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
             ));
         }
     }
+    if let Some(cancel) = &block.cancel {
+        errors.extend(validate_kill_switch_cancel_block(cancel));
+    }
     errors
+}
+
+fn validate_kill_switch_cancel_block(block: &KillSwitchCancelConfigBlock) -> Vec<String> {
+    if !block.enabled {
+        return Vec::new();
+    }
+
+    let mut errors = Vec::new();
+    if block.retry_max_attempts == 0 {
+        errors.push("risk.kill_switch.cancel.retry_max_attempts must be positive".to_string());
+    }
+    if block.retry_timeout_ms == 0 {
+        errors.push("risk.kill_switch.cancel.retry_timeout_ms must be positive".to_string());
+    }
+    if block.retry_backoff_ms == 0 {
+        errors.push("risk.kill_switch.cancel.retry_backoff_ms must be positive".to_string());
+    }
+    if block.source_freshness_max_age_ms == 0 {
+        errors.push(
+            "risk.kill_switch.cancel.source_freshness_max_age_ms must be positive".to_string(),
+        );
+    }
+
+    let mut configured_surfaces = BTreeSet::new();
+    for surface in &block.mandatory_surfaces {
+        match parse_kill_switch_cancel_surface(surface.trim()) {
+            Some(surface) => {
+                configured_surfaces.insert(surface);
+            }
+            None => errors.push(format!(
+                "risk.kill_switch.cancel.mandatory_surfaces[`{surface}`] is not a supported outstanding order risk surface"
+            )),
+        }
+    }
+    let required_surfaces = BoltV3KillSwitchOutstandingOrderRiskSurface::mandatory_surfaces()
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if !required_surfaces.is_subset(&configured_surfaces) {
+        errors.push(
+            "risk.kill_switch.cancel.mandatory_surfaces must include every mandatory outstanding order risk surface"
+                .to_string(),
+        );
+    }
+
+    errors
+}
+
+fn parse_kill_switch_cancel_surface(
+    value: &str,
+) -> Option<BoltV3KillSwitchOutstandingOrderRiskSurface> {
+    match value {
+        "open" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Open),
+        "inflight" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Inflight),
+        "pending-cancel" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::PendingCancel),
+        "emulated" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Emulated),
+        "algorithm-managed" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::AlgorithmManaged),
+        "contingent" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Contingent),
+        "accepted-but-not-terminal" => {
+            Some(BoltV3KillSwitchOutstandingOrderRiskSurface::AcceptedButNotTerminal)
+        }
+        _ => None,
+    }
 }
 
 /// Seconds in one hour / one minute, named so the `HH:MM:SS` interval

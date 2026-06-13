@@ -273,6 +273,18 @@ pub struct KillSwitchConfigBlock {
     pub authorized_operator_ids: Vec<String>,
     pub account_ids: Vec<String>,
     pub instrument_ids: Vec<String>,
+    pub cancel: Option<KillSwitchCancelConfigBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KillSwitchCancelConfigBlock {
+    pub enabled: bool,
+    pub retry_max_attempts: u32,
+    pub retry_timeout_ms: u64,
+    pub retry_backoff_ms: u64,
+    pub source_freshness_max_age_ms: u64,
+    pub mandatory_surfaces: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

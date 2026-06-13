@@ -2880,6 +2880,10 @@ def wait_for_full_ci_run(
                 return verify_remote_fail(f"no matching full-CI workflow run appeared for {head} on {pr_url}")
             time.sleep(interval)
             continue
+        if workflow_run_state(run) != "pending":
+            head_result = verify_remote_head_current_or_fail(repo, branch, head)
+            if head_result is not None:
+                return head_result
         result = evaluate_full_ci_run(run, head=head, pr_url=pr_url)
         if result is not None:
             head_result = verify_remote_head_current_or_fail(repo, branch, head)

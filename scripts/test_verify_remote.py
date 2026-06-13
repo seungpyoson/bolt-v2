@@ -75,6 +75,19 @@ def write_policy(repo: pathlib.Path, *, checks_timeout: int = 300, overall_timeo
         ),
         encoding="utf-8",
     )
+    (repo / "ci" / "github-actions-runners.toml").write_text(
+        textwrap.dedent(
+            """\
+            [ci_provenance]
+            workflow_name = "CI"
+            workflow_path = ".github/workflows/ci.yml"
+
+            [ci_provenance.dispatch]
+            workflow_input = "full_ci"
+            """
+        ),
+        encoding="utf-8",
+    )
 
 
 def run_cmd_verify_remote(owner: object, repo: pathlib.Path) -> tuple[int, str]:
@@ -214,33 +227,59 @@ def assert_verify_remote_waits_then_passes() -> None:
         write_policy(repo)
         original_preconditions = owner.ensure_verify_remote_preconditions
         original_pr = owner.pr_for_current_branch
-        original_checks = owner.pr_checks
+        original_run_list = owner.workflow_run_list
         original_sleep = owner.time.sleep
         try:
             owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
             owner.pr_for_current_branch = lambda _repo, _branch: (
-                {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1},
+                {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False},
                 None,
             )
             calls = iter(
                 [
-                    ([{"name": "gate", "bucket": "pending", "link": "https://example.invalid/run"}], None),
-                    ([{"name": "gate", "bucket": "pass", "link": "https://example.invalid/run"}], None),
+                    (
+                        [
+                            {
+                                "databaseId": 101,
+                                "event": "pull_request",
+                                "headSha": "abc",
+                                "status": "in_progress",
+                                "conclusion": None,
+                                "createdAt": "2026-06-13T00:00:00Z",
+                                "url": "https://example.invalid/run",
+                            }
+                        ],
+                        None,
+                    ),
+                    (
+                        [
+                            {
+                                "databaseId": 101,
+                                "event": "pull_request",
+                                "headSha": "abc",
+                                "status": "completed",
+                                "conclusion": "success",
+                                "createdAt": "2026-06-13T00:00:00Z",
+                                "url": "https://example.invalid/run",
+                            }
+                        ],
+                        None,
+                    ),
                 ]
             )
-            owner.pr_checks = lambda _repo: next(calls)
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: next(calls)
             owner.time.sleep = lambda _seconds: None
             result, output = run_cmd_verify_remote(owner, repo)
         finally:
             owner.ensure_verify_remote_preconditions = original_preconditions
             owner.pr_for_current_branch = original_pr
-            owner.pr_checks = original_checks
+            owner.workflow_run_list = original_run_list
             owner.time.sleep = original_sleep
-    if result != 0 or "OK: remote checks passed" not in output:
+    if result != 0 or "OK: remote full CI passed" not in output:
         raise AssertionError((result, output))
 
 
-def assert_verify_remote_fetches_checks_before_watch_recheck() -> None:
+def assert_verify_remote_uses_latest_full_run_over_stale_deferred_run() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
         repo = pathlib.Path(tmp) / "repo"
@@ -248,37 +287,42 @@ def assert_verify_remote_fetches_checks_before_watch_recheck() -> None:
         write_policy(repo)
         original_preconditions = owner.ensure_verify_remote_preconditions
         original_pr = owner.pr_for_current_branch
-        original_checks = owner.pr_checks
-        original_sleep = owner.time.sleep
+        original_run_list = owner.workflow_run_list
         try:
             owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
-            pr_calls = 0
-            checks_fetched = False
-
-            def mock_pr(_repo: pathlib.Path, _branch: str) -> tuple[dict[str, object] | None, str | None]:
-                nonlocal pr_calls
-                pr_calls += 1
-                if pr_calls == 1:
-                    return {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None
-                if not checks_fetched:
-                    return None, "watch recheck happened before checks fetch"
-                return {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None
-
-            def mock_checks(_repo: pathlib.Path) -> tuple[list[dict[str, str]], None]:
-                nonlocal checks_fetched
-                checks_fetched = True
-                return [{"name": "gate", "bucket": "pass"}], None
-
-            owner.pr_for_current_branch = mock_pr
-            owner.pr_checks = mock_checks
-            owner.time.sleep = lambda _seconds: None
+            owner.pr_for_current_branch = lambda _repo, _branch: (
+                {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False},
+                None,
+            )
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: (
+                [
+                    {
+                        "databaseId": 201,
+                        "event": "pull_request",
+                        "headSha": "abc",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "createdAt": "2026-06-13T00:00:00Z",
+                        "url": "https://example.invalid/stale-deferred",
+                    },
+                    {
+                        "databaseId": 202,
+                        "event": "pull_request",
+                        "headSha": "abc",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "createdAt": "2026-06-13T00:01:00Z",
+                        "url": "https://example.invalid/full-ci",
+                    },
+                ],
+                None,
+            )
             result, output = run_cmd_verify_remote(owner, repo)
         finally:
             owner.ensure_verify_remote_preconditions = original_preconditions
             owner.pr_for_current_branch = original_pr
-            owner.pr_checks = original_checks
-            owner.time.sleep = original_sleep
-    if result != 0 or "OK: remote checks passed" not in output:
+            owner.workflow_run_list = original_run_list
+    if result != 0 or "full-ci" not in output:
         raise AssertionError((result, output))
 
 
@@ -290,30 +334,42 @@ def assert_verify_remote_rejects_branch_advance_during_watch() -> None:
         write_policy(repo)
         original_preconditions = owner.ensure_verify_remote_preconditions
         original_pr = owner.pr_for_current_branch
-        original_checks = owner.pr_checks
+        original_run_list = owner.workflow_run_list
         original_sleep = owner.time.sleep
         try:
             owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
             pr_calls = iter(
                 [
-                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
-                    ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
+                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False}, None),
+                    ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False}, None),
                 ]
             )
             owner.pr_for_current_branch = lambda _repo, _branch: next(pr_calls)
-            owner.pr_checks = lambda _repo: ([{"name": "gate", "bucket": "pass"}], None)
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: (
+                [
+                    {
+                        "databaseId": 301,
+                        "event": "pull_request",
+                        "headSha": "abc",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "createdAt": "2026-06-13T00:00:00Z",
+                    }
+                ],
+                None,
+            )
             owner.time.sleep = lambda _seconds: None
             result, output = run_cmd_verify_remote(owner, repo)
         finally:
             owner.ensure_verify_remote_preconditions = original_preconditions
             owner.pr_for_current_branch = original_pr
-            owner.pr_checks = original_checks
+            owner.workflow_run_list = original_run_list
             owner.time.sleep = original_sleep
     if result != 2 or "advanced during watch" not in output:
         raise AssertionError((result, output))
 
 
-def assert_verify_remote_reports_failing_checks() -> None:
+def assert_verify_remote_reports_failing_full_ci_run() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
         repo = pathlib.Path(tmp) / "repo"
@@ -321,16 +377,26 @@ def assert_verify_remote_reports_failing_checks() -> None:
         write_policy(repo)
         original_preconditions = owner.ensure_verify_remote_preconditions
         original_pr = owner.pr_for_current_branch
-        original_checks = owner.pr_checks
+        original_run_list = owner.workflow_run_list
         original_sleep = owner.time.sleep
         try:
             owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
             owner.pr_for_current_branch = lambda _repo, _branch: (
-                {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"},
+                {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False},
                 None,
             )
-            owner.pr_checks = lambda _repo: (
-                [{"name": "source-fence", "bucket": "fail", "link": "https://example.invalid/run"}],
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: (
+                [
+                    {
+                        "databaseId": 401,
+                        "event": "pull_request",
+                        "headSha": "abc",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "createdAt": "2026-06-13T00:00:00Z",
+                        "url": "https://example.invalid/run",
+                    }
+                ],
                 None,
             )
             owner.time.sleep = lambda _seconds: None
@@ -338,13 +404,13 @@ def assert_verify_remote_reports_failing_checks() -> None:
         finally:
             owner.ensure_verify_remote_preconditions = original_preconditions
             owner.pr_for_current_branch = original_pr
-            owner.pr_checks = original_checks
+            owner.workflow_run_list = original_run_list
             owner.time.sleep = original_sleep
-    if result != 1 or "Remote checks failed" not in output or "source-fence [fail]" not in output:
+    if result != 1 or "Remote full CI failed" not in output or "workflow run 401" not in output:
         raise AssertionError((result, output))
 
 
-def assert_verify_remote_rechecks_head_before_reporting_failed_checks() -> None:
+def assert_verify_remote_rechecks_head_before_reporting_failed_run() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
         repo = pathlib.Path(tmp) / "repo"
@@ -352,109 +418,30 @@ def assert_verify_remote_rechecks_head_before_reporting_failed_checks() -> None:
         write_policy(repo)
         original_preconditions = owner.ensure_verify_remote_preconditions
         original_pr = owner.pr_for_current_branch
-        original_checks = owner.pr_checks
+        original_run_list = owner.workflow_run_list
         original_sleep = owner.time.sleep
         try:
             owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
             pr_calls = iter(
                 [
-                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
-                    ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
+                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False}, None),
+                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False}, None),
+                    ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False}, None),
                 ]
             )
             owner.pr_for_current_branch = lambda _repo, _branch: next(pr_calls)
-            owner.pr_checks = lambda _repo: (
-                [{"name": "source-fence", "bucket": "fail", "link": "https://example.invalid/run"}],
-                None,
-            )
-            owner.time.sleep = lambda _seconds: None
-            result, output = run_cmd_verify_remote(owner, repo)
-        finally:
-            owner.ensure_verify_remote_preconditions = original_preconditions
-            owner.pr_for_current_branch = original_pr
-            owner.pr_checks = original_checks
-            owner.time.sleep = original_sleep
-    if result != 2 or "advanced during watch" not in output or "Remote checks failed" in output:
-        raise AssertionError((result, output))
-
-
-def assert_verify_remote_fails_unknown_check_bucket() -> None:
-    owner = load_owner_module()
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, checks_timeout=1, overall_timeout=3)
-        original_preconditions = owner.ensure_verify_remote_preconditions
-        original_pr = owner.pr_for_current_branch
-        original_checks = owner.pr_checks
-        original_sleep = owner.time.sleep
-        try:
-            owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
-            owner.pr_for_current_branch = lambda _repo, _branch: (
-                {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"},
-                None,
-            )
-            owner.pr_checks = lambda _repo: ([{"name": "future-check", "bucket": "mystery"}], None)
-            owner.time.sleep = lambda _seconds: None
-            result, output = run_cmd_verify_remote(owner, repo)
-        finally:
-            owner.ensure_verify_remote_preconditions = original_preconditions
-            owner.pr_for_current_branch = original_pr
-            owner.pr_checks = original_checks
-            owner.time.sleep = original_sleep
-    if result != 2 or "unknown PR check bucket" not in output or "future-check [mystery]" not in output:
-        raise AssertionError((result, output))
-
-
-def assert_verify_remote_rechecks_head_before_reporting_unknown_checks() -> None:
-    owner = load_owner_module()
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo, checks_timeout=1, overall_timeout=3)
-        original_preconditions = owner.ensure_verify_remote_preconditions
-        original_pr = owner.pr_for_current_branch
-        original_checks = owner.pr_checks
-        original_sleep = owner.time.sleep
-        try:
-            owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
-            pr_calls = iter(
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: (
                 [
-                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
-                    ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
-                ]
-            )
-            owner.pr_for_current_branch = lambda _repo, _branch: next(pr_calls)
-            owner.pr_checks = lambda _repo: ([{"name": "future-check", "bucket": "mystery"}], None)
-            owner.time.sleep = lambda _seconds: None
-            result, output = run_cmd_verify_remote(owner, repo)
-        finally:
-            owner.ensure_verify_remote_preconditions = original_preconditions
-            owner.pr_for_current_branch = original_pr
-            owner.pr_checks = original_checks
-            owner.time.sleep = original_sleep
-    if result != 2 or "advanced during watch" not in output or "unknown PR check bucket" in output:
-        raise AssertionError((result, output))
-
-
-def assert_verify_remote_allows_skipping_checks() -> None:
-    owner = load_owner_module()
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_policy(repo)
-        original_preconditions = owner.ensure_verify_remote_preconditions
-        original_pr = owner.pr_for_current_branch
-        original_checks = owner.pr_checks
-        original_sleep = owner.time.sleep
-        try:
-            owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
-            owner.pr_for_current_branch = lambda _repo, _branch: (
-                {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"},
-                None,
-            )
-            owner.pr_checks = lambda _repo: (
-                [{"name": "build", "bucket": "skipping"}, {"name": "gate", "bucket": "pass"}],
+                    {
+                        "databaseId": 501,
+                        "event": "pull_request",
+                        "headSha": "abc",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "createdAt": "2026-06-13T00:00:00Z",
+                        "url": "https://example.invalid/run",
+                    }
+                ],
                 None,
             )
             owner.time.sleep = lambda _seconds: None
@@ -462,13 +449,13 @@ def assert_verify_remote_allows_skipping_checks() -> None:
         finally:
             owner.ensure_verify_remote_preconditions = original_preconditions
             owner.pr_for_current_branch = original_pr
-            owner.pr_checks = original_checks
+            owner.workflow_run_list = original_run_list
             owner.time.sleep = original_sleep
-    if result != 0 or "OK: remote checks passed" not in output:
+    if result != 2 or "advanced during watch" not in output or "Remote full CI failed" in output:
         raise AssertionError((result, output))
 
 
-def assert_verify_remote_no_checks_times_out() -> None:
+def assert_verify_remote_run_list_api_error_fails_closed() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
         repo = pathlib.Path(tmp) / "repo"
@@ -476,16 +463,44 @@ def assert_verify_remote_no_checks_times_out() -> None:
         write_policy(repo, checks_timeout=1, overall_timeout=3)
         original_preconditions = owner.ensure_verify_remote_preconditions
         original_pr = owner.pr_for_current_branch
-        original_checks = owner.pr_checks
+        original_run_list = owner.workflow_run_list
+        original_sleep = owner.time.sleep
+        try:
+            owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
+            owner.pr_for_current_branch = lambda _repo, _branch: (
+                {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False},
+                None,
+            )
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: (None, "API rate limit exceeded")
+            owner.time.sleep = lambda _seconds: None
+            result, output = run_cmd_verify_remote(owner, repo)
+        finally:
+            owner.ensure_verify_remote_preconditions = original_preconditions
+            owner.pr_for_current_branch = original_pr
+            owner.workflow_run_list = original_run_list
+            owner.time.sleep = original_sleep
+    if result != 2 or "API rate limit exceeded" not in output:
+        raise AssertionError((result, output))
+
+
+def assert_verify_remote_no_matching_run_times_out() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo, checks_timeout=1, overall_timeout=3)
+        original_preconditions = owner.ensure_verify_remote_preconditions
+        original_pr = owner.pr_for_current_branch
+        original_run_list = owner.workflow_run_list
         original_sleep = owner.time.sleep
         original_monotonic = owner.time.monotonic
         try:
             owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
             owner.pr_for_current_branch = lambda _repo, _branch: (
-                {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1},
+                {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False},
                 None,
             )
-            owner.pr_checks = lambda _repo: ([], None)
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: ([], None)
             owner.time.sleep = lambda _seconds: None
             current_time = 0.0
 
@@ -499,14 +514,14 @@ def assert_verify_remote_no_checks_times_out() -> None:
         finally:
             owner.ensure_verify_remote_preconditions = original_preconditions
             owner.pr_for_current_branch = original_pr
-            owner.pr_checks = original_checks
+            owner.workflow_run_list = original_run_list
             owner.time.sleep = original_sleep
             owner.time.monotonic = original_monotonic
-    if result != 2 or "no PR checks appeared" not in output:
+    if result != 2 or "no matching full-CI workflow run appeared" not in output:
         raise AssertionError((result, output))
 
 
-def assert_verify_remote_rechecks_head_before_no_checks_timeout() -> None:
+def assert_verify_remote_rechecks_head_before_no_matching_run_timeout() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
         repo = pathlib.Path(tmp) / "repo"
@@ -514,19 +529,19 @@ def assert_verify_remote_rechecks_head_before_no_checks_timeout() -> None:
         write_policy(repo, checks_timeout=1, overall_timeout=5)
         original_preconditions = owner.ensure_verify_remote_preconditions
         original_pr = owner.pr_for_current_branch
-        original_checks = owner.pr_checks
+        original_run_list = owner.workflow_run_list
         original_sleep = owner.time.sleep
         original_monotonic = owner.time.monotonic
         try:
             owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
             pr_calls = iter(
                 [
-                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
-                    ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
+                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False}, None),
+                    ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False}, None),
                 ]
             )
             owner.pr_for_current_branch = lambda _repo, _branch: next(pr_calls)
-            owner.pr_checks = lambda _repo: ([], None)
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: ([], None)
             owner.time.sleep = lambda _seconds: None
             current_time = 0.0
 
@@ -540,10 +555,10 @@ def assert_verify_remote_rechecks_head_before_no_checks_timeout() -> None:
         finally:
             owner.ensure_verify_remote_preconditions = original_preconditions
             owner.pr_for_current_branch = original_pr
-            owner.pr_checks = original_checks
+            owner.workflow_run_list = original_run_list
             owner.time.sleep = original_sleep
             owner.time.monotonic = original_monotonic
-    if result != 2 or "advanced during watch" not in output or "no PR checks appeared" in output:
+    if result != 2 or "advanced during watch" not in output or "no matching full-CI workflow run appeared" in output:
         raise AssertionError((result, output))
 
 
@@ -555,20 +570,32 @@ def assert_verify_remote_rechecks_head_before_overall_timeout() -> None:
         write_policy(repo, checks_timeout=1, overall_timeout=2)
         original_preconditions = owner.ensure_verify_remote_preconditions
         original_pr = owner.pr_for_current_branch
-        original_checks = owner.pr_checks
+        original_run_list = owner.workflow_run_list
         original_sleep = owner.time.sleep
         original_monotonic = owner.time.monotonic
         try:
             owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
             pr_calls = iter(
                 [
-                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
-                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
-                    ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
+                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False}, None),
+                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False}, None),
+                    ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False}, None),
                 ]
             )
             owner.pr_for_current_branch = lambda _repo, _branch: next(pr_calls)
-            owner.pr_checks = lambda _repo: ([{"name": "gate", "bucket": "pending"}], None)
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: (
+                [
+                    {
+                        "databaseId": 601,
+                        "event": "pull_request",
+                        "headSha": "abc",
+                        "status": "in_progress",
+                        "conclusion": None,
+                        "createdAt": "2026-06-13T00:00:00Z",
+                    }
+                ],
+                None,
+            )
             owner.time.sleep = lambda _seconds: None
             current_time = 0.0
 
@@ -582,7 +609,7 @@ def assert_verify_remote_rechecks_head_before_overall_timeout() -> None:
         finally:
             owner.ensure_verify_remote_preconditions = original_preconditions
             owner.pr_for_current_branch = original_pr
-            owner.pr_checks = original_checks
+            owner.workflow_run_list = original_run_list
             owner.time.sleep = original_sleep
             owner.time.monotonic = original_monotonic
     if result != 2 or "advanced during watch" not in output or "timed out waiting" in output:
@@ -595,15 +622,13 @@ def main() -> int:
     assert_pr_lookup_preserves_gh_errors()
     assert_pr_checks_allows_pending_exit_code_with_json()
     assert_verify_remote_waits_then_passes()
-    assert_verify_remote_fetches_checks_before_watch_recheck()
+    assert_verify_remote_uses_latest_full_run_over_stale_deferred_run()
     assert_verify_remote_rejects_branch_advance_during_watch()
-    assert_verify_remote_reports_failing_checks()
-    assert_verify_remote_rechecks_head_before_reporting_failed_checks()
-    assert_verify_remote_fails_unknown_check_bucket()
-    assert_verify_remote_rechecks_head_before_reporting_unknown_checks()
-    assert_verify_remote_allows_skipping_checks()
-    assert_verify_remote_no_checks_times_out()
-    assert_verify_remote_rechecks_head_before_no_checks_timeout()
+    assert_verify_remote_reports_failing_full_ci_run()
+    assert_verify_remote_rechecks_head_before_reporting_failed_run()
+    assert_verify_remote_run_list_api_error_fails_closed()
+    assert_verify_remote_no_matching_run_times_out()
+    assert_verify_remote_rechecks_head_before_no_matching_run_timeout()
     assert_verify_remote_rechecks_head_before_overall_timeout()
     print("OK: remote verification watcher self-tests passed.")
     return 0

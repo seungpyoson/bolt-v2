@@ -690,6 +690,13 @@ impl OwnedBatchPlan {
 /// resume.
 fn carried_output_still_verifies(prior: &SourceUniverseBatchExecutionRecord) -> bool {
     let catalog_root = prior.output_dir.join(CATALOG_DIR);
+    // A missing prior output is "not verified" (re-execute), not a panic: NT's
+    // catalog open expects an existing path and panics otherwise, so guard the
+    // deleted/missing case here before re-hashing. A present-but-corrupt catalog
+    // still surfaces as Err below.
+    if !catalog_root.is_dir() {
+        return false;
+    }
     match logical_catalog_hash(&catalog_root) {
         Ok(actual_catalog_hash) => actual_catalog_hash == prior.catalog_hash,
         Err(_) => false,

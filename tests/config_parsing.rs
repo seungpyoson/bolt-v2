@@ -4662,8 +4662,7 @@ fn shipped_binary_oracle_configs_carry_sizing_ev_reference_for_deploy() {
     for relative_path in SHIPPED_BINARY_ORACLE_STRATEGY_FILES {
         let source =
             std::fs::read_to_string(support::repo_path(relative_path)).expect("source should read");
-        let document = source
-            .parse::<toml::Value>()
+        let document = toml::from_str::<toml::Value>(&source)
             .unwrap_or_else(|error| panic!("{relative_path} should parse: {error}"));
         let runtime = document
             .get("parameters")

@@ -4594,9 +4594,25 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         }
     }
 
+    fn insert_configured_data_client(loaded: &mut LoadedBoltV3Config) {
+        loaded.root.clients.insert(
+            "configured-client".to_string(),
+            toml::from_str(
+                r#"
+venue = "OKX"
+
+[data]
+configured_data_param = "configured-value"
+"#,
+            )
+            .expect("configured data client should parse"),
+        );
+    }
+
     fn fixture_loaded_config_with_external_option_greeks_iv() -> LoadedBoltV3Config {
         let mut loaded = fixture_loaded_config();
         loaded.root.clients.clear();
+        insert_configured_data_client(&mut loaded);
         loaded.root.nautilus.data_engine.external_clients =
             vec![ClientId::from("configured-client")];
         loaded.root.iv = Some(
@@ -4671,6 +4687,7 @@ configured_source_param = "configured-value"
     fn live_node_startup_applies_iv_subscription_plans_to_runtime_source_health() {
         let mut loaded = fixture_loaded_config();
         loaded.root.clients.clear();
+        insert_configured_data_client(&mut loaded);
         loaded.root.nautilus.data_engine.external_clients =
             vec![ClientId::from("configured-client")];
         loaded.root.iv = Some(
@@ -5352,6 +5369,7 @@ configured_source_param = "configured-value"
     fn live_node_startup_binds_aggregate_greeks_sources_through_nt_custom_data() {
         let mut loaded = fixture_loaded_config();
         loaded.root.clients.clear();
+        insert_configured_data_client(&mut loaded);
         loaded.root.nautilus.data_engine.external_clients =
             vec![ClientId::from("configured-client")];
         loaded.root.iv = Some(

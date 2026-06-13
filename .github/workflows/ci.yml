@@ -132,6 +132,8 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "push" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
           elif [[ "${{ steps.build_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
           else

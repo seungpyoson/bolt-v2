@@ -222,9 +222,30 @@ jobs:
 
   detector:
     name: detector
+    outputs:
+      build_required: ${{ steps.build_required.outputs.value }}
     runs-on: ubuntu-latest
     steps:
-      - run: echo detector
+      # detector probe insertion point
+      - name: Detect build-affecting changes
+        id: build_inputs_changed
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: echo "any_changed=false" >> "$GITHUB_OUTPUT"
+
+      - name: Determine build requirement
+        id: build_required
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ steps.build_inputs_changed.outputs.any_changed }}" == "true" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
 
   fmt-check:
     name: fmt-check
@@ -1124,6 +1145,18 @@ def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
         errors = verifier.verify_workflow(mutated_workflow)
         if not any(fragment in error for error in errors):
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    forced_branch = """          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+"""
+    mutated = workflow.replace(forced_branch, "", 1)
+    errors = verifier.verify_workflow(mutated)
+    if not any("detector must force build_required=true for workflow_dispatch full CI" in error for error in errors):
+        raise AssertionError(f"expected workflow_dispatch detector guard error, got: {errors}")
 
 
 def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
@@ -2028,7 +2061,7 @@ def assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action() -> N
 def workflow_with_detector_probe(script: str) -> str:
     return replace_once(
         BASE_WORKFLOW,
-        "      - run: echo detector",
+        "      # detector probe insertion point",
         "      - name: V6 raw Rust storage policy probe\n        run: |\n"
         + textwrap.indent(script.strip(), "          "),
     )
@@ -6245,6 +6278,7 @@ def main() -> int:
     assert_rust_verification_policy_parse_errors_are_domain_specific()
     assert_ci_policy_matrix()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
+    assert_ci_detector_forces_build_on_workflow_dispatch()
     assert_ci_policy_heavy_lane_gaps_are_reported()
     assert_gate_policy_truth_table_gaps_are_reported()
     assert_ci_concurrency_split_gaps_are_reported()

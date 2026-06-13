@@ -228,6 +228,7 @@ def assert_verify_remote_waits_then_passes() -> None:
         original_preconditions = owner.ensure_verify_remote_preconditions
         original_pr = owner.pr_for_current_branch
         original_run_list = owner.workflow_run_list
+        original_run_view = owner.workflow_run_view
         original_sleep = owner.time.sleep
         try:
             owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
@@ -268,12 +269,25 @@ def assert_verify_remote_waits_then_passes() -> None:
                 ]
             )
             owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: next(calls)
+            owner.workflow_run_view = lambda _repo, _run_id: (
+                {
+                    "databaseId": 101,
+                    "event": "pull_request",
+                    "headSha": "abc",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "createdAt": "2026-06-13T00:00:00Z",
+                    "url": "https://example.invalid/run",
+                },
+                None,
+            )
             owner.time.sleep = lambda _seconds: None
             result, output = run_cmd_verify_remote(owner, repo)
         finally:
             owner.ensure_verify_remote_preconditions = original_preconditions
             owner.pr_for_current_branch = original_pr
             owner.workflow_run_list = original_run_list
+            owner.workflow_run_view = original_run_view
             owner.time.sleep = original_sleep
     if result != 0 or "OK: remote full CI passed" not in output:
         raise AssertionError((result, output))
@@ -385,20 +399,48 @@ def assert_verify_remote_reports_failing_full_ci_run() -> None:
                 {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False},
                 None,
             )
-            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: (
+            calls = iter(
                 [
-                    {
-                        "databaseId": 401,
-                        "event": "pull_request",
-                        "headSha": "abc",
-                        "status": "completed",
-                        "conclusion": "failure",
-                        "createdAt": "2026-06-13T00:00:00Z",
-                        "url": "https://example.invalid/run",
-                    }
-                ],
-                None,
+                    (
+                        [
+                            {
+                                "databaseId": 400,
+                                "event": "pull_request",
+                                "headSha": "abc",
+                                "status": "completed",
+                                "conclusion": "failure",
+                                "createdAt": "2026-06-13T00:00:00Z",
+                                "url": "https://example.invalid/stale-deferred",
+                            }
+                        ],
+                        None,
+                    ),
+                    (
+                        [
+                            {
+                                "databaseId": 400,
+                                "event": "pull_request",
+                                "headSha": "abc",
+                                "status": "completed",
+                                "conclusion": "failure",
+                                "createdAt": "2026-06-13T00:00:00Z",
+                                "url": "https://example.invalid/stale-deferred",
+                            },
+                            {
+                                "databaseId": 401,
+                                "event": "pull_request",
+                                "headSha": "abc",
+                                "status": "completed",
+                                "conclusion": "failure",
+                                "createdAt": "2026-06-13T00:01:00Z",
+                                "url": "https://example.invalid/run",
+                            },
+                        ],
+                        None,
+                    ),
+                ]
             )
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: next(calls)
             owner.time.sleep = lambda _seconds: None
             result, output = run_cmd_verify_remote(owner, repo)
         finally:
@@ -430,20 +472,48 @@ def assert_verify_remote_rechecks_head_before_reporting_failed_run() -> None:
                 ]
             )
             owner.pr_for_current_branch = lambda _repo, _branch: next(pr_calls)
-            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: (
+            calls = iter(
                 [
-                    {
-                        "databaseId": 501,
-                        "event": "pull_request",
-                        "headSha": "abc",
-                        "status": "completed",
-                        "conclusion": "failure",
-                        "createdAt": "2026-06-13T00:00:00Z",
-                        "url": "https://example.invalid/run",
-                    }
-                ],
-                None,
+                    (
+                        [
+                            {
+                                "databaseId": 500,
+                                "event": "pull_request",
+                                "headSha": "abc",
+                                "status": "completed",
+                                "conclusion": "failure",
+                                "createdAt": "2026-06-13T00:00:00Z",
+                                "url": "https://example.invalid/stale-deferred",
+                            }
+                        ],
+                        None,
+                    ),
+                    (
+                        [
+                            {
+                                "databaseId": 500,
+                                "event": "pull_request",
+                                "headSha": "abc",
+                                "status": "completed",
+                                "conclusion": "failure",
+                                "createdAt": "2026-06-13T00:00:00Z",
+                                "url": "https://example.invalid/stale-deferred",
+                            },
+                            {
+                                "databaseId": 501,
+                                "event": "pull_request",
+                                "headSha": "abc",
+                                "status": "completed",
+                                "conclusion": "failure",
+                                "createdAt": "2026-06-13T00:01:00Z",
+                                "url": "https://example.invalid/run",
+                            },
+                        ],
+                        None,
+                    ),
+                ]
             )
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: next(calls)
             owner.time.sleep = lambda _seconds: None
             result, output = run_cmd_verify_remote(owner, repo)
         finally:
@@ -571,6 +641,7 @@ def assert_verify_remote_rechecks_head_before_overall_timeout() -> None:
         original_preconditions = owner.ensure_verify_remote_preconditions
         original_pr = owner.pr_for_current_branch
         original_run_list = owner.workflow_run_list
+        original_run_view = owner.workflow_run_view
         original_sleep = owner.time.sleep
         original_monotonic = owner.time.monotonic
         try:
@@ -596,6 +667,17 @@ def assert_verify_remote_rechecks_head_before_overall_timeout() -> None:
                 ],
                 None,
             )
+            owner.workflow_run_view = lambda _repo, _run_id: (
+                {
+                    "databaseId": 601,
+                    "event": "pull_request",
+                    "headSha": "abc",
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "createdAt": "2026-06-13T00:00:00Z",
+                },
+                None,
+            )
             owner.time.sleep = lambda _seconds: None
             current_time = 0.0
 
@@ -610,6 +692,7 @@ def assert_verify_remote_rechecks_head_before_overall_timeout() -> None:
             owner.ensure_verify_remote_preconditions = original_preconditions
             owner.pr_for_current_branch = original_pr
             owner.workflow_run_list = original_run_list
+            owner.workflow_run_view = original_run_view
             owner.time.sleep = original_sleep
             owner.time.monotonic = original_monotonic
     if result != 2 or "advanced during watch" not in output or "timed out waiting" in output:

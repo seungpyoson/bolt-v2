@@ -5913,6 +5913,16 @@ def deploy_logs_reused_evidence(job_lines: list[str]) -> bool:
     return all(item in text for item in required)
 
 
+def detector_forces_build_on_workflow_dispatch(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    branch = branch_body(
+        text,
+        "elif",
+        '"${{ github.event_name }}" == "workflow_dispatch"',
+    )
+    return branch is not None and 'echo "value=true" >> "$GITHUB_OUTPUT"' in branch
+
+
 def deploy_verifies_downloaded_artifact_checksum(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "cd artifact" in text and "sha256sum -c bolt-v2.sha256" in text
@@ -6183,6 +6193,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if "fmt-check" in jobs and "detector" in extract_needs(jobs["fmt-check"]):
         errors.append("fmt-check must not need detector")
+    if "detector" in jobs and not detector_forces_build_on_workflow_dispatch(jobs["detector"]):
+        errors.append("detector must force build_required=true for workflow_dispatch full CI")
 
     if "ci-policy" in jobs:
         errors.extend(ci_policy_job_errors(jobs["ci-policy"]))

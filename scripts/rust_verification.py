@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import datetime
 import fcntl
 import json
 import os
@@ -2759,11 +2758,15 @@ def matching_full_ci_runs(
     head: str,
     events: set[str],
     created_at_floor: str | None = None,
+    ignored_run_ids: set[int] | None = None,
 ) -> list[dict[str, Any]]:
     matching = []
     for run in runs:
         event = run.get("event")
         if run.get("headSha") != head or event not in events:
+            continue
+        run_id = run_database_id(run)
+        if ignored_run_ids is not None and run_id in ignored_run_ids:
             continue
         if created_at_floor is not None and run_created_at(run) < created_at_floor:
             continue
@@ -2789,8 +2792,8 @@ def workflow_run_summary(run: dict[str, Any]) -> str:
     return f"workflow run {run_id} [{status}/{conclusion}]" + (f" {url}" if url else "")
 
 
-def utc_now_for_github() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+def run_ids(runs: list[dict[str, Any]]) -> set[int]:
+    return {run_id for run in runs if (run_id := run_database_id(run)) is not None}
 
 
 def dispatch_full_ci(
@@ -2845,12 +2848,17 @@ def wait_for_full_ci_run(
     remote_policy: dict[str, int],
     events: set[str],
     created_at_floor: str | None = None,
+    ignored_run_ids: set[int] | None = None,
+    initial_tracked_run_id: int | None = None,
+    sleep_before_initial_tracked_poll: bool = False,
     track_run_once_found: bool = False,
 ) -> int:
     appear_deadline = time.monotonic() + remote_policy["checks_appear_timeout_seconds"]
     overall_deadline = time.monotonic() + remote_policy["overall_timeout_seconds"]
     interval = remote_policy["poll_interval_seconds"]
-    tracked_run_id: int | None = None
+    tracked_run_id: int | None = initial_tracked_run_id
+    if tracked_run_id is not None and sleep_before_initial_tracked_poll:
+        time.sleep(interval)
     while True:
         now = time.monotonic()
         if now >= overall_deadline:
@@ -2870,7 +2878,13 @@ def wait_for_full_ci_run(
             runs, error = workflow_run_list(repo, dispatch_config, branch)
             if error is not None or runs is None:
                 return verify_remote_fail(error or "unable to inspect workflow runs")
-            matching = matching_full_ci_runs(runs, head=head, events=events, created_at_floor=created_at_floor)
+            matching = matching_full_ci_runs(
+                runs,
+                head=head,
+                events=events,
+                created_at_floor=created_at_floor,
+                ignored_run_ids=ignored_run_ids,
+            )
             if matching:
                 run = matching[0]
                 if track_run_once_found:
@@ -2942,9 +2956,10 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
                     pr_url=str(pr_url),
                     remote_policy=remote_policy,
                     events=FULL_CI_DRAFT_EVENTS,
+                    initial_tracked_run_id=run_id,
+                    sleep_before_initial_tracked_poll=True,
                     track_run_once_found=True,
                 )
-        dispatch_requested_at = utc_now_for_github()
         _unused, error = dispatch_full_ci(repo, dispatch_config, branch)
         if error is not None:
             return verify_remote_fail(error)
@@ -2957,9 +2972,38 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
             pr_url=str(pr_url),
             remote_policy=remote_policy,
             events=FULL_CI_DRAFT_EVENTS,
-            created_at_floor=dispatch_requested_at,
+            ignored_run_ids=run_ids(existing),
             track_run_once_found=True,
         )
+
+    runs, error = workflow_run_list(repo, dispatch_config, branch)
+    if error is not None or runs is None:
+        return verify_remote_fail(error or "unable to inspect workflow runs")
+    existing = matching_full_ci_runs(runs, head=head, events=FULL_CI_READY_EVENTS)
+    if existing:
+        run = existing[0]
+        state = workflow_run_state(run)
+        if state == "pass":
+            result = evaluate_full_ci_run(run, head=head, pr_url=str(pr_url))
+            head_result = verify_remote_head_current_or_fail(repo, branch, head)
+            if head_result is not None:
+                return head_result
+            return result
+        if state == "pending":
+            run_id = run_database_id(run)
+            if run_id is not None:
+                return wait_for_full_ci_run(
+                    repo=repo,
+                    dispatch_config=dispatch_config,
+                    branch=branch,
+                    head=head,
+                    pr_url=str(pr_url),
+                    remote_policy=remote_policy,
+                    events=FULL_CI_READY_EVENTS,
+                    initial_tracked_run_id=run_id,
+                    sleep_before_initial_tracked_poll=True,
+                    track_run_once_found=True,
+                )
 
     return wait_for_full_ci_run(
         repo=repo,
@@ -2969,6 +3013,8 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
         pr_url=str(pr_url),
         remote_policy=remote_policy,
         events=FULL_CI_READY_EVENTS,
+        ignored_run_ids=run_ids(existing),
+        track_run_once_found=True,
     )
 
 

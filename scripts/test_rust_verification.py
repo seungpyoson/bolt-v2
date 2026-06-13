@@ -357,7 +357,6 @@ class VerifyRemoteHarness:
             "run_capture": self.owner.run_capture,
             "monotonic": self.owner.time.monotonic,
             "sleep": self.owner.time.sleep,
-            "utc_now_for_github": self.owner.utc_now_for_github,
         }
         self.owner.load_policy = self.fake_load_policy
         self.owner.ensure_verify_remote_preconditions = self.fake_preconditions
@@ -366,7 +365,6 @@ class VerifyRemoteHarness:
         self.owner.run_capture = self.fake_run_capture
         self.owner.time.monotonic = self.fake_monotonic
         self.owner.time.sleep = self.fake_sleep
-        self.owner.utc_now_for_github = lambda: "2026-06-13T00:00:00Z"
         return self
 
     def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
@@ -501,6 +499,29 @@ def assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped() -> None
             raise AssertionError("draft dispatch wait must not use aggregate gh pr checks")
 
 
+def assert_verify_remote_dispatch_wait_does_not_depend_on_local_clock() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=True),
+            run_lists=[
+                [],
+                [workflow_run(204, status="in_progress", conclusion=None, created_at="2026-06-13T00:00:01Z")],
+                [workflow_run(204, status="completed", conclusion="success", created_at="2026-06-13T00:00:01Z")],
+            ],
+        ) as harness:
+            result, stdout, stderr = run_verify_remote_with_harness(harness)
+        if result != 0:
+            raise AssertionError((result, stdout, stderr))
+        if len(harness.dispatches) != 1:
+            raise AssertionError(harness.dispatches)
+
+
 def assert_verify_remote_reuses_existing_matching_full_ci_run() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -578,6 +599,46 @@ def assert_verify_remote_waits_on_pending_full_run_over_stale_deferred_gate() ->
             raise AssertionError((result, stdout, stderr))
         if harness.sleep_calls < 1:
             raise AssertionError("expected verify-remote to wait on the pending full-CI run")
+
+
+def assert_verify_remote_ready_pr_waits_for_full_run_after_stale_deferred_gate() -> None:
+    owner = load_owner_module()
+    stale_deferred = workflow_run(
+        303,
+        event="pull_request",
+        status="completed",
+        conclusion="failure",
+        created_at="2026-06-13T00:00:00Z",
+    )
+    pending_full = workflow_run(
+        304,
+        event="pull_request",
+        status="in_progress",
+        conclusion=None,
+        created_at="2026-06-13T00:02:00Z",
+    )
+    green_full = workflow_run(
+        304,
+        event="pull_request",
+        status="completed",
+        conclusion="success",
+        created_at="2026-06-13T00:02:00Z",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=False),
+            run_lists=[[stale_deferred], [stale_deferred, pending_full], [stale_deferred, green_full]],
+        ) as harness:
+            result, stdout, stderr = run_verify_remote_with_harness(harness)
+        if result != 0:
+            raise AssertionError((result, stdout, stderr))
+        if harness.sleep_calls < 1:
+            raise AssertionError("expected verify-remote to wait past stale deferred gate for ready full-CI run")
 
 
 def assert_verify_remote_uses_green_full_run_over_stale_deferred_gate() -> None:
@@ -705,9 +766,11 @@ def main() -> int:
     assert_system_python_contract()
     assert_oversized_policy_fails_closed()
     assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped()
+    assert_verify_remote_dispatch_wait_does_not_depend_on_local_clock()
     assert_verify_remote_reuses_existing_matching_full_ci_run()
     assert_verify_remote_fails_when_branch_advances_after_dispatch()
     assert_verify_remote_waits_on_pending_full_run_over_stale_deferred_gate()
+    assert_verify_remote_ready_pr_waits_for_full_run_after_stale_deferred_gate()
     assert_verify_remote_uses_green_full_run_over_stale_deferred_gate()
     assert_verify_remote_fork_draft_fails_closed()
     assert_verify_remote_api_error_fails_closed()

@@ -876,8 +876,14 @@ fn validate_strategy_source(
                 .parameters
                 .get(STRATEGY_PARAM_TRADE_SIZE)
                 .expect("presence checked above");
-            Quantity::from_str(trade_size)
+            let parsed_trade_size = Quantity::from_str(trade_size)
                 .map_err(|_| ManifestError::MissingField("strategy.parameters.trade_size"))?;
+            if !parsed_trade_size.is_positive() {
+                return Err(ManifestError::UnsupportedEnum {
+                    field: "strategy.parameters.trade_size",
+                    value: trade_size.to_string(),
+                });
+            }
             let entry_after_trades = strategy
                 .parameters
                 .get(STRATEGY_PARAM_ENTRY_AFTER_TRADES)
@@ -892,7 +898,7 @@ fn validate_strategy_source(
                     value: entry_after_trades.to_string(),
                 });
             }
-            strategy
+            let exit_after_trades = strategy
                 .parameters
                 .get(STRATEGY_PARAM_EXIT_AFTER_TRADES)
                 .expect("presence checked above")
@@ -900,6 +906,12 @@ fn validate_strategy_source(
                 .map_err(|_| {
                     ManifestError::MissingField("strategy.parameters.exit_after_trades")
                 })?;
+            if exit_after_trades == 0 {
+                return Err(ManifestError::UnsupportedEnum {
+                    field: "strategy.parameters.exit_after_trades",
+                    value: exit_after_trades.to_string(),
+                });
+            }
             let side = strategy
                 .parameters
                 .get(STRATEGY_PARAM_SIDE)
@@ -3830,6 +3842,38 @@ mod tests {
             manifest.validate(&accepted_dataset()).unwrap_err(),
             ManifestError::UnsupportedEnum {
                 field: "strategy.parameters.entry_after_trades",
+                value: "0".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn mechanical_trade_replay_probe_rejects_zero_exit_after_trades() {
+        let mut manifest = probe_manifest();
+        manifest.strategy.parameters.insert(
+            STRATEGY_PARAM_EXIT_AFTER_TRADES.to_string(),
+            "0".to_string(),
+        );
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "strategy.parameters.exit_after_trades",
+                value: "0".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn mechanical_trade_replay_probe_rejects_zero_trade_size() {
+        let mut manifest = probe_manifest();
+        manifest
+            .strategy
+            .parameters
+            .insert(STRATEGY_PARAM_TRADE_SIZE.to_string(), "0".to_string());
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "strategy.parameters.trade_size",
                 value: "0".to_string(),
             }
         );

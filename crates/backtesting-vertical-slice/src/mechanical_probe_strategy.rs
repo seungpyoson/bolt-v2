@@ -152,6 +152,66 @@ impl MechanicalTradeReplayProbe {
 
 nautilus_strategy!(MechanicalTradeReplayProbe);
 
+#[cfg(test)]
+mod tests {
+    use nautilus_model::instruments::Instrument as _;
+
+    use crate::catalog_projection::{SpotInstrumentSpec, build_currency_pair};
+
+    /// Baseline spec with size_increment "0.0001" (precision 4).
+    fn probe_instrument_spec() -> SpotInstrumentSpec {
+        SpotInstrumentSpec {
+            nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
+            raw_symbol: "BNBUSDC".to_string(),
+            base_currency: "BNB".to_string(),
+            quote_currency: "USDC".to_string(),
+            price_increment: "0.1".to_string(),
+            size_increment: "0.0001".to_string(),
+            min_quantity: "0.0001".to_string(),
+            max_quantity: "1400".to_string(),
+            min_notional: "5".to_string(),
+            max_notional: "200000".to_string(),
+        }
+    }
+
+    /// Verifies that `try_make_qty` succeeds for a trade_size whose precision is
+    /// compatible with the instrument (the guard passes, no panic).
+    #[test]
+    fn try_make_qty_succeeds_for_compatible_size() {
+        let instrument = build_currency_pair(&probe_instrument_spec())
+            .expect("build_currency_pair must not fail for valid spec");
+        // trade_size "0.01" has precision 2; instrument precision 4 — fine.
+        let result = instrument.try_make_qty(0.01_f64, None);
+        assert!(
+            result.is_ok(),
+            "expected Ok for compatible trade_size, got: {result:?}"
+        );
+        assert!(result.unwrap().is_positive());
+    }
+
+    /// Verifies that `try_make_qty` returns an error when a sub-increment
+    /// trade_size rounds to zero against the instrument's precision.
+    /// This is the exact guard the `on_start` fix relies on: `try_make_qty(...)?`
+    /// converts NT's bail into a clean anyhow::Error instead of an unwrap panic.
+    #[test]
+    fn try_make_qty_errors_for_sub_increment_size() {
+        let instrument = build_currency_pair(&probe_instrument_spec())
+            .expect("build_currency_pair must not fail for valid spec");
+        // trade_size 1e-5 < size_increment 0.0001 (precision 4) — rounds to zero.
+        let result = instrument.try_make_qty(1e-5_f64, None);
+        assert!(
+            result.is_err(),
+            "expected Err for sub-increment trade_size, got Ok({:?})",
+            result.ok()
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("rounded to zero"),
+            "expected 'rounded to zero' in error, got: {msg}"
+        );
+    }
+}
+
 impl Debug for MechanicalTradeReplayProbe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(stringify!(MechanicalTradeReplayProbe))
@@ -188,7 +248,18 @@ impl DataActor for MechanicalTradeReplayProbe {
                     self.instrument_id
                 )
             })?;
-            instrument.make_qty(self.trade_size.as_f64(), None)
+            instrument
+                .try_make_qty(self.trade_size.as_f64(), None)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "trade_size {} quantizes to zero against instrument {} \
+                         (size_increment precision {}): {}",
+                        self.trade_size,
+                        self.instrument_id,
+                        instrument.size_precision(),
+                        e,
+                    )
+                })?
         };
         self.trade_size = trade_size;
 

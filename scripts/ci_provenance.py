@@ -7,11 +7,17 @@ import argparse
 import dataclasses
 import datetime
 import hashlib
+import io
 import json
+import os
 import pathlib
 import re
 import sys
 import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -75,6 +81,13 @@ class ProvenanceConfig:
     policy: dict[str, str]
     force_full_ci: bool
     ignore_emit_failure: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class ResolvedEvidence:
+    run: dict[str, object]
+    artifact: dict[str, object]
+    record: dict[str, object]
 
 
 def require_table(parent: dict[str, object], key: str, prefix: str) -> dict[str, object]:
@@ -320,6 +333,87 @@ def load_json(path: pathlib.Path) -> dict[str, object]:
     return data
 
 
+def parse_timestamp(value: str) -> datetime.datetime:
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ProvenanceError(f"invalid timestamp {value!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def github_api_json(
+    repo: str,
+    token: str,
+    path: str,
+    query: dict[str, str] | None = None,
+) -> dict[str, object]:
+    url = f"https://api.github.com/repos/{repo}/{path}"
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
+        raise ProvenanceError(f"GitHub API request failed for {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ProvenanceError(f"GitHub API payload for {path} is malformed")
+    return payload
+
+
+def github_api_bytes(repo: str, token: str, url: str) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read()
+    except (urllib.error.URLError, urllib.error.HTTPError) as exc:
+        raise ProvenanceError(f"GitHub API download failed for {url}: {exc}") from exc
+
+
+def artifact_record_from_zip(payload: bytes) -> dict[str, object]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            names = [name for name in archive.namelist() if name == "ci-provenance.json"]
+            if len(names) != 1:
+                raise ProvenanceError("provenance artifact must contain exactly one ci-provenance.json")
+            record = json.loads(archive.read(names[0]).decode("utf-8"))
+    except zipfile.BadZipFile as exc:
+        raise ProvenanceError("provenance artifact archive is malformed") from exc
+    except json.JSONDecodeError as exc:
+        raise ProvenanceError("ci-provenance.json is invalid JSON") from exc
+    if not isinstance(record, dict):
+        raise ProvenanceError("ci-provenance.json must contain a JSON object")
+    return record
+
+
+def as_text(value: object) -> str:
+    return "" if value is None else str(value)
+
+
+def positive_int_value(value: object, field: str) -> int:
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str) and value.isdecimal() and int(value) > 0:
+        return int(value)
+    raise ProvenanceError(f"{field} must be a positive integer")
+
+
 def sha256_file(path: pathlib.Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -419,6 +513,7 @@ def validate_record_schema(
     config: ProvenanceConfig,
     *,
     config_path: pathlib.Path = DEFAULT_CONFIG,
+    expected_workflow_digest: str | None = None,
 ) -> None:
     if record.get("schema_version") != config.schema_version:
         raise ProvenanceError(f"unknown provenance schema {record.get('schema_version')!r}")
@@ -428,7 +523,9 @@ def validate_record_schema(
     if require_record_string(record, "workflow_path") != config.workflow_path:
         raise ProvenanceError("record workflow_path does not match config")
     workflow_digest = require_record_digest(record, "workflow_digest")
-    if workflow_digest != workflow_file_digest(config):
+    if expected_workflow_digest is None:
+        expected_workflow_digest = workflow_file_digest(config)
+    if workflow_digest != expected_workflow_digest:
         raise ProvenanceError("record workflow_digest does not match workflow bytes")
     config_digest = require_record_digest(record, "provenance_config_digest")
     if config_digest != provenance_config_digest(config_path):
@@ -461,8 +558,14 @@ def validate_exact_sha_record(
     *,
     requested_sha: str,
     config_path: pathlib.Path = DEFAULT_CONFIG,
+    expected_workflow_digest: str | None = None,
 ) -> None:
-    validate_record_schema(record, config, config_path=config_path)
+    validate_record_schema(
+        record,
+        config,
+        config_path=config_path,
+        expected_workflow_digest=expected_workflow_digest,
+    )
     if SHA_RE.fullmatch(requested_sha) is None:
         raise ProvenanceError("requested_sha must be a 40-character lowercase hex SHA")
     if record.get("event") == "pull_request":
@@ -473,6 +576,204 @@ def validate_exact_sha_record(
         raise ProvenanceError(f"record head_branch must be {config.deploy_source_branch}")
     if record.get("head_sha") != requested_sha or record.get("tested_sha") != requested_sha:
         raise ProvenanceError("record head_sha and tested_sha must match requested exact SHA")
+
+
+def provenance_artifact_name(config: ProvenanceConfig, run_attempt: int) -> str:
+    try:
+        return config.artifact_name_template.format(run_attempt=run_attempt)
+    except KeyError as exc:
+        raise ProvenanceError("ci_provenance.artifact_name_template has unsupported placeholders") from exc
+
+
+def run_matches_exact_sha(
+    run: dict[str, object],
+    config: ProvenanceConfig,
+    requested_sha: str,
+    current_run_id: int | str | None,
+) -> bool:
+    if current_run_id is not None and as_text(run.get("id")) == as_text(current_run_id):
+        return False
+    return (
+        as_text(run.get("name")) == config.workflow_name
+        and as_text(run.get("path")) == config.workflow_path
+        and as_text(run.get("event")) == config.deploy_source_event
+        and as_text(run.get("head_branch")) == config.deploy_source_branch
+        and as_text(run.get("head_sha")) == requested_sha
+        and as_text(run.get("status")) == "completed"
+        and as_text(run.get("conclusion")) == "success"
+    )
+
+
+def workflow_digest_from_github(
+    repo: str,
+    token: str,
+    config: ProvenanceConfig,
+    tested_sha: str,
+    api_bytes,
+) -> str:
+    url = f"https://raw.githubusercontent.com/{repo}/{tested_sha}/{config.workflow_path}"
+    return hashlib.sha256(api_bytes(repo, token, url)).hexdigest()
+
+
+def validate_artifact_metadata(
+    artifact: dict[str, object],
+    run: dict[str, object],
+    config: ProvenanceConfig,
+    requested_sha: str,
+) -> None:
+    run_id = as_text(run.get("id"))
+    if artifact.get("expired") is not False:
+        raise ProvenanceError(f"source run {run_id} provenance artifact expired or has unknown expiry state")
+    workflow_run = artifact.get("workflow_run")
+    if not isinstance(workflow_run, dict):
+        raise ProvenanceError(f"source run {run_id} artifact workflow_run payload is malformed")
+    if as_text(workflow_run.get("id")) != run_id:
+        raise ProvenanceError(f"artifact run ID does not match source run {run_id}")
+    if as_text(workflow_run.get("head_branch")) != config.deploy_source_branch:
+        raise ProvenanceError(
+            f"artifact branch is {as_text(workflow_run.get('head_branch'))}, expected {config.deploy_source_branch}"
+        )
+    if as_text(workflow_run.get("head_sha")) != requested_sha:
+        raise ProvenanceError(
+            f"artifact SHA {as_text(workflow_run.get('head_sha'))} does not match expected {requested_sha}"
+        )
+
+
+def validate_record_matches_run(record: dict[str, object], run: dict[str, object]) -> None:
+    checks = (
+        ("run_id", "id"),
+        ("run_attempt", "run_attempt"),
+        ("check_suite_id", "check_suite_id"),
+        ("event", "event"),
+        ("head_branch", "head_branch"),
+        ("head_sha", "head_sha"),
+    )
+    for record_key, run_key in checks:
+        if as_text(record.get(record_key)) != as_text(run.get(run_key)):
+            raise ProvenanceError(f"record {record_key} does not match source run {run_key}")
+
+
+def resolve_exact_sha_evidence(
+    *,
+    repo: str,
+    token: str,
+    requested_sha: str,
+    config: ProvenanceConfig,
+    config_path: pathlib.Path = DEFAULT_CONFIG,
+    current_run_id: int | str | None = None,
+    api_json=github_api_json,
+    api_bytes=github_api_bytes,
+    now: datetime.datetime | None = None,
+) -> ResolvedEvidence:
+    if SHA_RE.fullmatch(requested_sha) is None:
+        raise ProvenanceError("requested_sha must be a 40-character lowercase hex SHA")
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(seconds=config.max_lookback_age_seconds)
+    candidates: list[dict[str, object]] = []
+    last_page_len = 0
+
+    for page in range(1, config.max_lookback_pages + 1):
+        runs_payload = api_json(
+            repo,
+            token,
+            "actions/runs",
+            {
+                "event": config.deploy_source_event,
+                "branch": config.deploy_source_branch,
+                "head_sha": requested_sha,
+                "per_page": str(config.workflow_runs_per_page),
+                "page": str(page),
+            },
+        )
+        runs = runs_payload.get("workflow_runs")
+        if not isinstance(runs, list):
+            raise ProvenanceError("workflow runs payload is malformed")
+        last_page_len = len(runs)
+        if not runs:
+            break
+        for run in runs:
+            if not isinstance(run, dict):
+                raise ProvenanceError("workflow runs payload is malformed")
+            created_at = run.get("created_at")
+            if isinstance(created_at, str) and parse_timestamp(created_at) < cutoff:
+                if not candidates:
+                    raise ProvenanceError("lookback age limit exhausted before candidate evidence was found")
+                break
+            if run_matches_exact_sha(run, config, requested_sha, current_run_id):
+                candidates.append(run)
+        if candidates or len(runs) < config.workflow_runs_per_page:
+            break
+
+    if not candidates:
+        if last_page_len >= config.workflow_runs_per_page:
+            raise ProvenanceError("lookback page limit exhausted before candidate evidence was found")
+        raise ProvenanceError(f"no candidate provenance evidence found for exact SHA {requested_sha}")
+
+    candidates.sort(
+        key=lambda run: (
+            positive_int_value(run.get("run_attempt"), "workflow run run_attempt"),
+            as_text(run.get("updated_at")),
+            positive_int_value(run.get("id"), "workflow run id"),
+        ),
+        reverse=True,
+    )
+
+    artifact_by_attempt: dict[int, dict[str, object]] = {}
+    run_by_attempt: dict[int, dict[str, object]] = {}
+    for run in candidates:
+        run_id = positive_int_value(run.get("id"), "workflow run id")
+        run_attempt = positive_int_value(run.get("run_attempt"), "workflow run run_attempt")
+        artifacts_payload = api_json(
+            repo,
+            token,
+            f"actions/runs/{run_id}/artifacts",
+            {"per_page": str(config.run_artifacts_per_page)},
+        )
+        artifacts = artifacts_payload.get("artifacts")
+        if not isinstance(artifacts, list):
+            raise ProvenanceError(f"source run {run_id} artifacts payload is malformed")
+        expected_name = provenance_artifact_name(config, run_attempt)
+        matches = [
+            artifact
+            for artifact in artifacts
+            if isinstance(artifact, dict) and as_text(artifact.get("name")) == expected_name
+        ]
+        if len(matches) > 1:
+            raise ProvenanceError(f"source run {run_id} has ambiguous provenance artifacts for attempt {run_attempt}")
+        if not matches:
+            continue
+        if run_attempt in artifact_by_attempt:
+            raise ProvenanceError(f"multiple provenance artifacts for attempt {run_attempt}")
+        artifact_by_attempt[run_attempt] = matches[0]
+        run_by_attempt[run_attempt] = run
+
+    if not artifact_by_attempt:
+        raise ProvenanceError(f"no candidate provenance artifact found for exact SHA {requested_sha}")
+
+    for run_attempt in sorted(artifact_by_attempt, reverse=True):
+        artifact = artifact_by_attempt[run_attempt]
+        run = run_by_attempt[run_attempt]
+        validate_artifact_metadata(artifact, run, config, requested_sha)
+        archive_url = require_record_string(artifact, "archive_download_url")
+        record = artifact_record_from_zip(api_bytes(repo, token, archive_url))
+        if positive_int_value(record.get("run_attempt"), "record run_attempt") != run_attempt:
+            raise ProvenanceError("record run_attempt does not match source run attempt")
+        tested_sha = require_record_sha(record, "tested_sha")
+        expected_workflow_digest = workflow_digest_from_github(
+            repo, token, config, tested_sha, api_bytes
+        )
+        validate_exact_sha_record(
+            record,
+            config,
+            requested_sha=requested_sha,
+            config_path=config_path,
+            expected_workflow_digest=expected_workflow_digest,
+        )
+        validate_record_matches_run(record, run)
+        return ResolvedEvidence(run=run, artifact=artifact, record=record)
+
+    raise ProvenanceError(f"no valid provenance evidence found for exact SHA {requested_sha}")
 
 
 def emit_full_ci(config: ProvenanceConfig) -> dict[str, object]:
@@ -487,8 +788,11 @@ def emit_full_ci(config: ProvenanceConfig) -> dict[str, object]:
     }
 
 
-def resolve_exact_sha(_config: ProvenanceConfig) -> None:
-    raise ProvenanceError("no exact-SHA provenance evidence found")
+def require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise ProvenanceError(f"missing required environment variable {name}")
+    return value
 
 
 def parser_for_mode(mode: str) -> argparse.ArgumentParser:
@@ -496,6 +800,11 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
     parser.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
     if mode == "validate-record":
         parser.add_argument("--record", type=pathlib.Path, required=True)
+    if mode == "resolve-exact-sha":
+        parser.add_argument("--repo")
+        parser.add_argument("--token")
+        parser.add_argument("--sha")
+        parser.add_argument("--current-run-id")
     return parser
 
 
@@ -523,7 +832,15 @@ def main(argv: list[str] | None = None) -> int:
             validate_record_schema(load_json(args.record), config, config_path=args.config)
             print("record valid")
         elif mode == "resolve-exact-sha":
-            resolve_exact_sha(config)
+            evidence = resolve_exact_sha_evidence(
+                repo=args.repo or require_env("GITHUB_REPOSITORY"),
+                token=args.token or require_env("GITHUB_TOKEN"),
+                requested_sha=args.sha or require_env("GITHUB_SHA"),
+                config=config,
+                config_path=args.config,
+                current_run_id=args.current_run_id or os.environ.get("GITHUB_RUN_ID"),
+            )
+            print(json.dumps(evidence.record, sort_keys=True))
         return 0
     except ProvenanceError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

@@ -11,11 +11,14 @@ import json
 import pathlib
 import sys
 import tempfile
+import zipfile
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "ci_provenance.py"
 SHA = "a1a6be0d94e887538ebcd9afced6c94046a557d6"
+RUN_ID = 24623219988
+CHECK_SUITE_ID = 65233803543
 
 CONFIG_TOML = """
 schema_version = 1
@@ -272,6 +275,16 @@ def assert_fails(fragment: str, args: list[str]) -> None:
         raise AssertionError(f"expected {fragment!r} in output, got {combined!r}")
 
 
+def assert_raises(fragment: str, func) -> None:
+    try:
+        func()
+    except Exception as exc:  # noqa: BLE001 - script exposes domain errors.
+        if fragment not in str(exc):
+            raise AssertionError(f"expected {fragment!r}, got {exc}") from exc
+        return
+    raise AssertionError(f"expected {fragment!r}")
+
+
 def workflow_digest() -> str:
     return hashlib.sha256((REPO_ROOT / ".github" / "workflows" / "ci.yml").read_bytes()).hexdigest()
 
@@ -286,9 +299,9 @@ def valid_record(module, config_path: pathlib.Path) -> dict[str, object]:
         "provenance_config_digest": module.provenance_config_digest(config_path),
         "head_sha": SHA,
         "tested_sha": SHA,
-        "run_id": 24623219988,
+        "run_id": RUN_ID,
         "run_attempt": 1,
-        "check_suite_id": 65233803543,
+        "check_suite_id": CHECK_SUITE_ID,
         "event": "push",
         "head_branch": "main",
         "pull_request": {"number": None, "base_sha": None},
@@ -307,6 +320,91 @@ def valid_record(module, config_path: pathlib.Path) -> dict[str, object]:
         "nextest_fingerprint": None,
         "created_at": "2026-06-13T00:00:00Z",
     }
+
+
+def run_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": RUN_ID,
+        "name": "CI",
+        "path": ".github/workflows/ci.yml",
+        "event": "push",
+        "head_branch": "main",
+        "head_sha": SHA,
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "check_suite_id": CHECK_SUITE_ID,
+        "created_at": "2026-06-13T00:00:00Z",
+        "updated_at": "2026-06-13T00:10:00Z",
+        "html_url": "https://github.com/seungpyoson/bolt-v2/actions/runs/24623219988",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def provenance_artifact(**overrides: object) -> dict[str, object]:
+    artifact_id = overrides.get("id", 123)
+    run_id = overrides.get("run_id", RUN_ID)
+    run_attempt = overrides.get("run_attempt", 1)
+    payload: dict[str, object] = {
+        "id": artifact_id,
+        "name": f"ci-provenance-attempt-{run_attempt}",
+        "expired": False,
+        "archive_download_url": f"artifact://{artifact_id}",
+        "workflow_run": {
+            "id": run_id,
+            "head_branch": "main",
+            "head_sha": SHA,
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def artifact_zip(record: dict[str, object]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("ci-provenance.json", json.dumps(record))
+    return buffer.getvalue()
+
+
+class FakeGitHub:
+    def __init__(
+        self,
+        *,
+        runs_pages: list[list[dict[str, object]]] | object,
+        artifacts_by_run_id: dict[int, dict[str, object]] | None = None,
+        records_by_artifact_id: dict[int, dict[str, object]] | None = None,
+    ) -> None:
+        self.runs_pages = runs_pages
+        self.artifacts_by_run_id = artifacts_by_run_id or {}
+        self.records_by_artifact_id = records_by_artifact_id or {}
+
+    def json(
+        self,
+        repo: str,
+        token: str,
+        path: str,
+        query: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        if path == "actions/runs":
+            if not isinstance(self.runs_pages, list):
+                return {"workflow_runs": self.runs_pages}
+            page = int((query or {}).get("page", "1"))
+            runs = self.runs_pages[page - 1] if page <= len(self.runs_pages) else []
+            return {"workflow_runs": runs}
+        if path.startswith("actions/runs/") and path.endswith("/artifacts"):
+            run_id = int(path.split("/")[2])
+            return self.artifacts_by_run_id.get(run_id, {"artifacts": []})
+        raise AssertionError(f"unexpected JSON request {path} {query}")
+
+    def bytes(self, repo: str, token: str, url: str) -> bytes:
+        if url.startswith("artifact://"):
+            artifact_id = int(url.removeprefix("artifact://"))
+            return artifact_zip(self.records_by_artifact_id[artifact_id])
+        if url.startswith("https://raw.githubusercontent.com/"):
+            return (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_bytes()
+        raise AssertionError(f"unexpected bytes request {url}")
 
 
 def assert_unknown_mode_fails() -> None:
@@ -421,6 +519,140 @@ def assert_digest_mismatches_fail() -> None:
                 raise AssertionError(f"{key} mismatch must fail")
 
 
+def resolve_with_fake(
+    module,
+    config_path: pathlib.Path,
+    fake: FakeGitHub,
+    *,
+    now: str = "2026-06-13T00:30:00Z",
+):
+    return module.resolve_exact_sha_evidence(
+        repo="seungpyoson/bolt-v2",
+        token="token",
+        requested_sha=SHA,
+        config=module.load_config(config_path),
+        config_path=config_path,
+        api_json=fake.json,
+        api_bytes=fake.bytes,
+        now=module.parse_timestamp(now),
+    )
+
+
+def assert_no_candidate_evidence_fails() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        fake = FakeGitHub(runs_pages=[[]])
+        assert_raises("no candidate provenance evidence", lambda: resolve_with_fake(module, config, fake))
+
+
+def assert_lookback_exhaustion_fails() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace("workflow_runs_per_page = 100", "workflow_runs_per_page = 1").replace(
+                "max_lookback_pages = 10", "max_lookback_pages = 2"
+            ),
+        )
+        fake = FakeGitHub(
+            runs_pages=[
+                [run_payload(id=1, conclusion="failure")],
+                [run_payload(id=2, conclusion="failure")],
+            ]
+        )
+        assert_raises("lookback page limit exhausted", lambda: resolve_with_fake(module, config, fake))
+
+
+def assert_lookback_age_exhaustion_fails() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace("max_lookback_age_seconds = 2592000", "max_lookback_age_seconds = 1"),
+        )
+        fake = FakeGitHub(runs_pages=[[run_payload(created_at="2020-01-01T00:00:00Z")]])
+        assert_raises("lookback age limit exhausted", lambda: resolve_with_fake(module, config, fake))
+
+
+def assert_artifact_rejections() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = valid_record(module, config)
+        run = run_payload()
+        ambiguous = FakeGitHub(
+            runs_pages=[[run]],
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact(id=1), provenance_artifact(id=2)]}},
+            records_by_artifact_id={1: record, 2: record},
+        )
+        assert_raises("ambiguous provenance artifacts", lambda: resolve_with_fake(module, config, ambiguous))
+
+        expired = FakeGitHub(
+            runs_pages=[[run]],
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact(expired=True)]}},
+            records_by_artifact_id={123: record},
+        )
+        assert_raises("expired", lambda: resolve_with_fake(module, config, expired))
+
+        multi_same_attempt = FakeGitHub(
+            runs_pages=[[run, run_payload(id=RUN_ID + 1)]],
+            artifacts_by_run_id={
+                RUN_ID: {"artifacts": [provenance_artifact(id=1)]},
+                RUN_ID + 1: {"artifacts": [provenance_artifact(id=2, run_id=RUN_ID + 1)]},
+            },
+            records_by_artifact_id={1: record, 2: {**record, "run_id": RUN_ID + 1}},
+        )
+        assert_raises(
+            "multiple provenance artifacts for attempt 1",
+            lambda: resolve_with_fake(module, config, multi_same_attempt),
+        )
+
+
+def assert_latest_successful_attempt_selected() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        first = valid_record(module, config)
+        second = {**first, "run_id": RUN_ID + 1, "run_attempt": 2}
+        fake = FakeGitHub(
+            runs_pages=[[run_payload(), run_payload(id=RUN_ID + 1, run_attempt=2)]],
+            artifacts_by_run_id={
+                RUN_ID: {"artifacts": [provenance_artifact(id=1)]},
+                RUN_ID + 1: {"artifacts": [provenance_artifact(id=2, run_id=RUN_ID + 1, run_attempt=2)]},
+            },
+            records_by_artifact_id={1: first, 2: second},
+        )
+        evidence = resolve_with_fake(module, config, fake)
+        if evidence.record["run_attempt"] != 2:
+            raise AssertionError(evidence)
+
+
+def assert_record_attempt_mismatch_rejected() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = valid_record(module, config)
+        record["run_attempt"] = 2
+        fake = FakeGitHub(
+            runs_pages=[[run_payload(run_attempt=1)]],
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact(id=1, run_attempt=1)]}},
+            records_by_artifact_id={1: record},
+        )
+        assert_raises("record run_attempt", lambda: resolve_with_fake(module, config, fake))
+
+
+def assert_malformed_api_payload_rejected() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        fake = FakeGitHub(runs_pages={"not": "a-list"})
+        assert_raises("workflow runs payload is malformed", lambda: resolve_with_fake(module, config, fake))
+
+
 def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
@@ -431,6 +663,13 @@ def main() -> int:
     assert_record_schema_requires_head_and_tested_sha()
     assert_pr_event_record_cannot_validate_for_pr_head_reuse()
     assert_digest_mismatches_fail()
+    assert_no_candidate_evidence_fails()
+    assert_lookback_exhaustion_fails()
+    assert_lookback_age_exhaustion_fails()
+    assert_artifact_rejections()
+    assert_latest_successful_attempt_selected()
+    assert_record_attempt_mismatch_rejected()
+    assert_malformed_api_payload_rejected()
     print("OK: CI provenance self-tests passed.")
     return 0
 

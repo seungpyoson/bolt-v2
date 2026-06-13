@@ -14,6 +14,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::source_proof::{
     FixtureType, SourceCandidateClass, SourceProofFidelityClass, SourceProofReport,
     SourceProofStatus, SourceSelectionStatus,
@@ -329,7 +330,7 @@ pub fn write_source_proof_shortlist_report(
             });
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| SourceProofShortlistError::Write {
+        atomic_write(&path, &bytes).map_err(|error| SourceProofShortlistError::Write {
             path: path.display().to_string(),
             error: error.to_string(),
         })?;

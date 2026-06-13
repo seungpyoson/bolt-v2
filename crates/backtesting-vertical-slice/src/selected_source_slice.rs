@@ -20,6 +20,7 @@ use arrow::{
 use parquet::arrow::{ArrowWriter, ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuilder};
 use serde::{Deserialize, Serialize};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::first_proof_selector::{
     FirstProofSelectorReport, FirstProofSelectorStatus, SelectedFirstProofAsset,
 };
@@ -431,5 +432,5 @@ fn write_idempotent_artifact_bytes(path: &Path, bytes: &[u8], label: &str) -> Re
         );
         return Ok(());
     }
-    fs::write(path, bytes).with_context(|| format!("write {label} {}", path.display()))
+    atomic_write(path, bytes).with_context(|| format!("write {label} {}", path.display()))
 }

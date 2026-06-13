@@ -9,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use anyhow::{Context, Result, ensure};
@@ -208,12 +209,12 @@ pub fn write_source_universe_conversion_queue(
                 "dirty source-universe conversion queue {}: existing file content differs",
                 path.display()
             );
-            fs::write(&path, &bytes).with_context(|| {
+            atomic_write(&path, &bytes).with_context(|| {
                 format!("write source-universe conversion queue {}", path.display())
             })?;
         }
     } else {
-        fs::write(&path, &bytes).with_context(|| {
+        atomic_write(&path, &bytes).with_context(|| {
             format!("write source-universe conversion queue {}", path.display())
         })?;
     }

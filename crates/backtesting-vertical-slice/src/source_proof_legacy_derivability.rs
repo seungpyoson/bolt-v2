@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::source_proof::EvidenceState;
 
 pub const SOURCE_PROOF_LEGACY_DERIVABILITY_SCHEMA_VERSION: &str =
@@ -435,7 +436,7 @@ pub fn write_source_proof_legacy_derivability_report(
             );
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| {
+        atomic_write(&path, &bytes).map_err(|error| {
             SourceProofLegacyDerivabilityWriteError::Write {
                 path: path.display().to_string(),
                 error: error.to_string(),

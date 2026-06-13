@@ -12,6 +12,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::backfill_source_proof_scope::{
     BackfillSourceProofScopeReport, BackfillSourceProofScopeStatus,
 };
@@ -219,7 +220,7 @@ pub fn write_backfill_accepted_tranche_manifest(
             });
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| BackfillAcceptedTrancheError::Write {
+        atomic_write(&path, &bytes).map_err(|error| BackfillAcceptedTrancheError::Write {
             path: path.display().to_string(),
             error: error.to_string(),
         })?;

@@ -11,6 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use anyhow::{Context, Result, ensure};
@@ -154,7 +155,7 @@ pub fn write_source_archive_index_manifest(
             path.display()
         );
     } else {
-        fs::write(&path, &bytes)
+        atomic_write(&path, &bytes)
             .with_context(|| format!("write source archive index manifest {}", path.display()))?;
     }
 

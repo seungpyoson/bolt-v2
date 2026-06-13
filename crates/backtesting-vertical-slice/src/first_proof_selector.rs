@@ -20,6 +20,8 @@ use parquet::arrow::{ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuild
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::atomic_artifact_write::atomic_write;
+
 pub const FIRST_PROOF_EVENT_COUNT_LEDGER_SCHEMA_VERSION: &str = "first-proof-event-count-ledger.v1";
 pub const FIRST_PROOF_SELECTOR_SCHEMA_VERSION: &str = "first-proof-selector-report.v1";
 pub const FIRST_PROOF_SELECTOR_REPORT_FILE: &str = "first-proof-selector-report.json";
@@ -641,7 +643,7 @@ pub fn write_first_proof_event_count_ledger(
             });
         }
     } else {
-        fs::write(output_path, &bytes).map_err(|error| FirstProofSelectorError::Write {
+        atomic_write(output_path, &bytes).map_err(|error| FirstProofSelectorError::Write {
             path: output_path.display().to_string(),
             error: error.to_string(),
         })?;
@@ -677,7 +679,7 @@ pub fn write_first_proof_selector_report(
             });
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| FirstProofSelectorError::Write {
+        atomic_write(&path, &bytes).map_err(|error| FirstProofSelectorError::Write {
             path: path.display().to_string(),
             error: error.to_string(),
         })?;

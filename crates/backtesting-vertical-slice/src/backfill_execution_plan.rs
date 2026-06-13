@@ -12,6 +12,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::{
     backfill_accepted_tranche::{
@@ -450,7 +451,7 @@ pub fn write_backfill_execution_plan_with_overwrite(
             })?;
         if existing != bytes {
             if overwrite_existing {
-                fs::write(&path, &bytes).map_err(|error| BackfillExecutionPlanError::Write {
+                atomic_write(&path, &bytes).map_err(|error| BackfillExecutionPlanError::Write {
                     path: path.display().to_string(),
                     error: error.to_string(),
                 })?;
@@ -461,7 +462,7 @@ pub fn write_backfill_execution_plan_with_overwrite(
             }
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| BackfillExecutionPlanError::Write {
+        atomic_write(&path, &bytes).map_err(|error| BackfillExecutionPlanError::Write {
             path: path.display().to_string(),
             error: error.to_string(),
         })?;

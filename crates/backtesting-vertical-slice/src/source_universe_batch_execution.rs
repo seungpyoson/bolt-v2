@@ -20,6 +20,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::catalog_projection::logical_catalog_hash;
 use crate::path_resolution::resolve_existing_path;
 use crate::{
@@ -914,7 +915,7 @@ pub fn write_source_universe_batch_execution_report(
             path.display()
         );
     } else {
-        fs::write(&path, &bytes)
+        atomic_write(&path, &bytes)
             .with_context(|| format!("write batch execution report {}", path.display()))?;
     }
     Ok(SourceUniverseBatchExecutionReportArtifact {

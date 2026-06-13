@@ -16,6 +16,7 @@ use nautilus_model::{data::BarType, identifiers::InstrumentId};
 use serde::{Deserialize, Serialize};
 use toml::Value;
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
 use crate::{
@@ -1041,10 +1042,11 @@ fn write_bytes_if_clean(path: &Path, bytes: &[u8], overwrite_existing: bool) -> 
                 "dirty artifact {}: existing file content differs",
                 path.display()
             );
-            fs::write(path, bytes).with_context(|| format!("write artifact {}", path.display()))?;
+            atomic_write(path, bytes)
+                .with_context(|| format!("write artifact {}", path.display()))?;
         }
     } else {
-        fs::write(path, bytes).with_context(|| format!("write artifact {}", path.display()))?;
+        atomic_write(path, bytes).with_context(|| format!("write artifact {}", path.display()))?;
     }
     Ok(())
 }

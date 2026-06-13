@@ -14,6 +14,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::source_proof::SourceProofUsageScope;
 
@@ -458,7 +459,7 @@ pub fn write_source_catalog_mapping_readiness_report(
             );
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| SourceCatalogMappingReadinessError::Write {
+        atomic_write(&path, &bytes).map_err(|error| SourceCatalogMappingReadinessError::Write {
             path: path.display().to_string(),
             error: error.to_string(),
         })?;

@@ -20,6 +20,7 @@ use object_store::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::{
     artifact_index::{
@@ -850,7 +851,7 @@ fn write_report(
             path.display()
         );
     } else {
-        fs::write(&path, &bytes).with_context(|| {
+        atomic_write(&path, &bytes).with_context(|| {
             format!(
                 "write Artifact Index commit proof report {}",
                 path.display()

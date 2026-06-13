@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ustr::Ustr;
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::run_manifest::{ManifestArtifactStore, artifact_store_storage_options_for_uri};
 
 pub const NT_CATALOG_PROOF_SCHEMA_VERSION: &str = "nt-catalog-proof.v1";
@@ -535,7 +536,7 @@ fn write_report(
             path.display()
         );
     } else {
-        fs::write(&path, &bytes)
+        atomic_write(&path, &bytes)
             .with_context(|| format!("write NT catalog proof report {}", path.display()))?;
     }
     let hash = content_hash(report)?;

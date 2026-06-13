@@ -17,6 +17,8 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::atomic_artifact_write::atomic_write;
+
 pub const CONVERSION_MANIFEST_FILE: &str = "conversion-manifest.json";
 pub const CONVERSION_CHECKPOINT_FILE: &str = "conversion-checkpoint.json";
 pub const CATALOG_METADATA_FILE: &str = "catalog-metadata.json";
@@ -749,7 +751,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(value).context("serialize conversion artifact")?;
-    fs::write(path, bytes).with_context(|| format!("write {}", path.display()))
+    atomic_write(path, &bytes).with_context(|| format!("write {}", path.display()))
 }
 
 fn content_hash<T: Serialize>(value: &T) -> Result<String> {

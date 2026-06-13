@@ -14,6 +14,7 @@ use std::{
 use serde::Deserialize;
 use toml::Value;
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::{
     backfill_accepted_tranche::{
@@ -407,7 +408,7 @@ fn write_materialized_run_spec(
             );
         }
     } else {
-        fs::write(&path, bytes).map_err(|error| BackfillRunSpecMaterializationError::Write {
+        atomic_write(&path, bytes).map_err(|error| BackfillRunSpecMaterializationError::Write {
             path: path.display().to_string(),
             error: error.to_string(),
         })?;

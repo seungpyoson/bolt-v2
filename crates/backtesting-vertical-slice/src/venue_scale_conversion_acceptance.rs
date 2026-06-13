@@ -9,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
 use anyhow::{Context, Result, bail, ensure};
@@ -339,7 +340,7 @@ pub fn write_venue_scale_conversion_acceptance_ledger(
             path.display()
         );
     } else {
-        fs::write(&path, &bytes).with_context(|| {
+        atomic_write(&path, &bytes).with_context(|| {
             format!(
                 "write venue-scale conversion acceptance ledger {}",
                 path.display()

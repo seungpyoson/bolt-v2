@@ -12,6 +12,7 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::source_universe_object_gates::{
@@ -247,7 +248,7 @@ pub fn write_source_universe_conversion_run_plan(
                 "dirty source-universe conversion run-plan {}: existing file content differs",
                 path.display()
             );
-            fs::write(&path, &bytes).with_context(|| {
+            atomic_write(&path, &bytes).with_context(|| {
                 format!(
                     "write source-universe conversion run-plan {}",
                     path.display()
@@ -255,7 +256,7 @@ pub fn write_source_universe_conversion_run_plan(
             })?;
         }
     } else {
-        fs::write(&path, &bytes).with_context(|| {
+        atomic_write(&path, &bytes).with_context(|| {
             format!(
                 "write source-universe conversion run-plan {}",
                 path.display()

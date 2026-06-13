@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::source_proof::{
     AcceptanceScope, SourceBindingRegistry, SourceProofReport, SourceProofStatus,
     SourceProofUsageScope, read_source_binding_registry_from_path,
@@ -304,7 +305,7 @@ pub fn write_backfill_source_proof_scope_report(
             });
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| BackfillSourceProofScopeError::Write {
+        atomic_write(&path, &bytes).map_err(|error| BackfillSourceProofScopeError::Write {
             path: path.display().to_string(),
             error: error.to_string(),
         })?;

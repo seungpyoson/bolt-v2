@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    atomic_artifact_write::atomic_write,
     backfill_conversion_batch::{
         BackfillConversionBatchPlan, BackfillConversionBatchRecord, BackfillConversionBatchStatus,
     },
@@ -528,7 +529,7 @@ pub fn write_backfill_conversion_completion_ledger(
             );
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| {
+        atomic_write(&path, &bytes).map_err(|error| {
             BackfillConversionCompletionLedgerError::Write {
                 path: path.display().to_string(),
                 error: error.to_string(),

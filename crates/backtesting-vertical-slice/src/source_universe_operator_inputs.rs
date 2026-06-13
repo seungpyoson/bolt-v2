@@ -15,6 +15,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
 use crate::{
@@ -231,12 +232,12 @@ pub fn write_source_universe_operator_inputs(
                 "dirty source-universe operator-inputs {}: existing file content differs",
                 path.display()
             );
-            fs::write(&path, &bytes).with_context(|| {
+            atomic_write(&path, &bytes).with_context(|| {
                 format!("write source-universe operator-inputs {}", path.display())
             })?;
         }
     } else {
-        fs::write(&path, &bytes)
+        atomic_write(&path, &bytes)
             .with_context(|| format!("write source-universe operator-inputs {}", path.display()))?;
     }
 

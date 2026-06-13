@@ -8,6 +8,7 @@ use backtesting_vertical_slice::artifact_index_iam_policy::{
     ArtifactIndexProducerIamProvisioningPlan, ArtifactIndexProducerIamProvisioningPlanSpec,
     artifact_index_producer_iam_provisioning_plan,
 };
+use backtesting_vertical_slice::atomic_write;
 use clap::Parser;
 use serde::Deserialize;
 
@@ -72,5 +73,6 @@ fn write_plan(path: &Path, plan: &ArtifactIndexProducerIamProvisioningPlan) -> R
     }
     let mut bytes = serde_json::to_vec_pretty(plan).context("serialize provisioning plan")?;
     bytes.push(b'\n');
-    fs::write(path, bytes).with_context(|| format!("write provisioning plan {}", path.display()))
+    atomic_write(path, &bytes)
+        .with_context(|| format!("write provisioning plan {}", path.display()))
 }

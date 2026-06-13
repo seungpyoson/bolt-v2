@@ -3,6 +3,7 @@
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
+use backtesting_vertical_slice::atomic_write;
 use backtesting_vertical_slice::polymarket_metadata_gate::{
     PolymarketMetadataGateSpec, evaluate_polymarket_metadata_gate,
 };
@@ -44,12 +45,14 @@ fn main() -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("create metadata gate report dir {}", parent.display()))?;
     }
-    fs::write(&file_spec.output_path, serde_json::to_vec_pretty(&report)?).with_context(|| {
-        format!(
-            "write metadata gate report {}",
-            file_spec.output_path.display()
-        )
-    })?;
+    atomic_write(&file_spec.output_path, &serde_json::to_vec_pretty(&report)?).with_context(
+        || {
+            format!(
+                "write metadata gate report {}",
+                file_spec.output_path.display()
+            )
+        },
+    )?;
 
     let status = serde_json::to_value(report.status)?
         .as_str()

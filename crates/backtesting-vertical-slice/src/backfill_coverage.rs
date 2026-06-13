@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::source_proof::{SourceBindingRegistry, SourceProofReport, SourceProofStatus};
 
 pub const BACKFILL_COVERAGE_LEDGER_SCHEMA_VERSION: &str = "backfill-coverage-ledger.v1";
@@ -661,7 +662,7 @@ pub fn write_coverage_ledger_artifact(
             });
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| BackfillCoverageWriteError::Write {
+        atomic_write(&path, &bytes).map_err(|error| BackfillCoverageWriteError::Write {
             path: path.display().to_string(),
             error: error.to_string(),
         })?;

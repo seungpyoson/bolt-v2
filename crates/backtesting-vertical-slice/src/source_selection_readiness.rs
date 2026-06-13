@@ -13,6 +13,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::source_proof::{
     FixtureType, NtMappingStatus, SourceBindingRegistry, SourceProofFidelityClass,
@@ -390,7 +391,7 @@ pub fn write_source_selection_readiness_report(
             });
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| SourceSelectionReadinessError::Write {
+        atomic_write(&path, &bytes).map_err(|error| SourceSelectionReadinessError::Write {
             path: path.display().to_string(),
             error: error.to_string(),
         })?;

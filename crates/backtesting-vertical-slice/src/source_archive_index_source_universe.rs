@@ -12,6 +12,7 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
 use crate::source_archive_index_manifest::{
@@ -174,7 +175,7 @@ pub fn write_source_archive_index_source_universe_manifest(
             path.display()
         );
     } else {
-        fs::write(&path, &bytes).with_context(|| {
+        atomic_write(&path, &bytes).with_context(|| {
             format!(
                 "write source archive index source-universe manifest {}",
                 path.display()
@@ -434,7 +435,7 @@ fn write_clean_artifact(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
         );
         return Ok(());
     }
-    fs::write(path, bytes).with_context(|| format!("write {label} {}", path.display()))
+    atomic_write(path, bytes).with_context(|| format!("write {label} {}", path.display()))
 }
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).with_context(|| format!("read artifact {}", path.display()))?;

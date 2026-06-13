@@ -13,6 +13,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::backfill_coverage::{
     BackfillCoverageLedger, BackfillCoverageRecord, BackfillCoverageStatus,
 };
@@ -245,7 +246,7 @@ pub fn write_backfill_preflight_report(
             });
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| BackfillPreflightError::Write {
+        atomic_write(&path, &bytes).map_err(|error| BackfillPreflightError::Write {
             path: path.display().to_string(),
             error: error.to_string(),
         })?;

@@ -46,6 +46,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::{Deserialize, de::DeserializeOwned};
 use ustr::Ustr;
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
 use crate::{
     catalog_projection::{ensure_binary_option_catalog_persistable, logical_catalog_hash},
@@ -1585,7 +1586,7 @@ fn write_result_contract_idempotent(
         );
         return Ok(existing);
     }
-    fs::write(path, bytes).with_context(|| format!("write {}", path.display()))?;
+    atomic_write(path, &bytes).with_context(|| format!("write {}", path.display()))?;
     Ok(contract.clone())
 }
 

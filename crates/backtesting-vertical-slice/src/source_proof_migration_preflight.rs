@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    atomic_artifact_write::atomic_write,
     source_proof::{EvidenceState, SourceBindingRegistry, read_source_binding_registry_from_path},
     source_proof_legacy_derivability::{
         SourceProofLegacyDerivabilityIssue, SourceProofLegacyDerivabilityRecord,
@@ -265,7 +266,7 @@ pub fn write_source_proof_migration_preflight_report(
             );
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| SourceProofMigrationPreflightError::Write {
+        atomic_write(&path, &bytes).map_err(|error| SourceProofMigrationPreflightError::Write {
             path: path.display().to_string(),
             error: error.to_string(),
         })?;

@@ -26,6 +26,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::{
     canonical_market_data::{
         CanonicalBarsTable, CanonicalIndexPricesTable, CanonicalMarkPricesTable,
@@ -848,16 +849,18 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
     redact_operator_contract(&mut output, &inputs.catalog_root);
     output.contract = verify_completed_result_contract(&inputs.contract_path, &output.contract)?;
 
-    fs::write(
+    atomic_write(
         &inputs.proof_path,
         serde_json::to_string_pretty(&inputs.accepted_source_proof)
-            .context("serialize accepted source proof")?,
+            .context("serialize accepted source proof")?
+            .as_bytes(),
     )
     .with_context(|| format!("write {}", inputs.proof_path.display()))?;
-    fs::write(
+    atomic_write(
         &inputs.run_manifest_path,
         serde_json::to_string_pretty(&inputs.spec_manifest.to_artifact_manifest()?)
-            .context("serialize resolved run manifest")?,
+            .context("serialize resolved run manifest")?
+            .as_bytes(),
     )
     .with_context(|| format!("write {}", inputs.run_manifest_path.display()))?;
 
@@ -1035,20 +1038,25 @@ pub fn run_from_run_spec(
     })?;
     redact_operator_contract(&mut output, &catalog_root);
 
-    fs::write(
+    atomic_write(
         &proof_path,
-        serde_json::to_string_pretty(&accepted_proof).context("serialize accepted source proof")?,
+        serde_json::to_string_pretty(&accepted_proof)
+            .context("serialize accepted source proof")?
+            .as_bytes(),
     )
     .with_context(|| format!("write {}", proof_path.display()))?;
-    fs::write(
+    atomic_write(
         &contract_path,
-        serde_json::to_string_pretty(&output.contract).context("serialize result contract")?,
+        serde_json::to_string_pretty(&output.contract)
+            .context("serialize result contract")?
+            .as_bytes(),
     )
     .with_context(|| format!("write {}", contract_path.display()))?;
-    fs::write(
+    atomic_write(
         &run_manifest_path,
         serde_json::to_string_pretty(&spec.manifest.to_artifact_manifest()?)
-            .context("serialize resolved run manifest")?,
+            .context("serialize resolved run manifest")?
+            .as_bytes(),
     )
     .with_context(|| format!("write {}", run_manifest_path.display()))?;
     write_completed_conversion_artifacts(
@@ -2310,20 +2318,25 @@ pub fn run_multi_table_from_run_spec(
     .map_err(|error| anyhow::anyhow!("result contract construction failed: {error}"))?;
     redact_multi_operator_contract(&mut contract, &spec.manifest, &planned);
 
-    fs::write(
+    atomic_write(
         &proof_path,
-        serde_json::to_string_pretty(&accepted_proof).context("serialize accepted source proof")?,
+        serde_json::to_string_pretty(&accepted_proof)
+            .context("serialize accepted source proof")?
+            .as_bytes(),
     )
     .with_context(|| format!("write {}", proof_path.display()))?;
-    fs::write(
+    atomic_write(
         &contract_path,
-        serde_json::to_string_pretty(&contract).context("serialize result contract")?,
+        serde_json::to_string_pretty(&contract)
+            .context("serialize result contract")?
+            .as_bytes(),
     )
     .with_context(|| format!("write {}", contract_path.display()))?;
-    fs::write(
+    atomic_write(
         &run_manifest_path,
         serde_json::to_string_pretty(&spec.manifest.to_artifact_manifest()?)
-            .context("serialize resolved run manifest")?,
+            .context("serialize resolved run manifest")?
+            .as_bytes(),
     )
     .with_context(|| format!("write {}", run_manifest_path.display()))?;
     write_completed_conversion_artifacts(
@@ -2562,16 +2575,18 @@ fn run_multi_from_completed_output(
     redact_multi_operator_contract(&mut contract, &spec.manifest, &planned);
     let contract = verify_completed_result_contract(&inputs.contract_path, &contract)?;
 
-    fs::write(
+    atomic_write(
         &inputs.proof_path,
         serde_json::to_string_pretty(&inputs.accepted_proof)
-            .context("serialize accepted source proof")?,
+            .context("serialize accepted source proof")?
+            .as_bytes(),
     )
     .with_context(|| format!("write {}", inputs.proof_path.display()))?;
-    fs::write(
+    atomic_write(
         &inputs.run_manifest_path,
         serde_json::to_string_pretty(&spec.manifest.to_artifact_manifest()?)
-            .context("serialize resolved run manifest")?,
+            .context("serialize resolved run manifest")?
+            .as_bytes(),
     )
     .with_context(|| format!("write {}", inputs.run_manifest_path.display()))?;
 
@@ -2922,9 +2937,11 @@ fn write_published_catalog_proof(
     proof: &PublishedCatalogProof,
 ) -> Result<Vec<PathBuf>> {
     let proof_path = output_dir.join(PUBLISHED_CATALOG_PROOF_FILE);
-    fs::write(
+    atomic_write(
         &proof_path,
-        serde_json::to_string_pretty(proof).context("serialize published catalog proof")?,
+        serde_json::to_string_pretty(proof)
+            .context("serialize published catalog proof")?
+            .as_bytes(),
     )
     .with_context(|| format!("write {}", proof_path.display()))?;
 
@@ -2951,10 +2968,11 @@ fn write_published_catalog_proof(
         .contract
         .validate()
         .map_err(|error| anyhow::anyhow!("updated result contract rejected: {error}"))?;
-    fs::write(
+    atomic_write(
         &run.contract_path,
         serde_json::to_string_pretty(&run.output.contract)
-            .context("serialize updated result contract")?,
+            .context("serialize updated result contract")?
+            .as_bytes(),
     )
     .with_context(|| format!("write {}", run.contract_path.display()))?;
 

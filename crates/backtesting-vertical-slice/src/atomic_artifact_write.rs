@@ -15,7 +15,7 @@ use std::{fs, path::Path};
 /// The temp file is written first; if the write succeeds it is renamed onto
 /// `path` (atomic on a single filesystem). On any error the temp file is
 /// removed so no orphan `.tmp` remains. Returns `std::io::Error` on failure.
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

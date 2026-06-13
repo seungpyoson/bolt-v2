@@ -22,6 +22,7 @@ use object_store::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::atomic_artifact_write::atomic_write;
 use crate::run_manifest::{ManifestArtifactStore, artifact_store_storage_options_for_uri};
 
 pub const SOURCE_PROOF_EVIDENCE_STAGING_SCHEMA_VERSION: &str =
@@ -514,7 +515,7 @@ fn write_manifest(
             });
         }
     } else {
-        fs::write(&path, &bytes).map_err(|error| {
+        atomic_write(&path, &bytes).map_err(|error| {
             SourceProofEvidenceStagingError::WriteManifest {
                 path: path.display().to_string(),
                 error: error.to_string(),

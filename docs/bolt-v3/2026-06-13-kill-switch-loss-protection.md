@@ -2,7 +2,7 @@
 
 This document describes the durable realized-loss kill switch wired through `[risk.kill_switch]`.
 
-It is the **hard** control in a two-control design: the instantaneous, unrealized-inclusive `LossGovernorRuntimeFeed` feeds the soft admission gate (`max_daily_loss`), while this controller owns the durable, realized-only daily accumulator that latches the kill switch at `max_utc_daily_realized_loss` and persists across restarts.
+It is the **hard** control in a two-control design: the instantaneous, unrealized-inclusive `LossGovernorRuntimeFeed` feeds the soft admission gate (`max_session_loss`), while this controller owns the durable, realized-only daily accumulator that latches the kill switch at `max_utc_daily_realized_loss` and persists across restarts.
 
 ## Breach Behavior
 

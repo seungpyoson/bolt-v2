@@ -551,13 +551,8 @@ pub fn normalize_csv_native_bars(
                 step: *step,
                 aggregation: *aggregation,
             };
-            let interval_ms = bar_interval_ms(declared)?;
-            let interval_nanos = i64::try_from(
-                interval_ms
-                    .checked_mul(NANOS_PER_MILLISECOND)
-                    .context("declared bar interval overflows nanoseconds")?,
-            )
-            .context("declared bar interval overflows i64")?;
+            let interval_nanos = bar_interval_nanos_for_spec(declared)?
+                .context("declared fixed-duration bar spec yielded no fixed nanosecond length")?;
             let period =
                 u64::try_from(interval_nanos).context("declared bar interval is non-positive")?;
             // Validate every instrument's gaps are positive integer multiples

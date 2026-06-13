@@ -263,6 +263,12 @@ jobs:
       - name: Install source-fence Python dependencies
         run: 'python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/source-fence.txt'
 
+      - name: Install cargo-shim test dependencies
+        run: 'python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/cargo-shim-tests.txt'
+
+      - name: Cargo shim tests
+        run: just cargo-shim-tests
+
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
@@ -355,6 +361,19 @@ jobs:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           if-no-files-found: error
           retention-days: 1
+
+      - name: Publish nextest archive fingerprint
+        run: |
+          mkdir -p .nextest-archive-fingerprint
+          printf '%s\n' "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}" > .nextest-archive-fingerprint/cache-key.txt
+
+      - name: Upload nextest archive fingerprint
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          path: .nextest-archive-fingerprint/cache-key.txt
+          if-no-files-found: error
+          retention-days: 30
 
   test-shards:
     name: nextest shard ${{ matrix.shard }} of 4

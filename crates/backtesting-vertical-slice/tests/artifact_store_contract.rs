@@ -78,6 +78,7 @@ fn successful_capability_evidence(root: &ResolvedArtifactRoot) -> NtCatalogCapab
         ambient_credentials_scrubbed: true,
         invalid_credentials_write_failed: true,
         ssm_credentials_write_reopen_query_succeeded: true,
+        nt_catalog_storage_option_keys: vec!["region".to_string()],
         read_back: NtCatalogReadBackEvidence {
             query_files_succeeded: true,
             query_files_result_count: 1,
@@ -332,6 +333,19 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
     committed_proof
         .direct_s3_catalog_access_proven(&committed_root)
         .expect("committed proof controls validate");
+    let mut mismatched_storage_options_evidence = evidence.clone();
+    mismatched_storage_options_evidence.nt_catalog_storage_option_keys =
+        vec!["endpoint_url".to_string()];
+    assert!(
+        fixture
+            .nt_catalog_capability_proof
+            .completed_proof_from_evidence(
+                &fixture.artifact_store,
+                &mismatched_storage_options_evidence
+            )
+            .is_err(),
+        "capability proof must reject NT storage option evidence that differs from the plan"
+    );
     let mut missing_query_evidence = evidence.clone();
     missing_query_evidence.read_back.query_instruments_succeeded = false;
     assert!(

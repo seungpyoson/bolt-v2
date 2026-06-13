@@ -166,6 +166,7 @@ pub struct NtCatalogCapabilityEvidence {
     pub ambient_credentials_scrubbed: bool,
     pub invalid_credentials_write_failed: bool,
     pub ssm_credentials_write_reopen_query_succeeded: bool,
+    pub nt_catalog_storage_option_keys: Vec<String>,
     pub read_back: NtCatalogReadBackEvidence,
     pub create_only_probe: CreateOnlyProbeTranscript,
 }
@@ -284,6 +285,7 @@ fn successful_capability_evidence() -> NtCatalogCapabilityEvidence {
         ambient_credentials_scrubbed: true,
         invalid_credentials_write_failed: true,
         ssm_credentials_write_reopen_query_succeeded: true,
+        nt_catalog_storage_option_keys: vec!["region".to_string()],
         read_back: NtCatalogReadBackEvidence {
             query_files_succeeded: true,
             query_files_result_count: 1,
@@ -310,6 +312,8 @@ fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
     let _profile = plan.profile_file_paths_redirected;
     let _imds = plan.imds_blocked;
     let _completed = plan.completed_proof_from_evidence(&evidence);
+    let mut mismatched_storage_options_evidence = evidence.clone();
+    mismatched_storage_options_evidence.nt_catalog_storage_option_keys = vec!["endpoint_url".to_string()];
     evidence.read_back.query_instruments_succeeded = false;
     evidence.read_back.query_files_result_count = 0;
     evidence.read_back.binary_option_instrument_id

@@ -134,6 +134,7 @@ impl NtCatalogCapabilityControls {
             evidence.ssm_credentials_write_reopen_query_succeeded,
             "capability evidence must prove SSM credentials can write, reopen, and query"
         );
+        ensure_storage_option_keys(&evidence.nt_catalog_storage_option_keys)?;
         evidence.read_back.validate()?;
         ensure!(
             evidence.create_only_probe.first_create_succeeded,
@@ -246,6 +247,7 @@ pub struct NtCatalogCapabilityEvidence {
     pub ambient_credentials_scrubbed: bool,
     pub invalid_credentials_write_failed: bool,
     pub ssm_credentials_write_reopen_query_succeeded: bool,
+    pub nt_catalog_storage_option_keys: Vec<String>,
     pub read_back: NtCatalogReadBackEvidence,
     pub create_only_probe: CreateOnlyProbeTranscript,
 }
@@ -389,7 +391,12 @@ impl NtCatalogCapabilityRunSpec {
         evidence: &NtCatalogCapabilityEvidence,
     ) -> Result<NtCatalogCapabilityProof> {
         let controls = NtCatalogCapabilityControls::from_evidence(evidence)?;
-        self.completed_proof(artifact_store, controls)
+        let proof = self.completed_proof(artifact_store, controls)?;
+        ensure_evidence_storage_options_match(
+            &proof.storage_options_keys,
+            &evidence.nt_catalog_storage_option_keys,
+        )?;
+        Ok(proof)
     }
 
     /// # Errors
@@ -454,6 +461,10 @@ impl NtCatalogCapabilityProofDocument {
             self.proof.controls == controls,
             "capability proof document controls must match observed evidence"
         );
+        ensure_evidence_storage_options_match(
+            &self.proof.storage_options_keys,
+            &self.evidence.nt_catalog_storage_option_keys,
+        )?;
         artifact_root.object_path_for_uri(&self.evidence.create_only_probe.probe_uri)?;
         artifact_root.object_path_for_uri(&self.evidence.create_only_probe.copy_source_uri)?;
         artifact_root.object_path_for_uri(&self.evidence.create_only_probe.copy_dest_uri)?;
@@ -689,6 +700,19 @@ fn ensure_sorted_storage_option_keys(keys: &[String]) -> Result<Vec<String>> {
     let mut sorted = keys.to_vec();
     sorted.sort();
     Ok(sorted)
+}
+
+fn ensure_evidence_storage_options_match(
+    proof_storage_option_keys: &[String],
+    evidence_storage_option_keys: &[String],
+) -> Result<()> {
+    let expected = ensure_sorted_storage_option_keys(proof_storage_option_keys)?;
+    let observed = ensure_sorted_storage_option_keys(evidence_storage_option_keys)?;
+    ensure!(
+        observed == expected,
+        "capability evidence NT catalog storage option keys must match the proof plan"
+    );
+    Ok(())
 }
 
 fn unique_sorted_strings(values: &[String]) -> Result<Vec<String>> {

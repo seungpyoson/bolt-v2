@@ -311,8 +311,10 @@ mod tests {
     // submit skips that must not consume live capacity.
     // Re-derived after merging main's shared submit-admission changes into the
     // shadow-mode submit switch.
+    // Re-derived after exposing read-only loss-governor policy/snapshot
+    // accessors for live manual recovery.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "285e76d348d172f90601491cf6b2090c409d16cbc5664ad489e54c0ea4310659";
+        "490905e38555139fdd4180ee747be5329e70fd120a19debca058e3136e85c4f1";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

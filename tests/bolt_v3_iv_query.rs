@@ -3655,7 +3655,7 @@ fn derived_iv_query_rejects_profile_owned_input_without_current_source_health() 
                 inputs: None,
             },
         })),
-        Err(IvQueryError::DerivedInputNotFound)
+        Err(IvQueryError::DerivationRejected)
     );
 }
 

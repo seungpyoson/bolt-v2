@@ -762,16 +762,34 @@ fn parallel_overlaps_and_matches_serial_report() {
         (0..8u64).collect::<Vec<_>>(),
         "all sequences present in order"
     );
-    for (parallel, serial) in parallel_report
-        .records
-        .iter()
-        .zip(serial_report.records.iter())
-    {
-        assert_eq!(parallel.sequence, serial.sequence);
-        assert_eq!(parallel.symbol, serial.symbol);
-        assert_eq!(parallel.canonical_rows, serial.canonical_rows);
-        assert_eq!(parallel.nt_catalog_rows, serial.nt_catalog_rows);
-        assert_eq!(parallel.catalog_hash, serial.catalog_hash);
+    // Check per-record content against sequence-derived expected values so the
+    // assertions detect dropped, duplicated, or swapped records. parallel==serial
+    // parity alone cannot distinguish those failure modes because both sides
+    // would receive the same wrong value.
+    for report_records in [&parallel_report.records, &serial_report.records] {
+        for rec in report_records {
+            assert_eq!(
+                rec.canonical_rows,
+                100 + rec.sequence,
+                "canonical_rows for sequence {} must be {}",
+                rec.sequence,
+                100 + rec.sequence
+            );
+            assert_eq!(
+                rec.nt_catalog_rows,
+                200 + rec.sequence,
+                "nt_catalog_rows for sequence {} must be {}",
+                rec.sequence,
+                200 + rec.sequence
+            );
+            assert_eq!(
+                rec.catalog_hash,
+                format!("catalog-hash-{}", rec.sequence),
+                "catalog_hash for sequence {} must be catalog-hash-{}",
+                rec.sequence,
+                rec.sequence
+            );
+        }
     }
 }
 
@@ -1006,6 +1024,283 @@ fn resume_into_same_output_dir_fails_loud_before_any_fetch() {
     assert!(
         resume_calls.lock().expect("resume fetch log").is_empty(),
         "rejection happens before any fetch"
+    );
+}
+
+// ── Fix 1: path-traversal class — sha256 validation at the consume boundary ──
+
+/// A pack record with a `../`-prefixed sha256 field must be rejected at pack
+/// consumption, before any fetch or cache activity.
+#[test]
+fn prepare_batch_rejects_parent_dir_traversal_sha256() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let run_spec_path = temp_dir.path().join("run-spec.toml");
+    let execution_plan_path = temp_dir.path().join("execution-plan.json");
+    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
+    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
+
+    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
+    write_pack_with_sha256(
+        &pack_path,
+        &run_spec_path,
+        &execution_plan_path,
+        "../etc/passwd",
+    );
+
+    let output_dir = temp_dir.path().join("batch-output");
+    let mut fetcher = NeverFetcher;
+    let mut runner = RecordingRunner::default();
+    let err = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: None,
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: None,
+        },
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect_err("parent-dir traversal sha256 must be rejected");
+    assert!(
+        format!("{err:#}").contains("selected_object_sha256"),
+        "error names the field: {err:#}"
+    );
+    assert!(
+        runner.calls.is_empty(),
+        "rejection must happen before any run"
+    );
+}
+
+/// A pack record with an absolute-path sha256 field must be rejected before
+/// any fetch or cache activity.
+#[test]
+fn prepare_batch_rejects_absolute_path_sha256() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let run_spec_path = temp_dir.path().join("run-spec.toml");
+    let execution_plan_path = temp_dir.path().join("execution-plan.json");
+    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
+    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
+
+    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
+    write_pack_with_sha256(
+        &pack_path,
+        &run_spec_path,
+        &execution_plan_path,
+        "/etc/shadow",
+    );
+
+    let output_dir = temp_dir.path().join("batch-output");
+    let mut fetcher = NeverFetcher;
+    let mut runner = RecordingRunner::default();
+    let err = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: None,
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: None,
+        },
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect_err("absolute-path sha256 must be rejected");
+    assert!(
+        format!("{err:#}").contains("selected_object_sha256"),
+        "error names the field: {err:#}"
+    );
+    assert!(runner.calls.is_empty(), "rejection before any run");
+}
+
+/// A pack record with an uppercase-hex sha256 field must be rejected (the
+/// digest produced by `hex::encode(Sha256::digest(...))` is always lowercase;
+/// uppercase is a sign of a hand-crafted or tampered value).
+#[test]
+fn prepare_batch_rejects_uppercase_hex_sha256() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let run_spec_path = temp_dir.path().join("run-spec.toml");
+    let execution_plan_path = temp_dir.path().join("execution-plan.json");
+    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
+    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
+
+    // 64 chars but uppercase — valid hex encoding but not lowercase sha256.
+    let uppercase_sha = "A".repeat(64);
+    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
+    write_pack_with_sha256(
+        &pack_path,
+        &run_spec_path,
+        &execution_plan_path,
+        &uppercase_sha,
+    );
+
+    let output_dir = temp_dir.path().join("batch-output");
+    let mut fetcher = NeverFetcher;
+    let mut runner = RecordingRunner::default();
+    let err = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: None,
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: None,
+        },
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect_err("uppercase-hex sha256 must be rejected");
+    assert!(
+        format!("{err:#}").contains("selected_object_sha256"),
+        "error names the field: {err:#}"
+    );
+    assert!(runner.calls.is_empty(), "rejection before any run");
+}
+
+/// A pack record with a 63-char hex sha256 (one char short) must be rejected.
+#[test]
+fn prepare_batch_rejects_short_hex_sha256() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let run_spec_path = temp_dir.path().join("run-spec.toml");
+    let execution_plan_path = temp_dir.path().join("execution-plan.json");
+    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
+    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
+
+    let short_sha = "a".repeat(63);
+    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
+    write_pack_with_sha256(&pack_path, &run_spec_path, &execution_plan_path, &short_sha);
+
+    let output_dir = temp_dir.path().join("batch-output");
+    let mut fetcher = NeverFetcher;
+    let mut runner = RecordingRunner::default();
+    let err = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: None,
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: None,
+        },
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect_err("63-char hex sha256 must be rejected");
+    assert!(
+        format!("{err:#}").contains("selected_object_sha256"),
+        "error names the field: {err:#}"
+    );
+    assert!(runner.calls.is_empty(), "rejection before any run");
+}
+
+// ── Fix 2: missing negative test for schema_version validation ──
+
+#[test]
+fn resume_schema_version_mismatch_fails_loud() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let run_spec_path = temp_dir.path().join("run-spec.toml");
+    let execution_plan_path = temp_dir.path().join("execution-plan.json");
+    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
+    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
+
+    let objects = vec![(0u64, b"synthetic object zero".to_vec())];
+    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
+    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
+
+    let prior_report = SourceUniverseBatchExecutionReport {
+        schema_version: "wrong-schema-version.v0".to_string(),
+        batch_id: "source-universe-batch-synthetic".to_string(),
+        status: SourceUniverseBatchExecutionReportStatus::Completed,
+        pack_id: "source-universe-execution-pack-synthetic".to_string(),
+        universe_id: "backfill-source-universe-synthetic".to_string(),
+        venue: "synthetic-venue".to_string(),
+        selected_record_count: 1,
+        completed_record_count: 1,
+        failed_record_count: 0,
+        total_canonical_rows: 7,
+        total_nt_catalog_rows: 7,
+        records: vec![carried_record_fixture(
+            0,
+            &sha256_hex(b"synthetic object zero"),
+        )],
+        failures: vec![],
+    };
+    let resume_report_path = temp_dir.path().join("prior-report.json");
+    fs::write(
+        &resume_report_path,
+        serde_json::to_vec_pretty(&prior_report).expect("serialize prior report"),
+    )
+    .expect("write prior report");
+
+    let output_dir = temp_dir.path().join("batch-output");
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    let mut runner = RecordingRunner::default();
+    let result = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: Some(1),
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: Some(resume_report_path),
+        },
+        &mut fetcher,
+        &mut runner,
+    );
+    let err = result.expect_err("schema_version mismatch must fail loud");
+    assert!(
+        err.to_string().contains("schema_version") || format!("{err:#}").contains("schema_version"),
+        "error names the schema_version mismatch: {err:#}"
+    );
+}
+
+// ── Fix 3: missing negative test for max_concurrent_records == 0 ──
+
+#[test]
+fn prepare_batch_rejects_zero_max_concurrent_records() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let run_spec_path = temp_dir.path().join("run-spec.toml");
+    let execution_plan_path = temp_dir.path().join("execution-plan.json");
+    fs::write(&run_spec_path, "run_id = \"synthetic-run\"\n").expect("write run spec");
+    fs::write(&execution_plan_path, "{}\n").expect("write execution plan");
+
+    let objects = vec![(0u64, b"synthetic object zero".to_vec())];
+    let pack_path = temp_dir.path().join("source-universe-execution-pack.json");
+    write_n_record_pack(&pack_path, &run_spec_path, &execution_plan_path, &objects);
+
+    let output_dir = temp_dir.path().join("batch-output");
+    let mut fetcher = SequencedFetcher::from_objects(&objects);
+    let mut runner = RecordingRunner::default();
+    let err = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: None,
+            record_limit: None,
+            continue_on_error: false,
+            max_concurrent_records: Some(0),
+            resume_report: None,
+        },
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect_err("max_concurrent_records = 0 must be rejected");
+    assert!(
+        err.to_string().contains("max_concurrent_records")
+            || format!("{err:#}").contains("max_concurrent_records"),
+        "error names max_concurrent_records: {err:#}"
     );
 }
 
@@ -1330,7 +1625,7 @@ impl ConcurrencyRunner {
 impl SourceUniverseOperatorRunner for ConcurrencyRunner {
     fn run(
         &mut self,
-        _record: &SourceUniverseExecutionPackRecord,
+        record: &SourceUniverseExecutionPackRecord,
         _object_bytes: &[u8],
         _run_spec_path: &Path,
         _execution_plan_path: &Path,
@@ -1342,10 +1637,12 @@ impl SourceUniverseOperatorRunner for ConcurrencyRunner {
             std::thread::sleep(Duration::from_millis(20));
             probe.active.fetch_sub(1, Ordering::SeqCst);
         }
+        // Return per-record values derived from sequence so per-record assertions
+        // are discriminating: swapping or duplicating records would be caught.
         Ok(SourceUniverseBatchExecutionRunOutput {
-            canonical_rows: 7,
-            nt_catalog_rows: 7,
-            catalog_hash: "catalog-hash".to_string(),
+            canonical_rows: 100 + record.sequence,
+            nt_catalog_rows: 200 + record.sequence,
+            catalog_hash: format!("catalog-hash-{}", record.sequence),
         })
     }
 }
@@ -1379,4 +1676,87 @@ impl SourceUniverseOperatorRunner for FailingRunner {
             catalog_hash: "catalog-hash".to_string(),
         })
     }
+}
+
+/// Fetcher used by the sha256-validation rejection tests. Its `fetch` panics
+/// if called, proving that validation fires before any fetch activity.
+struct NeverFetcher;
+
+impl SourceUniverseObjectFetcher for NeverFetcher {
+    fn fetch(&mut self, record: &SourceUniverseExecutionPackRecord) -> anyhow::Result<Vec<u8>> {
+        panic!(
+            "NeverFetcher called for sequence {} — validation should have rejected the pack first",
+            record.sequence
+        );
+    }
+}
+
+/// Write a single-record pack whose `selected_object_sha256` is set to the
+/// given literal string (without computing a real digest). Used by the
+/// sha256-field rejection tests to inject invalid values.
+fn write_pack_with_sha256(
+    pack_path: &Path,
+    run_spec_path: &Path,
+    execution_plan_path: &Path,
+    sha256_literal: &str,
+) {
+    // Use a placeholder byte count; validation rejects the sha256 field before
+    // byte-count checks are ever reached.
+    fs::write(
+        pack_path,
+        format!(
+            r#"{{
+  "schema_version": "source-universe-execution-pack.v1",
+  "pack_id": "source-universe-execution-pack-synthetic",
+  "status": "ready",
+  "work_order_id": "source-universe-conversion-work-order-synthetic",
+  "input_id": "source-universe-operator-inputs-synthetic",
+  "gate_id": "source-universe-object-gates-synthetic",
+  "conversion_run_plan_id": "source-universe-conversion-run-plan-synthetic",
+  "universe_id": "backfill-source-universe-synthetic",
+  "venue": "synthetic-venue",
+  "source": "public_archive",
+  "family": "tick_trades",
+  "table_family": "trades",
+  "planned_object_count": 1,
+  "executable_record_count": 1,
+  "withheld_record_count": 0,
+  "selected_record_count": 1,
+  "materialized_record_count": 1,
+  "skipped_executable_record_count": 0,
+  "executable_source_bytes": 1,
+  "materialized_source_bytes": 1,
+  "artifact_refs": [],
+  "records": [
+    {{
+      "sequence": 0,
+      "work_item_id": "synthetic-work-item-0",
+      "operator_run_id": "source-universe-operator-run-synthetic-00000",
+      "source_binding": "synthetic-spot-tick-trades",
+      "category": "spot",
+      "symbol": "SYNTHETIC-AAA",
+      "archive_date": "2026-03-01",
+      "source_uri": "s3://synthetic-bucket/raw/synthetic-0.csv.gz",
+      "source_url": "https://public.synthetic.example/object-0.csv.gz",
+      "selected_object_sha256": "{sha256_literal}",
+      "selected_object_bytes": 1,
+      "source_proof_id": "source-proof-synthetic",
+      "source_proof_version": 1,
+      "accepted_tranche_id": "accepted-tranche-synthetic-0",
+      "output_prefix": "s3://synthetic-bucket/nt-research-analytics/backtests/synthetic-0",
+      "run_spec_path": "{run_spec_path}",
+      "run_spec_sha256": "run-spec-sha",
+      "accepted_tranche_path": "accepted-tranche.json",
+      "accepted_tranche_sha256": "accepted-tranche-sha",
+      "execution_plan_path": "{execution_plan_path}",
+      "execution_plan_sha256": "execution-plan-sha"
+    }}
+  ],
+  "blocking_reasons": []
+}}"#,
+            run_spec_path = run_spec_path.display(),
+            execution_plan_path = execution_plan_path.display(),
+        ),
+    )
+    .expect("write pack with literal sha256");
 }

@@ -594,6 +594,23 @@ fn prepare_batch(
         );
     }
 
+    // Validate every record's sha256 field before any fetch or cache activity.
+    // A pack record whose selected_object_sha256 is not exactly 64 lowercase-hex
+    // characters would be used verbatim as a filesystem path component by the
+    // caching fetcher, allowing path traversal. Fail loud here so the class of
+    // invalid pack is caught at the single consume boundary.
+    for record in &pack.records {
+        validate_sha256_hex(&record.selected_object_sha256).with_context(|| {
+            format!(
+                "pack record {} (operator_run_id {}) has an invalid selected_object_sha256: \
+                 expected 64 lowercase-hex chars, got {} chars",
+                record.sequence,
+                record.operator_run_id,
+                record.selected_object_sha256.len(),
+            )
+        })?;
+    }
+
     let resume_records = load_resume_records(config.resume_report.as_deref(), &pack)?;
 
     let record_limit = config
@@ -881,6 +898,23 @@ fn unique_temp_token() -> u128 {
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or(0);
     nanos.wrapping_mul(1_000_003).wrapping_add(counter)
+}
+
+/// Validate that `value` is exactly 64 lowercase ASCII hex characters.
+///
+/// Stricter than the case-insensitive `artifact_index` sha256 check: this
+/// requires lowercase hex, so a malformed pack digest can never introduce
+/// uppercase — or any non-hex — bytes into a path component. Call at the
+/// pack-consume boundary before `value` is used as a filesystem path component.
+fn validate_sha256_hex(value: &str) -> Result<()> {
+    ensure!(
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f')),
+        "not a 64-char lowercase-hex sha256 digest"
+    );
+    Ok(())
 }
 
 fn verify_object(record: &SourceUniverseExecutionPackRecord, object_bytes: &[u8]) -> Result<()> {

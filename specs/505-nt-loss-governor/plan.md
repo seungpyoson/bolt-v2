@@ -5,7 +5,7 @@
 
 ## Summary
 
-Build a Bolt-owned loss governor that consumes NT-derived loss/equity facts and evaluates admission against configured per-trade, daily, rolling-window, max-drawdown, and freshness policy. PR #507 implements the pure evaluator, positional-sizing core, configured shared submit-admission loss gate, configured NT portfolio/position runtime feed, and NT risk-state halt actions. The market-exit follow-on adds configured NT `Trader::market_exit_strategy` dispatch for registered strategies when active loss halts are configured.
+Build a Bolt-owned loss governor that consumes NT-derived loss/equity facts and evaluates admission against configured per-trade, daily/session, rolling-window, max-drawdown, and freshness policy. PR #507 implements the pure evaluator, positional-sizing core, configured shared submit-admission loss gate, configured NT portfolio/position/account runtime feed, and NT risk-state halt actions. The market-exit action fields remain explicit config, but active market exits are rejected until loss-halt exits can route through a Bolt-owned submit/cancel chokepoint.
 
 ## Technical Context
 
@@ -16,8 +16,8 @@ Build a Bolt-owned loss governor that consumes NT-derived loss/equity facts and 
 **Target Platform**: bolt-v3 pure Rust LiveNode path
 **Project Type**: Rust trading runtime and shared policy module
 **Performance Goals**: Bounded admission evaluation and bounded in-process rolling-window sample retention; no polling, adapter simulation, or venue calls
-**Constraints**: No hardcoded runtime thresholds, no alternate account truth, no Bolt-built cancel/flatten side effects, and no flat-position claim from submit-admission, NT risk-state, or NT market-exit dispatch
-**Scale/Scope**: Shared policy module, TOML config binding, capital reservation, NT-derived sizing-state validation, configured submit-admission enforcement, NT portfolio/position runtime feed, configured NT risk-state/market-exit loss-halt actions, and focused tests; later slices must add the operator clear-to-Active live command surface and remaining production-grade position-sizer gaps
+**Constraints**: No hardcoded runtime thresholds, no alternate account truth, no Bolt-built cancel/flatten side effects, and no flat-position claim from submit-admission or NT risk-state
+**Scale/Scope**: Shared policy module, TOML config binding, capital reservation, NT-derived sizing-state validation, configured submit-admission enforcement, NT portfolio/position/account runtime feed, configured NT risk-state loss-halt actions, a live manual-recovery method, explicit rejection of active market-exit config, and focused tests; later slices must add Bolt-owned loss-halt exit execution, the external operator clear-to-Active command surface, and remaining production-grade position-sizer gaps
 
 ## Constitution Check
 
@@ -60,7 +60,7 @@ src/
 └── lib.rs
 ```
 
-**Structure Decision**: Keep strategy files unchanged. Put policy math, reservation, sizing-state validation, product liability calculation, NT portfolio/position feed derivation, and loss-halt action policy in shared modules. Configured active exits use NT strategy-control primitives rather than Bolt-built orders.
+**Structure Decision**: Keep strategy files unchanged. Put policy math, reservation, sizing-state validation, product liability calculation, NT portfolio/account/position feed derivation, and loss-halt action policy in shared modules. Configured active exits remain disabled until they can use a Bolt-owned submit/cancel path.
 
 ## Phase 0: Research
 

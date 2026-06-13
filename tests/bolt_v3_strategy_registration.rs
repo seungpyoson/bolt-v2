@@ -27,7 +27,6 @@ use nautilus_model::{
     enums::OrderSide,
     identifiers::{ClientId, InstrumentId, StrategyId, Venue},
 };
-use nautilus_system::trader::Trader;
 use rust_decimal::Decimal;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -512,36 +511,6 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     assert_eq!(
         node.kernel().trader().borrow().strategy_ids(),
         vec![StrategyId::from("BOLT-V3-PHASE3-BINDING")]
-    );
-}
-
-#[test]
-fn nt_market_exit_strategy_reaches_running_stub_strategy_hook() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let mut empty_loaded = loaded.clone();
-    empty_loaded.strategies.clear();
-    let mut node = make_bolt_v3_live_node_builder(&empty_loaded)
-        .expect("v3 LiveNodeBuilder should construct before strategy registration")
-        .build()
-        .expect("v3 LiveNode should build before strategy registration");
-    let strategy_id = StrategyId::from("BOLT-V3-MARKET-EXIT-STUB");
-    let strategy = support::stub_runtime_strategy::StubRuntimeStrategy::new(strategy_id.as_str());
-    node.add_strategy(strategy)
-        .expect("stub strategy should register with NT trader");
-    let trader = node.kernel().trader().clone();
-    trader
-        .borrow()
-        .start_strategy(&strategy_id)
-        .expect("NT trader should start registered stub strategy");
-    let _ = support::stub_runtime_strategy::take_market_exit_calls();
-
-    Trader::market_exit_strategy(&trader, &strategy_id)
-        .expect("NT market exit command should reach registered strategy");
-
-    assert_eq!(
-        support::stub_runtime_strategy::take_market_exit_calls(),
-        vec![strategy_id]
     );
 }
 

@@ -5,7 +5,7 @@
 **Status**: Draft
 **Input**: Prompt `/Users/spson/Downloads/prompts/bolt-v2-circuit-breaker-goal.md`; GitHub issue #505.
 
-**PR #507 Scope Note**: PR #507 implemented the pure loss-governor and positional-sizing core, plus the configured loss-governor gate in shared submit admission. It wires `[risk.loss_governor]` into `bolt_v3_live_node`, subscribes a configured NT portfolio/position runtime feed that publishes loss snapshots to submit admission, rejects entry/replace risk before NT submit on missing/stale/breached loss facts, leaves risk-reducing exits eligible under existing caps, records schema-v6 halt evidence, and applies configured loss-halt actions through NT `RiskEngine::set_trading_state`. The follow-on market-exit slice adds configured dispatch through NT `Trader::market_exit_strategy`. Neither NT `Halted`/`Reducing` nor market-exit dispatch by itself proves the account is flat. The operator clear-to-Active live command surface remains later work.
+**PR #507 Scope Note**: PR #507 implemented the pure loss-governor and positional-sizing core, plus the configured loss-governor gate in shared submit admission. It wires `[risk.loss_governor]` into `bolt_v3_live_node`, subscribes a configured NT portfolio/position/account runtime feed that publishes loss snapshots to submit admission, rejects entry/replace risk before NT submit on missing/stale/breached loss facts, leaves risk-reducing exits eligible under existing caps, records schema-v6 halt evidence, applies configured loss-halt actions through NT `RiskEngine::set_trading_state`, and exposes a live runtime manual-recovery method that can return NT risk state to `Active` only with fresh accepted loss evidence and bounded operator evidence. The market-exit action fields remain explicit config, but active `all_registered_strategies` exits are rejected until loss-halt exits route through a Bolt-owned submit/cancel chokepoint. NT `Halted`/`Reducing` by itself does not prove the account is flat. The external operator clear-to-Active command surface remains later work.
 
 ## User Scenarios & Testing
 
@@ -79,12 +79,12 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - **FR-009**: System MUST reject entry and replace submits before NT submit when configured loss-governor policy rejects, while leaving risk-reducing exits governed by existing lifecycle and count caps.
 - **FR-010**: System MUST document NT support and NT gaps with exact pinned-source paths and line ranges.
 - **FR-011**: System MUST use TDD vertical slices before production behavior changes.
-- **FR-012**: System MUST NOT implement Bolt-built cancel, flatten, or bespoke venue side effects in this slice; configured active exits MUST use NT strategy-control primitives.
+- **FR-012**: System MUST NOT implement Bolt-built cancel, flatten, or bespoke venue side effects in this slice.
 - **FR-013**: System MUST require every `[risk.loss_governor]` threshold when the governor is enabled.
 - **FR-014**: System MUST evaluate loss snapshots against a conservative NT-derived observation timestamp for the facts in the snapshot and MUST evict expired rolling-window samples on fresh portfolio heartbeats.
 - **FR-015**: System MUST validate explicit loss-governor trading-state, market-exit, and recovery-mode actions when the governor is enabled.
-- **FR-016**: System MUST require configured active market exit to target NT `TradingState::Reducing`, not `Halted`, and MUST validate that loaded strategies use the configured loss-governor execution account.
-- **FR-017**: System MUST dispatch configured active loss-halt exits through NT `Trader::market_exit_strategy` for registered strategies after moving the NT risk engine to the configured state, with a Bolt-owned idempotency latch that records successful NT dispatches only.
+- **FR-016**: System MUST reject configured active market exit until loss-halt exits can route through a Bolt-owned submit/cancel chokepoint.
+- **FR-017**: System MUST keep explicit market-exit action fields validated as `none` for this slice and fail config validation on `all_registered_strategies`.
 
 ### Key Entities
 
@@ -92,7 +92,7 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - **LossSnapshot**: Fresh NT-derived PnL/equity facts plus source attribution and timestamp.
 - **LossAdmissionDecision**: Accept/reject decision with deterministic halt evidence.
 - **LossHaltReason**: Public reason enum for per-trade, daily, rolling, max-drawdown, and stale snapshot failures.
-- **LossGovernorRuntimeFeed**: Live in-process feed that derives governor snapshots from NT `PortfolioSnapshot` and `PositionEvent` messages for the configured account.
+- **LossGovernorRuntimeFeed**: Live in-process feed that derives governor snapshots from NT `PortfolioSnapshot`, `AccountState`, and `PositionEvent` messages for the configured account.
 
 ## Success Criteria
 
@@ -104,10 +104,10 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - **SC-004**: `cargo fmt --check` and `git diff --check` pass.
 - **SC-005**: Submit/live integration tests pass for `bolt_v3_submit_admission`.
 - **SC-006**: `cargo test --locked --test config_parsing` and `cargo test --locked --test bolt_v3_decision_evidence` pass.
-- **SC-007**: Final report separates submit-admission protection, NT trading-state protection, and NT market-exit dispatch from flat-position proof and operator clear-to-Active behavior.
+- **SC-007**: Final report separates submit-admission protection, NT trading-state protection, and the live manual-recovery method from flat-position proof, deferred active market-exit execution, and the external operator clear-to-Active command surface.
 
 ## Assumptions
 
 - Current pinned NautilusTrader revision is `6e059dcbb59ac1e582132fc431a581936c216c3c`.
 - Issue #505 is the tracking issue for this slice.
-- PR #507 wires configured submit-admission loss protection, the live NT runtime feed that refreshes snapshots, and explicit NT `RiskEngine::set_trading_state` side effects for configured loss halts. The follow-on market-exit slice adds configured NT `Trader::market_exit_strategy` dispatch for loss halts. The operator clear-to-Active surface remains later work.
+- PR #507 wires configured submit-admission loss protection, the live NT runtime feed that refreshes snapshots, explicit NT `RiskEngine::set_trading_state` side effects for configured loss halts, and the live runtime manual-recovery method. Active market-exit execution and the external operator clear-to-Active command surface remain later work.

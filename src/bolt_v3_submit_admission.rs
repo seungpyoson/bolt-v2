@@ -396,6 +396,22 @@ impl BoltV3SubmitAdmissionState {
             .loss_snapshot = Some(snapshot);
     }
 
+    pub fn loss_governor_policy(&self) -> Option<LossGovernorPolicy> {
+        self.inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .loss_policy
+            .clone()
+    }
+
+    pub fn loss_snapshot(&self) -> Option<LossSnapshot> {
+        self.inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .loss_snapshot
+            .clone()
+    }
+
     pub fn update_position_sizing_nt_components(
         &self,
         components: BoltV3SubmitPositionSizingNtComponents,

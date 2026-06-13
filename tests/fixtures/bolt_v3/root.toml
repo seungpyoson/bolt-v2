@@ -116,6 +116,7 @@ on_untrusted_snapshot_trading_state = "reducing"
 on_loss_breach_market_exit = "none"
 on_untrusted_snapshot_market_exit = "none"
 recovery_mode = "manual"
+manual_recovery_evidence_max_path_bytes = 256
 max_per_trade_loss = "2.50"
 max_daily_loss = "7.50"
 max_rolling_loss = "10.00"

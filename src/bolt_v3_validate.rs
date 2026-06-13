@@ -37,12 +37,11 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     path::Path,
-    str::FromStr,
 };
 
 use nautilus_model::{
     enums::{BarAggregation, BarIntervalType},
-    identifiers::{AccountId, ClientOrderId, InstrumentId},
+    identifiers::{ClientOrderId, InstrumentId},
 };
 use rust_decimal::Decimal;
 
@@ -57,9 +56,7 @@ use crate::bolt_v3_config::{
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
-use crate::bolt_v3_loss_halt_actions::{
-    LossGovernorMarketExitAction, LossGovernorTradingStateAction,
-};
+use crate::bolt_v3_loss_halt_actions::LossGovernorMarketExitAction;
 use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 
 #[derive(Debug)]
@@ -136,7 +133,6 @@ const TARGET_RESOLUTION_KIND_FIELD: &str = "resolution_kind";
 const TARGET_PROVIDER_ID_FIELD: &str = "provider_id";
 const TARGET_PROVIDER_PREFERENCE_FIELD: &str = "provider_preference";
 const TARGET_ALLOWED_PROVIDER_IDS_FIELD: &str = "allowed_provider_ids";
-const EXECUTION_ACCOUNT_ID_FIELD: &str = stringify!(account_id);
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct ResolutionFeedBindingKey {
@@ -1255,33 +1251,32 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                     "risk.loss_governor.recovery_mode",
                     loss_governor.recovery_mode.is_some(),
                 ),
+                (
+                    "risk.loss_governor.manual_recovery_evidence_max_path_bytes",
+                    loss_governor
+                        .manual_recovery_evidence_max_path_bytes
+                        .is_some(),
+                ),
             ] {
                 if !configured {
                     errors.push(format!("{label} must be configured when enabled"));
                 }
             }
-            errors.extend(validate_loss_governor_market_exit_pair(
-                "risk.loss_governor.on_loss_breach",
-                loss_governor.on_loss_breach_trading_state,
-                loss_governor.on_loss_breach_market_exit,
-            ));
+            if loss_governor
+                .manual_recovery_evidence_max_path_bytes
+                .is_some_and(|limit| limit == usize::MIN)
+            {
+                errors.push(
+                    "risk.loss_governor.manual_recovery_evidence_max_path_bytes must be a positive integer"
+                        .to_string(),
+                );
+            }
             errors.extend(validate_loss_governor_market_exit_supported(
                 "risk.loss_governor.on_loss_breach",
                 loss_governor.on_loss_breach_market_exit,
             ));
-            errors.extend(validate_loss_governor_market_exit_pair(
-                "risk.loss_governor.on_untrusted_snapshot",
-                loss_governor.on_untrusted_snapshot_trading_state,
-                loss_governor.on_untrusted_snapshot_market_exit,
-            ));
             errors.extend(validate_loss_governor_market_exit_supported(
                 "risk.loss_governor.on_untrusted_snapshot",
-                loss_governor.on_untrusted_snapshot_market_exit,
-            ));
-            errors.extend(validate_loss_governor_market_exit_combination(
-                loss_governor.on_loss_breach_trading_state,
-                loss_governor.on_untrusted_snapshot_trading_state,
-                loss_governor.on_loss_breach_market_exit,
                 loss_governor.on_untrusted_snapshot_market_exit,
             ));
         }
@@ -2096,28 +2091,6 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
     errors
 }
 
-fn validate_loss_governor_market_exit_pair(
-    label_prefix: &str,
-    trading_state: Option<LossGovernorTradingStateAction>,
-    market_exit: Option<LossGovernorMarketExitAction>,
-) -> Vec<String> {
-    if !matches!(
-        market_exit,
-        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
-    ) {
-        return Vec::new();
-    }
-    if matches!(
-        trading_state,
-        Some(LossGovernorTradingStateAction::Reducing)
-    ) {
-        return Vec::new();
-    }
-    vec![format!(
-        "{label_prefix}_market_exit=all_registered_strategies requires {label_prefix}_trading_state=reducing"
-    )]
-}
-
 fn validate_loss_governor_market_exit_supported(
     label_prefix: &str,
     market_exit: Option<LossGovernorMarketExitAction>,
@@ -2133,63 +2106,8 @@ fn validate_loss_governor_market_exit_supported(
     )]
 }
 
-fn validate_loss_governor_market_exit_combination(
-    on_loss_breach_trading_state: Option<LossGovernorTradingStateAction>,
-    on_untrusted_snapshot_trading_state: Option<LossGovernorTradingStateAction>,
-    on_loss_breach_market_exit: Option<LossGovernorMarketExitAction>,
-    on_untrusted_snapshot_market_exit: Option<LossGovernorMarketExitAction>,
-) -> Vec<String> {
-    if !matches!(
-        on_loss_breach_market_exit,
-        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
-    ) && !matches!(
-        on_untrusted_snapshot_market_exit,
-        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
-    ) {
-        return Vec::new();
-    }
-
-    let mut errors = Vec::new();
-    if matches!(
-        on_loss_breach_trading_state,
-        Some(LossGovernorTradingStateAction::Halted)
-    ) {
-        errors.push(
-            "risk.loss_governor market_exit=all_registered_strategies cannot be combined with on_loss_breach_trading_state=halted; use reducing or disable market exit"
-                .to_string(),
-        );
-    }
-    if matches!(
-        on_untrusted_snapshot_trading_state,
-        Some(LossGovernorTradingStateAction::Halted)
-    ) {
-        errors.push(
-            "risk.loss_governor market_exit=all_registered_strategies cannot be combined with on_untrusted_snapshot_trading_state=halted; use reducing or disable market exit"
-                .to_string(),
-        );
-    }
-    errors
-}
-
 pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy]) -> Vec<String> {
     let mut errors = Vec::new();
-    let loss_governor_market_exit_enabled = root
-        .risk
-        .loss_governor
-        .as_ref()
-        .is_some_and(loss_governor_market_exit_enabled);
-    if loss_governor_market_exit_enabled {
-        if strategies.is_empty() {
-            errors.push(
-                "risk.loss_governor market_exit=all_registered_strategies requires at least one loaded strategy"
-                    .to_string(),
-            );
-        }
-        errors.extend(validate_loss_governor_market_exit_strategy_accounts(
-            root, strategies,
-        ));
-    }
-
     let mut seen_instance_ids: HashSet<&str> = HashSet::new();
     let mut seen_order_id_tags: HashSet<&str> = HashSet::new();
     let mut seen_target_ids: HashSet<String> = HashSet::new();
@@ -2296,65 +2214,6 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
     errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));
 
     errors
-}
-
-fn loss_governor_market_exit_enabled(
-    loss_governor: &crate::bolt_v3_config::LossGovernorBlock,
-) -> bool {
-    loss_governor.enabled
-        && (matches!(
-            loss_governor.on_loss_breach_market_exit,
-            Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
-        ) || matches!(
-            loss_governor.on_untrusted_snapshot_market_exit,
-            Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
-        ))
-}
-
-fn validate_loss_governor_market_exit_strategy_accounts(
-    root: &BoltV3RootConfig,
-    strategies: &[LoadedStrategy],
-) -> Vec<String> {
-    let Some(loss_governor) = root.risk.loss_governor.as_ref() else {
-        return Vec::new();
-    };
-    let mut errors = Vec::new();
-    for loaded in strategies {
-        let strategy = &loaded.config;
-        let context = format!("strategy `{}`", loaded.relative_path);
-        let execution_client_id = strategy.execution_client_id.as_str();
-        let Some(client) = root.clients.get(execution_client_id) else {
-            continue;
-        };
-        let Some(execution) = client.execution.as_ref() else {
-            continue;
-        };
-        match execution_account_id(execution) {
-            Ok(account_id) if account_id == loss_governor.account_id => {}
-            Ok(account_id) => errors.push(format!(
-                "{context}: market_exit=all_registered_strategies requires execution_client_id `{execution_client_id}` account_id `{account_id}` to match risk.loss_governor.account_id `{}`",
-                loss_governor.account_id
-            )),
-            Err(message) => errors.push(format!(
-                "{context}: market_exit=all_registered_strategies requires execution_client_id `{execution_client_id}` [execution].account_id to match risk.loss_governor.account_id `{}` ({message})",
-                loss_governor.account_id
-            )),
-        }
-    }
-    errors
-}
-
-fn execution_account_id(execution: &toml::Value) -> Result<AccountId, &'static str> {
-    let Some(table) = execution.as_table() else {
-        return Err("execution block must be a TOML table");
-    };
-    let Some(account_id) = table.get(EXECUTION_ACCOUNT_ID_FIELD) else {
-        return Err("missing account_id");
-    };
-    let Some(account_id) = account_id.as_str() else {
-        return Err("account_id must be a string");
-    };
-    AccountId::new_checked(account_id).map_err(|_| "account_id is not a valid NT account id")
 }
 
 fn validate_target_gate_provider_references(

@@ -99,8 +99,10 @@ use crate::{
     },
     bolt_v3_loss_governor::{LossGovernorPolicy, evaluate_loss_admission},
     bolt_v3_loss_halt_actions::{
-        LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy, LossGovernorMarketExitAction,
-        LossGovernorRecoveryMode, LossGovernorTradingStateAction, next_loss_governor_halt_action,
+        LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy,
+        LossGovernorManualRecoveryEvidence, LossGovernorManualRecoveryRequest,
+        LossGovernorMarketExitAction, LossGovernorRecoveryMode, LossGovernorTradingStateAction,
+        next_loss_governor_halt_action, next_loss_governor_manual_recovery_trading_state,
     },
     bolt_v3_loss_runtime_feed::{
         LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
@@ -156,6 +158,7 @@ pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     registration_summary: BoltV3RegistrationSummary,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
     loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
@@ -1098,6 +1101,7 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
 }
 
 struct BoltV3LiveNodeRuntimeFeeds {
+    loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
     loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
@@ -1119,6 +1123,7 @@ impl BoltV3LiveNodeRuntime {
             node,
             registration_summary,
             submit_admission,
+            loss_halt_action_policy: feeds.loss_halt_action_policy,
             loss_runtime_feed: feeds.loss_runtime_feed,
             loss_runtime_feed_subscription: feeds.loss_runtime_feed_subscription,
             position_sizer_runtime_feed: feeds.position_sizer_runtime_feed,
@@ -1194,6 +1199,35 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn nt_risk_trading_state(&self) -> TradingState {
         self.node.kernel().risk_engine().borrow().trading_state()
+    }
+
+    pub fn apply_loss_governor_manual_recovery(
+        &self,
+        evidence: &LossGovernorManualRecoveryEvidence,
+        now_ns: u64,
+    ) -> Option<TradingState> {
+        let loss_policy = self.submit_admission.loss_governor_policy()?;
+        let action_policy = self.loss_halt_action_policy.as_ref()?;
+        let snapshot = self.submit_admission.loss_snapshot();
+        let decision = evaluate_loss_admission(&loss_policy, snapshot.as_ref(), now_ns);
+        let current_state = self.nt_risk_trading_state();
+        let target =
+            next_loss_governor_manual_recovery_trading_state(LossGovernorManualRecoveryRequest {
+                policy: action_policy,
+                current_state,
+                decision: &decision,
+                snapshot: snapshot.as_ref(),
+                now_ns,
+                max_snapshot_age_ns: loss_policy.max_snapshot_age_ns,
+                evidence: Some(evidence),
+                max_evidence_path_bytes: action_policy.manual_recovery_evidence_max_path_bytes,
+            })?;
+        self.node
+            .kernel()
+            .risk_engine()
+            .borrow_mut()
+            .set_trading_state(target);
+        Some(target)
     }
 
     pub fn position_sizer_configured(&self) -> bool {
@@ -1317,18 +1351,21 @@ impl BoltV3LiveNodeRuntime {
             };
         drop(cache);
 
+        let account_cache_is_authoritative = cached_account_balances.is_some();
         // Seed live NT order and position state before rebuilding reservations from the same snapshot.
         if let Some(feed) = self.position_sizer_runtime_feed.as_ref() {
             let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some((free_collateral, total_equity)) = cached_account_balances {
                 feed.seed_account_portfolio_snapshot(free_collateral, total_equity, now_ns);
             }
-            feed.seed_cache_snapshot(
-                open_client_order_ids.clone(),
-                yes_position,
-                no_position,
-                now_ns,
-            );
+            if account_cache_is_authoritative || !open_client_order_ids.is_empty() {
+                feed.seed_cache_snapshot(
+                    open_client_order_ids.clone(),
+                    yes_position,
+                    no_position,
+                    now_ns,
+                );
+            }
         }
 
         let recovered_reservations = if open_order_snapshots.is_empty() {
@@ -2337,9 +2374,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             ),
             _ => None,
         };
-    if let Some(handler) = loss_halt_action_handler.as_ref() {
-        handler(None, startup_observed_at_ns);
-    }
     let (loss_runtime_feed, loss_runtime_feed_subscription) =
         match loss_governor_runtime_feed_config_from_loaded(loaded) {
             Some(config) => {
@@ -2359,6 +2393,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         summary.clone(),
         submit_admission,
         BoltV3LiveNodeRuntimeFeeds {
+            loss_halt_action_policy,
             loss_runtime_feed,
             loss_runtime_feed_subscription,
             position_sizer_runtime_feed,
@@ -2636,6 +2671,10 @@ fn loss_governor_halt_action_policy_from_loaded(
             "risk.loss_governor.recovery_mode",
             block.recovery_mode,
         )?,
+        manual_recovery_evidence_max_path_bytes: required_loss_governor_usize(
+            "risk.loss_governor.manual_recovery_evidence_max_path_bytes",
+            block.manual_recovery_evidence_max_path_bytes,
+        )?,
     }))
 }
 
@@ -2658,6 +2697,20 @@ fn required_loss_governor_recovery_mode(
     value: Option<LossGovernorRecoveryMode>,
 ) -> Result<LossGovernorRecoveryMode, BoltV3LiveNodeError> {
     value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))
+}
+
+fn required_loss_governor_usize(
+    label: &'static str,
+    value: Option<usize>,
+) -> Result<usize, BoltV3LiveNodeError> {
+    let value =
+        value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))?;
+    if value == usize::MIN {
+        return Err(BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+            "{label} must be positive"
+        )));
+    }
+    Ok(value)
 }
 
 fn loss_governor_halt_action_handler_from_node(
@@ -3041,6 +3094,7 @@ mod tests {
         DataClientReadinessProbeQuoteTargetBlock, DataClientReadinessProbeQuoteTargetSource,
         ReferenceDataBlock,
     };
+    use crate::bolt_v3_loss_governor::LossSnapshot;
     use crate::bolt_v3_providers::hyperliquid::{
         ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
     };
@@ -3209,6 +3263,42 @@ mod tests {
         let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
             .expect("fixture v3 LiveNode should build");
 
+        assert_eq!(runtime.nt_risk_trading_state(), TradingState::Active);
+    }
+
+    #[test]
+    fn manual_recovery_evidence_clears_live_reducing_state_after_fresh_snapshot() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+        runtime
+            .node
+            .kernel()
+            .risk_engine()
+            .borrow_mut()
+            .set_trading_state(TradingState::Reducing);
+        runtime.submit_admission.update_loss_snapshot(LossSnapshot {
+            source: "nt_loss_runtime_feed".to_string(),
+            observed_at_ns: 2_000,
+            per_trade_pnl: Some(Decimal::ZERO),
+            daily_pnl: Some(Decimal::ZERO),
+            rolling_pnl: Some(Decimal::ZERO),
+            current_equity: Some(Decimal::new(100, 0)),
+            peak_equity: Some(Decimal::new(100, 0)),
+        });
+        let evidence = LossGovernorManualRecoveryEvidence::new(
+            "operator-primary",
+            "loss-governor/manual-recovery.json",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            2_050,
+            256,
+        )
+        .expect("bounded manual recovery evidence should validate");
+
+        let target = runtime.apply_loss_governor_manual_recovery(&evidence, 2_100);
+
+        assert_eq!(target, Some(TradingState::Active));
         assert_eq!(runtime.nt_risk_trading_state(), TradingState::Active);
     }
 

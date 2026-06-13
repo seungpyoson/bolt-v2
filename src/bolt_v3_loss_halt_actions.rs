@@ -51,6 +51,7 @@ pub struct LossGovernorHaltActionPolicy {
     pub on_loss_breach_market_exit: LossGovernorMarketExitAction,
     pub on_untrusted_snapshot_market_exit: LossGovernorMarketExitAction,
     pub recovery_mode: LossGovernorRecoveryMode,
+    pub manual_recovery_evidence_max_path_bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -412,6 +413,7 @@ mod tests {
             on_loss_breach_market_exit: LossGovernorMarketExitAction::None,
             on_untrusted_snapshot_market_exit: LossGovernorMarketExitAction::None,
             recovery_mode: LossGovernorRecoveryMode::Manual,
+            manual_recovery_evidence_max_path_bytes: 128,
         }
     }
 
@@ -427,6 +429,7 @@ mod tests {
             on_loss_breach_market_exit,
             on_untrusted_snapshot_market_exit,
             recovery_mode: LossGovernorRecoveryMode::Manual,
+            manual_recovery_evidence_max_path_bytes: 128,
         }
     }
 

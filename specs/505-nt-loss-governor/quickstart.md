@@ -6,7 +6,7 @@
 cargo test --locked --lib bolt_v3_loss_governor -- --nocapture
 cargo test --locked --test config_parsing loss_governor -- --nocapture
 cargo test --locked --test bolt_v3_loss_runtime_feed -- --nocapture
-cargo test --locked --test bolt_v3_strategy_registration nt_market_exit_strategy_reaches_running_stub_strategy_hook -- --nocapture
+cargo test --locked --test bolt_v3_submit_admission loss_governor -- --nocapture
 ```
 
 ## Full Verification
@@ -31,4 +31,4 @@ Expected output is empty for this slice.
 
 ## Proof Boundary
 
-Passing tests in PR #507 and the market-exit follow-on prove pure policy behavior, config binding, NT-derived sizing-state validation, worst-case binary liability sizing, capital-reservation reserve/release/rebuild/revalue behavior, pure already-attributed lifecycle update dispatch, configured submit-admission loss rejection before NT submit, configured NT event-feed snapshot derivation, configured NT `RiskEngine::set_trading_state` halt actions, and configured NT `Trader::market_exit_strategy` dispatch to registered strategies. They do not prove the account is flat, implement the operator clear-to-Active command surface, or close the remaining production-grade position-sizer gaps.
+Passing tests in PR #507 and the consolidation prove pure policy behavior, config binding, NT-derived sizing-state validation, worst-case binary liability sizing, capital-reservation reserve/release/rebuild/revalue behavior, pure already-attributed lifecycle update dispatch, configured submit-admission loss rejection before NT submit, configured NT event-feed snapshot derivation, configured NT `RiskEngine::set_trading_state` halt actions, live manual recovery with bounded operator evidence, and validation that direct active market-exit config is rejected. They do not prove the account is flat, implement active loss-halt exit execution, implement the external operator command surface, or close the remaining production-grade position-sizer gaps.

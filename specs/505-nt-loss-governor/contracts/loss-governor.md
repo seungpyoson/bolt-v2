@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Evaluate whether Bolt may admit new risk using only fresh NT-derived loss/equity facts and configured policy thresholds. PR #507 provides the pure evaluator, positional-sizing core, configured enforcement at the shared submit-admission boundary, a configured NT portfolio/position runtime feed that publishes loss snapshots to submit admission, and configured NT trading-state actions. The market-exit follow-on adds configured NT `Trader::market_exit_strategy` dispatch for active loss halts.
+Evaluate whether Bolt may admit new risk using only fresh NT-derived loss/equity facts and configured policy thresholds. PR #507 provides the pure evaluator, positional-sizing core, configured enforcement at the shared submit-admission boundary, a configured NT portfolio/account/position runtime feed that publishes loss snapshots to submit admission, configured NT trading-state actions, and live manual recovery guarded by fresh accepted loss evidence plus bounded operator evidence. Active market-exit config is rejected until loss-halt exits can route through a Bolt-owned submit/cancel chokepoint.
 
 ## Public Behavior
 
@@ -65,4 +65,4 @@ This slice must not edit:
 
 - `src/strategies/binary_oracle_edge_taker.rs`
 
-The final report must state that submit-admission protection, NT trading-state protection, and NT market-exit dispatch do not prove flat-position behavior.
+The final report must state that submit-admission protection, NT trading-state protection, and manual recovery do not prove flat-position behavior; active market-exit execution is deferred.

@@ -198,6 +198,7 @@ pub struct LossGovernorBlock {
     pub on_loss_breach_market_exit: Option<LossGovernorMarketExitAction>,
     pub on_untrusted_snapshot_market_exit: Option<LossGovernorMarketExitAction>,
     pub recovery_mode: Option<LossGovernorRecoveryMode>,
+    pub manual_recovery_evidence_max_path_bytes: Option<usize>,
     pub max_per_trade_loss: Option<String>,
     pub max_daily_loss: Option<String>,
     pub max_rolling_loss: Option<String>,

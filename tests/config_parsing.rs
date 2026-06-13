@@ -5586,6 +5586,10 @@ fn parses_loss_governor_market_exit_actions_from_root_fixture() {
         loss_governor.recovery_mode,
         Some(LossGovernorRecoveryMode::Manual)
     );
+    assert_eq!(
+        loss_governor.manual_recovery_evidence_max_path_bytes,
+        Some(256)
+    );
 }
 
 #[test]
@@ -5607,6 +5611,45 @@ fn rejects_enabled_loss_governor_missing_halt_action_fields() {
 }
 
 #[test]
+fn rejects_enabled_loss_governor_missing_manual_recovery_evidence_path_limit() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("manual_recovery_evidence_max_path_bytes = 256\n", "");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("missing manual recovery limit fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.loss_governor.manual_recovery_evidence_max_path_bytes")
+                && message.contains("must be configured when enabled")
+        }),
+        "enabled loss governor should require explicit manual recovery evidence path limit: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_enabled_loss_governor_zero_manual_recovery_evidence_path_limit() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "manual_recovery_evidence_max_path_bytes = 256",
+        "manual_recovery_evidence_max_path_bytes = 0",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero manual recovery limit fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.loss_governor.manual_recovery_evidence_max_path_bytes")
+                && message.contains("positive integer")
+        }),
+        "enabled loss governor should reject zero manual recovery evidence path limit: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_loss_governor_market_exit_all_registered_strategies() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
@@ -5624,27 +5667,6 @@ fn rejects_loss_governor_market_exit_all_registered_strategies() {
                 && message.contains("bypass Bolt submit/cancel chokepoints")
         }),
         "market exit should be disabled until it can route through Bolt submit/cancel chokepoints: {messages:#?}"
-    );
-}
-
-#[test]
-fn rejects_loss_governor_market_exit_before_strategy_account_validation() {
-    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
-
-    let root_toml = replace_in_fixture_root(
-        "on_loss_breach_market_exit = \"none\"",
-        "on_loss_breach_market_exit = \"all_registered_strategies\"",
-    );
-    let root: BoltV3RootConfig =
-        toml::from_str(&root_toml).expect("market exit fixture should parse");
-    let messages = validate_root_only(&root);
-
-    assert!(
-        messages.iter().any(|message| {
-            message.contains("market_exit=all_registered_strategies")
-                && message.contains("use none")
-        }),
-        "unsupported market exit should fail at root validation: {messages:#?}"
     );
 }
 

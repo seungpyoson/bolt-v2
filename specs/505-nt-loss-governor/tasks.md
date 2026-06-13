@@ -74,7 +74,7 @@
 
 **Independent Test**: Submit-admission/live-node tests prove missing/breached loss snapshots reject new risk before NT submit, fresh below-limit snapshots admit, risk-reducing exits remain possible under existing caps, and live builds carry policy into submit admission.
 
-**PR #507 status**: PR #507 included configured submit-admission loss protection, live-node policy wiring, a configured NT portfolio/position runtime feed that publishes loss snapshots from subscribed NT events, and configured NT `RiskEngine::set_trading_state` halt actions. The market-exit follow-on adds configured dispatch through NT `Trader::market_exit_strategy`; it still does not include the operator clear-to-Active live command surface or flat-position proof.
+**PR #507 status**: PR #507 included configured submit-admission loss protection, live-node policy wiring, a configured NT portfolio/position/account runtime feed that publishes loss snapshots from subscribed NT events, configured NT `RiskEngine::set_trading_state` halt actions, and live manual recovery guarded by fresh accepted loss evidence plus bounded operator evidence. The market-exit action fields are explicit, but active `all_registered_strategies` exit config is rejected until loss-halt exits can route through a Bolt-owned submit/cancel chokepoint. It still does not include the external operator clear-to-Active command surface or flat-position proof.
 
 - [X] T023 [US3] Add failing submit-admission test for configured loss governor rejecting new risk without a fresh snapshot
 - [X] T024 [US3] Implement `BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor`, `update_loss_snapshot`, deterministic loss halt evidence, and `admit_at`
@@ -90,10 +90,11 @@
 - [X] T047 [US3] Require explicit loss-governor NT halt-action config and manual recovery mode
 - [X] T048 [US3] Apply configured loss-halt actions through NT `RiskEngine::set_trading_state` with monotonic severity and no auto-clear
 - [X] T049 [US3] Document that NT `Halted`/`Reducing` do not cancel working orders or flatten positions
-- [X] T050 [US3] Require explicit loss-governor market-exit action config and validate that enabled market exit targets NT `TradingState::Reducing`
-- [X] T051 [US3] Dispatch configured active market exit through NT `Trader::market_exit_strategy` for registered strategies after setting the NT risk engine to `Reducing`
-- [X] T052 [US3] Add a Bolt-owned idempotency latch so repeated breached snapshots do not repeatedly dispatch the same NT market-exit action
-- [X] T053 [US3] Add focused tests for market-exit decision policy, config validation, live halt wiring, and NT strategy-control delivery to a running strategy
+- [X] T049A [US3] Wire live manual recovery to set NT `Active` only after fresh accepted loss evidence and bounded operator evidence
+- [X] T050 [US3] Require explicit loss-governor market-exit action config and reject active market-exit actions until they route through Bolt submit/cancel chokepoints
+- [ ] T051 [US3] Dispatch configured active market exit through a Bolt-owned loss-halt exit path after setting the NT risk engine to `Reducing`
+- [ ] T052 [US3] Add a Bolt-owned idempotency latch so repeated breached snapshots do not repeatedly dispatch the same exit action
+- [X] T053 [US3] Add focused tests for market-exit decision policy, config validation, and live halt wiring
 
 ---
 

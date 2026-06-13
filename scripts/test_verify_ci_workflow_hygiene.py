@@ -1177,13 +1177,24 @@ def assert_workflow_hygiene_reviewer_regressions() -> None:
     s3_expected = "S3 active mutable target cache must be rejected"
     s3_stdout_cases = {
         "aws stdout extracted into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | tar -x -C target",
+        "aws stdout extracted into target with traditional tar options": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | tar xf - -C target",
         "aws stdout piped through cat into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | cat > target/cache.tar",
+        "aws stdout piped through cat with >& redirection into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | cat >& target/cache.tar",
         "aws stdout redirected into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - > target/cache.tar",
     }
     for name, script in s3_stdout_cases.items():
         errors = verifier.raw_rust_storage_errors(script)
         if s3_expected not in errors:
             raise AssertionError(f"{name} was not rejected: {errors!r}")
+
+    env_chdir_cases = [
+        "env -Ctarget aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+        "env -iC target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+    ]
+    for script in env_chdir_cases:
+        errors = verifier.raw_rust_storage_errors(script)
+        if s3_expected not in errors:
+            raise AssertionError(f"env chdir active target context was not rejected: {script!r} -> {errors!r}")
 
 
 def assert_required_job_indentation_is_actionable() -> None:

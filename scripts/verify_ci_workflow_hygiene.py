@@ -4037,12 +4037,12 @@ def output_redirection_targets(tokens: list[str], index: int) -> list[str]:
     cursor = 0
     while cursor < len(tail):
         token = tail[cursor]
-        if token in {">", ">>", "<>", ">|", "&>", "&>>"}:
+        if token in {">", ">>", "<>", ">|", ">&", "&>", "&>>"}:
             if cursor + 1 < len(tail):
                 targets.append(tail[cursor + 1])
             cursor += 2
             continue
-        match = re.match(r"^\d?(?:>>?|<>|>\||&>>?)(.+)$", token)
+        match = re.match(r"^(?:\d?(?:>>?|<>|>\||>&)|&>>?)(.+)$", token)
         if match is not None:
             targets.append(match.group(1))
         cursor += 1
@@ -4087,6 +4087,15 @@ def tar_extracts_to_active_target(
             extracts = True
             cursor += 1
             continue
+        if token and not token.startswith("-") and "x" in token and all(char.isalnum() or char == "-" for char in token):
+            extracts = True
+            if "C" in token:
+                suffix = token.split("C", 1)[1]
+                if suffix:
+                    directories.append(suffix)
+                elif cursor + 1 < len(tail):
+                    directories.append(tail[cursor + 1])
+                    cursor += 1
         if token.startswith("-") and not token.startswith("--") and "x" in token[1:]:
             extracts = True
         if token in {"-C", "--directory"} and cursor + 1 < len(tail):
@@ -4432,6 +4441,12 @@ def env_chdir_value(tokens: list[str]) -> str | None:
             return tokens[index + 1]
         if token.startswith("--chdir="):
             return token.split("=", 1)[1]
+        if token.startswith("-") and not token.startswith("--") and "C" in token[1:]:
+            suffix = token[1:].split("C", 1)[1]
+            if suffix:
+                return suffix
+            if index + 1 < command_index:
+                return tokens[index + 1]
     return None
 
 

@@ -73,6 +73,10 @@ verify-bolt-v3-pure-rust-runtime: check-workspace
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
 
+verify-ra-single-engine-import-boundary: check-workspace
+    python3 scripts/test_verify_ra_single_engine_import_boundary.py
+    python3 scripts/verify_ra_single_engine_import_boundary.py
+
 verify-bolt-v3-legacy-default-fence: check-workspace
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
     python3 scripts/verify_bolt_v3_legacy_default_fence.py
@@ -183,6 +187,8 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_schema_current.py
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
+    python3 scripts/test_verify_ra_single_engine_import_boundary.py
+    python3 scripts/verify_ra_single_engine_import_boundary.py
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
     python3 scripts/verify_bolt_v3_legacy_default_fence.py
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py

@@ -387,6 +387,56 @@ fn reference_fixtures_include_unselected_binary_option_source_proof() {
 }
 
 #[test]
+fn reference_fixtures_exercise_one_off_l2_dynamic_tick_size_replay_ban() {
+    // The per-report guard `assert_one_off_l2_blocks_dynamic_tick_size_replay`
+    // early-returns unless a fixture is (OneOffBackfillData, L2Replay). If the
+    // only matching fixture is ever flipped to another fidelity_class, that guard
+    // silently becomes vacuous. This test fails loud when no committed fixture
+    // exercises the (one-off, L2-replay) combination at all, and independently
+    // re-asserts the dynamic-tick-size-replay ban for every such fixture so the
+    // protection cannot decay into a no-op.
+    let reports = reference_source_proof_reports();
+
+    let one_off_l2_reports: Vec<_> = reports
+        .iter()
+        .filter(|(_, _, report)| {
+            report.usage_scope == SourceProofUsageScope::OneOffBackfillData
+                && report.fidelity_class == SourceProofFidelityClass::L2Replay
+        })
+        .collect();
+    assert!(
+        !one_off_l2_reports.is_empty(),
+        "at least one committed reference fixture must be (OneOffBackfillData, L2Replay) so the \
+         dynamic-tick-size-replay ban guard is exercised and cannot become vacuous"
+    );
+
+    for (path, _, report) in one_off_l2_reports {
+        assert!(
+            report.forbidden_claims.iter().any(|claim| {
+                let claim = claim.to_ascii_lowercase();
+                claim.contains("dynamic")
+                    && claim.contains("tick")
+                    && claim.contains("size")
+                    && claim.contains("replay")
+            }),
+            "one-off L2 fixture report {path:?} must forbid dynamic tick-size replay claims \
+             in forbidden_claims"
+        );
+        assert!(
+            report.claim_limits.iter().any(|limit| {
+                let claim = limit.claim.to_ascii_lowercase();
+                claim.contains("dynamic")
+                    && claim.contains("tick")
+                    && claim.contains("size")
+                    && claim.contains("replay")
+            }),
+            "one-off L2 fixture report {path:?} must bind the dynamic tick-size replay ban \
+             to a claim-limit record"
+        );
+    }
+}
+
+#[test]
 fn reference_fixtures_include_bounded_one_off_source_proof_scope() {
     let reports = reference_source_proof_reports();
 

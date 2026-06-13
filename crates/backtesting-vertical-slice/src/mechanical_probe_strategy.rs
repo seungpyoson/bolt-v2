@@ -150,12 +150,49 @@ impl MechanicalTradeReplayProbe {
     }
 }
 
+/// Re-quantizes a requested order size to an instrument's own size precision,
+/// failing loud if the size quantizes to zero.
+///
+/// NautilusTrader's matching engine rejects any order whose quantity precision
+/// is not *exactly* the instrument's `size_precision`, and the manifest carries
+/// `trade_size` as a free-form decimal whose parsed precision need not match the
+/// catalog instrument's `size_increment`-derived precision. Binding the order
+/// quantity through `instrument.try_make_qty` makes the probe correct for any
+/// (config size, instrument precision) pair rather than only one fixture.
+///
+/// This is a pure free fn so it can be unit-tested directly. It deliberately is
+/// **not** exercised through a `run_backtest`/`node.run()` test that asserts
+/// `on_start` errors: NT's `kernel.start_trader()` swallows an `on_start` `Err`
+/// (it logs the failure and does not propagate it), so a backtest-driven test
+/// asserting on the `on_start` error path would be false. The error contract is
+/// verified here at the helper boundary instead.
+fn quantize_trade_size_to_instrument(
+    instrument: &dyn Instrument,
+    instrument_id: InstrumentId,
+    requested: Quantity,
+) -> anyhow::Result<Quantity> {
+    instrument
+        .try_make_qty(requested.as_f64(), None)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "trade_size {} quantizes to zero against instrument {} \
+                 (size_increment precision {}): {}",
+                requested,
+                instrument_id,
+                instrument.size_precision(),
+                e,
+            )
+        })
+}
+
 nautilus_strategy!(MechanicalTradeReplayProbe);
 
 #[cfg(test)]
 mod tests {
     use nautilus_model::instruments::Instrument as _;
+    use nautilus_model::types::Quantity;
 
+    use super::quantize_trade_size_to_instrument;
     use crate::catalog_projection::{SpotInstrumentSpec, build_currency_pair};
 
     /// Baseline spec with size_increment "0.0001" (precision 4).
@@ -210,6 +247,61 @@ mod tests {
             "expected 'rounded to zero' in error, got: {msg}"
         );
     }
+
+    /// The extracted helper fails loud when a sub-increment trade_size quantizes
+    /// to zero, surfacing the probe-specific context (the "quantizes to zero
+    /// against instrument" message and the instrument's size precision).
+    #[test]
+    fn quantize_trade_size_fails_loud_for_sub_increment_size() {
+        let instrument = build_currency_pair(&probe_instrument_spec())
+            .expect("build_currency_pair must not fail for valid spec");
+        let instrument_id = instrument.id();
+        // "0.00001" has precision 5 < instrument size_increment 0.0001
+        // (precision 4) — it quantizes to zero against this instrument.
+        let requested = Quantity::from("0.00001");
+        let error = quantize_trade_size_to_instrument(&instrument, instrument_id, requested)
+            .expect_err("sub-increment trade_size must fail loud");
+        let msg = error.to_string();
+        assert!(
+            msg.contains("quantizes to zero against instrument"),
+            "expected 'quantizes to zero against instrument' in error, got: {msg}"
+        );
+        // The instrument's size precision (4) must be reported so the operator
+        // can see what precision the configured size was measured against.
+        assert!(
+            msg.contains(&format!(
+                "size_increment precision {}",
+                instrument.size_precision()
+            )),
+            "expected instrument size precision {} in error, got: {msg}",
+            instrument.size_precision()
+        );
+    }
+
+    /// The extracted helper quantizes a compatible trade_size and the returned
+    /// quantity adopts the instrument's own size precision, which is what the
+    /// matching engine requires.
+    #[test]
+    fn quantize_trade_size_adopts_instrument_size_precision() {
+        let instrument = build_currency_pair(&probe_instrument_spec())
+            .expect("build_currency_pair must not fail for valid spec");
+        let instrument_id = instrument.id();
+        // "0.01" has parsed precision 2; the instrument's size precision is 4.
+        let requested = Quantity::from("0.01");
+        assert_ne!(
+            requested.precision,
+            instrument.size_precision(),
+            "test premise: requested precision must differ from instrument precision"
+        );
+        let quantized = quantize_trade_size_to_instrument(&instrument, instrument_id, requested)
+            .expect("compatible trade_size must quantize");
+        assert!(quantized.is_positive(), "quantized size must be positive");
+        assert_eq!(
+            quantized.precision,
+            instrument.size_precision(),
+            "quantized size must adopt the instrument's size precision"
+        );
+    }
 }
 
 impl Debug for MechanicalTradeReplayProbe {
@@ -248,18 +340,7 @@ impl DataActor for MechanicalTradeReplayProbe {
                     self.instrument_id
                 )
             })?;
-            instrument
-                .try_make_qty(self.trade_size.as_f64(), None)
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "trade_size {} quantizes to zero against instrument {} \
-                         (size_increment precision {}): {}",
-                        self.trade_size,
-                        self.instrument_id,
-                        instrument.size_precision(),
-                        e,
-                    )
-                })?
+            quantize_trade_size_to_instrument(instrument, self.instrument_id, self.trade_size)?
         };
         self.trade_size = trade_size;
 

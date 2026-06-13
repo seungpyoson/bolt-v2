@@ -520,6 +520,121 @@ fn committed_source_universe_execution_acceptance_ledger_round_trips_through_eva
         "evaluator output must match the committed ledger; \
          if input artifacts changed, regenerate the committed ledger from the spec"
     );
+
+    // The struct `PartialEq` above can silently miss an added optional/default
+    // field that round-trips to a default. Compare the serialized bytes too: the
+    // writer emits `serde_json::to_vec_pretty` with no trailing newline, so the
+    // re-serialized evaluator output must be byte-identical to the committed file.
+    let reserialized = serde_json::to_vec_pretty(&evaluated).expect("serialize evaluated ledger");
+    assert_eq!(
+        reserialized, committed_bytes,
+        "re-serialized evaluator output must be byte-identical to the committed ledger JSON; \
+         a mismatch signals serialized field drift the struct PartialEq cannot see"
+    );
+}
+
+#[test]
+fn source_universe_execution_acceptance_blocks_on_spec_vs_artifact_family_mismatch() {
+    // Negative regression for the spec-vs-artifact family check: when a loaded
+    // artifact's `family` disagrees with the spec's declared `family`, the
+    // evaluator must push a `source_universe_spec_family_mismatch_<role>` blocking
+    // reason and mark the universe Blocked. This mirrors the pmxt-universe
+    // construction in the round-trip-free fixture test above (a conversion-queue
+    // artifact), but deliberately declares a spec family that disagrees with the
+    // artifact's `orderbook` family.
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let manifest_path = temp_dir.path().join("pmxt-source-universe-manifest.json");
+    let queue_path = temp_dir.path().join("pmxt-conversion-queue.json");
+    let output_dir = temp_dir.path().join("execution-ledger");
+    let spec_path = temp_dir
+        .path()
+        .join("source-universe-execution-acceptance-ledger.toml");
+
+    fs::write(&manifest_path, b"{}").expect("write pmxt manifest");
+    // The conversion-queue artifact carries `family: "orderbook"`.
+    fs::write(
+        &queue_path,
+        r#"{
+  "schema_version": "source-universe-conversion-queue.v1",
+  "queue_id": "source-universe-conversion-queue-pmxt-mismatch-test",
+  "status": "ready",
+  "manifest_id": "backfill-source-universe-object-manifest-pmxt-mismatch-test",
+  "universe_id": "backfill-source-universe-pmxt-mismatch-test",
+  "venue": "pmxt",
+  "source": "polymarket-v2-archive",
+  "family": "orderbook",
+  "table_family": "orderbook",
+  "source_manifest_path": "pmxt-source-universe-manifest.json",
+  "source_manifest_hash": "manifest-hash",
+  "output_prefix_template": "s3://example/pmxt/{symbol}",
+  "work_item_count": 1,
+  "pending_conversion_items": 1,
+  "total_source_bytes": 100,
+  "category_summaries": [],
+  "artifact_refs": [],
+  "work_items": [
+    {
+      "work_item_id": "pmxt:orderbook:POLYMARKET:2026-06-10T15:00:00Z:hash-a",
+      "work_state": "pending_conversion",
+      "source_binding": "polymarket-parquet-archive-index",
+      "table_family": "orderbook",
+      "category": "orderbook",
+      "symbol": "POLYMARKET",
+      "archive_date": "2026-06-10T15:00:00Z",
+      "source_uri": "s3://example/pmxt/a.parquet",
+      "source_url": "https://example.invalid/pmxt/a.parquet",
+      "source_hash_algorithm": "etag",
+      "source_hash": "hash-a",
+      "source_bytes": 100,
+      "schema_columns": ["timestamp", "market", "asset_id", "bids", "asks"],
+      "output_prefix": "s3://example/pmxt/a"
+    }
+  ]
+}"#,
+    )
+    .expect("write pmxt queue");
+    // The spec declares `family = "trades"`, which disagrees with the queue
+    // artifact's `orderbook` family above — the mismatch the check must catch.
+    fs::write(
+        &spec_path,
+        format!(
+            r#"ledger_id = "source-universe-execution-acceptance-ledger-mismatch-test"
+output_dir = "{output_dir}"
+
+[[universe]]
+universe_id = "backfill-source-universe-pmxt-mismatch-test"
+venue = "pmxt"
+source = "polymarket-v2-archive"
+family = "trades"
+source_universe_manifest_path = "{manifest_path}"
+source_universe_conversion_queue_path = "{queue_path}"
+"#,
+            output_dir = output_dir.display(),
+            manifest_path = manifest_path.display(),
+            queue_path = queue_path.display(),
+        ),
+    )
+    .expect("write spec");
+
+    let artifact = write_source_universe_execution_acceptance_ledger_from_spec_file(&spec_path)
+        .expect("write execution acceptance ledger");
+    let ledger: SourceUniverseExecutionAcceptanceLedger =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("ledger bytes"))
+            .expect("ledger parses");
+
+    let pmxt = record(&ledger, "backfill-source-universe-pmxt-mismatch-test");
+    assert_eq!(
+        pmxt.status,
+        SourceUniverseExecutionAcceptanceUniverseStatus::Blocked,
+        "a spec-vs-artifact family mismatch must mark the universe Blocked"
+    );
+    assert!(
+        pmxt.blocking_reasons
+            .iter()
+            .any(|reason| reason.starts_with("source_universe_spec_family_mismatch_")),
+        "expected a source_universe_spec_family_mismatch_<role> blocking reason, got: {:?}",
+        pmxt.blocking_reasons
+    );
 }
 
 fn record<'a>(

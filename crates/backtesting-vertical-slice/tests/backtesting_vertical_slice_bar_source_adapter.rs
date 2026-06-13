@@ -19,8 +19,8 @@ use std::io::{Cursor, Read, Write};
 
 use backtesting_vertical_slice::{
     canonical_bars::{
-        BarInstrumentIdentities, BarIntervalSource, BarMappingConfig, BarPriceSignPolicy,
-        normalize_csv_native_bars,
+        BAR_TRANSFORM_IDENTITY, BarInstrumentIdentities, BarIntervalSource, BarMappingConfig,
+        BarPriceSignPolicy, normalize_csv_native_bars,
     },
     canonical_trades::{CanonicalInstrumentIdentity, CsvTimestampUnit},
     catalog_projection::{SpotInstrumentSpec, project_canonical_bars_to_catalog, read_back_bars},
@@ -241,6 +241,7 @@ fn csv_native_bars_round_trip_to_catalog() {
         BARS_CSV,
         42,
         "ingest-run-test",
+        BAR_TRANSFORM_IDENTITY,
     )
     .expect("normalize csv bars");
     assert_eq!(tables.len(), 1, "single-instrument object yields one table");
@@ -302,6 +303,7 @@ fn csv_native_bars_in_zip_decodes_and_normalizes() {
         &csv_text,
         42,
         "ingest-run-test",
+        BAR_TRANSFORM_IDENTITY,
     )
     .expect("normalize bars decoded from zip");
     assert_eq!(tables.len(), 1);

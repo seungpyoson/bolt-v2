@@ -8,13 +8,24 @@
 //! 1. The superseded path gunzipped the *whole* tar into a single `Vec<u8>`
 //!    bounded at a fixed archive cap. Real archives are multiple gibibytes
 //!    uncompressed, so that approach either exhausts memory or rejects valid
-//!    data. Here decompression is streaming: [`flate2::read::GzDecoder`] wraps
-//!    the source reader and tar entries are read sequentially out of the
+//!    data. Here decompression is streaming: [`flate2::read::MultiGzDecoder`]
+//!    wraps the source reader and tar entries are read sequentially out of the
 //!    decompressed stream — the whole archive is never resident.
 //! 2. The superseded path returned only the *first* matching member and dropped
 //!    the rest. Here *every* member whose name ends with `member_suffix` is
 //!    yielded, in archive order, and non-matching members are skipped by
 //!    consuming (never retaining) their bytes.
+//!
+//! Decompression uses [`flate2::read::MultiGzDecoder`], not the single-stream
+//! `GzDecoder`. A gzip file is legitimately a concatenation of independent gzip
+//! members (the format is defined to be stream-concatenable, and producers such
+//! as parallel compressors and `cat a.gz b.gz` emit multi-member streams).
+//! `GzDecoder` stops at the end of the *first* gzip member and silently drops
+//! every subsequent member's bytes, which would truncate the tar mid-archive and
+//! lose every tar member carried after the first gzip stream. `MultiGzDecoder`
+//! transparently concatenates all gzip members into one decompressed byte
+//! stream, so the tar walk sees the whole archive regardless of how many gzip
+//! streams it was written as.
 //!
 //! Each yielded member's content read is bounded by `max_member_bytes` and fails
 //! loud naming the offending member when exceeded, so one pathological member
@@ -29,7 +40,7 @@
 use std::io::Read;
 
 use anyhow::{Context, Result, bail, ensure};
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 
 /// POSIX tar block size: headers and data are laid out in 512-byte blocks.
 const TAR_BLOCK: usize = 512;
@@ -60,8 +71,10 @@ pub struct TarMember {
 /// `member_suffix`.
 ///
 /// Decompression and tar walking are both streaming: `reader` is wrapped in a
-/// [`GzDecoder`] and tar entries are read sequentially from the decompressed
-/// stream, so the whole archive is never held in memory. Each *matching*
+/// [`MultiGzDecoder`] and tar entries are read sequentially from the decompressed
+/// stream, so the whole archive is never held in memory. A multi-member gzip
+/// stream is transparently concatenated, so no tar member is lost when the gzip
+/// was written as several streams. Each *matching*
 /// member's text is read under a `max_member_bytes` bound (per member, not
 /// cumulative); a non-matching member's bytes are consumed and discarded.
 ///
@@ -74,7 +87,7 @@ pub fn gzip_tar_members<R: Read>(
     max_member_bytes: u64,
 ) -> GzipTarMembers<R> {
     GzipTarMembers {
-        decoder: GzDecoder::new(reader),
+        decoder: MultiGzDecoder::new(reader),
         member_suffix: member_suffix.to_string(),
         max_member_bytes,
         done: false,
@@ -83,10 +96,10 @@ pub fn gzip_tar_members<R: Read>(
 
 /// Streaming iterator over the matching members of a gzip-compressed POSIX tar.
 ///
-/// Created by [`gzip_tar_members`]. Holds the streaming [`GzDecoder`] and the
+/// Created by [`gzip_tar_members`]. Holds the streaming [`MultiGzDecoder`] and the
 /// member filter; it never buffers more than one member's bytes at a time.
 pub struct GzipTarMembers<R: Read> {
-    decoder: GzDecoder<R>,
+    decoder: MultiGzDecoder<R>,
     member_suffix: String,
     max_member_bytes: u64,
     done: bool,
@@ -279,14 +292,20 @@ fn parse_name(header: &[u8; TAR_BLOCK]) -> String {
 }
 
 /// Parse the octal `size` field (bytes 124..136) of a tar header.
+///
+/// The POSIX/`ustar` size field is octal ASCII digits that may be surrounded by
+/// spaces and terminated by a space or NUL; different tar implementations
+/// left-pad, right-pad, or both. The field is therefore cut at its first NUL
+/// only (never at an interior space, which would drop a leading-space-padded
+/// value), then ASCII-trimmed before the octal parse. An all-NUL or all-space
+/// field trims to empty and fails loud.
 fn parse_octal_size(header: &[u8; TAR_BLOCK]) -> Result<u64> {
     let field = &header[SIZE_OFFSET..SIZE_OFFSET + SIZE_LEN];
-    let trimmed: Vec<u8> = field
+    let end = field
         .iter()
-        .take_while(|&&byte| byte != 0 && byte != b' ')
-        .copied()
-        .collect();
-    let text = std::str::from_utf8(&trimmed).context("tar size field is not ASCII")?;
+        .position(|&byte| byte == 0)
+        .unwrap_or(field.len());
+    let text = std::str::from_utf8(&field[..end]).context("tar size field is not ASCII")?;
     let text = text.trim();
     ensure!(!text.is_empty(), "tar size field is empty");
     u64::from_str_radix(text, 8).context("tar size field is not octal")
@@ -442,9 +461,94 @@ mod tests {
     }
 
     #[test]
+    fn parses_space_padded_octal_size_field() {
+        // POSIX/star tars may surround the octal size with spaces (leading,
+        // trailing, or both). The field must be cut at NUL only and ASCII-trimmed,
+        // not stopped at the first interior space — a leading-space-padded value
+        // must still parse to its octal magnitude.
+        let mut header = [0u8; TAR_BLOCK];
+        header[SIZE_OFFSET..SIZE_OFFSET + 9].copy_from_slice(b"   1750  ");
+        let size = parse_octal_size(&header).expect("space-padded octal size parses");
+        assert_eq!(size, 0o1750);
+    }
+
+    #[test]
+    fn streams_member_with_space_padded_size_field() {
+        // End-to-end: a real member whose header size field is leading-AND-
+        // trailing space padded must be read with the correct length, not
+        // rejected as empty. The data length is chosen to match the octal value.
+        let data = vec![b'q'; 0o12]; // 0o12 == 10 bytes.
+        let mut header = ustar_header("padded.data", data.len() as u64);
+        // Overwrite the size field with " 12 " surrounded by spaces, NUL-filled.
+        for byte in &mut header[SIZE_OFFSET..SIZE_OFFSET + SIZE_LEN] {
+            *byte = 0;
+        }
+        header[SIZE_OFFSET..SIZE_OFFSET + 4].copy_from_slice(b"  12");
+        header[SIZE_OFFSET + 4] = b' ';
+
+        let mut tar = Vec::new();
+        tar.extend_from_slice(&header);
+        tar.extend_from_slice(&data);
+        let padding = (TAR_BLOCK - data.len() % TAR_BLOCK) % TAR_BLOCK;
+        tar.extend(std::iter::repeat_n(0u8, padding));
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
+
+        let members = collect(gzip(&tar), ".data", 1024)
+            .expect("space-padded size field member streams cleanly");
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].name, "padded.data");
+        assert_eq!(members[0].text, "q".repeat(10));
+    }
+
+    #[test]
+    fn rejects_all_space_size_field() {
+        // An all-space (or all-NUL) size field trims to empty and must fail loud
+        // rather than parsing as zero.
+        let mut header = [0u8; TAR_BLOCK];
+        for byte in &mut header[SIZE_OFFSET..SIZE_OFFSET + SIZE_LEN] {
+            *byte = b' ';
+        }
+        let err = parse_octal_size(&header).expect_err("all-space size field must fail loud");
+        assert!(err.to_string().contains("empty"), "{err}");
+    }
+
+    #[test]
     fn empty_archive_yields_no_members() {
         let archive = gzip_tar(&[]);
         let members = collect(archive, ".data", 1024).expect("empty archive streams cleanly");
         assert!(members.is_empty());
+    }
+
+    #[test]
+    fn yields_all_members_across_concatenated_gzip_streams() {
+        // A gzip file is legitimately a concatenation of independent gzip
+        // members. Build the tar as two raw halves and gzip each half on its
+        // own, then concatenate the two gzip streams into one byte vector. The
+        // single-stream `GzDecoder` stops at the end of the first gzip member
+        // and silently drops the second member's tar bytes; `MultiGzDecoder`
+        // must concatenate both gzip streams so the whole tar (both members)
+        // is walked.
+        let mut first_half = Vec::new();
+        push_member(&mut first_half, "first.data", b"alpha");
+
+        let mut second_half = Vec::new();
+        push_member(&mut second_half, "second.data", b"omega");
+        // End-of-archive marker lives at the very end of the decompressed tar.
+        second_half.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
+
+        let mut concatenated = gzip(&first_half);
+        concatenated.extend_from_slice(&gzip(&second_half));
+
+        let members = collect(concatenated, ".data", 1024)
+            .expect("multi-member gzip stream walks the whole tar");
+        assert_eq!(
+            members.len(),
+            2,
+            "both gzip streams' tar members must be yielded"
+        );
+        assert_eq!(members[0].name, "first.data");
+        assert_eq!(members[0].text, "alpha");
+        assert_eq!(members[1].name, "second.data");
+        assert_eq!(members[1].text, "omega");
     }
 }

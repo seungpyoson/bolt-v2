@@ -288,8 +288,10 @@ mod tests {
     // binary-oracle-local `submit_orders` into the shared root-owned order
     // execution policy, removing the stale strategy-local field, and bringing
     // the shared execution-policy boundary into the gated strategy source set.
+    // Re-derived after split strategy tests imported the NT Strategy trait for
+    // direct callback method resolution.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "2b53fa3b9168ce65659ea50bb390c2a91225007f96921fe435565b6e14d67c1a";
+        "b70344e3e05b55107c4edd801f3614a556f7ae5f04fe6c47dba189363aa2e9a1";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

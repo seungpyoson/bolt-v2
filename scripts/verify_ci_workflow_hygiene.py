@@ -4016,6 +4016,7 @@ def local_transfer_operands(tokens: list[str], index: int) -> tuple[list[str], s
     tail = command_tail_until_boundary(tokens, index + 1)
     operands: list[str] = []
     target_directory: str | None = None
+    cluster_prefix_flags_without_argument = {"a", "d", "f", "H", "i", "L", "l", "n", "P", "p", "R", "r", "s", "u", "v", "x", "Z"}
     cursor = 0
     while cursor < len(tail):
         token = tail[cursor]
@@ -4030,6 +4031,18 @@ def local_transfer_operands(tokens: list[str], index: int) -> tuple[list[str], s
             target_directory = token[2:]
             cursor += 1
             continue
+        if token.startswith("-") and not token.startswith("--") and "t" in token[1:]:
+            prefix, suffix = token[1:].split("t", 1)
+            if set(prefix) <= cluster_prefix_flags_without_argument:
+                if suffix:
+                    target_directory = suffix
+                    cursor += 1
+                elif cursor + 1 < len(tail):
+                    target_directory = tail[cursor + 1]
+                    cursor += 2
+                else:
+                    cursor += 1
+                continue
         if token.startswith("--target-directory="):
             target_directory = token.split("=", 1)[1]
             cursor += 1
@@ -4097,79 +4110,110 @@ def record_local_transfer_paths(
         s3_paths.add(storage_path_key(destination))
 
 
+TAR_SHORT_OPTION_CLUSTER_FLAGS = set("AacdtruxvzjJfCOpPsSMWUmhk")
+TAR_SHORT_OPTIONS_WITH_ARGUMENT = {"C", "f"}
+
+
+def tar_cluster_looks_like_options(cluster: str) -> bool:
+    return bool(cluster) and set(cluster) <= TAR_SHORT_OPTION_CLUSTER_FLAGS
+
+
+def tar_option_parts(token: str, tail: list[str], index: int) -> tuple[set[str], dict[str, str], int, bool]:
+    flags: set[str] = set()
+    arguments: dict[str, str] = {}
+    consumed = 0
+    if token == "--":
+        return flags, arguments, consumed, True
+    if token in {"c", "-c", "--create"}:
+        flags.add("c")
+        return flags, arguments, consumed, True
+    if token in {"x", "-x", "--extract", "--get"}:
+        flags.add("x")
+        return flags, arguments, consumed, True
+    if token in {"-f", "--file"}:
+        if index + 1 < len(tail):
+            arguments["f"] = tail[index + 1]
+            consumed = 1
+        return flags, arguments, consumed, True
+    if token.startswith("--file="):
+        arguments["f"] = token.split("=", 1)[1]
+        return flags, arguments, consumed, True
+    if token in {"-C", "--directory"}:
+        if index + 1 < len(tail):
+            arguments["C"] = tail[index + 1]
+            consumed = 1
+        return flags, arguments, consumed, True
+    if token.startswith("--directory="):
+        arguments["C"] = token.split("=", 1)[1]
+        return flags, arguments, consumed, True
+    if token.startswith("--"):
+        return flags, arguments, consumed, True
+
+    traditional_cluster = False
+    cluster: str | None = None
+    if token.startswith("-") and len(token) > 1:
+        cluster = token[1:]
+    elif tar_cluster_looks_like_options(token):
+        cluster = token
+        traditional_cluster = True
+    if cluster is None:
+        return flags, arguments, consumed, False
+
+    argument_offset = 1
+    position = 0
+    while position < len(cluster):
+        flag = cluster[position]
+        if flag == "c":
+            flags.add("c")
+        elif flag == "x":
+            flags.add("x")
+        if flag in TAR_SHORT_OPTIONS_WITH_ARGUMENT:
+            suffix = cluster[position + 1 :]
+            if suffix and not (traditional_cluster or tar_cluster_looks_like_options(suffix)):
+                arguments[flag] = suffix
+                break
+            if index + argument_offset < len(tail):
+                arguments[flag] = tail[index + argument_offset]
+                consumed = max(consumed, argument_offset)
+                argument_offset += 1
+            position += 1
+            continue
+        position += 1
+    return flags, arguments, consumed, True
+
+
 def tar_writes_archive_to_stdout(tail: list[str]) -> bool:
     creates_archive = False
+    skip_count = 0
     for index, token in enumerate(tail):
-        if (
-            token
-            and not token.startswith("-")
-            and "c" in token
-            and all(char.isalnum() or char == "-" for char in token)
-        ):
-            creates_archive = True
-            if "f" in token:
-                suffix = token.split("f", 1)[1]
-                if suffix:
-                    return suffix == "-"
-                return index + 1 < len(tail) and tail[index + 1] == "-"
+        if skip_count:
+            skip_count -= 1
             continue
-        if token in {"c", "-c", "--create"}:
+        flags, arguments, consumed, _option_like = tar_option_parts(token, tail, index)
+        skip_count = consumed
+        if "c" in flags:
             creates_archive = True
-            continue
-        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
-            creates_archive = True
-        if token in {"-f", "--file"}:
-            return index + 1 < len(tail) and tail[index + 1] == "-"
-        if token.startswith("--file="):
-            return token.split("=", 1)[1] == "-"
-        if token.startswith("-") and not token.startswith("--") and "f" in token[1:]:
-            suffix = token[1:].split("f", 1)[1]
-            if suffix:
-                return suffix == "-"
-            return index + 1 < len(tail) and tail[index + 1] == "-"
+        if "f" in arguments:
+            return arguments["f"] == "-"
     return creates_archive
-
-
-def tar_file_argument(token: str, tail: list[str], index: int, flag: str) -> tuple[str | None, bool]:
-    if token in {f"-{flag}", "--file"}:
-        return (tail[index + 1], True) if index + 1 < len(tail) else (None, False)
-    if token.startswith("--file="):
-        return token.split("=", 1)[1], False
-    if token and not token.startswith("-") and flag in token and all(char.isalnum() or char == "-" for char in token):
-        suffix = token.split(flag, 1)[1]
-        if suffix:
-            return suffix, False
-        return (tail[index + 1], True) if index + 1 < len(tail) else (None, False)
-    if token.startswith("-") and not token.startswith("--") and flag in token[1:]:
-        suffix = token[1:].split(flag, 1)[1]
-        if suffix:
-            return suffix, False
-        return (tail[index + 1], True) if index + 1 < len(tail) else (None, False)
-    return None, False
 
 
 def tar_archive_creation(tail: list[str]) -> tuple[str | None, list[str]]:
     creates_archive = False
     archive: str | None = None
     sources: list[str] = []
-    skip_next = False
+    skip_count = 0
     for index, token in enumerate(tail):
-        if skip_next:
-            skip_next = False
+        if skip_count:
+            skip_count -= 1
             continue
-        if token in {"c", "-c", "--create"}:
+        flags, arguments, consumed, option_like = tar_option_parts(token, tail, index)
+        skip_count = consumed
+        if "c" in flags:
             creates_archive = True
-            continue
-        if token and not token.startswith("-") and "c" in token and all(char.isalnum() or char == "-" for char in token):
-            creates_archive = True
-        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
-            creates_archive = True
-        file_arg, consumed_next = tar_file_argument(token, tail, index, "f")
-        if file_arg is not None:
-            archive = file_arg
-            skip_next = consumed_next
-            continue
-        if token == "--" or token.startswith("-"):
+        if "f" in arguments:
+            archive = arguments["f"]
+        if option_like:
             continue
         sources.append(token)
     return (archive, sources) if creates_archive else (None, [])
@@ -4177,22 +4221,17 @@ def tar_archive_creation(tail: list[str]) -> tuple[str | None, list[str]]:
 
 def tar_archive_inputs(tail: list[str]) -> list[str]:
     archives: list[str] = []
-    skip_next = False
+    skip_count = 0
     for index, token in enumerate(tail):
-        if skip_next:
-            skip_next = False
+        if skip_count:
+            skip_count -= 1
             continue
-        if token in {"-C", "--directory"}:
-            skip_next = index + 1 < len(tail)
+        _flags, arguments, consumed, option_like = tar_option_parts(token, tail, index)
+        skip_count = consumed
+        if "f" in arguments and arguments["f"] != "-":
+            archives.append(arguments["f"])
             continue
-        if token.startswith("--directory="):
-            continue
-        file_arg, consumed_next = tar_file_argument(token, tail, index, "f")
-        if file_arg is not None and file_arg != "-":
-            archives.append(file_arg)
-            skip_next = consumed_next
-            continue
-        if token == "--" or token.startswith("-") or token in {"x", "c"}:
+        if option_like:
             continue
         archives.append(token)
     return archives
@@ -4476,48 +4515,24 @@ def tar_extracts_to_active_target(
     extracts = False
     directories: list[str] = []
     members: list[str] = []
-    skip_next = False
+    skip_count = 0
     cursor = 0
     while cursor < len(tail):
-        if skip_next:
-            skip_next = False
+        if skip_count:
+            skip_count -= 1
             cursor += 1
             continue
         token = tail[cursor]
-        if token in {"x", "-x", "--extract", "--get"}:
+        flags, arguments, consumed, option_like = tar_option_parts(token, tail, cursor)
+        skip_count = consumed
+        if "x" in flags:
             extracts = True
+        if "C" in arguments:
+            directories.append(arguments["C"])
+        if option_like:
             cursor += 1
             continue
-        if token and not token.startswith("-") and "x" in token and all(char.isalnum() or char == "-" for char in token):
-            extracts = True
-            if "C" in token:
-                suffix = token.split("C", 1)[1]
-                if suffix:
-                    directories.append(suffix)
-                elif cursor + 1 < len(tail):
-                    directories.append(tail[cursor + 1])
-                    skip_next = True
-        if token.startswith("-") and not token.startswith("--") and "x" in token[1:]:
-            extracts = True
-        file_arg, consumed_next = tar_file_argument(token, tail, cursor, "f")
-        if file_arg is not None:
-            skip_next = consumed_next
-            cursor += 1
-            continue
-        if token in {"-C", "--directory"} and cursor + 1 < len(tail):
-            directories.append(tail[cursor + 1])
-            cursor += 2
-            continue
-        if token.startswith("--directory="):
-            directories.append(token.split("=", 1)[1])
-        elif token.startswith("-") and not token.startswith("--") and "C" in token[1:]:
-            suffix = token[1:].split("C", 1)[1]
-            if suffix:
-                directories.append(suffix)
-            elif cursor + 1 < len(tail):
-                directories.append(tail[cursor + 1])
-                skip_next = True
-        elif token != "--" and not token.startswith("-"):
+        if token != "--":
             members.append(token)
         cursor += 1
     if not extracts:

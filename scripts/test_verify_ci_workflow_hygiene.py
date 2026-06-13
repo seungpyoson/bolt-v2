@@ -1765,6 +1765,10 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
             aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
             mv -t target s3_cache
         """,
+        "s3 download moved to active target through clustered mv target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            mv -vt target s3_cache
+        """,
         "s3 download moved to active target through concatenated mv target-directory option": """
             aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
             mv -ttarget s3_cache
@@ -1773,9 +1777,21 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
             aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
             cp --target-directory=target s3_cache
         """,
+        "s3 download copied to active target through clustered cp target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            cp -vt target s3_cache
+        """,
         "s3 download copied to active target through concatenated cp target-directory option": """
             aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
             cp -ttarget s3_cache
+        """,
+        "s3 tar extraction handles ordered traditional options": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
+            tar xCf target cache.tar
+        """,
+        "s3 tar extraction handles ordered clustered options": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
+            tar -xCf target cache.tar
         """,
         "s3 transfer hidden behind su command string": """
             su -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"

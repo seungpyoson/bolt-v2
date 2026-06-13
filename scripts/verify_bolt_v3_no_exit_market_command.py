@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Verify Bolt does not send NautilusTrader ExitMarket commands.
+"""Verify Bolt does not wire NautilusTrader market-exit control paths.
 
 Shadow mode forbids venue mutation under `submit_orders=false`. The NT
 `StrategyCommand::ExitMarket` control endpoint can route to `market_exit()`,
 which is outside Bolt's submit/cancel chokepoints, so Bolt production source
-must not wire a sender for that command.
+must not wire a sender for that command or call equivalent market-exit/close
+APIs directly.
 """
 
 from __future__ import annotations
@@ -22,6 +23,12 @@ from verify_bolt_v3_pure_rust_runtime import (
 
 
 @dataclass(frozen=True)
+class Rule:
+    label: str
+    pattern: re.Pattern[str]
+
+
+@dataclass(frozen=True)
 class Violation:
     path: str
     line: int
@@ -29,8 +36,20 @@ class Violation:
     excerpt: str
 
 
-EXIT_MARKET_COMMAND = re.compile(r"(?<![A-Za-z0-9_])ExitMarket(?![A-Za-z0-9_])")
-LABEL = "NT ExitMarket command sender"
+FORBIDDEN_RULES = (
+    Rule(
+        "NT ExitMarket command sender",
+        re.compile(r"(?<![A-Za-z0-9_])ExitMarket(?![A-Za-z0-9_])"),
+    ),
+    Rule(
+        "NT market-exit lifecycle API",
+        re.compile(
+            r"(?:\.|::)\s*"
+            r"(?:market_exit_strategy|exit_market|market_exit|cancel_all_orders|close_all_positions|close_position)"
+            r"\s*\("
+        ),
+    ),
+)
 
 
 def line_number(text: str, pos: int) -> int:
@@ -40,19 +59,20 @@ def line_number(text: str, pos: int) -> int:
 def find_violations_in_text(path: str, text: str) -> list[Violation]:
     scan_text = strip_rust_comments_and_literals(text)
     violations: list[Violation] = []
-    for match in EXIT_MARKET_COMMAND.finditer(scan_text):
-        line_start = text.rfind("\n", 0, match.start()) + 1
-        line_end = text.find("\n", match.end())
-        if line_end == -1:
-            line_end = len(text)
-        violations.append(
-            Violation(
-                path=path,
-                line=line_number(scan_text, match.start()),
-                label=LABEL,
-                excerpt=text[line_start:line_end].strip(),
+    for rule in FORBIDDEN_RULES:
+        for match in rule.pattern.finditer(scan_text):
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            line_end = text.find("\n", match.end())
+            if line_end == -1:
+                line_end = len(text)
+            violations.append(
+                Violation(
+                    path=path,
+                    line=line_number(scan_text, match.start()),
+                    label=rule.label,
+                    excerpt=text[line_start:line_end].strip(),
+                )
             )
-        )
     return violations
 
 

@@ -155,7 +155,8 @@ fn shadow_pnl_report_rejects_unrecognized_winning_side() {
     assert!(!output.status.success(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
     assert!(
-        stderr.contains("not a recognized binary outcome side"),
+        stderr.contains("settlement winning_side")
+            && stderr.contains("not a recognized binary outcome side"),
         "{stderr}"
     );
 }
@@ -212,7 +213,8 @@ fn shadow_pnl_report_rejects_unrecognized_selected_side() {
     assert!(!output.status.success(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
     assert!(
-        stderr.contains("not a recognized binary outcome side"),
+        stderr.contains("evidence selected_side")
+            && stderr.contains("not a recognized binary outcome side"),
         "{stderr}"
     );
 }

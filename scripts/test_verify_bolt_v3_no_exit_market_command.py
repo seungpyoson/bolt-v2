@@ -48,6 +48,32 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
 
         self.assertEqual({violation.line for violation in violations}, {2, 3})
 
+    def test_detects_snake_case_nt_market_exit_apis(self) -> None:
+        violations = VERIFIER.find_violations_in_text(
+            "src/probe.rs",
+            """
+            trader.market_exit_strategy(&strategy_id)?;
+            controller.exit_market(&instrument_id)?;
+            strategy.market_exit()?;
+            Strategy::market_exit(&mut strategy)?;
+            """,
+        )
+
+        self.assertEqual({violation.line for violation in violations}, {2, 3, 4, 5})
+
+    def test_detects_direct_nt_market_exit_lifecycle_apis(self) -> None:
+        violations = VERIFIER.find_violations_in_text(
+            "src/probe.rs",
+            """
+            self.cancel_all_orders(instrument_id, None)?;
+            self.close_all_positions(instrument_id, None)?;
+            self.close_position(position_id, None)?;
+            Strategy::close_position(self, position_id, None)?;
+            """,
+        )
+
+        self.assertEqual({violation.line for violation in violations}, {2, 3, 4, 5})
+
     def test_identifier_rules_do_not_match_substrings_or_comments(self) -> None:
         violations = VERIFIER.find_violations_in_text(
             "src/probe.rs",
@@ -55,6 +81,11 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
             // StrategyCommand::ExitMarket is allowed in comments.
             let last_exit_market_command = "documented elsewhere";
             let command = StrategyCommand::ExitMarketDisabled;
+            let market_exit_interval_ms = 250;
+            let market_exit_max_attempts = 7;
+            self.market_exit_disabled();
+            self.not_market_exit();
+            self.close_position_limit();
             sender.send(NotExitMarket { strategy_id })?;
             """,
         )

@@ -92,7 +92,8 @@ use super::{
     canonical_trades::{
         CanonicalInstrumentIdentity, CanonicalTradeRow, CanonicalTradesTable, CsvTimestampUnit,
         DELTAS_TRANSFORM_IDENTITY, EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY,
-        TRADE_SOURCE_TYPE_NATIVE, TradeAggressorSide, TradesPartition,
+        TAR_DELTAS_TRANSFORM_IDENTITY, TRADE_SOURCE_TYPE_NATIVE, TradeAggressorSide,
+        TradesPartition,
     },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
     tar_reader::TarMember,
@@ -320,7 +321,10 @@ pub enum DeltaInstrumentIdentities {
 impl DeltaInstrumentIdentities {
     /// Resolve the identity for one photo, given the configured instrument-key
     /// value (`None` for the single-instrument shape).
-    fn resolve(&self, instrument_key: Option<&str>) -> Result<&CanonicalInstrumentIdentity> {
+    pub(crate) fn resolve(
+        &self,
+        instrument_key: Option<&str>,
+    ) -> Result<&CanonicalInstrumentIdentity> {
         match self {
             Self::Single(identity) => {
                 ensure!(
@@ -341,11 +345,16 @@ impl DeltaInstrumentIdentities {
     }
 }
 
-/// Lowercase SHA-256 hex of the order-book-delta transform identity.
+/// Lowercase SHA-256 hex of the given transform identity string.
+///
+/// The caller selects the identity for the adapter being used (e.g.
+/// [`DELTAS_TRANSFORM_IDENTITY`] for the JSONL snapshot adapter). Later
+/// adapters (tar, parquet) pass their own identity constants so every
+/// adapter family stamps a distinct, correct `transform_hash`.
 #[must_use]
-pub fn delta_transform_hash() -> String {
+pub fn delta_transform_hash(identity: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(DELTAS_TRANSFORM_IDENTITY.as_bytes());
+    hasher.update(identity.as_bytes());
     hex::encode(hasher.finalize())
 }
 
@@ -696,6 +705,19 @@ fn check_event_stream_mapping(mapping: &DeltaMappingConfig) -> Result<()> {
             "converter deltas.instrument_key.key_field must not be empty when set"
         );
     }
+    // The event-stream family canonicalizes the monotonic ingest capture clock as
+    // the replay-ordering authority (per-instrument stable sort by
+    // (capture_time, source_row_index); availability_time carries the exchange
+    // time). Declaring event_time ordering here would contradict the clock the
+    // decoder actually uses, so reject it: the ordering knob must match the family
+    // that consumes it.
+    ensure!(
+        matches!(mapping.ordering, OrderingAuthority::CaptureTime),
+        "converter deltas.ordering must be capture_time for the event-stream delta \
+         family (capture time is the only clock guaranteed monotonic across a \
+         multi-instrument event stream); got {:?}",
+        mapping.ordering
+    );
     Ok(())
 }
 
@@ -956,8 +978,13 @@ fn expand_event_stream_into_tables(
     );
 
     let canonical_instrument_key_prefix = format!("{}/{}", accepted.venue, accepted.product_family);
-    let delta_transform_hash = delta_transform_hash();
-    let trade_transform_hash = event_stream_trade_transform_hash();
+    // Both families emitted here are produced by the ONE parquet event-stream
+    // transform, so both stamp the event-stream identity (distinct from the JSONL
+    // and tar snapshot delta identities). Stamping the delta table with the
+    // snapshot identity would misattribute its lineage.
+    let event_stream_transform_hash = delta_transform_hash(EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY);
+    let delta_transform_hash = event_stream_transform_hash.clone();
+    let trade_transform_hash = event_stream_transform_hash;
 
     let mut delta_tables = Vec::with_capacity(accumulator.order.len());
     let mut trade_tables = Vec::new();
@@ -970,7 +997,7 @@ fn expand_event_stream_into_tables(
         let mut group = accumulator
             .groups
             .remove(instrument_key)
-            .expect("group order entry has a populated group");
+            .context("internal: group order entry missing from groups map")?;
         // Capture-time replay order with the physical row-index tiebreak.
         group.sort_by_key(|raw| (raw.capture_time, raw.source_row_index));
 
@@ -994,33 +1021,42 @@ fn expand_event_stream_into_tables(
             decode_event_into(&decode_ctx, raw, &mut events, &mut trade_rows)?;
         }
 
-        let rows = expand_delta_events(
-            &delta_provenance,
-            mapping.ordering,
-            mapping.empty_book_policy,
-            &events,
-        )?;
-        let delta_table = CanonicalOrderBookDeltasTable {
-            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
-            partition: TradesPartition {
-                venue: accepted.venue.clone(),
-                product_family: accepted.product_family.clone(),
-                product_category: accepted.product_category.clone(),
-                instrument_id: identity.instrument_id.clone(),
-                dt: accepted.object.archive_date.clone(),
-            },
-            source_proof_id: accepted.source_proof_id.clone(),
-            source_proof_version: accepted.source_proof_version,
-            // Dual-fidelity rule: deltas inherit the accepted L2 archive's
-            // fidelity and forbidden claims verbatim.
-            fidelity_class: accepted.fidelity_class,
-            forbidden_claims: accepted.forbidden_claims.clone(),
-            transform_hash: delta_transform_hash.clone(),
-            payload_hash: accepted.object.sha256.clone(),
-            rows,
-        };
-        delta_table.validate()?;
-        delta_tables.push(delta_table);
+        // A keyed instrument can appear in the window with ONLY trade prints (no
+        // snapshot/level-change event). Under the dual-emit design a trade print
+        // is standalone trade-grade evidence, so such an instrument must still
+        // emit its trades table and simply produce NO deltas table — it must NOT
+        // abort the whole object. Only expand deltas when this instrument carried
+        // at least one book event; an empty `events` here is a trades-only
+        // instrument, not an error.
+        if !events.is_empty() {
+            let rows = expand_delta_events(
+                &delta_provenance,
+                mapping.ordering,
+                mapping.empty_book_policy,
+                &events,
+            )?;
+            let delta_table = CanonicalOrderBookDeltasTable {
+                schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+                partition: TradesPartition {
+                    venue: accepted.venue.clone(),
+                    product_family: accepted.product_family.clone(),
+                    product_category: accepted.product_category.clone(),
+                    instrument_id: identity.instrument_id.clone(),
+                    dt: accepted.object.archive_date.clone(),
+                },
+                source_proof_id: accepted.source_proof_id.clone(),
+                source_proof_version: accepted.source_proof_version,
+                // Dual-fidelity rule: deltas inherit the accepted L2 archive's
+                // fidelity and forbidden claims verbatim.
+                fidelity_class: accepted.fidelity_class,
+                forbidden_claims: accepted.forbidden_claims.clone(),
+                transform_hash: delta_transform_hash.clone(),
+                payload_hash: accepted.object.sha256.clone(),
+                rows,
+            };
+            delta_table.validate()?;
+            delta_tables.push(delta_table);
+        }
 
         if !trade_rows.is_empty() {
             let trade_table = CanonicalTradesTable {
@@ -1167,7 +1203,7 @@ fn decode_trade_row(
     let notional = price_dec
         .checked_mul(size_dec)
         .context("trade notional overflow")?;
-    let trade_id = resolve_trade_id(ctx.fields, raw, trade_ordinal);
+    let trade_id = resolve_trade_id(ctx.fields, raw, trade_ordinal)?;
     Ok(CanonicalTradeRow {
         schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
         ingest_run_id: provenance.ingest_run_id.to_string(),
@@ -1212,6 +1248,14 @@ fn expand_delta_events(
     empty_book_policy: EmptyBookPolicy,
     events: &[DeltaEvent],
 ) -> Result<Vec<CanonicalOrderBookDeltaRow>> {
+    // The ordering authority is enforced upstream (mapping validation rejects a
+    // family/ordering mismatch) and APPLIED upstream (each family pre-sorts its
+    // per-instrument timeline by its own clock before calling in here:
+    // capture-time + row-index for the event stream, exchange event time for the
+    // tar snapshot path, photo order for the single JSONL object). By the time the
+    // ordered `events` reach expansion both variants are already in the right
+    // order, so expansion itself is ordering-agnostic. The exhaustive match exists
+    // so a future variant cannot be added without revisiting this contract.
     match ordering {
         OrderingAuthority::EventTime | OrderingAuthority::CaptureTime => {}
     }
@@ -1292,7 +1336,12 @@ fn expand_delta_events(
                         ));
                     }
                 }
-                let last = rows.last_mut().expect("non-empty photo emitted rows");
+                // A non-empty photo always pushes at least one row above, so an
+                // empty `rows` here is an internal invariant breach: fail loud
+                // instead of panicking.
+                let last = rows
+                    .last_mut()
+                    .context("internal: non-empty photo emitted no rows")?;
                 last.flags |= last_flag;
             }
             DeltaEvent::Standalone(delta) => {
@@ -1445,34 +1494,45 @@ fn parse_trade_aggressor(fields: &EventStreamFields<'_>, raw: &str) -> Result<Tr
     }
 }
 
-/// Resolve a trade id: the configured field verbatim when present and non-empty,
-/// otherwise the synthetic per-instrument 0-based ordinal (`trade_ordinal`)
-/// rendered as a decimal string.
+/// Resolve a trade id.
+///
+/// When `trade_id_field` is configured the operator is asserting the archive
+/// carries a real trade id on every trade row, so a missing/empty cell is a
+/// malformed-input error and fails loud — silently fabricating a synthetic
+/// ordinal would draw from the same decimal id space as real numeric venue ids
+/// and enable collisions. The synthetic per-instrument 0-based ordinal
+/// (`trade_ordinal`) rendered as a decimal string is only used when NO
+/// `trade_id_field` is configured.
+///
+/// # Errors
+///
+/// Returns an error when `trade_id_field` is configured but the row's trade-id
+/// cell is missing or empty.
 fn resolve_trade_id(
     fields: &EventStreamFields<'_>,
     raw: &RawEventRow,
     trade_ordinal: usize,
-) -> String {
+) -> Result<String> {
     if fields.trade_id_field.is_some() {
         let configured = raw.trade_id.trim();
-        if !configured.is_empty() {
-            return configured.to_string();
-        }
+        ensure!(
+            !configured.is_empty(),
+            "trade: configured trade_id_field is set but the trade-id cell is \
+             missing or empty (synthetic ids are only valid when no \
+             trade_id_field is configured)"
+        );
+        return Ok(configured.to_string());
     }
-    trade_ordinal.to_string()
+    Ok(trade_ordinal.to_string())
 }
 
-/// Lowercase SHA-256 hex of the event-stream trade transform identity.
-#[must_use]
-fn event_stream_trade_transform_hash() -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY.as_bytes());
-    hex::encode(hasher.finalize())
-}
-
-/// The container the photos were parsed from, used only to fail loud with the
-/// right empty-input message and to decide whether per-group photos need a
-/// stable event-time sort before expansion.
+/// The container the photos were parsed from. It selects three container-bound
+/// behaviours: the empty-input failure noun, whether per-group photos need a
+/// stable event-time sort before expansion, and — because the container is the
+/// only thing that distinguishes the two transforms — the transform identity
+/// stamped onto every produced row. The single-object and tar containers share
+/// the photo-expansion core but are distinct provenance transforms, so each owns
+/// its own identity here rather than letting a caller pass a mismatched one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SnapshotContainer {
     /// One decoded JSONL object: photos already arrive in a single time-ordered
@@ -1490,6 +1550,19 @@ impl SnapshotContainer {
         match self {
             Self::SingleObject => "snapshot object",
             Self::TarArchive => "snapshot tar archive",
+        }
+    }
+
+    /// Transform identity stamped on produced rows, distinct per container.
+    ///
+    /// The single-object JSONL container and the streaming gzip-tar container
+    /// share the photo-expansion core but are separate provenance transforms (the
+    /// container differs), so each stamps its own identity. The tar container must
+    /// not reuse the single-object JSONL identity.
+    const fn transform_identity(self) -> &'static str {
+        match self {
+            Self::SingleObject => DELTAS_TRANSFORM_IDENTITY,
+            Self::TarArchive => TAR_DELTAS_TRANSFORM_IDENTITY,
         }
     }
 }
@@ -1535,6 +1608,17 @@ fn validate_snapshot_mapping<'a>(
              JSONL/tar entry points"
         );
     };
+    // The snapshot families order by the per-instrument exchange event time; they
+    // carry no capture clock and set availability_time to None. A
+    // `capture_time` ordering on a snapshot mapping would silently order/label by
+    // exchange time while declaring capture-time semantics, so reject it: the
+    // ordering knob must match the family that consumes it.
+    ensure!(
+        matches!(mapping.ordering, OrderingAuthority::EventTime),
+        "converter deltas.ordering must be event_time for the snapshot delta \
+         families (the snapshot path has no capture clock); got {:?}",
+        mapping.ordering
+    );
     for (label, field) in [
         ("bids_field", sn.bids_field.as_str()),
         ("asks_field", sn.asks_field.as_str()),
@@ -1552,6 +1636,20 @@ fn validate_snapshot_mapping<'a>(
             !key_field.trim().is_empty(),
             "converter deltas.instrument_key.key_field must not be empty when set"
         );
+    }
+    if let Some(filter) = &mapping.instrument_key.exclusion_filter {
+        for needle in &filter.exclude_if_contains {
+            ensure!(
+                !needle.trim().is_empty(),
+                "converter deltas.instrument_key.exclusion_filter.exclude_if_contains must not contain empty needles"
+            );
+        }
+        for prefix in &filter.exclude_if_prefix {
+            ensure!(
+                !prefix.trim().is_empty(),
+                "converter deltas.instrument_key.exclusion_filter.exclude_if_prefix must not contain empty prefixes"
+            );
+        }
     }
     Ok(SnapshotFields {
         bids_field: &sn.bids_field,
@@ -1669,7 +1767,7 @@ fn expand_groups_into_tables(
     );
 
     let canonical_instrument_key_prefix = format!("{}/{}", accepted.venue, accepted.product_family);
-    let transform_hash = delta_transform_hash();
+    let transform_hash = delta_transform_hash(container.transform_identity());
 
     let mut tables = Vec::with_capacity(accumulator.order.len());
     for instrument_key in &accumulator.order {
@@ -1681,7 +1779,7 @@ fn expand_groups_into_tables(
         let mut photos = accumulator
             .groups
             .remove(instrument_key)
-            .expect("group order entry has a populated group");
+            .context("internal: group_order entry missing from groups map")?;
 
         if container == SnapshotContainer::TarArchive {
             // Stable sort by event time: members can interleave an instrument
@@ -1849,9 +1947,11 @@ struct RowPayload<'a> {
 /// Build one canonical delta row from the per-table [`RowProvenance`] and the
 /// row's [`RowPayload`].
 ///
-/// `sequence` / `source_sequence` are assigned by the caller after expansion and
-/// collapse; this constructor leaves `sequence` at `0` and `source_sequence` at
-/// `None`.
+/// `sequence` and `source_sequence` are assigned by [`expand_photos`] after
+/// expansion and collapse. Both are set to the converter-assigned dense
+/// per-instrument ordinal; `source_sequence` is NOT a venue-native sequence
+/// number (periodic-full-snapshot objects carry no per-row wire identity).
+/// This constructor leaves `sequence` at `0` and `source_sequence` at `None`.
 fn make_row(
     provenance: &RowProvenance<'_>,
     payload: &RowPayload<'_>,
@@ -1890,6 +1990,9 @@ fn make_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // BAR_TRANSFORM_IDENTITY is not used by production code in this module; the
+    // four-identity distinctness test below references it, so import it here.
+    use crate::canonical_trades::BAR_TRANSFORM_IDENTITY;
     use crate::source_proof::{
         AcceptanceMode, AcceptanceScope, EvidenceState, FixtureType, IngestManifestObjectRecord,
         L2ReplayEvidence, LicenseScope, NtMappingStatus, RequiredCheck, RequiredChecks,
@@ -2120,7 +2223,10 @@ table_families = ["order_book_snapshot_deltas"]
             "testvenue/prediction-market/BASEQUOTE"
         );
         assert_eq!(table.rows[0].payload_hash, OBJECT_SHA256);
-        assert_eq!(table.rows[0].transform_hash, delta_transform_hash());
+        assert_eq!(
+            table.rows[0].transform_hash,
+            delta_transform_hash(DELTAS_TRANSFORM_IDENTITY)
+        );
         assert_eq!(
             table.rows[0].nt_instrument_id.as_deref(),
             Some("BASEQUOTE.TESTVENUE")
@@ -2347,6 +2453,46 @@ table_families = ["order_book_snapshot_deltas"]
         assert_eq!(tables[0].rows.len(), 6);
         assert_eq!(tables[0].rows[0].event_time, 1_700_000_000_000_000_000);
         assert_eq!(tables[0].rows[3].event_time, 1_700_000_060_000_000_000);
+        // The tar container stamps its OWN transform identity, not the
+        // single-object JSONL identity it shares the expansion core with.
+        assert_eq!(
+            tables[0].transform_hash,
+            delta_transform_hash(TAR_DELTAS_TRANSFORM_IDENTITY)
+        );
+        assert_ne!(
+            tables[0].transform_hash,
+            delta_transform_hash(DELTAS_TRANSFORM_IDENTITY),
+            "tar path must not reuse the single-object JSONL transform identity"
+        );
+        assert_eq!(
+            tables[0].rows[0].transform_hash,
+            delta_transform_hash(TAR_DELTAS_TRANSFORM_IDENTITY)
+        );
+    }
+
+    /// Pin the tar snapshot adapter's `transform_hash` to its exact SHA-256 hex.
+    ///
+    /// The tar container is a distinct provenance transform from the single-object
+    /// JSONL container even though they share the expansion core. Any change to
+    /// [`TAR_DELTAS_TRANSFORM_IDENTITY`] will break this test, which is
+    /// intentional: the identity is part of the provenance contract and must be
+    /// changed deliberately. The pinned hex must also differ from the JSONL
+    /// identity's pinned hex, proving the two transforms are not conflated.
+    #[test]
+    fn tar_snapshot_delta_transform_hash_is_stable() {
+        // SHA-256("tar-jsonl-snapshot-deltas-to-canonical-order-book-deltas.v1")
+        let expected = "ce47520b2c136a91e7edbe7bf733e3b0217330801580a9f9aaf4636ab419e2f7";
+        assert_eq!(
+            delta_transform_hash(TAR_DELTAS_TRANSFORM_IDENTITY),
+            expected,
+            "TAR_DELTAS_TRANSFORM_IDENTITY hash changed — update the expected \
+             value and bump the transform version if this is intentional"
+        );
+        assert_ne!(
+            delta_transform_hash(TAR_DELTAS_TRANSFORM_IDENTITY),
+            delta_transform_hash(DELTAS_TRANSFORM_IDENTITY),
+            "tar and single-object JSONL transforms must hash distinctly"
+        );
     }
 
     #[test]
@@ -2470,6 +2616,7 @@ table_families = ["order_book_snapshot_deltas"]
         side: Option<&'static str>,
         trade_price: Option<&'static str>,
         trade_size: Option<&'static str>,
+        trade_id: Option<&'static str>,
     }
 
     /// Build an in-memory typed-event Parquet object from the row specs. Columns
@@ -2488,6 +2635,7 @@ table_families = ["order_book_snapshot_deltas"]
             Field::new("side", DataType::Utf8, true),
             Field::new("trade_price", DataType::Utf8, true),
             Field::new("trade_size", DataType::Utf8, true),
+            Field::new("trade_id", DataType::Utf8, true),
         ]));
         let column = |pick: fn(&EventRowSpec) -> Option<&'static str>| -> ArrayRef {
             Arc::new(StringArray::from(rows.iter().map(pick).collect::<Vec<_>>()))
@@ -2509,6 +2657,7 @@ table_families = ["order_book_snapshot_deltas"]
                 column(|r| r.side),
                 column(|r| r.trade_price),
                 column(|r| r.trade_size),
+                column(|r| r.trade_id),
             ],
         )
         .expect("synthetic event-stream record batch");
@@ -2555,6 +2704,93 @@ table_families = ["order_book_snapshot_deltas"]
             price_sign_policy: DeltaPriceSignPolicy::StrictlyPositive,
             empty_book_policy: EmptyBookPolicy::LoneClearLast,
         }
+    }
+
+    /// `event_stream_mapping` with a configured `trade_id_field` ("trade_id"), so
+    /// the configured-id branch of `resolve_trade_id` is exercised.
+    fn event_stream_mapping_with_trade_id(key_field: Option<&str>) -> DeltaMappingConfig {
+        let mut mapping = event_stream_mapping(key_field);
+        if let DeltaSourceFormat::EventStream(fields) = &mut mapping.format {
+            fields.trade_id_field = Some("trade_id".to_string());
+        }
+        mapping
+    }
+
+    /// Build an in-memory typed-event Parquet object whose `capture_time` and
+    /// `exchange_time` columns are Int64 (the real prediction-market CLOB archive
+    /// shape) rather than Utf8. Every other column stays Utf8 (nullable) so the
+    /// mapping's full column set still resolves. Each row is a `book` (snapshot)
+    /// event with the given Int64 capture/exchange times and level shapes. This
+    /// exercises the `optional_string_cell` Int64 decode branch end to end.
+    fn build_event_parquet_int64_times(rows: &[Int64TimeRow]) -> Vec<u8> {
+        use arrow::array::Int64Array;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("coin", DataType::Utf8, true),
+            Field::new("event_type", DataType::Utf8, true),
+            Field::new("capture_time", DataType::Int64, true),
+            Field::new("exchange_time", DataType::Int64, true),
+            Field::new("bids", DataType::Utf8, true),
+            Field::new("asks", DataType::Utf8, true),
+            Field::new("price", DataType::Utf8, true),
+            Field::new("size", DataType::Utf8, true),
+            Field::new("side", DataType::Utf8, true),
+            Field::new("trade_price", DataType::Utf8, true),
+            Field::new("trade_size", DataType::Utf8, true),
+            Field::new("trade_id", DataType::Utf8, true),
+        ]));
+        let none_utf8: ArrayRef = Arc::new(StringArray::from(
+            rows.iter().map(|_| None::<&str>).collect::<Vec<_>>(),
+        ));
+        let coin_col: ArrayRef = Arc::new(StringArray::from(
+            rows.iter().map(|_| None::<&str>).collect::<Vec<_>>(),
+        ));
+        let event_type_col: ArrayRef = Arc::new(StringArray::from(
+            rows.iter().map(|_| Some("book")).collect::<Vec<_>>(),
+        ));
+        let capture_col: ArrayRef = Arc::new(Int64Array::from(
+            rows.iter().map(|r| Some(r.capture)).collect::<Vec<_>>(),
+        ));
+        let exchange_col: ArrayRef = Arc::new(Int64Array::from(
+            rows.iter().map(|r| r.exchange).collect::<Vec<_>>(),
+        ));
+        let bids_col: ArrayRef = Arc::new(StringArray::from(
+            rows.iter().map(|r| Some(r.bids)).collect::<Vec<_>>(),
+        ));
+        let asks_col: ArrayRef = Arc::new(StringArray::from(
+            rows.iter().map(|r| Some(r.asks)).collect::<Vec<_>>(),
+        ));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                coin_col,
+                event_type_col,
+                capture_col,
+                exchange_col,
+                bids_col,
+                asks_col,
+                none_utf8.clone(),
+                none_utf8.clone(),
+                none_utf8.clone(),
+                none_utf8.clone(),
+                none_utf8.clone(),
+                none_utf8,
+            ],
+        )
+        .expect("int64-time event-stream record batch");
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut writer =
+            ArrowWriter::try_new(&mut buffer, schema, None).expect("int64-time parquet writer");
+        writer.write(&batch).expect("write int64-time batch");
+        writer.close().expect("finalize int64-time parquet");
+        buffer
+    }
+
+    /// One row for [`build_event_parquet_int64_times`].
+    struct Int64TimeRow {
+        capture: i64,
+        exchange: Option<i64>,
+        bids: &'static str,
+        asks: &'static str,
     }
 
     fn snapshot_row(
@@ -2900,6 +3136,35 @@ table_families = ["order_book_snapshot_deltas"]
         );
     }
 
+    // ── Fix 1: exclusion-filter empty-needle validation ───────────────────────
+
+    #[test]
+    fn rejects_empty_exclude_if_contains_needle() {
+        let accepted = accepted_dataset();
+        let filter = InstrumentExclusionFilter {
+            exclude_if_contains: vec!["".to_string()],
+            exclude_if_prefix: vec![],
+        };
+        let jsonl = "{\"coin\":\"AAA\",\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &DeltaInstrumentIdentities::Keyed(BTreeMap::from([(
+                "AAA".to_string(),
+                identity("BASE"),
+            )])),
+            &keyed_mapping(Some(filter)),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("empty exclude_if_contains needle must be rejected");
+        assert!(
+            err.to_string()
+                .contains("exclusion_filter.exclude_if_contains must not contain empty needles"),
+            "{err}"
+        );
+    }
+
     #[test]
     fn event_stream_rejects_empty_object() {
         let accepted = accepted_dataset();
@@ -2988,6 +3253,55 @@ table_families = ["order_book_snapshot_deltas"]
     }
 
     #[test]
+    fn rejects_empty_exclude_if_prefix_needle() {
+        let accepted = accepted_dataset();
+        let filter = InstrumentExclusionFilter {
+            exclude_if_contains: vec![],
+            exclude_if_prefix: vec!["".to_string()],
+        };
+        let jsonl = "{\"coin\":\"AAA\",\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &DeltaInstrumentIdentities::Keyed(BTreeMap::from([(
+                "AAA".to_string(),
+                identity("BASE"),
+            )])),
+            &keyed_mapping(Some(filter)),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("empty exclude_if_prefix needle must be rejected");
+        assert!(
+            err.to_string()
+                .contains("exclusion_filter.exclude_if_prefix must not contain empty prefixes"),
+            "{err}"
+        );
+    }
+
+    // ── Fix 2: missing / non-array side-field negative tests ─────────────────
+
+    #[test]
+    fn rejects_missing_bids_side_field() {
+        let accepted = accepted_dataset();
+        // Photo has no "bids" key at all.
+        let jsonl = "{\"time\":1700000000000,\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &single_identity(),
+            &single_mapping(),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("missing bids field must be rejected");
+        assert!(
+            err.to_string().contains("missing side field"),
+            "expected 'missing side field' in: {err}"
+        );
+    }
+
+    #[test]
     fn event_stream_path_rejects_snapshot_mapping() {
         let accepted = accepted_dataset();
         let parquet = build_event_parquet(&[snapshot_row(
@@ -3007,6 +3321,539 @@ table_families = ["order_book_snapshot_deltas"]
         .expect_err("event-stream path must reject a Snapshot mapping");
         assert!(
             err.to_string().contains("requires an EventStream format"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_array_bids_side_field() {
+        let accepted = accepted_dataset();
+        // "bids" is a string, not an array.
+        let jsonl = "{\"time\":1700000000000,\"bids\":\"not-an-array\",\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &single_identity(),
+            &single_mapping(),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("non-array bids field must be rejected");
+        assert!(
+            err.to_string().contains("is not an array"),
+            "expected 'is not an array' in: {err}"
+        );
+    }
+
+    // ── Fix 3: JSON-parse surface negative tests ──────────────────────────────
+
+    #[test]
+    fn rejects_malformed_json_line() {
+        let accepted = accepted_dataset();
+        let jsonl = "not valid json\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &single_identity(),
+            &single_mapping(),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("malformed JSON must be rejected");
+        assert!(
+            err.to_string().contains("malformed snapshot JSON"),
+            "expected 'malformed snapshot JSON' in: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_missing_event_time_field() {
+        let accepted = accepted_dataset();
+        // Photo is valid JSON but has no "time" key.
+        let jsonl = "{\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &single_identity(),
+            &single_mapping(),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("missing event time field must be rejected");
+        assert!(
+            err.to_string().contains("missing event time field"),
+            "expected 'missing event time field' in: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_missing_instrument_key_field_in_keyed_mode() {
+        let accepted = accepted_dataset();
+        let identities = DeltaInstrumentIdentities::Keyed(BTreeMap::from([(
+            "AAA".to_string(),
+            identity("BASE"),
+        )]));
+        // Photo has no "coin" key; keyed mode requires it.
+        let jsonl = "{\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &identities,
+            &keyed_mapping(None),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("missing instrument key field must be rejected in keyed mode");
+        assert!(
+            err.to_string()
+                .contains("missing string instrument key field"),
+            "expected 'missing string instrument key field' in: {err}"
+        );
+    }
+
+    // ── Fix 4: DeltaInstrumentIdentities::resolve mismatch negative tests ────
+
+    #[test]
+    fn rejects_non_none_key_with_single_identity() {
+        let identity_single = single_identity();
+        let err = identity_single
+            .resolve(Some("AAA"))
+            .expect_err("Single identity given non-None key must fail");
+        assert!(
+            err.to_string()
+                .contains("single-instrument identities cannot resolve instrument key"),
+            "expected mismatch message in: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_none_key_with_keyed_identity() {
+        let identities = DeltaInstrumentIdentities::Keyed(BTreeMap::from([(
+            "AAA".to_string(),
+            identity("BASE"),
+        )]));
+        // Passing None simulates "no key_field configured" for a Keyed shape.
+        let err = identities
+            .resolve(None)
+            .expect_err("Keyed identity given None key must fail");
+        assert!(
+            err.to_string()
+                .contains("keyed instrument identities require a configured key_field"),
+            "expected key_field message in: {err}"
+        );
+    }
+
+    // ── Fix 6: transform_hash pinning test ────────────────────────────────────
+
+    /// Pin the JSONL snapshot adapter's `transform_hash` to its exact SHA-256
+    /// hex. Any change to [`DELTAS_TRANSFORM_IDENTITY`] will break this test,
+    /// which is intentional: the identity is part of the provenance contract and
+    /// must be changed deliberately.
+    #[test]
+    fn jsonl_snapshot_delta_transform_hash_is_stable() {
+        // SHA-256("jsonl-snapshot-deltas-to-canonical-order-book-deltas.v1")
+        let expected = "3a06800b8fb1971b991255cde14c031dedb02de2fe16daf3d08af9cc6b0882f7";
+        assert_eq!(
+            delta_transform_hash(DELTAS_TRANSFORM_IDENTITY),
+            expected,
+            "DELTAS_TRANSFORM_IDENTITY hash changed — update the expected value \
+             and bump the transform version if this is intentional"
+        );
+    }
+
+    // ── Finding #2: event-stream transform identity (seam) ────────────────────
+
+    /// Pin the parquet event-stream adapter's `transform_hash` to its exact
+    /// SHA-256 hex. Distinct from the JSONL and tar snapshot delta identities; a
+    /// change breaks this test by design (the identity is provenance contract).
+    #[test]
+    fn event_stream_delta_transform_hash_is_stable() {
+        // SHA-256("parquet-event-stream-to-canonical-order-book-deltas-and-trades.v1")
+        let expected = "ad79aeea655c683a1c5b2375fd39e46fde6540f2efa40b23f9552c504e753669";
+        assert_eq!(
+            delta_transform_hash(EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY),
+            expected,
+            "EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY hash changed — update the \
+             expected value and bump the transform version if this is intentional"
+        );
+        // The four registry identities must hash to four distinct fingerprints.
+        let bar = delta_transform_hash(BAR_TRANSFORM_IDENTITY);
+        let jsonl = delta_transform_hash(DELTAS_TRANSFORM_IDENTITY);
+        let tar = delta_transform_hash(TAR_DELTAS_TRANSFORM_IDENTITY);
+        let event = delta_transform_hash(EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY);
+        let set: std::collections::BTreeSet<&str> =
+            [bar.as_str(), jsonl.as_str(), tar.as_str(), event.as_str()]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            set.len(),
+            4,
+            "all four transform identities must hash distinctly"
+        );
+    }
+
+    /// The event-stream DELTA table must be stamped with the event-stream identity
+    /// hash, NOT the JSONL snapshot identity (lineage attribution). The TRADE
+    /// table emitted by the same dual-emit transform carries the same identity.
+    #[test]
+    fn event_stream_delta_table_stamps_event_stream_identity() {
+        let accepted = accepted_dataset();
+        let rows = vec![
+            snapshot_row(
+                "1700000000000",
+                None,
+                "[[\"0.49\",\"10\"]]",
+                "[[\"0.51\",\"12\"]]",
+            ),
+            trade_row("1700000002000", "BUY", "0.50", "3"),
+        ];
+        let parquet = build_event_parquet(&rows);
+        let (deltas, trades) = normalize_parquet_event_stream_deltas(
+            &accepted,
+            &single_identity(),
+            &event_stream_mapping(None),
+            &parquet,
+            42,
+            "ingest-run-test",
+        )
+        .expect("dual emit");
+        let event_hash = delta_transform_hash(EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY);
+        let jsonl_hash = delta_transform_hash(DELTAS_TRANSFORM_IDENTITY);
+        assert_eq!(
+            deltas[0].transform_hash, event_hash,
+            "delta table must carry the event-stream identity hash"
+        );
+        assert_ne!(
+            deltas[0].transform_hash, jsonl_hash,
+            "delta table must NOT carry the JSONL snapshot identity hash"
+        );
+        // Table-level and row-level hashes agree (round-trip self-consistency).
+        assert_eq!(deltas[0].rows[0].transform_hash, event_hash);
+        assert_eq!(
+            trades[0].transform_hash, event_hash,
+            "trade table shares the one dual-emit transform identity"
+        );
+    }
+
+    // ── Finding #1: trades-only instrument must not abort the object ───────────
+
+    /// A keyed multi-instrument object where one instrument carries ONLY trade
+    /// prints (no book event) must normalize successfully: that instrument yields
+    /// a trade table and NO delta table, while the other instrument's delta and
+    /// trade tables are unaffected.
+    #[test]
+    fn event_stream_trades_only_instrument_emits_trades_no_deltas() {
+        let accepted = accepted_dataset();
+        let identities = DeltaInstrumentIdentities::Keyed(BTreeMap::from([
+            ("AAA".to_string(), identity("BASEONE")),
+            ("BBB".to_string(), identity("BASETWO")),
+        ]));
+        let mapping = event_stream_mapping(Some("coin"));
+        let rows = vec![
+            // AAA: a real book snapshot plus a trade.
+            EventRowSpec {
+                coin: Some("AAA"),
+                ..snapshot_row(
+                    "1700000000000",
+                    None,
+                    "[[\"0.49\",\"10\"]]",
+                    "[[\"0.51\",\"12\"]]",
+                )
+            },
+            EventRowSpec {
+                coin: Some("AAA"),
+                ..trade_row("1700000001000", "BUY", "0.50", "3")
+            },
+            // BBB: ONLY a trade print, no book event at all.
+            EventRowSpec {
+                coin: Some("BBB"),
+                ..trade_row("1700000002000", "SELL", "0.30", "7")
+            },
+        ];
+        let parquet = build_event_parquet(&rows);
+        let (mut deltas, mut trades) = normalize_parquet_event_stream_deltas(
+            &accepted,
+            &identities,
+            &mapping,
+            &parquet,
+            42,
+            "ingest-run-test",
+        )
+        .expect("trades-only instrument must not abort the object");
+
+        deltas.sort_by(|a, b| a.partition.instrument_id.cmp(&b.partition.instrument_id));
+        trades.sort_by(|a, b| a.partition.instrument_id.cmp(&b.partition.instrument_id));
+
+        // Only AAA yields a delta table; BBB (trades-only) yields none.
+        assert_eq!(
+            deltas.len(),
+            1,
+            "only the book-carrying instrument has deltas"
+        );
+        assert_eq!(deltas[0].partition.instrument_id, "BASEONE");
+
+        // BOTH instruments yield a trade table.
+        assert_eq!(trades.len(), 2, "both instruments printed a trade");
+        assert_eq!(trades[0].partition.instrument_id, "BASEONE");
+        assert_eq!(trades[1].partition.instrument_id, "BASETWO");
+        // The trades-only instrument's trade row is present and validates.
+        assert_eq!(trades[1].rows.len(), 1);
+        assert_eq!(trades[1].rows[0].price, "0.30");
+        assert_eq!(trades[1].rows[0].size, "7");
+        trades[1].validate().expect("trades-only table validates");
+    }
+
+    // ── Finding #3: configured trade_id_field empty cell fails loud ───────────
+
+    #[test]
+    fn event_stream_configured_empty_trade_id_fails_loud() {
+        let accepted = accepted_dataset();
+        let rows = vec![
+            snapshot_row(
+                "1700000000000",
+                None,
+                "[[\"0.49\",\"10\"]]",
+                "[[\"0.51\",\"12\"]]",
+            ),
+            // Trade row with NO trade_id cell, but trade_id_field is configured.
+            trade_row("1700000001000", "BUY", "0.50", "3"),
+        ];
+        let parquet = build_event_parquet(&rows);
+        let err = normalize_parquet_event_stream_deltas(
+            &accepted,
+            &single_identity(),
+            &event_stream_mapping_with_trade_id(None),
+            &parquet,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("configured trade_id_field with an empty cell must fail loud");
+        assert!(
+            err.to_string()
+                .contains("configured trade_id_field is set but"),
+            "{err}"
+        );
+    }
+
+    // ── Finding #4: configured trade_id_field reads through verbatim ──────────
+
+    #[test]
+    fn event_stream_configured_trade_id_reads_through() {
+        let accepted = accepted_dataset();
+        let rows = vec![
+            snapshot_row(
+                "1700000000000",
+                None,
+                "[[\"0.49\",\"10\"]]",
+                "[[\"0.51\",\"12\"]]",
+            ),
+            EventRowSpec {
+                trade_id: Some("venue-trade-77"),
+                ..trade_row("1700000001000", "BUY", "0.50", "3")
+            },
+        ];
+        let parquet = build_event_parquet(&rows);
+        let (_deltas, trades) = normalize_parquet_event_stream_deltas(
+            &accepted,
+            &single_identity(),
+            &event_stream_mapping_with_trade_id(None),
+            &parquet,
+            42,
+            "ingest-run-test",
+        )
+        .expect("configured trade id reads through");
+        assert_eq!(trades.len(), 1);
+        let trade = &trades[0].rows[0];
+        // The configured id is used verbatim, NOT the synthetic ordinal "0".
+        assert_eq!(trade.trade_id, "venue-trade-77");
+        // source_sequence mirrors the resolved trade id.
+        assert_eq!(trade.source_sequence.as_deref(), Some("venue-trade-77"));
+        trades[0].validate().expect("configured-id trades validate");
+    }
+
+    // ── Finding #5: synthetic trade ordinals are unique and increasing ────────
+
+    #[test]
+    fn event_stream_synthetic_trade_ordinals_are_unique_and_increasing() {
+        let accepted = accepted_dataset();
+        let rows = vec![
+            snapshot_row(
+                "1700000000000",
+                None,
+                "[[\"0.49\",\"10\"]]",
+                "[[\"0.51\",\"12\"]]",
+            ),
+            trade_row("1700000001000", "BUY", "0.50", "3"),
+            trade_row("1700000002000", "SELL", "0.51", "4"),
+            trade_row("1700000003000", "BUY", "0.52", "5"),
+        ];
+        let parquet = build_event_parquet(&rows);
+        let (_deltas, trades) = normalize_parquet_event_stream_deltas(
+            &accepted,
+            &single_identity(),
+            &event_stream_mapping(None),
+            &parquet,
+            42,
+            "ingest-run-test",
+        )
+        .expect("multi-trade synthetic ids");
+        assert_eq!(trades.len(), 1);
+        let ids: Vec<&str> = trades[0].rows.iter().map(|r| r.trade_id.as_str()).collect();
+        assert_eq!(ids, vec!["0", "1", "2"], "dense 0-based ordinals per trade");
+        // Strictly increasing and unique, and event_time is non-decreasing.
+        let unique: std::collections::BTreeSet<&str> = ids.iter().copied().collect();
+        assert_eq!(unique.len(), ids.len(), "synthetic ordinals are unique");
+        let mut prev = i64::MIN;
+        for row in &trades[0].rows {
+            assert!(row.event_time >= prev, "trade event_time non-decreasing");
+            prev = row.event_time;
+        }
+    }
+
+    // ── Finding #6: Int64 timestamp column decode (production archive shape) ──
+
+    #[test]
+    fn event_stream_int64_timestamp_decode() {
+        let accepted = accepted_dataset();
+        let rows = vec![
+            Int64TimeRow {
+                capture: 1_700_000_000_000,
+                exchange: Some(1_699_999_999_000),
+                bids: "[[\"0.49\",\"10\"]]",
+                asks: "[[\"0.51\",\"12\"]]",
+            },
+            Int64TimeRow {
+                capture: 1_700_000_060_000,
+                exchange: None,
+                bids: "[[\"0.50\",\"11\"]]",
+                asks: "[[\"0.52\",\"13\"]]",
+            },
+        ];
+        let parquet = build_event_parquet_int64_times(&rows);
+        let (deltas, _trades) = normalize_parquet_event_stream_deltas(
+            &accepted,
+            &single_identity(),
+            &event_stream_mapping(None),
+            &parquet,
+            42,
+            "ingest-run-test",
+        )
+        .expect("Int64 capture/exchange columns decode end to end");
+        let table = &deltas[0];
+        // First photo's capture clock (ms) rendered to nanos via the Int64 branch.
+        assert_eq!(table.rows[0].event_time, 1_700_000_000_000_000_000);
+        // Int64 exchange time becomes availability_time on the first photo.
+        assert_eq!(
+            table.rows[0].availability_time,
+            Some(1_699_999_999_000_000_000)
+        );
+        table.validate().expect("int64-time table validates");
+    }
+
+    // ── Finding #7: event-stream trade size/side negative tests ──────────────
+
+    #[test]
+    fn event_stream_trade_rejects_non_positive_size() {
+        let accepted = accepted_dataset();
+        let rows = vec![
+            snapshot_row(
+                "1700000000000",
+                None,
+                "[[\"0.49\",\"10\"]]",
+                "[[\"0.51\",\"12\"]]",
+            ),
+            // Zero-size trade: a trade print must carry a strictly-positive size.
+            trade_row("1700000001000", "BUY", "0.50", "0"),
+        ];
+        let parquet = build_event_parquet(&rows);
+        let err = normalize_parquet_event_stream_deltas(
+            &accepted,
+            &single_identity(),
+            &event_stream_mapping(None),
+            &parquet,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("non-positive trade size must fail loud");
+        assert!(err.to_string().contains("non-positive size"), "{err}");
+    }
+
+    #[test]
+    fn event_stream_rejects_unknown_side_token() {
+        let accepted = accepted_dataset();
+        let rows = vec![
+            snapshot_row(
+                "1700000000000",
+                None,
+                "[[\"0.49\",\"10\"]]",
+                "[[\"0.51\",\"12\"]]",
+            ),
+            // Level change with an unrecognized side token.
+            level_change_row("1700000001000", "SIDEWAYS", "0.48", "5"),
+        ];
+        let parquet = build_event_parquet(&rows);
+        let err = normalize_parquet_event_stream_deltas(
+            &accepted,
+            &single_identity(),
+            &event_stream_mapping(None),
+            &parquet,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("unknown side token must fail loud");
+        assert!(
+            err.to_string().contains("unknown event-stream side token"),
+            "{err}"
+        );
+    }
+
+    // ── Finding #9: ordering authority must match the adapter family ──────────
+
+    #[test]
+    fn snapshot_mapping_rejects_capture_time_ordering() {
+        let accepted = accepted_dataset();
+        let mut mapping = single_mapping();
+        mapping.ordering = OrderingAuthority::CaptureTime;
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &single_identity(),
+            &mapping,
+            SINGLE_JSONL,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("snapshot family must reject capture_time ordering");
+        assert!(
+            err.to_string()
+                .contains("ordering must be event_time for the snapshot delta"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn event_stream_mapping_rejects_event_time_ordering() {
+        let accepted = accepted_dataset();
+        let mut mapping = event_stream_mapping(None);
+        mapping.ordering = OrderingAuthority::EventTime;
+        let rows = vec![snapshot_row(
+            "1700000000000",
+            None,
+            "[[\"0.49\",\"10\"]]",
+            "[[\"0.51\",\"12\"]]",
+        )];
+        let parquet = build_event_parquet(&rows);
+        let err = normalize_parquet_event_stream_deltas(
+            &accepted,
+            &single_identity(),
+            &mapping,
+            &parquet,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("event-stream family must reject event_time ordering");
+        assert!(
+            err.to_string()
+                .contains("ordering must be capture_time for the event-stream delta"),
             "{err}"
         );
     }

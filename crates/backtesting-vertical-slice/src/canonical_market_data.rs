@@ -1134,6 +1134,156 @@ mod tests {
         assert!(error.to_string().contains("F_LAST"), "{error}");
     }
 
+    // Fix 2 — DELETE branch coverage: validation accepts a well-formed DELETE
+    // row (non-empty side/price/size, no positive-size requirement) and the
+    // reject tests below confirm the branch is fully reachable.
+    #[test]
+    fn deltas_validate_accepts_delete_row() {
+        // A DELETE carries side/price/size but the validator intentionally skips
+        // the positive-size check (level-removal may carry size 0).
+        let last = RecordFlag::F_LAST as u8;
+        let mbp = RecordFlag::F_MBP as u8;
+        let snapshot_flags = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
+        let event_time = 1_700_000_000_000_000_000;
+        // Build a minimal valid table: snapshot (Clear+Add) then a DELETE.
+        let rows = vec![
+            delta_row(
+                0,
+                event_time,
+                DeltaAction::Clear,
+                "",
+                "",
+                "",
+                snapshot_flags,
+            ),
+            delta_row(
+                1,
+                event_time,
+                DeltaAction::Add,
+                DeltaSide::Sell.as_str(),
+                "0.51",
+                "10",
+                snapshot_flags | last,
+            ),
+            delta_row(
+                2,
+                event_time + 1,
+                DeltaAction::Delete,
+                DeltaSide::Sell.as_str(),
+                "0.51",
+                "10",
+                mbp | last,
+            ),
+        ];
+        let table = CanonicalOrderBookDeltasTable {
+            rows,
+            ..snapshot_table()
+        };
+        table
+            .validate()
+            .expect("well-formed DELETE row must be accepted");
+    }
+
+    #[test]
+    fn deltas_validate_accepts_delete_row_with_zero_size() {
+        // DELETE is the only action where size 0 is valid (level-removal
+        // carrying no residual quantity). This validates the positive-size
+        // carve-out at validate_delta_action_payload line ~291.
+        let last = RecordFlag::F_LAST as u8;
+        let mbp = RecordFlag::F_MBP as u8;
+        let snapshot_flags = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
+        let event_time = 1_700_000_000_000_000_000;
+        let rows = vec![
+            delta_row(
+                0,
+                event_time,
+                DeltaAction::Clear,
+                "",
+                "",
+                "",
+                snapshot_flags,
+            ),
+            delta_row(
+                1,
+                event_time,
+                DeltaAction::Add,
+                DeltaSide::Buy.as_str(),
+                "0.49",
+                "10",
+                snapshot_flags | last,
+            ),
+            delta_row(
+                2,
+                event_time + 1,
+                DeltaAction::Delete,
+                DeltaSide::Buy.as_str(),
+                "0.49",
+                "0",
+                mbp | last,
+            ),
+        ];
+        let table = CanonicalOrderBookDeltasTable {
+            rows,
+            ..snapshot_table()
+        };
+        table
+            .validate()
+            .expect("DELETE with size 0 must be accepted (level-removal)");
+    }
+
+    // Fix 3 — negative test for the "CLEAR may only begin a book event" rule.
+    // The existing deltas_validate_rejects_consecutive_clear_rows test places
+    // both CLEARs at event boundaries (each carries F_LAST), so it only trips
+    // the consecutive-CLEAR ensure.  This test constructs a mid-event CLEAR
+    // (its predecessor did NOT carry F_LAST) to exercise the at_event_start
+    // ensure on line ~324 of validate_snapshot_f_last.
+    #[test]
+    fn deltas_validate_rejects_mid_event_clear() {
+        // Row 0: ADD without F_LAST — opens an event but does not close it.
+        // Row 1: CLEAR — appears mid-event; predecessor is not event-closing.
+        // This shape must be rejected with the "CLEAR may only begin a book
+        // event" message, not the consecutive-CLEAR message.
+        let mbp = RecordFlag::F_MBP as u8;
+        let snapshot_flags = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
+        let last = RecordFlag::F_LAST as u8;
+        let event_time = 1_700_000_000_000_000_000;
+        let rows = vec![
+            // An ADD that does NOT carry F_LAST — event remains open.
+            delta_row(
+                0,
+                event_time,
+                DeltaAction::Add,
+                DeltaSide::Buy.as_str(),
+                "0.49",
+                "10",
+                mbp, // no F_LAST intentionally
+            ),
+            // CLEAR mid-event: at_event_start is false here.
+            delta_row(
+                1,
+                event_time,
+                DeltaAction::Clear,
+                "",
+                "",
+                "",
+                snapshot_flags | last,
+            ),
+        ];
+        let table = CanonicalOrderBookDeltasTable {
+            rows,
+            ..snapshot_table()
+        };
+        let error = table
+            .validate()
+            .expect_err("mid-event CLEAR must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("CLEAR may only begin a book event"),
+            "expected mid-event CLEAR rejection; got: {error}"
+        );
+    }
+
     fn bar_row(
         open_time: i64,
         open: &str,
@@ -1250,10 +1400,28 @@ mod tests {
 
     #[test]
     fn bars_validate_rejects_low_above_close() {
+        // Construct a bearish bar where open > close so that a low between
+        // open and close satisfies low<=open but violates low<=close.  This
+        // ensures the low<=close ensure fires — not the preceding low<=open or
+        // high>=low ensures — so the test is discriminating for that specific
+        // rule.
+        //
+        // Values: open=0.55, high=0.60, close=0.50, low=0.53.
+        //   high>=open  : 0.60 >= 0.55  ✓
+        //   high>=low   : 0.60 >= 0.53  ✓
+        //   high>=close : 0.60 >= 0.50  ✓
+        //   low<=open   : 0.53 <= 0.55  ✓
+        //   low<=close  : 0.53 <= 0.50  ✗  ← the only failing rule
         let mut table = bars_table();
-        table.rows[0].low = "0.60".to_string();
+        table.rows[0].open = "0.55".to_string();
+        table.rows[0].high = "0.60".to_string();
+        table.rows[0].close = "0.50".to_string();
+        table.rows[0].low = "0.53".to_string();
         let error = table.validate().expect_err("low above close rejected");
-        assert!(error.to_string().contains("low"), "{error}");
+        assert!(
+            error.to_string().contains("low") && error.to_string().contains("above close"),
+            "expected low-above-close rejection; got: {error}"
+        );
     }
 
     #[test]

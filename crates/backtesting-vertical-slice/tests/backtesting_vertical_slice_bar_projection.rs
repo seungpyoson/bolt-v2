@@ -23,7 +23,11 @@ use backtesting_vertical_slice::{
     },
     source_proof::SourceProofFidelityClass,
 };
-use nautilus_model::{enums::BarAggregation, instruments::InstrumentAny, types::Price};
+use nautilus_model::{
+    enums::{AggregationSource, BarAggregation},
+    instruments::InstrumentAny,
+    types::Price,
+};
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
 const NT_INSTRUMENT_ID: &str = "BASEQUOTE.TESTVENUE";
@@ -175,6 +179,39 @@ fn bars_round_trip_through_nt_catalog() {
         // Bar event/init timestamps are the canonical close_time.
         assert_eq!(bar.ts_event.as_u64(), row.close_time as u64);
         assert_eq!(bar.ts_init.as_u64(), row.close_time as u64);
+        // Assert the full bar_type — step, aggregation, and AggregationSource
+        // — so a hardcoded spec or wrong source in canonical_rows_to_bars
+        // causes a test failure rather than silently passing.
+        let bt = &bar.bar_type;
+        let (bt_instrument_id, bt_spec, bt_source) = match bt {
+            nautilus_model::data::bar::BarType::Standard {
+                instrument_id,
+                spec,
+                aggregation_source,
+            } => (instrument_id, spec, aggregation_source),
+            nautilus_model::data::bar::BarType::Composite { .. } => {
+                panic!("expected Standard bar type, got Composite");
+            }
+        };
+        assert_eq!(
+            bt_instrument_id.to_string(),
+            NT_INSTRUMENT_ID,
+            "bar_type instrument_id mismatch"
+        );
+        assert_eq!(
+            bt_spec.step.get(),
+            table.bar_spec.step as usize,
+            "bar_type step mismatch"
+        );
+        assert_eq!(
+            bt_spec.aggregation, table.bar_spec.aggregation,
+            "bar_type aggregation mismatch"
+        );
+        assert_eq!(
+            *bt_source,
+            AggregationSource::External,
+            "bar_type aggregation source must be External"
+        );
         // Compare OHLCV numerically: Display renders at instrument precision.
         assert_eq!(
             bar.open.as_decimal(),
@@ -249,6 +286,63 @@ fn bars_round_trip_through_binary_option_spec() {
             nautilus_model::types::Quantity::from(row.volume.as_str()).as_decimal()
         );
     }
+}
+
+#[test]
+fn bars_round_trip_preserves_non_default_bar_spec() {
+    // Prove that bar_type step and aggregation are read from the canonical
+    // bar_spec rather than hardcoded: use step=5, BarAggregation::Hour
+    // (a valid periodic step) and assert the read-back bar_type reflects it.
+    let mut table = table_with_rows(vec![bar_row(
+        BASE_OPEN_TIME,
+        "0.50",
+        "0.55",
+        "0.49",
+        "0.52",
+        "100",
+    )]);
+    // Override the bar spec: 4-HOUR instead of 1-MINUTE. The step must evenly
+    // divide 24 to be a valid (periodic) NautilusTrader Hour specification, so
+    // 4 is a non-default choice that survives the admissibility probe (5 would
+    // not: 5 does not divide 24).
+    table.bar_spec = CanonicalBarSpec {
+        step: 4,
+        aggregation: BarAggregation::Hour,
+    };
+    // Adjust close_time to respect the new interval (4 hours in nanos) so
+    // that the periodic-step validation passes.
+    let four_hours_nanos: i64 = 4 * 3_600_000_000_000;
+    table.rows[0].close_time = BASE_OPEN_TIME + four_hours_nanos;
+    table.rows[0].capture_time = BASE_OPEN_TIME + four_hours_nanos;
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    project_canonical_bars_to_catalog(&table, &spec(), dir.path()).expect("project 4-HOUR bars");
+
+    let loaded = read_back_bars(dir.path(), NT_INSTRUMENT_ID).expect("read back");
+    assert_eq!(loaded.len(), 1);
+
+    let bt = &loaded[0].bar_type;
+    let (bt_spec, bt_source) = match bt {
+        nautilus_model::data::bar::BarType::Standard {
+            spec,
+            aggregation_source,
+            ..
+        } => (spec, aggregation_source),
+        nautilus_model::data::bar::BarType::Composite { .. } => {
+            panic!("expected Standard bar type, got Composite");
+        }
+    };
+    assert_eq!(bt_spec.step.get(), 4, "step must be 4 not default 1");
+    assert_eq!(
+        bt_spec.aggregation,
+        BarAggregation::Hour,
+        "aggregation must be Hour not default Minute"
+    );
+    assert_eq!(
+        *bt_source,
+        AggregationSource::External,
+        "aggregation source must be External"
+    );
 }
 
 #[test]

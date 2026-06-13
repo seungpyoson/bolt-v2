@@ -47,6 +47,7 @@ use super::{
     },
     canonical_trades::{
         BAR_TRANSFORM_IDENTITY, CanonicalInstrumentIdentity, CsvTimestampUnit, TradesPartition,
+        column_index,
     },
     source_proof::AcceptedDataset,
 };
@@ -156,12 +157,27 @@ impl BarInstrumentIdentities {
     }
 }
 
-/// Lowercase SHA-256 hex of the bar transform identity.
+/// Lowercase SHA-256 hex of an arbitrary transform identity string.
+///
+/// This is the parameterized core used by every bar adapter to derive its
+/// per-row `transform_hash` from the adapter's own registry identity.  Each
+/// adapter entry point passes its own identity constant so that the shared
+/// assembly path never hardcodes a single adapter's identity.
+#[must_use]
+pub fn compute_bar_transform_hash(identity: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(identity.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Lowercase SHA-256 hex of the CSV bar transform identity.
+///
+/// Convenience wrapper for the CSV native-bar adapter.  The hash value is
+/// pinned by `csv_adapter_transform_hash_is_stable` so that any inadvertent
+/// identity-string change is caught before it reaches the catalog.
 #[must_use]
 pub fn bar_transform_hash() -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(BAR_TRANSFORM_IDENTITY.as_bytes());
-    hex::encode(hasher.finalize())
+    compute_bar_transform_hash(BAR_TRANSFORM_IDENTITY)
 }
 
 /// Express a fixed millisecond interval as the NautilusTrader `(step, unit)`
@@ -420,7 +436,6 @@ pub fn normalize_csv_native_bars(
     // group keyed by `None`), preserving first-seen group order.
     let mut group_order: Vec<Option<String>> = Vec::new();
     let mut groups: BTreeMap<Option<String>, Vec<ParsedBarRow>> = BTreeMap::new();
-    let mut object_open_times: Vec<i64> = Vec::new();
 
     for (index, record) in reader.records().enumerate() {
         let fields = record.with_context(|| format!("row {index}: malformed csv record"))?;
@@ -496,7 +511,6 @@ pub fn normalize_csv_native_bars(
             None => None,
         };
 
-        object_open_times.push(open_time);
         let group = groups.entry(instrument_key.clone()).or_insert_with(|| {
             group_order.push(instrument_key.clone());
             Vec::new()
@@ -515,27 +529,116 @@ pub fn normalize_csv_native_bars(
 
     ensure!(!group_order.is_empty(), "bar object yielded no rows");
 
-    // Derive the period ONCE for the whole object from the union of every
-    // instrument's open times, so a single-bar instrument inherits the object's
-    // proven period instead of aborting. A declared period must equal it.
-    let bar_spec = bar_spec_from_open_times(&object_open_times)?;
-    if let BarIntervalSource::Declared { step, aggregation } = &mapping.interval_source {
-        let declared = CanonicalBarSpec {
-            step: *step,
-            aggregation: *aggregation,
-        };
-        ensure!(
-            declared == bar_spec,
-            "declared bar interval {declared:?} does not match interval derived from open times {bar_spec:?}"
-        );
-    }
-    let interval_ms = bar_interval_ms(bar_spec)?;
-    let interval_nanos = i64::try_from(
-        interval_ms
-            .checked_mul(NANOS_PER_MILLISECOND)
-            .context("bar interval overflows nanoseconds")?,
-    )
-    .context("bar interval overflows i64")?;
+    // Determine the bar period from the interval source.
+    //
+    // Declared: the operator-specified period is authoritative. Each
+    // instrument's adjacent open-time gaps must each be a positive integer
+    // multiple of the declared period (gaps represent missing bars). A
+    // single-bar instrument is valid — one bar cannot prove a gap, but the
+    // declared period makes the period unambiguous.
+    //
+    // DerivedFromOpenTimes: the period is derived per instrument from its own
+    // open times. Each instrument must have at least two rows so the minimum
+    // adjacent gap can be found; if any instrument has only one row the
+    // operator must declare the interval explicitly. Every instrument's gaps
+    // must be integer multiples of that instrument's minimum gap. All
+    // per-instrument derived specs must agree (a single canonical spec for the
+    // whole object). GCD across instruments is not used; only the per-instrument
+    // minimum gap drives the spec.
+    let (bar_spec, interval_nanos) = match &mapping.interval_source {
+        BarIntervalSource::Declared { step, aggregation } => {
+            let declared = CanonicalBarSpec {
+                step: *step,
+                aggregation: *aggregation,
+            };
+            let interval_ms = bar_interval_ms(declared)?;
+            let interval_nanos = i64::try_from(
+                interval_ms
+                    .checked_mul(NANOS_PER_MILLISECOND)
+                    .context("declared bar interval overflows nanoseconds")?,
+            )
+            .context("declared bar interval overflows i64")?;
+            let period =
+                u64::try_from(interval_nanos).context("declared bar interval is non-positive")?;
+            // Validate every instrument's gaps are positive integer multiples
+            // of the declared period. Single-bar instruments are valid.
+            for instrument_key in &group_order {
+                let rows = groups
+                    .get(instrument_key)
+                    .context("internal: group_order key absent from groups")?;
+                let mut opens: Vec<i64> = rows.iter().map(|row| row.open_time).collect();
+                opens.sort_unstable();
+                opens.dedup();
+                for window in opens.windows(2) {
+                    let gap = u64::try_from(
+                        window[1]
+                            .checked_sub(window[0])
+                            .context("open_time underflow in declared-interval gap check")?,
+                    )
+                    .context("negative open_time gap in declared-interval gap check")?;
+                    ensure!(
+                        gap > 0,
+                        "duplicate open_time survived dedup for instrument {instrument_key:?}"
+                    );
+                    ensure!(
+                        gap.is_multiple_of(period),
+                        "instrument {instrument_key:?}: open_time gap {gap} ns is not a \
+                         multiple of the declared interval {period} ns — row is misaligned, \
+                         not a data hole"
+                    );
+                }
+            }
+            (declared, interval_nanos)
+        }
+        BarIntervalSource::DerivedFromOpenTimes => {
+            // Derive the spec per instrument through the one shared
+            // open-times helper, then require every instrument to agree on a
+            // single canonical spec for the whole object.
+            let mut object_spec: Option<CanonicalBarSpec> = None;
+            for instrument_key in &group_order {
+                let rows = groups
+                    .get(instrument_key)
+                    .context("internal: group_order key absent from groups")?;
+                let mut opens: Vec<i64> = rows.iter().map(|row| row.open_time).collect();
+                opens.sort_unstable();
+                opens.dedup();
+                // A single-bar instrument cannot prove a gap; the derive path
+                // demands an explicit declaration with an operator-actionable
+                // message before delegating to the shared min-gap derivation.
+                ensure!(
+                    opens.len() >= 2,
+                    "instrument {instrument_key:?} has only {} bar row(s) — cannot derive the \
+                     period from a single open time; declare the interval explicitly via \
+                     interval_source = \"declared\"",
+                    opens.len()
+                );
+                let instrument_spec = bar_spec_from_open_times(&opens).with_context(|| {
+                    format!("instrument {instrument_key:?}: cannot derive bar period")
+                })?;
+                match &object_spec {
+                    None => object_spec = Some(instrument_spec),
+                    Some(existing) => {
+                        ensure!(
+                            *existing == instrument_spec,
+                            "instrument {instrument_key:?} derived bar spec {instrument_spec:?} \
+                             disagrees with object spec {existing:?} — all instruments must \
+                             have the same bar period; declare the interval explicitly if the \
+                             instruments have different granularities"
+                        );
+                    }
+                }
+            }
+            let bar_spec =
+                object_spec.context("internal: no instrument groups to derive a bar spec from")?;
+            let interval_nanos = bar_interval_nanos_for_spec(bar_spec)?.context(
+                "internal: derived fixed-duration bar spec yielded no fixed nanosecond length",
+            )?;
+            (bar_spec, interval_nanos)
+        }
+        BarIntervalSource::FromColumn { .. } => {
+            bail!("internal: from_column interval source reached after pre-parse rejection")
+        }
+    };
 
     let mut tables = Vec::with_capacity(group_order.len());
     for instrument_key in &group_order {
@@ -1369,13 +1472,6 @@ fn apply_price_sign_policy_at(
     }
 }
 
-fn column_index(header_columns: &[String], column_name: &str) -> Result<usize> {
-    header_columns
-        .iter()
-        .position(|column| column == column_name)
-        .with_context(|| format!("configured converter column {column_name:?} missing from csv"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1682,8 +1778,8 @@ table_families = ["bars"]
             ("AAA".to_string(), identity("BASEONE")),
             ("BBB".to_string(), identity("BASETWO")),
         ]));
-        // AAA carries two bars (proves the minute period); BBB carries one bar
-        // and inherits the object-level period.
+        // AAA carries two bars with 1-minute gaps; BBB carries one bar (no gap
+        // to validate). With a declared 1-minute interval, single-bar BBB is valid.
         let csv = "instrument,open_time,close_time,open,high,low,close,volume\n\
             AAA,1700000000000,1700000060000,0.50,0.55,0.49,0.52,100\n\
             AAA,1700000060000,1700000120000,0.52,0.58,0.51,0.57,120\n\
@@ -1701,7 +1797,7 @@ table_families = ["bars"]
         assert_eq!(tables[0].rows.len(), 2);
         assert_eq!(tables[1].partition.instrument_id, "BASETWO");
         assert_eq!(tables[1].rows.len(), 1);
-        // Single-bar instrument inherited the object's minute period.
+        // Single-bar instrument receives the declared minute period.
         assert_eq!(tables[1].bar_spec.aggregation, BarAggregation::Minute);
     }
 
@@ -1728,9 +1824,10 @@ table_families = ["bars"]
     }
 
     #[test]
-    fn rejects_declared_interval_disagreeing_with_derived() {
+    fn rejects_declared_interval_misaligned_with_data_gaps() {
         let accepted = accepted_dataset(&schema_with_close());
-        // The data is a one-minute period but the run-spec declares one hour.
+        // Data has one-minute gaps; declaring one hour means 60s is not a
+        // multiple of 3600s — the adapter must reject the row as misaligned.
         let mapping = BarMappingConfig {
             interval_source: BarIntervalSource::Declared {
                 step: 1,
@@ -1746,8 +1843,8 @@ table_families = ["bars"]
             42,
             "ingest-run-test",
         )
-        .expect_err("declared/derived interval mismatch must be rejected");
-        assert!(err.to_string().contains("does not match"), "{err}");
+        .expect_err("misaligned gap must be rejected against declared interval");
+        assert!(err.to_string().contains("not a multiple"), "{err}");
     }
 
     #[test]
@@ -2314,5 +2411,218 @@ table_families = ["bars"]
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].partition.instrument_id, "BASEQUOTE");
         assert_eq!(tables[0].rows.len(), 2);
+    }
+
+    // ── Fix 3: close_time equality clause in dedup ────────────────────────────
+
+    /// Two rows with the same open_time but different close_time values must be
+    /// rejected even when all OHLCV fields are identical.  The dedup clause
+    /// requires byte-identical rows; differing close_time alone must fail.
+    #[test]
+    fn rejects_disagreeing_close_time_with_identical_ohlcv() {
+        let accepted = accepted_dataset(&schema_with_close());
+        let csv = "open_time,close_time,open,high,low,close,volume\n\
+            1700000000000,1700000060000,0.50,0.55,0.49,0.52,100\n\
+            1700000000000,1700000999000,0.50,0.55,0.49,0.52,100\n\
+            1700000060000,1700000120000,0.52,0.58,0.51,0.57,120\n";
+        let err = normalize_csv_native_bars(
+            &accepted,
+            &single_identity(),
+            &declared_minute_mapping(),
+            csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("disagreeing close_time with identical OHLCV must be rejected");
+        assert!(
+            err.to_string().contains("disagreeing"),
+            "expected 'disagreeing' in error: {err}"
+        );
+    }
+
+    // ── Fix 4: gap-multiple integrity negative tests ──────────────────────────
+
+    /// A derived-interval object whose single instrument has gaps of 60 s and
+    /// 90 s must fail: 90 s is not a multiple of 60 s.  The error must cite
+    /// "not a multiple".
+    #[test]
+    fn rejects_derived_interval_misaligned_gaps() {
+        let accepted = accepted_dataset(&schema_with_close());
+        let mapping = BarMappingConfig {
+            interval_source: BarIntervalSource::DerivedFromOpenTimes,
+            ..declared_minute_mapping()
+        };
+        // Gaps: 60 s then 90 s — 90 s is not a multiple of 60 s.
+        let csv = "open_time,close_time,open,high,low,close,volume\n\
+            1700000000000,1700000060000,0.50,0.55,0.49,0.52,100\n\
+            1700000060000,1700000120000,0.52,0.58,0.51,0.57,120\n\
+            1700000150000,1700000210000,0.57,0.60,0.55,0.59,80\n";
+        let err = normalize_csv_native_bars(
+            &accepted,
+            &single_identity(),
+            &mapping,
+            csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("misaligned gaps must be rejected");
+        assert!(
+            err.to_string().contains("not a multiple"),
+            "expected 'not a multiple' in error: {err}"
+        );
+    }
+
+    /// A derived-interval object with a single bar row cannot derive its period.
+    /// The adapter must fail loud and tell the operator to declare the interval.
+    #[test]
+    fn rejects_derived_interval_single_bar_without_declaration() {
+        let accepted = accepted_dataset(&schema_with_close());
+        let mapping = BarMappingConfig {
+            interval_source: BarIntervalSource::DerivedFromOpenTimes,
+            ..declared_minute_mapping()
+        };
+        let csv = "open_time,close_time,open,high,low,close,volume\n\
+            1700000000000,1700000060000,0.50,0.55,0.49,0.52,100\n";
+        let err = normalize_csv_native_bars(
+            &accepted,
+            &single_identity(),
+            &mapping,
+            csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("single-bar derived-interval must be rejected");
+        assert!(
+            err.to_string().contains("declare the interval"),
+            "expected 'declare the interval' in error: {err}"
+        );
+    }
+
+    // ── Fix 5: header-vs-schema reconciliation negative test ─────────────────
+
+    /// A CSV header that diverges from the accepted object's schema_columns must
+    /// be rejected.  The error must reference "header" or "does not match".
+    #[test]
+    fn rejects_header_mismatch() {
+        // Accepted schema expects the standard columns in schema_with_close order.
+        let accepted = accepted_dataset(&schema_with_close());
+        // CSV header has an extra column that is not in the accepted schema.
+        let csv = "open_time,close_time,open,high,low,close,volume,unexpected_column\n\
+            1700000000000,1700000060000,0.50,0.55,0.49,0.52,100,extra\n";
+        let err = normalize_csv_native_bars(
+            &accepted,
+            &single_identity(),
+            &declared_minute_mapping(),
+            csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("header mismatch must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("header") || msg.contains("does not match"),
+            "expected 'header' or 'does not match' in error: {err}"
+        );
+    }
+
+    // ── Fix 6: empty-string validation negative tests ─────────────────────────
+
+    /// An empty ingest_run_id must be rejected.
+    #[test]
+    fn rejects_empty_ingest_run_id() {
+        let accepted = accepted_dataset(&schema_with_close());
+        let err = normalize_csv_native_bars(
+            &accepted,
+            &single_identity(),
+            &declared_minute_mapping(),
+            SINGLE_CSV_WITH_CLOSE,
+            42,
+            "",
+        )
+        .expect_err("empty ingest_run_id must be rejected");
+        assert!(
+            err.to_string().contains("ingest_run_id"),
+            "expected 'ingest_run_id' in error: {err}"
+        );
+    }
+
+    /// An empty open_time_column name in the mapping must be rejected.
+    #[test]
+    fn rejects_empty_column_name_in_mapping() {
+        let accepted = accepted_dataset(&schema_with_close());
+        let mapping = BarMappingConfig {
+            open_time_column: String::new(),
+            ..declared_minute_mapping()
+        };
+        let err = normalize_csv_native_bars(
+            &accepted,
+            &single_identity(),
+            &mapping,
+            SINGLE_CSV_WITH_CLOSE,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("empty open_time_column must be rejected");
+        assert!(
+            err.to_string().contains("open_time_column"),
+            "expected 'open_time_column' in error: {err}"
+        );
+    }
+
+    /// An empty instrument column value in a data row must be rejected.
+    #[test]
+    fn rejects_empty_instrument_key_value() {
+        let accepted = accepted_dataset(&[
+            "instrument",
+            "open_time",
+            "close_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        ]);
+        let mapping = BarMappingConfig {
+            instrument_column: Some("instrument".to_string()),
+            ..declared_minute_mapping()
+        };
+        let identities = BarInstrumentIdentities::Keyed(BTreeMap::from([(
+            "AAA".to_string(),
+            identity("BASEONE"),
+        )]));
+        // Row has an empty string for the instrument column.
+        let csv = "instrument,open_time,close_time,open,high,low,close,volume\n\
+            ,1700000000000,1700000060000,0.50,0.55,0.49,0.52,100\n";
+        let err =
+            normalize_csv_native_bars(&accepted, &identities, &mapping, csv, 42, "ingest-run-test")
+                .expect_err("empty instrument column value must be rejected");
+        assert!(
+            err.to_string().contains("empty instrument"),
+            "expected 'empty instrument' in error: {err}"
+        );
+    }
+
+    /// Pin the CSV bar adapter's transform_hash to its current byte value.
+    ///
+    /// The CSV native-bar adapter stamps `BAR_TRANSFORM_IDENTITY` through the
+    /// shared `assemble_bar_table`, which derives the per-row `transform_hash`
+    /// via the `bar_transform_hash()` convenience wrapper. That wrapper must
+    /// produce the identical digest to `compute_bar_transform_hash(BAR_TRANSFORM_IDENTITY)`
+    /// so that any inadvertent change to the identity string is caught before it
+    /// reaches the catalog.
+    #[test]
+    fn csv_adapter_transform_hash_is_stable() {
+        let via_param = compute_bar_transform_hash(BAR_TRANSFORM_IDENTITY);
+        let via_wrapper = bar_transform_hash();
+        assert_eq!(
+            via_param, via_wrapper,
+            "CSV adapter transform_hash diverged: param={via_param:?} wrapper={via_wrapper:?}"
+        );
+        // Pin the current byte value so identity-string drift is caught immediately.
+        // Computed from: sha256("csv-native-bars-to-canonical-bars.v1")
+        assert_eq!(
+            via_wrapper, "03abb9c288a4f54881aab0e60d6ca8e28c6872023dbbbc54cc2577fb5c5cdd75",
+            "BAR_TRANSFORM_IDENTITY hash changed — update this pin or revert the identity change"
+        );
     }
 }

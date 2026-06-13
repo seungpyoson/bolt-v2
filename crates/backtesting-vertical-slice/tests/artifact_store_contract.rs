@@ -18,7 +18,8 @@ use backtesting_vertical_slice::{
     },
     nt_catalog_capability::{
         NtCatalogCapabilityControls, NtCatalogCapabilityEvidence, NtCatalogCapabilityProof,
-        NtCatalogCapabilityRunSpec, NtCatalogCredentialSource, NtCatalogReadBackEvidence,
+        NtCatalogCapabilityProofDocument, NtCatalogCapabilityRunSpec, NtCatalogCredentialSource,
+        NtCatalogReadBackEvidence,
     },
     operator::{RunSpec, run_from_run_spec_with_artifact_store},
     run_manifest::MarketStructureFixture,
@@ -379,6 +380,15 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
         sha256_hex(persisted_bytes.as_ref()),
         persisted.proof_artifact_sha256
     );
+    let persisted_document =
+        serde_json::from_slice::<NtCatalogCapabilityProofDocument>(persisted_bytes.as_ref())
+            .expect("proof artifact stores proof document");
+    assert_eq!(persisted_document.proof, persisted.proof);
+    assert_eq!(persisted_document.evidence, persisted.evidence);
+    assert_eq!(persisted_document.evidence, evidence);
+    persisted_document
+        .validate(&committed_root)
+        .expect("persisted proof document validates");
 
     let root = artifact_config().resolve().expect("valid artifact root");
     let mut proof = NtCatalogCapabilityProof::synthetic_success(

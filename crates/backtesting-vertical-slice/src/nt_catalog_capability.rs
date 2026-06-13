@@ -91,6 +91,14 @@ pub struct NtCatalogCapabilityProofArtifact {
     pub proof_artifact_uri: String,
     pub proof_artifact_sha256: String,
     pub proof: NtCatalogCapabilityProof,
+    pub evidence: NtCatalogCapabilityEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NtCatalogCapabilityProofDocument {
+    pub proof: NtCatalogCapabilityProof,
+    pub evidence: NtCatalogCapabilityEvidence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -353,20 +361,25 @@ impl NtCatalogCapabilityRunSpec {
 
     /// # Errors
     ///
-    /// Returns an error if the run spec is invalid, the runtime controls are
+    /// Returns an error if the run spec is invalid, the runtime evidence is
     /// incomplete, serialization fails, or create-only persistence fails.
     async fn persist_completed_proof(
         &self,
         artifact_store: &ArtifactStoreConfig,
         writer: &CreateOnlyArtifactWriter<'_>,
-        controls: NtCatalogCapabilityControls,
+        evidence: &NtCatalogCapabilityEvidence,
     ) -> Result<NtCatalogCapabilityProofArtifact> {
         let artifact_root = artifact_store.resolve()?;
         let plan = self.proof_plan(artifact_store)?;
         let proof_artifact_uri = plan.proof_artifact_uri.clone();
+        let controls = NtCatalogCapabilityControls::from_evidence(evidence)?;
         let proof = plan.completed_proof(controls);
-        proof.validate(&artifact_root)?;
-        let proof_bytes = serde_json::to_vec_pretty(&proof)?;
+        let proof_document = NtCatalogCapabilityProofDocument {
+            proof: proof.clone(),
+            evidence: evidence.clone(),
+        };
+        proof_document.validate(&artifact_root)?;
+        let proof_bytes = serde_json::to_vec_pretty(&proof_document)?;
         let proof_artifact_sha256 = sha256_bytes(&proof_bytes);
         let proof_artifact_path = artifact_root.object_path_for_uri(&proof_artifact_uri)?;
         writer
@@ -376,6 +389,7 @@ impl NtCatalogCapabilityRunSpec {
             proof_artifact_uri,
             proof_artifact_sha256,
             proof,
+            evidence: evidence.clone(),
         })
     }
 
@@ -389,9 +403,28 @@ impl NtCatalogCapabilityRunSpec {
         writer: &CreateOnlyArtifactWriter<'_>,
         evidence: &NtCatalogCapabilityEvidence,
     ) -> Result<NtCatalogCapabilityProofArtifact> {
-        let controls = NtCatalogCapabilityControls::from_evidence(evidence)?;
-        self.persist_completed_proof(artifact_store, writer, controls)
+        self.persist_completed_proof(artifact_store, writer, evidence)
             .await
+    }
+}
+
+impl NtCatalogCapabilityProofDocument {
+    /// # Errors
+    ///
+    /// Returns an error if the persisted proof document is incomplete, its
+    /// evidence does not prove every control, or probe URIs leave the artifact
+    /// root.
+    pub fn validate(&self, artifact_root: &ResolvedArtifactRoot) -> Result<()> {
+        self.proof.validate(artifact_root)?;
+        let controls = NtCatalogCapabilityControls::from_evidence(&self.evidence)?;
+        ensure!(
+            self.proof.controls == controls,
+            "capability proof document controls must match observed evidence"
+        );
+        artifact_root.object_path_for_uri(&self.evidence.create_only_probe.probe_uri)?;
+        artifact_root.object_path_for_uri(&self.evidence.create_only_probe.copy_source_uri)?;
+        artifact_root.object_path_for_uri(&self.evidence.create_only_probe.copy_dest_uri)?;
+        Ok(())
     }
 }
 

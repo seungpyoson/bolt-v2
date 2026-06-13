@@ -133,6 +133,7 @@ pub struct NtCatalogCapabilityPlan;
 pub struct NtCatalogCapabilityProofArtifact {
     pub proof_artifact_uri: String,
     pub proof_artifact_sha256: String,
+    pub evidence: NtCatalogCapabilityEvidence,
 }
 pub struct NtCatalogCapabilityControls {
     pub no_cloud_feature_gate_failed: bool,
@@ -160,6 +161,17 @@ pub struct NtCatalogCapabilityProof {
     pub synthetic_source_proof_id: String,
     pub provenance: String,
     pub synthetic_fixture_coverage: Vec<MarketStructureFixture>,
+}
+pub struct NtCatalogCapabilityProofDocument {
+    pub proof: NtCatalogCapabilityProof,
+    pub evidence: NtCatalogCapabilityEvidence,
+}
+
+impl NtCatalogCapabilityProofDocument {
+    pub fn validate(&self, artifact_root: &ResolvedArtifactRoot) {
+        self.proof.direct_s3_catalog_access_proven(artifact_root);
+        let _evidence = &self.evidence;
+    }
 }
 
 impl NtCatalogCapabilityProof {
@@ -193,6 +205,7 @@ impl NtCatalogCapabilityProof {
         NtCatalogCapabilityProofArtifact {
             proof_artifact_uri: "s3://bucket/nt-catalog-synthetic-proof/v1/proof=proof-run/nt-catalog-capability-proof.json".to_string(),
             proof_artifact_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            evidence: NtCatalogCapabilityEvidence {},
         }
     }
     pub async fn persist_completed_proof_from_evidence(&self, writer: &CreateOnlyArtifactWriter<'_>, evidence: &NtCatalogCapabilityEvidence) -> NtCatalogCapabilityProofArtifact {
@@ -284,6 +297,9 @@ fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
     let persisted = proof.persist_completed_proof_from_evidence(&writer, &evidence);
     let _proof_uri = persisted.proof_artifact_uri;
     let _proof_sha256 = persisted.proof_artifact_sha256;
+    let persisted_document = serde_json::from_slice::<NtCatalogCapabilityProofDocument>(&persisted_bytes).unwrap();
+    let _document_evidence = persisted_document.evidence;
+    let _document_proof = persisted_document.proof;
     let _credential_source = NtCatalogCredentialSource::Ssm;
     proof.direct_s3_catalog_access_proven();
 }

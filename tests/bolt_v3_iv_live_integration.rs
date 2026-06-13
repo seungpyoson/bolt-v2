@@ -1226,6 +1226,9 @@ configured_source_param = "configured-value"
 fn live_root_registry_stamps_derived_inputs_with_cargo_pinned_nt_revision() {
     let mut root = live_event_router_root_config();
     let profile = root.iv.as_mut().unwrap().profiles.first_mut().unwrap();
+    profile.strategy_authorizations[0]
+        .allowed_product_kinds
+        .insert(bolt_v2::bolt_v3_iv::types::IvProductKind::DerivedIv);
     profile.derived_inputs = vec![IvDerivedInputSet {
         profile_id: "configured-profile".to_string(),
         source_id: "configured-greeks-source".to_string(),

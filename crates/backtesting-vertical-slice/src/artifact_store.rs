@@ -48,6 +48,8 @@ pub enum S3CopyIfNotExistsMode {
 pub struct CreateOnlyProbeConfig {
     pub prefix: String,
     pub object_name: String,
+    pub copy_source_object_name: String,
+    pub copy_dest_object_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +145,14 @@ impl ArtifactStoreConfig {
             object_name: normalize_subpath(
                 "create_only_probe.object_name",
                 &self.create_only_probe.object_name,
+            )?,
+            copy_source_object_name: normalize_subpath(
+                "create_only_probe.copy_source_object_name",
+                &self.create_only_probe.copy_source_object_name,
+            )?,
+            copy_dest_object_name: normalize_subpath(
+                "create_only_probe.copy_dest_object_name",
+                &self.create_only_probe.copy_dest_object_name,
             )?,
         };
         let subpaths = ArtifactSubpaths {
@@ -261,6 +271,24 @@ impl ResolvedArtifactRoot {
             self.create_only_probe.prefix.as_str(),
             &format!("probe={probe_id}"),
             self.create_only_probe.object_name.as_str(),
+        ])
+    }
+
+    #[must_use]
+    pub fn create_only_probe_copy_source_uri(&self, probe_id: &str) -> String {
+        self.join([
+            self.create_only_probe.prefix.as_str(),
+            &format!("probe={probe_id}"),
+            self.create_only_probe.copy_source_object_name.as_str(),
+        ])
+    }
+
+    #[must_use]
+    pub fn create_only_probe_copy_dest_uri(&self, probe_id: &str) -> String {
+        self.join([
+            self.create_only_probe.prefix.as_str(),
+            &format!("probe={probe_id}"),
+            self.create_only_probe.copy_dest_object_name.as_str(),
         ])
     }
 
@@ -471,8 +499,12 @@ pub struct PersistedCatalogProjection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateOnlyProbeTranscript {
     pub probe_uri: String,
+    pub copy_source_uri: String,
+    pub copy_dest_uri: String,
     pub first_create_succeeded: bool,
     pub duplicate_create_rejected: bool,
+    pub first_copy_succeeded: bool,
+    pub duplicate_copy_rejected: bool,
 }
 
 impl CatalogDispatchConfig {
@@ -647,15 +679,49 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
             .await
             .with_context(|| format!("create-only probe first write {probe_uri}"))?;
 
-        match self.put_create(&path, payload).await {
+        match self.put_create(&path, payload.clone()).await {
             Ok(()) => bail!("create-only probe accepted duplicate write to {probe_uri}"),
-            Err(err) if is_create_only_conflict(&err) => Ok(CreateOnlyProbeTranscript {
+            Err(err) if is_create_only_conflict(&err) => {}
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("create-only probe duplicate write failed unexpectedly for {probe_uri}")
+                });
+            }
+        }
+
+        let copy_source_uri = artifact_root.create_only_probe_copy_source_uri(probe_id);
+        let copy_dest_uri = artifact_root.create_only_probe_copy_dest_uri(probe_id);
+        let copy_source_path = artifact_root.object_path_for_uri(&copy_source_uri)?;
+        let copy_dest_path = artifact_root.object_path_for_uri(&copy_dest_uri)?;
+        self.put_create(&copy_source_path, payload)
+            .await
+            .with_context(|| format!("create-only probe copy source write {copy_source_uri}"))?;
+        self.store
+            .copy_if_not_exists(&copy_source_path, &copy_dest_path)
+            .await
+            .with_context(|| {
+                format!("create-only probe first copy-if-not-exists {copy_source_uri} -> {copy_dest_uri}")
+            })?;
+
+        match self
+            .store
+            .copy_if_not_exists(&copy_source_path, &copy_dest_path)
+            .await
+        {
+            Ok(()) => bail!("create-only probe accepted duplicate copy to {copy_dest_uri}"),
+            Err(err) if is_object_store_create_only_conflict(&err) => Ok(CreateOnlyProbeTranscript {
                 probe_uri,
+                copy_source_uri,
+                copy_dest_uri,
                 first_create_succeeded: true,
                 duplicate_create_rejected: true,
+                first_copy_succeeded: true,
+                duplicate_copy_rejected: true,
             }),
             Err(err) => Err(err).with_context(|| {
-                format!("create-only probe duplicate write failed unexpectedly for {probe_uri}")
+                format!(
+                    "create-only probe duplicate copy-if-not-exists failed unexpectedly for {copy_dest_uri}"
+                )
             }),
         }
     }
@@ -1596,14 +1662,15 @@ fn is_create_only_conflict(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         cause
             .downcast_ref::<object_store::Error>()
-            .is_some_and(|object_error| {
-                matches!(
-                    object_error,
-                    object_store::Error::AlreadyExists { .. }
-                        | object_store::Error::Precondition { .. }
-                )
-            })
+            .is_some_and(is_object_store_create_only_conflict)
     })
+}
+
+fn is_object_store_create_only_conflict(err: &object_store::Error) -> bool {
+    matches!(
+        err,
+        object_store::Error::AlreadyExists { .. } | object_store::Error::Precondition { .. }
+    )
 }
 
 fn normalize_artifact_root(value: &str) -> Result<String> {

@@ -36,8 +36,14 @@ def compliant_artifact_store() -> str:
 use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut, S3CopyIfNotExists};
 
 pub struct S3ArtifactStoreConfig;
-pub struct CreateOnlyProbeConfig;
-pub struct CreateOnlyProbeTranscript { pub duplicate_create_rejected: bool }
+pub struct CreateOnlyProbeConfig {
+    pub copy_source_object_name: String,
+    pub copy_dest_object_name: String,
+}
+pub struct CreateOnlyProbeTranscript {
+    pub duplicate_create_rejected: bool,
+    pub duplicate_copy_rejected: bool,
+}
 
 pub struct ArtifactStoreConfig {
     pub s3: S3ArtifactStoreConfig,
@@ -59,6 +65,8 @@ fn create_only_probe_uri() {}
 impl CreateOnlyArtifactWriter {
     pub async fn probe_create_only() {
         let _duplicate_create_rejected = true;
+        let _duplicate_copy_rejected = true;
+        store.copy_if_not_exists(source, dest).await?;
     }
 }
 
@@ -147,6 +155,8 @@ copy_if_not_exists = "multipart"
 [artifact_store.create_only_probe]
 prefix = ".writer-probe"
 object_name = "sentinel"
+copy_source_object_name = "copy-source"
+copy_dest_object_name = "copy-dest"
 """,
     )
 

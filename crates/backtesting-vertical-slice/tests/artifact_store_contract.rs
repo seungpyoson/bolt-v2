@@ -34,6 +34,8 @@ copy_if_not_exists = "multipart"
 [create_only_probe]
 prefix = ".writer-probe"
 object_name = "sentinel"
+copy_source_object_name = "copy-source"
+copy_dest_object_name = "copy-dest"
 
 [subpaths]
 raw = "raw"
@@ -291,8 +293,18 @@ async fn create_only_probe_requires_duplicate_create_rejection() {
         transcript.probe_uri,
         "s3://bolt-ra-artifacts/prod/.writer-probe/probe=probe-run-123/sentinel"
     );
+    assert_eq!(
+        transcript.copy_source_uri,
+        "s3://bolt-ra-artifacts/prod/.writer-probe/probe=probe-run-123/copy-source"
+    );
+    assert_eq!(
+        transcript.copy_dest_uri,
+        "s3://bolt-ra-artifacts/prod/.writer-probe/probe=probe-run-123/copy-dest"
+    );
     assert!(transcript.first_create_succeeded);
     assert!(transcript.duplicate_create_rejected);
+    assert!(transcript.first_copy_succeeded);
+    assert!(transcript.duplicate_copy_rejected);
     let probe_path = root
         .object_path_for_uri(&transcript.probe_uri)
         .expect("probe uri under artifact root");
@@ -304,6 +316,17 @@ async fn create_only_probe_requires_duplicate_create_rejection() {
         .await
         .expect("probe object bytes");
     assert_eq!(stored.as_ref(), b"probe-run-123");
+    let copied_path = root
+        .object_path_for_uri(&transcript.copy_dest_uri)
+        .expect("probe copy dest uri under artifact root");
+    let copied = store
+        .get(&copied_path)
+        .await
+        .expect("created probe copy object")
+        .bytes()
+        .await
+        .expect("probe copy object bytes");
+    assert_eq!(copied.as_ref(), b"probe-run-123");
 }
 
 #[tokio::test]

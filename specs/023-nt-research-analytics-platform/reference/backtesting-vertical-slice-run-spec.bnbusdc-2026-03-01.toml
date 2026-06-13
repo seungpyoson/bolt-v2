@@ -159,6 +159,8 @@ copy_if_not_exists = "multipart"
 [artifact_store.create_only_probe]
 prefix = ".writer-probe"
 object_name = "sentinel"
+copy_source_object_name = "copy-source"
+copy_dest_object_name = "copy-dest"
 
 [artifact_store.subpaths]
 raw = "raw"

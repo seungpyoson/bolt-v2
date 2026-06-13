@@ -33,10 +33,14 @@ ARTIFACT_STORE_REQUIRED = (
     ".with_copy_if_not_exists(S3CopyIfNotExists::Multipart)",
     "pub struct CreateOnlyProbeConfig",
     "pub struct CreateOnlyProbeTranscript",
+    "copy_source_object_name",
+    "copy_dest_object_name",
     "pub async fn persist_catalog_projection_for_source_binding",
     "pub async fn probe_create_only",
     "duplicate_create_rejected",
+    "duplicate_copy_rejected",
     "create_only_probe_uri",
+    "copy_if_not_exists",
     "CatalogDispatchConfig",
     ".catalog_root_for(",
     "CreateOnlyArtifactWriter::new",
@@ -70,6 +74,8 @@ RUN_SPEC_REQUIRED = (
     "[artifact_store.create_only_probe]",
     "prefix",
     "object_name",
+    "copy_source_object_name",
+    "copy_dest_object_name",
 )
 
 

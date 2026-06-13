@@ -113,14 +113,10 @@ jobs:
       - name: fmt --check
         run: just bte-fmt-check
 
-  # clippy does a FULL crate compile (every NT dependency in check mode), so its disk footprint
-  # matches the test lane's — it must run on the HEAVY runner, not LIGHT. The LIGHT runner provisions
-  # ~9.9 GiB free, which falls below the 10 GiB disk-pressure floor once the managed target cache is
-  # restored, so the preflight refuses before clippy ever starts. Proven by control (same run): the
-  # test lane on HEAVY cleared the floor and ran nextest, while clippy on LIGHT was refused at
-  # free_bytes=10,622,885,888 < min_free_bytes=10,737,418,240. A reclaim patch on LIGHT is not durable
-  # (reclaimable_bytes=0 — nothing left to free) and would re-breach as the crate grows. Only fmt stays
-  # on LIGHT, because it is parse-only (no dependency compile, no disk pressure).
+  # Runner tier is governed by ci/github-actions-runners.toml ([workflows.backtester_ci].clippy),
+  # which scripts/verify_ci_workflow_hygiene.py enforces against this runs-on. clippy compiles the
+  # full NT-heavy dep graph and only clears the disk-pressure floor on the heavy tier (the TOML
+  # records the measured light-runner refusal); keep both files in sync.
   clippy:
     name: bvs-clippy
     needs: [detect, fmt]

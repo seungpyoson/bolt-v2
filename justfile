@@ -93,6 +93,10 @@ verify-ra-bte-phase-prerequisite: check-workspace
     python3 scripts/test_verify_ra_bte_phase_prerequisite.py
     python3 scripts/verify_ra_bte_phase_prerequisite.py
 
+verify-dashboard-customer-jobs: check-workspace
+    python3 scripts/test_verify_dashboard_customer_jobs.py
+    python3 scripts/verify_dashboard_customer_jobs.py
+
 verify-bolt-v3-legacy-default-fence: check-workspace
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
     python3 scripts/verify_bolt_v3_legacy_default_fence.py
@@ -213,6 +217,8 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_ra_thin_reader_helper.py
     python3 scripts/test_verify_ra_bte_phase_prerequisite.py
     python3 scripts/verify_ra_bte_phase_prerequisite.py
+    python3 scripts/test_verify_dashboard_customer_jobs.py
+    python3 scripts/verify_dashboard_customer_jobs.py
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
     python3 scripts/verify_bolt_v3_legacy_default_fence.py
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py

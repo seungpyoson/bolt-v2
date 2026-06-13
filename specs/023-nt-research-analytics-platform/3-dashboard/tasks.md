@@ -1,6 +1,6 @@
 # Tasks: Dashboard
 
-- [ ] DASH-001 Define dashboard customer jobs and capability classes before product selection: trade monitor, trade investigation, optional annotation/review notes, and controlled action workflow; keep trading/runtime/credential/fund/order mutation outside this package unless separately approved.
+- [x] DASH-001 Define dashboard customer jobs and capability classes before product selection: trade monitor, trade investigation, optional annotation/review notes, and controlled action workflow; keep trading/runtime/credential/fund/order mutation outside this package unless separately approved.
 - [ ] DASH-002 Define dashboard field-source matrix, including trade explanation fields, source proof id, run purpose, proof pin reason code/detail when present, fidelity class, claim limits, warning fields, source role, and data status/gap reason.
 - [ ] DASH-003 Resolve #409 `PortfolioSnapshot` dependency for PnL completeness.
 - [ ] DASH-004 Resolve #77 durable trade-history/PnL dependency.

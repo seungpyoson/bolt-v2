@@ -1359,13 +1359,24 @@ fn projected_scalar_fallback_accepts_nearby_input_inside_configured_timestamp_sk
 }
 
 #[test]
-fn projected_scalar_fallback_rejects_production_inputs_exceeding_timestamp_skew() {
+fn projected_scalar_fallback_rejects_distinct_source_inputs_exceeding_timestamp_skew() {
     let mut store = IvStore::empty();
-    for ts in [1_990, 2_000] {
+    for (source_id, selector_fingerprint, ts) in [
+        (
+            "configured-source",
+            "configured-selector-fingerprint",
+            1_990,
+        ),
+        (
+            "configured-backup-source",
+            "configured-backup-selector-fingerprint",
+            2_000,
+        ),
+    ] {
         store
             .ingest_event(greeks_event(
-                "configured-source",
-                "configured-selector-fingerprint",
+                source_id,
+                selector_fingerprint,
                 ts,
                 test_implied_volatility(42),
             ))
@@ -1381,7 +1392,10 @@ fn projected_scalar_fallback_rejects_production_inputs_exceeding_timestamp_skew(
         .with_fallback_policies(vec![IvFallbackPolicy {
             policy_id: "configured-fallback-policy".to_string(),
             candidate_order: vec!["configured-option-instrument".to_string()],
-            eligible_sources: vec!["configured-source".to_string()],
+            eligible_sources: vec![
+                "configured-source".to_string(),
+                "configured-backup-source".to_string(),
+            ],
             maximum_timestamp_skew_ns: 5,
             required_provenance_fields: vec!["raw_event_id".to_string()],
         }]);

@@ -39,5 +39,6 @@ nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.gi
 object_store = { version = "=0.13.2", default-features = false }
 
 [dev-dependencies]
+futures-util = "=0.3.32"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt"] }

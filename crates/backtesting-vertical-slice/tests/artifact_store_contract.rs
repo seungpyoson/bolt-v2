@@ -1,4 +1,10 @@
-use object_store::{ObjectStoreExt, memory::InMemory};
+use futures_util::stream::BoxStream;
+use object_store::{
+    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult,
+    Result as ObjectStoreResult, memory::InMemory, path::Path as ObjectPath,
+};
+use std::fmt;
 
 use backtesting_vertical_slice::{
     artifact_store::{
@@ -44,6 +50,90 @@ research_analytics = 7200
 latest_pointer_storage_profile = "active"
 current_snapshot_storage_profile = "active"
 "#
+}
+
+#[derive(Debug)]
+struct NoListObjectStore {
+    inner: InMemory,
+}
+
+impl NoListObjectStore {
+    fn new() -> Self {
+        Self {
+            inner: InMemory::new(),
+        }
+    }
+}
+
+impl fmt::Display for NoListObjectStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("NoListObjectStore")
+    }
+}
+
+impl ObjectStore for NoListObjectStore {
+    async fn put_opts(
+        &self,
+        location: &ObjectPath,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> ObjectStoreResult<PutResult> {
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &ObjectPath,
+        opts: PutMultipartOptions,
+    ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &ObjectPath,
+        options: GetOptions,
+    ) -> ObjectStoreResult<GetResult> {
+        self.inner.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, ObjectStoreResult<ObjectPath>>,
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectPath>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        _prefix: Option<&ObjectPath>,
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        panic!("artifact index normal discovery must not recursively list object storage")
+    }
+
+    fn list_with_offset(
+        &self,
+        _prefix: Option<&ObjectPath>,
+        _offset: &ObjectPath,
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        panic!("artifact index normal discovery must not offset-list object storage")
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        _prefix: Option<&ObjectPath>,
+    ) -> ObjectStoreResult<ListResult> {
+        panic!("artifact index normal discovery must not delimiter-list object storage")
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &ObjectPath,
+        to: &ObjectPath,
+        options: CopyOptions,
+    ) -> ObjectStoreResult<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
 }
 
 #[test]
@@ -614,6 +704,77 @@ async fn artifact_index_keeps_uncommitted_events_out_of_normal_discovery() {
         .map(|row| row.artifact_id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(artifact_ids, vec!["run-040"]);
+}
+
+#[tokio::test]
+async fn artifact_index_normal_discovery_uses_direct_pointer_reads_without_listing() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = NoListObjectStore::new();
+    let writer = ArtifactIndexWriter::new(&store);
+    let catalog_root = |artifact_id: &str| {
+        format!(
+            "{}/artifact={artifact_id}/",
+            root.typed_root(ArtifactKind::NtCatalog)
+        )
+    };
+
+    let parent = nt_catalog_event(
+        catalog_root("projection-001"),
+        "event-060",
+        "projection-001",
+        'b',
+    );
+    writer
+        .commit_event(
+            &root,
+            commit_plan(parent, &["snapshot-catalog-060"], "2026-06-13T00:00:09Z"),
+        )
+        .await
+        .expect("parent commits without object-store listing");
+
+    let child = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::BinaryOption, "run-060"),
+        "event-061",
+        "run-060",
+    );
+    writer
+        .commit_event(
+            &root,
+            commit_plan(child, &["snapshot-backtest-060"], "2026-06-13T00:00:10Z"),
+        )
+        .await
+        .expect("child commits without object-store listing");
+
+    let latest = writer
+        .read_verified_latest_snapshot(&root, ArtifactKind::Backtests)
+        .await
+        .expect("latest snapshot reads without object-store listing");
+    let latest_artifact_ids = latest
+        .rows
+        .iter()
+        .map(|row| row.artifact_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(latest_artifact_ids, vec!["run-060"]);
+
+    let committed_child = writer
+        .read_committed_row(&root, ArtifactKind::Backtests, "run-060")
+        .await
+        .expect("committed row lookup reads without object-store listing")
+        .expect("committed child exists");
+    assert_eq!(committed_child.artifact_id, "run-060");
+
+    let resolved_parent = writer
+        .read_declared_parent_row(
+            &root,
+            ArtifactKind::Backtests,
+            "run-060",
+            ArtifactKind::NtCatalog,
+            "projection-001",
+        )
+        .await
+        .expect("declared parent lookup reads without object-store listing")
+        .expect("declared parent exists");
+    assert_eq!(resolved_parent.content_sha256, sha256('b'));
 }
 
 #[tokio::test]

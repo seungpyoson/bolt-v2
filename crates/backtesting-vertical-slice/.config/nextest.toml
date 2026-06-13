@@ -1,5 +1,0 @@
-# TEMPORARY (diagnostic, revert before merge): disable nextest fail-fast so a
-# single CI round surfaces EVERY remaining test failure at once instead of one
-# per run. Removed in the follow-up commit once all failures are addressed.
-[profile.default]
-fail-fast = false

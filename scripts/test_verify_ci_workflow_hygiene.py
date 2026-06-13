@@ -1080,6 +1080,99 @@ def assert_strip_comment_handles_single_quoted_backslash() -> None:
         raise AssertionError(f"single-quoted backslash comment stripping failed: {actual!r}")
 
 
+def assert_workflow_hygiene_reviewer_regressions() -> None:
+    verifier = load_verifier()
+
+    url_fragment_command = "URL=https://example.com/api#fragment ; cargo build --target-dir /tmp/raw"
+    if verifier.strip_comment(url_fragment_command) != url_fragment_command:
+        raise AssertionError("unquoted # inside a shell word must not hide the rest of the command")
+
+    trailing_comment = "run: echo ok # trailing comment"
+    if verifier.strip_comment(trailing_comment) != "run: echo ok":
+        raise AssertionError("whitespace-prefixed trailing comments must still be stripped")
+
+    upload_probe = replace_once(
+        BASE_WORKFLOW,
+        "      - run: just fmt-check",
+        '      - run: echo "actions/upload-artifact@"\n      - run: just fmt-check',
+    )
+    upload_errors = verifier.verify_text(upload_probe, BASE_ACTION, BASE_NEXTEST_CONFIG)
+    if any("actions/upload-artifact must be pinned" in error for error in upload_errors):
+        raise AssertionError(f"action prose must not be treated as an upload-artifact action: {upload_errors!r}")
+
+    rust_cache_probe = replace_once(
+        BASE_WORKFLOW,
+        "      - run: just deny",
+        '      - run: echo "Swatinem/rust-cache@"\n      - run: just deny',
+    )
+    rust_cache_errors = verifier.verify_text(rust_cache_probe, BASE_ACTION, BASE_NEXTEST_CONFIG)
+    if any("shared Cargo registry/git" in error for error in rust_cache_errors):
+        raise AssertionError(f"action prose must not be treated as a rust-cache action: {rust_cache_errors!r}")
+
+    dynamic_env_cases = {
+        "RUSTFLAGS raw output override must be classified": """
+            E=RUSTFLAGS
+            export $E='--out-dir=/tmp/raw-out'
+            cargo build
+        """,
+        "CARGO_BUILD_RUSTFLAGS raw output override must be classified": """
+            E=CARGO_BUILD_RUSTFLAGS
+            export $E='--artifact-dir=/tmp/raw-artifacts'
+            cargo build
+        """,
+        "CARGO_ENCODED_RUSTFLAGS raw output override must be classified": """
+            E=CARGO_ENCODED_RUSTFLAGS
+            export $E='--out-dir=/tmp/raw-out'
+            cargo build
+        """,
+        "CARGO_HOME raw cache override must be classified": """
+            E=CARGO_HOME
+            export $E=/tmp/cargo-home
+            cargo build
+        """,
+        "RUSTUP_HOME raw toolchain override must be classified": """
+            E=RUSTUP_HOME
+            export $E=/tmp/rustup-home
+            cargo build
+        """,
+        "CARGO_INCREMENTAL raw cache override must be classified": """
+            E=CARGO_INCREMENTAL
+            export $E=1
+            cargo build
+        """,
+        "CARGO_INSTALL_ROOT install output override must be classified": """
+            E=CARGO_INSTALL_ROOT
+            export $E=/tmp/install-root
+            cargo install cargo-deny
+        """,
+        "RUSTC_WRAPPER raw compiler wrapper must be classified": """
+            E=RUSTC_WRAPPER
+            export $E=/tmp/wrapper
+            cargo build
+        """,
+        "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified": """
+            E=RUSTC_WORKSPACE_WRAPPER
+            export $E=/tmp/workspace-wrapper
+            cargo build
+        """,
+    }
+    for expected, script in dynamic_env_cases.items():
+        errors = verifier.raw_rust_storage_errors(textwrap.dedent(script))
+        if expected not in errors:
+            raise AssertionError(f"dynamic env alias did not classify {expected!r}: {errors!r}")
+
+    s3_expected = "S3 active mutable target cache must be rejected"
+    s3_stdout_cases = {
+        "aws stdout extracted into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | tar -x -C target",
+        "aws stdout piped through cat into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | cat > target/cache.tar",
+        "aws stdout redirected into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - > target/cache.tar",
+    }
+    for name, script in s3_stdout_cases.items():
+        errors = verifier.raw_rust_storage_errors(script)
+        if s3_expected not in errors:
+            raise AssertionError(f"{name} was not rejected: {errors!r}")
+
+
 def assert_required_job_indentation_is_actionable() -> None:
     assert_error(
         "job clippy must use two-space top-level indentation",
@@ -3615,6 +3708,7 @@ def main() -> int:
     assert_v6_red_local_composite_actions_are_scanned()
     assert_v6_red_additional_workflows_are_scanned()
     assert_shell_logical_lines_handles_crlf_continuations()
+    assert_workflow_hygiene_reviewer_regressions()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(
         "concurrency group must key pull_request runs by PR number",

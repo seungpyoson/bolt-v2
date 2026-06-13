@@ -388,7 +388,7 @@ def strip_comment(line: str) -> str:
         if char in {"'", '"'}:
             quote = char
             continue
-        if char == "#":
+        if char == "#" and (index == 0 or line[index - 1].isspace()):
             return line[:index].rstrip()
     return line.rstrip()
 
@@ -641,8 +641,13 @@ def setup_action_blocks(job_lines: list[str]) -> list[list[str]]:
     return [block for block in step_blocks(job_lines) if any("./.github/actions/setup-environment" in line for line in block)]
 
 
+def line_uses_action(line: str, action: str) -> bool:
+    match = re.match(r"^\s*(?:-\s*)?uses:\s*(['\"]?)(?P<value>[^'\"\s#]+)", strip_comment(line))
+    return match is not None and match.group("value").startswith(action)
+
+
 def action_blocks(job_lines: list[str], action: str) -> list[list[str]]:
-    return [block for block in step_blocks(job_lines) if any(action in strip_comment(line) for line in block)]
+    return [block for block in step_blocks(job_lines) if any(line_uses_action(line, action) for line in block)]
 
 
 def upload_artifact_pin_errors(job_lines: list[str]) -> list[str]:
@@ -4026,6 +4031,134 @@ def command_streams_active_target_to_stdout(
     )
 
 
+def output_redirection_targets(tokens: list[str], index: int) -> list[str]:
+    targets: list[str] = []
+    tail = command_tail_until_boundary(tokens, index + 1)
+    cursor = 0
+    while cursor < len(tail):
+        token = tail[cursor]
+        if token in {">", ">>", "<>", ">|", "&>", "&>>"}:
+            if cursor + 1 < len(tail):
+                targets.append(tail[cursor + 1])
+            cursor += 2
+            continue
+        match = re.match(r"^\d?(?:>>?|<>|>\||&>>?)(.+)$", token)
+        if match is not None:
+            targets.append(match.group(1))
+        cursor += 1
+    return targets
+
+
+def command_output_redirects_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    return any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in storage_value_roles(
+            target,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for target in output_redirection_targets(tokens, index)
+    )
+
+
+def tar_extracts_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    extracts = False
+    directories: list[str] = []
+    cursor = 0
+    while cursor < len(tail):
+        token = tail[cursor]
+        if token in {"x", "-x", "--extract", "--get"}:
+            extracts = True
+            cursor += 1
+            continue
+        if token.startswith("-") and not token.startswith("--") and "x" in token[1:]:
+            extracts = True
+        if token in {"-C", "--directory"} and cursor + 1 < len(tail):
+            directories.append(tail[cursor + 1])
+            cursor += 2
+            continue
+        if token.startswith("--directory="):
+            directories.append(token.split("=", 1)[1])
+        elif token.startswith("-") and not token.startswith("--") and "C" in token[1:]:
+            suffix = token[1:].split("C", 1)[1]
+            if suffix:
+                directories.append(suffix)
+            elif cursor + 1 < len(tail):
+                directories.append(tail[cursor + 1])
+                cursor += 1
+        cursor += 1
+    if not extracts:
+        return False
+    if cwd_is_active_target:
+        return True
+    return any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in storage_value_roles(
+            directory,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for directory in directories
+    )
+
+
+def command_writes_s3_stdin_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+    command_name: str,
+) -> bool:
+    if command_output_redirects_to_active_target(
+        tokens,
+        index,
+        variable_roles,
+        active_paths,
+        cwd_is_active_target=cwd_is_active_target,
+    ):
+        return True
+    if command_name == "tar" and tar_extracts_to_active_target(
+        tokens,
+        index,
+        variable_roles,
+        active_paths,
+        cwd_is_active_target=cwd_is_active_target,
+    ):
+        return True
+    if command_name == "tee":
+        return any(
+            STORAGE_ROLE_ACTIVE_TARGET
+            in storage_value_roles(
+                token,
+                variable_roles,
+                cwd_is_active_target=cwd_is_active_target,
+                active_paths=active_paths,
+            )
+            for token in command_tail_until_boundary(tokens, index + 1)
+            if token != "-" and not token.startswith("-")
+        )
+    return False
+
+
 def shell_assignment_from_tokens(tokens: list[str], index: int) -> tuple[str, str, int] | None:
     if index >= len(tokens) or not shell_assignment_word(tokens[index]):
         return None
@@ -4254,6 +4387,35 @@ def aws_s3_transfer_touches_active_target(
     return any(STORAGE_ROLE_ACTIVE_TARGET in roles for roles in endpoint_roles)
 
 
+def aws_s3_transfer_streams_s3_to_stdout(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    *,
+    cwd_is_active_target: bool,
+    active_paths: set[str],
+) -> bool:
+    service_index = aws_service_index(tokens, index)
+    if service_index is None or tokens[service_index] != "s3":
+        return False
+    op_index = service_index + 1
+    if op_index >= len(tokens) or tokens[op_index] != "cp":
+        return False
+    operands = aws_s3_operands(command_tail_until_boundary(tokens, op_index + 1))
+    if len(operands) < 2:
+        return False
+    source = operands[0]
+    destination = operands[1]
+    if destination != "-":
+        return False
+    return STORAGE_ROLE_S3 in storage_value_roles(
+        source,
+        variable_roles,
+        cwd_is_active_target=cwd_is_active_target,
+        active_paths=active_paths,
+    )
+
+
 def command_prefix_before_token(tokens: list[str], index: int) -> list[str]:
     cursor = index - 1
     while cursor >= 0 and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
@@ -4341,6 +4503,8 @@ def storage_transfer_policy_errors_from_tokens(
     active_paths: set[str] = set(initial_active_paths or set())
     pipe_stdout_is_active_target = False
     pipe_stdin_is_active_target = False
+    pipe_stdout_is_s3 = False
+    pipe_stdin_is_s3 = False
     while cursor < len(tokens):
         assignment = shell_assignment_from_tokens(tokens, cursor)
         if assignment is not None:
@@ -4350,9 +4514,12 @@ def storage_transfer_policy_errors_from_tokens(
         if token in SHELL_COMMAND_BOUNDARIES:
             if token == "|":
                 pipe_stdin_is_active_target = pipe_stdout_is_active_target
+                pipe_stdin_is_s3 = pipe_stdout_is_s3
             else:
                 pipe_stdin_is_active_target = False
+                pipe_stdin_is_s3 = False
             pipe_stdout_is_active_target = False
+            pipe_stdout_is_s3 = False
             cursor += 1
             continue
         name = executable_name(token)
@@ -4439,6 +4606,15 @@ def storage_transfer_policy_errors_from_tokens(
             )
         elif pipe_stdin_is_active_target and name != "aws":
             pipe_stdout_is_active_target = True
+        if pipe_stdin_is_s3 and command_writes_s3_stdin_to_active_target(
+            tokens,
+            cursor,
+            variable_roles,
+            active_paths,
+            cwd_is_active_target=cwd_is_active_target,
+            command_name=name,
+        ):
+            return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
         if name == "aws" and aws_s3_transfer_touches_active_target(
             tokens,
             cursor,
@@ -4449,7 +4625,17 @@ def storage_transfer_policy_errors_from_tokens(
         ):
             return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
         if name == "aws":
+            pipe_stdout_is_s3 = aws_s3_transfer_streams_s3_to_stdout(
+                tokens,
+                cursor,
+                variable_roles,
+                cwd_is_active_target=cwd_is_active_target,
+                active_paths=active_paths,
+            )
             pipe_stdin_is_active_target = False
+            pipe_stdin_is_s3 = False
+        elif pipe_stdin_is_s3:
+            pipe_stdout_is_s3 = True
         cursor += 1
     return []
 
@@ -4503,6 +4689,18 @@ def target_env_key_from_assignment_name(
     return None
 
 
+RUSTFLAGS_OUTPUT_OVERRIDE_KEYS = {
+    "CARGO_BUILD_RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "RUSTFLAGS",
+}
+
+
+def rustflags_value_has_output_override(value: str) -> bool:
+    clean = storage_strip_quotes(value)
+    return "--out-dir" in clean or "--artifact-dir" in clean
+
+
 def dynamic_env_assignment_message(
     token: str,
     assignments: dict[str, str],
@@ -4510,9 +4708,13 @@ def dynamic_env_assignment_message(
 ) -> str | None:
     if "=" not in token:
         return None
-    name, _value = token.split("=", 1)
+    name, value = token.split("=", 1)
     target_key = target_env_key_from_assignment_name(name, assignments, target_keys)
-    return target_keys[target_key] if target_key is not None else None
+    if target_key is None:
+        return None
+    if target_key in RUSTFLAGS_OUTPUT_OVERRIDE_KEYS and not rustflags_value_has_output_override(value):
+        return None
+    return target_keys[target_key]
 
 
 def dynamic_env_segment_messages(
@@ -4779,6 +4981,15 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
         "CARGO_TARGET_DIR": "CARGO_TARGET_DIR raw target override must be classified",
         "CARGO_BUILD_TARGET_DIR": "CARGO_BUILD_TARGET_DIR raw target override must be classified",
         "CARGO_TARGET_TMPDIR": "CARGO_TARGET_TMPDIR raw target override must be classified",
+        "CARGO_INCREMENTAL": "CARGO_INCREMENTAL raw cache override must be classified",
+        "CARGO_BUILD_RUSTFLAGS": "CARGO_BUILD_RUSTFLAGS raw output override must be classified",
+        "CARGO_ENCODED_RUSTFLAGS": "CARGO_ENCODED_RUSTFLAGS raw output override must be classified",
+        "CARGO_INSTALL_ROOT": "CARGO_INSTALL_ROOT install output override must be classified",
+        "CARGO_HOME": "CARGO_HOME raw cache override must be classified",
+        "RUSTUP_HOME": "RUSTUP_HOME raw toolchain override must be classified",
+        "RUSTFLAGS": "RUSTFLAGS raw output override must be classified",
+        "RUSTC_WRAPPER": "RUSTC_WRAPPER raw compiler wrapper must be classified",
+        "RUSTC_WORKSPACE_WRAPPER": "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified",
         "BOLT_ALLOW_LOCAL_RUST": "BOLT_ALLOW_LOCAL_RUST local Rust break-glass must not be checked in",
         "BOLT_MANAGED_JUST": "BOLT_MANAGED_JUST private just recipe bypass must be classified",
         "GITHUB_ACTIONS": "GITHUB_ACTIONS local CI spoof must not be checked in",

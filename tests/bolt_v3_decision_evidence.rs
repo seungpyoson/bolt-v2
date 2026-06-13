@@ -30,6 +30,9 @@ use rust_decimal::Decimal;
 
 struct NoopFeeProvider;
 
+const EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 10;
+const PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 9;
+
 impl FeeProvider for NoopFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
         None
@@ -38,6 +41,14 @@ impl FeeProvider for NoopFeeProvider {
     fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
         async { Ok(()) }.boxed()
     }
+}
+
+#[test]
+fn decision_evidence_schema_version_tracks_position_sizer_recovery_records() {
+    assert_eq!(
+        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION
+    );
 }
 
 #[test]
@@ -377,6 +388,60 @@ fn submit_reservation_recovery_rejects_noncanonical_metadata_encodings() {
             "expected canonical {field} diagnostic, got: {rendered}"
         );
     }
+}
+
+#[test]
+fn submit_reservation_recovery_skips_legacy_v9_non_recovery_lines() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut lines = sample_entry_decision_evidence_lines().to_vec();
+    for line in &mut lines {
+        line["schema_version"] = serde_json::json!(PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION);
+    }
+    lines.push(serde_json::json!({
+        "schema_version": EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 4_i64,
+        "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": "submit_reservation_metadata",
+        "metadata": sample_submit_reservation_metadata(),
+    }));
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let recovery = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+        .expect("legacy v9 non-recovery lines must not block reservation recovery");
+
+    assert!(
+        recovery
+            .metadata_by_client_order_id
+            .contains_key("client-order-one"),
+        "current reservation metadata should recover despite legacy non-recovery lines"
+    );
+}
+
+#[test]
+fn submit_reservation_recovery_rejects_legacy_v9_reservation_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[serde_json::json!({
+            "schema_version": PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION,
+            "recorded_at_utc_ns": 1_i64,
+            "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+            "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+            "kind": "submit_reservation_metadata",
+            "metadata": sample_submit_reservation_metadata(),
+        })],
+    );
+
+    let error = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+        .expect_err("legacy v9 reservation metadata must fail closed");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("schema_version mismatch"),
+        "expected schema mismatch for legacy reservation metadata, got: {rendered}"
+    );
 }
 
 fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {

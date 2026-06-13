@@ -531,11 +531,15 @@ pub fn normalize_csv_native_bars(
 
     // Determine the bar period from the interval source.
     //
-    // Declared: the operator-specified period is authoritative. Each
-    // instrument's adjacent open-time gaps must each be a positive integer
-    // multiple of the declared period (gaps represent missing bars). A
-    // single-bar instrument is valid — one bar cannot prove a gap, but the
-    // declared period makes the period unambiguous.
+    // Declared: the operator-specified period is reconciled against the period
+    // derived from each instrument's own deduped open times via the one shared
+    // [`bar_spec_from_open_times`] helper — the SAME reconciliation the paged-
+    // JSON and derive paths use. The helper computes the fundamental (minimum-
+    // gap) spec and enforces that every gap is a multiple of it, so a declared
+    // period that under-states the true spacing (e.g. 60 s bars declared as 1 s)
+    // fails loud instead of mislabelling the bar_spec and deriving a wrong
+    // close_time. A single-bar instrument is valid — one bar cannot prove a
+    // period, but the declared period makes it unambiguous.
     //
     // DerivedFromOpenTimes: the period is derived per instrument from its own
     // open times. Each instrument must have at least two rows so the minimum
@@ -553,10 +557,13 @@ pub fn normalize_csv_native_bars(
             };
             let interval_nanos = bar_interval_nanos_for_spec(declared)?
                 .context("declared fixed-duration bar spec yielded no fixed nanosecond length")?;
-            let period =
-                u64::try_from(interval_nanos).context("declared bar interval is non-positive")?;
-            // Validate every instrument's gaps are positive integer multiples
-            // of the declared period. Single-bar instruments are valid.
+            // Reconcile the declared period against the period derived from each
+            // instrument's own deduped open times. The shared helper enforces
+            // all-gaps-are-multiples-of-the-minimum internally (so misaligned
+            // rows still fail loud) AND returns the fundamental spec, so a
+            // declared period that mis-states the true spacing is rejected
+            // instead of silently mislabelling the table. A single-bar
+            // instrument has no derivable gap; the declaration stands.
             for instrument_key in &group_order {
                 let rows = groups
                     .get(instrument_key)
@@ -564,24 +571,20 @@ pub fn normalize_csv_native_bars(
                 let mut opens: Vec<i64> = rows.iter().map(|row| row.open_time).collect();
                 opens.sort_unstable();
                 opens.dedup();
-                for window in opens.windows(2) {
-                    let gap = u64::try_from(
-                        window[1]
-                            .checked_sub(window[0])
-                            .context("open_time underflow in declared-interval gap check")?,
-                    )
-                    .context("negative open_time gap in declared-interval gap check")?;
-                    ensure!(
-                        gap > 0,
-                        "duplicate open_time survived dedup for instrument {instrument_key:?}"
-                    );
-                    ensure!(
-                        gap.is_multiple_of(period),
-                        "instrument {instrument_key:?}: open_time gap {gap} ns is not a \
-                         multiple of the declared interval {period} ns — row is misaligned, \
-                         not a data hole"
-                    );
+                if opens.len() < 2 {
+                    continue;
                 }
+                // Prefix the instrument key while preserving the specific
+                // derivation failure (e.g. "not a multiple") in the Display, as
+                // the derive path does — a `with_context` wrapper would bury it.
+                let derived = bar_spec_from_open_times(&opens)
+                    .map_err(|error| anyhow::anyhow!("instrument {instrument_key:?}: {error:#}"))?;
+                ensure!(
+                    declared == derived,
+                    "instrument {instrument_key:?}: declared bar interval {declared:?} does not \
+                     match interval derived from open times {derived:?} — the declared period \
+                     mis-states the true bar spacing"
+                );
             }
             (declared, interval_nanos)
         }
@@ -1826,8 +1829,9 @@ table_families = ["bars"]
     #[test]
     fn rejects_declared_interval_misaligned_with_data_gaps() {
         let accepted = accepted_dataset(&schema_with_close());
-        // Data has one-minute gaps; declaring one hour means 60s is not a
-        // multiple of 3600s — the adapter must reject the row as misaligned.
+        // Data has uniform one-minute gaps; declaring one hour over-states the
+        // true spacing. The declared spec is reconciled against the spec derived
+        // from the open times (one minute), so the mismatch must fail loud.
         let mapping = BarMappingConfig {
             interval_source: BarIntervalSource::Declared {
                 step: 1,
@@ -1843,8 +1847,127 @@ table_families = ["bars"]
             42,
             "ingest-run-test",
         )
-        .expect_err("misaligned gap must be rejected against declared interval");
-        assert!(err.to_string().contains("not a multiple"), "{err}");
+        .expect_err("over-stated declared interval must be rejected against derived spec");
+        assert!(
+            err.to_string()
+                .contains("does not match interval derived from open times"),
+            "{err}"
+        );
+    }
+
+    /// A row whose open-time gap is not a multiple of the minimum gap is
+    /// misaligned, not a data hole. The shared derivation helper (reached through
+    /// the declared-interval reconciliation) must surface "not a multiple".
+    #[test]
+    fn rejects_declared_interval_misaligned_within_instrument_gaps() {
+        let accepted = accepted_dataset(&schema_with_close());
+        // Gaps: 60 s then 90 s — 90 s is not a multiple of the 60 s minimum, so
+        // the open times do not describe a single period regardless of what is
+        // declared.
+        let csv = "open_time,close_time,open,high,low,close,volume\n\
+            1700000000000,1700000060000,0.50,0.55,0.49,0.52,100\n\
+            1700000060000,1700000120000,0.52,0.58,0.51,0.57,120\n\
+            1700000150000,1700000210000,0.57,0.60,0.55,0.59,80\n";
+        let err = normalize_csv_native_bars(
+            &accepted,
+            &single_identity(),
+            &declared_minute_mapping(),
+            csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("misaligned within-instrument gaps must be rejected");
+        assert!(
+            err.to_string().contains("not a multiple"),
+            "expected 'not a multiple' in error: {err}"
+        );
+    }
+
+    /// F7: a CSV of true 60 s-spaced bars with NO close_time column declared with
+    /// a SMALLER step (1 s) must FAIL LOUD. The old divisibility-only check let
+    /// it pass (every 60 s gap is a multiple of 1 s), then derived a wrong 1 s
+    /// close_time and wrote a mislabelled bar_spec. The shared derivation derives
+    /// the fundamental 60 s spec, so the declared 1 s now fails to reconcile.
+    #[test]
+    fn rejects_declared_interval_understating_true_spacing() {
+        let accepted = accepted_dataset(&["open_time", "open", "high", "low", "close", "volume"]);
+        // Declared one-second step over data spaced one minute apart.
+        let mapping = BarMappingConfig {
+            interval_source: BarIntervalSource::Declared {
+                step: 1,
+                aggregation: BarAggregation::Second,
+            },
+            ..declared_minute_mapping()
+        };
+        let csv = "open_time,open,high,low,close,volume\n\
+            1700000000000,0.50,0.55,0.49,0.52,100\n\
+            1700000060000,0.52,0.58,0.51,0.57,120\n\
+            1700000120000,0.57,0.60,0.55,0.59,80\n";
+        let err = normalize_csv_native_bars(
+            &accepted,
+            &single_identity(),
+            &mapping,
+            csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("under-stated declared interval must be rejected against derived spec");
+        assert!(
+            err.to_string()
+                .contains("does not match interval derived from open times"),
+            "expected derived-spec mismatch in error: {err}"
+        );
+    }
+
+    /// F7: sparse-bar tolerance must be preserved. A correctly declared 60 s
+    /// interval over data with HOLES (gaps 60 s, 120 s, 180 s) must still PASS —
+    /// larger gaps are missing bars, never a different period.
+    #[test]
+    fn accepts_declared_interval_with_sparse_holes() {
+        let accepted = accepted_dataset(&["open_time", "open", "high", "low", "close", "volume"]);
+        // Open times at 0 s, 60 s, 180 s, 360 s: gaps of 60 s, 120 s, 180 s — all
+        // multiples of the 60 s declared minute.
+        let csv = "open_time,open,high,low,close,volume\n\
+            1700000000000,0.50,0.55,0.49,0.52,100\n\
+            1700000060000,0.52,0.58,0.51,0.57,120\n\
+            1700000180000,0.57,0.60,0.55,0.59,80\n\
+            1700000360000,0.59,0.62,0.58,0.61,90\n";
+        let tables = normalize_csv_native_bars(
+            &accepted,
+            &single_identity(),
+            &declared_minute_mapping(),
+            csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect("sparse holes that are multiples of the declared minute must be accepted");
+        let table = &tables[0];
+        assert_eq!(table.bar_spec.aggregation, BarAggregation::Minute);
+        assert_eq!(table.rows.len(), 4);
+        // close_time is derived from the declared (and reconciled) minute period.
+        assert_eq!(table.rows[0].close_time, 1_700_000_060_000_000_000);
+    }
+
+    /// F7: a single-bar instrument cannot derive a period, so an explicit
+    /// declaration is still accepted (no derivable gap to reconcile against).
+    #[test]
+    fn accepts_declared_interval_for_single_bar_instrument() {
+        let accepted = accepted_dataset(&["open_time", "open", "high", "low", "close", "volume"]);
+        let csv = "open_time,open,high,low,close,volume\n\
+            1700000000000,0.50,0.55,0.49,0.52,100\n";
+        let tables = normalize_csv_native_bars(
+            &accepted,
+            &single_identity(),
+            &declared_minute_mapping(),
+            csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect("single-bar instrument keeps the declared period");
+        let table = &tables[0];
+        assert_eq!(table.bar_spec.aggregation, BarAggregation::Minute);
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(table.rows[0].close_time, 1_700_000_060_000_000_000);
     }
 
     #[test]

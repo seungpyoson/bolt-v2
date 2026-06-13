@@ -383,9 +383,30 @@ fn parse_raw_symbol(value: &str) -> Result<Symbol> {
         .map_err(|error| anyhow::anyhow!("invalid raw_symbol {value:?}: {error}"))
 }
 
+/// Upper bound on a minted crypto currency code length.
+///
+/// `Currency::get_or_create_crypto` mints a precision-8 currency for ANY
+/// non-empty UTF-8 string, so a malformed `currency` cell (lowercase, padded,
+/// punctuation, or a stray free-text value) would silently become a phantom
+/// currency. NT venue/crypto codes are short uppercase alphanumeric tickers;
+/// this bounds the accepted length structurally without an allowlist.
+const MAX_VENUE_CURRENCY_CODE_LEN: usize = 10;
+
 fn parse_venue_currency(value: &str, label: &str) -> Result<Currency> {
     let code = value.trim();
     ensure!(!code.is_empty(), "{label} must not be empty");
+    // Structural format gate (NOT an allowlist): NT codes are short uppercase
+    // ASCII tickers, optionally with digits. Reject anything outside that shape
+    // so a degraded cell cannot mint a phantom currency further down the path.
+    ensure!(
+        code.len() <= MAX_VENUE_CURRENCY_CODE_LEN,
+        "{label} {value:?} exceeds the {MAX_VENUE_CURRENCY_CODE_LEN}-character venue currency bound"
+    );
+    ensure!(
+        code.bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit()),
+        "{label} {value:?} must be uppercase ASCII alphanumeric"
+    );
     Ok(Currency::get_or_create_crypto(code))
 }
 
@@ -660,7 +681,7 @@ pub fn build_binary_option(spec: &BinaryOptionInstrumentSpec) -> Result<BinaryOp
              be silently lost on the projection round-trip"
         );
     }
-    BinaryOption::new_checked(
+    let option = BinaryOption::new_checked(
         instrument_id,
         raw_symbol,
         asset_class,
@@ -692,7 +713,69 @@ pub fn build_binary_option(spec: &BinaryOptionInstrumentSpec) -> Result<BinaryOp
             "invalid binary option for {:?}: {error}",
             spec.nt_instrument_id
         )
-    })
+    })?;
+    // The six NT-non-persistable fields are passed as `None`/default above, but
+    // route the constructed instrument through the single catalog-persistability
+    // invariant so the SPEC path and the one-off backfill path enforce one rule.
+    ensure_binary_option_catalog_persistable(&option)?;
+    Ok(option)
+}
+
+/// THE one rule: a [`BinaryOption`] is catalog-persistable only when every
+/// field the NT catalog Arrow schema cannot encode is at its round-trip value.
+///
+/// `decode_binary_option_batch` (rev 6e059dc lines 412-417) hardcodes
+/// `max_price`, `min_price`, `max_notional`, `min_notional`, `margin_init`, and
+/// `margin_maint` to `None` on read-back; `BinaryOption`'s constructor stores
+/// the two margins as `Decimal::default()` when given `None`. So a persisted
+/// instrument round-trips losslessly only when the four `Option` bounds are
+/// `None` and the two margins are zero. Any other value would be silently
+/// dropped on the projection round-trip (FAIL LOUD: reject it here). Both the
+/// SPEC projection ([`build_binary_option`]) and the one-off backfill
+/// projection share this invariant so no second production rule can disagree on
+/// whether a degraded instrument is acceptable (NO DUAL PATHS).
+///
+/// # Errors
+///
+/// Returns an error naming the first field that would be lost on round-trip.
+pub(crate) fn ensure_binary_option_catalog_persistable(inst: &BinaryOption) -> Result<()> {
+    ensure!(
+        inst.max_price.is_none(),
+        "max_price would be silently lost on the NT catalog round-trip \
+         (decode_binary_option_batch hardcodes it as None): {:?}",
+        inst.id
+    );
+    ensure!(
+        inst.min_price.is_none(),
+        "min_price would be silently lost on the NT catalog round-trip \
+         (decode_binary_option_batch hardcodes it as None): {:?}",
+        inst.id
+    );
+    ensure!(
+        inst.max_notional.is_none(),
+        "max_notional would be silently lost on the NT catalog round-trip \
+         (decode_binary_option_batch hardcodes it as None): {:?}",
+        inst.id
+    );
+    ensure!(
+        inst.min_notional.is_none(),
+        "min_notional would be silently lost on the NT catalog round-trip \
+         (decode_binary_option_batch hardcodes it as None): {:?}",
+        inst.id
+    );
+    ensure!(
+        inst.margin_init == Decimal::default(),
+        "margin_init would be silently zeroed on the NT catalog round-trip \
+         (decode_binary_option_batch hardcodes it as None): {:?}",
+        inst.id
+    );
+    ensure!(
+        inst.margin_maint == Decimal::default(),
+        "margin_maint would be silently zeroed on the NT catalog round-trip \
+         (decode_binary_option_batch hardcodes it as None): {:?}",
+        inst.id
+    );
+    Ok(())
 }
 
 /// NT `ts_event` for a canonical row: the exchange/source event instant.
@@ -3456,6 +3539,84 @@ mod tests {
             msg.contains("NT catalog Arrow schema does not persist"),
             "error must cite the round-trip reason: {msg}"
         );
+    }
+
+    // Fix F5 — the shared catalog-persistability invariant is the single
+    // production rule both projection paths enforce. A constructed BinaryOption
+    // carrying any NT-non-persistable field must be rejected, and a clean one
+    // must pass.
+    #[test]
+    fn ensure_binary_option_catalog_persistable_rejects_each_lost_field() {
+        let clean = build_binary_option(&binary_option_inner()).expect("clean instrument");
+        ensure_binary_option_catalog_persistable(&clean).expect("clean instrument is persistable");
+
+        let with_price_bound = BinaryOption {
+            max_price: Some(Price::from("0.999")),
+            ..clean.clone()
+        };
+        let err = ensure_binary_option_catalog_persistable(&with_price_bound).unwrap_err();
+        assert!(
+            err.to_string().contains("max_price"),
+            "error must name the lost field: {err}"
+        );
+
+        let with_margin = BinaryOption {
+            margin_init: Decimal::new(5, 2),
+            ..clean
+        };
+        let err = ensure_binary_option_catalog_persistable(&with_margin).unwrap_err();
+        assert!(
+            err.to_string().contains("margin_init"),
+            "error must name the lost field: {err}"
+        );
+    }
+
+    // Fix F9 — parse_venue_currency structural format gate. The minting call
+    // (`get_or_create_crypto`) accepts ANY non-empty UTF-8 string, so the
+    // pre-check is the only thing that stops a degraded cell from minting a
+    // phantom currency.
+    #[test]
+    fn parse_venue_currency_rejects_lowercase() {
+        let err = parse_venue_currency("usdc", "currency").unwrap_err();
+        assert!(
+            err.to_string().contains("uppercase ASCII alphanumeric"),
+            "error must state the format rule: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_venue_currency_rejects_over_length() {
+        let err = parse_venue_currency("ABCDEFGHIJK", "currency").unwrap_err();
+        assert!(
+            err.to_string().contains("character venue currency bound"),
+            "error must state the length bound: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_venue_currency_rejects_non_ascii() {
+        let err = parse_venue_currency("USDÇ", "currency").unwrap_err();
+        assert!(
+            err.to_string().contains("uppercase ASCII alphanumeric"),
+            "error must state the format rule: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_venue_currency_rejects_punctuation() {
+        let err = parse_venue_currency("US-D", "currency").unwrap_err();
+        assert!(
+            err.to_string().contains("uppercase ASCII alphanumeric"),
+            "error must state the format rule: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_venue_currency_accepts_uppercase_alphanumeric() {
+        // A well-formed code (including a leading digit, which NT codes allow)
+        // still mints, so the gate does not over-reject valid tickers.
+        let minted = parse_venue_currency("1INCH", "currency").expect("valid code mints");
+        assert_eq!(minted.code.as_str(), "1INCH");
     }
 
     // Fix 4 — parse_optional_ustr empty-when-present rejection.

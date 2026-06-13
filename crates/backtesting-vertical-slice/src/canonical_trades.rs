@@ -2086,6 +2086,7 @@ impl CanonicalTradesTable {
         );
 
         let mut previous_event_time = i64::MIN;
+        let mut previous_ts_init = i64::MIN;
         for (index, row) in self.rows.iter().enumerate() {
             ensure!(
                 row.schema_version == NORMALIZED_SCHEMA_VERSION,
@@ -2099,6 +2100,15 @@ impl CanonicalTradesTable {
                 previous_event_time
             );
             previous_event_time = row.event_time;
+            // NT's catalog write orders/hard-checks by ts_init
+            // (= availability_time.unwrap_or(capture_time)); validate() must
+            // reject what the write would reject, via the single shared guard.
+            previous_ts_init = super::canonical_market_data::ensure_ts_init_non_decreasing(
+                index,
+                row.availability_time,
+                row.capture_time,
+                previous_ts_init,
+            )?;
             ensure!(
                 row.instrument_id == self.partition.instrument_id,
                 "row {index}: instrument_id does not match partition"
@@ -3453,5 +3463,105 @@ seller_side_values = ["Sell"]
             total_rows += batch.expect("batch").num_rows();
         }
         assert_eq!(total_rows, table.rows.len());
+    }
+
+    /// Hand-build a single canonical trade row with every required field valid,
+    /// so `validate()` reaches the per-row `ts_init` guard. The CSV normalize
+    /// path stamps a uniform `capture_time` and `availability_time: None` on
+    /// every row, so it cannot regress `ts_init`; this builder lets a test drive
+    /// `event_time`, `capture_time`, and `availability_time` independently.
+    fn trade_row(
+        event_time: i64,
+        capture_time: i64,
+        availability_time: Option<i64>,
+    ) -> CanonicalTradeRow {
+        CanonicalTradeRow {
+            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+            ingest_run_id: "ingest-run-test".to_string(),
+            source_binding: "synthetic-archive".to_string(),
+            venue: "testvenue".to_string(),
+            product_family: "spot".to_string(),
+            product_category: "spot".to_string(),
+            instrument_id: "TESTPAIR".to_string(),
+            canonical_instrument_key: "testvenue/spot/TESTPAIR".to_string(),
+            venue_symbol: "TESTPAIR".to_string(),
+            nt_instrument_id: Some("TESTPAIR.TESTVENUE".to_string()),
+            event_time,
+            capture_time,
+            availability_time,
+            source_sequence: Some("1".to_string()),
+            raw_payload_id: "feedface".to_string(),
+            source_proof_id: "source-proof-synthetic".to_string(),
+            payload_hash: "feedface".to_string(),
+            transform_hash: "0badc0de".to_string(),
+            trade_source_type: TRADE_SOURCE_TYPE_NATIVE.to_string(),
+            trade_id: "1".to_string(),
+            aggressor_side: TradeAggressorSide::Buyer.as_str().to_string(),
+            price: "100".to_string(),
+            size: "1".to_string(),
+            notional: "100".to_string(),
+        }
+    }
+
+    /// Hand-build a two-row canonical trades table from caller-provided rows,
+    /// with a partition and provenance fields that match the rows so `validate()`
+    /// reaches the timestamp guards.
+    fn trades_table(rows: Vec<CanonicalTradeRow>) -> CanonicalTradesTable {
+        CanonicalTradesTable {
+            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+            partition: TradesPartition {
+                venue: "testvenue".to_string(),
+                product_family: "spot".to_string(),
+                product_category: "spot".to_string(),
+                instrument_id: "TESTPAIR".to_string(),
+                dt: "2026-03-01".to_string(),
+            },
+            source_proof_id: "source-proof-synthetic".to_string(),
+            source_proof_version: 1,
+            fidelity_class: SourceProofFidelityClass::TradeReplay,
+            forbidden_claims: vec!["No execution-quality or queue-position claims.".to_string()],
+            transform_hash: "0badc0de".to_string(),
+            payload_hash: "feedface".to_string(),
+            rows,
+        }
+    }
+
+    #[test]
+    fn trades_validate_rejects_decreasing_ts_init() {
+        // event_time stays monotonic non-decreasing (so the event_time guard does
+        // not fire first), but ts_init (= availability_time.unwrap_or(capture_time))
+        // regresses from row 0 to row 1. NT's catalog write orders and
+        // hard-checks by ts_init, so validate() must reject what the write would
+        // reject — the per-series event_time guard does not cover this axis.
+        let event_time = 1_700_000_000_000_000_000;
+        let table = trades_table(vec![
+            // Row 0: ts_init = capture_time = event_time + 10.
+            trade_row(event_time, event_time + 10, None),
+            // Row 1: event_time equal (non-decreasing), capture_time smaller ->
+            // ts_init drops while the event_time guard stays satisfied.
+            trade_row(event_time, event_time, None),
+        ]);
+        let err = table
+            .validate()
+            .expect_err("decreasing ts_init must be rejected");
+        assert!(
+            err.to_string().contains("ts_init") && err.to_string().contains("precedes previous"),
+            "expected ts_init regression rejection; got: {err}"
+        );
+    }
+
+    #[test]
+    fn trades_validate_accepts_non_decreasing_ts_init() {
+        // Positive control: identical rows except capture_time is non-decreasing,
+        // so ts_init does not regress. Proves the guard is not over-firing on a
+        // table whose event_time and ts_init are both monotonic.
+        let event_time = 1_700_000_000_000_000_000;
+        let table = trades_table(vec![
+            trade_row(event_time, event_time, None),
+            trade_row(event_time, event_time + 10, None),
+        ]);
+        table
+            .validate()
+            .expect("non-decreasing ts_init must validate");
     }
 }

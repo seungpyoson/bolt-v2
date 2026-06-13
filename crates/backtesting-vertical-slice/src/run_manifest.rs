@@ -589,6 +589,9 @@ pub enum ManifestError {
         data_type: String,
         fidelity_class: SourceProofFidelityClass,
     },
+    OrderBookDeltaRequiresL2Mbp {
+        book_type: String,
+    },
     NonLatestProofPinForNormalRun,
     UnsupportedDataType {
         data_type: String,
@@ -726,6 +729,10 @@ impl std::fmt::Display for ManifestError {
             } => write!(
                 f,
                 "catalog data type {data_type:?} is incompatible with accepted fidelity {fidelity_class:?}"
+            ),
+            Self::OrderBookDeltaRequiresL2Mbp { book_type } => write!(
+                f,
+                "order-book-delta catalog inputs require venue.book_type L2_MBP; bolt converters emit L2 (F_LAST) deltas with no per-order identity, so book_type {book_type:?} (e.g. L3_MBO) would collapse every level change onto order_id 0 and silently corrupt the book"
             ),
             Self::NonLatestProofPinForNormalRun => {
                 write!(f, "normal runs cannot pin a non-latest source proof")
@@ -1559,6 +1566,7 @@ impl BacktestingRunManifest {
         )?;
         validate_artifact_root_protocol(&self.artifact_root)?;
         ensure_catalog_inputs_match_fidelity(&self.catalog_inputs, accepted.fidelity_class)?;
+        ensure_order_book_delta_inputs_require_l2_mbp(&self.catalog_inputs, &self.venue.book_type)?;
         validate_strategy_source(&self.strategy, &self.artifact_root)?;
         validate_starting_balances(&self.venue.starting_balances)?;
 
@@ -2597,6 +2605,41 @@ fn ensure_catalog_inputs_match_fidelity(
         ensure_data_type_matches_fidelity(&input.data_type, fidelity_class)?;
     }
     Ok(())
+}
+
+/// Fail-loud fence coupling order-book-delta inputs to an L2 book type.
+///
+/// bolt's converter emits L2 (MBP) order-book deltas flagged `F_LAST` only, with
+/// no per-order (`F_MBP`) identity — every level change carries `order_id == 0`.
+/// Under NT's `BookType::L3_MBO` (or any non-L2 book type) those `order_id == 0`
+/// UPDATE/DELETE rows collapse onto a single phantom order, silently corrupting
+/// the book with nothing failing loud at run time. The `(data_type, fidelity)`
+/// admittance table never couples `book_type` to the delta fidelity, so this is
+/// the single place that rejects the mismatch: when any catalog input parses to
+/// [`NautilusDataType::OrderBookDelta`], `venue.book_type` must be `L2_MBP`.
+///
+/// `book_type` is parsed through [`parse_book_type`] (the single book-type parser)
+/// so the only admitted value is the typed [`BookType::L2_MBP`]; no book-type
+/// string literal is duplicated here.
+fn ensure_order_book_delta_inputs_require_l2_mbp(
+    inputs: &[ManifestCatalogInput],
+    book_type: &str,
+) -> Result<(), ManifestError> {
+    let has_order_book_delta = inputs.iter().any(|input| {
+        parse_data_type_str(&input.data_type)
+            .map(|parsed| parsed == NautilusDataType::OrderBookDelta)
+            .unwrap_or(false)
+    });
+    if !has_order_book_delta {
+        return Ok(());
+    }
+    if parse_book_type(book_type)? == BookType::L2_MBP {
+        Ok(())
+    } else {
+        Err(ManifestError::OrderBookDeltaRequiresL2Mbp {
+            book_type: book_type.to_string(),
+        })
+    }
 }
 
 fn parse_oms_type(value: &str) -> Result<OmsType, ManifestError> {
@@ -4434,6 +4477,59 @@ mod tests {
         let data = manifest.to_nt_data_config().expect("data config");
 
         assert_eq!(data.data_type(), NautilusDataType::OrderBookDelta);
+    }
+
+    #[test]
+    fn order_book_delta_input_rejected_under_l3_mbo_book_type() {
+        // bolt converters emit L2 (F_LAST) deltas with order_id 0; under
+        // BookType::L3_MBO every level change would collapse onto a single
+        // phantom order and silently corrupt the book. Pairing an
+        // OrderBookDelta input with L3_MBO must fail loud at manifest validation.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L3_MBO".to_string();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        assert_eq!(
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::OrderBookDeltaRequiresL2Mbp {
+                book_type: "L3_MBO".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn order_book_delta_input_rejected_under_l1_mbp_book_type() {
+        // Any non-L2 book type (here the default L1_MBP top-of-book) is
+        // incompatible with full-depth L2 delta inputs and must fail loud.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        // valid_manifest() defaults book_type to L1_MBP; leave it as-is (not L2_MBP).
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        assert_eq!(
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::OrderBookDeltaRequiresL2Mbp {
+                book_type: "L1_MBP".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn order_book_delta_input_accepted_under_l2_mbp_book_type() {
+        // The single admissible pairing: an OrderBookDelta input with the
+        // L2_MBP book type passes the fail-loud fence.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        manifest
+            .validate(&accepted)
+            .expect("OrderBookDelta under L2_MBP must pass the book-type fence");
     }
 
     #[test]

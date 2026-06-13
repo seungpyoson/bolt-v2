@@ -420,6 +420,123 @@ fn count_with_row_groups(
     }
 }
 
+#[test]
+fn first_proof_event_count_ledger_rejects_missing_required_column_before_output() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let source_path = dir.path().join("source.parquet");
+    let ledger_path = dir.path().join("event-count-ledger.json");
+    let spec_path = dir.path().join("ledger.toml");
+    // Parquet has only "asset"; "event_type" is absent.
+    write_single_column_parquet(&source_path, "asset");
+    let max_source_parquet_bytes = std::fs::metadata(&source_path)
+        .expect("source parquet metadata")
+        .len();
+    std::fs::write(
+        &spec_path,
+        format!(
+            r#"source_parquet_path = "{}"
+output_path = "{}"
+max_source_parquet_bytes = {max_source_parquet_bytes}
+asset_id_column = "asset"
+event_family_column = "event_type"
+"#,
+            source_path.display(),
+            ledger_path.display()
+        ),
+    )
+    .expect("write ledger spec");
+
+    let err = write_first_proof_event_count_ledger_from_spec_file(&spec_path)
+        .expect_err("missing column must be rejected");
+
+    assert!(
+        err.to_string().contains("missing column"),
+        "expected MissingSourceColumn error, got: {err}"
+    );
+    assert!(
+        !ledger_path.exists(),
+        "missing column must be rejected before output"
+    );
+}
+
+#[test]
+fn first_proof_event_count_ledger_rejects_null_cell_in_scanned_column_before_output() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let source_path = dir.path().join("source.parquet");
+    let ledger_path = dir.path().join("event-count-ledger.json");
+    let spec_path = dir.path().join("ledger.toml");
+    // Parquet has correct schema but a null in the "asset" column at row 1.
+    write_nullable_column_parquet(&source_path);
+    let max_source_parquet_bytes = std::fs::metadata(&source_path)
+        .expect("source parquet metadata")
+        .len();
+    std::fs::write(
+        &spec_path,
+        format!(
+            r#"source_parquet_path = "{}"
+output_path = "{}"
+max_source_parquet_bytes = {max_source_parquet_bytes}
+asset_id_column = "asset"
+event_family_column = "event_type"
+"#,
+            source_path.display(),
+            ledger_path.display()
+        ),
+    )
+    .expect("write ledger spec");
+
+    let err = write_first_proof_event_count_ledger_from_spec_file(&spec_path)
+        .expect_err("null cell must be rejected");
+
+    assert!(
+        err.to_string().contains("null at row"),
+        "expected NullSourceColumnValue error, got: {err}"
+    );
+    assert!(
+        !ledger_path.exists(),
+        "null cell must be rejected before output"
+    );
+}
+
+#[test]
+fn first_proof_event_count_ledger_rejects_non_string_column_type_before_output() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let source_path = dir.path().join("source.parquet");
+    let ledger_path = dir.path().join("event-count-ledger.json");
+    let spec_path = dir.path().join("ledger.toml");
+    // Parquet has "event_type" as Int64, not Utf8 or LargeUtf8.
+    write_wrong_type_column_parquet(&source_path);
+    let max_source_parquet_bytes = std::fs::metadata(&source_path)
+        .expect("source parquet metadata")
+        .len();
+    std::fs::write(
+        &spec_path,
+        format!(
+            r#"source_parquet_path = "{}"
+output_path = "{}"
+max_source_parquet_bytes = {max_source_parquet_bytes}
+asset_id_column = "asset"
+event_family_column = "event_type"
+"#,
+            source_path.display(),
+            ledger_path.display()
+        ),
+    )
+    .expect("write ledger spec");
+
+    let err = write_first_proof_event_count_ledger_from_spec_file(&spec_path)
+        .expect_err("wrong-type column must be rejected");
+
+    assert!(
+        err.to_string().contains("not Utf8 or LargeUtf8"),
+        "expected UnsupportedSourceColumn error, got: {err}"
+    );
+    assert!(
+        !ledger_path.exists(),
+        "wrong-type column must be rejected before output"
+    );
+}
+
 fn write_event_count_source_parquet(path: &std::path::Path) {
     use std::{fs::File, sync::Arc};
 
@@ -457,6 +574,95 @@ fn write_event_count_source_parquet(path: &std::path::Path) {
         .set_max_row_group_row_count(Some(3))
         .build();
     let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("parquet writer");
+    writer.write(&batch).expect("write batch");
+    writer.close().expect("close parquet");
+}
+
+/// Parquet with only one column ("asset"); "event_type" is absent.
+fn write_single_column_parquet(path: &std::path::Path, column_name: &str) {
+    use std::{fs::File, sync::Arc};
+
+    use arrow::{
+        array::{ArrayRef, StringArray},
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+    use parquet::arrow::ArrowWriter;
+
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        column_name,
+        DataType::Utf8,
+        false,
+    )]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(StringArray::from(vec!["asset-a", "asset-b"])) as ArrayRef],
+    )
+    .expect("record batch");
+    let file = File::create(path).expect("create parquet");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("parquet writer");
+    writer.write(&batch).expect("write batch");
+    writer.close().expect("close parquet");
+}
+
+/// Parquet with the correct two-column schema but a null value in the "asset"
+/// column at row 1 (triggering NullSourceColumnValue).
+fn write_nullable_column_parquet(path: &std::path::Path) {
+    use std::{fs::File, sync::Arc};
+
+    use arrow::{
+        array::{ArrayRef, StringArray},
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+    use parquet::arrow::ArrowWriter;
+
+    // Nullable field: Field::new(..., true) allows nulls in the column.
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("asset", DataType::Utf8, true),
+        Field::new("event_type", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            // Row 0: "asset-a", row 1: null.
+            Arc::new(StringArray::from(vec![Some("asset-a"), None])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["book", "price_change"])) as ArrayRef,
+        ],
+    )
+    .expect("record batch");
+    let file = File::create(path).expect("create parquet");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("parquet writer");
+    writer.write(&batch).expect("write batch");
+    writer.close().expect("close parquet");
+}
+
+/// Parquet where the "event_type" column is Int64 instead of Utf8/LargeUtf8
+/// (triggering UnsupportedSourceColumn).
+fn write_wrong_type_column_parquet(path: &std::path::Path) {
+    use std::{fs::File, sync::Arc};
+
+    use arrow::{
+        array::{ArrayRef, Int64Array, StringArray},
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+    use parquet::arrow::ArrowWriter;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("asset", DataType::Utf8, false),
+        Field::new("event_type", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["asset-a", "asset-b"])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1_i64, 2_i64])) as ArrayRef,
+        ],
+    )
+    .expect("record batch");
+    let file = File::create(path).expect("create parquet");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("parquet writer");
     writer.write(&batch).expect("write batch");
     writer.close().expect("close parquet");
 }

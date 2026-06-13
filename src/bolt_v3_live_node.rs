@@ -86,10 +86,7 @@ use crate::{
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
-    bolt_v3_config::{
-        CapitalPoolBlock, CapitalPoolSizingPolicyBlock, LoadedBoltV3Config,
-        resolve_root_relative_path,
-    },
+    bolt_v3_config::{CapitalPoolBlock, LoadedBoltV3Config, resolve_root_relative_path},
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,

@@ -477,7 +477,7 @@ pub fn evaluate_position_sizing(inputs: PositionSizingInputs<'_>) -> SizedAdmiss
     }
 
     let calculator = PredictionMarketBinaryLiabilityCalculator;
-    let mut liability_quote = match calculator.worst_case_liability(
+    let liability_quote = match calculator.worst_case_liability(
         inputs.request,
         &state.product_state,
         inputs.policy,

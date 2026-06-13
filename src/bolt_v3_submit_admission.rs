@@ -1201,21 +1201,7 @@ impl BoltV3SubmitAdmissionState {
                 reason: format!("{err:#}"),
             });
         }
-        let evidence = BoltV3AdmissionDecisionEvidence {
-            strategy_id: request.strategy_id.clone(),
-            execution_client_id: request.execution_client_id.clone(),
-            client_order_id: request.client_order_id.clone(),
-            instrument_id: request.instrument_id.clone(),
-            notional: request.notional.to_string(),
-            intent_kind: request.intent_kind,
-            outcome: evaluation.outcome.clone(),
-            loss_halt_reasons: evaluation
-                .loss_halt_reasons
-                .iter()
-                .map(|reason| reason.as_str().to_string())
-                .collect(),
-        };
-        if let Err(err) = self.decision_evidence.record_admission_decision(&evidence) {
+        if let Err(err) = self.record_admission_decision(request, &evaluation) {
             if let Some(rollback) = evaluation.rollback.as_ref() {
                 rollback_position_sizer_reservation(&mut inner, rollback);
             }
@@ -1263,6 +1249,99 @@ impl BoltV3SubmitAdmissionState {
             BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
                 Err(BoltV3SubmitAdmissionError::LossGovernorHalted {
                     reasons: evaluation.loss_halt_reasons,
+                })
+            }
+            BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
+                Err(BoltV3SubmitAdmissionError::NonPositiveNotional)
+            }
+            BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => {
+                Err(BoltV3SubmitAdmissionError::NotionalCapExceeded)
+            }
+            BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof => {
+                Err(BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof)
+            }
+            BoltV3AdmissionOutcome::RejectedCountCapExhausted => {
+                Err(BoltV3SubmitAdmissionError::CountCapExhausted)
+            }
+            BoltV3AdmissionOutcome::RejectedPositionSizing => {
+                Err(BoltV3SubmitAdmissionError::PositionSizingRejected {
+                    reason: evaluation
+                        .position_sizer_rejection
+                        .unwrap_or(BoltV3PositionSizerRejectReason::Rejected),
+                })
+            }
+            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
+                Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionProofInvalid)
+            }
+            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
+                Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded)
+            }
+        }
+    }
+
+    pub fn evaluate_and_record_without_consuming_capacity(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+    ) -> Result<(), BoltV3SubmitAdmissionError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        let evaluation = Self::evaluate(&mut inner, request, current_unix_ns()?);
+        let record_result = self.record_admission_decision(request, &evaluation);
+        if let Some(rollback) = evaluation.rollback.as_ref() {
+            rollback_position_sizer_reservation(&mut inner, rollback);
+        }
+        if let Err(err) = record_result {
+            return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                reason: format!("{err:#}"),
+            });
+        }
+        Self::admission_result(&inner, request, &evaluation)
+    }
+
+    fn record_admission_decision(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+        evaluation: &BoltV3SubmitAdmissionEvaluation,
+    ) -> Result<(), anyhow::Error> {
+        let evidence = BoltV3AdmissionDecisionEvidence {
+            strategy_id: request.strategy_id.clone(),
+            execution_client_id: request.execution_client_id.clone(),
+            client_order_id: request.client_order_id.clone(),
+            instrument_id: request.instrument_id.clone(),
+            notional: request.notional.to_string(),
+            intent_kind: request.intent_kind,
+            outcome: evaluation.outcome.clone(),
+            loss_halt_reasons: evaluation
+                .loss_halt_reasons
+                .iter()
+                .map(|reason| reason.as_str().to_string())
+                .collect(),
+        };
+        self.decision_evidence.record_admission_decision(&evidence)
+    }
+
+    fn admission_result(
+        inner: &BoltV3SubmitAdmissionInner,
+        request: &BoltV3SubmitAdmissionRequest,
+        evaluation: &BoltV3SubmitAdmissionEvaluation,
+    ) -> Result<(), BoltV3SubmitAdmissionError> {
+        match evaluation.outcome {
+            BoltV3AdmissionOutcome::Admitted => Ok(()),
+            BoltV3AdmissionOutcome::RejectedKillSwitchLatched => {
+                Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
+                    state: inner.kill_switch_state.kind(),
+                })
+            }
+            BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
+                Err(BoltV3SubmitAdmissionError::SubmitLifecycleDisallowed {
+                    intent: request.intent_kind,
+                })
+            }
+            BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
+                Err(BoltV3SubmitAdmissionError::LossGovernorHalted {
+                    reasons: evaluation.loss_halt_reasons.clone(),
                 })
             }
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {

@@ -1265,9 +1265,17 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                 loss_governor.on_loss_breach_trading_state,
                 loss_governor.on_loss_breach_market_exit,
             ));
+            errors.extend(validate_loss_governor_market_exit_supported(
+                "risk.loss_governor.on_loss_breach",
+                loss_governor.on_loss_breach_market_exit,
+            ));
             errors.extend(validate_loss_governor_market_exit_pair(
                 "risk.loss_governor.on_untrusted_snapshot",
                 loss_governor.on_untrusted_snapshot_trading_state,
+                loss_governor.on_untrusted_snapshot_market_exit,
+            ));
+            errors.extend(validate_loss_governor_market_exit_supported(
+                "risk.loss_governor.on_untrusted_snapshot",
                 loss_governor.on_untrusted_snapshot_market_exit,
             ));
             errors.extend(validate_loss_governor_market_exit_combination(
@@ -2107,6 +2115,21 @@ fn validate_loss_governor_market_exit_pair(
     }
     vec![format!(
         "{label_prefix}_market_exit=all_registered_strategies requires {label_prefix}_trading_state=reducing"
+    )]
+}
+
+fn validate_loss_governor_market_exit_supported(
+    label_prefix: &str,
+    market_exit: Option<LossGovernorMarketExitAction>,
+) -> Vec<String> {
+    if !matches!(
+        market_exit,
+        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+    ) {
+        return Vec::new();
+    }
+    vec![format!(
+        "{label_prefix}_market_exit=all_registered_strategies is disabled because NT market-exit commands bypass Bolt submit/cancel chokepoints; use none"
     )]
 }
 

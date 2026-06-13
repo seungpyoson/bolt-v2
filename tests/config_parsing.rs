@@ -5576,7 +5576,7 @@ fn parses_loss_governor_market_exit_actions_from_root_fixture() {
     );
     assert_eq!(
         loss_governor.on_loss_breach_market_exit,
-        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+        Some(LossGovernorMarketExitAction::None)
     );
     assert_eq!(
         loss_governor.on_untrusted_snapshot_market_exit,
@@ -5592,10 +5592,7 @@ fn parses_loss_governor_market_exit_actions_from_root_fixture() {
 fn rejects_enabled_loss_governor_missing_halt_action_fields() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
-        "on_loss_breach_market_exit = \"all_registered_strategies\"\n",
-        "",
-    );
+    let mutated = replace_in_fixture_root("on_loss_breach_market_exit = \"none\"\n", "");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("missing action fixture should parse");
     let messages = validate_root_only(&root);
@@ -5610,49 +5607,44 @@ fn rejects_enabled_loss_governor_missing_halt_action_fields() {
 }
 
 #[test]
-fn rejects_loss_governor_market_exit_without_reducing_state() {
+fn rejects_loss_governor_market_exit_all_registered_strategies() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "on_loss_breach_trading_state = \"reducing\"",
-        "on_loss_breach_trading_state = \"halted\"",
+        "on_loss_breach_market_exit = \"none\"",
+        "on_loss_breach_market_exit = \"all_registered_strategies\"",
     );
     let root: BoltV3RootConfig =
-        toml::from_str(&mutated).expect("halted market exit fixture should parse");
+        toml::from_str(&mutated).expect("market exit fixture should parse");
     let messages = validate_root_only(&root);
 
     assert!(
         messages.iter().any(|message| {
             message.contains("on_loss_breach_market_exit=all_registered_strategies")
-                && message.contains("on_loss_breach_trading_state=reducing")
+                && message.contains("bypass Bolt submit/cancel chokepoints")
         }),
-        "market exit should require reducing state: {messages:#?}"
+        "market exit should be disabled until it can route through Bolt submit/cancel chokepoints: {messages:#?}"
     );
 }
 
 #[test]
-fn rejects_loss_governor_market_exit_strategy_account_mismatch() {
-    let root_toml = replace_in_fixture_section(
-        "[clients.polymarket_main.execution]",
-        &[(
-            "account_id = \"POLYMARKET-001\"",
-            "account_id = \"POLYMARKET-002\"",
-        )],
+fn rejects_loss_governor_market_exit_before_strategy_account_validation() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root_toml = replace_in_fixture_root(
+        "on_loss_breach_market_exit = \"none\"",
+        "on_loss_breach_market_exit = \"all_registered_strategies\"",
     );
-    let strategy_toml = std::fs::read_to_string(support::repo_path(
-        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-    ))
-    .expect("strategy fixture should be readable");
-    let messages =
-        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    let root: BoltV3RootConfig =
+        toml::from_str(&root_toml).expect("market exit fixture should parse");
+    let messages = validate_root_only(&root);
 
     assert!(
         messages.iter().any(|message| {
             message.contains("market_exit=all_registered_strategies")
-                && message.contains("POLYMARKET-002")
-                && message.contains("risk.loss_governor.account_id `POLYMARKET-001`")
+                && message.contains("use none")
         }),
-        "market exit should reject strategy execution account mismatch: {messages:#?}"
+        "unsupported market exit should fail at root validation: {messages:#?}"
     );
 }
 

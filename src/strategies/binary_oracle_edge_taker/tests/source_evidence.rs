@@ -768,6 +768,206 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
 }
 
 #[test]
+fn submit_orders_false_does_not_leave_pending_entry_between_would_be_entries() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission.clone(),
+    );
+    strategy.config.submit_orders = false;
+    register_test_strategy_with_active_instruments(&mut strategy);
+
+    let first_client_order_id = strategy
+        .try_submit_entry_order(1_200)
+        .expect("first shadow entry should pass evidence and admission")
+        .expect("first shadow entry should produce a would-be client order id");
+    assert_eq!(
+        strategy.exposure_occupancy(),
+        None,
+        "shadow entry must not leave a pending exposure without an NT order"
+    );
+
+    let second_client_order_id = strategy
+        .try_submit_entry_order(1_201)
+        .expect("second shadow entry should not be blocked by stale pending exposure")
+        .expect("second shadow entry should produce a would-be client order id");
+    assert_ne!(first_client_order_id, second_client_order_id);
+    assert_eq!(
+        submit_admission.admitted_order_count(),
+        0,
+        "shadow entries must record admission evidence without consuming live submit capacity"
+    );
+    assert_eq!(
+        evidence
+            .events()
+            .iter()
+            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::OrderIntent(_)))
+            .count(),
+        2,
+        "each shadow entry should still record order-intent evidence"
+    );
+}
+
+#[test]
+fn submit_orders_false_entries_do_not_exhaust_live_admission_count_cap() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission =
+        submit_admission_with_provider_cap(Decimal::new(10_000, 0), evidence.clone());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission.clone(),
+    );
+    strategy.config.submit_orders = false;
+    register_test_strategy_with_active_instruments(&mut strategy);
+
+    let first_client_order_id = strategy
+        .try_submit_entry_order(1_200)
+        .expect("first shadow entry should record observed admission")
+        .expect("first shadow entry should produce a would-be client order id");
+    let second_client_order_id = strategy
+        .try_submit_entry_order(1_201)
+        .expect("shadow entry should not consume the live count cap")
+        .expect("second shadow entry should produce a would-be client order id");
+
+    assert_ne!(first_client_order_id, second_client_order_id);
+    assert_eq!(
+        submit_admission.admitted_order_count(),
+        0,
+        "shadow entries must not consume live submit admission capacity"
+    );
+    let admission_outcomes = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::AdmissionDecision(admission) => Some(admission.outcome),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        admission_outcomes,
+        vec![
+            crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::Admitted,
+            crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::Admitted,
+        ],
+        "shadow mode should still record admitted decisions for each would-be entry"
+    );
+}
+
+#[test]
+fn submit_orders_false_exit_keeps_pending_exit_between_would_be_exits() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission.clone(),
+    );
+    strategy.config.submit_orders = false;
+    strategy.active.phase = SelectionPhase::Freeze;
+    register_test_strategy_with_active_instruments(&mut strategy);
+    let instrument_id = configured_outcome_instruments(&strategy)
+        .into_iter()
+        .next()
+        .expect("ready-to-trade fixture should expose an outcome instrument");
+    let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-SHADOW-EXIT-001"),
+        position_quantity,
+        0.45,
+    );
+    set_managed_position(
+        &mut strategy,
+        position,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    let first_client_order_id = strategy
+        .try_submit_exit_order(1_200)
+        .expect("first shadow exit should pass evidence and admission")
+        .expect("first shadow exit should produce a would-be client order id");
+    assert_eq!(
+        strategy.exposure_occupancy(),
+        Some(ExposureOccupancy::ExitPending),
+        "shadow exit must keep the live-mode pending-exit latch"
+    );
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        Some(first_client_order_id)
+    );
+
+    assert_eq!(
+        strategy
+            .try_submit_exit_order(1_201)
+            .expect("latched shadow exit should not fail"),
+        None,
+        "latched shadow exit should block repeated would-be exits"
+    );
+    assert_eq!(
+        submit_admission.admitted_order_count(),
+        0,
+        "shadow exits must record admission evidence without consuming live submit capacity"
+    );
+    assert_eq!(
+        evidence
+            .events()
+            .iter()
+            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::OrderIntent(_)))
+            .count(),
+        1,
+        "latched shadow exit should record one order-intent"
+    );
+}
+
+#[test]
+fn submit_orders_false_surfaces_admission_rejection_and_clears_pending_entry() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission.clone(),
+    );
+    strategy.config.submit_orders = false;
+    register_test_strategy_with_active_instruments(&mut strategy);
+
+    let error = strategy.try_submit_entry_order(1_200).expect_err(
+        "a shadow admission rejection must still surface as Err via the non-consuming path",
+    );
+    assert!(
+        error.to_string().contains("notional cap is exceeded"),
+        "{error:#}"
+    );
+    assert_eq!(
+        strategy.exposure_occupancy(),
+        None,
+        "a rejected shadow entry must clear pending-entry exposure, not latch a phantom order"
+    );
+    assert_eq!(
+        submit_admission.admitted_order_count(),
+        0,
+        "a rejected shadow entry must not consume live submit capacity"
+    );
+    let admission_outcomes = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::AdmissionDecision(admission) => Some(admission.outcome),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        admission_outcomes,
+        vec![crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::RejectedNotionalCapExceeded],
+        "a rejected shadow entry must still record the rejected admission decision"
+    );
+}
+
+#[test]
 fn strategy_input_evidence_records_realized_volatility_unknown_source_rejections() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());

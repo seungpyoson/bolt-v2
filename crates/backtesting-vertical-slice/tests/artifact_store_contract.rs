@@ -73,6 +73,15 @@ fn artifact_store_builds_s3_backend_with_required_capabilities() {
 }
 
 #[test]
+fn artifact_store_exposes_nt_catalog_storage_options_from_s3_config() {
+    let options = artifact_config()
+        .nt_catalog_storage_options()
+        .expect("NT catalog storage options resolve from artifact-store config");
+
+    assert_eq!(options.get("region").map(String::as_str), Some("us-east-1"));
+}
+
+#[test]
 fn artifact_store_rejects_disabled_s3_conditional_put() {
     let disabled = artifact_config_toml().replace(
         "conditional_put = \"etag\"",

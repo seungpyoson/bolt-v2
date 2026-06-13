@@ -4,6 +4,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+use ahash::AHashMap;
 use anyhow::{Context, Result, bail, ensure};
 use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut, S3CopyIfNotExists};
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, UpdateVersion, path::Path as ObjectPath};
@@ -190,6 +191,13 @@ impl ArtifactStoreConfig {
         let resolved = self.resolve()?;
         resolved.build_s3_object_store()
     }
+
+    /// # Errors
+    ///
+    /// Returns an error when the artifact-store S3 config is invalid.
+    pub fn nt_catalog_storage_options(&self) -> Result<AHashMap<String, String>> {
+        Ok(self.resolve()?.nt_catalog_storage_options())
+    }
 }
 
 impl S3ArtifactStoreConfig {
@@ -226,6 +234,11 @@ impl ResolvedArtifactRoot {
             .with_copy_if_not_exists(S3CopyIfNotExists::Multipart)
             .build()
             .context("build artifact_root S3 object store")
+    }
+
+    #[must_use]
+    pub fn nt_catalog_storage_options(&self) -> AHashMap<String, String> {
+        self.s3.nt_catalog_storage_options()
     }
 
     #[must_use]
@@ -364,6 +377,15 @@ impl ResolvedArtifactRoot {
             }
         }
         uri
+    }
+}
+
+impl S3ArtifactStoreConfig {
+    #[must_use]
+    pub fn nt_catalog_storage_options(&self) -> AHashMap<String, String> {
+        let mut options = AHashMap::new();
+        options.insert("region".to_string(), self.region.clone());
+        options
     }
 }
 

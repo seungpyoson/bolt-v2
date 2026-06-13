@@ -23,10 +23,14 @@ CARGO_TOML_REQUIRED = (
     'object_store = { version = "=0.13.2", default-features = false, features = ["aws"] }',
 )
 ARTIFACT_STORE_REQUIRED = (
+    "AHashMap<String, String>",
     "object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut, S3CopyIfNotExists}",
     "pub struct S3ArtifactStoreConfig",
     "pub s3: S3ArtifactStoreConfig",
     "pub fn build_s3_object_store(&self) -> Result<AmazonS3>",
+    "pub fn nt_catalog_storage_options(&self) -> Result<AHashMap<String, String>>",
+    "pub fn nt_catalog_storage_options(&self) -> AHashMap<String, String>",
+    ".insert(\"region\".to_string(),",
     ".with_bucket_name(",
     ".with_region(",
     ".with_conditional_put(S3ConditionalPut::ETagMatch)",

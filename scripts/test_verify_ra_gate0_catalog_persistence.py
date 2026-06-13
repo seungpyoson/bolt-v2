@@ -33,6 +33,7 @@ def write_file(root: Path, rel: str, text: str) -> Path:
 
 def compliant_artifact_store() -> str:
     return """
+use ahash::AHashMap;
 use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut, S3CopyIfNotExists};
 
 pub struct S3ArtifactStoreConfig;
@@ -57,6 +58,18 @@ impl ArtifactStoreConfig {
             .with_conditional_put(S3ConditionalPut::ETagMatch)
             .with_copy_if_not_exists(S3CopyIfNotExists::Multipart)
             .build()
+    }
+
+    pub fn nt_catalog_storage_options(&self) -> Result<AHashMap<String, String>> {
+        Ok(self.s3.nt_catalog_storage_options())
+    }
+}
+
+impl S3ArtifactStoreConfig {
+    pub fn nt_catalog_storage_options(&self) -> AHashMap<String, String> {
+        let mut options = AHashMap::new();
+        options.insert("region".to_string(), "configured-region".to_string());
+        options
     }
 }
 

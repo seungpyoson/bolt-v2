@@ -176,9 +176,11 @@ fn bars_round_trip_through_nt_catalog() {
     loaded.sort_by_key(|bar| bar.ts_event.as_u64());
     for (bar, row) in loaded.iter().zip(table.rows.iter()) {
         assert_eq!(bar.instrument_id().to_string(), NT_INSTRUMENT_ID);
-        // Bar event/init timestamps are the canonical close_time.
+        // ts_event is the canonical close_time; ts_init is the receipt clock
+        // NautilusTrader replays by (capture_time here — no availability column;
+        // this fixture sets capture_time == close_time).
         assert_eq!(bar.ts_event.as_u64(), row.close_time as u64);
-        assert_eq!(bar.ts_init.as_u64(), row.close_time as u64);
+        assert_eq!(bar.ts_init.as_u64(), row.capture_time as u64);
         // Assert the full bar_type — step, aggregation, and AggregationSource
         // — so a hardcoded spec or wrong source in canonical_rows_to_bars
         // causes a test failure rather than silently passing.
@@ -263,8 +265,10 @@ fn bars_round_trip_through_binary_option_spec() {
     loaded.sort_by_key(|bar| bar.ts_event.as_u64());
     for (bar, row) in loaded.iter().zip(table.rows.iter()) {
         assert_eq!(bar.instrument_id().to_string(), NT_INSTRUMENT_ID);
+        // ts_event is the canonical close_time; ts_init is the receipt clock
+        // (capture_time here — no availability column; capture_time == close_time).
         assert_eq!(bar.ts_event.as_u64(), row.close_time as u64);
-        assert_eq!(bar.ts_init.as_u64(), row.close_time as u64);
+        assert_eq!(bar.ts_init.as_u64(), row.capture_time as u64);
         assert_eq!(
             bar.open.as_decimal(),
             Price::from(row.open.as_str()).as_decimal()

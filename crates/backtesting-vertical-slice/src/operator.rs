@@ -43,7 +43,7 @@ use crate::{
         CatalogInstrumentSpec, CatalogProjection, NT_DATA_TYPE_BAR, NT_DATA_TYPE_ORDER_BOOK_DELTA,
         NT_DATA_TYPE_TRADE_TICK, logical_catalog_hash, project_canonical_bars_to_catalog,
         project_canonical_order_book_deltas_to_catalog, project_canonical_trades_to_catalog,
-        read_back_bars, read_back_order_book_deltas, read_back_trade_ticks,
+        read_back_bars, read_back_order_book_deltas, read_back_trade_ticks, ts_init_nanos,
     },
     conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_TABLES_FILE, ConversionCatalogMetadata,
@@ -61,7 +61,7 @@ use crate::{
         assert_delta_read_back_matches, assert_read_back_matches, assert_time_window_overlaps_data,
         expected_iterations, iterations_mismatch, market_structure_label,
         nt_extension_surface_claim_limits, result_contract_warnings, run_backtest,
-        run_nt_backtest_node, run_purpose_label, time_window_excludes_all_data,
+        run_nt_backtest_node, run_purpose_label, time_window_excludes_all_data, window_bound_nanos,
     },
     source_proof::{
         AcceptedDataset, IngestManifestObjectRecord, SourceBindingRegistry,
@@ -759,7 +759,8 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         &canonical_table.rows,
         inputs.manifest.start_time,
         inputs.manifest.end_time,
-    );
+    )
+    .context("compute expected engine iterations")?;
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected) {
         anyhow::bail!("backtest did not consume the accepted data: {reason}");
     }
@@ -1150,46 +1151,105 @@ impl NormalizedTable {
         }
     }
 
-    /// First/last engine-delivery timestamps (bars deliver at close time).
-    fn event_time_range(&self) -> Option<(i64, i64)> {
+    /// Min/max `ts_init` (engine nanos) across the table's rows, or `None` when
+    /// empty. NautilusTrader replays and windows by `ts_init`
+    /// (availability-or-capture), not the event clock, and the canonical rows are
+    /// monotonic by `event_time` not `ts_init`, so the range is computed across
+    /// all rows via the shared projection owner rather than read off first/last.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a row's `ts_init` source clock is missing/non-positive.
+    fn ts_init_range(&self) -> Result<Option<(u64, u64)>> {
+        fn fold<R>(rows: &[R], ts_init: impl Fn(&R) -> Result<u64>) -> Result<Option<(u64, u64)>> {
+            let mut range: Option<(u64, u64)> = None;
+            for row in rows {
+                let ts = ts_init(row)?;
+                range = Some(match range {
+                    Some((min, max)) => (min.min(ts), max.max(ts)),
+                    None => (ts, ts),
+                });
+            }
+            Ok(range)
+        }
         match self {
-            Self::Trades(table) => match (table.rows.first(), table.rows.last()) {
-                (Some(first), Some(last)) => Some((first.event_time, last.event_time)),
-                _ => None,
-            },
-            Self::Bars(table) => match (table.rows.first(), table.rows.last()) {
-                (Some(first), Some(last)) => Some((first.close_time, last.close_time)),
-                _ => None,
-            },
-            Self::Deltas(table) => match (table.rows.first(), table.rows.last()) {
-                (Some(first), Some(last)) => Some((first.event_time, last.event_time)),
-                _ => None,
-            },
+            Self::Trades(table) => fold(&table.rows, |row| {
+                Ok(ts_init_nanos(
+                    row.availability_time,
+                    row.capture_time,
+                    &format!("trade {}", row.trade_id),
+                )?
+                .as_u64())
+            }),
+            Self::Bars(table) => fold(&table.rows, |row| {
+                Ok(ts_init_nanos(
+                    row.availability_time,
+                    row.capture_time,
+                    &format!("bar close_time {}", row.close_time),
+                )?
+                .as_u64())
+            }),
+            Self::Deltas(table) => fold(&table.rows, |row| {
+                Ok(ts_init_nanos(
+                    row.availability_time,
+                    row.capture_time,
+                    &format!("delta sequence {}", row.sequence),
+                )?
+                .as_u64())
+            }),
         }
     }
 
     /// Engine-delivery points inside the manifest's inclusive `[start, end]`
     /// window, mirroring [`expected_iterations`] for every projected family.
-    fn windowed_count(&self, start: Option<i64>, end: Option<i64>) -> usize {
-        let in_window = |time: i64| {
-            start.is_none_or(|start| time >= start) && end.is_none_or(|end| time <= end)
-        };
+    /// NautilusTrader windows by `ts_init`, so the count is over each row's
+    /// availability-or-capture clock (derived through the shared projection
+    /// owner), never the event clock. Bounds are engine nanos.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a row's `ts_init` source clock is missing/non-positive.
+    fn windowed_count(&self, start: Option<u64>, end: Option<u64>) -> Result<usize> {
+        fn count<R>(
+            rows: &[R],
+            start: Option<u64>,
+            end: Option<u64>,
+            ts_init: impl Fn(&R) -> Result<u64>,
+        ) -> Result<usize> {
+            let mut total = 0usize;
+            for row in rows {
+                let ts = ts_init(row)?;
+                if start.is_none_or(|start| ts >= start) && end.is_none_or(|end| ts <= end) {
+                    total += 1;
+                }
+            }
+            Ok(total)
+        }
         match self {
-            Self::Trades(table) => table
-                .rows
-                .iter()
-                .filter(|row| in_window(row.event_time))
-                .count(),
-            Self::Bars(table) => table
-                .rows
-                .iter()
-                .filter(|row| in_window(row.close_time))
-                .count(),
-            Self::Deltas(table) => table
-                .rows
-                .iter()
-                .filter(|row| in_window(row.event_time))
-                .count(),
+            Self::Trades(table) => count(&table.rows, start, end, |row| {
+                Ok(ts_init_nanos(
+                    row.availability_time,
+                    row.capture_time,
+                    &format!("trade {}", row.trade_id),
+                )?
+                .as_u64())
+            }),
+            Self::Bars(table) => count(&table.rows, start, end, |row| {
+                Ok(ts_init_nanos(
+                    row.availability_time,
+                    row.capture_time,
+                    &format!("bar close_time {}", row.close_time),
+                )?
+                .as_u64())
+            }),
+            Self::Deltas(table) => count(&table.rows, start, end, |row| {
+                Ok(ts_init_nanos(
+                    row.availability_time,
+                    row.capture_time,
+                    &format!("delta sequence {}", row.sequence),
+                )?
+                .as_u64())
+            }),
         }
     }
 }
@@ -1607,19 +1667,23 @@ fn find_planned_table_for_input(
 }
 
 /// Reject a manifest time window that excludes every point of any projected
-/// table (mirrors [`assert_time_window_overlaps_data`] per table).
+/// table (mirrors [`assert_time_window_overlaps_data`] per table). The overlap
+/// is tested against each table's `ts_init` range — the clock NautilusTrader
+/// windows by — not the event clock.
 fn assert_tables_overlap_window(
     manifest: &BacktestingRunManifest,
     planned: &[PlannedTable],
 ) -> Result<()> {
+    let start = window_bound_nanos("start_time", manifest.start_time)?;
+    let end = window_bound_nanos("end_time", manifest.end_time)?;
     for table in planned {
-        let Some((first, last)) = table.table.event_time_range() else {
+        let Some((first, last)) = table.table.ts_init_range()? else {
             continue;
         };
-        match time_window_excludes_all_data(manifest.start_time, manifest.end_time, first, last) {
+        match time_window_excludes_all_data(start, end, first, last) {
             None => {}
             Some(bound) => anyhow::bail!(
-                "manifest {bound} excludes all data of projected table {} ({first}..{last})",
+                "manifest {bound} excludes all data of projected table {} (ts_init {first}..{last})",
                 table.subroot_relative
             ),
         }
@@ -1935,14 +1999,15 @@ pub fn run_multi_table_from_run_spec(
 
     // Gate 5: ONE BacktestNode run over the N-input manifest.
     let nt_result = run_nt_backtest_node(&local_manifest)?.result;
-    let expected = planned
-        .iter()
-        .map(|table| {
-            table
-                .table
-                .windowed_count(local_manifest.start_time, local_manifest.end_time)
-        })
-        .sum::<usize>();
+    let window_start = window_bound_nanos("start_time", local_manifest.start_time)?;
+    let window_end = window_bound_nanos("end_time", local_manifest.end_time)?;
+    let mut expected = 0usize;
+    for table in &planned {
+        expected += table
+            .table
+            .windowed_count(window_start, window_end)
+            .context("compute expected engine iterations for projected table")?;
+    }
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected) {
         anyhow::bail!("backtest did not consume the accepted data: {reason}");
     }
@@ -2233,14 +2298,15 @@ fn run_multi_from_completed_output(
         multi_selector_provenance(spec, &planned)?;
 
     let nt_result = run_nt_backtest_node(&local_manifest)?.result;
-    let expected = planned
-        .iter()
-        .map(|table| {
-            table
-                .table
-                .windowed_count(local_manifest.start_time, local_manifest.end_time)
-        })
-        .sum::<usize>();
+    let window_start = window_bound_nanos("start_time", local_manifest.start_time)?;
+    let window_end = window_bound_nanos("end_time", local_manifest.end_time)?;
+    let mut expected = 0usize;
+    for table in &planned {
+        expected += table
+            .table
+            .windowed_count(window_start, window_end)
+            .context("compute expected engine iterations for projected table")?;
+    }
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected) {
         anyhow::bail!("backtest did not consume the accepted data: {reason}");
     }

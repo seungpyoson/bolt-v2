@@ -686,6 +686,52 @@ pub fn build_binary_option(spec: &BinaryOptionInstrumentSpec) -> Result<BinaryOp
     })
 }
 
+/// NT `ts_event` for a canonical row: the exchange/source event instant.
+///
+/// Event time is the per-row ordering clock the table's `validate()` already
+/// proved positive and monotonic, so a non-positive value here is an internal
+/// invariant breach — fail loud, never emit 0. This is the single owner of the
+/// canonical-event-time → NT `UnixNanos` conversion for every data family, so
+/// the projection seams and the runner's read-back/window gates cannot drift
+/// into separate derivations (NO DUAL PATHS).
+pub(crate) fn ts_event_nanos(event_time: i64, label: &str) -> Result<UnixNanos> {
+    let nanos = u64::try_from(event_time)
+        .with_context(|| format!("{label}: negative event time {event_time}"))?;
+    ensure!(nanos > 0, "{label}: non-positive event time {event_time}");
+    Ok(UnixNanos::from(nanos))
+}
+
+/// NT `ts_init` for a canonical row: when the data became available to the
+/// system.
+///
+/// Source order is `availability_time` (the source's own availability instant)
+/// when present, else `capture_time` (worker receipt). NT replays and windows
+/// by `ts_init` (`HasTsInit`), so this must reflect receipt order, never the
+/// exchange event clock. This NEVER falls back to event time or 0: if
+/// `availability_time` is `Some` it must be valid; if it is `None`,
+/// `capture_time` must be valid; otherwise fail loud so a missing receipt clock
+/// can never silently become `ts_init=0` or be conflated with the event clock.
+/// This is the single owner of the canonical-receipt-time → NT `UnixNanos`
+/// derivation: the projection seams AND the runner's read-back/window gates call
+/// it, so there is exactly one place that decides the `ts_init` precedence.
+pub(crate) fn ts_init_nanos(
+    availability_time: Option<i64>,
+    capture_time: i64,
+    label: &str,
+) -> Result<UnixNanos> {
+    let (raw, field) = match availability_time {
+        Some(value) => (value, "availability_time"),
+        None => (capture_time, "capture_time"),
+    };
+    let nanos = u64::try_from(raw)
+        .with_context(|| format!("{label}: negative ts_init source {field}={raw}"))?;
+    ensure!(
+        nanos > 0,
+        "{label}: non-positive ts_init source {field}={raw}"
+    );
+    Ok(UnixNanos::from(nanos))
+}
+
 fn rescaled(value: &str, precision: u8) -> Result<String> {
     let mut decimal = Decimal::from_str(value).with_context(|| format!("decimal {value:?}"))?;
     decimal.normalize_assign();
@@ -896,17 +942,19 @@ pub fn canonical_rows_to_trade_ticks<I: Instrument + ?Sized>(
                 s if s == TradeAggressorSide::Seller.as_str() => AggressorSide::Seller,
                 other => anyhow::bail!("unknown aggressor side {other:?}"),
             };
-            let ts = UnixNanos::from(u64::try_from(row.event_time).context("negative event_time")?);
             let trade_id = TradeId::new_checked(&row.trade_id)
                 .map_err(|error| anyhow::anyhow!("invalid trade_id {:?}: {error}", row.trade_id))?;
+            let label = format!("trade {}", row.trade_id);
+            let ts_event = ts_event_nanos(row.event_time, &label)?;
+            let ts_init = ts_init_nanos(row.availability_time, row.capture_time, &label)?;
             Ok(TradeTick::new(
                 instrument_id,
                 price,
                 size,
                 aggressor,
                 trade_id,
-                ts,
-                ts,
+                ts_event,
+                ts_init,
             ))
         })
         .collect()
@@ -1046,13 +1094,15 @@ fn canonical_row_to_order_book_delta(
     price_precision: u8,
     size_precision: u8,
 ) -> Result<OrderBookDelta> {
-    let ts = UnixNanos::from(u64::try_from(row.event_time).context("negative event_time")?);
+    let label = format!("delta sequence {}", row.sequence);
+    let ts_event = ts_event_nanos(row.event_time, &label)?;
+    let ts_init = ts_init_nanos(row.availability_time, row.capture_time, &label)?;
     if row.action == DeltaAction::Clear.as_str() {
         // NautilusTrader's `clear` sets F_SNAPSHOT only; carry the canonical
         // row's full flag bitmask (F_SNAPSHOT required, optionally F_MBP and
         // F_LAST when the row closes a snapshot expansion), which validate()
         // has already enforced.
-        let mut clear = OrderBookDelta::clear(instrument_id, row.sequence, ts, ts);
+        let mut clear = OrderBookDelta::clear(instrument_id, row.sequence, ts_event, ts_init);
         clear.flags = row.flags;
         return Ok(clear);
     }
@@ -1080,8 +1130,8 @@ fn canonical_row_to_order_book_delta(
         order,
         row.flags,
         row.sequence,
-        ts,
-        ts,
+        ts_event,
+        ts_init,
     )
     .map_err(|error| {
         anyhow::anyhow!(
@@ -1172,11 +1222,13 @@ pub fn read_back_order_book_deltas(
 /// externally-aggregated bar type, at the instrument's price/size precision.
 ///
 /// Each row's OHLC is parsed at the instrument's price precision and the volume
-/// at its size precision; `ts_event` and `ts_init` are both the row's
-/// `close_time` (the canonical close is the bar's event instant). The OHLC
-/// ordering invariant the table's `validate()` already enforces is re-checked by
-/// NautilusTrader's `Bar::new_checked`, so any residual precision-rescale edge
-/// fails loud rather than panicking.
+/// at its size precision; `ts_event` is the row's `close_time` (the canonical
+/// close is the bar's event instant) while `ts_init` is the row's
+/// `availability_time` when present, else its `capture_time` (when the bar
+/// became available to the system — the clock NautilusTrader replays by). The
+/// OHLC ordering invariant the table's `validate()` already enforces is
+/// re-checked by NautilusTrader's `Bar::new_checked`, so any residual
+/// precision-rescale edge fails loud rather than panicking.
 ///
 /// # Errors
 ///
@@ -1221,8 +1273,11 @@ fn canonical_row_to_bar(
     let volume_str = rescaled(&row.volume, size_precision)?;
     let volume = Quantity::from_str(&volume_str)
         .map_err(|error| anyhow::anyhow!("invalid rescaled volume {volume_str:?}: {error}"))?;
-    let ts = UnixNanos::from(u64::try_from(row.close_time).context("negative close_time")?);
-    Bar::new_checked(bar_type, open, high, low, close, volume, ts, ts).context("build bar")
+    let label = format!("bar close_time {}", row.close_time);
+    let ts_event = ts_event_nanos(row.close_time, &label)?;
+    let ts_init = ts_init_nanos(row.availability_time, row.capture_time, &label)?;
+    Bar::new_checked(bar_type, open, high, low, close, volume, ts_event, ts_init)
+        .context("build bar")
 }
 
 /// Project a canonical bar table into a NautilusTrader `ParquetDataCatalog`.
@@ -2440,6 +2495,109 @@ mod tests {
             .expect("trailing zero source values are exact at instrument precision");
         assert_eq!(ticks[0].price, Price::from("617.2"));
         assert_eq!(ticks[0].size, Quantity::from("0.3000"));
+    }
+
+    #[test]
+    fn ts_event_nanos_rejects_non_positive_event_time() {
+        // Event time is the per-row ordering clock validate() proved positive, so a
+        // non-positive value here is an internal invariant breach: fail loud, never 0.
+        let err = ts_event_nanos(0, "trade x").unwrap_err();
+        assert!(err.to_string().contains("non-positive event time"), "{err}");
+        let err = ts_event_nanos(-1, "trade x").unwrap_err();
+        assert!(err.to_string().contains("negative event time"), "{err}");
+    }
+
+    #[test]
+    fn ts_init_nanos_uses_capture_time_when_availability_none() {
+        // No availability instant -> the worker receipt clock governs ts_init.
+        assert_eq!(ts_init_nanos(None, 42, "trade x").unwrap().as_u64(), 42);
+    }
+
+    #[test]
+    fn ts_init_nanos_prefers_availability_time_when_some() {
+        // availability_time wins over capture_time when present (source order).
+        assert_eq!(ts_init_nanos(Some(7), 42, "trade x").unwrap().as_u64(), 7);
+    }
+
+    #[test]
+    fn ts_init_nanos_fails_loud_when_capture_invalid_and_no_availability() {
+        // No availability and a non-positive capture clock must fail loud and name
+        // the offending field, never fall back to the event clock or emit 0.
+        let err = ts_init_nanos(None, 0, "trade x").unwrap_err();
+        assert!(err.to_string().contains("capture_time"), "{err}");
+        let err = ts_init_nanos(None, -5, "trade x").unwrap_err();
+        assert!(err.to_string().contains("capture_time"), "{err}");
+    }
+
+    #[test]
+    fn ts_init_nanos_fails_loud_when_availability_some_but_invalid() {
+        // A present-but-invalid availability_time must error rather than silently
+        // fall back to capture_time.
+        let err = ts_init_nanos(Some(0), 42, "trade x").unwrap_err();
+        assert!(err.to_string().contains("availability_time"), "{err}");
+        let err = ts_init_nanos(Some(-1), 42, "trade x").unwrap_err();
+        assert!(err.to_string().contains("availability_time"), "{err}");
+    }
+
+    #[test]
+    fn trade_ticks_ts_init_uses_capture_time_when_availability_none() {
+        // canonical_table() rows carry availability_time=None and capture_time=42.
+        // Every projected tick must stamp ts_init=42 (the receipt clock) while
+        // ts_event stays the row's event_time (the event clock is preserved).
+        let table = canonical_table();
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let ticks = canonical_rows_to_trade_ticks(&table, &instrument).expect("project trades");
+        assert!(!ticks.is_empty(), "fixture must produce trades");
+        for (tick, row) in ticks.iter().zip(table.rows.iter()) {
+            assert_eq!(row.availability_time, None);
+            assert_eq!(row.capture_time, 42);
+            assert_eq!(tick.ts_init.as_u64(), 42);
+            assert_eq!(
+                tick.ts_event.as_u64(),
+                u64::try_from(row.event_time).expect("positive event_time")
+            );
+        }
+    }
+
+    #[test]
+    fn trade_ticks_ts_init_prefers_availability_time_when_some() {
+        // With a source availability instant present, ts_init follows it over the
+        // capture clock, while ts_event still preserves the event clock.
+        let mut table = canonical_table();
+        table.rows[0].availability_time = Some(7);
+        table.rows[0].capture_time = 42;
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let ticks = canonical_rows_to_trade_ticks(&table, &instrument).expect("project trades");
+        assert_eq!(ticks[0].ts_init.as_u64(), 7);
+        assert_eq!(
+            ticks[0].ts_event.as_u64(),
+            u64::try_from(table.rows[0].event_time).expect("positive event_time")
+        );
+    }
+
+    #[test]
+    fn trade_ticks_fail_loud_when_capture_invalid_and_no_availability() {
+        // validate() does not guard capture_time, so a None availability with a
+        // non-positive capture clock reaches the seam and must fail loud naming the
+        // capture_time field rather than silently stamping ts_init=0.
+        let mut table = canonical_table();
+        table.rows[0].availability_time = None;
+        table.rows[0].capture_time = 0;
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let err = canonical_rows_to_trade_ticks(&table, &instrument).unwrap_err();
+        assert!(err.to_string().contains("capture_time"), "{err}");
+    }
+
+    #[test]
+    fn trade_ticks_fail_loud_when_availability_some_but_invalid() {
+        // A present-but-invalid availability_time must fail, never fall back to the
+        // (valid) capture clock.
+        let mut table = canonical_table();
+        table.rows[0].availability_time = Some(0);
+        table.rows[0].capture_time = 42;
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let err = canonical_rows_to_trade_ticks(&table, &instrument).unwrap_err();
+        assert!(err.to_string().contains("availability_time"), "{err}");
     }
 
     #[test]

@@ -31,7 +31,7 @@ use super::{
     },
     catalog_projection::{
         CatalogInstrumentSpecSource, CatalogProjection, project_canonical_trades_to_catalog,
-        read_back_trade_ticks,
+        read_back_trade_ticks, ts_event_nanos, ts_init_nanos,
     },
     conversion_boundary::{
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
@@ -436,7 +436,8 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         &canonical_table.rows,
         inputs.manifest.start_time,
         inputs.manifest.end_time,
-    );
+    )
+    .context("compute expected engine iterations")?;
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected) {
         bail!("backtest did not consume the accepted data: {reason}");
     }
@@ -631,12 +632,24 @@ pub(crate) fn assert_read_back_matches(
             tick.aggressor_side,
             row.aggressor_side
         );
-        let expected_ts = u64::try_from(row.event_time)
-            .with_context(|| format!("canonical event_time {}", row.event_time))?;
+        let label = format!("trade {}", row.trade_id);
+        let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
         ensure!(
-            tick.ts_event.as_u64() == expected_ts,
-            "catalog read-back ts_event {} for trade {trade_id} does not match canonical {expected_ts}",
+            tick.ts_event.as_u64() == expected_ts_event,
+            "catalog read-back ts_event {} for trade {trade_id} does not match canonical {expected_ts_event}",
             tick.ts_event.as_u64()
+        );
+        // ts_init must equal the projection's availability-or-capture derivation,
+        // not the event clock: NautilusTrader replays and windows by ts_init, so a
+        // projection that stamped the wrong receipt clock must fail this gate. The
+        // expectation is derived through the same shared owner the seam uses, so
+        // the two cannot drift (NO DUAL PATHS).
+        let expected_ts_init =
+            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+        ensure!(
+            tick.ts_init.as_u64() == expected_ts_init,
+            "catalog read-back ts_init {} for trade {trade_id} does not match canonical {expected_ts_init}",
+            tick.ts_init.as_u64()
         );
         actual_ids.insert(trade_id);
     }
@@ -717,12 +730,21 @@ pub(crate) fn assert_bar_read_back_matches(
             "bar read-back {index} volume {} does not match canonical {expected_volume}",
             bar.volume
         );
-        let expected_ts = u64::try_from(row.close_time)
-            .with_context(|| format!("canonical close_time {}", row.close_time))?;
+        let label = format!("bar close_time {}", row.close_time);
+        let expected_ts_event = ts_event_nanos(row.close_time, &label)?.as_u64();
         ensure!(
-            bar.ts_event.as_u64() == expected_ts,
-            "bar read-back {index} ts_event {} does not match canonical close_time {expected_ts}",
+            bar.ts_event.as_u64() == expected_ts_event,
+            "bar read-back {index} ts_event {} does not match canonical close_time {expected_ts_event}",
             bar.ts_event.as_u64()
+        );
+        // ts_init is the bar's availability-or-capture receipt clock (the clock
+        // NautilusTrader replays by), derived through the shared projection owner.
+        let expected_ts_init =
+            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+        ensure!(
+            bar.ts_init.as_u64() == expected_ts_init,
+            "bar read-back {index} ts_init {} does not match canonical {expected_ts_init}",
+            bar.ts_init.as_u64()
         );
     }
     Ok(())
@@ -764,12 +786,22 @@ pub(crate) fn assert_delta_read_back_matches(
             delta.flags,
             row.flags
         );
-        let expected_ts = u64::try_from(row.event_time)
-            .with_context(|| format!("canonical event_time {}", row.event_time))?;
+        let label = format!("delta sequence {}", row.sequence);
+        let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
         ensure!(
-            delta.ts_event.as_u64() == expected_ts,
-            "delta read-back {index} ts_event {} does not match canonical {expected_ts}",
+            delta.ts_event.as_u64() == expected_ts_event,
+            "delta read-back {index} ts_event {} does not match canonical {expected_ts_event}",
             delta.ts_event.as_u64()
+        );
+        // CLEAR deltas carry ts_init too, so this gate covers them as well: the
+        // expectation is the availability-or-capture receipt clock derived through
+        // the shared projection owner (NautilusTrader replays by ts_init).
+        let expected_ts_init =
+            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+        ensure!(
+            delta.ts_init.as_u64() == expected_ts_init,
+            "delta read-back {index} ts_init {} does not match canonical {expected_ts_init}",
+            delta.ts_init.as_u64()
         );
         let actual_action = match delta.action {
             BookAction::Clear => DeltaAction::Clear.as_str(),
@@ -844,57 +876,110 @@ pub(crate) fn iterations_mismatch(iterations: usize, expected: usize) -> Option<
 /// manifest's optional `[start, end]` window. NautilusTrader includes a data
 /// point when `ts_init >= start_ns` (the skip-before-start loop breaks at the
 /// first such point) and `ts_init <= end_ns` (the run loop breaks only once
-/// `ts_init > end_ns`), so both bounds are inclusive. Each projected tick's
-/// `ts_init` equals its canonical `event_time`, so the windowed row count is
-/// exactly the engine's expected iteration count; with no bounds it is the whole
-/// accepted set, matching the read-back proof.
+/// `ts_init > end_ns`), so both bounds are inclusive. NautilusTrader windows by
+/// `ts_init`, not the event clock, so the expectation is derived from each row's
+/// availability-or-capture `ts_init` through the shared projection owner (the
+/// same derivation the catalog seam used), never the canonical `event_time`.
+/// With no bounds it is the whole accepted set, matching the read-back proof.
+///
+/// # Errors
+///
+/// Returns an error if a row's `ts_init` source clock is missing/non-positive,
+/// or if a window bound is negative (mirroring the manifest's own
+/// `manifest_time_to_nanos` rejection), so a malformed clock can never silently
+/// admit or drop data from the engine's expected iteration count.
 pub(crate) fn expected_iterations(
     rows: &[CanonicalTradeRow],
     start: Option<i64>,
     end: Option<i64>,
-) -> usize {
-    rows.iter()
-        .filter(|row| start.is_none_or(|start| row.event_time >= start))
-        .filter(|row| end.is_none_or(|end| row.event_time <= end))
-        .count()
+) -> Result<usize> {
+    let start = window_bound_nanos("start_time", start)?;
+    let end = window_bound_nanos("end_time", end)?;
+    let mut count = 0usize;
+    for row in rows {
+        let ts_init = ts_init_nanos(
+            row.availability_time,
+            row.capture_time,
+            &format!("trade {}", row.trade_id),
+        )?
+        .as_u64();
+        if start.is_none_or(|start| ts_init >= start) && end.is_none_or(|end| ts_init <= end) {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
-/// Reject a manifest time window that excludes every accepted trade. The
-/// canonical rows are validated monotonic by `event_time`, so the first and last
-/// rows bound the accepted data's event range; a `start_time` after the last
-/// trade (or an `end_time` at/ before the first) would leave the engine with no
-/// data while the run still reports the accepted source/catalog hash.
+/// Convert an optional manifest window bound to nanos in the same domain the
+/// engine compares `ts_init` against, rejecting a negative bound exactly as the
+/// manifest's `manifest_time_to_nanos` does so the window math cannot diverge
+/// from the configs NautilusTrader actually runs.
+pub(crate) fn window_bound_nanos(field: &'static str, value: Option<i64>) -> Result<Option<u64>> {
+    value
+        .map(|value| {
+            u64::try_from(value)
+                .map_err(|_| anyhow::anyhow!("manifest {field} {value} is negative"))
+        })
+        .transpose()
+}
+
+/// Reject a manifest time window that excludes every accepted trade.
+/// NautilusTrader admits a data point by `ts_init`, so the window must overlap
+/// the accepted data's `ts_init` range — the min/max over the rows'
+/// availability-or-capture clocks (the canonical rows are monotonic by
+/// `event_time`, not `ts_init`, so the range is computed across all rows rather
+/// than read off the first/last row). A `start_time` after the last available
+/// trade (or an `end_time` before the first) would leave the engine with no data
+/// while the run still reports the accepted source/catalog hash.
+///
+/// # Errors
+///
+/// Returns an error if a row's `ts_init` source clock is missing/non-positive,
+/// if a window bound is negative, or if the window excludes all accepted data.
 pub(crate) fn assert_time_window_overlaps_data(
     manifest: &BacktestingRunManifest,
     canonical_table: &CanonicalTradesTable,
 ) -> Result<()> {
-    let (Some(first), Some(last)) = (
-        canonical_table.rows.first().map(|row| row.event_time),
-        canonical_table.rows.last().map(|row| row.event_time),
-    ) else {
+    let mut range: Option<(u64, u64)> = None;
+    for row in &canonical_table.rows {
+        let ts_init = ts_init_nanos(
+            row.availability_time,
+            row.capture_time,
+            &format!("trade {}", row.trade_id),
+        )?
+        .as_u64();
+        range = Some(match range {
+            Some((min, max)) => (min.min(ts_init), max.max(ts_init)),
+            None => (ts_init, ts_init),
+        });
+    }
+    let Some((first, last)) = range else {
         return Ok(());
     };
-    match time_window_excludes_all_data(manifest.start_time, manifest.end_time, first, last) {
+    let start = window_bound_nanos("start_time", manifest.start_time)?;
+    let end = window_bound_nanos("end_time", manifest.end_time)?;
+    match time_window_excludes_all_data(start, end, first, last) {
         None => Ok(()),
         Some("start_time") => bail!(
-            "manifest start_time {:?} excludes all accepted data after event_time {last}",
+            "manifest start_time {:?} excludes all accepted data after ts_init {last}",
             manifest.start_time
         ),
         Some(_) => bail!(
-            "manifest end_time {:?} excludes all accepted data before event_time {first}",
+            "manifest end_time {:?} excludes all accepted data before ts_init {first}",
             manifest.end_time
         ),
     }
 }
 
 /// Pure overlap test for a manifest `[start, end]` window against the accepted
-/// data's `[first, last]` event range. Returns the name of the bound that
-/// excludes all data, or `None` when the window admits at least one trade.
+/// data's `[first, last]` `ts_init` range (all in engine nanos). Returns the
+/// name of the bound that excludes all data, or `None` when the window admits at
+/// least one trade.
 pub(crate) fn time_window_excludes_all_data(
-    start: Option<i64>,
-    end: Option<i64>,
-    first: i64,
-    last: i64,
+    start: Option<u64>,
+    end: Option<u64>,
+    first: u64,
+    last: u64,
 ) -> Option<&'static str> {
     if let Some(start) = start
         && start > last
@@ -949,7 +1034,10 @@ mod tests {
             venue_symbol: String::new(),
             nt_instrument_id: None,
             event_time,
-            capture_time: 0,
+            // The directly-built `tick()` fixtures stamp ts_init == ts_event ==
+            // event_time, so the canonical row's receipt clock must derive the
+            // same ts_init: availability absent, capture_time == event_time.
+            capture_time: event_time,
             availability_time: None,
             source_sequence: None,
             raw_payload_id: String::new(),
@@ -1097,33 +1185,75 @@ mod tests {
 
     #[test]
     fn expected_iterations_counts_all_rows_without_window() {
-        assert_eq!(expected_iterations(&windowed_rows(), None, None), 3);
+        // capture_time == event_time for these fixtures, so the ts_init the engine
+        // windows by equals the event clock and the counts below are unchanged by S1.
+        assert_eq!(
+            expected_iterations(&windowed_rows(), None, None).expect("expected iterations"),
+            3
+        );
     }
 
     #[test]
     fn expected_iterations_excludes_trades_before_start() {
-        // start is inclusive: the trades at 200 and 300 remain.
-        assert_eq!(expected_iterations(&windowed_rows(), Some(200), None), 2);
+        // start is inclusive: the trades at ts_init 200 and 300 remain.
+        assert_eq!(
+            expected_iterations(&windowed_rows(), Some(200), None).expect("expected iterations"),
+            2
+        );
     }
 
     #[test]
     fn expected_iterations_excludes_trades_after_end() {
-        // end is inclusive: only the trade at 100 remains.
-        assert_eq!(expected_iterations(&windowed_rows(), None, Some(100)), 1);
+        // end is inclusive: only the trade at ts_init 100 remains.
+        assert_eq!(
+            expected_iterations(&windowed_rows(), None, Some(100)).expect("expected iterations"),
+            1
+        );
     }
 
     #[test]
     fn expected_iterations_counts_inclusive_boundary_and_interior_windows() {
         // Both bounds inclusive and exactly on the data's edges -> all three.
         assert_eq!(
-            expected_iterations(&windowed_rows(), Some(100), Some(300)),
+            expected_iterations(&windowed_rows(), Some(100), Some(300))
+                .expect("expected iterations"),
             3
         );
         // A window strictly inside the edges keeps only the middle trade.
         assert_eq!(
-            expected_iterations(&windowed_rows(), Some(150), Some(250)),
+            expected_iterations(&windowed_rows(), Some(150), Some(250))
+                .expect("expected iterations"),
             1
         );
+    }
+
+    #[test]
+    fn expected_iterations_windows_by_ts_init_not_event_time() {
+        // A row whose receipt clock (capture_time) differs from its event clock is
+        // windowed by ts_init: event_time 100 but capture_time 500 falls OUTSIDE a
+        // [100, 100] window (event-time math would wrongly include it) and INSIDE a
+        // [500, 500] window.
+        let mut rows = windowed_rows();
+        rows[0].capture_time = 500;
+        // Window on the event clock value -> excluded (ts_init 500 > 100).
+        assert_eq!(
+            expected_iterations(&rows, Some(100), Some(100)).expect("expected iterations"),
+            0
+        );
+        // Window on the receipt clock value -> included.
+        assert_eq!(
+            expected_iterations(&rows, Some(500), Some(500)).expect("expected iterations"),
+            1
+        );
+    }
+
+    #[test]
+    fn expected_iterations_fails_loud_on_invalid_ts_init_source() {
+        let mut rows = windowed_rows();
+        rows[0].capture_time = 0;
+        rows[0].availability_time = None;
+        let err = expected_iterations(&rows, None, None).unwrap_err();
+        assert!(err.to_string().contains("capture_time"), "{err}");
     }
 
     #[test]
@@ -1137,7 +1267,7 @@ mod tests {
             time_window_excludes_all_data(Some(150), Some(180), 100, 200),
             None
         );
-        // A window covering exactly the data's event range admits all of it.
+        // A window covering exactly the data's ts_init range admits all of it.
         assert_eq!(
             time_window_excludes_all_data(Some(100), Some(200), 100, 200),
             None

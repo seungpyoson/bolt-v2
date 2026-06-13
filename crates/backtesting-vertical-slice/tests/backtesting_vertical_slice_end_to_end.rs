@@ -456,47 +456,57 @@ fn accepted_data_flows_through_to_objective_result_contract() {
 }
 
 #[test]
-fn partial_time_window_gate_admits_only_in_window_trades() {
+fn time_window_gate_admits_by_ts_init_receipt_clock() {
     // The manifest's optional `[start_time, end_time]` window maps into
-    // NautilusTrader's `BacktestRunConfig` start/end. NautilusTrader only delivers
-    // (and counts in `iterations`) trades whose `ts_init` falls inside that window,
-    // so the iterations gate must compare the engine's count to the *in-window*
-    // accepted trades — not the full projected set. A window that legitimately
-    // trims the data must still run, not spuriously fail the gate.
+    // NautilusTrader's `BacktestRunConfig` start/end, which NautilusTrader applies
+    // to each tick's `ts_init` — the availability-or-capture receipt clock — never
+    // the exchange event clock (#677). Native CSV trades carry no per-row
+    // availability and a single batch `capture_time`, so every projected trade
+    // shares one `ts_init == capture_time`: a window covering that capture instant
+    // admits the whole table (the end bound is inclusive), and a window that ends
+    // before it is rejected by the overlap gate as excluding all accepted data.
+    // Trade-replay windows are therefore all-or-nothing while one capture clock
+    // governs the table; giving native CSV trades a per-row receipt clock (so a
+    // sub-window can trim a trade table) is tracked as spine follow-up.
     let accepted = accepted_dataset();
     let identity = CanonicalInstrumentIdentity {
         instrument_id: "BNBUSDC".to_string(),
         venue_symbol: "BNBUSDC".to_string(),
         nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
     };
+    // The single batch receipt clock stamped on every native CSV trade; both
+    // windows below are expressed against it so the test proves windowing on
+    // `ts_init`, not the strictly-earlier event clock.
+    let capture_time_nanos = 1_772_512_022_000_000_000_i64;
 
-    // A full-window run first, only to learn the real normalized event times of the
-    // accepted trades (so the windowed run below carries no hardcoded nanosecond
-    // literal and stays faithful to the canonical normalizer).
-    let full_temp = tempfile::TempDir::new().expect("temp dir");
-    let full_canonical = full_temp.path().join("canonical-trades.parquet");
-    let full_catalog = full_temp.path().join("nt-catalog");
-    let full_catalog_path = full_catalog.to_str().unwrap().to_string();
-    let full_manifest = manifest(&full_catalog_path);
-    let full_contract_manifest_hash = full_manifest.manifest_hash();
-    let full = run_backtest(BacktestRunInputs {
+    // A window whose `end_time` sits exactly on the capture instant admits all
+    // three trades (NautilusTrader's end bound is inclusive on `ts_init`), so the
+    // iterations gate sees the full set rather than spuriously bailing.
+    let admit_temp = tempfile::TempDir::new().expect("temp dir");
+    let admit_canonical = admit_temp.path().join("canonical-trades.parquet");
+    let admit_catalog = admit_temp.path().join("nt-catalog");
+    let admit_catalog_path = admit_catalog.to_str().unwrap().to_string();
+    let mut admit_manifest = manifest(&admit_catalog_path);
+    admit_manifest.end_time = Some(capture_time_nanos);
+    let admit_contract_manifest_hash = admit_manifest.manifest_hash();
+    let admitted = run_backtest(BacktestRunInputs {
         accepted: &accepted,
         identity: &identity,
         instrument_spec: &instrument_spec(),
         csv_text: SAMPLE_CSV,
-        capture_time_nanos: 1_772_512_022_000_000_000,
-        manifest: &full_manifest,
-        contract_manifest_hash: &full_contract_manifest_hash,
+        capture_time_nanos,
+        manifest: &admit_manifest,
+        contract_manifest_hash: &admit_contract_manifest_hash,
         converter: &converter_config(),
-        canonical_artifact_path: &full_canonical,
-        catalog_root: &full_catalog,
+        canonical_artifact_path: &admit_canonical,
+        catalog_root: &admit_catalog,
         selector_provenance: None,
         created_at: "2026-06-02T00:00:00Z",
         artifact_uris: ResultArtifactUris {
             source_proof_uri: "s3://bolt-parquet/nt-research-analytics/source-proofs/p.json"
                 .to_string(),
-            canonical_table_uri: full_canonical.to_string_lossy().to_string(),
-            nt_catalog_uri: full_catalog_path.clone(),
+            canonical_table_uri: admit_canonical.to_string_lossy().to_string(),
+            nt_catalog_uri: admit_catalog_path.clone(),
             catalog_metadata_uri:
                 "s3://bolt-parquet/nt-research-analytics/backtests/win/catalog-metadata.json"
                     .to_string(),
@@ -504,58 +514,67 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
                 .to_string(),
         },
     })
-    .expect("full-window run");
-    assert_eq!(full.canonical_table.rows.len(), 3);
-    let first_event = full.canonical_table.rows[0].event_time;
-    let last_event = full.canonical_table.rows[2].event_time;
-    assert!(
-        first_event < last_event,
-        "fixture must span more than one event timestamp"
+    .expect("window covering the capture instant must admit all trades");
+
+    // Every native CSV trade shares one `ts_init == capture_time` while its event
+    // clock is strictly earlier, so the admitting window above is unambiguously on
+    // the receipt clock, not the event clock.
+    assert_eq!(admitted.canonical_table.rows.len(), 3);
+    for row in &admitted.canonical_table.rows {
+        assert_eq!(row.availability_time, None);
+        assert_eq!(row.capture_time, capture_time_nanos);
+        assert!(
+            row.event_time < capture_time_nanos,
+            "fixture event clock must be earlier than the receipt clock"
+        );
+    }
+    // The catalog still projects all three accepted trades; the window only governs
+    // the engine run, which iterates over every in-window (here, all) trade.
+    assert_eq!(admitted.read_back_count, 3);
+    assert_eq!(
+        admitted.nt_result.iterations, 3,
+        "a window covering the shared ts_init admits every trade (end bound inclusive)"
     );
 
-    // Second run: an `end_time` at the first trade's event time admits exactly one
-    // trade (NautilusTrader's end bound is inclusive). The gate must accept the run
-    // with `iterations == 1`; under a full-dataset gate it would spuriously bail.
-    let temp = tempfile::TempDir::new().expect("temp dir");
-    let canonical_path = temp.path().join("canonical-trades.parquet");
-    let catalog_root = temp.path().join("nt-catalog");
-    let catalog_path = catalog_root.to_str().unwrap().to_string();
-    let mut windowed_manifest = manifest(&catalog_path);
-    windowed_manifest.end_time = Some(first_event);
-    let windowed_contract_manifest_hash = windowed_manifest.manifest_hash();
-
-    let windowed = run_backtest(BacktestRunInputs {
+    // A window that ends one nanosecond before the shared receipt instant excludes
+    // every trade by `ts_init`: the overlap gate must reject the run rather than
+    // silently report a zero-iteration backtest against the accepted source.
+    let reject_temp = tempfile::TempDir::new().expect("temp dir");
+    let reject_canonical = reject_temp.path().join("canonical-trades.parquet");
+    let reject_catalog = reject_temp.path().join("nt-catalog");
+    let reject_catalog_path = reject_catalog.to_str().unwrap().to_string();
+    let mut reject_manifest = manifest(&reject_catalog_path);
+    reject_manifest.end_time = Some(capture_time_nanos - 1);
+    let reject_contract_manifest_hash = reject_manifest.manifest_hash();
+    let rejected = run_backtest(BacktestRunInputs {
         accepted: &accepted,
         identity: &identity,
         instrument_spec: &instrument_spec(),
         csv_text: SAMPLE_CSV,
-        capture_time_nanos: 1_772_512_022_000_000_000,
-        manifest: &windowed_manifest,
-        contract_manifest_hash: &windowed_contract_manifest_hash,
+        capture_time_nanos,
+        manifest: &reject_manifest,
+        contract_manifest_hash: &reject_contract_manifest_hash,
         converter: &converter_config(),
-        canonical_artifact_path: &canonical_path,
-        catalog_root: &catalog_root,
+        canonical_artifact_path: &reject_canonical,
+        catalog_root: &reject_catalog,
         selector_provenance: None,
         created_at: "2026-06-02T00:00:00Z",
         artifact_uris: ResultArtifactUris {
             source_proof_uri: "s3://bolt-parquet/nt-research-analytics/source-proofs/p.json"
                 .to_string(),
-            canonical_table_uri: canonical_path.to_string_lossy().to_string(),
-            nt_catalog_uri: catalog_path.clone(),
+            canonical_table_uri: reject_canonical.to_string_lossy().to_string(),
+            nt_catalog_uri: reject_catalog_path.clone(),
             catalog_metadata_uri:
                 "s3://bolt-parquet/nt-research-analytics/backtests/win/catalog-metadata-2.json"
                     .to_string(),
             result_contract_uri: "s3://bolt-parquet/nt-research-analytics/backtests/win/r2.json"
                 .to_string(),
         },
-    })
-    .expect("partial-window run must pass the iterations gate");
-
-    // The catalog still projects all three accepted trades; only the engine run is
-    // windowed, so the read-back proof is unchanged while the engine iterates once.
-    assert_eq!(windowed.read_back_count, 3);
-    assert_eq!(
-        windowed.nt_result.iterations, 1,
-        "engine must iterate once per in-window trade (end bound inclusive)"
+    });
+    let error = rejected.expect_err("window before the receipt instant must be rejected");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("end_time") && message.contains("excludes all accepted data"),
+        "overlap gate must explain the empty window: {message}"
     );
 }

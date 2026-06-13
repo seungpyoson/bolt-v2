@@ -5,7 +5,8 @@
 //! branch, that an accepted bar object normalizes through the F2/F3 entry points
 //! into validated [`CanonicalBarsTable`]s and projects into a local
 //! `ParquetDataCatalog` as externally-aggregated `Bar` data that reads back with
-//! `ts_event == close_time` and per-field OHLCV equality.
+//! `ts_event == close_time`, `ts_init == capture_time` (the receipt clock
+//! NautilusTrader replays by), and per-field OHLCV equality.
 //!
 //! F2 (paged REST JSON) is per-instrument: one envelope (or several
 //! newline-separated page envelopes) yields one table. F3 (line-delimited
@@ -219,8 +220,10 @@ fn assert_round_trip(table: &CanonicalBarsTable) {
     loaded.sort_by_key(|bar| bar.ts_event.as_u64());
     for (bar, row) in loaded.iter().zip(table.rows.iter()) {
         assert_eq!(bar.instrument_id().to_string(), NT_INSTRUMENT_ID);
+        // ts_event is the canonical close_time; ts_init is the receipt clock
+        // NautilusTrader replays by (capture_time here — no availability column).
         assert_eq!(bar.ts_event.as_u64(), row.close_time as u64);
-        assert_eq!(bar.ts_init.as_u64(), row.close_time as u64);
+        assert_eq!(bar.ts_init.as_u64(), row.capture_time as u64);
         assert_eq!(
             bar.open.as_decimal(),
             Price::from(row.open.as_str()).as_decimal()

@@ -262,9 +262,11 @@ fn csv_native_bars_round_trip_to_catalog() {
     loaded.sort_by_key(|bar| bar.ts_event.as_u64());
     for (bar, row) in loaded.iter().zip(table.rows.iter()) {
         assert_eq!(bar.instrument_id().to_string(), NT_INSTRUMENT_ID);
-        // The canonical close_time is the bar's event/init instant.
+        // ts_event is the canonical close_time (the bar's event instant); ts_init
+        // is the receipt clock NautilusTrader replays by, which for this native
+        // CSV source (no availability column) is the row's capture_time.
         assert_eq!(bar.ts_event.as_u64(), row.close_time as u64);
-        assert_eq!(bar.ts_init.as_u64(), row.close_time as u64);
+        assert_eq!(bar.ts_init.as_u64(), row.capture_time as u64);
         // Compare OHLCV numerically: Display renders at instrument precision.
         assert_eq!(
             bar.open.as_decimal(),

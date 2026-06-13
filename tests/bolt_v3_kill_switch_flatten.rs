@@ -99,6 +99,98 @@ fn flatten_snapshot_rejects_conflicting_cache_and_report_position_proof() {
 }
 
 #[test]
+fn flatten_snapshot_dedups_agreeing_cache_and_report_position_proof_to_one_command() {
+    let snapshot = BoltV3KillSwitchFlattenSnapshot::new(vec![
+        flatten_candidate(
+            BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
+            "position-long-1",
+            PositionSide::Long,
+            Quantity::from("1.00"),
+        ),
+        flatten_candidate(
+            BoltV3KillSwitchFlattenPositionEvidenceKind::PositionStatusReport,
+            "position-long-1",
+            PositionSide::Long,
+            Quantity::from("1.00"),
+        ),
+    ])
+    .expect("agreeing NT cache/report position proof should collapse to one candidate");
+
+    assert_eq!(
+        snapshot.candidates().len(),
+        1,
+        "agreeing cache/report evidence for one position must dedup to a single candidate"
+    );
+    assert_eq!(snapshot.open_positions().len(), 1);
+
+    let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(flatten_plan_request_with_snapshot(
+        KillSwitchState::Flattening {
+            halt_id: HALT_ID.to_string(),
+        },
+        TradingState::Reducing,
+        snapshot,
+    ))
+    .expect("deduped open position should plan forced-reduction commands");
+
+    assert_eq!(
+        plan.commands().len(),
+        1,
+        "agreeing duplicate position evidence must not plan duplicate reduce-only commands"
+    );
+    assert_eq!(
+        plan.commands()[0].position_id(),
+        PositionId::from("position-long-1")
+    );
+}
+
+#[test]
+fn flatten_candidate_rejects_open_side_with_zero_quantity() {
+    for open_side in [PositionSide::Long, PositionSide::Short] {
+        let error = BoltV3KillSwitchFlattenCandidate::from_nt_position_state(
+            BoltV3KillSwitchFlattenPositionState {
+                evidence_kind: BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
+                account_id: account_id(),
+                instrument_id: instrument_id(),
+                strategy_id: strategy_id("binary-oracle-edge-taker-001"),
+                position_id: PositionId::from("position-zero-qty-1"),
+                position_side: open_side,
+                quantity: Quantity::from("0"),
+                source_timestamp_unix_nanos: SOURCE_TIMESTAMP_UNIX_NANOS,
+            },
+        )
+        .expect_err("open-side zero-quantity position evidence must fail closed");
+
+        assert_eq!(
+            error,
+            BoltV3KillSwitchFlattenError::InconsistentPositionProof
+        );
+    }
+}
+
+#[test]
+fn flatten_plan_trims_action_id_into_command_proof_records() {
+    let mut request = flatten_plan_request(
+        KillSwitchState::Flattening {
+            halt_id: HALT_ID.to_string(),
+        },
+        TradingState::Reducing,
+    );
+    request.action_id = format!("  {ACTION_ID}  ");
+
+    let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(request)
+        .expect("padded action ID matching the forced-reduction claim should plan");
+
+    assert_eq!(
+        plan.commands()
+            .first()
+            .expect("open position should plan one command")
+            .action_id(),
+        ACTION_ID,
+        "flatten command must store the trimmed action ID so cancel and flatten proof records match"
+    );
+}
+
+#[test]
 fn flatten_policy_rejects_empty_and_stale_position_proof() {
     let policy = BoltV3KillSwitchFlattenPolicy::with_source_freshness(MAX_SOURCE_AGE_UNIX_NANOS)
         .expect("positive freshness policy should be valid");

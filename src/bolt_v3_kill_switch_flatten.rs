@@ -61,6 +61,11 @@ impl BoltV3KillSwitchFlattenCandidate {
                 BoltV3KillSwitchFlattenQuantitySource::PositionStatusReportQuantity
             }
         };
+        if is_observed_open_side(position_state.position_side)
+            && position_state.quantity.is_zero()
+        {
+            return Err(BoltV3KillSwitchFlattenError::InconsistentPositionProof);
+        }
         Ok(Self {
             evidence_kind: position_state.evidence_kind,
             account_id: position_state.account_id,
@@ -124,6 +129,20 @@ impl BoltV3KillSwitchFlattenSnapshot {
         candidates: Vec<BoltV3KillSwitchFlattenCandidate>,
     ) -> Result<Self, BoltV3KillSwitchFlattenError> {
         validate_no_conflicting_position_proof(&candidates)?;
+        let mut scoped_candidates = BTreeMap::new();
+        for candidate in candidates {
+            let scoped_position_identity = (
+                candidate.account_id,
+                candidate.instrument_id,
+                candidate.strategy_id,
+                candidate.position_id,
+            );
+            scoped_candidates
+                .entry(scoped_position_identity)
+                .or_insert(candidate);
+        }
+        let candidates: Vec<BoltV3KillSwitchFlattenCandidate> =
+            scoped_candidates.into_values().collect();
         let open_positions = candidates
             .iter()
             .filter(|candidate| is_observed_open_side(candidate.position_side))
@@ -376,13 +395,14 @@ impl BoltV3KillSwitchFlattenSupervisor {
             return Err(BoltV3KillSwitchFlattenError::NtTradingStateNotReducing);
         }
         validate_flatten_command_metadata(&request)?;
+        let action_id = request.action_id.trim().to_string();
         validate_flatten_order_template(
             &request.order_template,
             request.snapshot.open_positions(),
-            &request.action_id,
+            &action_id,
         )?;
         if request.forced_reduction_claim.halt_id() != halt_id
-            || request.forced_reduction_claim.action_id() != request.action_id
+            || request.forced_reduction_claim.action_id().trim() != action_id
             || request.forced_reduction_claim.policy_sha256() != request.policy_sha256
         {
             return Err(BoltV3KillSwitchFlattenError::ForcedReductionProofMismatch);
@@ -399,7 +419,7 @@ impl BoltV3KillSwitchFlattenSupervisor {
             .iter()
             .map(|candidate| BoltV3KillSwitchFlattenCommand {
                 halt_id: halt_id.clone(),
-                action_id: request.action_id.clone(),
+                action_id: action_id.clone(),
                 config_sha256: request.config_sha256.clone(),
                 policy_sha256: request.policy_sha256.clone(),
                 source_timestamp_unix_nanos: request.source_timestamp_unix_nanos,
@@ -854,6 +874,7 @@ impl BoltV3KillSwitchFlattenRetrySupervisor {
 pub enum BoltV3KillSwitchFlattenError {
     ConflictingPositionProof,
     ForcedReductionProofMismatch,
+    InconsistentPositionProof,
     InvalidConfigSha256,
     InvalidOrderTemplate,
     InvalidPolicySha256,

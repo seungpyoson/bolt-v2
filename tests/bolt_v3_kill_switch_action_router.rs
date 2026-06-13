@@ -8,6 +8,7 @@ use bolt_v2::{
     bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionClaim,
 };
 use nautilus_model::enums::TradingState;
+use nautilus_model::identifiers::{AccountId, InstrumentId};
 
 const POLICY_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const CONFIG_SHA256: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -36,10 +37,13 @@ fn dry_run_router_emits_cancel_and_flatten_metadata_without_order_effects() {
         cancel_decision.source_timestamp_unix_nanos(),
         1_717_200_000_000_000_000
     );
-    assert_eq!(cancel_decision.scope().account_ids(), ["POLYMARKET-001"]);
+    assert_eq!(
+        cancel_decision.scope().account_ids(),
+        [account_id("POLYMARKET-001")]
+    );
     assert_eq!(
         cancel_decision.scope().instrument_ids(),
-        ["BTC-USD.BINANCE"]
+        [instrument_id("BTC-USD.BINANCE")]
     );
     assert!(cancel_decision.forced_reduction_claim().is_none());
     assert!(cancel_decision.live_order_effects().is_empty());
@@ -64,10 +68,13 @@ fn dry_run_router_emits_cancel_and_flatten_metadata_without_order_effects() {
     assert_eq!(flatten_decision.action_id(), "flatten-action-1");
     assert_eq!(flatten_decision.config_sha256(), CONFIG_SHA256);
     assert_eq!(flatten_decision.policy_sha256(), POLICY_SHA256);
-    assert_eq!(flatten_decision.scope().account_ids(), ["POLYMARKET-001"]);
+    assert_eq!(
+        flatten_decision.scope().account_ids(),
+        [account_id("POLYMARKET-001")]
+    );
     assert_eq!(
         flatten_decision.scope().instrument_ids(),
-        ["BTC-USD.BINANCE"]
+        [instrument_id("BTC-USD.BINANCE")]
     );
     assert_eq!(
         flatten_decision
@@ -149,7 +156,7 @@ fn router_rejects_invalid_metadata_before_dry_run_decision() {
         Err(BoltV3KillSwitchActionRouterError::InvalidScope)
     );
     assert_eq!(
-        BoltV3KillSwitchActionScope::new(vec!["POLYMARKET-001".to_string()], vec![" ".to_string()]),
+        BoltV3KillSwitchActionScope::new(vec!["POLYMARKET-001".to_string()], Vec::new()),
         Err(BoltV3KillSwitchActionRouterError::InvalidScope)
     );
 
@@ -217,6 +224,34 @@ fn phase3_router_rejects_live_or_venue_action_outputs() {
     }
 }
 
+#[test]
+fn action_scope_rejects_malformed_nt_identifier_strings_fail_closed() {
+    assert_eq!(
+        BoltV3KillSwitchActionScope::new(
+            vec!["POLYMARKET001".to_string()],
+            vec!["BTC-USD.BINANCE".to_string()],
+        ),
+        Err(BoltV3KillSwitchActionRouterError::InvalidAccountId),
+        "account scope without an issuer/account hyphen must fail closed at construction"
+    );
+    assert_eq!(
+        BoltV3KillSwitchActionScope::new(
+            vec!["POLYMARKET-001".to_string()],
+            vec!["BTC-USD-BINANCE".to_string()],
+        ),
+        Err(BoltV3KillSwitchActionRouterError::InvalidInstrumentId),
+        "instrument scope without a symbol/venue '.' separator must fail closed at construction"
+    );
+    assert_eq!(
+        BoltV3KillSwitchActionScope::new(
+            vec!["POLYMARKET-001".to_string()],
+            vec![" ".to_string()],
+        ),
+        Err(BoltV3KillSwitchActionRouterError::InvalidInstrumentId),
+        "blank instrument scope must fail closed through NT parsing, not slip past as valid"
+    );
+}
+
 fn cancel_request(
     action_id: &str,
     kill_switch_state: KillSwitchState,
@@ -258,6 +293,14 @@ fn scope() -> BoltV3KillSwitchActionScope {
         vec!["BTC-USD.BINANCE".to_string()],
     )
     .expect("valid scope should construct")
+}
+
+fn account_id(value: &str) -> AccountId {
+    AccountId::new(value)
+}
+
+fn instrument_id(value: &str) -> InstrumentId {
+    InstrumentId::from_as_ref(value).expect("test instrument ID should parse through NT")
 }
 
 fn cancelling_state() -> KillSwitchState {

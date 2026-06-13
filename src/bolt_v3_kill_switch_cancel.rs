@@ -658,7 +658,11 @@ fn validate_outcome_status(
         }
         BoltV3KillSwitchCancelAttemptOutcomeKind::CancelRequested
         | BoltV3KillSwitchCancelAttemptOutcomeKind::CancelAccepted
-        | BoltV3KillSwitchCancelAttemptOutcomeKind::CancelRejected => {}
+        | BoltV3KillSwitchCancelAttemptOutcomeKind::CancelRejected => {
+            if order_status.is_closed() {
+                return Err(BoltV3KillSwitchCancelError::InvalidOutcomeOrderStatus);
+            }
+        }
     }
     Ok(())
 }

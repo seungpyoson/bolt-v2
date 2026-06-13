@@ -373,6 +373,40 @@ fn cancel_outcome_aggregation_uses_nt_order_status_evidence_without_collapsing_r
 }
 
 #[test]
+fn cancel_attempt_outcomes_reject_terminal_nt_status_fail_closed() {
+    for terminal_status in [
+        OrderStatus::Denied,
+        OrderStatus::Rejected,
+        OrderStatus::Canceled,
+        OrderStatus::Expired,
+        OrderStatus::Filled,
+    ] {
+        assert_eq!(
+            BoltV3KillSwitchCancelAttemptOutcome::cancel_requested(terminal_status),
+            Err(BoltV3KillSwitchCancelError::InvalidOutcomeOrderStatus),
+            "cancel-requested must reject terminal NT status {terminal_status:?}"
+        );
+        assert_eq!(
+            BoltV3KillSwitchCancelAttemptOutcome::cancel_accepted(terminal_status),
+            Err(BoltV3KillSwitchCancelError::InvalidOutcomeOrderStatus),
+            "cancel-accepted must reject terminal NT status {terminal_status:?}"
+        );
+        assert_eq!(
+            BoltV3KillSwitchCancelAttemptOutcome::cancel_rejected(terminal_status),
+            Err(BoltV3KillSwitchCancelError::InvalidOutcomeOrderStatus),
+            "cancel-rejected must reject terminal NT status {terminal_status:?}"
+        );
+    }
+
+    BoltV3KillSwitchCancelAttemptOutcome::cancel_requested(OrderStatus::Accepted)
+        .expect("cancel-requested must still accept non-terminal NT status");
+    BoltV3KillSwitchCancelAttemptOutcome::cancel_accepted(OrderStatus::Accepted)
+        .expect("cancel-accepted must still accept non-terminal NT status");
+    BoltV3KillSwitchCancelAttemptOutcome::cancel_rejected(OrderStatus::Accepted)
+        .expect("cancel-rejected must still accept non-terminal NT status");
+}
+
+#[test]
 fn cancel_outcome_aggregation_keeps_missing_or_duplicate_evidence_fail_closed() {
     let snapshot = single_candidate_snapshot(BoltV3KillSwitchOutstandingOrderRiskSurface::Open);
 

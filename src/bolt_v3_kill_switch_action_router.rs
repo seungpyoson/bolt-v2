@@ -3,6 +3,7 @@ use crate::{
     bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionClaim,
 };
 use nautilus_model::enums::TradingState;
+use nautilus_model::identifiers::{AccountId, InstrumentId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3KillSwitchActionClass {
@@ -23,8 +24,8 @@ pub enum BoltV3KillSwitchActionDecisionMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3KillSwitchActionScope {
-    account_ids: Vec<String>,
-    instrument_ids: Vec<String>,
+    account_ids: Vec<AccountId>,
+    instrument_ids: Vec<InstrumentId>,
 }
 
 impl BoltV3KillSwitchActionScope {
@@ -32,23 +33,34 @@ impl BoltV3KillSwitchActionScope {
         account_ids: Vec<String>,
         instrument_ids: Vec<String>,
     ) -> Result<Self, BoltV3KillSwitchActionRouterError> {
-        if account_ids.is_empty() || account_ids.iter().any(|value| value.trim().is_empty()) {
+        if account_ids.is_empty() || instrument_ids.is_empty() {
             return Err(BoltV3KillSwitchActionRouterError::InvalidScope);
         }
-        if instrument_ids.is_empty() || instrument_ids.iter().any(|value| value.trim().is_empty()) {
-            return Err(BoltV3KillSwitchActionRouterError::InvalidScope);
-        }
+        let account_ids = account_ids
+            .into_iter()
+            .map(|value| {
+                AccountId::new_checked(value.trim())
+                    .map_err(|_| BoltV3KillSwitchActionRouterError::InvalidAccountId)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let instrument_ids = instrument_ids
+            .into_iter()
+            .map(|value| {
+                InstrumentId::from_as_ref(value.trim())
+                    .map_err(|_| BoltV3KillSwitchActionRouterError::InvalidInstrumentId)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             account_ids,
             instrument_ids,
         })
     }
 
-    pub fn account_ids(&self) -> &[String] {
+    pub fn account_ids(&self) -> &[AccountId] {
         &self.account_ids
     }
 
-    pub fn instrument_ids(&self) -> &[String] {
+    pub fn instrument_ids(&self) -> &[InstrumentId] {
         &self.instrument_ids
     }
 }
@@ -138,6 +150,8 @@ pub enum BoltV3KillSwitchActionRouterError {
     InvalidPolicySha256,
     MissingSourceTimestamp,
     InvalidScope,
+    InvalidAccountId,
+    InvalidInstrumentId,
     NtTradingStateNotReducing,
     KillSwitchStateNotCancelling,
     KillSwitchStateNotFlattening,

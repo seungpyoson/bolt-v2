@@ -3968,7 +3968,29 @@ def operand_has_s3_path_role(operand: str, s3_paths: set[str]) -> bool:
 
 def local_transfer_operands(tokens: list[str], index: int) -> tuple[list[str], str] | None:
     tail = command_tail_until_boundary(tokens, index + 1)
-    operands = [token for token in tail if token != "--" and not token.startswith("-")]
+    operands: list[str] = []
+    target_directory: str | None = None
+    cursor = 0
+    while cursor < len(tail):
+        token = tail[cursor]
+        if token == "--":
+            cursor += 1
+            continue
+        if token in {"-t", "--target-directory"} and cursor + 1 < len(tail):
+            target_directory = tail[cursor + 1]
+            cursor += 2
+            continue
+        if token.startswith("--target-directory="):
+            target_directory = token.split("=", 1)[1]
+            cursor += 1
+            continue
+        if token.startswith("-"):
+            cursor += 1
+            continue
+        operands.append(token)
+        cursor += 1
+    if target_directory is not None:
+        return (operands, target_directory) if operands else None
     if len(operands) < 2:
         return None
     return operands[:-1], operands[-1]
@@ -4221,6 +4243,7 @@ def unzip_extracts_s3_archive_to_active_target(
 ) -> bool:
     tail = command_tail_until_boundary(tokens, index + 1)
     archives: list[str] = []
+    members: list[str] = []
     destination: str | None = None
     cursor = 0
     while cursor < len(tail):
@@ -4236,17 +4259,30 @@ def unzip_extracts_s3_archive_to_active_target(
         if token == "--" or token.startswith("-"):
             cursor += 1
             continue
-        archives.append(token)
+        if archives:
+            members.append(token)
+        else:
+            archives.append(token)
         cursor += 1
     if not any(operand_has_s3_path_role(archive, s3_paths) for archive in archives):
         return False
     if cwd_is_active_target and destination is None:
         return True
-    return destination is not None and STORAGE_ROLE_ACTIVE_TARGET in storage_value_roles(
+    destination_is_active = destination is not None and STORAGE_ROLE_ACTIVE_TARGET in storage_value_roles(
         destination,
         variable_roles,
         cwd_is_active_target=cwd_is_active_target,
         active_paths=active_paths,
+    )
+    return destination_is_active or any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in storage_value_roles(
+            member,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for member in members
     )
 
 
@@ -4324,8 +4360,14 @@ def tar_extracts_to_active_target(
     tail = command_tail_until_boundary(tokens, index + 1)
     extracts = False
     directories: list[str] = []
+    members: list[str] = []
+    skip_next = False
     cursor = 0
     while cursor < len(tail):
+        if skip_next:
+            skip_next = False
+            cursor += 1
+            continue
         token = tail[cursor]
         if token in {"x", "-x", "--extract", "--get"}:
             extracts = True
@@ -4339,9 +4381,14 @@ def tar_extracts_to_active_target(
                     directories.append(suffix)
                 elif cursor + 1 < len(tail):
                     directories.append(tail[cursor + 1])
-                    cursor += 1
+                    skip_next = True
         if token.startswith("-") and not token.startswith("--") and "x" in token[1:]:
             extracts = True
+        file_arg, consumed_next = tar_file_argument(token, tail, cursor, "f")
+        if file_arg is not None:
+            skip_next = consumed_next
+            cursor += 1
+            continue
         if token in {"-C", "--directory"} and cursor + 1 < len(tail):
             directories.append(tail[cursor + 1])
             cursor += 2
@@ -4354,7 +4401,9 @@ def tar_extracts_to_active_target(
                 directories.append(suffix)
             elif cursor + 1 < len(tail):
                 directories.append(tail[cursor + 1])
-                cursor += 1
+                skip_next = True
+        elif token != "--" and not token.startswith("-"):
+            members.append(token)
         cursor += 1
     if not extracts:
         return False
@@ -4369,6 +4418,15 @@ def tar_extracts_to_active_target(
             active_paths=active_paths,
         )
         for directory in directories
+    ) or any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in storage_value_roles(
+            member,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for member in members
     )
 
 
@@ -4988,9 +5046,7 @@ def storage_transfer_policy_errors_from_tokens(
             cursor += 1
             continue
         name = executable_name(token)
-        if name in {"bash", "dash", "fish", "sh", "zsh"} and command_prefix_allows_cargo(
-            command_prefix_before_token(tokens, cursor)
-        ):
+        if name in {"bash", "dash", "fish", "sh", "zsh"}:
             nested = shell_command(tokens[cursor:])
             if nested is not None:
                 nested_errors = storage_transfer_policy_errors_from_tokens(
@@ -5003,7 +5059,7 @@ def storage_transfer_policy_errors_from_tokens(
                 )
                 if nested_errors:
                     return nested_errors
-        if name == "eval" and command_prefix_allows_cargo(command_prefix_before_token(tokens, cursor)):
+        if name == "eval":
             inner = tokens[cursor + 1 :]
             if inner and inner[0] == "--":
                 inner = inner[1:]
@@ -5036,6 +5092,22 @@ def storage_transfer_policy_errors_from_tokens(
                     initial_cwd_is_active_target=STORAGE_ROLE_ACTIVE_TARGET in chdir_roles,
                     initial_active_paths=active_paths,
                     initial_s3_paths=s3_paths,
+                )
+                if nested_errors:
+                    return nested_errors
+        if name in RECURSIVE_WRAPPER_EXECUTABLES:
+            segment = [token] + command_tail_until_boundary(tokens, cursor + 1)
+            inner = wrapper_inner_tokens(segment)
+            if inner:
+                nested_errors = storage_transfer_policy_errors_from_tokens(
+                    inner,
+                    variable_roles,
+                    depth=depth + 1,
+                    initial_cwd_is_active_target=cwd_is_active_target,
+                    initial_active_paths=active_paths,
+                    initial_s3_paths=s3_paths,
+                    initial_pipe_stdin_is_active_target=pipe_stdin_is_active_target,
+                    initial_pipe_stdin_is_s3=pipe_stdin_is_s3,
                 )
                 if nested_errors:
                     return nested_errors

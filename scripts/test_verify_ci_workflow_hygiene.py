@@ -1733,9 +1733,34 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
             aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
             tar -xf cache.tar -C target
         """,
+        "s3 archive extraction names active target as operand": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
+            tar xf cache.tar target
+        """,
         "s3 zip downloaded locally before active target extraction": """
             aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
             unzip cache.zip -d target
+        """,
+        "s3 zip extraction names active target as operand": """
+            aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
+            unzip cache.zip target/*
+        """,
+        "s3 download moved to active target through mv target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            mv -t target s3_cache
+        """,
+        "s3 download copied to active target through cp target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            cp --target-directory=target s3_cache
+        """,
+        "s3 transfer hidden behind su command string": """
+            su -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind sg command string": """
+            sg docker -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind rustup shell command string": """
+            rustup run nightly sh -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
         """,
     }
     misses: list[str] = []

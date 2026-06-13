@@ -168,7 +168,7 @@
             {
               "role": "source_universe_manifest",
               "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/binance-data-vision-trades-object-manifest.json",
-              "sha256": "0bf347df87377bd4e030708f89ac5f6b0503cbeff0deb8d3a28177720fd65414"
+              "sha256": "b6994022c557abfeb2b8d04526728dbd92975511bdf967249f84148a14e76ceb"
             },
             {
               "role": "source_universe_conversion_queue",

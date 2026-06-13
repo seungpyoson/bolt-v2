@@ -6,7 +6,7 @@
   "venue": "binance",
   "source": "data-vision",
   "family": "native_trades",
-  "table_family": "native_trades",
+  "table_family": "trades",
   "staging_snapshot": "2026-03-01",
   "staging_prefix": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/",
   "category": "coin_m_delivery",

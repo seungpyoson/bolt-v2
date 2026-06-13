@@ -542,6 +542,7 @@ pub struct PersistedCatalogProjectionObject {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistedCatalogProjection {
     pub catalog_root_uri: String,
+    pub binding: CatalogProjectionBinding,
     pub objects: Vec<PersistedCatalogProjectionObject>,
 }
 
@@ -558,15 +559,7 @@ pub struct CreateOnlyProbeTranscript {
 }
 
 impl CatalogDispatchConfig {
-    /// # Errors
-    ///
-    /// Returns an error if the source binding is missing, ambiguous, or resolves
-    /// to an invalid projection id.
-    pub fn catalog_root_for(
-        &self,
-        source_binding: &str,
-        artifact_root: &ResolvedArtifactRoot,
-    ) -> Result<String> {
+    fn binding_for(&self, source_binding: &str) -> Result<&CatalogProjectionBinding> {
         let mut matches = self
             .bindings
             .iter()
@@ -583,6 +576,19 @@ impl CatalogDispatchConfig {
             &binding.catalog_projection_id,
             PathTokenMode::AllowEquals,
         )?;
+        Ok(binding)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the source binding is missing, ambiguous, or resolves
+    /// to an invalid projection id.
+    pub fn catalog_root_for(
+        &self,
+        source_binding: &str,
+        artifact_root: &ResolvedArtifactRoot,
+    ) -> Result<String> {
+        let binding = self.binding_for(source_binding)?;
         Ok(artifact_root.nt_catalog_projection_root(&binding.catalog_projection_id))
     }
 }
@@ -604,7 +610,8 @@ pub async fn persist_catalog_projection_for_source_binding(
         "local catalog projection root {} is not a directory",
         local_catalog_root.display()
     );
-    let catalog_root_uri = dispatch.catalog_root_for(source_binding, artifact_root)?;
+    let binding = dispatch.binding_for(source_binding)?.clone();
+    let catalog_root_uri = artifact_root.nt_catalog_projection_root(&binding.catalog_projection_id);
     let mut file_paths = Vec::new();
     collect_regular_files(local_catalog_root, local_catalog_root, &mut file_paths)?;
     ensure!(
@@ -643,6 +650,7 @@ pub async fn persist_catalog_projection_for_source_binding(
     objects.sort_by(|left, right| left.uri.cmp(&right.uri));
     Ok(PersistedCatalogProjection {
         catalog_root_uri,
+        binding,
         objects,
     })
 }

@@ -643,6 +643,15 @@ async fn persists_catalog_projection_directory_with_create_only_dispatch() {
         persisted.catalog_root_uri,
         "s3://bolt-ra-artifacts/prod/nt-catalog/v1/projection=projection-run-123/"
     );
+    assert_eq!(persisted.binding.source_binding, "binary-official");
+    assert_eq!(
+        persisted.binding.market_structure_fixture,
+        MarketStructureFixture::BinaryOption
+    );
+    assert_eq!(
+        persisted.binding.catalog_projection_id,
+        "projection-run-123"
+    );
     assert_eq!(persisted.objects.len(), 2);
     assert!(
         persisted

@@ -83,6 +83,10 @@ fn nt_catalog_synthetic_proof_root() {
     let _root = subpaths.nt_catalog_synthetic_proof;
 }
 
+impl CatalogDispatchConfig {
+    pub fn catalog_root_for(&self) {}
+}
+
 impl CreateOnlyArtifactWriter {
     pub async fn probe_create_only() {
         let _duplicate_create_rejected = true;
@@ -94,6 +98,10 @@ impl CreateOnlyArtifactWriter {
 pub async fn persist_catalog_projection_for_source_binding() {
     let _dispatch: CatalogDispatchConfig;
     let _root = dispatch.catalog_root_for(source_binding, artifact_root)?;
+    pub binding: CatalogProjectionBinding,
+    let _persisted = PersistedCatalogProjection {
+        binding,
+    };
     let writer = CreateOnlyArtifactWriter::new(store);
     let bytes = fs::read(path)?;
     writer.put_create_idempotent(path, bytes).await?;
@@ -261,6 +269,9 @@ fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
     let artifacts = run_from_run_spec_with_artifact_store();
     let _canonical_catalog_uri = artifacts.canonical_catalog_uri;
     let _persisted_catalog_objects = artifacts.persisted_catalog_objects;
+    let _persisted_source_binding = persisted.binding.source_binding;
+    let _persisted_market_structure = persisted.binding.market_structure_fixture;
+    let _persisted_projection_id = persisted.binding.catalog_projection_id;
     let _create_only_probe_transcript = artifacts.create_only_probe_transcript;
     let _nt_catalog_uri = artifacts.output.contract.artifact_uris.nt_catalog_uri;
 }

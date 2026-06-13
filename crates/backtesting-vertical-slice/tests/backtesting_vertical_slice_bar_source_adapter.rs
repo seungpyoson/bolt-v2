@@ -19,10 +19,10 @@ use std::io::{Cursor, Read, Write};
 
 use backtesting_vertical_slice::{
     canonical_bars::{
-        BAR_TRANSFORM_IDENTITY, BarInstrumentIdentities, BarIntervalSource, BarMappingConfig,
-        BarPriceSignPolicy, normalize_csv_native_bars,
+        BarInstrumentIdentities, BarIntervalSource, BarMappingConfig, BarPriceSignPolicy,
+        normalize_csv_native_bars,
     },
-    canonical_trades::{CanonicalInstrumentIdentity, CsvTimestampUnit},
+    canonical_trades::{BAR_TRANSFORM_IDENTITY, CanonicalInstrumentIdentity, CsvTimestampUnit},
     catalog_projection::{SpotInstrumentSpec, project_canonical_bars_to_catalog, read_back_bars},
     source_proof::{
         AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,

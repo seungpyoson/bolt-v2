@@ -20,7 +20,7 @@ managed-clippy:
 [private]
 managed-test *args:
     if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-test must run through scripts/rust_verification.py run"; exit 2; fi
-    cargo nextest run --locked {{args}}
+    cargo nextest run --locked --no-fail-fast {{args}}
 
 [private]
 managed-build:

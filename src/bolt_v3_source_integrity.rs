@@ -288,7 +288,7 @@ mod tests {
     // Re-derived after routing replace-submit through configured position
     // sizing.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "7b064753f4677fdd506db5f5cdbd4baa70f76d58660b485a72704eb9ac6778a5";
+        "d2fc05371df51b91e4ac7d5e89d165e33cfdad8a6c6c31421246771c50f26c88";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

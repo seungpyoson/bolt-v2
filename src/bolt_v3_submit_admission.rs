@@ -2525,6 +2525,14 @@ fn refresh_position_sizer_state_from_components(
     mut components: BoltV3SubmitPositionSizingNtComponents,
 ) {
     preserve_fresher_order_lifecycle(position_sizer.state.as_ref(), &mut components);
+    if position_sizer.state.is_none()
+        && !position_sizer.gate.is_reconciled()
+        && position_sizer.client_order_reservations.is_empty()
+        && components.order_lifecycle.open_order_count == 0
+        && components.order_lifecycle.all_open_orders_attributed
+    {
+        position_sizer.gate = PositionSizingAdmissionGate::reconciled();
+    }
     let state = compose_position_sizing_state_from_components(
         components,
         position_sizer.gate.is_reconciled(),

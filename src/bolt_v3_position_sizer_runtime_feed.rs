@@ -31,6 +31,8 @@ use crate::{
 };
 
 const POSITION_SIZER_ORDER_TERMINAL_SOURCE: &str = stringify!(nt_order_terminal_event);
+const NT_ACCOUNT_STATE_PORTFOLIO_SOURCE: &str = stringify!(nt_account_state);
+const NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE: &str = "nt_account_cache";
 const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,13 +164,20 @@ impl PositionSizerRuntimeFeed {
         if account_state.account_id != self.config.account_id {
             return None;
         }
-        let free_collateral = account_state
+        let balance = account_state
             .balances
             .iter()
-            .find(|balance| balance.currency.code.as_str() == self.config.collateral_currency)
-            .map(|balance| balance.free.as_decimal())?;
+            .find(|balance| balance.currency.code.as_str() == self.config.collateral_currency)?;
+        let free_collateral = balance.free.as_decimal();
+        let total_equity = balance.total.as_decimal();
         self.component_builder.latest_account_free_collateral =
             Some((free_collateral, account_state.ts_event.as_u64()));
+        self.component_builder.record_account_state_portfolio(
+            &self.config,
+            free_collateral,
+            total_equity,
+            account_state.ts_event.as_u64(),
+        );
         self.component_builder.record_nt_account_spendability(
             &self.config,
             free_collateral,
@@ -488,7 +497,7 @@ impl PositionSizerRuntimeComponentBuilder {
     ) {
         self.latest_account_free_collateral = Some((free_collateral, observed_at_ns));
         self.latest_portfolio = Some(PortfolioSizingSnapshot {
-            source: "nt_account_cache".to_string(),
+            source: NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE.to_string(),
             observed_at_ns,
             venue_id: config.venue_id.clone(),
             account_id: config.account_id.to_string(),
@@ -497,6 +506,36 @@ impl PositionSizerRuntimeComponentBuilder {
             total_equity,
         });
         self.record_nt_account_spendability(config, free_collateral, observed_at_ns);
+    }
+
+    fn record_account_state_portfolio(
+        &mut self,
+        config: &PositionSizerRuntimeFeedConfig,
+        free_collateral: Decimal,
+        total_equity: Decimal,
+        observed_at_ns: u64,
+    ) {
+        match self.latest_portfolio.as_mut() {
+            Some(current)
+                if current.source != NT_ACCOUNT_STATE_PORTFOLIO_SOURCE
+                    && current.source != NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE => {}
+            Some(current) => {
+                current.observed_at_ns = observed_at_ns;
+                current.free_collateral = free_collateral;
+                current.total_equity = total_equity;
+            }
+            None => {
+                self.latest_portfolio = Some(PortfolioSizingSnapshot {
+                    source: NT_ACCOUNT_STATE_PORTFOLIO_SOURCE.to_string(),
+                    observed_at_ns,
+                    venue_id: config.venue_id.clone(),
+                    account_id: config.account_id.to_string(),
+                    collateral_currency: config.collateral_currency.clone(),
+                    free_collateral,
+                    total_equity,
+                });
+            }
+        }
     }
 
     fn record_venue_spendability(

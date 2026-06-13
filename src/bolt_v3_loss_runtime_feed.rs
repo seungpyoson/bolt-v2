@@ -235,21 +235,10 @@ impl LossGovernorRuntimeFeed {
             self.config.rolling_window_ns,
         );
         self.state.daily_pnl = Some(TimedDecimal::new(daily_pnl, observed_at_ns));
-        if self.state.per_trade_pnl_source != Some(PerTradePnlSource::PositionEvent) {
-            self.state.per_trade_pnl = Some(TimedDecimal::new(Decimal::ZERO, observed_at_ns));
-            self.state.per_trade_pnl_source = Some(PerTradePnlSource::PortfolioBaseline);
-        }
-
+        self.state.refresh_per_trade_pnl_clock(observed_at_ns);
         self.state.current_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
-        match (peak_equity_action, self.state.peak_equity) {
-            (PeakEquityAction::RebaselineToCurrent, _) => {
-                self.state.peak_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
-            }
-            (PeakEquityAction::Preserve, Some(peak)) if peak.value > current_equity => {}
-            (PeakEquityAction::Preserve, _) => {
-                self.state.peak_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
-            }
-        }
+        self.state
+            .apply_peak_equity_action(peak_equity_action, current_equity, observed_at_ns);
 
         self.publish_if_complete()
     }
@@ -279,11 +268,29 @@ impl LossGovernorRuntimeFeed {
 
         let observed_at_ns = state.ts_event.as_u64();
         let current_equity = account_total_equity(state, currency)?;
-        let daily_pnl = if self.state.portfolio_pnl_observed {
-            self.state
+        if self.state.portfolio_pnl_observed {
+            let daily_pnl = self
+                .state
                 .daily_pnl
-                .map_or(Decimal::ZERO, |daily_pnl| daily_pnl.value)
-        } else {
+                .map_or(Decimal::ZERO, |daily_pnl| daily_pnl.value);
+            let rolling_pnl = self
+                .state
+                .rolling_pnl
+                .map_or(Decimal::ZERO, |rolling_pnl| rolling_pnl.value);
+            self.state.daily_pnl = Some(TimedDecimal::new(daily_pnl, observed_at_ns));
+            self.state.rolling_pnl = Some(TimedDecimal::new(rolling_pnl, observed_at_ns));
+            self.state.previous_daily_pnl = Some(TimedDecimal::new(daily_pnl, observed_at_ns));
+            self.state.previous_total_equity =
+                Some(TimedDecimal::new(current_equity, observed_at_ns));
+            self.state.refresh_per_trade_pnl_clock(observed_at_ns);
+            self.state.current_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
+            self.state
+                .preserve_or_raise_peak_equity(current_equity, observed_at_ns);
+
+            return self.publish_if_complete();
+        }
+
+        let daily_pnl = {
             let baseline = self
                 .state
                 .account_state_equity_baseline
@@ -297,21 +304,10 @@ impl LossGovernorRuntimeFeed {
             self.config.rolling_window_ns,
         );
         self.state.daily_pnl = Some(TimedDecimal::new(daily_pnl, observed_at_ns));
-        if self.state.per_trade_pnl_source != Some(PerTradePnlSource::PositionEvent) {
-            self.state.per_trade_pnl = Some(TimedDecimal::new(Decimal::ZERO, observed_at_ns));
-            self.state.per_trade_pnl_source = Some(PerTradePnlSource::PortfolioBaseline);
-        }
-
+        self.state.refresh_per_trade_pnl_clock(observed_at_ns);
         self.state.current_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
-        match (peak_equity_action, self.state.peak_equity) {
-            (PeakEquityAction::RebaselineToCurrent, _) => {
-                self.state.peak_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
-            }
-            (PeakEquityAction::Preserve, Some(peak)) if peak.value > current_equity => {}
-            (PeakEquityAction::Preserve, _) => {
-                self.state.peak_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
-            }
-        }
+        self.state
+            .apply_peak_equity_action(peak_equity_action, current_equity, observed_at_ns);
 
         self.publish_if_complete()
     }
@@ -438,6 +434,42 @@ impl LossGovernorRuntimeFeedState {
             None => {
                 self.currency = Some(currency);
                 true
+            }
+        }
+    }
+
+    fn refresh_per_trade_pnl_clock(&mut self, observed_at_ns: u64) {
+        if self.per_trade_pnl_source == Some(PerTradePnlSource::PositionEvent) {
+            if let Some(per_trade_pnl) = self.per_trade_pnl {
+                self.per_trade_pnl = Some(TimedDecimal::new(per_trade_pnl.value, observed_at_ns));
+            }
+        } else {
+            self.per_trade_pnl = Some(TimedDecimal::new(Decimal::ZERO, observed_at_ns));
+            self.per_trade_pnl_source = Some(PerTradePnlSource::PortfolioBaseline);
+        }
+    }
+
+    fn preserve_or_raise_peak_equity(&mut self, current_equity: Decimal, observed_at_ns: u64) {
+        match self.peak_equity {
+            Some(peak) if peak.value > current_equity => {}
+            _ => {
+                self.peak_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
+            }
+        }
+    }
+
+    fn apply_peak_equity_action(
+        &mut self,
+        action: PeakEquityAction,
+        current_equity: Decimal,
+        observed_at_ns: u64,
+    ) {
+        match action {
+            PeakEquityAction::RebaselineToCurrent => {
+                self.peak_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
+            }
+            PeakEquityAction::Preserve => {
+                self.preserve_or_raise_peak_equity(current_equity, observed_at_ns);
             }
         }
     }

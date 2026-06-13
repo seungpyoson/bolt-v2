@@ -193,14 +193,14 @@ fn account_state_heartbeat_preserves_portfolio_loss_components() {
     feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_100, -20.0, -20.0, 960.0))
         .expect("portfolio loss should publish");
     let snapshot = feed
-        .on_account_state(&account_state(account_id, 1_200, 960.0))
+        .on_account_state(&account_state(account_id, 1_200, 959.0))
         .expect("account heartbeat should refresh without erasing portfolio loss evidence");
 
     assert_eq!(snapshot.observed_at_ns, 1_200);
     assert_eq!(snapshot.per_trade_pnl, Some(Decimal::ZERO));
     assert_eq!(snapshot.daily_pnl, Some(Decimal::new(-40, 0)));
     assert_eq!(snapshot.rolling_pnl, Some(Decimal::new(-40, 0)));
-    assert_eq!(snapshot.current_equity, Some(Decimal::new(960, 0)));
+    assert_eq!(snapshot.current_equity, Some(Decimal::new(959, 0)));
     assert_eq!(snapshot.peak_equity, Some(Decimal::new(1_000, 0)));
 
     let error = admission
@@ -364,6 +364,40 @@ fn position_adjustment_does_not_mask_larger_per_trade_loss() {
         commission_adjustment.per_trade_pnl,
         Some(Decimal::new(-8, 0))
     );
+}
+
+#[test]
+fn account_state_heartbeat_refreshes_position_event_per_trade_timestamp() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-PER-TRADE-FRESH");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission.clone(),
+    );
+
+    feed.on_account_state(&account_state(account_id, 1_000, 1_000.0))
+        .expect("account baseline should publish");
+    let position_loss = feed
+        .on_position_event(&changed_position_event(account_id, 1_100, -8.0))
+        .expect("position changed should publish per-trade pnl");
+    assert_eq!(position_loss.per_trade_pnl, Some(Decimal::new(-8, 0)));
+
+    let heartbeat = feed
+        .on_account_state(&account_state(account_id, 2_000, 1_000.0))
+        .expect("account heartbeat should keep position-event pnl fresh");
+    assert_eq!(heartbeat.observed_at_ns, 2_000);
+    assert_eq!(heartbeat.per_trade_pnl, Some(Decimal::new(-8, 0)));
+
+    admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 2_200)
+        .expect("fresh below-limit position-event pnl should admit entry submit");
 }
 
 #[test]

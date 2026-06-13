@@ -728,11 +728,19 @@ fn add_batch_event_counts(
         let source_row_group = row_group_cursor.current_row_group()?;
         let asset_id = string_column_value(asset_values.as_ref(), asset_id_column, row)?;
         let event_family = string_column_value(event_values.as_ref(), event_family_column, row)?;
-        let event_count = counts
-            .entry(asset_id.to_string())
-            .or_default()
-            .entry(event_family.to_string())
-            .or_default();
+        // Allocate an owned key only on first sight of an asset / event family.
+        // Repeated rows (the common case on this per-batch hot path) reuse the
+        // existing entry through a borrowed &str lookup instead of allocating a
+        // throwaway String every row. The accumulator outlives each Arrow batch,
+        // so its keys must stay owned — only the lookup avoids the allocation.
+        let asset_counts = match counts.get_mut(asset_id) {
+            Some(asset_counts) => asset_counts,
+            None => counts.entry(asset_id.to_string()).or_default(),
+        };
+        let event_count = match asset_counts.get_mut(event_family) {
+            Some(event_count) => event_count,
+            None => asset_counts.entry(event_family.to_string()).or_default(),
+        };
         event_count.rows = event_count.rows.saturating_add(1);
         event_count.source_row_groups.insert(source_row_group);
         row_group_cursor.advance_row();

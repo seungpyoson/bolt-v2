@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import json
 import importlib.util
@@ -15,6 +17,8 @@ import textwrap
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "rust_verification.py"
+VERIFY_REMOTE_HEAD = "a" * 40
+VERIFY_REMOTE_BRANCH = "codex/verify-remote-test"
 
 
 def run_owner(args: list[str], *, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -272,11 +276,568 @@ def assert_oversized_policy_fails_closed() -> None:
             raise AssertionError(result.stderr)
 
 
+def write_verify_remote_config(repo: pathlib.Path) -> None:
+    (repo / "ci").mkdir(exist_ok=True)
+    (repo / "ci" / "github-actions-runners.toml").write_text(
+        textwrap.dedent(
+            """\
+            [ci_provenance]
+            workflow_name = "CI"
+            workflow_path = ".github/workflows/ci.yml"
+
+            [ci_provenance.dispatch]
+            workflow_input = "full_ci"
+            """
+        ),
+        encoding="utf-8",
+    )
+
+
+def verify_remote_pr(*, is_draft: bool = True, owner: str = "seungpyoson", repo: str = "bolt-v2") -> dict[str, object]:
+    return {
+        "number": 648,
+        "url": "https://github.com/seungpyoson/bolt-v2/pull/648",
+        "headRefOid": VERIFY_REMOTE_HEAD,
+        "headRefName": VERIFY_REMOTE_BRANCH,
+        "state": "OPEN",
+        "isDraft": is_draft,
+        "headRepositoryOwner": {"login": owner},
+        "headRepository": {"name": repo, "nameWithOwner": f"{owner}/{repo}"},
+    }
+
+
+def workflow_run(
+    database_id: int,
+    *,
+    event: str = "workflow_dispatch",
+    status: str = "completed",
+    conclusion: str | None = "success",
+    created_at: str = "2026-06-13T00:00:00Z",
+) -> dict[str, object]:
+    return {
+        "databaseId": database_id,
+        "event": event,
+        "headSha": VERIFY_REMOTE_HEAD,
+        "status": status,
+        "conclusion": conclusion,
+        "createdAt": created_at,
+        "url": f"https://github.com/seungpyoson/bolt-v2/actions/runs/{database_id}",
+    }
+
+
+class VerifyRemoteHarness:
+    def __init__(
+        self,
+        owner: object,
+        repo: pathlib.Path,
+        *,
+        pr: dict[str, object],
+        run_lists: list[list[dict[str, object]]],
+        run_list_error: str | None = None,
+        advance_after_dispatch: bool = False,
+    ) -> None:
+        self.owner = owner
+        self.repo = repo
+        self.pr = pr
+        self.run_lists = list(run_lists)
+        self.run_list_error = run_list_error
+        self.advance_after_dispatch = advance_after_dispatch
+        self.dispatches: list[list[str]] = []
+        self.pr_checks_calls = 0
+        self.sleep_calls = 0
+        self._time = 1000.0
+        self._saved: dict[str, object] = {}
+
+    def __enter__(self) -> "VerifyRemoteHarness":
+        self._saved = {
+            "load_policy": self.owner.load_policy,
+            "ensure_verify_remote_preconditions": self.owner.ensure_verify_remote_preconditions,
+            "pr_for_exact_head": self.owner.pr_for_exact_head,
+            "load_json_command": self.owner.load_json_command,
+            "run_capture": self.owner.run_capture,
+            "monotonic": self.owner.time.monotonic,
+            "sleep": self.owner.time.sleep,
+        }
+        self.owner.load_policy = self.fake_load_policy
+        self.owner.ensure_verify_remote_preconditions = self.fake_preconditions
+        self.owner.pr_for_exact_head = self.fake_pr_for_exact_head
+        self.owner.load_json_command = self.fake_load_json_command
+        self.owner.run_capture = self.fake_run_capture
+        self.owner.time.monotonic = self.fake_monotonic
+        self.owner.time.sleep = self.fake_sleep
+        return self
+
+    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
+        for name, value in self._saved.items():
+            if name == "monotonic":
+                self.owner.time.monotonic = value
+            elif name == "sleep":
+                self.owner.time.sleep = value
+            else:
+                setattr(self.owner, name, value)
+
+    def fake_load_policy(self, _repo: pathlib.Path) -> dict[str, object]:
+        return {
+            "remote_verification": {
+                "poll_interval_seconds": 1,
+                "checks_appear_timeout_seconds": 2,
+                "overall_timeout_seconds": 8,
+            }
+        }
+
+    def fake_preconditions(self, _repo: pathlib.Path) -> tuple[str, str, None]:
+        return VERIFY_REMOTE_HEAD, VERIFY_REMOTE_BRANCH, None
+
+    def fake_pr_for_exact_head(
+        self,
+        _repo: pathlib.Path,
+        _branch: str,
+        _head: str,
+        *,
+        during_watch: bool,
+    ) -> tuple[dict[str, object] | None, str | None]:
+        if during_watch and self.advance_after_dispatch and self.dispatches:
+            return (
+                None,
+                "PR branch advanced during watch: headRefOid bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "
+                f"no longer matches local HEAD {VERIFY_REMOTE_HEAD}; fetch the branch and rerun verify-remote",
+            )
+        return self.pr, None
+
+    def fake_load_json_command(self, argv: list[str], *, repo: pathlib.Path) -> tuple[object | None, str | None]:
+        if repo != self.repo:
+            raise AssertionError(repo)
+        if argv[:3] == ["gh", "run", "list"]:
+            if self.run_list_error is not None:
+                return None, self.run_list_error
+            if self.run_lists:
+                return self.run_lists.pop(0), None
+            return [], None
+        if argv[:3] == ["gh", "run", "view"]:
+            run_id = int(argv[3])
+            for run_list in self.run_lists:
+                for run in run_list:
+                    if int(run["databaseId"]) == run_id:
+                        return run, None
+            return workflow_run(run_id), None
+        if argv[:3] == ["gh", "repo", "view"]:
+            return {"name": "bolt-v2", "owner": {"login": "seungpyoson"}}, None
+        raise AssertionError(f"unexpected JSON command: {argv}")
+
+    def fake_run_capture(self, argv: list[str], *, repo: pathlib.Path) -> subprocess.CompletedProcess[str]:
+        if repo != self.repo:
+            raise AssertionError(repo)
+        if argv[:3] == ["gh", "workflow", "run"]:
+            self.dispatches.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[:3] == ["gh", "run", "list"]:
+            payload, error = self.fake_load_json_command(argv, repo=repo)
+            return subprocess.CompletedProcess(argv, 1 if error else 0, json.dumps(payload), error or "")
+        if argv[:3] == ["gh", "run", "view"]:
+            payload, error = self.fake_load_json_command(argv, repo=repo)
+            return subprocess.CompletedProcess(argv, 1 if error else 0, json.dumps(payload), error or "")
+        if argv[:3] == ["gh", "repo", "view"]:
+            payload, error = self.fake_load_json_command(argv, repo=repo)
+            return subprocess.CompletedProcess(argv, 1 if error else 0, json.dumps(payload), error or "")
+        if argv[:3] == ["gh", "pr", "checks"]:
+            self.pr_checks_calls += 1
+            stale_deferred_gate = [
+                {
+                    "name": "gate",
+                    "bucket": "fail",
+                    "state": "FAILURE",
+                    "link": "https://github.com/seungpyoson/bolt-v2/actions/runs/100",
+                    "workflow": "CI",
+                }
+            ]
+            return subprocess.CompletedProcess(argv, 0, json.dumps(stale_deferred_gate), "")
+        raise AssertionError(f"unexpected command: {argv}")
+
+    def fake_monotonic(self) -> float:
+        self._time += 0.5
+        return self._time
+
+    def fake_sleep(self, _seconds: int) -> None:
+        self.sleep_calls += 1
+        self._time += 1.0
+
+
+def run_verify_remote_with_harness(harness: VerifyRemoteHarness) -> tuple[int, str, str]:
+    args = type("Args", (), {"repo": str(harness.repo)})()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        result = harness.owner.cmd_verify_remote(args)
+    return result, stdout.getvalue(), stderr.getvalue()
+
+
+def assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=True),
+            run_lists=[
+                [],
+                [workflow_run(201, status="in_progress", conclusion=None)],
+                [workflow_run(201, status="completed", conclusion="success")],
+            ],
+        ) as harness:
+            result, stdout, stderr = run_verify_remote_with_harness(harness)
+        if result != 0:
+            raise AssertionError((result, stdout, stderr))
+        if len(harness.dispatches) != 1:
+            raise AssertionError(harness.dispatches)
+        dispatch_text = " ".join(harness.dispatches[0])
+        if ".github/workflows/ci.yml" not in dispatch_text or "full_ci=true" not in dispatch_text:
+            raise AssertionError(dispatch_text)
+        if harness.pr_checks_calls:
+            raise AssertionError("draft dispatch wait must not use aggregate gh pr checks")
+
+
+def assert_verify_remote_dispatch_wait_does_not_depend_on_local_clock() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=True),
+            run_lists=[
+                [],
+                [workflow_run(204, status="in_progress", conclusion=None, created_at="2026-06-13T00:00:01Z")],
+                [workflow_run(204, status="completed", conclusion="success", created_at="2026-06-13T00:00:01Z")],
+            ],
+        ) as harness:
+            result, stdout, stderr = run_verify_remote_with_harness(harness)
+        if result != 0:
+            raise AssertionError((result, stdout, stderr))
+        if len(harness.dispatches) != 1:
+            raise AssertionError(harness.dispatches)
+
+
+def assert_verify_remote_reuses_existing_matching_full_ci_run() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=True),
+            run_lists=[[workflow_run(202, status="completed", conclusion="success")]],
+        ) as harness:
+            result, stdout, stderr = run_verify_remote_with_harness(harness)
+        if result != 0:
+            raise AssertionError((result, stdout, stderr))
+        if harness.dispatches:
+            raise AssertionError(harness.dispatches)
+
+
+def assert_verify_remote_fails_when_branch_advances_after_dispatch() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=True),
+            run_lists=[[], [workflow_run(203, status="in_progress", conclusion=None)]],
+            advance_after_dispatch=True,
+        ) as harness:
+            result, _stdout, stderr = run_verify_remote_with_harness(harness)
+        if result != 2 or "PR branch advanced during watch" not in stderr:
+            raise AssertionError((result, stderr))
+        if len(harness.dispatches) != 1:
+            raise AssertionError(harness.dispatches)
+
+
+def assert_verify_remote_waits_on_pending_full_run_over_stale_deferred_gate() -> None:
+    owner = load_owner_module()
+    stale_deferred = workflow_run(
+        301,
+        event="pull_request",
+        status="completed",
+        conclusion="failure",
+        created_at="2026-06-13T00:00:00Z",
+    )
+    pending_full = workflow_run(
+        302,
+        event="pull_request",
+        status="in_progress",
+        conclusion=None,
+        created_at="2026-06-13T00:02:00Z",
+    )
+    green_full = workflow_run(
+        302,
+        event="pull_request",
+        status="completed",
+        conclusion="success",
+        created_at="2026-06-13T00:02:00Z",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=False),
+            run_lists=[[stale_deferred, pending_full], [stale_deferred, green_full]],
+        ) as harness:
+            result, stdout, stderr = run_verify_remote_with_harness(harness)
+        if result != 0:
+            raise AssertionError((result, stdout, stderr))
+        if harness.sleep_calls < 1:
+            raise AssertionError("expected verify-remote to wait on the pending full-CI run")
+
+
+def assert_verify_remote_ready_pr_waits_for_full_run_after_stale_deferred_gate() -> None:
+    owner = load_owner_module()
+    stale_deferred = workflow_run(
+        303,
+        event="pull_request",
+        status="completed",
+        conclusion="failure",
+        created_at="2026-06-13T00:00:00Z",
+    )
+    pending_full = workflow_run(
+        304,
+        event="pull_request",
+        status="in_progress",
+        conclusion=None,
+        created_at="2026-06-13T00:02:00Z",
+    )
+    green_full = workflow_run(
+        304,
+        event="pull_request",
+        status="completed",
+        conclusion="success",
+        created_at="2026-06-13T00:02:00Z",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=False),
+            run_lists=[[stale_deferred], [stale_deferred, pending_full], [stale_deferred, green_full]],
+        ) as harness:
+            result, stdout, stderr = run_verify_remote_with_harness(harness)
+        if result != 0:
+            raise AssertionError((result, stdout, stderr))
+        if harness.sleep_calls < 1:
+            raise AssertionError("expected verify-remote to wait past stale deferred gate for ready full-CI run")
+
+
+def assert_verify_remote_uses_green_full_run_over_stale_deferred_gate() -> None:
+    owner = load_owner_module()
+    stale_deferred = workflow_run(
+        401,
+        event="pull_request",
+        status="completed",
+        conclusion="failure",
+        created_at="2026-06-13T00:00:00Z",
+    )
+    green_full = workflow_run(
+        402,
+        event="pull_request",
+        status="completed",
+        conclusion="success",
+        created_at="2026-06-13T00:03:00Z",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=False),
+            run_lists=[[stale_deferred, green_full]],
+        ) as harness:
+            result, stdout, stderr = run_verify_remote_with_harness(harness)
+        if result != 0:
+            raise AssertionError((result, stdout, stderr))
+
+
+def assert_verify_remote_fork_draft_fails_closed() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=True, owner="outside-contributor"),
+            run_lists=[],
+        ) as harness:
+            result, _stdout, stderr = run_verify_remote_with_harness(harness)
+        expected = (
+            "draft fork PRs cannot dispatch upstream full CI; mark the PR ready for review "
+            "or have a maintainer move the branch into the upstream repository"
+        )
+        if result != 2 or expected not in stderr:
+            raise AssertionError((result, stderr))
+
+
+def assert_repository_owner_requires_owner_separator() -> None:
+    owner = load_owner_module()
+    if owner.repository_owner("bolt-v2") is not None:
+        raise AssertionError("bare repository names must not be parsed as owners")
+    if owner.repository_owner("seungpyoson/bolt-v2") != "seungpyoson":
+        raise AssertionError("owner/repo strings must expose the owner")
+    if owner.repository_name("seungpyoson/bolt-v2") != "bolt-v2":
+        raise AssertionError("owner/repo strings must expose the repository name")
+
+
+def assert_verify_remote_api_error_fails_closed() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=True),
+            run_lists=[],
+            run_list_error="API rate limit exceeded while listing workflow runs",
+        ) as harness:
+            result, _stdout, stderr = run_verify_remote_with_harness(harness)
+        if result != 2 or "API rate limit exceeded" not in stderr:
+            raise AssertionError((result, stderr))
+        if harness.dispatches:
+            raise AssertionError(harness.dispatches)
+
+
+def assert_verify_remote_preflight_rejects_dirty_or_unpushed_head_before_ci() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        calls: list[list[str]] = []
+
+        def dirty_run_capture(argv: list[str], *, repo: pathlib.Path) -> subprocess.CompletedProcess[str]:
+            calls.append(argv)
+            if argv[:3] == ["git", "status", "--porcelain"]:
+                return subprocess.CompletedProcess(argv, 0, " M scripts/rust_verification.py\n", "")
+            raise AssertionError(f"unexpected command after dirty status: {argv}")
+
+        original_run_capture = owner.run_capture
+        try:
+            owner.run_capture = dirty_run_capture
+            _head, _branch, error = owner.ensure_verify_remote_preconditions(repo)
+        finally:
+            owner.run_capture = original_run_capture
+        if error != "verify-remote requires a clean worktree, including untracked files":
+            raise AssertionError(error)
+        if calls != [["git", "status", "--porcelain", "--untracked-files=normal"]]:
+            raise AssertionError(calls)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+
+        def stale_tracking_ref_run_capture(
+            argv: list[str], *, repo: pathlib.Path
+        ) -> subprocess.CompletedProcess[str]:
+            if argv == ["git", "status", "--porcelain", "--untracked-files=normal"]:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            if argv == ["git", "rev-parse", "HEAD"]:
+                return subprocess.CompletedProcess(argv, 0, VERIFY_REMOTE_HEAD + "\n", "")
+            if argv == ["git", "rev-parse", "@{u}"]:
+                return subprocess.CompletedProcess(argv, 0, ("b" * 40) + "\n", "")
+            if argv == ["git", "branch", "--show-current"]:
+                return subprocess.CompletedProcess(argv, 0, "codex/slice\n", "")
+            if argv == ["git", "config", "branch.codex/slice.remote"]:
+                return subprocess.CompletedProcess(argv, 0, "origin\n", "")
+            if argv == ["git", "config", "branch.codex/slice.merge"]:
+                return subprocess.CompletedProcess(argv, 0, "refs/heads/codex/slice\n", "")
+            if argv == ["git", "ls-remote", "--heads", "origin", "codex/slice"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    f"{VERIFY_REMOTE_HEAD}\trefs/heads/codex/slice\n",
+                    "",
+                )
+            raise AssertionError(f"unexpected command: {argv}")
+
+        original_run_capture = owner.run_capture
+        try:
+            owner.run_capture = stale_tracking_ref_run_capture
+            head, branch, error = owner.ensure_verify_remote_preconditions(repo)
+        finally:
+            owner.run_capture = original_run_capture
+        if error is not None:
+            raise AssertionError(error)
+        if head != VERIFY_REMOTE_HEAD or branch != "codex/slice":
+            raise AssertionError((head, branch))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+
+        def unpushed_run_capture(argv: list[str], *, repo: pathlib.Path) -> subprocess.CompletedProcess[str]:
+            if argv == ["git", "status", "--porcelain", "--untracked-files=normal"]:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            if argv == ["git", "rev-parse", "HEAD"]:
+                return subprocess.CompletedProcess(argv, 0, VERIFY_REMOTE_HEAD + "\n", "")
+            if argv == ["git", "rev-parse", "@{u}"]:
+                return subprocess.CompletedProcess(argv, 0, ("b" * 40) + "\n", "")
+            if argv == ["git", "branch", "--show-current"]:
+                return subprocess.CompletedProcess(argv, 0, "codex/slice\n", "")
+            if argv == ["git", "config", "branch.codex/slice.remote"]:
+                return subprocess.CompletedProcess(argv, 0, "origin\n", "")
+            if argv == ["git", "config", "branch.codex/slice.merge"]:
+                return subprocess.CompletedProcess(argv, 0, "refs/heads/codex/slice\n", "")
+            if argv == ["git", "ls-remote", "--heads", "origin", "codex/slice"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    f"{'b' * 40}\trefs/heads/codex/slice\n",
+                    "",
+                )
+            raise AssertionError(f"unexpected command: {argv}")
+
+        original_run_capture = owner.run_capture
+        try:
+            owner.run_capture = unpushed_run_capture
+            _head, _branch, error = owner.ensure_verify_remote_preconditions(repo)
+        finally:
+            owner.run_capture = original_run_capture
+        if error != "verify-remote requires HEAD to be pushed to the upstream branch":
+            raise AssertionError(error)
+
+
 def main() -> int:
     assert_repo_local_owner_contract()
     assert_fmt_avoids_managed_cache_lock()
     assert_system_python_contract()
     assert_oversized_policy_fails_closed()
+    assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped()
+    assert_verify_remote_dispatch_wait_does_not_depend_on_local_clock()
+    assert_verify_remote_reuses_existing_matching_full_ci_run()
+    assert_verify_remote_fails_when_branch_advances_after_dispatch()
+    assert_verify_remote_waits_on_pending_full_run_over_stale_deferred_gate()
+    assert_verify_remote_ready_pr_waits_for_full_run_after_stale_deferred_gate()
+    assert_verify_remote_uses_green_full_run_over_stale_deferred_gate()
+    assert_verify_remote_fork_draft_fails_closed()
+    assert_repository_owner_requires_owner_separator()
+    assert_verify_remote_api_error_fails_closed()
+    assert_verify_remote_preflight_rejects_dirty_or_unpushed_head_before_ci()
     print("OK: Rust verification owner self-tests passed.")
     return 0
 

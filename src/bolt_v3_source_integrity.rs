@@ -271,8 +271,23 @@ mod tests {
     // Re-derived after merging current main (#618/#623 strategy source-set
     // state) into the consolidated NT position-sizer branch (#658), unioning the
     // main-side strategy source set with the position-sizer fixture coverage.
+    // main-side shadow-mode trail (unioned on the #621 merge):
+    // Re-derived after adding the TOML-owned shadow-mode submit switch and
+    // preserving decision evidence before skipped NT submits; seeding admission
+    // instruments before asserting no NT submit; not retaining pending strategy
+    // exposure without an NT order; retaining the exit-pending latch on skipped
+    // shadow exits; not consuming live admission capacity while still recording
+    // admission evidence; merging #623's dollar-sizing strategy source roots; the
+    // shadow-mode fail-closed config guard (submit_orders=false forbids
+    // NautilusTrader-managed venue actions); and bringing the archetype config
+    // translator (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs) into the
+    // strategy source set.
+    // PLACEHOLDER (fails loud): merging current main (#621 shadow-submit + #680)
+    // into the kill-switch consolidation (#673) unions both source-set trails
+    // above. The canonical digest must be CI-harvested after the flatten redesign
+    // settles the strategy source set; do not claim green until harvested.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "56daec3fcf35bbf7b46cdab93938780c7daf8e2246d3a68dbc2f901b450f8366";
+        "0000000000000000000000000000000000000000000000000000000000000000";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -289,9 +304,16 @@ mod tests {
     // sizing.
     // Re-derived after grafting #548's Cancelling/Flattening kill-switch state
     // handling into submit-admission forced-reduction admission during the
-    // kill-switch consolidation (#673). CI-computed canonical value.
+    // kill-switch consolidation (#673).
+    // main-side trail (unioned on the #621 merge): re-derived after adding
+    // observed admission decisions for shadow submit skips that must not consume
+    // live capacity, and after merging main's shared submit-admission changes
+    // into the shadow-mode submit switch.
+    // PLACEHOLDER (fails loud): the flatten redesign mutates submit-admission
+    // (forced-reduction path + dispatcher routing), so the canonical digest must
+    // be CI-harvested at the end; do not claim green until harvested.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "a73cfb3279f61c32726ffad89c0e0b42a009c54d67900eb5edc1934cf024ad39";
+        "0000000000000000000000000000000000000000000000000000000000000000";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -401,6 +423,7 @@ mod tests {
             registry_relative_roots(STRATEGY_KEY),
             &[
                 "src/strategies/binary_oracle_edge_taker",
+                "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
                 "src/bolt_v3_book_sizing.rs",
                 "src/bolt_v3_binary_outcome_edge.rs",
                 "src/bolt_v3_executable_cost.rs",

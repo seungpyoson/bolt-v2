@@ -3228,8 +3228,8 @@ mod tests {
             let account = cache
                 .account_owned(&account_id)
                 .expect("seeded account should be present in NT cache");
-            let balance = account
-                .balances()
+            let balances = account.balances();
+            let balance = balances
                 .values()
                 .find(|balance| balance.currency.code.as_str() == "PUSD")
                 .expect("seeded collateral balance should be present in NT cache");

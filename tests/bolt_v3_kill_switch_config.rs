@@ -10,6 +10,7 @@ fn valid_kill_switch_block_without_cancel() -> &'static str {
 enabled = true
 state_path = "state/kill-switch.json"
 max_state_file_bytes = 65536
+daily_realized_loss_limit = "250.00"
 action_retry_interval_ms = 250
 action_retry_timeout_ms = 5000
 mandatory_proof_max_age_ms = 1000
@@ -79,6 +80,7 @@ fn kill_switch_config_is_optional_and_parses_when_present() {
 
     assert!(kill_switch.enabled);
     assert_eq!(kill_switch.state_path, "state/kill-switch.json");
+    assert_eq!(kill_switch.daily_realized_loss_limit, "250.00");
     assert_eq!(
         kill_switch.forced_reduction_policy_sha256,
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -123,6 +125,7 @@ fn enabled_kill_switch_rejects_invalid_runtime_settings() {
 enabled = true
 state_path = ""
 max_state_file_bytes = 0
+daily_realized_loss_limit = "0"
 action_retry_interval_ms = 0
 action_retry_timeout_ms = 0
 mandatory_proof_max_age_ms = 0
@@ -142,6 +145,7 @@ instrument_ids = ["not-an-instrument"]
     for expected in [
         "risk.kill_switch.state_path must be a non-empty relative path",
         "risk.kill_switch.max_state_file_bytes must be positive",
+        "risk.kill_switch.daily_realized_loss_limit must be positive",
         "risk.kill_switch.action_retry_interval_ms must be positive",
         "risk.kill_switch.action_retry_timeout_ms must be positive",
         "risk.kill_switch.mandatory_proof_max_age_ms must be positive",
@@ -158,6 +162,38 @@ instrument_ids = ["not-an-instrument"]
             "expected `{expected}` in errors: {errors:?}"
         );
     }
+}
+
+#[test]
+fn enabled_kill_switch_rejects_non_decimal_daily_realized_loss_limit() {
+    let root: BoltV3RootConfig = toml::from_str(&root_with_kill_switch(
+        r#"
+[risk.kill_switch]
+enabled = true
+state_path = "state/kill_switch.json"
+max_state_file_bytes = 65536
+daily_realized_loss_limit = "not-a-number"
+action_retry_interval_ms = 250
+action_retry_timeout_ms = 5000
+mandatory_proof_max_age_ms = 1000
+manual_reset_evidence_max_age_ms = 60000
+forced_reduction_policy_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+forced_reduction_max_live_order_count = 4
+forced_reduction_max_notional_per_order = "100.00"
+authorized_operator_ids = ["operator-primary"]
+account_ids = ["POLYMARKET-001"]
+instrument_ids = ["BTC-USD.BINANCE"]
+"#,
+    ))
+    .unwrap();
+
+    let errors = validate_root_only(&root);
+
+    assert!(
+        errors.iter().any(|error| error
+            .contains("risk.kill_switch.daily_realized_loss_limit is not a valid decimal string")),
+        "expected decimal-parse error for daily_realized_loss_limit, got: {errors:?}"
+    );
 }
 
 #[test]
@@ -396,4 +432,37 @@ is_quote_quantity = true
             "expected `{expected}` in errors: {errors:?}"
         );
     }
+}
+
+#[test]
+fn enabled_kill_switch_rejects_empty_instrument_scope() {
+    let root: BoltV3RootConfig = toml::from_str(&root_with_kill_switch(
+        r#"
+[risk.kill_switch]
+enabled = true
+state_path = "state/kill-switch.json"
+max_state_file_bytes = 65536
+daily_realized_loss_limit = "250.00"
+action_retry_interval_ms = 250
+action_retry_timeout_ms = 5000
+mandatory_proof_max_age_ms = 1000
+manual_reset_evidence_max_age_ms = 60000
+forced_reduction_policy_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+forced_reduction_max_live_order_count = 4
+forced_reduction_max_notional_per_order = "100.00"
+authorized_operator_ids = ["operator-primary"]
+account_ids = ["POLYMARKET-001"]
+instrument_ids = []
+"#,
+    ))
+    .unwrap();
+
+    let errors = validate_root_only(&root);
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("risk.kill_switch.instrument_ids must not be empty")),
+        "enabled kill switch must reject empty instrument scope: {errors:?}"
+    );
 }

@@ -2277,6 +2277,13 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
                 return command_tokens(token.split("=", 1)[1])
             if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
                 return command_tokens(token[2:])
+            if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+                prefix, suffix = token[1:].split("c", 1)
+                if set(prefix) <= {"m", "M", "p", "P", "l"}:
+                    if suffix:
+                        return command_tokens(suffix)
+                    if index + 1 < len(tokens):
+                        return command_tokens(tokens[index + 1])
             index += 1
         return None
     if executable == "runuser":
@@ -2291,6 +2298,13 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
                 return command_tokens(token.split("=", 1)[1])
             if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
                 return command_tokens(token[2:])
+            if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+                prefix, suffix = token[1:].split("c", 1)
+                if set(prefix) <= {"m", "M", "p", "P", "l"}:
+                    if suffix:
+                        return command_tokens(suffix)
+                    if index + 1 < len(tokens):
+                        return command_tokens(tokens[index + 1])
             if token in {"-u", "--user", "-g", "--group", "-G", "--supp-group", "-s", "--shell"} and index + 1 < len(tokens):
                 index += 2
                 continue
@@ -2300,6 +2314,14 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
             if token.startswith("-"):
                 index += 1
                 continue
+            for command_index in range(index + 1, len(tokens)):
+                candidate = tokens[command_index]
+                if candidate in {"-c", "--command"} and command_index + 1 < len(tokens):
+                    return command_tokens(tokens[command_index + 1])
+                if candidate.startswith("--command="):
+                    return command_tokens(candidate.split("=", 1)[1])
+                if candidate.startswith("-c") and not candidate.startswith("--") and len(candidate) > 2:
+                    return command_tokens(candidate[2:])
             return tokens[index:]
         return None
     starters = {
@@ -2532,6 +2554,13 @@ def flock_inner_tokens(tokens: list[str]) -> list[str] | None:
             return command_tokens(token.split("=", 1)[1])
         if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
             return command_tokens(token[2:])
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            prefix, suffix = token[1:].split("c", 1)
+            if set(prefix) <= {"s", "x", "n", "u", "o", "F"}:
+                if suffix:
+                    return command_tokens(suffix)
+                if index + 1 < len(tokens):
+                    return command_tokens(tokens[index + 1])
         if token in ("-E", "--conflict-exit-code", "-w", "--wait", "--timeout") and index + 1 < len(tokens):
             index += 2
             continue
@@ -2559,8 +2588,13 @@ def flock_command_option_tokens(tokens: list[str]) -> list[str] | None:
             return command_tokens(token.split("=", 1)[1])
         if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
             return command_tokens(token[2:])
-        if token.startswith("-") and not token.startswith("--") and "c" in token[1:] and index + 1 < len(tokens):
-            return command_tokens(tokens[index + 1])
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            prefix, suffix = token[1:].split("c", 1)
+            if set(prefix) <= {"s", "x", "n", "u", "o", "F"}:
+                if suffix:
+                    return command_tokens(suffix)
+                if index + 1 < len(tokens):
+                    return command_tokens(tokens[index + 1])
         index += 1
     return None
 
@@ -4227,9 +4261,22 @@ def zip_archive_operands(tokens: list[str], index: int) -> tuple[str, list[str]]
         if token.startswith(("--temp-path=", "--password=", "--suffixes=", "--output-file=")):
             cursor += 1
             continue
-        if token.startswith(("-b", "-P", "-n", "-O")) and len(token) > 2:
-            cursor += 1
-            continue
+        if token.startswith("-") and not token.startswith("--"):
+            cluster = token[1:]
+            argument_consumed = False
+            for position, flag in enumerate(cluster):
+                if flag not in {"b", "P", "n", "O"}:
+                    continue
+                if position + 1 < len(cluster):
+                    cursor += 1
+                elif cursor + 1 < len(tail):
+                    cursor += 2
+                else:
+                    cursor += 1
+                argument_consumed = True
+                break
+            if argument_consumed:
+                continue
         if token.startswith("-"):
             cursor += 1
             continue
@@ -4298,9 +4345,32 @@ def unzip_extracts_s3_archive_to_active_target(
         if token.startswith(("--exclude=", "--password=")):
             cursor += 1
             continue
-        if token.startswith(("-x", "-P")) and len(token) > 2:
-            cursor += 1
-            continue
+        if token.startswith("-") and not token.startswith("--"):
+            cluster = token[1:]
+            argument_consumed = False
+            for position, flag in enumerate(cluster):
+                if flag == "d":
+                    if position + 1 < len(cluster):
+                        destination = cluster[position + 1 :]
+                        cursor += 1
+                    elif cursor + 1 < len(tail):
+                        destination = tail[cursor + 1]
+                        cursor += 2
+                    else:
+                        cursor += 1
+                    argument_consumed = True
+                    break
+                if flag in {"x", "P"}:
+                    if position + 1 < len(cluster):
+                        cursor += 1
+                    elif cursor + 1 < len(tail):
+                        cursor += 2
+                    else:
+                        cursor += 1
+                    argument_consumed = True
+                    break
+            if argument_consumed:
+                continue
         if token == "--" or token.startswith("-"):
             cursor += 1
             continue
@@ -4832,7 +4902,9 @@ def env_chdir_value(tokens: list[str]) -> str | None:
         if token.startswith("--chdir="):
             return token.split("=", 1)[1]
         if token.startswith("-") and not token.startswith("--") and "C" in token[1:]:
-            suffix = token[1:].split("C", 1)[1]
+            prefix, suffix = token[1:].split("C", 1)
+            if set(prefix) - {"0", "i", "v"}:
+                continue
             if suffix:
                 return suffix
             if index + 1 < command_index:
@@ -4858,7 +4930,9 @@ def sudo_chdir_value(tokens: list[str]) -> str | None:
         if token.startswith("-D") and len(token) > 2:
             return token[2:]
         if token.startswith("-") and not token.startswith("--") and "D" in token[1:]:
-            suffix = token[1:].split("D", 1)[1]
+            prefix, suffix = token[1:].split("D", 1)
+            if set(prefix) - {"A", "b", "E", "e", "H", "i", "K", "k", "l", "n", "P", "S", "s", "V", "v"}:
+                continue
             if suffix:
                 return suffix
             if index + 1 < command_index:

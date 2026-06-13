@@ -1733,6 +1733,10 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
             zip -b /tmp cache.zip target
             aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
         """,
+        "active target zipped with clustered option argument before S3 upload": """
+            zip -qr0b /tmp cache.zip target
+            aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
+        """,
         "s3 archive downloaded locally before active target extraction": """
             aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
             tar -xf cache.tar -C target
@@ -1752,6 +1756,10 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         "s3 zip extraction skips option argument before archive": """
             aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
             unzip -x ignored cache.zip -d target
+        """,
+        "s3 zip extraction handles clustered directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
+            unzip -qd target cache.zip
         """,
         "s3 download moved to active target through mv target-directory option": """
             aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
@@ -1775,6 +1783,9 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         "s3 transfer hidden behind su long command string": """
             su --command="aws s3 cp s3://bolt-v2-active-cache/target.tar target"
         """,
+        "s3 transfer hidden behind su clustered command string": """
+            su -mc "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
         "s3 transfer hidden behind sg command string": """
             sg docker -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
         """,
@@ -1783,6 +1794,18 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         """,
         "s3 transfer hidden behind runuser long command string": """
             runuser --command="aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind runuser user command string": """
+            runuser user -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind flock clustered command string": """
+            flock /tmp/lock -c"aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "env chdir ignores C inside unset option argument": """
+            env -uC -C target aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
+        "sudo chdir ignores D inside user option argument": """
+            sudo -uD -D target aws s3 sync debug s3://bolt-v2-active-cache/target/debug
         """,
         "s3 transfer hidden behind rustup shell command string": """
             rustup run nightly sh -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
@@ -3699,6 +3722,7 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "scripts/raw-find-exec.sh": "#!/usr/bin/env bash\nfind . -name Cargo.toml -exec cargo build \\;\n",
             "scripts/raw-su.sh": "#!/usr/bin/env bash\nsu user -c 'cargo build'\n",
             "scripts/raw-runuser.sh": "#!/usr/bin/env bash\nrunuser -u user -- cargo build\n",
+            "scripts/raw-flock.sh": "#!/usr/bin/env bash\nflock /tmp/lock -ccargo\\ build\n",
             "scripts/multiline-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo build\"\nbash -c \"$CMD\"\n",
             "scripts/multiline-quoted-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo\nbuild --target-dir /tmp/raw\"\nbash -c \"$CMD\"\n",
             "scripts/comment-blind.sh": "# comment with unbalanced quote '\ncargo build\necho 'closing quote'\n",
@@ -3755,6 +3779,8 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"script su raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-runuser.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script runuser raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-flock.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script flock raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/multiline-eval.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script multiline eval raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/multiline-quoted-eval.sh" in error and expected in error for error in repo_errors):

@@ -9649,25 +9649,25 @@ classification = "executable_cost_block_reason_label"
 reason = "Stable structured block-reason label for executable-cost output; it records decision evidence and does not configure runtime behavior."
 
 [[allowed]]
-path = 'src/shadow_pnl.rs'
-kind = 'string'
-literal = '"settlement inconsistency for {}: winning_side {} marks a win but settlement_price {settlement_price} is below entry_price {entry_price}"'
-context = '"settlement inconsistency for {}: winning_side {} marks a win but settlement_price {settlement_price} is below entry_price {entry_price}",'
-classification = 'shadow_pnl_settlement_consistency_diagnostic_template'
-reason = 'Fail-loud diagnostic asserting the settlement winning_side agrees with settlement_price direction relative to entry_price before a would-be trade is scored; error-message template, not a runtime value.'
+path = "src/shadow_pnl.rs"
+kind = "string"
+literal = '''"settlement inconsistency for {}: winning_side {} marks a win but settlement_price {settlement_price} is below entry_price {entry_price}"'''
+context = '''"settlement inconsistency for {}: winning_side {} marks a win but settlement_price {settlement_price} is below entry_price {entry_price}",'''
+classification = "shadow_pnl_settlement_consistency_diagnostic_template"
+reason = "Fail-loud diagnostic asserting the settlement winning_side agrees with settlement_price direction relative to entry_price before a would-be trade is scored; error-message template, not a runtime value."
 
 [[allowed]]
-path = 'src/shadow_pnl.rs'
-kind = 'string'
-literal = '"settlement inconsistency for {}: winning_side {} marks a loss but settlement_price {settlement_price} is above entry_price {entry_price}"'
-context = '"settlement inconsistency for {}: winning_side {} marks a loss but settlement_price {settlement_price} is above entry_price {entry_price}",'
-classification = 'shadow_pnl_settlement_consistency_diagnostic_template'
-reason = 'Fail-loud diagnostic asserting the settlement winning_side agrees with settlement_price direction relative to entry_price before a would-be trade is scored; error-message template, not a runtime value.'
+path = "src/shadow_pnl.rs"
+kind = "string"
+literal = '''"settlement inconsistency for {}: winning_side {} marks a loss but settlement_price {settlement_price} is above entry_price {entry_price}"'''
+context = '''"settlement inconsistency for {}: winning_side {} marks a loss but settlement_price {settlement_price} is above entry_price {entry_price}",'''
+classification = "shadow_pnl_settlement_consistency_diagnostic_template"
+reason = "Fail-loud diagnostic asserting the settlement winning_side agrees with settlement_price direction relative to entry_price before a would-be trade is scored; error-message template, not a runtime value."
 
 [[allowed]]
-path = 'src/shadow_pnl.rs'
-kind = 'string'
-literal = '"duplicate {record_kind} decision evidence for client_order_id {client_order_id} at line {line_number}; cannot disambiguate would-be trades"'
-context = '"duplicate {record_kind} decision evidence for client_order_id {client_order_id} at line {line_number}; cannot disambiguate would-be trades"'
-classification = 'shadow_pnl_duplicate_decision_evidence_diagnostic_template'
-reason = 'Fail-loud diagnostic rejecting a second decision-evidence record for an already-seen client_order_id so would-be trades cannot be silently disambiguated; error-message template, not a runtime value.'
+path = "src/shadow_pnl.rs"
+kind = "string"
+literal = '''"duplicate {record_kind} decision evidence for client_order_id {client_order_id} at line {line_number}; cannot disambiguate would-be trades"'''
+context = '''"duplicate {record_kind} decision evidence for client_order_id {client_order_id} at line {line_number}; cannot disambiguate would-be trades"'''
+classification = "shadow_pnl_duplicate_decision_evidence_diagnostic_template"
+reason = "Fail-loud diagnostic rejecting a second decision-evidence record for an already-seen client_order_id so would-be trades cannot be silently disambiguated; error-message template, not a runtime value."

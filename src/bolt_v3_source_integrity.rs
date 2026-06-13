@@ -278,7 +278,7 @@ mod tests {
     // Re-derived after merging #623's dollar-sizing strategy source roots into
     // the shadow-mode submit switch.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "d23a787360794a654f21590240969beb50746a825a72039e623ecdcc31f6e22b";
+        "d74948aff407b49c031afbecd804414efd1e2b7740b839b191dc4e0dd5a640e9";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

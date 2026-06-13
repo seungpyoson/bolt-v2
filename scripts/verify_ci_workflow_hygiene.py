@@ -4467,6 +4467,12 @@ def sudo_chdir_value(tokens: list[str]) -> str | None:
             return token.split("=", 1)[1]
         if token.startswith("-D") and len(token) > 2:
             return token[2:]
+        if token.startswith("-") and not token.startswith("--") and "D" in token[1:]:
+            suffix = token[1:].split("D", 1)[1]
+            if suffix:
+                return suffix
+            if index + 1 < command_index:
+                return tokens[index + 1]
     return None
 
 

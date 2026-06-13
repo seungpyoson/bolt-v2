@@ -1196,6 +1196,14 @@ def assert_workflow_hygiene_reviewer_regressions() -> None:
         if s3_expected not in errors:
             raise AssertionError(f"env chdir active target context was not rejected: {script!r} -> {errors!r}")
 
+    sudo_chdir_cases = [
+        "sudo -ED target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+    ]
+    for script in sudo_chdir_cases:
+        errors = verifier.raw_rust_storage_errors(script)
+        if s3_expected not in errors:
+            raise AssertionError(f"sudo chdir active target context was not rejected: {script!r} -> {errors!r}")
+
 
 def assert_required_job_indentation_is_actionable() -> None:
     assert_error(

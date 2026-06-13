@@ -444,6 +444,7 @@ jobs:
 
       - name: Resolve nextest fingerprint reuse
         id: reuse
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: >

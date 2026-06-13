@@ -436,11 +436,13 @@ class FakeGitHub:
         jobs_by_run_id: dict[int, dict[str, object]] | None = None,
         artifacts_by_run_id: dict[int, dict[str, object]] | None = None,
         records_by_artifact_id: dict[int, dict[str, object]] | None = None,
+        workflow_bytes: bytes | None = None,
     ) -> None:
         self.runs_pages = runs_pages
         self.jobs_by_run_id = jobs_by_run_id or {}
         self.artifacts_by_run_id = artifacts_by_run_id or {}
         self.records_by_artifact_id = records_by_artifact_id or {}
+        self.workflow_bytes = workflow_bytes
         self.queries: list[tuple[str, dict[str, str] | None]] = []
 
     def json(
@@ -470,6 +472,8 @@ class FakeGitHub:
             artifact_id = int(url.removeprefix("artifact://"))
             return artifact_zip(self.records_by_artifact_id[artifact_id])
         if url.startswith("https://raw.githubusercontent.com/"):
+            if self.workflow_bytes is not None:
+                return self.workflow_bytes
             return (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_bytes()
         raise AssertionError(f"unexpected bytes request {url}")
 
@@ -520,10 +524,6 @@ def assert_unknown_record_schema_fails() -> None:
             "unknown provenance schema",
             ["validate-record", "--config", str(config), "--record", str(record)],
         )
-
-
-def assert_resolve_fingerprint_is_rejected() -> None:
-    assert_fails("resolve-fingerprint is not supported", ["resolve-fingerprint"])
 
 
 def resolve_fingerprint_with_fake(
@@ -664,16 +664,45 @@ def assert_fingerprint_reuse_requires_exact_fingerprint_components() -> None:
         ]
         for fingerprint in variants:
             record = record_with_fingerprint(module, config, fingerprint=fingerprint)
+            artifact_name = fingerprint.replace("nextest-archive-", "nextest-archive-fingerprint-", 1)
             fake = FakeGitHub(
                 runs_pages=[[run_payload()]],
                 artifacts_by_run_id={
-                    RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
+                    RUN_ID: {
+                        "artifacts": [
+                            fingerprint_artifact(id=1, name=artifact_name),
+                            provenance_artifact(id=2),
+                        ]
+                    }
                 },
                 records_by_artifact_id={2: record},
             )
             result = resolve_fingerprint_with_fake(module, config, fake)
             if result.reuse_found is not False:
                 raise AssertionError((fingerprint, result))
+
+
+def assert_fingerprint_reuse_rejects_source_workflow_digest_drift() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        source_workflow_bytes = b"name: CI\n# source workflow bytes differ from current checkout\n"
+        record = record_with_fingerprint(module, config)
+        record["workflow_digest"] = hashlib.sha256(source_workflow_bytes).hexdigest()
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
+            },
+            records_by_artifact_id={2: record},
+            workflow_bytes=source_workflow_bytes,
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if "workflow digest" not in result.reason:
+            raise AssertionError(result)
 
 
 def assert_fingerprint_reuse_malformed_fingerprint_fails_closed() -> None:
@@ -1395,6 +1424,7 @@ def main() -> int:
     assert_fingerprint_reuse_rejects_failed_cancelled_and_wrong_workflow_runs()
     assert_fingerprint_reuse_rejects_ambiguous_and_expired_artifacts()
     assert_fingerprint_reuse_requires_exact_fingerprint_components()
+    assert_fingerprint_reuse_rejects_source_workflow_digest_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()

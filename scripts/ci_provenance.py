@@ -1202,6 +1202,8 @@ def validate_fingerprint_candidate(
             config_path=config_path,
             expected_workflow_digest=expected_workflow_digest,
         )
+        if require_record_digest(record, "workflow_digest") != workflow_file_digest(config):
+            return no_fingerprint_reuse(f"source run {run_id} workflow digest does not match current workflow")
         validate_record_matches_run(record, run)
         record_fingerprint = parse_nextest_fingerprint(
             record.get("nextest_fingerprint"), label="source record"

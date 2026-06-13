@@ -5709,6 +5709,11 @@ def fingerprint_reuse_job_runs_resolver(job_lines: list[str]) -> bool:
     return all(item in text for item in required)
 
 
+def fingerprint_reuse_resolver_uses_bash(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return "id: reuse" in text and "shell: bash" in text
+
+
 def test_shards_skip_on_fingerprint_reuse(job_lines: list[str]) -> bool:
     return NEXTEST_REUSE_MISS_EXPR in uncommented_text(job_lines)
 
@@ -6476,6 +6481,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest-fingerprint-reuse must download current nextest fingerprint fail-closed")
         if not fingerprint_reuse_job_runs_resolver(reuse_lines):
             errors.append("nextest-fingerprint-reuse must run ci_provenance.py resolve-fingerprint")
+        if not fingerprint_reuse_resolver_uses_bash(reuse_lines):
+            errors.append("nextest-fingerprint-reuse resolver must use bash")
 
     if "test-shards" in jobs:
         test_shards_needs = extract_needs(jobs["test-shards"])

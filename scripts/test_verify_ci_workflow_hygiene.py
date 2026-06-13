@@ -476,6 +476,7 @@ jobs:
           merge-multiple: true
       - name: Resolve nextest fingerprint reuse
         id: reuse
+        shell: bash
         run: >
           python3 scripts/ci_provenance.py resolve-fingerprint
           --current-run-id "${{ github.run_id }}"
@@ -1073,6 +1074,15 @@ def replace_once_after(text: str, anchor: str, old: str, new: str) -> str:
     before = text[:index]
     after = text[index:]
     return before + replace_once(after, old, new)
+
+
+def without_once_after(text: str, anchor: str, old: str) -> str:
+    index = text.find(anchor)
+    if index == -1:
+        raise AssertionError(f"fixture anchor not found: {anchor!r}")
+    before = text[:index]
+    after = text[index:]
+    return before + after.replace(old, "", 1)
 
 
 def repo_workflow_text(path: str) -> str:
@@ -5081,6 +5091,14 @@ def main() -> int:
             BASE_WORKFLOW,
             "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]",
             "  test:\n    name: test\n    needs: ci-policy",
+        ),
+    )
+    assert_error(
+        "nextest-fingerprint-reuse resolver must use bash",
+        without_once_after(
+            BASE_WORKFLOW,
+            "      - name: Resolve nextest fingerprint reuse",
+            "        shell: bash\n",
         ),
     )
     assert_error(

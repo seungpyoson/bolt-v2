@@ -935,9 +935,9 @@ fn submit_orders_false_surfaces_admission_rejection_and_clears_pending_entry() {
     strategy.config.submit_orders = false;
     register_test_strategy_with_active_instruments(&mut strategy);
 
-    let error = strategy
-        .try_submit_entry_order(1_200)
-        .expect_err("a shadow admission rejection must still surface as Err via the non-consuming path");
+    let error = strategy.try_submit_entry_order(1_200).expect_err(
+        "a shadow admission rejection must still surface as Err via the non-consuming path",
+    );
     assert!(
         error.to_string().contains("notional cap is exceeded"),
         "{error:#}"

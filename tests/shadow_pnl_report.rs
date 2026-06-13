@@ -423,7 +423,9 @@ fn shadow_pnl_report_rejects_duplicate_exact_market_id_settlements() {
     assert!(!output.status.success(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
     assert!(
-        stderr.contains("ambiguous settlement for client-order-dup-market: duplicate market_id match"),
+        stderr.contains(
+            "ambiguous settlement for client-order-dup-market: duplicate market_id match"
+        ),
         "{stderr}"
     );
 }

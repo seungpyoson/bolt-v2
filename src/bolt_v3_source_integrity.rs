@@ -276,9 +276,9 @@ mod tests {
     // Re-derived after shadow skipped submits stopped consuming live admission
     // capacity while still recording admission evidence.
     // Re-derived after merging #623's dollar-sizing strategy source roots into
-    // the shadow-mode submit switch (value pending exact-head CI re-derivation).
+    // the shadow-mode submit switch.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "1ad5babbee2a00448759ed7bf6dc6c7b3a4412f06c9ee73b1ad32ecd30579ef6";
+        "d23a787360794a654f21590240969beb50746a825a72039e623ecdcc31f6e22b";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -294,7 +294,7 @@ mod tests {
     // Re-derived after merging main's shared submit-admission changes into the
     // shadow-mode submit switch.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "a599017321ab11710d598bde5b3da95f5a43f861744f3ff9f0c8a6f78d30ef96";
+        "bafab7b0646c9bcf78327a099d819acaad168ef9f2ed29d524e90c3572e91d8e";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

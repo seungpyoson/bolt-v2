@@ -388,7 +388,7 @@ pub fn normalize_jsonl_snapshot_deltas(
         );
         let photos = groups
             .remove(instrument_key)
-            .expect("group order entry has a populated group");
+            .context("internal: group_order entry missing from groups map")?;
 
         let provenance = RowProvenance {
             accepted,
@@ -635,8 +635,12 @@ fn expand_photos(
                 ));
             }
         }
-        // Close the photo's book event on its final row.
-        let last = rows.last_mut().expect("non-empty photo emitted rows");
+        // Close the photo's book event on its final row. A non-empty photo
+        // always pushes at least one row above, so an empty `rows` here is an
+        // internal invariant breach: fail loud instead of panicking.
+        let last = rows
+            .last_mut()
+            .context("internal: non-empty photo emitted no rows")?;
         last.flags |= last_flag;
     }
 

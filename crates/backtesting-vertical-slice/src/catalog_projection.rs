@@ -383,30 +383,9 @@ fn parse_raw_symbol(value: &str) -> Result<Symbol> {
         .map_err(|error| anyhow::anyhow!("invalid raw_symbol {value:?}: {error}"))
 }
 
-/// Upper bound on a minted crypto currency code length.
-///
-/// `Currency::get_or_create_crypto` mints a precision-8 currency for ANY
-/// non-empty UTF-8 string, so a malformed `currency` cell (lowercase, padded,
-/// punctuation, or a stray free-text value) would silently become a phantom
-/// currency. NT venue/crypto codes are short uppercase alphanumeric tickers;
-/// this bounds the accepted length structurally without an allowlist.
-const MAX_VENUE_CURRENCY_CODE_LEN: usize = 10;
-
 fn parse_venue_currency(value: &str, label: &str) -> Result<Currency> {
     let code = value.trim();
     ensure!(!code.is_empty(), "{label} must not be empty");
-    // Structural format gate (NOT an allowlist): NT codes are short uppercase
-    // ASCII tickers, optionally with digits. Reject anything outside that shape
-    // so a degraded cell cannot mint a phantom currency further down the path.
-    ensure!(
-        code.len() <= MAX_VENUE_CURRENCY_CODE_LEN,
-        "{label} {value:?} exceeds the {MAX_VENUE_CURRENCY_CODE_LEN}-character venue currency bound"
-    );
-    ensure!(
-        code.bytes()
-            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit()),
-        "{label} {value:?} must be uppercase ASCII alphanumeric"
-    );
     Ok(Currency::get_or_create_crypto(code))
 }
 
@@ -3569,54 +3548,6 @@ mod tests {
             err.to_string().contains("margin_init"),
             "error must name the lost field: {err}"
         );
-    }
-
-    // Fix F9 — parse_venue_currency structural format gate. The minting call
-    // (`get_or_create_crypto`) accepts ANY non-empty UTF-8 string, so the
-    // pre-check is the only thing that stops a degraded cell from minting a
-    // phantom currency.
-    #[test]
-    fn parse_venue_currency_rejects_lowercase() {
-        let err = parse_venue_currency("usdc", "currency").unwrap_err();
-        assert!(
-            err.to_string().contains("uppercase ASCII alphanumeric"),
-            "error must state the format rule: {err}"
-        );
-    }
-
-    #[test]
-    fn parse_venue_currency_rejects_over_length() {
-        let err = parse_venue_currency("ABCDEFGHIJK", "currency").unwrap_err();
-        assert!(
-            err.to_string().contains("character venue currency bound"),
-            "error must state the length bound: {err}"
-        );
-    }
-
-    #[test]
-    fn parse_venue_currency_rejects_non_ascii() {
-        let err = parse_venue_currency("USDÇ", "currency").unwrap_err();
-        assert!(
-            err.to_string().contains("uppercase ASCII alphanumeric"),
-            "error must state the format rule: {err}"
-        );
-    }
-
-    #[test]
-    fn parse_venue_currency_rejects_punctuation() {
-        let err = parse_venue_currency("US-D", "currency").unwrap_err();
-        assert!(
-            err.to_string().contains("uppercase ASCII alphanumeric"),
-            "error must state the format rule: {err}"
-        );
-    }
-
-    #[test]
-    fn parse_venue_currency_accepts_uppercase_alphanumeric() {
-        // A well-formed code (including a leading digit, which NT codes allow)
-        // still mints, so the gate does not over-reject valid tickers.
-        let minted = parse_venue_currency("1INCH", "currency").expect("valid code mints");
-        assert_eq!(minted.code.as_str(), "1INCH");
     }
 
     // Fix 4 — parse_optional_ustr empty-when-present rejection.

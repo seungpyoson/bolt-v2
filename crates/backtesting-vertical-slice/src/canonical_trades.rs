@@ -1005,6 +1005,7 @@ pub fn normalize_registered_bar_converter(
                 csv_text,
                 capture_time_nanos,
                 ingest_run_id,
+                super::canonical_bars::BAR_TRANSFORM_IDENTITY,
             )
         }
         SourceAdapterKind::CsvNativeTrades => {
@@ -1156,7 +1157,7 @@ pub fn normalize_registered_tar_order_book_delta_converter(
     }
 }
 
-fn column_index(header_columns: &[String], column_name: &str) -> Result<usize> {
+pub(crate) fn column_index(header_columns: &[String], column_name: &str) -> Result<usize> {
     header_columns
         .iter()
         .position(|column| column == column_name)

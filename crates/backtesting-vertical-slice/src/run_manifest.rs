@@ -3990,6 +3990,39 @@ mod tests {
     }
 
     #[test]
+    fn trade_bar_replay_rejects_mixed_input_containing_order_book_delta() {
+        // The per-input guard loop inside ensure_catalog_inputs_match_fidelity
+        // must reject any non-{Bar,TradeTick,InstrumentStatus,InstrumentClose}
+        // entry even when the mandatory Bar is present.  Previously the only
+        // tested path was "no Bar at all" (trade_bar_replay_rejects_when_no_bar);
+        // that test cannot exercise the per-input loop.  This test supplies:
+        //   input[0] = Bar         (valid, satisfies the "must have Bar" check)
+        //   input[1] = OrderBookDelta (invalid under TradeBarReplay)
+        // and asserts that the second input triggers the DataTypeFidelityMismatch
+        // on "OrderBookDelta", not on "Bar".
+        let mut manifest = valid_manifest();
+        let bar_input = ManifestCatalogInput {
+            data_type: "Bar".to_string(),
+            ..manifest.catalog_inputs[0].clone()
+        };
+        let delta_input = ManifestCatalogInput {
+            data_type: "OrderBookDelta".to_string(),
+            ..manifest.catalog_inputs[0].clone()
+        };
+        manifest.catalog_inputs = vec![bar_input, delta_input];
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::TradeBarReplay;
+
+        assert_eq!(
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::DataTypeFidelityMismatch {
+                data_type: "OrderBookDelta".to_string(),
+                fidelity_class: SourceProofFidelityClass::TradeBarReplay,
+            }
+        );
+    }
+
+    #[test]
     fn data_config_maps_configured_multi_instrument_ids() {
         let mut manifest = valid_manifest();
         manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();

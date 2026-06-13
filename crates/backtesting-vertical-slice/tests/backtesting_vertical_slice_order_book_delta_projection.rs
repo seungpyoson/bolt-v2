@@ -107,7 +107,14 @@ fn table_with_rows(rows: Vec<CanonicalOrderBookDeltaRow>) -> CanonicalOrderBookD
 }
 
 /// One snapshot expansion (Clear + 2 bid/ask Adds) followed by one standalone
-/// single-level Update.
+/// single-level Update and one standalone single-level Delete.
+///
+/// The Delete row (sequence 4) is included so that Fix 1 (action assertion for
+/// UPDATE/DELETE) and Fix 2 (DELETE branch coverage) are both exercised by the
+/// shared round-trip fixture.  DELETE carries a non-zero size in this fixture;
+/// the canonical validation intentionally skips the positive-size check for
+/// DELETE (level-removal may carry size 0), but a non-zero value is also valid
+/// and avoids coupling the round-trip fixture to that edge case.
 fn snapshot_then_delta_table() -> CanonicalOrderBookDeltasTable {
     let snapshot_flags = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
     let last = RecordFlag::F_LAST as u8;
@@ -149,6 +156,18 @@ fn snapshot_then_delta_table() -> CanonicalOrderBookDeltasTable {
             "5",
             mbp | last,
         ),
+        // Sequence 4: a standalone DELETE removes the sell-side level.  This
+        // row exercises both the DELETE validation branch and the
+        // DELETE -> BookAction::Delete conversion mapping in the round-trip.
+        delta_row(
+            4,
+            BASE_EVENT_TIME + 2,
+            DeltaAction::Delete,
+            DeltaSide::Sell.as_str(),
+            "0.51",
+            "12",
+            mbp | last,
+        ),
     ];
     table_with_rows(rows)
 }
@@ -180,9 +199,24 @@ fn deltas_round_trip_through_nt_catalog() {
         assert_eq!(delta.sequence, row.sequence);
         assert_eq!(delta.flags, row.flags);
         assert_eq!(delta.ts_event.as_u64(), row.event_time as u64);
-        if row.action == DeltaAction::Clear.as_str() {
-            assert_eq!(delta.action, BookAction::Clear);
+        // Assert the round-tripped BookAction for every row — including
+        // UPDATE and DELETE — so a wrong action mapping cannot survive.
+        let expected_action = if row.action == DeltaAction::Clear.as_str() {
+            BookAction::Clear
+        } else if row.action == DeltaAction::Add.as_str() {
+            BookAction::Add
+        } else if row.action == DeltaAction::Update.as_str() {
+            BookAction::Update
         } else {
+            // DeltaAction::Delete
+            BookAction::Delete
+        };
+        assert_eq!(
+            delta.action, expected_action,
+            "sequence {}: action mismatch (source {:?})",
+            row.sequence, row.action
+        );
+        if row.action != DeltaAction::Clear.as_str() {
             // Compare numerically: `Price`/`Quantity` Display renders at the
             // instrument precision (trailing zeros), so compare the
             // round-tripped value against the source parsed at the same scale.

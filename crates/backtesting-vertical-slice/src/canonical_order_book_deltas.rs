@@ -193,7 +193,10 @@ pub enum DeltaInstrumentIdentities {
 impl DeltaInstrumentIdentities {
     /// Resolve the identity for one photo, given the configured instrument-key
     /// value (`None` for the single-instrument shape).
-    fn resolve(&self, instrument_key: Option<&str>) -> Result<&CanonicalInstrumentIdentity> {
+    pub(crate) fn resolve(
+        &self,
+        instrument_key: Option<&str>,
+    ) -> Result<&CanonicalInstrumentIdentity> {
         match self {
             Self::Single(identity) => {
                 ensure!(
@@ -214,11 +217,16 @@ impl DeltaInstrumentIdentities {
     }
 }
 
-/// Lowercase SHA-256 hex of the order-book-delta transform identity.
+/// Lowercase SHA-256 hex of the given transform identity string.
+///
+/// The caller selects the identity for the adapter being used (e.g.
+/// [`DELTAS_TRANSFORM_IDENTITY`] for the JSONL snapshot adapter). Later
+/// adapters (tar, parquet) pass their own identity constants so every
+/// adapter family stamps a distinct, correct `transform_hash`.
 #[must_use]
-pub fn delta_transform_hash() -> String {
+pub fn delta_transform_hash(identity: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(DELTAS_TRANSFORM_IDENTITY.as_bytes());
+    hasher.update(identity.as_bytes());
     hex::encode(hasher.finalize())
 }
 
@@ -412,6 +420,20 @@ fn validate_snapshot_mapping<'a>(
             "converter deltas.instrument_key.key_field must not be empty when set"
         );
     }
+    if let Some(filter) = &mapping.instrument_key.exclusion_filter {
+        for needle in &filter.exclude_if_contains {
+            ensure!(
+                !needle.trim().is_empty(),
+                "converter deltas.instrument_key.exclusion_filter.exclude_if_contains must not contain empty needles"
+            );
+        }
+        for prefix in &filter.exclude_if_prefix {
+            ensure!(
+                !prefix.trim().is_empty(),
+                "converter deltas.instrument_key.exclusion_filter.exclude_if_prefix must not contain empty prefixes"
+            );
+        }
+    }
     Ok(SnapshotFields {
         bids_field,
         asks_field,
@@ -527,7 +549,7 @@ fn expand_groups_into_tables(
     );
 
     let canonical_instrument_key_prefix = format!("{}/{}", accepted.venue, accepted.product_family);
-    let transform_hash = delta_transform_hash();
+    let transform_hash = delta_transform_hash(DELTAS_TRANSFORM_IDENTITY);
 
     let mut tables = Vec::with_capacity(accumulator.order.len());
     for instrument_key in &accumulator.order {
@@ -805,6 +827,12 @@ fn expand_photos(
         "instrument {:?} yielded no delta rows",
         provenance.identity.instrument_id
     );
+    // `sequence` and `source_sequence` are both set to the converter-assigned
+    // dense per-instrument ordinal (0, 1, 2, …). `source_sequence` does NOT
+    // carry a venue-native sequence number — periodic-full-snapshot objects
+    // carry no per-row native identity. The field is populated so downstream
+    // readers can reference a stable within-table row index without treating
+    // it as a wire-derived identifier.
     for (sequence, row) in rows.iter_mut().enumerate() {
         let sequence = sequence as u64;
         row.sequence = sequence;
@@ -816,9 +844,11 @@ fn expand_photos(
 /// Build one canonical delta row from the per-table [`RowProvenance`] and the
 /// row's [`RowPayload`].
 ///
-/// `sequence` / `source_sequence` are assigned by the caller after expansion and
-/// collapse; this constructor leaves `sequence` at `0` and `source_sequence` at
-/// `None`.
+/// `sequence` and `source_sequence` are assigned by [`expand_photos`] after
+/// expansion and collapse. Both are set to the converter-assigned dense
+/// per-instrument ordinal; `source_sequence` is NOT a venue-native sequence
+/// number (periodic-full-snapshot objects carry no per-row wire identity).
+/// This constructor leaves `sequence` at `0` and `source_sequence` at `None`.
 fn make_row(
     provenance: &RowProvenance<'_>,
     payload: &RowPayload<'_>,
@@ -1087,7 +1117,10 @@ table_families = ["order_book_snapshot_deltas"]
             "testvenue/prediction-market/BASEQUOTE"
         );
         assert_eq!(table.rows[0].payload_hash, OBJECT_SHA256);
-        assert_eq!(table.rows[0].transform_hash, delta_transform_hash());
+        assert_eq!(
+            table.rows[0].transform_hash,
+            delta_transform_hash(DELTAS_TRANSFORM_IDENTITY)
+        );
         assert_eq!(
             table.rows[0].nt_instrument_id.as_deref(),
             Some("BASEQUOTE.TESTVENUE")
@@ -1407,5 +1440,219 @@ table_families = ["order_book_snapshot_deltas"]
         )
         .expect_err("an archive with no in-scope photos must fail loud");
         assert!(err.to_string().contains("snapshot tar archive"), "{err}");
+    }
+
+    // ── Fix 1: exclusion-filter empty-needle validation ───────────────────────
+
+    #[test]
+    fn rejects_empty_exclude_if_contains_needle() {
+        let accepted = accepted_dataset();
+        let filter = InstrumentExclusionFilter {
+            exclude_if_contains: vec!["".to_string()],
+            exclude_if_prefix: vec![],
+        };
+        let jsonl = "{\"coin\":\"AAA\",\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &DeltaInstrumentIdentities::Keyed(BTreeMap::from([(
+                "AAA".to_string(),
+                identity("BASE"),
+            )])),
+            &keyed_mapping(Some(filter)),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("empty exclude_if_contains needle must be rejected");
+        assert!(
+            err.to_string()
+                .contains("exclusion_filter.exclude_if_contains must not contain empty needles"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_exclude_if_prefix_needle() {
+        let accepted = accepted_dataset();
+        let filter = InstrumentExclusionFilter {
+            exclude_if_contains: vec![],
+            exclude_if_prefix: vec!["".to_string()],
+        };
+        let jsonl = "{\"coin\":\"AAA\",\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &DeltaInstrumentIdentities::Keyed(BTreeMap::from([(
+                "AAA".to_string(),
+                identity("BASE"),
+            )])),
+            &keyed_mapping(Some(filter)),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("empty exclude_if_prefix needle must be rejected");
+        assert!(
+            err.to_string()
+                .contains("exclusion_filter.exclude_if_prefix must not contain empty prefixes"),
+            "{err}"
+        );
+    }
+
+    // ── Fix 2: missing / non-array side-field negative tests ─────────────────
+
+    #[test]
+    fn rejects_missing_bids_side_field() {
+        let accepted = accepted_dataset();
+        // Photo has no "bids" key at all.
+        let jsonl = "{\"time\":1700000000000,\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &single_identity(),
+            &single_mapping(),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("missing bids field must be rejected");
+        assert!(
+            err.to_string().contains("missing side field"),
+            "expected 'missing side field' in: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_array_bids_side_field() {
+        let accepted = accepted_dataset();
+        // "bids" is a string, not an array.
+        let jsonl = "{\"time\":1700000000000,\"bids\":\"not-an-array\",\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &single_identity(),
+            &single_mapping(),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("non-array bids field must be rejected");
+        assert!(
+            err.to_string().contains("is not an array"),
+            "expected 'is not an array' in: {err}"
+        );
+    }
+
+    // ── Fix 3: JSON-parse surface negative tests ──────────────────────────────
+
+    #[test]
+    fn rejects_malformed_json_line() {
+        let accepted = accepted_dataset();
+        let jsonl = "not valid json\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &single_identity(),
+            &single_mapping(),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("malformed JSON must be rejected");
+        assert!(
+            err.to_string().contains("malformed snapshot JSON"),
+            "expected 'malformed snapshot JSON' in: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_missing_event_time_field() {
+        let accepted = accepted_dataset();
+        // Photo is valid JSON but has no "time" key.
+        let jsonl = "{\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &single_identity(),
+            &single_mapping(),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("missing event time field must be rejected");
+        assert!(
+            err.to_string().contains("missing event time field"),
+            "expected 'missing event time field' in: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_missing_instrument_key_field_in_keyed_mode() {
+        let accepted = accepted_dataset();
+        let identities = DeltaInstrumentIdentities::Keyed(BTreeMap::from([(
+            "AAA".to_string(),
+            identity("BASE"),
+        )]));
+        // Photo has no "coin" key; keyed mode requires it.
+        let jsonl = "{\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let err = normalize_jsonl_snapshot_deltas(
+            &accepted,
+            &identities,
+            &keyed_mapping(None),
+            jsonl,
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("missing instrument key field must be rejected in keyed mode");
+        assert!(
+            err.to_string()
+                .contains("missing string instrument key field"),
+            "expected 'missing string instrument key field' in: {err}"
+        );
+    }
+
+    // ── Fix 4: DeltaInstrumentIdentities::resolve mismatch negative tests ────
+
+    #[test]
+    fn rejects_non_none_key_with_single_identity() {
+        let identity_single = single_identity();
+        let err = identity_single
+            .resolve(Some("AAA"))
+            .expect_err("Single identity given non-None key must fail");
+        assert!(
+            err.to_string()
+                .contains("single-instrument identities cannot resolve instrument key"),
+            "expected mismatch message in: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_none_key_with_keyed_identity() {
+        let identities = DeltaInstrumentIdentities::Keyed(BTreeMap::from([(
+            "AAA".to_string(),
+            identity("BASE"),
+        )]));
+        // Passing None simulates "no key_field configured" for a Keyed shape.
+        let err = identities
+            .resolve(None)
+            .expect_err("Keyed identity given None key must fail");
+        assert!(
+            err.to_string()
+                .contains("keyed instrument identities require a configured key_field"),
+            "expected key_field message in: {err}"
+        );
+    }
+
+    // ── Fix 6: transform_hash pinning test ────────────────────────────────────
+
+    /// Pin the JSONL snapshot adapter's `transform_hash` to its exact SHA-256
+    /// hex. Any change to [`DELTAS_TRANSFORM_IDENTITY`] will break this test,
+    /// which is intentional: the identity is part of the provenance contract and
+    /// must be changed deliberately.
+    #[test]
+    fn jsonl_snapshot_delta_transform_hash_is_stable() {
+        // SHA-256("jsonl-snapshot-deltas-to-canonical-order-book-deltas.v1")
+        let expected = "3a06800b8fb1971b991255cde14c031dedb02de2fe16daf3d08af9cc6b0882f7";
+        assert_eq!(
+            delta_transform_hash(DELTAS_TRANSFORM_IDENTITY),
+            expected,
+            "DELTAS_TRANSFORM_IDENTITY hash changed — update the expected value \
+             and bump the transform version if this is intentional"
+        );
     }
 }

@@ -26,7 +26,7 @@ impl LossHaltReason {
 pub struct LossGovernorPolicy {
     pub max_snapshot_age_ns: u64,
     pub max_per_trade_loss: Option<Decimal>,
-    pub max_daily_loss: Option<Decimal>,
+    pub max_session_loss: Option<Decimal>,
     pub max_rolling_loss: Option<Decimal>,
     pub max_drawdown: Option<Decimal>,
 }
@@ -70,7 +70,7 @@ pub fn evaluate_loss_admission(
         }
         _ => {}
     }
-    match (policy.max_daily_loss, snapshot.daily_pnl) {
+    match (policy.max_session_loss, snapshot.daily_pnl) {
         (Some(limit), Some(pnl)) if loss_breaches(pnl, limit) => {
             halt_reasons.push(LossHaltReason::DailyLossLimit);
         }
@@ -117,7 +117,7 @@ fn snapshot_is_stale(policy: &LossGovernorPolicy, snapshot: &LossSnapshot, now_n
     }
 
     (policy.max_per_trade_loss.is_some() && snapshot.per_trade_pnl.is_none())
-        || (policy.max_daily_loss.is_some() && snapshot.daily_pnl.is_none())
+        || (policy.max_session_loss.is_some() && snapshot.daily_pnl.is_none())
         || (policy.max_rolling_loss.is_some() && snapshot.rolling_pnl.is_none())
         || (policy.max_drawdown.is_some()
             && (snapshot.current_equity.is_none() || snapshot.peak_equity.is_none()))
@@ -141,7 +141,7 @@ mod tests {
         LossGovernorPolicy {
             max_snapshot_age_ns: 1_000,
             max_per_trade_loss: Some(Decimal::new(10, 0)),
-            max_daily_loss: None,
+            max_session_loss: None,
             max_rolling_loss: None,
             max_drawdown: None,
         }
@@ -195,7 +195,7 @@ mod tests {
     fn daily_loss_breach_rejects_admission() {
         let mut policy = policy();
         policy.max_per_trade_loss = None;
-        policy.max_daily_loss = Some(Decimal::new(25, 0));
+        policy.max_session_loss = Some(Decimal::new(25, 0));
 
         let mut snapshot = snapshot();
         snapshot.per_trade_pnl = None;
@@ -212,7 +212,7 @@ mod tests {
     fn stale_missing_or_unattributed_snapshot_fails_closed() {
         let mut policy = policy();
         policy.max_per_trade_loss = None;
-        policy.max_daily_loss = Some(Decimal::new(25, 0));
+        policy.max_session_loss = Some(Decimal::new(25, 0));
 
         let mut missing_daily = snapshot();
         missing_daily.per_trade_pnl = None;
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn fresh_below_limit_snapshot_accepts_admission() {
         let mut policy = policy();
-        policy.max_daily_loss = Some(Decimal::new(25, 0));
+        policy.max_session_loss = Some(Decimal::new(25, 0));
 
         let mut snapshot = snapshot();
         snapshot.per_trade_pnl = Some(Decimal::new(-9, 0));
@@ -304,7 +304,7 @@ mod tests {
         let policy = LossGovernorPolicy {
             max_snapshot_age_ns: 1_000,
             max_per_trade_loss: Some(Decimal::new(10, 0)),
-            max_daily_loss: Some(Decimal::new(25, 0)),
+            max_session_loss: Some(Decimal::new(25, 0)),
             max_rolling_loss: Some(Decimal::new(30, 0)),
             max_drawdown: Some(Decimal::new(40, 0)),
         };
@@ -350,7 +350,7 @@ mod tests {
         let policy = LossGovernorPolicy {
             max_snapshot_age_ns: 1_000,
             max_per_trade_loss: Some(Decimal::new(10, 0)),
-            max_daily_loss: Some(Decimal::new(25, 0)),
+            max_session_loss: Some(Decimal::new(25, 0)),
             max_rolling_loss: Some(Decimal::new(30, 0)),
             max_drawdown: Some(Decimal::new(40, 0)),
         };

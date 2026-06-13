@@ -199,7 +199,7 @@ pub struct LossGovernorBlock {
     pub on_untrusted_snapshot_market_exit: Option<LossGovernorMarketExitAction>,
     pub recovery_mode: Option<LossGovernorRecoveryMode>,
     pub max_per_trade_loss: Option<String>,
-    pub max_daily_loss: Option<String>,
+    pub max_session_loss: Option<String>,
     pub max_rolling_loss: Option<String>,
     pub max_drawdown: Option<String>,
 }

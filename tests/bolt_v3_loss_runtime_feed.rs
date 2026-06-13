@@ -97,7 +97,7 @@ fn rolling_window_advances_from_portfolio_pnl_deltas_and_evicts_on_heartbeat() {
         LossGovernorPolicy {
             max_snapshot_age_ns: 1_000,
             max_per_trade_loss: Some(Decimal::new(10, 0)),
-            max_daily_loss: Some(Decimal::new(100, 0)),
+            max_session_loss: Some(Decimal::new(100, 0)),
             max_rolling_loss: Some(Decimal::new(30, 0)),
             max_drawdown: Some(Decimal::new(100, 0)),
         },
@@ -170,7 +170,7 @@ fn stale_peak_timestamp_does_not_make_fresh_portfolio_snapshot_stale() {
         LossGovernorPolicy {
             max_snapshot_age_ns: 100,
             max_per_trade_loss: Some(Decimal::new(10, 0)),
-            max_daily_loss: Some(Decimal::new(25, 0)),
+            max_session_loss: Some(Decimal::new(25, 0)),
             max_rolling_loss: Some(Decimal::new(30, 0)),
             max_drawdown: Some(Decimal::new(100, 0)),
         },
@@ -322,7 +322,7 @@ fn loss_policy() -> LossGovernorPolicy {
     LossGovernorPolicy {
         max_snapshot_age_ns: 1_000,
         max_per_trade_loss: Some(Decimal::new(10, 0)),
-        max_daily_loss: Some(Decimal::new(25, 0)),
+        max_session_loss: Some(Decimal::new(25, 0)),
         max_rolling_loss: Some(Decimal::new(30, 0)),
         max_drawdown: Some(Decimal::new(40, 0)),
     }

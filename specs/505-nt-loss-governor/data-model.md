@@ -9,7 +9,7 @@ Fields:
 - `max_snapshot_age_ns`: maximum accepted age of NT-derived facts.
 - `[risk.loss_governor].rolling_window_ns`: config-owned rolling-window length for the live NT event feed.
 - `max_per_trade_loss`: configured loss threshold for one trade.
-- `max_daily_loss`: configured session/day loss threshold.
+- `max_session_loss`: configured session/day loss threshold.
 - `max_rolling_loss`: configured rolling-window loss threshold.
 - `max_drawdown`: configured drawdown threshold from peak equity to current equity.
 

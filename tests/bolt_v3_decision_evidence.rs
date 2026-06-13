@@ -333,7 +333,7 @@ fn latest_entry_decision_evidence_chain_rejects_cross_record_field_mismatches() 
 }
 
 #[test]
-fn latest_entry_decision_evidence_chain_rejects_stale_v5_before_admission_payload_parse() {
+fn latest_entry_decision_evidence_chain_rejects_legacy_schema_before_admission_payload_parse() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("decision-evidence.jsonl");
     let mut lines = sample_entry_decision_evidence_lines();
@@ -345,15 +345,15 @@ fn latest_entry_decision_evidence_chain_rejects_stale_v5_before_admission_payloa
     write_decision_evidence_lines(&evidence_path, &lines);
 
     let error = read_latest_entry_decision_evidence_chain(&evidence_path, 100_000)
-        .expect_err("stale v5 decision evidence should fail closed before payload parsing");
+        .expect_err("legacy decision evidence should fail closed before payload parsing");
     let rendered = format!("{error:#}");
     assert!(
         rendered.contains("schema_version mismatch"),
-        "stale v5 should fail on envelope schema, got: {rendered}"
+        "legacy schema should fail on envelope schema, got: {rendered}"
     );
     assert!(
         !rendered.contains("execution_client_id"),
-        "stale v5 should not reach current admission payload parsing, got: {rendered}"
+        "legacy schema should not reach current admission payload parsing, got: {rendered}"
     );
 }
 

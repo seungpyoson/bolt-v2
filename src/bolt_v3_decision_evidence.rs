@@ -20,7 +20,7 @@ use crate::bolt_v3_realized_volatility::{
     RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 9;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 10;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";
@@ -32,6 +32,7 @@ pub const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
 const BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";
 const BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND: &str = "submit_reservation_metadata";
 const BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND: &str = "submit_reservation_fill";
+const PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 9;
 const SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY: &str = "prediction_market_binary";
 const SUBMIT_RESERVATION_METADATA_SIDE_BUY: &str = "buy";
 const SUBMIT_RESERVATION_METADATA_SIDE_SELL: &str = "sell";
@@ -638,6 +639,9 @@ pub fn read_latest_entry_decision_evidence_chain(
             serde_json::from_slice(line).with_context(|| {
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
+        if is_pre_position_sizer_recovery_non_recovery_record(&header) {
+            continue;
+        }
         match header.kind.as_str() {
             "strategy_input_snapshot" => {
                 header.validate(
@@ -947,6 +951,19 @@ pub fn read_submit_reservation_recovery_evidence(
     Ok(BoltV3SubmitReservationRecoveryEvidence {
         metadata_by_client_order_id: recovered,
     })
+}
+
+fn is_pre_position_sizer_recovery_non_recovery_record(
+    header: &DecisionEvidenceEnvelopeHeader,
+) -> bool {
+    header.schema_version == PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION
+        && matches!(
+            header.kind.as_str(),
+            BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND
+                | BOLT_V3_ORDER_INTENT_RECORD_KIND
+                | BOLT_V3_ADMISSION_DECISION_RECORD_KIND
+                | BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND
+        )
 }
 
 fn open_regular_decision_evidence_file(path: &Path) -> std::io::Result<fs::File> {

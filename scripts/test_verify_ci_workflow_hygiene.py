@@ -19,7 +19,7 @@ VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 SYNC_CI_DEBUG_SSH_PATH = REPO_ROOT / "scripts" / "sync_ci_debug_ssh_secret.py"
 DEBUG_WORKFLOW_PATH = ".github/workflows/ci-runner-debug.yml"
 SSH_RUNNER_ACTION = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
-GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]"
+GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]"
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
@@ -27,6 +27,98 @@ EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.no-mistakes.yaml'",
     "'scripts/command_understanding.py'",
 )
+
+CI_PROVENANCE_TOML = """
+[ci_provenance]
+schema_version = 1
+artifact_name_template = "ci-provenance-attempt-{run_attempt}"
+workflow_key = "ci"
+workflow_name = "CI"
+workflow_path = ".github/workflows/ci.yml"
+fingerprint_source = "meter"
+
+[ci_provenance.full_ci]
+required_jobs = [
+  "detector",
+  "fmt-check",
+  "deny",
+  "clippy",
+  "check-aarch64",
+  "source-fence",
+  "test-archive",
+  "test-shards",
+  "test",
+]
+conditional_jobs = ["build"]
+conditional_job_outputs = { build = "detector.build_required" }
+
+[ci_provenance.full_ci.jobs.detector]
+check_name = "detector"
+
+[ci_provenance.full_ci.jobs.fmt-check]
+check_name = "fmt-check"
+
+[ci_provenance.full_ci.jobs.deny]
+check_name = "deny"
+
+[ci_provenance.full_ci.jobs.clippy]
+check_name = "clippy"
+
+[ci_provenance.full_ci.jobs.check-aarch64]
+check_name = "check-aarch64"
+
+[ci_provenance.full_ci.jobs.source-fence]
+check_name = "source-fence"
+
+[ci_provenance.full_ci.jobs.test-archive]
+check_name = "nextest archive"
+
+[ci_provenance.full_ci.jobs.test-shards]
+check_name_template = "nextest shard {shard} of {shard_count}"
+shard_count = 4
+
+[ci_provenance.full_ci.jobs.test]
+check_name = "test"
+
+[ci_provenance.full_ci.jobs.build]
+check_name = "build"
+conditional = "detector.build_required"
+
+[ci_provenance.deploy]
+artifact_name = "bolt-v2-binary"
+require_source_event = "push"
+require_source_branch = "main"
+require_gate_check = true
+
+[ci_provenance.dispatch]
+workflow_input = "full_ci"
+
+[ci_provenance.api_limits]
+workflow_runs_per_page = 100
+run_jobs_per_page = 100
+run_artifacts_per_page = 100
+max_lookback_pages = 10
+max_lookback_age_seconds = 2592000
+
+[ci_provenance.artifacts]
+retention_days = 30
+
+[ci_provenance.policy]
+draft_pr_synchronize = "defer"
+draft_pr_opened = "defer"
+draft_pr_reopened = "defer"
+converted_to_draft = "defer"
+ready_pr = "full"
+ready_for_review = "full"
+workflow_dispatch = "full"
+main_push = "full"
+tag = "tag_reuse"
+unknown_event = "full"
+
+[ci_provenance.policy.override]
+force_full_ci = false
+ignore_emit_failure = false
+"""
 
 
 def load_verifier(
@@ -385,6 +477,42 @@ jobs:
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
 
+  ci-provenance-emit:
+    name: ci-provenance-emit
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]
+    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          pattern: nextest-archive-fingerprint-*
+          path: .ci-provenance/fingerprint
+          merge-multiple: true
+      - name: Emit CI provenance
+        run: >
+          python3 scripts/ci_provenance.py emit-full-ci
+          --output ci-provenance.json
+          --required-job detector=${{ needs.detector.result }}
+          --required-job fmt-check=${{ needs.fmt-check.result }}
+          --required-job deny=${{ needs.deny.result }}
+          --required-job clippy=${{ needs.clippy.result }}
+          --required-job check-aarch64=${{ needs.check-aarch64.result }}
+          --required-job source-fence=${{ needs.source-fence.result }}
+          --required-job test-archive=${{ needs.test-archive.result }}
+          --required-job test-shards=${{ needs.test-shards.result }}
+          --required-job test=${{ needs.test.result }}
+          --conditional-job build.required=${{ needs.detector.outputs.build_required }}
+          --conditional-job build.result=${{ needs.build.result }}
+          --nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt
+      - name: Upload CI provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-provenance-attempt-${{ github.run_attempt }}
+          path: ci-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
   same-sha-main-evidence:
     name: same-sha-main-evidence
     needs: detector
@@ -402,7 +530,7 @@ jobs:
 
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -436,9 +564,15 @@ jobs:
             if [[ "${{ needs.build.result }}" != "skipped" ]]; then
               exit 1
             fi
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+              exit 1
+            fi
             exit 0
           fi
           if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
+            exit 1
+          fi
+          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
             exit 1
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
@@ -635,12 +769,23 @@ refused_managed_commands = ["test", "clippy", "build"]
 refused_cargo_subcommands = ["b", "bench", "build", "c", "check", "clippy", "d", "doc", "fetch", "install", "nextest", "r", "run", "rustc", "t", "test", "zigbuild"]
 """
 
+LOCAL_LANE_POLICY_TOML = """
+[local_lane_policy]
+enabled = true
+allowed_ci_env = "GITHUB_ACTIONS"
+lock_dir = "/tmp/rust-verification-lanes"
+acquire_timeout_seconds = 1800
+heartbeat_seconds = 15
+poll_interval_seconds = 1
+"""
+
 BASE_RUST_VERIFICATION_POLICY = f"""
 schema_version = 2
 project_id = "bolt-v2"
 target_namespace = "bolt-v2"
 
 {LOCAL_COMPILE_POLICY_TOML}
+{LOCAL_LANE_POLICY_TOML}
 
 [remote_verification]
 poll_interval_seconds = 15
@@ -654,6 +799,7 @@ project_id = "backtesting-vertical-slice"
 target_namespace = "backtesting-vertical-slice"
 
 {LOCAL_COMPILE_POLICY_TOML}
+{LOCAL_LANE_POLICY_TOML}
 """
 
 
@@ -731,6 +877,91 @@ def replace_once(text: str, old: str, new: str) -> str:
 
 def repo_workflow_text(path: str) -> str:
     return (REPO_ROOT / path).read_text()
+
+
+def strip_ci_provenance_config(config_text: str) -> str:
+    lines = config_text.splitlines()
+    kept: list[str] = []
+    skip = False
+    for line in lines:
+        if line.startswith("[ci_provenance"):
+            skip = True
+            continue
+        if skip and line.startswith("["):
+            skip = False
+        if not skip:
+            kept.append(line)
+    return "\n".join(kept).rstrip() + "\n"
+
+
+def ci_provenance_config_fixture() -> str:
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text()
+    return strip_ci_provenance_config(config_text) + "\n" + CI_PROVENANCE_TOML
+
+
+def runner_config_load_error(config_text: str) -> str:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
+        config_path.write_text(config_text, encoding="utf-8")
+        try:
+            verifier.load_github_actions_runners_config(config_path)
+        except Exception as exc:  # noqa: BLE001 - loader raises domain errors.
+            return str(exc)
+    return ""
+
+
+def assert_ci_provenance_config_contract() -> None:
+    valid = ci_provenance_config_fixture()
+    if runner_config_load_error(valid):
+        raise AssertionError("valid ci_provenance fixture must load")
+
+    cases = [
+        (
+            "ci/github-actions-runners.toml must define [ci_provenance]",
+            strip_ci_provenance_config(valid),
+        ),
+        (
+            "ci_provenance.full_ci.jobs.test missing",
+            valid.replace(
+                """
+[ci_provenance.full_ci.jobs.test]
+check_name = "test"
+""",
+                "",
+            ),
+        ),
+        (
+            "ci_provenance.full_ci.jobs.test-shards shard_count",
+            valid.replace("shard_count = 4", "shard_count = 3"),
+        ),
+        (
+            "ci_provenance.full_ci.jobs.test-shards template count",
+            valid.replace(
+                'check_name_template = "nextest shard {shard} of {shard_count}"',
+                'check_name_template = "nextest shard {shard} of 3"',
+            ),
+        ),
+        (
+            "must reference [meter] fingerprint keys",
+            valid.replace(
+                'fingerprint_source = "meter"',
+                'fingerprint_source = "meter"\nfingerprint_artifact_prefix = "nextest-archive-fingerprint-"',
+            ),
+        ),
+        (
+            "ci_provenance.policy.override.force_full_ci must default to false",
+            valid.replace("force_full_ci = false\n", ""),
+        ),
+        (
+            "ci_provenance.policy.override.ignore_emit_failure must default to false",
+            valid.replace("ignore_emit_failure = false\n", ""),
+        ),
+    ]
+    for fragment, config_text in cases:
+        error = runner_config_load_error(config_text)
+        if fragment not in error:
+            raise AssertionError(f"expected {fragment!r}, got {error!r}")
 
 
 def assert_runner_contract_rejects_missing_and_extra_jobs() -> None:
@@ -990,6 +1221,9 @@ source-fence-static:
     # cargo fetch and scripts/verify_runtime_capture_yaml.py stay in source-fence
     # python3 scripts/rust_verification.py cargo --repo . -- test stays remote-only
     python3 scripts/test_verify_runtime_capture_yaml.py
+    python3 scripts/test_lane_governor.py
+    python3 scripts/test_verify_lane_governance.py
+    python3 scripts/verify_lane_governance.py
 
 source-fence: source-fence-static
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
@@ -1006,6 +1240,19 @@ source-fence: source-fence-static
     bad_errors = verifier.verify_source_fence_static_recipe(active_bad)
     if not any("must not invoke wrapper-routed Cargo" in error for error in bad_errors):
         raise AssertionError(f"source-fence-static active wrapper cargo must still fail, got: {bad_errors}")
+
+    missing_lane_check = justfile_text.replace("    python3 scripts/verify_lane_governance.py\n", "")
+    missing_errors = verifier.verify_source_fence_static_recipe(missing_lane_check)
+    if not any("must run python3 scripts/verify_lane_governance.py" in error for error in missing_errors):
+        raise AssertionError(f"source-fence-static must require lane governance meta-check, got: {missing_errors}")
+
+    commented_lane_test = justfile_text.replace(
+        "    python3 scripts/test_lane_governor.py",
+        "    # python3 scripts/test_lane_governor.py",
+    )
+    commented_errors = verifier.verify_source_fence_static_recipe(commented_lane_test)
+    if not any("must run python3 scripts/test_lane_governor.py" in error for error in commented_errors):
+        raise AssertionError(f"source-fence-static comments must not satisfy lane test wiring, got: {commented_errors}")
 
 
 def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
@@ -3866,6 +4113,21 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"s3api get-object raw-storage drift was silent: {repo_errors!r}")
 
 
+def assert_cargo_named_just_recipe_headers_are_not_raw_cargo_commands() -> None:
+    verifier = load_verifier()
+    errors = verifier.verify_repo_automation_texts(
+        {
+            "justfile": (
+                "cargo-shim-tests:\n"
+                "    python3 -m pytest scripts/test_cargo_shim.py -q\n"
+            )
+        }
+    )
+    expected = "repo automation raw Cargo must use managed rust_verification wrapper"
+    if any(expected in error for error in errors):
+        raise AssertionError(f"cargo-named just recipe header was treated as raw cargo: {errors!r}")
+
+
 def assert_ci_lint_runs_rust_verification_cache_retention_tests() -> None:
     justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     expected = "python3 scripts/test_rust_verification_cache_retention.py"
@@ -3915,6 +4177,7 @@ def main() -> int:
     assert_pin_consistency_rejects_mismatched_quotes()
     assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action()
     assert_v6_red_raw_storage_checks_all_ci_automation()
+    assert_cargo_named_just_recipe_headers_are_not_raw_cargo_commands()
     assert_v6_red_yaml_anchor_jobs_do_not_hide_raw_storage()
     assert_v6_red_yaml_anchor_steps_do_not_hide_raw_storage()
     assert_v6_red_yaml_steps_aliases_are_rejected()
@@ -4688,6 +4951,133 @@ def main() -> int:
             ),
             "      - uses: ./.github/actions/setup-environment",
             "      - if: needs.detector.outputs.build_required == 'true'\n        uses: ./.github/actions/setup-environment",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit needs source-fence",
+        replace_once(
+            BASE_WORKFLOW,
+            "    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
+            "    needs: [detector, fmt-check, deny, clippy, check-aarch64, test-archive, test-shards, test, build]",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must use always()",
+        replace_once(
+            BASE_WORKFLOW,
+            "    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
+            "    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must pass detector result from needs.detector.result",
+        replace_once(
+            BASE_WORKFLOW,
+            "--required-job detector=${{ needs.detector.result }}",
+            "--required-job detector=success\n          printf '%s\\n' '${{ needs.detector.result }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must pass build.required from needs.detector.outputs.build_required",
+        replace_once(
+            BASE_WORKFLOW,
+            "--conditional-job build.required=${{ needs.detector.outputs.build_required }}",
+            "--conditional-job build.required=true\n          printf '%s\\n' '${{ needs.detector.outputs.build_required }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must pass build.result from needs.build.result",
+        replace_once(
+            BASE_WORKFLOW,
+            "--conditional-job build.result=${{ needs.build.result }}",
+            "--conditional-job build.result=success\n          printf '%s\\n' '${{ needs.build.result }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            BASE_WORKFLOW,
+            "--nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
+            "--nextest-fingerprint-path .ci-provenance/wrong/cache-key.txt",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            BASE_WORKFLOW,
+            "          path: .ci-provenance/fingerprint",
+            "          path: .ci-provenance/downloaded",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            BASE_WORKFLOW,
+            "          path: .ci-provenance/fingerprint",
+            "          path: .ci-provenance/fingerprint-backup",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                "          path: .ci-provenance/fingerprint",
+                "          path: .ci-provenance/downloaded",
+            ),
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+            "          printf '%s\\n' 'path: .ci-provenance/fingerprint'\n"
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must record nextest fingerprint when present",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                "          pattern: nextest-archive-fingerprint-*",
+                "          pattern: nextest-archive-fingerprint-backup-*",
+            ),
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+            "          printf '%s\\n' 'pattern: nextest-archive-fingerprint-*'\n"
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must record nextest fingerprint when present",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                "        continue-on-error: true",
+                "        continue-on-error: false",
+            ),
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+            "          printf '%s\\n' 'continue-on-error: true'\n"
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
+        "actions/upload-artifact must be pinned to a 40-character SHA",
+        replace_once(
+            BASE_WORKFLOW,
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "uses: actions/upload-artifact@v7",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit retention-days must match TOML",
+        replace_once(
+            BASE_WORKFLOW,
+            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 30",
+            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 7",
+        ),
+    )
+    assert_error(
+        "gate must not read nextest_fingerprint",
+        replace_once(
+            BASE_WORKFLOW,
+            '          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then\n',
+            '          if [[ "${{ needs.ci-provenance-emit.outputs.nextest_fingerprint }}" != "" ]]; then\n',
         ),
     )
     assert_error("same-sha-main-evidence needs detector", replace_once(BASE_WORKFLOW, "    needs: detector\n    if: startsWith(github.ref, 'refs/tags/v')", "    if: startsWith(github.ref, 'refs/tags/v')"))
@@ -5859,6 +6249,7 @@ def main() -> int:
     )
     assert_v6_deploy_artifact_s3_stays_allowed()
     assert_v6_red_workflow_policy_gaps()
+    assert_ci_provenance_config_contract()
     assert_runner_contract_rejects_missing_and_extra_jobs()
     assert_runner_contract_rejects_unmapped_workflow_jobs()
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()
@@ -5892,4 +6283,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     sys.exit(main())

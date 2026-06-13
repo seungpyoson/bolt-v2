@@ -78,6 +78,14 @@ def write_policy(repo: pathlib.Path) -> None:
             refused_managed_commands = ["test", "clippy", "build"]
             refused_cargo_subcommands = ["b", "bench", "build", "c", "check", "clippy", "d", "doc", "fetch", "install", "nextest", "r", "run", "rustc", "t", "test", "zigbuild"]
 
+            [local_lane_policy]
+            enabled = true
+            allowed_ci_env = "GITHUB_ACTIONS"
+            lock_dir = "/tmp/rust-verification-lanes"
+            acquire_timeout_seconds = 1800
+            heartbeat_seconds = 15
+            poll_interval_seconds = 1
+
             [commands]
 
             [commands.test]
@@ -3206,4 +3214,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     sys.exit(main())

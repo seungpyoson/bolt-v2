@@ -257,6 +257,12 @@ jobs:
       - name: Install source-fence Python dependencies
         run: 'python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/source-fence.txt'
 
+      - name: Install cargo-shim test dependencies
+        run: 'python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/cargo-shim-tests.txt'
+
+      - name: Cargo shim tests
+        run: just cargo-shim-tests
+
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
@@ -494,6 +500,55 @@ jobs:
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
           retention-days: 30
 
+  ci-provenance-emit:
+    name: ci-provenance-emit
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]
+    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Download nextest archive fingerprint
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          pattern: nextest-archive-fingerprint-*
+          path: .ci-provenance/fingerprint
+          merge-multiple: true
+
+      - name: Emit CI provenance
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+        run: >
+          python3 scripts/ci_provenance.py emit-full-ci
+          --output ci-provenance.json
+          --required-job detector=${{ needs.detector.result }}
+          --required-job fmt-check=${{ needs.fmt-check.result }}
+          --required-job deny=${{ needs.deny.result }}
+          --required-job clippy=${{ needs.clippy.result }}
+          --required-job check-aarch64=${{ needs.check-aarch64.result }}
+          --required-job source-fence=${{ needs.source-fence.result }}
+          --required-job test-archive=${{ needs.test-archive.result }}
+          --required-job test-shards=${{ needs.test-shards.result }}
+          --required-job test=${{ needs.test.result }}
+          --conditional-job build.required=${{ needs.detector.outputs.build_required }}
+          --conditional-job build.result=${{ needs.build.result }}
+          --nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt
+
+      - name: Upload CI provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-provenance-attempt-${{ github.run_attempt }}
+          path: ci-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
   same-sha-main-evidence:
     name: same-sha-main-evidence
     needs: detector
@@ -519,7 +574,7 @@ jobs:
 
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
@@ -566,10 +621,18 @@ jobs:
               echo "build unexpectedly ran during tag reuse"
               exit 1
             fi
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+              echo "ci-provenance-emit unexpectedly ran during tag reuse"
+              exit 1
+            fi
             exit 0
           fi
           if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
             echo "same-sha-main-evidence unexpectedly ran outside tag reuse"
+            exit 1
+          fi
+          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
+            echo "ci-provenance-emit did not succeed"
             exit 1
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then

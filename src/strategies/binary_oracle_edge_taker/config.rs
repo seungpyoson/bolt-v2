@@ -16,7 +16,7 @@ use toml::Value;
 
 use crate::{
     bolt_v3_market_families,
-    bolt_v3_numeric::{BPS_DENOMINATOR, is_positive_finite},
+    bolt_v3_numeric::{BPS_DENOMINATOR, is_non_negative_finite, is_positive_finite},
     strategies::registry::ValidationError,
 };
 
@@ -53,6 +53,7 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             manage_contingent_orders: bool => Boolean;
             manage_gtd_expiry: bool => Boolean;
             manage_stop: bool => Boolean;
+            submit_orders: bool => Boolean;
             market_exit_interval_ms: u64 => Integer;
             market_exit_max_attempts: u64 => Integer;
             log_events: bool => Boolean;
@@ -66,6 +67,7 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             vwap_depth_limit_bps: u64 => Integer;
             slippage_buffer_bps: u64 => Integer;
             risk_lambda: f64 => Float;
+            sizing_ev_reference_bps: u64 => Integer;
             edge_threshold_basis_points: i64 => Integer;
             exit_hysteresis_bps: i64 => Integer;
             trade_flow_window_secs: u64 => Integer;
@@ -277,6 +279,10 @@ impl BinaryOracleEdgeTakerBuilder {
             is_positive_finite(config.spike_guard_return_threshold),
             "spike_guard_return_threshold must be positive and finite"
         );
+        anyhow::ensure!(
+            is_non_negative_finite(config.risk_lambda),
+            "risk_lambda must be finite and >= 0"
+        );
         // Fail loud at load for positive-required integer knobs. A zero
         // trade-flow sample cap makes the count-cap evict every observation,
         // permanently emptying the buffer and starving the W3 read seam.
@@ -293,6 +299,10 @@ impl BinaryOracleEdgeTakerBuilder {
                 stringify!(spike_guard_cooldown_secs),
                 Some(config.spike_guard_cooldown_secs),
             ),
+            (
+                stringify!(sizing_ev_reference_bps),
+                Some(config.sizing_ev_reference_bps),
+            ),
         ] {
             if let Some(value) = value {
                 anyhow::ensure!(value > u64::MIN, "{field} must be positive");
@@ -301,7 +311,47 @@ impl BinaryOracleEdgeTakerBuilder {
         Self::ensure_bps_runtime_knobs_within_full_scale(&config)?;
         Self::ensure_executable_entry_order_shape(&config)?;
         Self::ensure_configured_instrument_id_fields_parse(&config)?;
+        Self::ensure_shadow_mode_forbids_managed_venue_actions(&config)?;
         Ok(config)
+    }
+
+    /// Fail loud at load when shadow mode is paired with any NautilusTrader-managed
+    /// venue action.
+    ///
+    /// `submit_orders = false` (shadow mode) suppresses the strategy's own
+    /// submit/cancel at the `submit_order_with_decision_evidence` /
+    /// `cancel_resting_order_if_live` chokepoints. But `manage_stop`,
+    /// `manage_gtd_expiry`, `manage_contingent_orders`, and a non-empty
+    /// `external_order_claims` drive NautilusTrader's `StrategyCore` lifecycle —
+    /// `close_all_positions` market exits, GTD auto-cancels, contingent routing, and
+    /// adoption of foreign resting orders — which mutate venue state OUTSIDE those
+    /// chokepoints. Reject the combination so "no venue mutation in shadow mode" is a
+    /// structural property of the config, not a property of every operator remembering
+    /// to disable each knob independently.
+    fn ensure_shadow_mode_forbids_managed_venue_actions(
+        config: &BinaryOracleEdgeTakerConfig,
+    ) -> Result<()> {
+        if config.submit_orders {
+            return Ok(());
+        }
+        for (field, enabled) in [
+            (stringify!(manage_stop), config.manage_stop),
+            (stringify!(manage_gtd_expiry), config.manage_gtd_expiry),
+            (
+                stringify!(manage_contingent_orders),
+                config.manage_contingent_orders,
+            ),
+        ] {
+            anyhow::ensure!(
+                !enabled,
+                "{field} must be false when submit_orders=false because it drives NautilusTrader-managed venue actions that bypass the shadow-mode submit/cancel chokepoints"
+            );
+        }
+        anyhow::ensure!(
+            config.external_order_claims.is_empty(),
+            "external_order_claims must be empty when submit_orders=false because claimed foreign orders are managed by NautilusTrader outside the shadow-mode submit/cancel chokepoints"
+        );
+        Ok(())
     }
 
     fn ensure_bps_runtime_knobs_within_full_scale(
@@ -314,6 +364,10 @@ impl BinaryOracleEdgeTakerBuilder {
                 config.vwap_depth_limit_bps,
             ),
             (stringify!(slippage_buffer_bps), config.slippage_buffer_bps),
+            (
+                stringify!(sizing_ev_reference_bps),
+                config.sizing_ev_reference_bps,
+            ),
         ] {
             anyhow::ensure!(
                 (value as f64) <= BPS_DENOMINATOR,
@@ -451,9 +505,22 @@ impl BinaryOracleEdgeTakerBuilder {
             stringify!(book_impact_cap_bps),
             stringify!(vwap_depth_limit_bps),
             stringify!(slippage_buffer_bps),
+            stringify!(sizing_ev_reference_bps),
         ] {
             Self::validate_bps_runtime_knob_upper_bound(table, field_prefix, field_name, errors);
         }
+        Self::validate_positive_u64_field(
+            table,
+            field_prefix,
+            stringify!(sizing_ev_reference_bps),
+            errors,
+        );
+        Self::validate_non_negative_finite_float_field(
+            table,
+            field_prefix,
+            stringify!(risk_lambda),
+            errors,
+        );
         Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);
         Self::validate_optional_string_field(
             table,
@@ -568,7 +635,53 @@ impl BinaryOracleEdgeTakerBuilder {
         );
         Self::validate_executable_entry_order_shape(table, field_prefix, errors);
         Self::validate_slippage_buffer_covers_vwap_depth(table, field_prefix, errors);
+        Self::validate_shadow_mode_forbids_managed_venue_actions(table, field_prefix, errors);
         Self::validate_rotating_market_family(table, field_prefix, errors);
+    }
+
+    /// Lint-layer mirror of [`Self::ensure_shadow_mode_forbids_managed_venue_actions`]:
+    /// when `submit_orders = false`, any enabled NautilusTrader-managed venue knob
+    /// (`manage_stop`, `manage_gtd_expiry`, `manage_contingent_orders`) or non-empty
+    /// `external_order_claims` would mutate venue state outside the shadow-mode
+    /// submit/cancel chokepoints. Reject so the invariant is structural.
+    fn validate_shadow_mode_forbids_managed_venue_actions(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        // Only constrain when shadow mode is explicitly enabled. An absent or
+        // wrong-typed submit_orders is already reported by the field validation.
+        if table
+            .get(stringify!(submit_orders))
+            .and_then(Value::as_bool)
+            != Some(false)
+        {
+            return;
+        }
+        for field_name in [
+            stringify!(manage_stop),
+            stringify!(manage_gtd_expiry),
+            stringify!(manage_contingent_orders),
+        ] {
+            if table.get(field_name).and_then(Value::as_bool) == Some(true) {
+                errors.push(ValidationError {
+                    field: format!("{field_prefix}.{field_name}"),
+                    code: stringify!(shadow_mode_forbids_managed_venue_action),
+                    message: "must be false when submit_orders=false because it drives NautilusTrader-managed venue actions that bypass the shadow-mode submit/cancel chokepoints".to_string(),
+                });
+            }
+        }
+        if table
+            .get(stringify!(external_order_claims))
+            .and_then(Value::as_array)
+            .is_some_and(|claims| !claims.is_empty())
+        {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{}", stringify!(external_order_claims)),
+                code: stringify!(shadow_mode_forbids_managed_venue_action),
+                message: "must be empty when submit_orders=false because claimed foreign orders are managed by NautilusTrader outside the shadow-mode submit/cancel chokepoints".to_string(),
+            });
+        }
     }
 
     fn validate_executable_entry_order_shape(
@@ -636,6 +749,42 @@ impl BinaryOracleEdgeTakerBuilder {
                 field: format!("{field_prefix}.{field_name}"),
                 code: stringify!(bps_out_of_range),
                 message: format!("must be at most {BPS_DENOMINATOR} bps"),
+            });
+        }
+    }
+
+    fn validate_positive_u64_field(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        field_name: &'static str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Some(value) = table.get(field_name).and_then(Value::as_integer) else {
+            return;
+        };
+        if value <= 0 {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{field_name}"),
+                code: stringify!(positive_required),
+                message: "must be positive".to_string(),
+            });
+        }
+    }
+
+    fn validate_non_negative_finite_float_field(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        field_name: &'static str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Some(value) = table.get(field_name).and_then(Value::as_float_or_integer) else {
+            return;
+        };
+        if !is_non_negative_finite(value) {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{field_name}"),
+                code: stringify!(value_out_of_range),
+                message: "must be finite and >= 0".to_string(),
             });
         }
     }

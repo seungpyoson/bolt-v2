@@ -94,11 +94,22 @@ REQUIRED_JOBS = (
     "test-shards",
     "test",
     "build",
+    "ci-provenance-emit",
     "same-sha-main-evidence",
     "gate",
     "deploy",
 )
-GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build")
+GATE_REQUIRED = (
+    "detector",
+    "fmt-check",
+    "deny",
+    "clippy",
+    "check-aarch64",
+    "source-fence",
+    "test",
+    "build",
+    "ci-provenance-emit",
+)
 DEPLOY_REQUIRED_NEEDS = (
     "gate",
     "same-sha-main-evidence",
@@ -111,7 +122,31 @@ DEPLOY_REQUIRED_NEEDS = (
     "source-fence",
     "test",
 )
-TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build")
+CI_PROVENANCE_REQUIRED_JOBS = (
+    "detector",
+    "fmt-check",
+    "deny",
+    "clippy",
+    "check-aarch64",
+    "source-fence",
+    "test-archive",
+    "test-shards",
+    "test",
+)
+CI_PROVENANCE_POLICY_VALUES = {"full", "defer", "tag_reuse"}
+CI_PROVENANCE_POLICY_ROWS = (
+    "draft_pr_synchronize",
+    "draft_pr_opened",
+    "draft_pr_reopened",
+    "converted_to_draft",
+    "ready_pr",
+    "ready_for_review",
+    "workflow_dispatch",
+    "main_push",
+    "tag",
+    "unknown_event",
+)
+TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build", "ci-provenance-emit")
 TAG_SKIP_REQUIRED_JOBS = (
     "fmt-check",
     "deny",
@@ -120,6 +155,7 @@ TAG_SKIP_REQUIRED_JOBS = (
     "test-archive",
     "test-shards",
     "test",
+    "ci-provenance-emit",
 )
 TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-shards", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
@@ -733,6 +769,11 @@ def block_has_input(block: list[str], name: str, value: str | None = None) -> bo
         if expected is None or unquote_yaml_scalar(item_value) == expected:
             return True
     return False
+
+
+def block_has_scalar(block: list[str], name: str, value: str) -> bool:
+    expected = f"{name}: {value}"
+    return any(strip_comment(line).strip() == expected for line in block)
 
 
 def block_input_value(block: list[str], name: str) -> str | None:
@@ -3340,10 +3381,11 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
         if is_justfile and not line[:1].isspace():
             if stripped.startswith("["):
                 continue
-            if ":" in stripped:
+            if ":" in stripped and ":=" not in stripped:
                 recipe = stripped.split(":", 1)[0].strip()
                 current_just_recipe = recipe.split()[0] if recipe else ""
                 managed_just_recipe = False
+                continue
         if (
             is_justfile
             and current_just_recipe in {"managed-build", "managed-clippy", "managed-test"}
@@ -3823,13 +3865,21 @@ def verify_source_fence_static_recipe(justfile_text: str) -> list[str]:
     source_fence_dependencies, source_fence_body = recipes["source-fence"]
     if "source-fence-static" not in source_fence_dependencies:
         errors.append("justfile source-fence must depend on source-fence-static")
-    static_body = "\n".join(
+    static_lines = [
         line for line in (strip_comment(raw_line).strip() for raw_line in recipes["source-fence-static"][1]) if line
-    )
+    ]
+    static_body = "\n".join(static_lines)
     if command_has_managed_compile_heavy_invocation(static_body) or re.search(r"\brust_verification\.py\b[^\n]*\bcargo\b", static_body):
         errors.append("justfile source-fence-static must not invoke wrapper-routed Cargo")
     if "cargo fetch" in static_body or re.search(r"\bscripts/verify_runtime_capture_yaml\.py\b", static_body):
         errors.append("justfile source-fence-static must stop before cargo fetch and runtime capture verification")
+    for command in (
+        "python3 scripts/test_lane_governor.py",
+        "python3 scripts/test_verify_lane_governance.py",
+        "python3 scripts/verify_lane_governance.py",
+    ):
+        if command not in static_lines:
+            errors.append(f"justfile source-fence-static must run {command}")
     full_body = "\n".join(source_fence_body)
     if "verify_runtime_capture_yaml.py" not in full_body:
         errors.append("justfile source-fence must keep runtime capture verification in the full recipe")
@@ -6533,6 +6583,76 @@ def same_sha_job_runs_resolver(job_lines: list[str]) -> bool:
     return "id: evidence" in text and "python3 scripts/find_same_sha_main_evidence.py" in text
 
 
+def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return "python3 scripts/ci_provenance.py emit-full-ci" in text and "--output ci-provenance.json" in text
+
+
+def ci_provenance_emit_fingerprint_download_blocks(job_lines: list[str]) -> list[list[str]]:
+    return [
+        block
+        for block in action_blocks(job_lines, "actions/download-artifact@")
+        if block_has_input(block, "pattern", "nextest-archive-fingerprint-*")
+    ]
+
+
+def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]) -> list[str]:
+    text = uncommented_text(job_lines)
+    errors = []
+    fingerprint_path = ".ci-provenance/fingerprint/cache-key.txt"
+    fingerprint_download_path = str(pathlib.PurePosixPath(fingerprint_path).parent)
+    for need in needs:
+        if need == "build":
+            expected = "--conditional-job build.result=${{ needs.build.result }}"
+            if expected not in text:
+                errors.append("ci-provenance-emit must pass build.result from needs.build.result")
+            continue
+        expected = f"--required-job {need}=${{{{ needs.{need}.result }}}}"
+        if expected not in text:
+            errors.append(f"ci-provenance-emit must pass {need} result from needs.{need}.result")
+    if "--conditional-job build.required=${{ needs.detector.outputs.build_required }}" not in text:
+        errors.append("ci-provenance-emit must pass build.required from needs.detector.outputs.build_required")
+    if (
+        f"--nextest-fingerprint-path {fingerprint_path}" not in text
+        or not any(
+            block_has_input(block, "path", fingerprint_download_path)
+            for block in ci_provenance_emit_fingerprint_download_blocks(job_lines)
+        )
+    ):
+        errors.append("ci-provenance-emit fingerprint download path must match emitter argument")
+    return errors
+
+
+def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) -> list[str]:
+    errors: list[str] = []
+    upload_blocks = [
+        block
+        for block in action_blocks(job_lines, "actions/upload-artifact@")
+        if block_has_input(block, "name", "ci-provenance-attempt-${{ github.run_attempt }}")
+    ]
+    if not upload_blocks:
+        errors.append("ci-provenance-emit must upload configured provenance artifact")
+        return errors
+    if not any(block_has_input(block, "path", "ci-provenance.json") for block in upload_blocks):
+        errors.append("ci-provenance-emit must upload ci-provenance.json")
+    if retention_days > 0 and not any(
+        block_has_input(block, "retention-days", str(retention_days)) for block in upload_blocks
+    ):
+        errors.append("ci-provenance-emit retention-days must match TOML")
+    return errors
+
+
+def ci_provenance_emit_downloads_fingerprint(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    fingerprint_path = ".ci-provenance/fingerprint/cache-key.txt"
+    fingerprint_download_path = str(pathlib.PurePosixPath(fingerprint_path).parent)
+    return f"--nextest-fingerprint-path {fingerprint_path}" in text and any(
+        block_has_input(block, "path", fingerprint_download_path)
+        and block_has_scalar(block, "continue-on-error", "true")
+        for block in ci_provenance_emit_fingerprint_download_blocks(job_lines)
+    )
+
+
 def clippy_installs_aarch64_toolchain(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "gcc-aarch64-linux-gnu" in text or "libc6-dev-arm64-cross" in text
@@ -6746,6 +6866,21 @@ def job_permission_has(job_lines: list[str], permission: str, value: str) -> boo
 
 def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+actions:\s+read\s*$", workflow_text) is not None
+
+
+def configured_ci_provenance_retention_days() -> int:
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
+        return -1
+    ci_provenance = config.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        return -1
+    artifacts = ci_provenance.get("artifacts")
+    if not isinstance(artifacts, dict):
+        return -1
+    retention_days = artifacts.get("retention_days")
+    return retention_days if isinstance(retention_days, int) else -1
 
 
 def branch_body(gate_text: str, keyword: str, condition: str) -> str | None:
@@ -7096,6 +7231,30 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if not has_line_matching(jobs["build"], BUILD_IF_RE):
             errors.append("build must gate on needs.detector.outputs.build_required and skip tag reuse")
 
+    if "ci-provenance-emit" in jobs:
+        emit_lines = jobs["ci-provenance-emit"]
+        emit_needs = extract_needs(emit_lines)
+        for job in (*CI_PROVENANCE_REQUIRED_JOBS, "build"):
+            if job not in emit_needs:
+                errors.append(f"ci-provenance-emit needs {job}")
+        if "gate" in emit_needs:
+            errors.append("ci-provenance-emit must not need gate")
+        if not job_if_uses_always(emit_lines):
+            errors.append("ci-provenance-emit must use always()")
+        if not job_skips_tag_reuse(emit_lines):
+            errors.append("ci-provenance-emit must skip tag reuse")
+        if not ci_provenance_emit_runs_emitter(emit_lines):
+            errors.append("ci-provenance-emit must run provenance emitter")
+        errors.extend(ci_provenance_emit_checks_needs(emit_lines, (*CI_PROVENANCE_REQUIRED_JOBS, "build")))
+        errors.extend(
+            ci_provenance_emit_upload_errors(
+                emit_lines,
+                configured_ci_provenance_retention_days(),
+            )
+        )
+        if not ci_provenance_emit_downloads_fingerprint(emit_lines):
+            errors.append("ci-provenance-emit must record nextest fingerprint when present")
+
     if "same-sha-main-evidence" in jobs:
         if "detector" not in extract_needs(jobs["same-sha-main-evidence"]):
             errors.append("same-sha-main-evidence needs detector")
@@ -7125,6 +7284,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.extend(gate_checks_same_sha_reuse(gate_text))
         if not has_line_matching(jobs["gate"], GATE_IF_RE):
             errors.append("gate must use always()")
+        if "nextest_fingerprint" in gate_text:
+            errors.append("gate must not read nextest_fingerprint")
 
     if "deploy" in jobs:
         deploy_needs = extract_needs(jobs["deploy"])
@@ -7516,6 +7677,175 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
     return errors
 
 
+def require_config_table(parent: dict[str, object], key: str, prefix: str) -> dict[str, object]:
+    value = parent.get(key)
+    if not isinstance(value, dict):
+        raise ValueError(f"{prefix}.{key} must be a table")
+    return value
+
+
+def require_config_string(parent: dict[str, object], key: str, prefix: str) -> str:
+    value = parent.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{prefix}.{key} must be a non-empty string")
+    return value
+
+
+def require_config_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
+    value = parent.get(key)
+    if not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{prefix}.{key} must be a positive integer")
+    return value
+
+
+def require_config_string_list(parent: dict[str, object], key: str, prefix: str) -> list[str]:
+    value = parent.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"{prefix}.{key} must be a non-empty string list")
+    return value
+
+
+def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
+    ci_provenance = data.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [ci_provenance]")
+
+    duplicated_fingerprint_keys = {
+        "fingerprint_artifact_prefix",
+        "fingerprint_workflow",
+    } & set(ci_provenance)
+    if duplicated_fingerprint_keys:
+        raise ValueError(
+            "[ci_provenance] must reference [meter] fingerprint keys instead of duplicating "
+            + ", ".join(sorted(duplicated_fingerprint_keys))
+        )
+
+    if ci_provenance.get("schema_version") != 1:
+        raise ValueError("ci_provenance.schema_version must be 1")
+    artifact_name_template = require_config_string(
+        ci_provenance, "artifact_name_template", "ci_provenance"
+    )
+    if "{run_attempt}" not in artifact_name_template:
+        raise ValueError("ci_provenance.artifact_name_template must include {run_attempt}")
+    if require_config_string(ci_provenance, "workflow_key", "ci_provenance") != "ci":
+        raise ValueError("ci_provenance.workflow_key must be ci")
+    require_config_string(ci_provenance, "workflow_name", "ci_provenance")
+    require_config_string(ci_provenance, "workflow_path", "ci_provenance")
+    if require_config_string(ci_provenance, "fingerprint_source", "ci_provenance") != "meter":
+        raise ValueError("ci_provenance.fingerprint_source must be meter")
+
+    meter = data.get("meter")
+    if not isinstance(meter, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [meter]")
+    require_config_string(meter, "fingerprint_artifact_prefix", "meter")
+    require_config_string(meter, "fingerprint_workflow", "meter")
+
+    full_ci = require_config_table(ci_provenance, "full_ci", "ci_provenance")
+    required_jobs = require_config_string_list(full_ci, "required_jobs", "ci_provenance.full_ci")
+    if tuple(required_jobs) != CI_PROVENANCE_REQUIRED_JOBS:
+        raise ValueError(
+            "ci_provenance.full_ci.required_jobs must match the current full-CI logical jobs"
+        )
+    conditional_jobs = require_config_string_list(
+        full_ci, "conditional_jobs", "ci_provenance.full_ci"
+    )
+    if conditional_jobs != ["build"]:
+        raise ValueError("ci_provenance.full_ci.conditional_jobs must be ['build']")
+    conditional_outputs = full_ci.get("conditional_job_outputs")
+    if (
+        not isinstance(conditional_outputs, dict)
+        or conditional_outputs.get("build") != "detector.build_required"
+    ):
+        raise ValueError(
+            "ci_provenance.full_ci.conditional_job_outputs.build must be detector.build_required"
+        )
+    jobs = require_config_table(full_ci, "jobs", "ci_provenance.full_ci")
+    for job in (*CI_PROVENANCE_REQUIRED_JOBS, "build"):
+        if job not in jobs:
+            raise ValueError(f"ci_provenance.full_ci.jobs.{job} missing")
+        job_table = jobs[job]
+        if not isinstance(job_table, dict):
+            raise ValueError(f"ci_provenance.full_ci.jobs.{job} must be a table")
+        if job == "test-shards":
+            template = require_config_string(
+                job_table, "check_name_template", "ci_provenance.full_ci.jobs.test-shards"
+            )
+            shard_count = require_config_positive_int(
+                job_table, "shard_count", "ci_provenance.full_ci.jobs.test-shards"
+            )
+            if shard_count != 4:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards shard_count must match the ci.yml shard matrix"
+                )
+            if "{shard}" not in template:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards check_name_template must include {shard}"
+                )
+            literal_count = re.search(r"\bof\s+(\d+)\b", template)
+            if "{shard_count}" not in template and literal_count is None:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards check_name_template must include shard count"
+                )
+            if literal_count is not None and int(literal_count.group(1)) != shard_count:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards template count must match shard_count"
+                )
+        else:
+            require_config_string(job_table, "check_name", f"ci_provenance.full_ci.jobs.{job}")
+        if job == "build" and job_table.get("conditional") != "detector.build_required":
+            raise ValueError(
+                "ci_provenance.full_ci.jobs.build.conditional must be detector.build_required"
+            )
+
+    deploy = require_config_table(ci_provenance, "deploy", "ci_provenance")
+    require_config_string(deploy, "artifact_name", "ci_provenance.deploy")
+    if deploy.get("require_source_event") != "push":
+        raise ValueError("ci_provenance.deploy.require_source_event must be push")
+    if deploy.get("require_source_branch") != "main":
+        raise ValueError("ci_provenance.deploy.require_source_branch must be main")
+    if deploy.get("require_gate_check") is not True:
+        raise ValueError("ci_provenance.deploy.require_gate_check must be true")
+
+    dispatch = require_config_table(ci_provenance, "dispatch", "ci_provenance")
+    require_config_string(dispatch, "workflow_input", "ci_provenance.dispatch")
+
+    api_limits = require_config_table(ci_provenance, "api_limits", "ci_provenance")
+    for key in (
+        "workflow_runs_per_page",
+        "run_jobs_per_page",
+        "run_artifacts_per_page",
+        "max_lookback_pages",
+        "max_lookback_age_seconds",
+    ):
+        require_config_positive_int(api_limits, key, "ci_provenance.api_limits")
+
+    artifacts = require_config_table(ci_provenance, "artifacts", "ci_provenance")
+    retention_days = require_config_positive_int(
+        artifacts, "retention_days", "ci_provenance.artifacts"
+    )
+    if api_limits["max_lookback_age_seconds"] > retention_days * 24 * 60 * 60:
+        raise ValueError(
+            "ci_provenance.api_limits.max_lookback_age_seconds must not exceed artifact retention"
+        )
+
+    policy = require_config_table(ci_provenance, "policy", "ci_provenance")
+    for row in CI_PROVENANCE_POLICY_ROWS:
+        value = policy.get(row)
+        if value not in CI_PROVENANCE_POLICY_VALUES:
+            raise ValueError(
+                f"ci_provenance.policy.{row} must be one of {sorted(CI_PROVENANCE_POLICY_VALUES)!r}"
+            )
+    override = require_config_table(policy, "override", "ci_provenance.policy")
+    if override.get("force_full_ci") is not False:
+        raise ValueError("ci_provenance.policy.override.force_full_ci must default to false")
+    if override.get("ignore_emit_failure") is not False:
+        raise ValueError(
+            "ci_provenance.policy.override.ignore_emit_failure must default to false"
+        )
+
+    return ci_provenance
+
+
 def load_github_actions_runners_config(
     path: pathlib.Path | None = None,
 ) -> dict[str, object]:
@@ -7531,6 +7861,7 @@ def load_github_actions_runners_config(
         raise ValueError("ci/github-actions-runners.toml must define [runners] and [workflows]")
     if not isinstance(meter, dict):
         raise ValueError("ci/github-actions-runners.toml must define [meter]")
+    ci_provenance = validate_ci_provenance_config(data)
     meter_workflows = meter.get("included_workflows")
     if not isinstance(meter_workflows, list) or not all(
         isinstance(workflow, str) and workflow for workflow in meter_workflows
@@ -7575,6 +7906,7 @@ def load_github_actions_runners_config(
         "meter_included_workflows": sorted(set(meter_workflows)),
         "variables": sorted(tier_to_var.values()),
         "workflows": workflows,
+        "ci_provenance": ci_provenance,
     }
 
 
@@ -7842,4 +8174,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     sys.exit(main())

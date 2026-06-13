@@ -17,7 +17,7 @@ use crate::{
         sanitize_probability,
     },
     bolt_v3_realized_volatility::RealizedVolSnapshot,
-    bolt_v3_taker_signal::{
+    bolt_v3_taker_updown_signal::{
         ThetaScalerInputs, compute_theta_scaler, price_agreement_corr, price_gap_probability,
     },
 };

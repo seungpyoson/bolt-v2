@@ -80,6 +80,10 @@ verify-bolt-v3-strategy-policy-fence: check-workspace
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py
 
+verify-bolt-v3-no-exit-market-command: check-workspace
+    python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
+    python3 scripts/verify_bolt_v3_no_exit_market_command.py
+
 verify-bolt-v3-dependency-direction: check-workspace
     python3 scripts/test_verify_bolt_v3_dependency_direction.py
     python3 scripts/verify_bolt_v3_dependency_direction.py
@@ -186,7 +190,12 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_legacy_default_fence.py
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py
+    python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
+    python3 scripts/verify_bolt_v3_no_exit_market_command.py
     python3 scripts/test_verify_runtime_capture_yaml.py
+    python3 scripts/test_lane_governor.py
+    python3 scripts/test_verify_lane_governance.py
+    python3 scripts/verify_lane_governance.py
 
 source-fence: source-fence-static
     git fetch -q origin main 2>/dev/null
@@ -197,6 +206,10 @@ source-fence: source-fence-static
     # #342 owns these canonical source-fence checks. Until #332 changes full
     # nextest ownership, `test` intentionally still duplicates them under `gate`.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_controlled_connect --test bolt_v3_production_entrypoint --test bolt_v3_iv_source_fence -- --nocapture
+
+# Cargo shim guard tests (pytest-based, unlike the self-running script tests)
+cargo-shim-tests:
+    python3 -m pytest scripts/test_cargo_shim.py -q
 
 require-live-root: check-workspace
     #!/usr/bin/env bash

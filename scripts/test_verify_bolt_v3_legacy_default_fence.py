@@ -258,9 +258,13 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 key: STRATEGY_KEY,
                 relative_roots: &[
                     "src/strategies/binary_oracle_edge_taker",
+                    // The archetype is the sole TOML->runtime-table translator.
+                    "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
                     "src/bolt_v3_book_sizing.rs",
                     "src/bolt_v3_binary_outcome_edge.rs",
                     "src/bolt_v3_executable_cost.rs",
+                    "src/bolt_v3_sizing.rs",
+                    "src/bolt_v3_taker_updown_signal.rs",
                 ],
             },
             GatedSourceRoot {
@@ -429,4 +433,7 @@ def production_text_from_string(source: str) -> str:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     unittest.main()

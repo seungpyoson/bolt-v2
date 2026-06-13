@@ -13,6 +13,12 @@ const BPS_RUNTIME_KNOB_FIELDS: &[&str] = &[
     stringify!(book_impact_cap_bps),
     stringify!(vwap_depth_limit_bps),
     stringify!(slippage_buffer_bps),
+    stringify!(sizing_ev_reference_bps),
+];
+const ZERO_ACCEPTED_BPS_RUNTIME_KNOB_FIELDS: &[&str] = &[
+    stringify!(book_impact_cap_bps),
+    stringify!(vwap_depth_limit_bps),
+    stringify!(slippage_buffer_bps),
 ];
 
 fn unsupported_executable_entry_order_shape_cases() -> Vec<(&'static str, Value)> {
@@ -145,6 +151,45 @@ fn parse_config_rejects_zero_positive_required_integer_fields() {
 }
 
 #[test]
+fn parse_config_rejects_zero_sizing_ev_reference_bps() {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("raw config should be a TOML table")
+        .insert(
+            stringify!(sizing_ev_reference_bps).to_string(),
+            Value::Integer(ZERO_INTEGER_CONFIG_VALUE),
+        );
+
+    let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+        .expect_err("zero sizing_ev_reference_bps must be rejected");
+
+    assert!(
+        err.to_string()
+            .contains("sizing_ev_reference_bps must be positive"),
+        "expected sizing_ev_reference_bps positivity rejection, got: {err}"
+    );
+}
+
+#[test]
+fn parse_config_rejects_negative_or_non_finite_risk_lambda() {
+    for bad in [-0.01_f64, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert(stringify!(risk_lambda).to_string(), Value::Float(bad));
+
+        let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("negative or non-finite risk_lambda must be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("risk_lambda must be finite and >= 0"),
+            "expected risk_lambda finite non-negative rejection for {bad}, got: {err}"
+        );
+    }
+}
+
+#[test]
 fn parse_config_rejects_bps_runtime_knobs_above_full_scale() {
     for field in BPS_RUNTIME_KNOB_FIELDS {
         let mut raw = valid_raw_config();
@@ -168,12 +213,29 @@ fn parse_config_accepts_bps_runtime_knob_boundaries() {
     for value in [0_i64, BPS_DENOMINATOR as i64] {
         let mut raw = valid_raw_config();
         let table = raw.as_table_mut().expect("raw config should be a table");
-        for field in BPS_RUNTIME_KNOB_FIELDS {
+        for field in ZERO_ACCEPTED_BPS_RUNTIME_KNOB_FIELDS {
             table.insert((*field).to_string(), Value::Integer(value));
         }
 
         BinaryOracleEdgeTakerBuilder::parse_config(&raw)
             .unwrap_or_else(|error| panic!("bps boundary {value} should parse: {error}"));
+    }
+}
+
+#[test]
+fn parse_config_accepts_sizing_ev_reference_bps_valid_boundaries() {
+    for value in [1_i64, BPS_DENOMINATOR as i64] {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a table")
+            .insert(
+                stringify!(sizing_ev_reference_bps).to_string(),
+                Value::Integer(value),
+            );
+
+        BinaryOracleEdgeTakerBuilder::parse_config(&raw).unwrap_or_else(|error| {
+            panic!("sizing_ev_reference_bps boundary {value} should parse: {error}")
+        });
     }
 }
 
@@ -220,6 +282,47 @@ fn validate_config_rejects_bps_runtime_knobs_above_full_scale() {
             error.message,
             format!("must be at most {BPS_DENOMINATOR} bps")
         );
+    }
+}
+
+#[test]
+fn validate_config_rejects_zero_sizing_ev_reference_bps() {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("raw config should be a TOML table")
+        .insert(
+            stringify!(sizing_ev_reference_bps).to_string(),
+            Value::Integer(ZERO_INTEGER_CONFIG_VALUE),
+        );
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    let error = find_error(
+        &errors,
+        "strategies[0].config.sizing_ev_reference_bps",
+        "positive_required",
+    );
+    assert_eq!(error.message, "must be positive");
+}
+
+#[test]
+fn validate_config_rejects_negative_or_non_finite_risk_lambda() {
+    for bad in [-0.01_f64, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert(stringify!(risk_lambda).to_string(), Value::Float(bad));
+        let mut errors = Vec::new();
+
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        let error = find_error(
+            &errors,
+            "strategies[0].config.risk_lambda",
+            "value_out_of_range",
+        );
+        assert_eq!(error.message, "must be finite and >= 0");
     }
 }
 
@@ -345,6 +448,91 @@ fn runtime_config_parse_normalizes_order_fields_to_nt_enums() {
     assert_eq!(config.entry_order.time_in_force, TimeInForce::Fok);
     assert_eq!(config.exit_order.order_type, OrderType::Market);
     assert_eq!(config.exit_order.time_in_force, TimeInForce::Ioc);
+}
+
+#[test]
+fn runtime_config_parse_accepts_submit_orders_switch() {
+    let mut raw = valid_raw_config();
+    let table = raw.as_table_mut().expect("valid config must be a table");
+    table.insert("submit_orders".to_string(), Value::Boolean(false));
+    // Shadow mode forbids NautilusTrader-managed venue actions (they bypass the
+    // submit/cancel chokepoints), so disable them; this test exercises the switch
+    // itself, not the managed-action rejection covered by the dedicated tests below.
+    table.insert("manage_stop".to_string(), Value::Boolean(false));
+    table.insert("manage_gtd_expiry".to_string(), Value::Boolean(false));
+    table.insert(
+        "manage_contingent_orders".to_string(),
+        Value::Boolean(false),
+    );
+    table.insert(
+        "external_order_claims".to_string(),
+        Value::Array(Vec::new()),
+    );
+
+    let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+        .expect("submit_orders should parse through runtime config");
+
+    assert!(!config.submit_orders);
+}
+
+#[test]
+fn parse_config_rejects_shadow_mode_with_nt_managed_venue_actions() {
+    // valid_raw_config ships the NautilusTrader-managed knobs ON (live mode). Flipping
+    // only submit_orders to false must be rejected at load: shadow mode may not leave
+    // any NT-managed venue action that bypasses the submit/cancel chokepoints.
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .insert("submit_orders".to_string(), Value::Boolean(false));
+
+    let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+        .expect_err("shadow mode with NT-managed venue actions must be rejected");
+    let rendered = format!("{err}");
+    assert!(
+        rendered.contains("submit_orders=false"),
+        "rejection must cite the shadow-mode invariant: {rendered}"
+    );
+}
+
+#[test]
+fn validate_config_reports_every_shadow_mode_managed_venue_action() {
+    // The lint path collects (does not short-circuit) so a fully-managed config under
+    // shadow mode surfaces a violation for each NT-managed venue knob plus the
+    // non-empty external_order_claims, not just the first.
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .insert("submit_orders".to_string(), Value::Boolean(false));
+
+    let mut errors = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+    let rendered = format!("{errors:?}");
+    for field in [
+        "manage_stop",
+        "manage_gtd_expiry",
+        "manage_contingent_orders",
+        "external_order_claims",
+    ] {
+        assert!(
+            rendered.contains(field),
+            "shadow mode must reject {field}: {errors:#?}"
+        );
+    }
+}
+
+#[test]
+fn runtime_config_parse_rejects_missing_submit_orders() {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .remove("submit_orders");
+
+    let mut errors = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+    assert!(
+        format!("{errors:?}").contains("submit_orders"),
+        "a config that omits submit_orders must fail validation (fail-closed, no default): {errors:#?}"
+    );
 }
 
 #[test]
@@ -541,6 +729,7 @@ fn builder_requires_strategy_id_and_client_id() {
         vwap_depth_limit_bps = 15
         slippage_buffer_bps = 15
         risk_lambda = 0.5
+        sizing_ev_reference_bps = 500
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
         forced_flat_stale_reference_ms = 1500
@@ -777,6 +966,7 @@ fn builder_requires_pricing_model_fields() {
         vwap_depth_limit_bps = 15
         slippage_buffer_bps = 15
         risk_lambda = 0.5
+        sizing_ev_reference_bps = 500
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
         forced_flat_stale_reference_ms = 1500

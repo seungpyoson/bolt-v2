@@ -5951,11 +5951,14 @@ def deploy_logs_reused_evidence(job_lines: list[str]) -> bool:
 
 
 def detector_forces_build_on_workflow_dispatch(job_lines: list[str]) -> bool:
+    # The push and workflow_dispatch cases are unified in a single `if` arm:
+    #   if [[ "..." == "push" || "..." == "workflow_dispatch" ]]; then
+    # Verify that this combined arm exists and unconditionally emits value=true.
     text = uncommented_text(job_lines)
     branch = branch_body(
         text,
-        "elif",
-        '"${{ github.event_name }}" == "workflow_dispatch"',
+        "if",
+        '"${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch"',
     )
     return branch is not None and 'echo "value=true" >> "$GITHUB_OUTPUT"' in branch
 

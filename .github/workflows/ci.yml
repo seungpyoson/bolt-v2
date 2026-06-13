@@ -34,7 +34,10 @@ on:
   # Manual lane: GitHub Actions does not deliver pull_request events for PRs
   # whose diff exceeds its internal size limit (observed at ~28k files on #610),
   # so oversized PRs need a manually dispatched run against the branch ref.
-  # full_ci defaults true, so a bare `gh workflow run ci.yml` still runs everything.
+  # full_ci is a required structural slot enforced by ci/github-actions-runners.toml
+  # (ci_provenance.dispatch.workflow_input = "full_ci") — its presence is what the
+  # ci_provenance policy resolver detects, not its value. The resolver always applies
+  # the workflow_dispatch = "full" policy regardless of the input value.
   workflow_dispatch:
     inputs:
       full_ci:
@@ -135,10 +138,9 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            # workflow_dispatch is the manual lane for oversized PRs; always full-build,
-            # never the skip path - a dispatched run must not produce vacuous evidence.
-            echo "value=true" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # push and workflow_dispatch always require a full build: push covers main
+            # and tags; workflow_dispatch is the manual lane for oversized PRs where
+            # a dispatched run must not produce vacuous evidence.
             echo "value=true" >> "$GITHUB_OUTPUT"
           elif [[ "${{ steps.build_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"

@@ -536,6 +536,7 @@ fn evaluate_universe(
     let mut converted_record_count = 0;
     let mut converted_canonical_rows = 0;
     let mut converted_nt_catalog_rows = 0;
+    let mut converted_completion_proof_seen = false;
     let mut source_object_count = 0;
     let mut source_object_gate_count = 0;
     let mut source_object_gate_source_binding_count = 0;
@@ -560,6 +561,7 @@ fn evaluate_universe(
             path.display()
         );
         completion_ledger_id = Some(ledger.ledger_id);
+        converted_completion_proof_seen = true;
         converted_record_count += ledger.record_count;
         converted_canonical_rows += ledger.total_canonical_rows;
         converted_nt_catalog_rows += ledger.total_nt_iterations;
@@ -808,6 +810,7 @@ fn evaluate_universe(
         let path = resolve_existing_path(base_dir, path);
         artifact_refs.push(artifact_ref("selected_conversion_manifest", &path)?);
         let conversion: SelectedConversionManifestSummary = read_json(&path)?;
+        converted_completion_proof_seen = true;
         converted_record_count += 1;
         converted_canonical_rows += conversion.canonical_rows;
         converted_nt_catalog_rows += conversion
@@ -838,6 +841,7 @@ fn evaluate_universe(
         converted_record_count,
         source_object_count,
         source_conversion_run_object_count,
+        converted_completion_proof_seen,
     )?;
 
     Ok(VenueScaleConversionAcceptanceUniverse {
@@ -895,6 +899,7 @@ fn validate_status_inputs(
     converted_record_count: u64,
     source_object_count: u64,
     planned_conversion_run_object_count: u64,
+    converted_completion_proof_seen: bool,
 ) -> Result<()> {
     match spec.status {
         VenueScaleConversionAcceptanceStatus::Converted => {
@@ -908,11 +913,22 @@ fn validate_status_inputs(
                 "converted universe {} must not contain blocking issues",
                 spec.universe_id
             );
-            // A Converted status must be COMPUTED from completeness, never
-            // copied from the operator-asserted spec: when the conversion run
-            // plan declares planned objects, every one must have a converted
-            // record (record_count_mismatch otherwise). Mirrors the sibling
-            // source-universe execution acceptance completeness blocker.
+            // A Converted status must rest on a self-attesting completion-proof
+            // artifact, never on a raw converted_record_count > 0: a completion
+            // ledger reaches `status: ready` only after its own internal coverage
+            // computation, and a selected conversion manifest is a finalized
+            // conversion output. Without such a proof there is no coverage
+            // evidence at all (the run-plan equality check below is skipped
+            // whenever no run plan is referenced, planned == 0).
+            ensure!(
+                converted_completion_proof_seen,
+                "converted universe {} must reference a completion ledger or selected conversion \
+                 manifest as coverage proof",
+                spec.universe_id
+            );
+            // When a conversion run plan declares planned objects, every one must
+            // have a converted record. This is the same completeness discipline
+            // the sibling source-universe execution acceptance evaluator applies.
             ensure!(
                 planned_conversion_run_object_count == 0
                     || converted_record_count == planned_conversion_run_object_count,
@@ -1043,7 +1059,7 @@ mod tests {
         let spec = converted_universe_spec();
         // converted_record_count (3) < planned conversion-run object count (5):
         // the operator-asserted Converted status must be rejected, not copied.
-        let error = validate_status_inputs(&spec, 3, 0, 5)
+        let error = validate_status_inputs(&spec, 3, 0, 5, true)
             .expect_err("converted universe short of planned objects must be blocked");
         assert!(
             format!("{error:#}").contains("record_count_mismatch"),
@@ -1054,7 +1070,31 @@ mod tests {
     #[test]
     fn converted_status_accepts_full_planned_object_coverage() {
         let spec = converted_universe_spec();
-        validate_status_inputs(&spec, 5, 0, 5)
+        validate_status_inputs(&spec, 5, 0, 5, true)
             .expect("converted universe covering every planned object is accepted");
+    }
+
+    #[test]
+    fn converted_status_without_completion_proof_is_rejected_when_planned_zero() {
+        let spec = converted_universe_spec();
+        // planned == 0 (no run plan) and no completion-proof artifact: the prior
+        // bypass accepted this on converted_record_count > 0 alone. It must now
+        // be rejected for missing coverage proof.
+        let error = validate_status_inputs(&spec, 7, 0, 0, false)
+            .expect_err("converted universe without a completion proof must be blocked");
+        assert!(
+            format!("{error:#}").contains("coverage proof"),
+            "expected coverage-proof blocker, got: {error:#}"
+        );
+    }
+
+    #[test]
+    fn converted_status_with_completion_proof_and_no_run_plan_is_accepted() {
+        let spec = converted_universe_spec();
+        // Control: a self-attesting completion proof with no run plan
+        // (planned == 0) is the legitimate Converted-via-completion-ledger or
+        // selected-manifest case.
+        validate_status_inputs(&spec, 7, 0, 0, true)
+            .expect("converted universe with a completion proof and no run plan is accepted");
     }
 }

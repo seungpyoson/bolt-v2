@@ -134,9 +134,22 @@ If Ubicloud exposes a per-repo or project runner/vCPU cap, set the first cap to 
 
 ### Lever A: test-result reuse by fingerprint
 
-Decision: no-go for implementation in this PR; gather post-instrumentation evidence first.
+Decision: go. Slice A implements safe nextest shard reuse by fingerprint for `.github/workflows/ci.yml`.
 
-The one-day lookback had 34 CI runs without fingerprint artifacts and 0 CI runs with known fingerprints. That is expected because prior runs did not publish the nextest fingerprint. This PR adds the fingerprint artifact, so a later lookback can measure fingerprint-identical spend without log scraping or historical checkouts.
+Post-instrumentation evidence found real duplicate nextest spend:
+
+| Metric | Count |
+| --- | ---: |
+| v1 fingerprint artifacts | 130 |
+| unique fingerprints | 94 |
+| repeated fingerprint groups | 19 |
+| reruns beyond first occurrence | 36 |
+| reruns after prior successful same-fingerprint run | 32 |
+| duplicate nextest shard runner-minutes | ~1,422 |
+
+The workflow now resolves the current nextest fingerprint after `test-archive` publishes `nextest-archive-fingerprint-*`. If a bounded search finds a newer-prior successful CI run with exactly one matching fingerprint artifact, exactly one matching CI provenance artifact, matching workflow/config digests, successful required job evidence, and the same parsed nextest fingerprint, the four `nextest shard` jobs are skipped. The `test` aggregate and `gate` jobs accept that path only when resolver outputs identify the reused source run, source SHA, and provenance artifact. Missing, malformed, ambiguous, expired, failed, cancelled, in-progress, wrong-workflow, wrong-OS, wrong-arch, wrong-profile, wrong-shard-count, wrong-schema, or otherwise unverifiable evidence falls back to normal full nextest shards.
+
+Rollback switch: set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to force full CI for PRs while preserving the resolver code path for investigation, or revert the Slice A workflow/provenance commits if reuse itself must be removed. Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; it does not make cache hits proof and does not bypass the validated reuse requirement.
 
 ### Lever B: full CI on demand
 
@@ -194,5 +207,4 @@ This Slice 1 PR should not close #648 by itself. Remaining close requirements:
 
 - Verify and document the Ubicloud-side cap setting path, or document from dashboard/API evidence that no such control exists.
 - Reconcile one day of meter output against Ubicloud dashboard spend.
-- Collect post-instrumentation fingerprint evidence and re-run Lever A quantification.
 - Implement Lever B only in a separate focused PR if the owner accepts the measured go decision.

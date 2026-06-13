@@ -22,8 +22,11 @@ import zipfile
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "ci_provenance.py"
 SHA = "a1a6be0d94e887538ebcd9afced6c94046a557d6"
+OTHER_SHA = "b" * 40
 RUN_ID = 24623219988
 CHECK_SUITE_ID = 65233803543
+NEXTEST_FINGERPRINT = f"nextest-archive-v1-Linux-X64-test-profile-shards-4-{'a' * 64}"
+NEXTEST_FINGERPRINT_ARTIFACT = f"nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-{'a' * 64}"
 
 CONFIG_TOML = """
 schema_version = 1
@@ -327,6 +330,18 @@ def valid_record(module, config_path: pathlib.Path) -> dict[str, object]:
     }
 
 
+def record_with_fingerprint(
+    module,
+    config_path: pathlib.Path,
+    fingerprint: object = NEXTEST_FINGERPRINT,
+    **overrides: object,
+) -> dict[str, object]:
+    record = valid_record(module, config_path)
+    record["nextest_fingerprint"] = fingerprint
+    record.update(overrides)
+    return record
+
+
 def run_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "id": RUN_ID,
@@ -356,6 +371,24 @@ def provenance_artifact(**overrides: object) -> dict[str, object]:
         "name": f"ci-provenance-attempt-{run_attempt}",
         "expired": False,
         "archive_download_url": f"artifact://{artifact_id}",
+        "workflow_run": {
+            "id": run_id,
+            "head_branch": "main",
+            "head_sha": SHA,
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def fingerprint_artifact(**overrides: object) -> dict[str, object]:
+    artifact_id = overrides.get("id", 456)
+    run_id = overrides.get("run_id", RUN_ID)
+    name = overrides.get("name", NEXTEST_FINGERPRINT_ARTIFACT)
+    payload: dict[str, object] = {
+        "id": artifact_id,
+        "name": name,
+        "expired": False,
         "workflow_run": {
             "id": run_id,
             "head_branch": "main",
@@ -491,6 +524,225 @@ def assert_unknown_record_schema_fails() -> None:
 
 def assert_resolve_fingerprint_is_rejected() -> None:
     assert_fails("resolve-fingerprint is not supported", ["resolve-fingerprint"])
+
+
+def resolve_fingerprint_with_fake(
+    module,
+    config_path: pathlib.Path,
+    fake: FakeGitHub,
+    *,
+    current_fingerprint: str = NEXTEST_FINGERPRINT,
+    current_run_id: int = RUN_ID + 999,
+    now: str = "2026-06-13T00:30:00Z",
+):
+    return module.resolve_fingerprint_reuse(
+        repo="seungpyoson/bolt-v2",
+        token="token",
+        current_fingerprint=current_fingerprint,
+        current_run_id=current_run_id,
+        config=module.load_config(config_path),
+        config_path=config_path,
+        api_json=fake.json,
+        api_bytes=fake.bytes,
+        now=module.parse_timestamp(now),
+    )
+
+
+def assert_fingerprint_reuse_prior_green_returns_reuse() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = record_with_fingerprint(module, config)
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={
+                RUN_ID: {
+                    "artifacts": [
+                        fingerprint_artifact(id=11),
+                        provenance_artifact(id=12),
+                    ]
+                }
+            },
+            records_by_artifact_id={12: record},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not True:
+            raise AssertionError(result)
+        if result.source_run_id != str(RUN_ID):
+            raise AssertionError(result)
+        if result.source_sha != SHA:
+            raise AssertionError(result)
+        if result.source_artifact_id != "12":
+            raise AssertionError(result)
+        if "matched" not in result.reason:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_no_prior_run_returns_no_reuse() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        result = resolve_fingerprint_with_fake(module, config, FakeGitHub(runs_pages=[[]]))
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if result.source_run_id or result.source_sha or result.source_artifact_id:
+            raise AssertionError(result)
+        if "no prior successful" not in result.reason:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_rejects_failed_cancelled_and_wrong_workflow_runs() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        cases = [
+            ("failed", run_payload(conclusion="failure")),
+            ("cancelled", run_payload(conclusion="cancelled")),
+            ("in-progress", run_payload(status="in_progress", conclusion=None)),
+            ("wrong workflow", run_payload(path=".github/workflows/backtester-ci.yml")),
+        ]
+        for label, run in cases:
+            result = resolve_fingerprint_with_fake(module, config, FakeGitHub(runs_pages=[[run]]))
+            if result.reuse_found is not False:
+                raise AssertionError((label, result))
+
+
+def assert_fingerprint_reuse_rejects_ambiguous_and_expired_artifacts() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = record_with_fingerprint(module, config)
+        cases = [
+            (
+                "ambiguous fingerprint",
+                {
+                    "artifacts": [
+                        fingerprint_artifact(id=1),
+                        fingerprint_artifact(id=2),
+                        provenance_artifact(id=3),
+                    ]
+                },
+                {3: record},
+            ),
+            (
+                "expired fingerprint",
+                {"artifacts": [fingerprint_artifact(expired=True), provenance_artifact(id=4)]},
+                {4: record},
+            ),
+            (
+                "expired provenance",
+                {"artifacts": [fingerprint_artifact(id=5), provenance_artifact(id=6, expired=True)]},
+                {6: record},
+            ),
+        ]
+        for label, artifacts, records in cases:
+            fake = FakeGitHub(
+                runs_pages=[[run_payload()]],
+                artifacts_by_run_id={RUN_ID: artifacts},
+                records_by_artifact_id=records,
+            )
+            result = resolve_fingerprint_with_fake(module, config, fake)
+            if result.reuse_found is not False:
+                raise AssertionError((label, result))
+            if label.split()[0] not in result.reason:
+                raise AssertionError((label, result))
+
+
+def assert_fingerprint_reuse_requires_exact_fingerprint_components() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        variants = [
+            NEXTEST_FINGERPRINT.replace("Linux", "macOS"),
+            NEXTEST_FINGERPRINT.replace("X64", "ARM64"),
+            NEXTEST_FINGERPRINT.replace("test-profile", "default-profile"),
+            NEXTEST_FINGERPRINT.replace("shards-4", "shards-8"),
+            NEXTEST_FINGERPRINT.replace("v1", "v2", 1),
+        ]
+        for fingerprint in variants:
+            record = record_with_fingerprint(module, config, fingerprint=fingerprint)
+            fake = FakeGitHub(
+                runs_pages=[[run_payload()]],
+                artifacts_by_run_id={
+                    RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
+                },
+                records_by_artifact_id={2: record},
+            )
+            result = resolve_fingerprint_with_fake(module, config, fake)
+            if result.reuse_found is not False:
+                raise AssertionError((fingerprint, result))
+
+
+def assert_fingerprint_reuse_malformed_fingerprint_fails_closed() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        result = resolve_fingerprint_with_fake(
+            module,
+            config,
+            FakeGitHub(runs_pages=[[run_payload()]]),
+            current_fingerprint="not-a-nextest-fingerprint",
+        )
+        if result.reuse_found is not False or "malformed current fingerprint" not in result.reason:
+            raise AssertionError(result)
+
+        record = record_with_fingerprint(module, config, fingerprint="not-a-nextest-fingerprint")
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}},
+            records_by_artifact_id={2: record},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_selects_newest_valid_prior_green() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        older = record_with_fingerprint(module, config, run_id=RUN_ID)
+        newer = record_with_fingerprint(
+            module,
+            config,
+            run_id=RUN_ID + 1,
+            head_sha=OTHER_SHA,
+            tested_sha=OTHER_SHA,
+        )
+        fake = FakeGitHub(
+            runs_pages=[
+                [
+                    run_payload(id=RUN_ID + 1, head_sha=OTHER_SHA, updated_at="2026-06-13T00:20:00Z"),
+                    run_payload(id=RUN_ID, updated_at="2026-06-13T00:10:00Z"),
+                ]
+            ],
+            artifacts_by_run_id={
+                RUN_ID + 1: {
+                    "artifacts": [
+                        fingerprint_artifact(
+                            id=21,
+                            run_id=RUN_ID + 1,
+                            workflow_run={"id": RUN_ID + 1, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                        provenance_artifact(
+                            id=22,
+                            run_id=RUN_ID + 1,
+                            workflow_run={"id": RUN_ID + 1, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                    ]
+                },
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=11), provenance_artifact(id=12)]},
+            },
+            records_by_artifact_id={12: older, 22: newer},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.source_run_id != str(RUN_ID + 1) or result.source_sha != OTHER_SHA:
+            raise AssertionError(result)
 
 
 def assert_top_level_help_is_supported() -> None:
@@ -1138,7 +1390,13 @@ def main() -> int:
     assert_invalid_shard_count_fails()
     assert_literal_shard_count_template_loads()
     assert_unknown_record_schema_fails()
-    assert_resolve_fingerprint_is_rejected()
+    assert_fingerprint_reuse_prior_green_returns_reuse()
+    assert_fingerprint_reuse_no_prior_run_returns_no_reuse()
+    assert_fingerprint_reuse_rejects_failed_cancelled_and_wrong_workflow_runs()
+    assert_fingerprint_reuse_rejects_ambiguous_and_expired_artifacts()
+    assert_fingerprint_reuse_requires_exact_fingerprint_components()
+    assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
+    assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
     assert_ci_policy_outputs_matrix()
     assert_config_digest_is_canonical()

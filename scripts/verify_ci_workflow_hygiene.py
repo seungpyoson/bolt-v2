@@ -101,6 +101,7 @@ REQUIRED_JOBS = (
     "check-aarch64",
     "source-fence",
     "test-archive",
+    "nextest-fingerprint-reuse",
     "test-shards",
     "test",
     "build",
@@ -170,13 +171,23 @@ CI_PROVENANCE_POLICY_EXPECTED = {
 assert set(CI_PROVENANCE_POLICY_ROWS) == set(
     CI_PROVENANCE_POLICY_EXPECTED
 ), "CI_PROVENANCE_POLICY_ROWS and CI_PROVENANCE_POLICY_EXPECTED keys must match"
-TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build", "ci-provenance-emit")
+TAG_SKIPPED_JOBS = (
+    "fmt-check",
+    "deny",
+    "clippy",
+    "source-fence",
+    "nextest-fingerprint-reuse",
+    "test",
+    "build",
+    "ci-provenance-emit",
+)
 TAG_SKIP_REQUIRED_JOBS = (
     "fmt-check",
     "deny",
     "clippy",
     "source-fence",
     "test-archive",
+    "nextest-fingerprint-reuse",
     "test-shards",
     "test",
     "ci-provenance-emit",
@@ -240,6 +251,7 @@ TAG_SKIP_ALWAYS_IF_RE = re.compile(
 SAME_SHA_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
 FULL_CI_REQUIRED_EXPR = "needs.ci-policy.outputs.full_ci_required == 'true'"
 TAG_REUSE_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'tag_reuse'"
+NEXTEST_REUSE_MISS_EXPR = "needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true'"
 BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
 BUILD_IF_RE = re.compile(
     r"^    if:\s*\$\{\{\s*"
@@ -5660,6 +5672,61 @@ def same_sha_job_runs_resolver(job_lines: list[str]) -> bool:
     return "id: evidence" in text and "python3 scripts/find_same_sha_main_evidence.py" in text
 
 
+def fingerprint_reuse_job_has_outputs(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    required = (
+        "reuse_found: ${{ steps.reuse.outputs.reuse_found }}",
+        "source_run_id: ${{ steps.reuse.outputs.source_run_id }}",
+        "source_sha: ${{ steps.reuse.outputs.source_sha }}",
+        "source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}",
+        "reason: ${{ steps.reuse.outputs.reason }}",
+    )
+    return all(item in text for item in required)
+
+
+def fingerprint_reuse_job_downloads_current_fingerprint(job_lines: list[str]) -> bool:
+    for block in action_blocks(job_lines, "actions/download-artifact@"):
+        if (
+            block_has_input(block, "pattern", "nextest-archive-fingerprint-*")
+            and block_has_input(block, "path", ".ci-provenance/fingerprint")
+            and block_has_input(block, "merge-multiple", "true")
+            and block_has_scalar(block, "continue-on-error", "true")
+            and any("needs.test-archive.result == 'success'" in line for line in block)
+        ):
+            return True
+    return False
+
+
+def fingerprint_reuse_job_runs_resolver(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    required = (
+        "id: reuse",
+        "python3 scripts/ci_provenance.py resolve-fingerprint",
+        '--current-run-id "${{ github.run_id }}"',
+        "--current-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
+        '| tee -a "$GITHUB_OUTPUT"',
+    )
+    return all(item in text for item in required)
+
+
+def test_shards_skip_on_fingerprint_reuse(job_lines: list[str]) -> bool:
+    return NEXTEST_REUSE_MISS_EXPR in uncommented_text(job_lines)
+
+
+def test_accepts_fingerprint_reuse(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    required = (
+        'reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"',
+        'if [[ "$reuse_found" == "true" ]]; then',
+        '"${{ needs.nextest-fingerprint-reuse.result }}" != "success"',
+        "nextest fingerprint reuse did not expose source_run_id",
+        "nextest fingerprint reuse did not expose source_sha",
+        "nextest fingerprint reuse did not expose source_artifact_id",
+        "nextest shards reused from run",
+    )
+    return all(item in text for item in required)
+
+
 def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "python3 scripts/ci_provenance.py emit-full-ci" in text and "--output ci-provenance.json" in text
@@ -5912,6 +5979,27 @@ def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
             errors.append(f"gate must require {job} skipped on tag reuse")
     if not branch_exits_reachable(tag_body, "if", '"${{ needs.check-aarch64.result }}" != "success"'):
         errors.append("gate must require check-aarch64 success on tag reuse")
+    return errors
+
+
+def gate_checks_nextest_fingerprint_reuse(gate_text: str) -> list[str]:
+    errors: list[str] = []
+    if 'reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"' not in gate_text:
+        errors.append("gate must read nextest fingerprint reuse output")
+    sections = top_level_if_body_and_remainder(
+        gate_standard_body(gate_text),
+        '"$reuse_found" == "true"',
+    )
+    if sections is None:
+        errors.append("gate must branch on nextest fingerprint reuse")
+        return errors
+    reuse_body = sections[0]
+    if '"${{ needs.nextest-fingerprint-reuse.result }}" != "success"' not in reuse_body:
+        errors.append("gate must require nextest fingerprint reuse resolver success")
+    if '"${{ needs.ci-provenance-emit.result }}" != "skipped"' not in reuse_body:
+        errors.append("gate must require ci-provenance-emit skipped on nextest fingerprint reuse")
+    if "nextest shards reused from run" not in reuse_body:
+        errors.append("gate must log nextest fingerprint reuse provenance")
     return errors
 
 
@@ -6295,6 +6383,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must not need source-fence")
     if "test-shards" in jobs and "test-archive" not in extract_needs(jobs["test-shards"]):
         errors.append("test-shards needs test-archive")
+    if "test-shards" in jobs and "nextest-fingerprint-reuse" not in extract_needs(jobs["test-shards"]):
+        errors.append("test-shards needs nextest-fingerprint-reuse")
 
     if "clippy" in jobs:
         clippy_text = uncommented_text(jobs["clippy"])
@@ -6369,12 +6459,32 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must build through just test-archive")
         errors.extend(test_archive_fingerprint_errors(archive_lines))
 
+    if "nextest-fingerprint-reuse" in jobs:
+        reuse_lines = jobs["nextest-fingerprint-reuse"]
+        reuse_needs = extract_needs(reuse_lines)
+        if "ci-policy" not in reuse_needs:
+            errors.append("nextest-fingerprint-reuse needs ci-policy")
+        if "test-archive" not in reuse_needs:
+            errors.append("nextest-fingerprint-reuse needs test-archive")
+        if not job_if_uses_always(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must use always()")
+        if not job_gates_on_full_ci_required(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must gate on full_ci_required")
+        if not fingerprint_reuse_job_has_outputs(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must expose reuse provenance outputs")
+        if not fingerprint_reuse_job_downloads_current_fingerprint(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must download current nextest fingerprint fail-closed")
+        if not fingerprint_reuse_job_runs_resolver(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must run ci_provenance.py resolve-fingerprint")
+
     if "test-shards" in jobs:
         test_shards_needs = extract_needs(jobs["test-shards"])
         if "ci-policy" not in test_shards_needs:
             errors.append("test-shards needs ci-policy")
         if not job_gates_on_full_ci_required(jobs["test-shards"]):
             errors.append("test-shards must gate on full_ci_required")
+        if not test_shards_skip_on_fingerprint_reuse(jobs["test-shards"]):
+            errors.append("test-shards must skip on validated nextest fingerprint reuse")
         test_lines = jobs["test-shards"]
         test_text = uncommented_text(test_lines)
         if not has_line_matching(test_lines, TEST_FAIL_FAST_FALSE_RE):
@@ -6410,8 +6520,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test must gate on full_ci_required")
         if "test-shards" not in test_needs:
             errors.append("test needs test-shards")
+        if "test-archive" not in test_needs:
+            errors.append("test needs test-archive")
+        if "nextest-fingerprint-reuse" not in test_needs:
+            errors.append("test needs nextest-fingerprint-reuse")
         if not gate_checks_lane_success(test_text, "test-shards"):
             errors.append("test must check needs.test-shards.result")
+        if not test_accepts_fingerprint_reuse(jobs["test"]):
+            errors.append("test must accept validated nextest fingerprint reuse")
         if not job_if_uses_always(jobs["test"]):
             errors.append("test must use always()")
 
@@ -6434,6 +6550,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         for job in (*CI_PROVENANCE_REQUIRED_JOBS, "build"):
             if job not in emit_needs:
                 errors.append(f"ci-provenance-emit needs {job}")
+        if "nextest-fingerprint-reuse" not in emit_needs:
+            errors.append("ci-provenance-emit needs nextest-fingerprint-reuse")
         if "gate" in emit_needs:
             errors.append("ci-provenance-emit must not need gate")
         if not job_if_uses_always(emit_lines):
@@ -6442,6 +6560,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("ci-provenance-emit must skip tag reuse")
         if not job_gates_on_full_ci_required(emit_lines):
             errors.append("ci-provenance-emit must gate on full_ci_required")
+        if NEXTEST_REUSE_MISS_EXPR not in uncommented_text(emit_lines):
+            errors.append("ci-provenance-emit must skip validated nextest fingerprint reuse")
         if not ci_provenance_emit_runs_emitter(emit_lines):
             errors.append("ci-provenance-emit must run provenance emitter")
         errors.extend(ci_provenance_emit_checks_needs(emit_lines, (*CI_PROVENANCE_REQUIRED_JOBS, "build")))
@@ -6482,8 +6602,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"gate must check needs.{job}.result")
         if "same-sha-main-evidence" not in gate_needs:
             errors.append("gate needs same-sha-main-evidence")
+        if "nextest-fingerprint-reuse" not in gate_needs:
+            errors.append("gate needs nextest-fingerprint-reuse")
         errors.extend(gate_policy_truth_table_errors(gate_text))
         errors.extend(gate_checks_same_sha_reuse(gate_text))
+        errors.extend(gate_checks_nextest_fingerprint_reuse(gate_text))
         if not has_line_matching(jobs["gate"], GATE_IF_RE):
             errors.append("gate must use always()")
         if "nextest_fingerprint" in gate_text:

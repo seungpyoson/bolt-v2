@@ -415,10 +415,47 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  nextest-fingerprint-reuse:
+    name: nextest fingerprint reuse
+    needs: [ci-policy, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    outputs:
+      reuse_found: ${{ steps.reuse.outputs.reuse_found }}
+      source_run_id: ${{ steps.reuse.outputs.source_run_id }}
+      source_sha: ${{ steps.reuse.outputs.source_sha }}
+      source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}
+      reason: ${{ steps.reuse.outputs.reason }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Download current nextest archive fingerprint
+        if: ${{ needs.test-archive.result == 'success' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          pattern: nextest-archive-fingerprint-*
+          path: .ci-provenance/fingerprint
+          merge-multiple: true
+
+      - name: Resolve nextest fingerprint reuse
+        id: reuse
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >
+          python3 scripts/ci_provenance.py resolve-fingerprint
+          --current-run-id "${{ github.run_id }}"
+          --current-fingerprint-path .ci-provenance/fingerprint/cache-key.txt
+          | tee -a "$GITHUB_OUTPUT"
+
   test-shards:
     name: nextest shard ${{ matrix.shard }} of 4
-    needs: [ci-policy, test-archive]
-    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
+    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     strategy:
       fail-fast: false
@@ -462,13 +499,38 @@ jobs:
 
   test:
     name: test
-    needs: [ci-policy, test-shards]
+    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - name: Check test shards
         shell: bash
         run: |
+          if [[ "${{ needs.test-archive.result }}" != "success" ]]; then
+            echo "nextest archive did not succeed"
+            exit 1
+          fi
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
+          if [[ "$reuse_found" == "true" ]]; then
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_run_id"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_sha"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_artifact_id }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_artifact_id"
+              exit 1
+            fi
+            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
+            exit 0
+          fi
           if [[ "${{ needs.test-shards.result }}" != "success" ]]; then
             echo "test shards did not succeed"
             exit 1
@@ -566,8 +628,8 @@ jobs:
 
   ci-provenance-emit:
     name: ci-provenance-emit
-    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -643,7 +705,7 @@ jobs:
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
           && 'gate-deferred'
           || 'gate' }}
-    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
@@ -653,6 +715,7 @@ jobs:
           policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
           full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
           ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
           if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
             echo "ci-policy did not succeed"
             exit 1
@@ -692,6 +755,10 @@ jobs:
               echo "test unexpectedly ran during tag reuse"
               exit 1
             fi
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "skipped" ]]; then
+              echo "nextest-fingerprint-reuse unexpectedly ran during tag reuse"
+              exit 1
+            fi
             if [[ "${{ needs.build.result }}" != "skipped" ]]; then
               echo "build unexpectedly ran during tag reuse"
               exit 1
@@ -721,12 +788,24 @@ jobs:
             echo "unknown CI policy path '$policy_path'"
             exit 1
           fi
-          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
-            if [[ "$ignore_emit_failure" == "true" ]]; then
-              echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
-            else
-              echo "ci-provenance-emit did not succeed"
+          if [[ "$reuse_found" == "true" ]]; then
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
               exit 1
+            fi
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+              echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
+              exit 1
+            fi
+            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
+          else
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
+              if [[ "$ignore_emit_failure" == "true" ]]; then
+                echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
+              else
+                echo "ci-provenance-emit did not succeed"
+                exit 1
+              fi
             fi
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then

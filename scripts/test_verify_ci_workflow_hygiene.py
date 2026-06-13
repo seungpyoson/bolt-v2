@@ -19,7 +19,7 @@ VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 SYNC_CI_DEBUG_SSH_PATH = REPO_ROOT / "scripts" / "sync_ci_debug_ssh_secret.py"
 DEBUG_WORKFLOW_PATH = ".github/workflows/ci-runner-debug.yml"
 SSH_RUNNER_ACTION = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
-GATE_NEEDS = "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]"
+GATE_NEEDS = "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]"
 GATE_NAME = """name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
@@ -455,10 +455,37 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  nextest-fingerprint-reuse:
+    name: nextest fingerprint reuse
+    needs: [ci-policy, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      reuse_found: ${{ steps.reuse.outputs.reuse_found }}
+      source_run_id: ${{ steps.reuse.outputs.source_run_id }}
+      source_sha: ${{ steps.reuse.outputs.source_sha }}
+      source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}
+      reason: ${{ steps.reuse.outputs.reason }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ needs.test-archive.result == 'success' }}
+        continue-on-error: true
+        with:
+          pattern: nextest-archive-fingerprint-*
+          path: .ci-provenance/fingerprint
+          merge-multiple: true
+      - name: Resolve nextest fingerprint reuse
+        id: reuse
+        run: >
+          python3 scripts/ci_provenance.py resolve-fingerprint
+          --current-run-id "${{ github.run_id }}"
+          --current-fingerprint-path .ci-provenance/fingerprint/cache-key.txt
+          | tee -a "$GITHUB_OUTPUT"
+
   test-shards:
     name: nextest shard ${{ matrix.shard }} of 4
-    needs: [ci-policy, test-archive]
-    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
+    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -493,11 +520,34 @@ jobs:
 
   test:
     name: test
-    needs: [ci-policy, test-shards]
+    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - run: |
+          if [[ "${{ needs.test-archive.result }}" != "success" ]]; then
+            exit 1
+          fi
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
+          if [[ "$reuse_found" == "true" ]]; then
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_run_id"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_sha"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_artifact_id }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_artifact_id"
+              exit 1
+            fi
+            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}"
+            exit 0
+          fi
           if [[ "${{ needs.test-shards.result }}" != "success" ]]; then
             exit 1
           fi
@@ -577,8 +627,8 @@ jobs:
 
   ci-provenance-emit:
     name: ci-provenance-emit
-    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -633,7 +683,7 @@ jobs:
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
           && 'gate-deferred'
           || 'gate' }}
-    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -641,6 +691,7 @@ jobs:
           policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
           full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
           ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
           if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
             exit 1
           fi
@@ -669,6 +720,9 @@ jobs:
             if [[ "${{ needs.test.result }}" != "skipped" ]]; then
               exit 1
             fi
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "skipped" ]]; then
+              exit 1
+            fi
             if [[ "${{ needs.build.result }}" != "skipped" ]]; then
               exit 1
             fi
@@ -694,11 +748,21 @@ jobs:
           else
             exit 1
           fi
-          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
-            if [[ "$ignore_emit_failure" == "true" ]]; then
-              echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
-            else
+          if [[ "$reuse_found" == "true" ]]; then
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
               exit 1
+            fi
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}"
+          else
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
+              if [[ "$ignore_emit_failure" == "true" ]]; then
+                echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
+              else
+                exit 1
+              fi
             fi
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
@@ -1002,6 +1066,15 @@ def replace_once(text: str, old: str, new: str) -> str:
     return text.replace(old, new, 1)
 
 
+def replace_once_after(text: str, anchor: str, old: str, new: str) -> str:
+    index = text.find(anchor)
+    if index == -1:
+        raise AssertionError(f"fixture anchor not found: {anchor!r}")
+    before = text[:index]
+    after = text[index:]
+    return before + replace_once(after, old, new)
+
+
 def repo_workflow_text(path: str) -> str:
     return (REPO_ROOT / path).read_text().replace("\r\n", "\n")
 
@@ -1285,16 +1358,16 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             "test-shards needs ci-policy",
             replace_once(
                 workflow,
-                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive]",
-                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: test-archive",
+                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]",
+                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [test-archive, nextest-fingerprint-reuse]",
             ),
         ),
         (
             "test needs ci-policy",
             replace_once(
                 workflow,
-                "  test:\n    name: test\n    needs: [ci-policy, test-shards]",
-                "  test:\n    name: test\n    needs: test-shards",
+                "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]",
+                "  test:\n    name: test\n    needs: [test-archive, nextest-fingerprint-reuse, test-shards]",
             ),
         ),
         (
@@ -1309,16 +1382,16 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             "ci-provenance-emit needs ci-policy",
             replace_once(
                 workflow,
-                "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
-                "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
+                "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
+                "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
             ),
         ),
         (
             "ci-provenance-emit must gate on full_ci_required",
             replace_once(
                 workflow,
-                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
-                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
             ),
         ),
         (
@@ -4998,7 +5071,7 @@ def main() -> int:
         "test-shards needs test-archive",
         replace_once(
             BASE_WORKFLOW,
-            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive]",
+            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]",
             "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: ci-policy",
         ),
     )
@@ -5006,7 +5079,7 @@ def main() -> int:
         "test needs test-shards",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: [ci-policy, test-shards]",
+            "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]",
             "  test:\n    name: test\n    needs: ci-policy",
         ),
     )
@@ -5018,8 +5091,8 @@ def main() -> int:
         "test must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: [ci-policy, test-shards]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
-            "  test:\n    name: test\n    needs: [ci-policy, test-shards]",
+            "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]",
         ),
     )
     assert_error(
@@ -5054,7 +5127,7 @@ def main() -> int:
         "source-fence must run just source-fence",
         replace_once(BASE_WORKFLOW, "- run: just source-fence", "- run: echo source-fence"),
     )
-    for job in ("fmt-check", "deny", "clippy", "source-fence", "test-archive", "test-shards", "test"):
+    for job in ("fmt-check", "deny", "clippy", "source-fence", "test-archive", "nextest-fingerprint-reuse", "test-shards", "test"):
         assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))
     assert_error(
         "fmt-check must run just fmt-check",
@@ -5136,16 +5209,16 @@ def main() -> int:
         "ci-provenance-emit needs source-fence",
         replace_once(
             BASE_WORKFLOW,
-            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
-            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, test-archive, test-shards, test, build]",
+            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
+            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
         ),
     )
     assert_error(
         "ci-provenance-emit must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
-            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
         ),
     )
     assert_error(
@@ -5182,16 +5255,18 @@ def main() -> int:
     )
     assert_error(
         "ci-provenance-emit fingerprint download path must match emitter argument",
-        replace_once(
+        replace_once_after(
             BASE_WORKFLOW,
+            "  ci-provenance-emit:",
             "          path: .ci-provenance/fingerprint",
             "          path: .ci-provenance/downloaded",
         ),
     )
     assert_error(
         "ci-provenance-emit fingerprint download path must match emitter argument",
-        replace_once(
+        replace_once_after(
             BASE_WORKFLOW,
+            "  ci-provenance-emit:",
             "          path: .ci-provenance/fingerprint",
             "          path: .ci-provenance/fingerprint-backup",
         ),
@@ -5200,20 +5275,26 @@ def main() -> int:
         "ci-provenance-emit fingerprint download path must match emitter argument",
         replace_once(
             replace_once(
-                BASE_WORKFLOW,
-                "          path: .ci-provenance/fingerprint",
-                "          path: .ci-provenance/downloaded",
+                replace_once_after(
+                    BASE_WORKFLOW,
+                    "  ci-provenance-emit:",
+                    "          path: .ci-provenance/fingerprint",
+                    "          path: .ci-provenance/downloaded",
+                ),
+                "          python3 scripts/ci_provenance.py emit-full-ci",
+                "          printf '%s\\n' 'path: .ci-provenance/fingerprint'\n"
+                "          python3 scripts/ci_provenance.py emit-full-ci",
             ),
-            "          python3 scripts/ci_provenance.py emit-full-ci",
-            "          printf '%s\\n' 'path: .ci-provenance/fingerprint'\n"
-            "          python3 scripts/ci_provenance.py emit-full-ci",
+            "          python3 scripts/ci_provenance.py resolve-fingerprint",
+            "          python3 scripts/ci_provenance.py resolve-fingerprint",
         ),
     )
     assert_error(
         "ci-provenance-emit must record nextest fingerprint when present",
         replace_once(
-            replace_once(
+            replace_once_after(
                 BASE_WORKFLOW,
+                "  ci-provenance-emit:",
                 "          pattern: nextest-archive-fingerprint-*",
                 "          pattern: nextest-archive-fingerprint-backup-*",
             ),
@@ -5225,8 +5306,9 @@ def main() -> int:
     assert_error(
         "ci-provenance-emit must record nextest fingerprint when present",
         replace_once(
-            replace_once(
+            replace_once_after(
                 BASE_WORKFLOW,
+                "  ci-provenance-emit:",
                 "        continue-on-error: true",
                 "        continue-on-error: false",
             ),

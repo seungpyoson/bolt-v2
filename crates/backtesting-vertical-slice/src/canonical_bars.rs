@@ -42,11 +42,6 @@ use super::{
     source_proof::AcceptedDataset,
 };
 
-/// Re-exported so callers that import from this module's namespace can pass the
-/// CSV bar transform identity to [`normalize_csv_native_bars`] without a
-/// separate import of [`canonical_trades`].
-pub use super::canonical_trades::BAR_TRANSFORM_IDENTITY;
-
 const NANOS_PER_MILLISECOND: u64 = 1_000_000;
 
 /// Fixed-duration NautilusTrader bar units, longest first, paired with their

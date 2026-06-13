@@ -335,6 +335,19 @@ def test_timeout_fails_loud_with_holder_info() -> None:
         assert str(holder.pid) in err, "timeout message must name the holding pid"
 
 
+def test_unrelated_holder_does_not_reenter() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(HOLD_RUNNER, tmp, str(sentinel), "10")
+        _wait_for(sentinel)
+        waiter = _spawn(ONCE_RUNNER, tmp, "1")
+        out, err = waiter.communicate(timeout=10)
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert waiter.returncode == 1, f"unrelated holder must not pass through: {out}"
+        assert "FAILED to acquire" in err
+
+
 def test_unexpected_flock_error_fails_immediately() -> None:
     lane_governor = _load("lane_governor")
     with tempfile.TemporaryDirectory() as tmp:
@@ -460,6 +473,7 @@ def main() -> int:
         test_second_acquire_queues_until_release,
         test_holder_metadata_written,
         test_timeout_fails_loud_with_holder_info,
+        test_unrelated_holder_does_not_reenter,
         test_unexpected_flock_error_fails_immediately,
         test_scrubbed_env_child_reenters_while_parent_holds,
         test_scrubbed_env_grandchild_reenters_while_grandparent_holds,

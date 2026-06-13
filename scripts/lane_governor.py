@@ -5,10 +5,10 @@ Every governed script (scripts/verify_*.py, scripts/test_*.py) imports this
 module and calls ``acquire()`` as the first two statements of its ``__main__`` block.
 Policy lives in ci/rust-verification.toml [local_lane_policy]. The lock path
 is committed and environment-independent so every checkout, worktree, and
-agent harness of this repo contends on the same machine-level file. CI
-(allowed_ci_env present) bypasses the lock. A waiter whose lock holder is one
-of its own process ancestors proceeds without the lock: the ancestor already
-serializes the repo. Coverage is enforced by scripts/verify_lane_governance.py.
+agent harness of this repo contends on the same machine-level file.
+GITHUB_ACTIONS=true bypasses the lock. A waiter whose lock holder is one of its
+own process ancestors proceeds without the lock: the ancestor already serializes
+the repo. Coverage is enforced by scripts/verify_lane_governance.py.
 """
 
 from __future__ import annotations

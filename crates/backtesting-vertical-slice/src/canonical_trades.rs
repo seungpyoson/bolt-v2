@@ -158,6 +158,26 @@ pub const INDEX_PRICES_TRANSFORM_IDENTITY: &str = "index-price-source-to-canonic
 /// Version of the registered index-price converter contract.
 pub const INDEX_PRICES_TRANSFORM_VERSION: &str = "1";
 
+/// NT catalog path-prefix and source-proof table family for mark-price updates.
+///
+/// Matches NautilusTrader's own `MarkPriceUpdate` catalog prefix
+/// (`impl_catalog_path_prefix!(MarkPriceUpdate, "mark_prices")`), so the
+/// canonical family name and the NT catalog directory agree.
+pub const MARK_PRICES_TABLE_FAMILY: &str = "mark_prices";
+
+/// Stable identity of the config-driven mark-price normalization transform.
+///
+/// Source-agnostic: a new mark/reference source that emits the same point-update
+/// shape binds this identity. The raw wire normalizer that fills a
+/// `CanonicalMarkPricesTable` from raw bytes is OUT OF SCOPE for this slice
+/// (data acquisition is tracked in bolt-v2 #685); only the canonical->NT
+/// projection path is delivered here. The operator dispatch fails loud naming
+/// that follow-up.
+pub const MARK_PRICES_TRANSFORM_IDENTITY: &str = "mark-price-source-to-canonical-mark-prices.v1";
+
+/// Version of the registered mark-price converter contract.
+pub const MARK_PRICES_TRANSFORM_VERSION: &str = "1";
+
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
 /// Expected sample raw header, in order.
@@ -180,6 +200,7 @@ pub enum SourceAdapterKind {
     ParquetEventStreamDeltas,
     SnapshotQuotes,
     IndexPrices,
+    MarkPrices,
     #[cfg(test)]
     SyntheticOrderBookDeltas,
 }
@@ -414,6 +435,15 @@ pub const INDEX_PRICES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinitio
     nt_data_type: crate::catalog_projection::NT_DATA_TYPE_INDEX_PRICE_UPDATE,
 };
 
+pub const MARK_PRICES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
+    identity: MARK_PRICES_TRANSFORM_IDENTITY,
+    version: MARK_PRICES_TRANSFORM_VERSION,
+    kind: SourceAdapterKind::MarkPrices,
+    table_family: MARK_PRICES_TABLE_FAMILY,
+    normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
+    nt_data_type: crate::catalog_projection::NT_DATA_TYPE_MARK_PRICE_UPDATE,
+};
+
 #[cfg(test)]
 pub const SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
     identity: "synthetic-order-book-deltas-fixture.v1",
@@ -435,6 +465,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
     SNAPSHOT_QUOTES_ADAPTER,
     INDEX_PRICES_ADAPTER,
+    MARK_PRICES_ADAPTER,
 ];
 
 #[cfg(test)]
@@ -448,6 +479,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
     SNAPSHOT_QUOTES_ADAPTER,
     INDEX_PRICES_ADAPTER,
+    MARK_PRICES_ADAPTER,
     SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER,
 ];
 
@@ -1277,6 +1309,9 @@ pub fn normalize_registered_trade_converter(
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize native trades")
         }
+        SourceAdapterKind::MarkPrices => {
+            bail!("mark-price adapter cannot normalize native trades")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize native trades")
@@ -1356,6 +1391,9 @@ pub fn normalize_registered_bar_converter(
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize native bars")
+        }
+        SourceAdapterKind::MarkPrices => {
+            bail!("mark-price adapter cannot normalize native bars")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1437,6 +1475,9 @@ pub fn normalize_registered_paged_json_bar_converter(
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize paged-JSON bars")
+        }
+        SourceAdapterKind::MarkPrices => {
+            bail!("mark-price adapter cannot normalize paged-JSON bars")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1521,6 +1562,9 @@ pub fn normalize_registered_jsonl_multi_interval_bar_converter(
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize JSONL multi-interval bars")
         }
+        SourceAdapterKind::MarkPrices => {
+            bail!("mark-price adapter cannot normalize JSONL multi-interval bars")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize JSONL multi-interval bars")
@@ -1602,6 +1646,9 @@ pub fn normalize_registered_order_book_delta_converter(
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize order-book deltas")
+        }
+        SourceAdapterKind::MarkPrices => {
+            bail!("mark-price adapter cannot normalize order-book deltas")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1692,6 +1739,9 @@ pub fn normalize_registered_tar_order_book_delta_converter(
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize tar order-book deltas")
         }
+        SourceAdapterKind::MarkPrices => {
+            bail!("mark-price adapter cannot normalize tar order-book deltas")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize tar order-book deltas")
@@ -1781,6 +1831,9 @@ pub fn normalize_registered_event_stream_delta_converter(
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize event-stream deltas")
         }
+        SourceAdapterKind::MarkPrices => {
+            bail!("mark-price adapter cannot normalize event-stream deltas")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize event-stream deltas")
@@ -1861,6 +1914,9 @@ pub fn normalize_registered_quote_converter(
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize top-of-book quotes")
+        }
+        SourceAdapterKind::MarkPrices => {
+            bail!("mark-price adapter cannot normalize top-of-book quotes")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -2799,6 +2855,40 @@ mod tests {
             &mismatch,
         )
         .expect_err("index-price adapter table-family mismatch must fail closed");
+        assert!(err.to_string().contains("table_family"), "{err}");
+    }
+
+    #[test]
+    fn mark_price_source_adapter_registry_exposes_data_family_metadata() {
+        let adapter = require_registered_source_adapter_for_table_family(
+            MARK_PRICES_TRANSFORM_IDENTITY,
+            MARK_PRICES_TRANSFORM_VERSION,
+            MARK_PRICES_TABLE_FAMILY,
+        )
+        .expect("registered mark-price source adapter");
+
+        assert_eq!(adapter.kind, SourceAdapterKind::MarkPrices);
+        assert_eq!(adapter.table_family, MARK_PRICES_TABLE_FAMILY);
+        assert_eq!(adapter.normalized_schema_version, NORMALIZED_SCHEMA_VERSION);
+        assert_eq!(
+            adapter.nt_data_type,
+            crate::catalog_projection::NT_DATA_TYPE_MARK_PRICE_UPDATE
+        );
+        assert_eq!(adapter.nt_data_type, "MarkPriceUpdate");
+        assert!(REGISTERED_SOURCE_ADAPTERS.contains(&MARK_PRICES_ADAPTER));
+        // The mark table family is the NT `MarkPriceUpdate` catalog prefix.
+        assert_eq!(MARK_PRICES_TABLE_FAMILY, "mark_prices");
+    }
+
+    #[test]
+    fn mark_price_source_adapter_registry_rejects_table_family_mismatch() {
+        let mismatch = format!("{MARK_PRICES_TABLE_FAMILY}_mismatch");
+        let err = require_registered_source_adapter_for_table_family(
+            MARK_PRICES_TRANSFORM_IDENTITY,
+            MARK_PRICES_TRANSFORM_VERSION,
+            &mismatch,
+        )
+        .expect_err("mark-price adapter table-family mismatch must fail closed");
         assert!(err.to_string().contains("table_family"), "{err}");
     }
 

@@ -28,14 +28,15 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     canonical_market_data::{
-        CanonicalBarsTable, CanonicalIndexPricesTable, CanonicalOrderBookDeltasTable,
-        CanonicalQuotesTable,
+        CanonicalBarsTable, CanonicalIndexPricesTable, CanonicalMarkPricesTable,
+        CanonicalOrderBookDeltasTable, CanonicalQuotesTable,
     },
     canonical_trades::{
         BAR_TABLE_FAMILY, CanonicalInstrumentIdentity, CanonicalTradesTable, ConverterConfig,
-        DELTAS_TABLE_FAMILY, INDEX_PRICES_TABLE_FAMILY, QUOTE_TABLE_FAMILY, RawPayloadConfig,
-        RawPayloadContainer, SourceAdapterKind, TRADE_TABLE_FAMILY,
-        normalize_registered_bar_converter, normalize_registered_event_stream_delta_converter,
+        DELTAS_TABLE_FAMILY, INDEX_PRICES_TABLE_FAMILY, MARK_PRICES_TABLE_FAMILY,
+        QUOTE_TABLE_FAMILY, RawPayloadConfig, RawPayloadContainer, SourceAdapterKind,
+        TRADE_TABLE_FAMILY, normalize_registered_bar_converter,
+        normalize_registered_event_stream_delta_converter,
         normalize_registered_jsonl_multi_interval_bar_converter,
         normalize_registered_order_book_delta_converter,
         normalize_registered_paged_json_bar_converter, normalize_registered_quote_converter,
@@ -44,12 +45,13 @@ use crate::{
     },
     catalog_projection::{
         CatalogInstrumentSpec, CatalogProjection, NT_DATA_TYPE_BAR,
-        NT_DATA_TYPE_INDEX_PRICE_UPDATE, NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK,
-        NT_DATA_TYPE_TRADE_TICK, logical_catalog_hash, project_canonical_bars_to_catalog,
-        project_canonical_index_to_catalog, project_canonical_order_book_deltas_to_catalog,
-        project_canonical_quotes_to_catalog, project_canonical_trades_to_catalog, read_back_bars,
-        read_back_index, read_back_order_book_deltas, read_back_quotes, read_back_trade_ticks,
-        ts_init_nanos,
+        NT_DATA_TYPE_INDEX_PRICE_UPDATE, NT_DATA_TYPE_MARK_PRICE_UPDATE,
+        NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK, NT_DATA_TYPE_TRADE_TICK,
+        logical_catalog_hash, project_canonical_bars_to_catalog,
+        project_canonical_index_to_catalog, project_canonical_mark_to_catalog,
+        project_canonical_order_book_deltas_to_catalog, project_canonical_quotes_to_catalog,
+        project_canonical_trades_to_catalog, read_back_bars, read_back_index, read_back_mark,
+        read_back_order_book_deltas, read_back_quotes, read_back_trade_ticks, ts_init_nanos,
     },
     conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_TABLES_FILE, ConversionCatalogMetadata,
@@ -65,10 +67,11 @@ use crate::{
     runner::{
         BacktestRunInputs, BacktestRunOutput, assert_bar_read_back_matches,
         assert_delta_read_back_matches, assert_index_read_back_matches,
-        assert_quote_read_back_matches, assert_read_back_matches, assert_time_window_overlaps_data,
-        expected_iterations, iterations_mismatch, market_structure_label,
-        nt_extension_surface_claim_limits, result_contract_warnings, run_backtest,
-        run_nt_backtest_node, run_purpose_label, time_window_excludes_all_data, window_bound_nanos,
+        assert_mark_read_back_matches, assert_quote_read_back_matches, assert_read_back_matches,
+        assert_time_window_overlaps_data, expected_iterations, iterations_mismatch,
+        market_structure_label, nt_extension_surface_claim_limits, result_contract_warnings,
+        run_backtest, run_nt_backtest_node, run_purpose_label, time_window_excludes_all_data,
+        window_bound_nanos,
     },
     source_proof::{
         AcceptedDataset, IngestManifestObjectRecord, SourceBindingRegistry,
@@ -382,6 +385,13 @@ fn ensure_container_matches_adapter_kind(
         // directly by the synthetic round-trip tests, not via this raw decode
         // boundary.
         SourceAdapterKind::IndexPrices => false,
+        // The mark-price raw normalizer (and thus its container shape) is not yet
+        // built — data acquisition is deferred to bolt-v2 #685. No container is
+        // admissible, so a run-spec naming the mark adapter fails loud here at
+        // config validation; the canonical->NT projection path is exercised
+        // directly by the synthetic round-trip tests, not via this raw decode
+        // boundary.
+        SourceAdapterKind::MarkPrices => false,
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => false,
     };
@@ -1079,6 +1089,7 @@ enum NormalizedTable {
     Deltas(CanonicalOrderBookDeltasTable),
     Quotes(CanonicalQuotesTable),
     Index(CanonicalIndexPricesTable),
+    Mark(CanonicalMarkPricesTable),
 }
 
 impl NormalizedTable {
@@ -1089,6 +1100,7 @@ impl NormalizedTable {
             Self::Deltas(_) => DELTAS_TABLE_FAMILY,
             Self::Quotes(_) => QUOTE_TABLE_FAMILY,
             Self::Index(_) => INDEX_PRICES_TABLE_FAMILY,
+            Self::Mark(_) => MARK_PRICES_TABLE_FAMILY,
         }
     }
 
@@ -1099,6 +1111,7 @@ impl NormalizedTable {
             Self::Deltas(_) => NT_DATA_TYPE_ORDER_BOOK_DELTA,
             Self::Quotes(_) => NT_DATA_TYPE_QUOTE_TICK,
             Self::Index(_) => NT_DATA_TYPE_INDEX_PRICE_UPDATE,
+            Self::Mark(_) => NT_DATA_TYPE_MARK_PRICE_UPDATE,
         }
     }
 
@@ -1109,6 +1122,7 @@ impl NormalizedTable {
             Self::Deltas(table) => &table.schema_version,
             Self::Quotes(table) => &table.schema_version,
             Self::Index(table) => &table.schema_version,
+            Self::Mark(table) => &table.schema_version,
         }
     }
 
@@ -1119,6 +1133,7 @@ impl NormalizedTable {
             Self::Deltas(table) => table.fidelity_class,
             Self::Quotes(table) => table.fidelity_class,
             Self::Index(table) => table.fidelity_class,
+            Self::Mark(table) => table.fidelity_class,
         }
     }
 
@@ -1129,6 +1144,7 @@ impl NormalizedTable {
             Self::Deltas(table) => table.rows.len(),
             Self::Quotes(table) => table.rows.len(),
             Self::Index(table) => table.rows.len(),
+            Self::Mark(table) => table.rows.len(),
         }
     }
 
@@ -1151,6 +1167,10 @@ impl NormalizedTable {
                 .first()
                 .and_then(|row| row.nt_instrument_id.as_deref()),
             Self::Index(table) => table
+                .rows
+                .first()
+                .and_then(|row| row.nt_instrument_id.as_deref()),
+            Self::Mark(table) => table
                 .rows
                 .first()
                 .and_then(|row| row.nt_instrument_id.as_deref()),
@@ -1180,6 +1200,10 @@ impl NormalizedTable {
                 .rows
                 .first()
                 .map(|row| row.canonical_instrument_key.as_str()),
+            Self::Mark(table) => table
+                .rows
+                .first()
+                .map(|row| row.canonical_instrument_key.as_str()),
         };
         key.context("normalized table is missing rows[0].canonical_instrument_key")
     }
@@ -1190,9 +1214,11 @@ impl NormalizedTable {
             Self::Bars(table) => {
                 format!("{}{}", table.bar_spec.step, table.bar_spec.aggregation).to_lowercase()
             }
-            Self::Trades(_) | Self::Deltas(_) | Self::Quotes(_) | Self::Index(_) => {
-                TABLE_DISCRIMINANT_DEFAULT.to_string()
-            }
+            Self::Trades(_)
+            | Self::Deltas(_)
+            | Self::Quotes(_)
+            | Self::Index(_)
+            | Self::Mark(_) => TABLE_DISCRIMINANT_DEFAULT.to_string(),
         }
     }
 
@@ -1255,6 +1281,14 @@ impl NormalizedTable {
                     row.availability_time,
                     row.capture_time,
                     &format!("index price {}", row.event_time),
+                )?
+                .as_u64())
+            }),
+            Self::Mark(table) => fold(&table.rows, |row| {
+                Ok(ts_init_nanos(
+                    row.availability_time,
+                    row.capture_time,
+                    &format!("mark price {}", row.event_time),
                 )?
                 .as_u64())
             }),
@@ -1324,6 +1358,14 @@ impl NormalizedTable {
                     row.availability_time,
                     row.capture_time,
                     &format!("index price {}", row.event_time),
+                )?
+                .as_u64())
+            }),
+            Self::Mark(table) => count(&table.rows, start, end, |row| {
+                Ok(ts_init_nanos(
+                    row.availability_time,
+                    row.capture_time,
+                    &format!("mark price {}", row.event_time),
                 )?
                 .as_u64())
             }),
@@ -1595,6 +1637,20 @@ fn normalize_tables_for_kind(
                  available via project_canonical_index_to_catalog"
             )
         }
+        SourceAdapterKind::MarkPrices => {
+            // The mark-price raw normalizer (data acquisition) is OUT OF SCOPE
+            // for this slice — tracked in bolt-v2 #685. This is the single
+            // fail-loud touchpoint to raw acquisition: an asserted, explicit
+            // boundary, not a TODO/debt. The canonical->NT projection path is
+            // fully wired (project_canonical_mark_to_catalog / read_back_mark /
+            // logical hash / dispatch) and proven by the synthetic round-trip
+            // tests in catalog_projection.
+            anyhow::bail!(
+                "mark-price source normalizer is not yet implemented (data acquisition \
+                 tracked in bolt-v2 #685); the mark canonical->NT projection path is \
+                 available via project_canonical_mark_to_catalog"
+            )
+        }
         SourceAdapterKind::CsvNativeTrades => {
             anyhow::bail!(
                 "CSV native-trades adapter dispatches through the single-table trade entry"
@@ -1638,7 +1694,8 @@ fn plan_projected_tables(
             NormalizedTable::Trades(_)
             | NormalizedTable::Deltas(_)
             | NormalizedTable::Quotes(_)
-            | NormalizedTable::Index(_) => None,
+            | NormalizedTable::Index(_)
+            | NormalizedTable::Mark(_) => None,
         };
         planned.push(PlannedTable {
             subroot: output_dir.join(&subroot_relative),
@@ -1713,6 +1770,11 @@ fn assert_planned_read_back(planned: &PlannedTable) -> Result<()> {
             let prices = read_back_index(&planned.subroot, &planned.nt_instrument_id)
                 .context("catalog read-back failed")?;
             assert_index_read_back_matches(&prices, table, &planned.nt_instrument_id)
+        }
+        NormalizedTable::Mark(table) => {
+            let prices = read_back_mark(&planned.subroot, &planned.nt_instrument_id)
+                .context("catalog read-back failed")?;
+            assert_mark_read_back_matches(&prices, table, &planned.nt_instrument_id)
         }
     }
 }
@@ -2051,6 +2113,7 @@ pub fn run_multi_table_from_run_spec(
         DELTAS_TABLE_FAMILY,
         QUOTE_TABLE_FAMILY,
         INDEX_PRICES_TABLE_FAMILY,
+        MARK_PRICES_TABLE_FAMILY,
     ] {
         let path = output_dir.join(stale_tree);
         if path.exists() {
@@ -2080,6 +2143,9 @@ pub fn run_multi_table_from_run_spec(
             NormalizedTable::Index(canonical) => {
                 project_canonical_index_to_catalog(canonical, instrument_spec, &table.subroot)
             }
+            NormalizedTable::Mark(canonical) => {
+                project_canonical_mark_to_catalog(canonical, instrument_spec, &table.subroot)
+            }
         }
         .with_context(|| format!("catalog projection failed for {}", table.subroot_relative))?;
         ensure!(
@@ -2107,6 +2173,7 @@ pub fn run_multi_table_from_run_spec(
             NormalizedTable::Deltas(canonical) => canonical.write_parquet(&table.canonical_path),
             NormalizedTable::Quotes(canonical) => canonical.write_parquet(&table.canonical_path),
             NormalizedTable::Index(canonical) => canonical.write_parquet(&table.canonical_path),
+            NormalizedTable::Mark(canonical) => canonical.write_parquet(&table.canonical_path),
         }
         .with_context(|| {
             format!(

@@ -1,13 +1,13 @@
-//! Gate 2 — canonical normalized order-book-delta, bar, quote, and index-price
-//! tables.
+//! Gate 2 — canonical normalized order-book-delta, bar, quote, index-price, and
+//! mark-price tables.
 //!
 //! Extends the canonical normalization layer beyond native `trades`
 //! ([`super::canonical_trades`]) to the additional NautilusTrader data families
 //! this slice projects: aggregated L2 order-book deltas, externally-aggregated
-//! OHLCV bars, top-of-book quotes, and index-price reference updates. Every
-//! table carries the same identity and provenance header shape as
-//! [`super::canonical_trades::CanonicalTradesTable`] and preserves the exact
-//! source price/size strings, so the catalog projection in
+//! OHLCV bars, top-of-book quotes, index-price reference updates, and mark-price
+//! reference updates. Every table carries the same identity and provenance
+//! header shape as [`super::canonical_trades::CanonicalTradesTable`] and
+//! preserves the exact source price/size strings, so the catalog projection in
 //! [`super::catalog_projection`] is the single bridge from accepted evidence to
 //! the NautilusTrader catalog.
 //!
@@ -16,8 +16,9 @@
 //! family binds to its own fidelity class: order-book deltas require
 //! [`SourceProofFidelityClass::L2Replay`], bars require
 //! [`SourceProofFidelityClass::TradeBarReplay`], top-of-book quotes require
-//! [`SourceProofFidelityClass::QuoteReplay`], and index-price updates require
-//! [`SourceProofFidelityClass::IndexReplay`].
+//! [`SourceProofFidelityClass::QuoteReplay`], index-price updates require
+//! [`SourceProofFidelityClass::IndexReplay`], and mark-price updates require
+//! [`SourceProofFidelityClass::MarkReplay`].
 
 use std::{fs::File, path::Path, sync::Arc};
 
@@ -962,6 +963,165 @@ impl CanonicalIndexPricesTable {
     }
 }
 
+/// One normalized mark-price reference update with full provenance.
+///
+/// The provenance prefix mirrors
+/// [`super::canonical_trades::CanonicalTradeRow`] exactly; the single payload
+/// field (`value`) is the exact source mark-price string for one NautilusTrader
+/// `MarkPriceUpdate` (a point update — no size, aggressor, or side; the NT
+/// `MarkPriceUpdate.value` is a `Price`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalMarkPriceRow {
+    pub schema_version: String,
+    pub ingest_run_id: String,
+    pub source_binding: String,
+    pub venue: String,
+    pub product_family: String,
+    pub product_category: String,
+    pub instrument_id: String,
+    pub canonical_instrument_key: String,
+    pub venue_symbol: String,
+    pub nt_instrument_id: Option<String>,
+    /// Exchange/source event timestamp in Unix nanoseconds.
+    pub event_time: i64,
+    /// Worker receipt/capture timestamp in Unix nanoseconds.
+    pub capture_time: i64,
+    /// Source availability timestamp in Unix nanoseconds, when distinct from event time.
+    pub availability_time: Option<i64>,
+    /// Native source sequence/print identity, when present.
+    pub source_sequence: Option<String>,
+    pub raw_payload_id: String,
+    pub source_proof_id: String,
+    /// Lowercase SHA-256 hex over the canonical raw object bytes.
+    pub payload_hash: String,
+    /// Lowercase SHA-256 hex over the transform identity.
+    pub transform_hash: String,
+    /// Exact source mark-price string (the NT `MarkPriceUpdate.value` is a `Price`).
+    pub value: String,
+}
+
+/// A validated canonical normalized mark-price table for one accepted object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalMarkPricesTable {
+    pub schema_version: String,
+    pub partition: TradesPartition,
+    pub source_proof_id: String,
+    pub source_proof_version: u32,
+    pub fidelity_class: SourceProofFidelityClass,
+    pub forbidden_claims: Vec<String>,
+    pub transform_hash: String,
+    pub payload_hash: String,
+    pub rows: Vec<CanonicalMarkPriceRow>,
+}
+
+impl CanonicalMarkPricesTable {
+    /// Validate required fields, fidelity class, timestamps, and parseable values.
+    ///
+    /// A mark/reference price series is a point-update reference feed, not a
+    /// book/trade/bar replay. It binds [`SourceProofFidelityClass::MarkReplay`]
+    /// — the dedicated NT mark-price replay class admitted by the run-manifest
+    /// gate (`ADMITTANCE_TABLE` binds `MarkPriceUpdate` to `MarkReplay` as a
+    /// runnable Primary row). `SignalOnly` has no primary row and is deliberately
+    /// non-runnable, so labelling the table `SignalOnly` would create a dead,
+    /// non-runnable gate-4 binding (a dual/dead path); `MarkReplay` matches the
+    /// S2 admittance table end to end (the same drift the sibling S3index slice
+    /// resolved by binding `IndexReplay` instead of the plan's `SignalOnly`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first contract violation.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.schema_version == NORMALIZED_SCHEMA_VERSION,
+            "unexpected schema_version {:?}",
+            self.schema_version
+        );
+        ensure!(
+            !self.rows.is_empty(),
+            "canonical mark prices table is empty"
+        );
+        for field in [
+            &self.partition.venue,
+            &self.partition.product_family,
+            &self.partition.product_category,
+            &self.partition.instrument_id,
+            &self.partition.dt,
+            &self.source_proof_id,
+            &self.transform_hash,
+            &self.payload_hash,
+        ] {
+            ensure!(!field.trim().is_empty(), "empty partition/provenance field");
+        }
+        ensure!(
+            self.fidelity_class == SourceProofFidelityClass::MarkReplay,
+            "mark prices must be labelled MARK_REPLAY"
+        );
+        ensure!(
+            !self.forbidden_claims.is_empty(),
+            "mark price table must carry explicit forbidden claims"
+        );
+
+        let mut previous_event_time = i64::MIN;
+        for (index, row) in self.rows.iter().enumerate() {
+            ensure!(
+                row.schema_version == NORMALIZED_SCHEMA_VERSION,
+                "row {index}: schema_version mismatch"
+            );
+            ensure!(row.event_time > 0, "row {index}: non-positive event_time");
+            // Mark prices share an event_time clock with trades/deltas: multiple
+            // prints can carry the same nanosecond timestamp (NT windows/orders by
+            // ts_init), so the rule is non-decreasing (>=), not the bars' strictly
+            // increasing open_time rule.
+            ensure!(
+                row.event_time >= previous_event_time,
+                "row {index}: event_time {} precedes previous {}",
+                row.event_time,
+                previous_event_time
+            );
+            previous_event_time = row.event_time;
+            ensure!(
+                row.instrument_id == self.partition.instrument_id,
+                "row {index}: instrument_id does not match partition"
+            );
+            for field in [
+                &row.ingest_run_id,
+                &row.source_binding,
+                &row.venue,
+                &row.product_family,
+                &row.product_category,
+                &row.instrument_id,
+                &row.canonical_instrument_key,
+                &row.venue_symbol,
+                &row.raw_payload_id,
+                &row.source_proof_id,
+                &row.payload_hash,
+                &row.transform_hash,
+                &row.value,
+            ] {
+                ensure!(
+                    !field.trim().is_empty(),
+                    "row {index}: empty required field"
+                );
+            }
+            for (name, field) in [
+                ("nt_instrument_id", &row.nt_instrument_id),
+                ("source_sequence", &row.source_sequence),
+            ] {
+                if let Some(field) = field {
+                    ensure!(
+                        !field.trim().is_empty(),
+                        "row {index}: empty nullable field {name}"
+                    );
+                }
+            }
+            row.value.parse::<Decimal>().map_err(|error| {
+                anyhow::anyhow!("row {index}: invalid value {:?}: {error}", row.value)
+            })?;
+        }
+        Ok(())
+    }
+}
+
 /// Write one canonical table record batch as a Parquet artifact.
 ///
 /// Shared by the bar and order-book-delta canonical writers; mirrors the
@@ -1379,6 +1539,100 @@ impl CanonicalIndexPricesTable {
             ],
         )
         .context("failed to build canonical index price record batch")
+    }
+
+    /// Write the canonical normalized table as a Parquet artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table is invalid or the file cannot be written.
+    pub fn write_parquet(&self, path: &Path) -> Result<()> {
+        self.validate()?;
+        write_record_batch_parquet(&self.to_record_batch()?, path)
+    }
+}
+
+impl CanonicalMarkPricesTable {
+    /// Arrow schema for the canonical mark-price table.
+    ///
+    /// Lists the IDENTICAL provenance columns as the quote/index/delta schema
+    /// plus the single `value` payload column (no size/aggressor columns — a
+    /// mark price is a point update).
+    #[must_use]
+    pub fn arrow_schema() -> Arc<Schema> {
+        let utf8 = |name: &str| Field::new(name, DataType::Utf8, false);
+        let utf8_nullable = |name: &str| Field::new(name, DataType::Utf8, true);
+        let int64 = |name: &str| Field::new(name, DataType::Int64, false);
+        let int64_nullable = |name: &str| Field::new(name, DataType::Int64, true);
+        Arc::new(Schema::new(vec![
+            utf8("schema_version"),
+            utf8("ingest_run_id"),
+            utf8("source_binding"),
+            utf8("venue"),
+            utf8("product_family"),
+            utf8("product_category"),
+            utf8("instrument_id"),
+            utf8("canonical_instrument_key"),
+            utf8("venue_symbol"),
+            utf8_nullable("nt_instrument_id"),
+            int64("event_time"),
+            int64("capture_time"),
+            int64_nullable("availability_time"),
+            utf8_nullable("source_sequence"),
+            utf8("raw_payload_id"),
+            utf8("source_proof_id"),
+            utf8("payload_hash"),
+            utf8("transform_hash"),
+            utf8("value"),
+        ]))
+    }
+
+    fn to_record_batch(&self) -> Result<RecordBatch> {
+        let utf8_col = |f: fn(&CanonicalMarkPriceRow) -> &str| {
+            Arc::new(StringArray::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let int64_col = |f: fn(&CanonicalMarkPriceRow) -> i64| {
+            Arc::new(Int64Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let opt_utf8_col = |f: fn(&CanonicalMarkPriceRow) -> Option<&str>| {
+            Arc::new(StringArray::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let opt_int64_col = |f: fn(&CanonicalMarkPriceRow) -> Option<i64>| {
+            Arc::new(Int64Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        RecordBatch::try_new(
+            Self::arrow_schema(),
+            vec![
+                utf8_col(|r| r.schema_version.as_str()),
+                utf8_col(|r| r.ingest_run_id.as_str()),
+                utf8_col(|r| r.source_binding.as_str()),
+                utf8_col(|r| r.venue.as_str()),
+                utf8_col(|r| r.product_family.as_str()),
+                utf8_col(|r| r.product_category.as_str()),
+                utf8_col(|r| r.instrument_id.as_str()),
+                utf8_col(|r| r.canonical_instrument_key.as_str()),
+                utf8_col(|r| r.venue_symbol.as_str()),
+                opt_utf8_col(|r| r.nt_instrument_id.as_deref()),
+                int64_col(|r| r.event_time),
+                int64_col(|r| r.capture_time),
+                opt_int64_col(|r| r.availability_time),
+                opt_utf8_col(|r| r.source_sequence.as_deref()),
+                utf8_col(|r| r.raw_payload_id.as_str()),
+                utf8_col(|r| r.source_proof_id.as_str()),
+                utf8_col(|r| r.payload_hash.as_str()),
+                utf8_col(|r| r.transform_hash.as_str()),
+                utf8_col(|r| r.value.as_str()),
+            ],
+        )
+        .context("failed to build canonical mark price record batch")
     }
 
     /// Write the canonical normalized table as a Parquet artifact.
@@ -2274,6 +2528,117 @@ mod tests {
     #[test]
     fn index_prices_validate_rejects_unparseable_value() {
         let mut table = index_prices_table();
+        table.rows[0].value = "not-a-decimal".to_string();
+        let error = table.validate().expect_err("unparseable value rejected");
+        assert!(error.to_string().contains("invalid value"), "{error}");
+    }
+
+    fn mark_row(event_time: i64, value: &str) -> CanonicalMarkPriceRow {
+        CanonicalMarkPriceRow {
+            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+            ingest_run_id: "ingest-run-test".to_string(),
+            source_binding: "synthetic-archive".to_string(),
+            venue: "testvenue".to_string(),
+            product_family: "prediction-market".to_string(),
+            product_category: "binary".to_string(),
+            instrument_id: "YES".to_string(),
+            canonical_instrument_key: "testvenue/prediction-market/YES".to_string(),
+            venue_symbol: "YES".to_string(),
+            nt_instrument_id: Some("YES.TESTVENUE".to_string()),
+            event_time,
+            capture_time: event_time,
+            availability_time: None,
+            source_sequence: Some(event_time.to_string()),
+            raw_payload_id: "feedface".to_string(),
+            source_proof_id: "source-proof-synthetic".to_string(),
+            payload_hash: "feedface".to_string(),
+            transform_hash: "0badc0de".to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn mark_prices_table() -> CanonicalMarkPricesTable {
+        let base = 1_700_000_000_000_000_000;
+        let rows = vec![mark_row(base, "0.50"), mark_row(base + 1, "0.51")];
+        CanonicalMarkPricesTable {
+            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+            partition: partition(),
+            source_proof_id: "source-proof-synthetic".to_string(),
+            source_proof_version: 1,
+            fidelity_class: SourceProofFidelityClass::MarkReplay,
+            forbidden_claims: vec!["No execution-quality claims.".to_string()],
+            transform_hash: "0badc0de".to_string(),
+            payload_hash: "feedface".to_string(),
+            rows,
+        }
+    }
+
+    #[test]
+    fn mark_prices_validate_accepts_well_formed_table() {
+        mark_prices_table()
+            .validate()
+            .expect("well-formed mark price table is valid");
+    }
+
+    #[test]
+    fn mark_prices_validate_rejects_empty_table() {
+        let mut table = mark_prices_table();
+        table.rows.clear();
+        let error = table
+            .validate()
+            .expect_err("empty mark price table rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("canonical mark prices table is empty"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn mark_prices_validate_rejects_wrong_fidelity_class() {
+        let mut table = mark_prices_table();
+        table.fidelity_class = SourceProofFidelityClass::SignalOnly;
+        let error = table.validate().expect_err("wrong fidelity rejected");
+        assert!(error.to_string().contains("MARK_REPLAY"), "{error}");
+    }
+
+    #[test]
+    fn mark_prices_validate_rejects_empty_forbidden_claims() {
+        let mut table = mark_prices_table();
+        table.forbidden_claims.clear();
+        let error = table
+            .validate()
+            .expect_err("empty forbidden claims rejected");
+        assert!(error.to_string().contains("forbidden claims"), "{error}");
+    }
+
+    #[test]
+    fn mark_prices_validate_rejects_non_positive_event_time() {
+        let mut table = mark_prices_table();
+        table.rows[0].event_time = 0;
+        let error = table
+            .validate()
+            .expect_err("non-positive event_time rejected");
+        assert!(
+            error.to_string().contains("non-positive event_time"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn mark_prices_validate_rejects_decreasing_event_time() {
+        let mut table = mark_prices_table();
+        table.rows[1].event_time = table.rows[0].event_time - 1;
+        let error = table
+            .validate()
+            .expect_err("decreasing event_time rejected");
+        assert!(error.to_string().contains("precedes previous"), "{error}");
+    }
+
+    #[test]
+    fn mark_prices_validate_rejects_unparseable_value() {
+        let mut table = mark_prices_table();
         table.rows[0].value = "not-a-decimal".to_string();
         let error = table.validate().expect_err("unparseable value rejected");
         assert!(error.to_string().contains("invalid value"), "{error}");

@@ -24,8 +24,8 @@ use anyhow::{Context, Result, ensure};
 use nautilus_core::{Params, UnixNanos, string::urlencoding};
 use nautilus_model::{
     data::{
-        Bar, BarSpecification, BarType, CatalogPathPrefix, IndexPriceUpdate, OrderBookDelta,
-        QuoteTick, TradeTick, order::BookOrder,
+        Bar, BarSpecification, BarType, CatalogPathPrefix, IndexPriceUpdate, MarkPriceUpdate,
+        OrderBookDelta, QuoteTick, TradeTick, order::BookOrder,
     },
     enums::{AggregationSource, AggressorSide, AssetClass, BookAction, OrderSide, PriceType},
     identifiers::{InstrumentId, Symbol, TradeId},
@@ -43,8 +43,9 @@ use ustr::Ustr;
 use super::{
     canonical_market_data::{
         CanonicalBarRow, CanonicalBarsTable, CanonicalIndexPriceRow, CanonicalIndexPricesTable,
-        CanonicalOrderBookDeltaRow, CanonicalOrderBookDeltasTable, CanonicalQuoteRow,
-        CanonicalQuotesTable, DeltaAction, DeltaSide,
+        CanonicalMarkPriceRow, CanonicalMarkPricesTable, CanonicalOrderBookDeltaRow,
+        CanonicalOrderBookDeltasTable, CanonicalQuoteRow, CanonicalQuotesTable, DeltaAction,
+        DeltaSide,
     },
     canonical_trades::{CanonicalTradesTable, TradeAggressorSide},
     source_proof::SourceProofFidelityClass,
@@ -68,6 +69,13 @@ pub const NT_DATA_TYPE_QUOTE_TICK: &str = "QuoteTick";
 /// `index_prices` via NT's own `impl_catalog_path_prefix!(IndexPriceUpdate,
 /// "index_prices")` — never redefined here.
 pub const NT_DATA_TYPE_INDEX_PRICE_UPDATE: &str = "IndexPriceUpdate";
+
+/// NautilusTrader data type written for the mark-price projection.
+///
+/// The token MUST equal the NT struct name; the catalog directory is
+/// `mark_prices` via NT's own `impl_catalog_path_prefix!(MarkPriceUpdate,
+/// "mark_prices")` — never redefined here.
+pub const NT_DATA_TYPE_MARK_PRICE_UPDATE: &str = "MarkPriceUpdate";
 
 /// Accepted spot instrument metadata needed to build the NautilusTrader
 /// `CurrencyPair`. Built from the accepted instrument-universe payload.
@@ -887,6 +895,18 @@ impl CanonicalPriceSizeView for CanonicalIndexPricesTable {
     }
 }
 
+impl CanonicalPriceSizeView for CanonicalMarkPricesTable {
+    fn price_values(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(self.rows.iter().map(|row| row.value.as_str()))
+    }
+    fn size_values(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        // A mark price is a point update with no size column, so the data's
+        // size scale folds to 0 and `widen_instrument_precision_for_data` keeps
+        // the instrument's own size precision unchanged.
+        Box::new(std::iter::empty())
+    }
+}
+
 /// Widen the catalog instrument's price/size precision to the accepted
 /// data's actual maximum decimal scale.
 ///
@@ -1529,6 +1549,129 @@ pub fn read_back_index(
         .context("query index prices from catalog")
 }
 
+/// Convert canonical mark-price rows into NautilusTrader `MarkPriceUpdate`s at
+/// the instrument's price precision.
+///
+/// A mark price is a point/reference update (the NT `MarkPriceUpdate.value`
+/// is a `Price`): there is no size, aggressor, or trade id. Replaying it feeds
+/// signals/reference series rather than driving strategy entries directly.
+/// Timestamps route through the shared S1 receipt-clock owners
+/// ([`ts_event_nanos`]/[`ts_init_nanos`]) — no new derivation here.
+///
+/// # Errors
+///
+/// Returns an error if a value cannot be represented at the instrument price
+/// precision, or a timestamp source is invalid.
+pub fn canonical_rows_to_mark_price_updates<I: Instrument + ?Sized>(
+    table: &CanonicalMarkPricesTable,
+    instrument: &I,
+) -> Result<Vec<MarkPriceUpdate>> {
+    let instrument_id = instrument.id();
+    let price_precision = instrument.price_precision();
+    table
+        .rows
+        .iter()
+        .map(|row| canonical_row_to_mark_price_update(instrument_id, row, price_precision))
+        .collect()
+}
+
+fn canonical_row_to_mark_price_update(
+    instrument_id: InstrumentId,
+    row: &CanonicalMarkPriceRow,
+    price_precision: u8,
+) -> Result<MarkPriceUpdate> {
+    let price_str = rescaled(&row.value, price_precision)?;
+    let value = Price::from_str(&price_str)
+        .map_err(|error| anyhow::anyhow!("invalid rescaled value {price_str:?}: {error}"))?;
+    let label = format!("mark price {}", row.event_time);
+    let ts_event = ts_event_nanos(row.event_time, &label)?;
+    let ts_init = ts_init_nanos(row.availability_time, row.capture_time, &label)?;
+    Ok(MarkPriceUpdate::new(
+        instrument_id,
+        value,
+        ts_event,
+        ts_init,
+    ))
+}
+
+/// Project a canonical mark-price table into a NautilusTrader
+/// `ParquetDataCatalog`.
+///
+/// Mirrors [`project_canonical_trades_to_catalog`]: validate, build the
+/// instrument, widen precision to the accepted data, assert the instrument id
+/// matches the canonical rows, convert, refuse a dirty root, then write the
+/// instrument and the `MarkPriceUpdate` projection. NautilusTrader writes its
+/// native `data/mark_prices/<instrument_id>/...` tree below `catalog_root`.
+///
+/// # Errors
+///
+/// Returns an error if instrument construction, conversion, or catalog writes
+/// fail, or if `catalog_root` is a non-empty (dirty) directory.
+pub fn project_canonical_mark_to_catalog<S: CatalogInstrumentSpecSource + ?Sized>(
+    table: &CanonicalMarkPricesTable,
+    spec: &S,
+    catalog_root: &Path,
+) -> Result<CatalogProjection> {
+    table.validate()?;
+    let instrument = spec.build_instrument_any()?;
+    // Venue instrument metadata can be coarser than the accepted archive's
+    // actual prints; widen precision to the data before binding and writing.
+    let instrument = widen_instrument_precision_for_data(instrument, table)?;
+    let instrument_id = instrument.id();
+    let row_instrument_id = table.rows[0]
+        .nt_instrument_id
+        .as_deref()
+        .context("canonical row missing nt_instrument_id")?;
+    ensure!(
+        instrument_id.to_string() == row_instrument_id,
+        "instrument id {instrument_id} does not match canonical rows {}",
+        row_instrument_id
+    );
+    let updates = canonical_rows_to_mark_price_updates(table, &instrument)?;
+    let count = updates.len();
+
+    ensure_clean_catalog_root(catalog_root)?;
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_instruments(vec![instrument])
+        .context("write instrument to catalog")?;
+    catalog
+        .write_to_parquet(updates, None, None, None)
+        .context("write mark prices to catalog")?;
+
+    Ok(CatalogProjection {
+        catalog_root: catalog_root.to_path_buf(),
+        nt_instrument_id: instrument_id.to_string(),
+        data_type: NT_DATA_TYPE_MARK_PRICE_UPDATE.to_string(),
+        trade_count: count,
+        catalog_hash: logical_catalog_hash(catalog_root)?,
+        fidelity_class: table.fidelity_class,
+    })
+}
+
+/// Prove the resolved NautilusTrader dependency can read the projected
+/// `MarkPriceUpdate` data back from `catalog_root`.
+///
+/// `MarkPriceUpdate` is keyed by bare instrument id under
+/// `data/mark_prices/<id>/` exactly like trades/deltas/quotes (not bar-type
+/// keyed), so this uses the file-filter path, not the bar query path.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_mark(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec<MarkPriceUpdate>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    let instrument_ids = vec![nt_instrument_id.to_string()];
+    let files =
+        catalog_files_for_instruments::<MarkPriceUpdate>(&catalog, catalog_root, &instrument_ids)?;
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    catalog
+        .query_typed_data::<MarkPriceUpdate>(None, None, None, None, Some(files), false)
+        .context("query mark prices from catalog")
+}
+
 /// Convert canonical bar rows into NautilusTrader `Bar`s under the table's
 /// externally-aggregated bar type, at the instrument's price/size precision.
 ///
@@ -1784,6 +1927,23 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
             p.ts_init.as_u64(),
         )
     });
+    let mark_files =
+        catalog_files_for_instruments::<MarkPriceUpdate>(&catalog, root, &instrument_ids)?;
+    let mut mark_prices = if mark_files.is_empty() {
+        Vec::new()
+    } else {
+        catalog
+            .query_typed_data::<MarkPriceUpdate>(None, None, None, None, Some(mark_files), false)
+            .context("query mark prices from catalog for logical hash")?
+    };
+    mark_prices.sort_by_key(|p| {
+        (
+            p.ts_event.as_u64(),
+            p.instrument_id.to_string(),
+            p.value.as_decimal().to_string(),
+            p.ts_init.as_u64(),
+        )
+    });
 
     let mut hasher = Sha256::new();
     hasher.update(b"nautilus-logical-catalog.v1");
@@ -1882,6 +2042,21 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(index_price.ts_event.as_u64().to_string().as_bytes());
         hasher.update([37u8]);
         hasher.update(index_price.ts_init.as_u64().to_string().as_bytes());
+    }
+    // Mark-price loop appended AFTER the index loop with NEW unique
+    // domain-separator tags 38..41 (existing tags end at 37 for index prices).
+    // Reusing any earlier tag would let two different families hash equal; these
+    // are fresh, so the committed reference catalog (which holds zero mark files)
+    // keeps hashing to its recorded value — this loop emits nothing for it.
+    for mark_price in mark_prices {
+        hasher.update([38u8]);
+        hasher.update(mark_price.instrument_id.to_string().as_bytes());
+        hasher.update([39u8]);
+        hasher.update(mark_price.value.as_decimal().to_string().as_bytes());
+        hasher.update([40u8]);
+        hasher.update(mark_price.ts_event.as_u64().to_string().as_bytes());
+        hasher.update([41u8]);
+        hasher.update(mark_price.ts_init.as_u64().to_string().as_bytes());
     }
     Ok(hex::encode(hasher.finalize()))
 }
@@ -3758,6 +3933,214 @@ max_notional = "200000"
         assert_ne!(
             a.catalog_hash, b.catalog_hash,
             "different index value must change the catalog hash"
+        );
+    }
+
+    fn mark_row(
+        event_time: i64,
+        capture_time: i64,
+        availability_time: Option<i64>,
+        value: &str,
+    ) -> CanonicalMarkPriceRow {
+        CanonicalMarkPriceRow {
+            schema_version: crate::canonical_trades::NORMALIZED_SCHEMA_VERSION.to_string(),
+            ingest_run_id: "ingest-run-test".to_string(),
+            source_binding: "synthetic-archive".to_string(),
+            venue: "BYBIT".to_string(),
+            product_family: "spot".to_string(),
+            product_category: "spot".to_string(),
+            instrument_id: "BNBUSDC".to_string(),
+            canonical_instrument_key: "bybit/spot/BNBUSDC".to_string(),
+            venue_symbol: "BNBUSDC".to_string(),
+            nt_instrument_id: Some("BNBUSDC.BYBIT".to_string()),
+            event_time,
+            capture_time,
+            availability_time,
+            source_sequence: Some(event_time.to_string()),
+            raw_payload_id: "feedface".to_string(),
+            source_proof_id: "source-proof-synthetic".to_string(),
+            payload_hash: "feedface".to_string(),
+            transform_hash: "0badc0de".to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    // Distinct capture_time != event_time (availability None) so the
+    // ts_init==capture_time proof is non-vacuous. The values carry 2 decimals,
+    // finer than the spec()'s 1-decimal (0.1) tick, so projection widens the
+    // instrument price precision (exercising the mark price_values view); the
+    // empty size_values view leaves size precision unchanged.
+    fn canonical_mark_prices_table() -> CanonicalMarkPricesTable {
+        let event_time = 1_700_000_000_000_000_000;
+        let capture_time = 1_700_000_000_000_000_500;
+        let rows = vec![
+            mark_row(event_time, capture_time, None, "617.05"),
+            mark_row(event_time + 1, capture_time + 1, None, "617.15"),
+        ];
+        CanonicalMarkPricesTable {
+            schema_version: crate::canonical_trades::NORMALIZED_SCHEMA_VERSION.to_string(),
+            partition: crate::canonical_trades::TradesPartition {
+                venue: "BYBIT".to_string(),
+                product_family: "spot".to_string(),
+                product_category: "spot".to_string(),
+                instrument_id: "BNBUSDC".to_string(),
+                dt: "2026-05-22".to_string(),
+            },
+            source_proof_id: "source-proof-synthetic".to_string(),
+            source_proof_version: 1,
+            fidelity_class: SourceProofFidelityClass::MarkReplay,
+            forbidden_claims: vec!["No execution-quality claims.".to_string()],
+            transform_hash: "0badc0de".to_string(),
+            payload_hash: "feedface".to_string(),
+            rows,
+        }
+    }
+
+    #[test]
+    fn projects_and_reads_back_mark_prices() {
+        let table = canonical_mark_prices_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let projection =
+            project_canonical_mark_to_catalog(&table, &spec(), dir.path()).expect("project");
+        assert_eq!(projection.trade_count, 2);
+        assert_eq!(projection.data_type, NT_DATA_TYPE_MARK_PRICE_UPDATE);
+        assert_eq!(projection.nt_instrument_id, "BNBUSDC.BYBIT");
+        assert!(!projection.catalog_hash.is_empty());
+
+        let loaded = read_back_mark(dir.path(), "BNBUSDC.BYBIT").expect("read back");
+        assert_eq!(loaded.len(), 2);
+        let mut loaded = loaded;
+        loaded.sort_by_key(|p| p.ts_event.as_u64());
+        for (update, row) in loaded.iter().zip(table.rows.iter()) {
+            assert_eq!(update.instrument_id.to_string(), "BNBUSDC.BYBIT");
+            assert_eq!(
+                update.value.as_decimal(),
+                Decimal::from_str(&row.value).unwrap()
+            );
+            let label = format!("mark price {}", row.event_time);
+            // ts_event preserves the event clock; ts_init is the receipt clock.
+            assert_eq!(
+                update.ts_event.as_u64(),
+                ts_event_nanos(row.event_time, &label).unwrap().as_u64()
+            );
+            assert_eq!(row.availability_time, None);
+            assert_eq!(
+                update.ts_init.as_u64(),
+                ts_init_nanos(row.availability_time, row.capture_time, &label)
+                    .unwrap()
+                    .as_u64(),
+                "ts_init must equal capture_time (the receipt clock), not event_time"
+            );
+        }
+    }
+
+    #[test]
+    fn mark_projection_widens_price_precision_and_keeps_size_precision() {
+        // The 2-decimal mark values are finer than spec()'s 1-decimal (0.1)
+        // tick, so projection widens price precision; mark carries no size, so
+        // the empty size_values view leaves the instrument size precision intact.
+        let table = canonical_mark_prices_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        project_canonical_mark_to_catalog(&table, &spec(), dir.path()).expect("project");
+        let loaded = read_back_mark(dir.path(), "BNBUSDC.BYBIT").expect("read back");
+        assert!(!loaded.is_empty());
+        for update in &loaded {
+            assert_eq!(
+                update.value.precision, 2,
+                "mark value precision must widen to the data's 2 decimals"
+            );
+        }
+        // spec()'s size_increment is 0.0001 (precision 4) and must be unchanged
+        // by a mark projection that contributes no size column.
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        assert_eq!(instrument.size_precision(), 4);
+    }
+
+    #[test]
+    fn mark_prices_fail_loud_when_capture_invalid_and_no_availability() {
+        // validate() does not guard capture_time, so a None availability with a
+        // non-positive capture clock reaches the seam and must fail loud naming
+        // the capture_time field, never silently stamping ts_init=0.
+        let mut table = canonical_mark_prices_table();
+        table.rows[0].availability_time = None;
+        table.rows[0].capture_time = 0;
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let err = canonical_rows_to_mark_price_updates(&table, &instrument).unwrap_err();
+        assert!(err.to_string().contains("capture_time"), "{err}");
+    }
+
+    #[test]
+    fn mark_prices_fail_loud_when_availability_some_but_invalid() {
+        // A present-but-invalid availability_time must fail, never fall back to
+        // the (valid) capture clock.
+        let mut table = canonical_mark_prices_table();
+        table.rows[0].availability_time = Some(0);
+        table.rows[0].capture_time = 42;
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let err = canonical_rows_to_mark_price_updates(&table, &instrument).unwrap_err();
+        assert!(err.to_string().contains("availability_time"), "{err}");
+    }
+
+    #[test]
+    fn mark_projection_refuses_dirty_catalog_root() {
+        let table = canonical_mark_prices_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        // Pre-seed the catalog root so it is non-empty.
+        fs::write(dir.path().join("stale.parquet"), b"stale").unwrap();
+        let err = project_canonical_mark_to_catalog(&table, &spec(), dir.path())
+            .expect_err("dirty catalog root must be refused");
+        assert!(err.to_string().contains("not empty"), "{err}");
+    }
+
+    #[test]
+    fn mark_catalog_hash_is_deterministic_across_roots() {
+        // No committed reference mark catalog exists, so determinism across two
+        // independent roots is the pin: the same mark data must hash identically.
+        let table = canonical_mark_prices_table();
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let a = project_canonical_mark_to_catalog(&table, &spec(), dir_a.path()).unwrap();
+        let b = project_canonical_mark_to_catalog(&table, &spec(), dir_b.path()).unwrap();
+        assert_eq!(
+            a.catalog_hash, b.catalog_hash,
+            "same mark data must hash identically regardless of root"
+        );
+    }
+
+    #[test]
+    fn mark_catalog_hash_changes_with_data_content() {
+        // Two mark tables differing only in one row's value must hash
+        // differently, proving the new [38..41] tag block covers mark value
+        // bytes (not just file paths).
+        let table_a = canonical_mark_prices_table();
+        let mut table_b = canonical_mark_prices_table();
+        table_b.rows[0].value = "618.05".to_string();
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let a = project_canonical_mark_to_catalog(&table_a, &spec(), dir_a.path()).unwrap();
+        let b = project_canonical_mark_to_catalog(&table_b, &spec(), dir_b.path()).unwrap();
+        assert_ne!(
+            a.catalog_hash, b.catalog_hash,
+            "different mark value must change the catalog hash"
+        );
+    }
+
+    #[test]
+    fn mark_section_does_not_change_trade_only_catalog_hash() {
+        // The mark loop is appended AFTER the index loop with fresh tags 38..41
+        // and emits nothing for an empty mark set, so a trade-only catalog must
+        // still hash to expected_logical_catalog_hash (which hashes only the
+        // instrument + ticks, no mark bytes). This protects the committed PMXT
+        // hash pin against mark-section byte-tag drift.
+        let table = canonical_table();
+        let dir = tempfile::TempDir::new().unwrap();
+        let projection = project_canonical_trades_to_catalog(&table, &spec(), dir.path()).unwrap();
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let ticks = canonical_rows_to_trade_ticks(&table, &instrument).expect("ticks");
+        assert_eq!(
+            projection.catalog_hash,
+            expected_logical_catalog_hash(&instrument, &ticks),
+            "an empty mark section must add zero bytes to a trade-only catalog hash"
         );
     }
 

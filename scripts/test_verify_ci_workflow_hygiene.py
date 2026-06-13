@@ -1068,6 +1068,26 @@ check_name = "test"
             "ci_provenance.policy.override.ignore_emit_failure must default to false",
             valid.replace("ignore_emit_failure = false\n", ""),
         ),
+        (
+            "ci_provenance.policy.ready_pr must be full",
+            valid.replace('ready_pr = "full"', 'ready_pr = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.ready_for_review must be full",
+            valid.replace('ready_for_review = "full"', 'ready_for_review = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.workflow_dispatch must be full",
+            valid.replace('workflow_dispatch = "full"', 'workflow_dispatch = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.main_push must be full",
+            valid.replace('main_push = "full"', 'main_push = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.draft_pr_synchronize must be defer",
+            valid.replace('draft_pr_synchronize = "defer"', 'draft_pr_synchronize = "full"'),
+        ),
     ]
     for fragment, config_text in cases:
         error = runner_config_load_error(config_text)
@@ -4257,6 +4277,13 @@ def assert_ci_lint_runs_verify_remote_tests() -> None:
         raise AssertionError("ci-lint-workflow must run remote verification watcher self-tests")
 
 
+def assert_ci_lint_runs_ci_provenance_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_ci_provenance.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run CI provenance self-tests")
+
+
 def assert_ci_lint_runs_command_understanding_tests() -> None:
     justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     expected = "python3 scripts/test_command_understanding.py"
@@ -4274,6 +4301,7 @@ def assert_cargo_zigbuild_probe_has_no_redundant_true() -> None:
 def main() -> int:
     assert_ci_lint_runs_rust_verification_cache_retention_tests()
     assert_ci_lint_runs_verify_remote_tests()
+    assert_ci_lint_runs_ci_provenance_tests()
     assert_ci_lint_runs_command_understanding_tests()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()

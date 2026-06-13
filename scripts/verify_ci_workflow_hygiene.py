@@ -155,6 +155,18 @@ CI_PROVENANCE_POLICY_ROWS = (
     "tag",
     "unknown_event",
 )
+CI_PROVENANCE_POLICY_EXPECTED = {
+    "draft_pr_synchronize": "defer",
+    "draft_pr_opened": "defer",
+    "draft_pr_reopened": "defer",
+    "converted_to_draft": "defer",
+    "ready_pr": "full",
+    "ready_for_review": "full",
+    "workflow_dispatch": "full",
+    "main_push": "full",
+    "tag": "tag_reuse",
+    "unknown_event": "full",
+}
 TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build", "ci-provenance-emit")
 TAG_SKIP_REQUIRED_JOBS = (
     "fmt-check",
@@ -7021,6 +7033,9 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
             raise ValueError(
                 f"ci_provenance.policy.{row} must be one of {sorted(CI_PROVENANCE_POLICY_VALUES)!r}"
             )
+        expected = CI_PROVENANCE_POLICY_EXPECTED[row]
+        if value != expected:
+            raise ValueError(f"ci_provenance.policy.{row} must be {expected}")
     override = require_config_table(policy, "override", "ci_provenance.policy")
     if override.get("force_full_ci") is not False:
         raise ValueError("ci_provenance.policy.override.force_full_ci must default to false")

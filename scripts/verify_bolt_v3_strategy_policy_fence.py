@@ -7,7 +7,10 @@ it is resolved layout-independently through the shared gated-source-root
 registry so the gate follows file moves. Each file's production text — comments
 and `#[cfg(test)]` code excluded via the shared production-text helper — is
 scanned individually so violations are reported against the file that actually
-contains them.
+contains them. Code-construct rules are matched against a code-only view with
+comments and string literals blanked, so naming a banned token inside an error
+message or doc string is not a violation; only rules that deliberately target
+string-literal content opt into scanning the original text.
 """
 
 from __future__ import annotations
@@ -17,13 +20,22 @@ import sys
 from dataclasses import dataclass
 
 from bolt_v3_source_roots import REPO_ROOT, STRATEGY_SOURCE_ROOTS, source_set_files
-from verify_bolt_v3_pure_rust_runtime import production_text
+from verify_bolt_v3_pure_rust_runtime import (
+    production_text,
+    strip_rust_comments_and_literals,
+)
 
 
 @dataclass(frozen=True)
 class Rule:
     label: str
     pattern: re.Pattern[str]
+    # When False (default) the rule bans a *code* construct and is matched against
+    # code only — comments and string literals are blanked first, so naming a banned
+    # token inside an error message or doc string is not a violation. When True the
+    # rule deliberately targets string-literal *content* (e.g. hardcoded NT metadata)
+    # and is matched against the original text.
+    scan_literals: bool = False
 
 
 @dataclass(frozen=True)
@@ -43,10 +55,15 @@ FORBIDDEN_RULES: tuple[Rule, ...] = (
             r"|\bsubscribe_any\b"
             r"|\btry_get_actor_unchecked\b"
         ),
+        # The dead bus path may appear as a hardcoded topic *string*
+        # (e.g. "platform.runtime.selection"); scan the original so a string
+        # topic is still caught, not only the code symbols.
+        scan_literals=True,
     ),
     Rule(
         "inline updown NT metadata interpretation",
         re.compile(r'"market_slug"|\"market_id\"|\"Up\"|\"Down\"'),
+        scan_literals=True,
     ),
     Rule(
         "fixed long-only position contract tuple",
@@ -116,9 +133,16 @@ def line_number(text: str, pos: int) -> int:
 
 
 def find_violations_in_text(path: str, text: str) -> list[Violation]:
+    # Blank comments and string literals to equal-length whitespace, preserving
+    # every newline so match offsets still map 1:1 onto `text` for accurate line
+    # and excerpt reporting. Code-construct rules scan this code-only view so a
+    # banned token named inside an error message or doc string is not a false
+    # positive; literal-targeting rules (scan_literals=True) scan the original.
+    code_only = strip_rust_comments_and_literals(text)
     violations: list[Violation] = []
     for rule in FORBIDDEN_RULES:
-        for match in rule.pattern.finditer(text):
+        scan_text = text if rule.scan_literals else code_only
+        for match in rule.pattern.finditer(scan_text):
             line_start = text.rfind("\n", 0, match.start()) + 1
             line_end = text.find("\n", match.end())
             if line_end == -1:

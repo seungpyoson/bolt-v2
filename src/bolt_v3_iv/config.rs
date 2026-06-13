@@ -545,6 +545,14 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 "{context}.helper_policies.{}.parameter_signature must be non-empty",
                 policy.helper_policy_id
             ));
+        } else if policy.parameter_signature.trim() != policy.nt_helper_symbol.parameter_signature()
+        {
+            errors.push(format!(
+                "{context}.helper_policies.{}.parameter_signature must match {} ({})",
+                policy.helper_policy_id,
+                policy.nt_helper_symbol.nt_symbol(),
+                policy.nt_helper_symbol.parameter_signature()
+            ));
         }
         if policy.allowed_outputs.is_empty() {
             errors.push(format!(

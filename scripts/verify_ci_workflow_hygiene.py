@@ -1090,9 +1090,11 @@ SUDO_OPTIONS_WITHOUT_ARGUMENT = {
     "--version",
 }
 ENV_OPTIONS_WITH_ARGUMENT = {
+    "-a",
     "-S",
     "-u",
     "-C",
+    "--argv0",
     "--split-string",
     "--unset",
     "--chdir",
@@ -2328,7 +2330,7 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
                 index += 1
                 continue
             break
-        if index < len(tokens):
+        if index < len(tokens) and re.fullmatch(r"-?\d+", tokens[index]):
             index += 1
         return tokens[index:]
     if executable == "xargs":

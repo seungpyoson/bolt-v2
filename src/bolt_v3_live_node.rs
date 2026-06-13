@@ -2314,7 +2314,7 @@ impl BoltV3LiveNodeRuntime {
                 ));
             }
         };
-        self.iv_event_bindings = None;
+        let iv_event_bindings = self.iv_event_bindings.take();
         let outcomes = {
             let mut adapter = NtIvRuntimeBindingAdapter::new(
                 &mut self.node,
@@ -2324,6 +2324,7 @@ impl BoltV3LiveNodeRuntime {
         };
         if let Err(error) = iv_runtime.apply_plan_outcomes(&outcomes) {
             self.iv_runtime = Some(iv_runtime);
+            self.iv_event_bindings = iv_event_bindings;
             return Err(BoltV3LiveNodeError::StrategyRegistration(
                 BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
                     message: format!("bolt-v3 IV lifecycle stop state update failed: {error:?}"),
@@ -3167,6 +3168,17 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     adapters: BoltV3AdapterConfigs,
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+    let iv_client_errors = crate::bolt_v3_validate::validate_iv_source_clients(&loaded.root);
+    if !iv_client_errors.is_empty() {
+        return Err(BoltV3LiveNodeError::StrategyRegistration(
+            BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                message: format!(
+                    "bolt-v3 IV source client validation failed: {}",
+                    iv_client_errors.join("; ")
+                ),
+            },
+        ));
+    }
     let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = if loaded.strategies.is_empty() {
         Arc::new(NoStrategyDecisionEvidenceWriter)
     } else {
@@ -4753,7 +4765,7 @@ configured_source_param = "configured-value"
     }
 
     #[test]
-    fn live_node_startup_marks_unknown_iv_data_client_subscription_failed() {
+    fn live_node_startup_rejects_unknown_iv_data_client() {
         let mut loaded = fixture_loaded_config();
         loaded.root.clients.clear();
         loaded.root.nautilus.data_engine.external_clients.clear();
@@ -4829,22 +4841,15 @@ configured_source_param = "configured-value"
             clients: BTreeMap::new(),
         };
 
-        let (runtime, _) = build_live_node_with_clients_and_submit_approval_limits(
+        let error = build_live_node_with_clients_and_submit_approval_limits(
             &loaded,
             &resolved,
             adapters,
             BTreeMap::new(),
         )
-        .expect("IV source-health failure should not prevent strategy-free node build");
+        .expect_err("unknown IV source client must reject before live-node build");
 
-        let health = runtime
-            .iv_source_health("configured-profile", "configured-greeks-source")
-            .expect("startup should record IV source health");
-        assert_eq!(
-            health.subscription_state,
-            crate::bolt_v3_iv::health::IvSourceHealthState::SubscriptionFailed
-        );
-        assert_eq!(health.subscription_generation, 7);
+        assert!(format!("{error:?}").contains("missing-client"));
     }
 
     #[test]

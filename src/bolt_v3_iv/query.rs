@@ -32,8 +32,7 @@ use super::{
 const INITIAL_REJECT_COUNT: u64 = 0;
 const REJECT_COUNT_INCREMENT: u64 = 1;
 const EMPTY_RETENTION_START: usize = usize::MIN;
-const RETENTION_MISS_INDEXED_PRODUCT_KINDS: &[IvProductKind] =
-    &[IvProductKind::IvPoint, IvProductKind::IvGreeksPoint];
+const RETENTION_MISS_INDEXED_PRODUCT_KIND_COUNT: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum IvQuery {
@@ -143,6 +142,7 @@ struct IvRetainedProductKey {
     instrument_id: String,
     basis: IvBasis,
     product_kind: IvProductKind,
+    product_key: String,
 }
 
 // Query evaluation holds a read lock; mutations are replayed after the guard
@@ -998,7 +998,7 @@ impl IvQueryHandle {
             )
             .into_iter()
             .next()
-            .ok_or(IvQueryError::ProductNotFound),
+            .ok_or_else(|| retained_or_not_found(state, query)),
             (
                 IvProductKind::Surface,
                 IvSelector::SurfaceQuery {
@@ -1015,7 +1015,7 @@ impl IvQueryHandle {
             )
             .into_iter()
             .next()
-            .ok_or(IvQueryError::ProductNotFound),
+            .ok_or_else(|| retained_or_not_found(state, query)),
             (
                 IvProductKind::AggregateGreeks,
                 IvSelector::AggregateGreeksQuery {
@@ -1035,7 +1035,7 @@ impl IvQueryHandle {
                 })
                 .cloned()
                 .map(IvQueryProduct::AggregateGreeks)
-                .ok_or(IvQueryError::ProductNotFound),
+                .ok_or_else(|| retained_or_not_found(state, query)),
             (
                 IvProductKind::CustomIvEvidence,
                 IvSelector::IvEvidenceQuery {
@@ -1055,7 +1055,7 @@ impl IvQueryHandle {
                 })
                 .cloned()
                 .map(IvQueryProduct::CustomIvEvidence)
-                .ok_or(IvQueryError::ProductNotFound),
+                .ok_or_else(|| retained_or_not_found(state, query)),
             (
                 IvProductKind::SourceHealth,
                 IvSelector::SourceHealthQuery {
@@ -1453,7 +1453,7 @@ impl IvQueryHandle {
                 .map(|product| vec![product]);
         }
 
-        let mut outputs = active_slice(&state.derived_outputs, state.derived_outputs_start)
+        let matching_outputs = active_slice(&state.derived_outputs, state.derived_outputs_start)
             .iter()
             .filter(|derived| {
                 derived_output_matches_query(
@@ -1463,9 +1463,16 @@ impl IvQueryHandle {
                     derived_query.helper_policy_id,
                     derived_query.as_of_ns,
                 )
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+            });
+        let mut unauthorized_candidate = false;
+        let mut outputs = Vec::new();
+        for derived in matching_outputs {
+            if self.authorizes_derived_output(query, derived) {
+                outputs.push(derived.clone());
+            } else {
+                unauthorized_candidate = true;
+            }
+        }
 
         let mut derived_any = false;
         let mut first_derivation_error = None;
@@ -1474,6 +1481,10 @@ impl IvQueryHandle {
                 && inputs.instrument_id == derived_query.instrument_id
                 && inputs.as_of_ns == derived_query.as_of_ns
         }) {
+            if !self.authorizes_derived_input(query, inputs) {
+                unauthorized_candidate = true;
+                continue;
+            }
             if outputs.iter().any(|output| {
                 derived_output_matches_input(output, inputs, derived_query.helper_policy_id)
             }) {
@@ -1501,7 +1512,9 @@ impl IvQueryHandle {
             side_effects.enforce_retention();
         }
 
-        if outputs.is_empty() {
+        if outputs.is_empty() && unauthorized_candidate && first_derivation_error.is_none() {
+            Err(IvQueryError::StrategyNotAuthorized)
+        } else if outputs.is_empty() {
             Err(first_derivation_error.unwrap_or(IvQueryError::ProductNotFound))
         } else {
             Ok(outputs
@@ -1525,21 +1538,54 @@ impl IvQueryHandle {
             {
                 return Err(IvQueryError::DerivedInputNotFound);
             }
+            if !self.authorizes_derived_input(query, inputs) {
+                return Err(IvQueryError::StrategyNotAuthorized);
+            }
             inputs.clone()
         } else {
+            let mut unauthorized_candidate = false;
             state
                 .derived_inputs
                 .iter()
                 .find(|inputs| {
-                    inputs.profile_id == query.profile_id
+                    let matches_query = inputs.profile_id == query.profile_id
                         && inputs.instrument_id == derived_query.instrument_id
-                        && inputs.as_of_ns == derived_query.as_of_ns
+                        && inputs.as_of_ns == derived_query.as_of_ns;
+                    if matches_query && !self.authorizes_derived_input(query, inputs) {
+                        unauthorized_candidate = true;
+                        return false;
+                    }
+                    matches_query
                 })
                 .cloned()
-                .ok_or(IvQueryError::DerivedInputNotFound)?
+                .ok_or(if unauthorized_candidate {
+                    IvQueryError::StrategyNotAuthorized
+                } else if retention_miss_for_query(state, query).is_some() {
+                    IvQueryError::RetentionMiss
+                } else {
+                    IvQueryError::DerivedInputNotFound
+                })?
         };
         self.derive_iv_from_inputs(state, side_effects, derived_query.helper_policy_id, inputs)
             .map(|output| IvQueryProduct::DerivedIv(Box::new(output)))
+    }
+
+    fn authorizes_derived_input(&self, query: &IvProductQuery, inputs: &IvDerivedInputSet) -> bool {
+        self.authorization.authorizes(
+            &query.strategy_id,
+            query.product_kind,
+            Some(&inputs.source_id),
+            &inputs.selector_fingerprint,
+        )
+    }
+
+    fn authorizes_derived_output(&self, query: &IvProductQuery, output: &IvDerivedOutput) -> bool {
+        self.authorization.authorizes(
+            &query.strategy_id,
+            query.product_kind,
+            Some(&output.point.source_id),
+            &output.point.provenance.selector_fingerprint,
+        )
     }
 
     fn derive_iv_from_inputs(
@@ -2542,12 +2588,56 @@ fn record_retention_misses(state: &mut IvQueryState, policy: &IvRetentionPolicy)
             IvProductKind::IvGreeksPoint,
         ));
     }
+
+    let evicted_smiles = state.store.smiles().len().saturating_sub(policy.max_smiles);
+    for smile in state.store.smiles().iter().take(evicted_smiles) {
+        state.retention_misses.insert(retained_smile_key(smile));
+    }
+
+    let evicted_aggregate_greeks = state
+        .store
+        .aggregate_greeks()
+        .len()
+        .saturating_sub(policy.max_indexed_points);
+    for aggregate in state
+        .store
+        .aggregate_greeks()
+        .iter()
+        .take(evicted_aggregate_greeks)
+    {
+        state
+            .retention_misses
+            .insert(retained_aggregate_greeks_key(aggregate));
+    }
+
+    let evicted_iv_evidence = state
+        .store
+        .iv_evidence()
+        .len()
+        .saturating_sub(policy.max_indexed_points);
+    for evidence in state.store.iv_evidence().iter().take(evicted_iv_evidence) {
+        state
+            .retention_misses
+            .insert(retained_iv_evidence_key(evidence));
+    }
+
+    let evicted_derived_outputs = active_slice(&state.derived_outputs, state.derived_outputs_start)
+        .len()
+        .saturating_sub(policy.max_derived_points);
+    for output in active_slice(&state.derived_outputs, state.derived_outputs_start)
+        .iter()
+        .take(evicted_derived_outputs)
+    {
+        state
+            .retention_misses
+            .insert(retained_derived_output_key(output));
+    }
 }
 
 fn retain_retention_misses(state: &mut IvQueryState, policy: &IvRetentionPolicy) {
     let max_len = policy
         .max_indexed_points
-        .saturating_mul(RETENTION_MISS_INDEXED_PRODUCT_KINDS.len());
+        .saturating_mul(RETENTION_MISS_INDEXED_PRODUCT_KIND_COUNT);
     if state.retention_misses.len() <= max_len {
         return;
     }
@@ -2570,7 +2660,78 @@ fn retained_iv_point_key(point: &IvPoint, product_kind: IvProductKind) -> IvReta
         instrument_id: point.instrument_id.clone(),
         basis: point.basis,
         product_kind,
+        product_key: point.instrument_id.clone(),
     }
+}
+
+fn retained_smile_key(smile: &IvSmile) -> IvRetainedProductKey {
+    IvRetainedProductKey {
+        ts_event_ns: smile.ts_event_ns,
+        subscription_generation: smile.provenance.subscription_generation,
+        profile_id: smile.profile_id.clone(),
+        source_id: smile.source_id.clone(),
+        instrument_id: smile.series_id.clone(),
+        basis: smile.basis,
+        product_kind: IvProductKind::Smile,
+        product_key: smile_key(&smile.series_id, smile.side.as_str()),
+    }
+}
+
+fn retained_aggregate_greeks_key(aggregate: &IvAggregateGreeks) -> IvRetainedProductKey {
+    IvRetainedProductKey {
+        ts_event_ns: aggregate.ts_event_ns,
+        subscription_generation: aggregate.provenance.subscription_generation,
+        profile_id: aggregate.profile_id.clone(),
+        source_id: aggregate.source_id.clone(),
+        instrument_id: aggregate.aggregate_key.clone(),
+        basis: IvBasis::Mark,
+        product_kind: IvProductKind::AggregateGreeks,
+        product_key: aggregate_greeks_key(
+            &aggregate.aggregate_key,
+            &aggregate.underlying_selectors,
+        ),
+    }
+}
+
+fn retained_iv_evidence_key(evidence: &IvEvidence) -> IvRetainedProductKey {
+    IvRetainedProductKey {
+        ts_event_ns: evidence.ts_event_ns,
+        subscription_generation: evidence.provenance.subscription_generation,
+        profile_id: evidence.profile_id.clone(),
+        source_id: evidence.source_id.clone(),
+        instrument_id: evidence.iv_evidence_kind.clone(),
+        basis: IvBasis::Mark,
+        product_kind: IvProductKind::CustomIvEvidence,
+        product_key: evidence.iv_evidence_kind.clone(),
+    }
+}
+
+fn retained_derived_output_key(output: &IvDerivedOutput) -> IvRetainedProductKey {
+    IvRetainedProductKey {
+        ts_event_ns: output.point.ts_event_ns,
+        subscription_generation: output.point.provenance.subscription_generation,
+        profile_id: output.point.profile_id.clone(),
+        source_id: output.point.source_id.clone(),
+        instrument_id: output.point.instrument_id.clone(),
+        basis: output.point.basis,
+        product_kind: IvProductKind::DerivedIv,
+        product_key: derived_output_key(
+            &output.point.instrument_id,
+            &output.helper_identity.helper_policy_id,
+        ),
+    }
+}
+
+fn smile_key(series_id: &str, side: &str) -> String {
+    format!("{series_id}:{side}")
+}
+
+fn aggregate_greeks_key(aggregate_key: &str, underlying_selectors: &[String]) -> String {
+    format!("{}:{}", aggregate_key, underlying_selectors.join("\u{1f}"))
+}
+
+fn derived_output_key(instrument_id: &str, helper_policy_id: &str) -> String {
+    format!("{instrument_id}:{helper_policy_id}")
 }
 
 fn retention_miss_for_query(
@@ -2598,8 +2759,107 @@ fn retention_miss_for_query(
                     && source_matches(&miss.source_id, source_filter)
             })
             .cloned(),
+        (
+            IvProductKind::Smile,
+            IvSelector::SmileQuery {
+                series_id,
+                side,
+                basis,
+                as_of_ns,
+            },
+        ) => state
+            .retention_misses
+            .iter()
+            .find(|miss| {
+                miss.profile_id == query.profile_id
+                    && miss.product_kind == IvProductKind::Smile
+                    && miss.instrument_id == *series_id
+                    && miss.basis == *basis
+                    && miss.ts_event_ns == *as_of_ns
+                    && side
+                        .as_ref()
+                        .is_none_or(|side| miss.product_key == smile_key(series_id, side))
+            })
+            .cloned(),
+        (
+            IvProductKind::Surface,
+            IvSelector::SurfaceQuery {
+                series_selectors,
+                basis,
+                as_of_ns,
+            },
+        ) => state
+            .retention_misses
+            .iter()
+            .find(|miss| {
+                miss.profile_id == query.profile_id
+                    && miss.product_kind == IvProductKind::Smile
+                    && series_selectors.contains(&miss.instrument_id)
+                    && miss.basis == *basis
+                    && miss.ts_event_ns == *as_of_ns
+            })
+            .cloned(),
+        (
+            IvProductKind::AggregateGreeks,
+            IvSelector::AggregateGreeksQuery {
+                aggregate_key,
+                underlying_selectors,
+                as_of_ns,
+            },
+        ) => state
+            .retention_misses
+            .iter()
+            .find(|miss| {
+                miss.profile_id == query.profile_id
+                    && miss.product_kind == IvProductKind::AggregateGreeks
+                    && miss.ts_event_ns == *as_of_ns
+                    && miss.product_key == aggregate_greeks_key(aggregate_key, underlying_selectors)
+            })
+            .cloned(),
+        (
+            IvProductKind::CustomIvEvidence,
+            IvSelector::IvEvidenceQuery {
+                iv_evidence_kind,
+                source_filter,
+                as_of_ns,
+            },
+        ) => state
+            .retention_misses
+            .iter()
+            .find(|miss| {
+                miss.profile_id == query.profile_id
+                    && miss.product_kind == IvProductKind::CustomIvEvidence
+                    && miss.product_key == *iv_evidence_kind
+                    && miss.ts_event_ns == *as_of_ns
+                    && source_matches(&miss.source_id, source_filter)
+            })
+            .cloned(),
+        (
+            IvProductKind::DerivedIv,
+            IvSelector::DerivedIvQuery {
+                instrument_id,
+                helper_policy_id,
+                as_of_ns,
+                ..
+            },
+        ) => state
+            .retention_misses
+            .iter()
+            .find(|miss| {
+                miss.profile_id == query.profile_id
+                    && miss.product_kind == IvProductKind::DerivedIv
+                    && miss.ts_event_ns == *as_of_ns
+                    && miss.product_key == derived_output_key(instrument_id, helper_policy_id)
+            })
+            .cloned(),
         _ => None,
     }
+}
+
+fn retained_or_not_found(state: &IvQueryState, query: &IvProductQuery) -> IvQueryError {
+    retention_miss_for_query(state, query).map_or(IvQueryError::ProductNotFound, |_| {
+        IvQueryError::RetentionMiss
+    })
 }
 
 fn record_query_rejection_locked(
@@ -2956,6 +3216,7 @@ mod tests {
             basis: IvBasis::Mark,
             ts_event_ns: UnixNanos::new(ts_event_ns),
             product_kind: IvProductKind::IvPoint,
+            product_key: "test_instrument".to_string(),
         }
     }
 

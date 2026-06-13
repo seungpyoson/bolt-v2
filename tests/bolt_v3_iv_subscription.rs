@@ -488,6 +488,40 @@ fn option_greeks_sources_plan_nt_subscribe_operations() {
 }
 
 #[test]
+fn plan_profile_reload_rejects_mismatched_profile_ids() {
+    let source = source(
+        "greeks-source",
+        IvSourceKind::OptionGreeks,
+        "configured-client",
+        IvSelector::SourceOptionGreeks {
+            instrument_ids: vec!["configured-instrument-a".to_string()],
+            nt_params: toml::toml! {
+                configured_nt_param = "greeks-value"
+            }
+            .into(),
+        },
+        toml::toml! {
+            configured_source_param = "greeks-source-value"
+        }
+        .into(),
+        7,
+    );
+    let current = profile(vec![source.clone()]);
+    let mut next = profile(vec![source]);
+    next.profile_id = "other-profile".to_string();
+
+    assert_eq!(
+        plan_profile_reload(&current, &next),
+        Err(
+            bolt_v2::bolt_v3_iv::subscription::IvSubscriptionError::ProfileMismatch {
+                current_profile_id: "iv-profile".to_string(),
+                next_profile_id: "other-profile".to_string(),
+            }
+        )
+    );
+}
+
+#[test]
 fn option_chain_sources_plan_nt_subscribe_operations() {
     let selector = IvSelector::SourceOptionChain {
         series_ids: vec![
@@ -715,6 +749,28 @@ configured_source_param = "greeks-source-value"
         panic!("expected source-health product");
     };
     assert_eq!(health.subscription_state, IvSourceHealthState::Subscribing);
+    assert_eq!(health.subscription_generation, 7);
+
+    engine
+        .ingest_event(greeks_ingest_event("greeks-source", 7))
+        .unwrap();
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "iv-profile".to_string(),
+            product_kind: IvProductKind::SourceHealth,
+            selector: IvSelector::SourceHealthQuery {
+                source_filter: Some("greeks-source".to_string()),
+                state_filter: vec!["active".to_string()],
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::SourceHealth(health) = product else {
+        panic!("expected active source-health product");
+    };
+    assert_eq!(health.subscription_state, IvSourceHealthState::Active);
+    assert_eq!(health.last_event_ts_ns, Some(UnixNanos::new(2_000)));
     assert_eq!(health.subscription_generation, 7);
 }
 

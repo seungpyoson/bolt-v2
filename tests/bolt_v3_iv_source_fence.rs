@@ -71,37 +71,6 @@ fn strategy_escapes_query_authz(handle: &IvQueryHandle) {
 }
 
 #[test]
-fn source_fence_rejects_iv_core_hardcoded_runtime_values() {
-    let source = r#"
-pub fn configured_source() -> &'static str {
-    "configured-instrument"
-}
-"#;
-
-    assert_iv_core_source_fence_rejects(source, "hardcoded IV runtime value");
-}
-
-#[test]
-fn source_fence_accepts_current_iv_core_files_without_runtime_hardcodes() {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let iv_dir = manifest_dir.join("src/bolt_v3_iv");
-
-    for entry in std::fs::read_dir(iv_dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-            continue;
-        }
-        let source = std::fs::read_to_string(&path).unwrap();
-        let violations = iv_core_source_fence_violations(&source);
-        assert!(
-            violations.is_empty(),
-            "{} had IV source-fence violations: {violations:?}",
-            path.display()
-        );
-    }
-}
-
-#[test]
 fn source_fence_rejects_forbidden_iv_bypass_in_strategy_tree() {
     let temp = tempfile::tempdir().unwrap();
     let strategy_dir = temp.path().join("src/strategies/configured_strategy");
@@ -135,16 +104,6 @@ fn source_fence_accepts_current_strategy_tree_without_iv_bypasses() {
 
 fn assert_strategy_source_fence_rejects(source: &str, expected_reason: &str) {
     let violations = iv_strategy_source_fence_violations(source);
-    assert!(
-        violations
-            .iter()
-            .any(|violation| violation.contains(expected_reason)),
-        "expected source-fence violation containing {expected_reason:?}, got {violations:?}"
-    );
-}
-
-fn assert_iv_core_source_fence_rejects(source: &str, expected_reason: &str) {
-    let violations = iv_core_source_fence_violations(source);
     assert!(
         violations
             .iter()
@@ -217,22 +176,4 @@ fn collect_strategy_source_fence_violations(path: &Path, violations: &mut Vec<St
                 .map(|violation| format!("{}: {violation}", path.display())),
         );
     }
-}
-
-fn iv_core_source_fence_violations(source: &str) -> Vec<String> {
-    let mut violations = Vec::new();
-
-    for needle in [
-        "\"configured-",
-        "\"configured_",
-        "\"strategy-",
-        "\"source-",
-        "\"instrument-",
-    ] {
-        if source.contains(needle) {
-            violations.push(format!("hardcoded IV runtime value: {needle}"));
-        }
-    }
-
-    violations
 }

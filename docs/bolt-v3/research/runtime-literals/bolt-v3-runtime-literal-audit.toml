@@ -11080,3 +11080,35 @@ literal = '''"unsupported_order_shape"'''
 context = '''Self::UnsupportedOrderShape => "unsupported_order_shape",'''
 classification = "executable_cost_block_reason_label"
 reason = "Stable structured block-reason label for executable-cost output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"s,r,b,is_call,k,t,price"'''
+context = '''Self::ImplyVolAndGreeks => "s,r,b,is_call,k,t,price",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation validates the configured helper parameter signature against the pinned NT helper ABI; operator helper selection remains policy/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "number"
+literal = '''6'''
+context = '''const RETENTION_MISS_INDEXED_PRODUCT_KIND_COUNT: usize = 6;'''
+classification = "iv_retention_family_count_literal"
+reason = "IV query retention uses a named count of indexed product families when bounding audit tombstones; retention limits remain profile-owned TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"; "'''
+context = '''iv_client_errors.join("; ")'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "The live-node IV client validator joins fail-closed config diagnostics; the referenced profile/source/client identifiers are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"iv.profiles.{}.sources.{}"'''
+context = '''"iv.profiles.{}.sources.{}",'''
+classification = "iv_config_schema_literal"
+reason = "IV root validation emits fail-closed diagnostics for profile/source client binding errors; operator profile, source, and client identifiers remain TOML-owned."

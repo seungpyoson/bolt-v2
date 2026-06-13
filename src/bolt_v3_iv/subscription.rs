@@ -93,6 +93,10 @@ pub enum IvSubscriptionError {
     DuplicateSourceId {
         source_id: String,
     },
+    ProfileMismatch {
+        current_profile_id: String,
+        next_profile_id: String,
+    },
     SelectorKindMismatch {
         source_id: String,
         source_kind: IvSourceKind,
@@ -147,6 +151,12 @@ pub fn plan_profile_reload(
 ) -> Result<Vec<IvSubscriptionPlan>, IvSubscriptionError> {
     validate_profile(current)?;
     validate_profile(next)?;
+    if current.profile_id != next.profile_id {
+        return Err(IvSubscriptionError::ProfileMismatch {
+            current_profile_id: current.profile_id.clone(),
+            next_profile_id: next.profile_id.clone(),
+        });
+    }
 
     let next_sources = source_map(next);
     let current_sources = source_map(current);

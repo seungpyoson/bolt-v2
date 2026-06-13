@@ -25,6 +25,12 @@ impl IvNtHelperSymbol {
             Self::ImplyVolAndGreeks => "nautilus_model::data::imply_vol_and_greeks",
         }
     }
+
+    pub fn parameter_signature(self) -> &'static str {
+        match self {
+            Self::ImplyVolAndGreeks => "s,r,b,is_call,k,t,price",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -265,6 +271,12 @@ pub fn derive_iv(
     policy: &IvHelperPolicy,
     inputs: IvDerivedInputSet,
 ) -> Result<IvDerivedOutput, IvDeriveError> {
+    if policy.parameter_signature.trim() != policy.nt_helper_symbol.parameter_signature() {
+        return Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::InvalidDerivedInput,
+            field: "parameter_signature".to_string(),
+        });
+    }
     if !policy
         .allowed_outputs
         .contains(&IvHelperOutput::IvAndGreeks)

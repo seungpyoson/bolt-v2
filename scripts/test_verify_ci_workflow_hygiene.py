@@ -3398,6 +3398,8 @@ commands:
   wrapped: command cargo fmt --check
   stdbufwrap: stdbuf -oL cargo build
   catchsegvwrap: catchsegv cargo test
+  chrtbatchwrap: chrt -b cargo build
+  chrtidlewrap: chrt -i cargo build
   nicewrap: nice cargo test
   timeniceadjust: time nice --adjustment 10 cargo test
   timeverbose: A=B time -v cargo test
@@ -3411,6 +3413,8 @@ commands:
   sudoflock: sudo flock -o "$TMPDIR/bolt.lock" cargo test
   sudousercommand: sudo -u bash cargo build
   sudoshell: sudo bash -lc 'cargo test --all'
+  envargv0: env --argv0 cargo cargo build
+  envshortargv0: env -a cargo cargo build
   envshell: env -i bash -lc 'cargo test --all'
   hyphenated: cargo-clippy --workspace
   zigbuild: cargo zigbuild --release
@@ -3516,6 +3520,8 @@ commands: { test: "cargo test" }
         "wrapped",
         "stdbufwrap",
         "catchsegvwrap",
+        "chrtbatchwrap",
+        "chrtidlewrap",
         "nicewrap",
         "timeniceadjust",
         "timeverbose",
@@ -3529,6 +3535,8 @@ commands: { test: "cargo test" }
         "sudoflock",
         "sudousercommand",
         "sudoshell",
+        "envargv0",
+        "envshortargv0",
         "envshell",
         "hyphenated",
         "zigbuild",
@@ -3747,6 +3755,8 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "scripts/raw-runuser.sh": "#!/usr/bin/env bash\nrunuser -u user -- cargo build\n",
             "scripts/raw-flock.sh": "#!/usr/bin/env bash\nflock /tmp/lock -ccargo\\ build\n",
             "scripts/raw-flock-option-arg.sh": "#!/usr/bin/env bash\nflock -w -c /tmp/lock -c 'cargo build'\n",
+            "scripts/raw-chrt-batch.sh": "#!/usr/bin/env bash\nchrt -b cargo build\n",
+            "scripts/raw-env-argv0.sh": "#!/usr/bin/env bash\nenv --argv0 cargo cargo build\n",
             "scripts/multiline-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo build\"\nbash -c \"$CMD\"\n",
             "scripts/multiline-quoted-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo\nbuild --target-dir /tmp/raw\"\nbash -c \"$CMD\"\n",
             "scripts/comment-blind.sh": "# comment with unbalanced quote '\ncargo build\necho 'closing quote'\n",

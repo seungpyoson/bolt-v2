@@ -651,7 +651,10 @@ impl IvRuntimeEngine {
             state.enforce_retention(&policy);
         }
         match ingest_result {
-            Ok(raw_event) => Ok(raw_event),
+            Ok(raw_event) => {
+                state.upsert_source_health(active_source_health_for_event(&event_for_error));
+                Ok(raw_event)
+            }
             Err(error) => {
                 let reason = error.reject_reason();
                 Err(self.reject_ingest_event(
@@ -1211,6 +1214,20 @@ fn source_health(
         stale_state: false,
         retention_state: false,
         subscription_generation: plan.subscription_generation,
+    }
+}
+
+fn active_source_health_for_event(event: &IvIngestEvent) -> IvSourceHealth {
+    IvSourceHealth {
+        profile_id: event.profile_id.clone(),
+        source_id: event.source_id.clone(),
+        subscription_state: IvSourceHealthState::Active,
+        last_event_ts_ns: Some(event.ts_event_ns),
+        last_reject_reason: None,
+        reject_counts: BTreeMap::new(),
+        stale_state: false,
+        retention_state: false,
+        subscription_generation: event.subscription_generation,
     }
 }
 

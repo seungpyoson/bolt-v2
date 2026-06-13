@@ -77,7 +77,7 @@ tie_break = "mean"
 [[profiles.helper_policies]]
 helper_policy_id = "configured-helper-policy"
 nt_helper_symbol = "imply_vol_and_greeks"
-parameter_signature = "configured-helper-signature"
+parameter_signature = "s,r,b,is_call,k,t,price"
 allowed_outputs = ["iv_and_greeks"]
 input_policy_ref = "configured-derived-input-policy"
 failure_policy = "reject_invalid_helper_output"
@@ -828,6 +828,21 @@ fn helper_policy_allowed_outputs_must_include_engine_helper_output() {
     assert!(errors.iter().any(|message| {
         message.contains("helper_policies.configured-helper-policy.allowed_outputs")
             && message.contains("iv_and_greeks")
+    }));
+}
+
+#[test]
+fn helper_policy_parameter_signature_must_match_selected_nt_helper() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0].helper_policies[0].parameter_signature =
+        "configured-wrong-signature".to_string();
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("helper_policies.configured-helper-policy.parameter_signature")
+            && message.contains("nautilus_model::data::imply_vol_and_greeks")
+            && message.contains("s,r,b,is_call,k,t,price")
     }));
 }
 

@@ -412,14 +412,12 @@ impl IvStore {
             BTreeMap::<(IvBasis, IvConvention), Vec<IvSmilePoint>>::new();
         for strike in strikes {
             if !strike.strike.is_finite() {
-                continue;
+                return Err(IvStoreError::InvalidIvValue);
             }
-            let Some(greeks) = &strike.greeks else {
-                continue;
-            };
+            let greeks = strike.greeks.as_ref().ok_or(IvStoreError::MissingIvBasis)?;
             for basis_value in &greeks.basis_values {
                 if !valid_iv(basis_value.iv) {
-                    continue;
+                    return Err(IvStoreError::InvalidIvValue);
                 }
                 points_by_basis_and_convention
                     .entry((basis_value.basis, greeks.convention.clone()))

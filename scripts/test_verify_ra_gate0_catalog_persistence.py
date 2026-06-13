@@ -33,8 +33,26 @@ def write_file(root: Path, rel: str, text: str) -> Path:
 
 def compliant_artifact_store() -> str:
     return """
+use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut, S3CopyIfNotExists};
+
+pub struct S3ArtifactStoreConfig;
 pub struct CreateOnlyProbeConfig;
 pub struct CreateOnlyProbeTranscript { pub duplicate_create_rejected: bool }
+
+pub struct ArtifactStoreConfig {
+    pub s3: S3ArtifactStoreConfig,
+}
+
+impl ArtifactStoreConfig {
+    pub fn build_s3_object_store(&self) -> Result<AmazonS3> {
+        AmazonS3Builder::new()
+            .with_bucket_name("configured-bucket")
+            .with_region("configured-region")
+            .with_conditional_put(S3ConditionalPut::ETagMatch)
+            .with_copy_if_not_exists(S3CopyIfNotExists::Multipart)
+            .build()
+    }
+}
 
 fn create_only_probe_uri() {}
 
@@ -89,6 +107,11 @@ fn rejects_duplicate_catalog_projection_bytes() {}
 def write_compliant_tree(root: Path) -> None:
     write_file(
         root,
+        "crates/backtesting-vertical-slice/Cargo.toml",
+        'object_store = { version = "=0.13.2", default-features = false, features = ["aws"] }\n',
+    )
+    write_file(
+        root,
         "crates/backtesting-vertical-slice/src/artifact_store.rs",
         compliant_artifact_store(),
     )
@@ -115,6 +138,11 @@ def write_compliant_tree(root: Path) -> None:
         ),
         """
 create_only_probe_id = "probe-run"
+
+[artifact_store.s3]
+region = "us-east-1"
+conditional_put = "etag"
+copy_if_not_exists = "multipart"
 
 [artifact_store.create_only_probe]
 prefix = ".writer-probe"

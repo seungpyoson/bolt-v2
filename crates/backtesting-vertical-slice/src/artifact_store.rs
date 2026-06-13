@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut, S3CopyIfNotExists};
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, UpdateVersion, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -15,9 +16,31 @@ use crate::run_manifest::MarketStructureFixture;
 #[serde(deny_unknown_fields)]
 pub struct ArtifactStoreConfig {
     pub artifact_root: String,
+    pub s3: S3ArtifactStoreConfig,
     pub create_only_probe: CreateOnlyProbeConfig,
     pub subpaths: ArtifactSubpaths,
     pub lifecycle: ArtifactLifecycleConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct S3ArtifactStoreConfig {
+    pub region: String,
+    pub conditional_put: S3ConditionalPutMode,
+    pub copy_if_not_exists: S3CopyIfNotExistsMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum S3ConditionalPutMode {
+    #[serde(rename = "etag")]
+    Etag,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum S3CopyIfNotExistsMode {
+    Multipart,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +124,7 @@ pub enum ArtifactKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedArtifactRoot {
     artifact_root: String,
+    s3: S3ArtifactStoreConfig,
     create_only_probe: CreateOnlyProbeConfig,
     subpaths: ArtifactSubpaths,
     lifecycle: ArtifactLifecyclePolicy,
@@ -113,6 +137,7 @@ impl ArtifactStoreConfig {
     /// valid artifact-store paths.
     pub fn resolve(&self) -> Result<ResolvedArtifactRoot> {
         let artifact_root = normalize_artifact_root(&self.artifact_root)?;
+        let s3 = self.s3.resolve()?;
         let create_only_probe = CreateOnlyProbeConfig {
             prefix: normalize_subpath("create_only_probe.prefix", &self.create_only_probe.prefix)?,
             object_name: normalize_subpath(
@@ -141,9 +166,34 @@ impl ArtifactStoreConfig {
         ensure_probe_prefix_is_private(&create_only_probe, &subpaths)?;
         Ok(ResolvedArtifactRoot {
             artifact_root,
+            s3,
             create_only_probe,
             subpaths,
             lifecycle: self.lifecycle.resolve()?,
+        })
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the artifact root or S3 capability config is invalid.
+    pub fn build_s3_object_store(&self) -> Result<AmazonS3> {
+        let resolved = self.resolve()?;
+        resolved.build_s3_object_store()
+    }
+}
+
+impl S3ArtifactStoreConfig {
+    fn resolve(&self) -> Result<Self> {
+        let region = self.region.trim();
+        ensure_path_token("s3.region", region, PathTokenMode::NoEquals)?;
+        ensure!(
+            region == self.region,
+            "s3.region must not contain leading or trailing whitespace"
+        );
+        Ok(Self {
+            region: region.to_string(),
+            conditional_put: self.conditional_put,
+            copy_if_not_exists: self.copy_if_not_exists,
         })
     }
 }
@@ -152,6 +202,20 @@ impl ResolvedArtifactRoot {
     #[must_use]
     pub fn lifecycle_policy(&self) -> &ArtifactLifecyclePolicy {
         &self.lifecycle
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the configured S3 object store cannot be built.
+    pub fn build_s3_object_store(&self) -> Result<AmazonS3> {
+        let bucket_name = artifact_bucket_name(&self.artifact_root)?;
+        AmazonS3Builder::new()
+            .with_bucket_name(bucket_name)
+            .with_region(self.s3.region.as_str())
+            .with_conditional_put(S3ConditionalPut::ETagMatch)
+            .with_copy_if_not_exists(S3CopyIfNotExists::Multipart)
+            .build()
+            .context("build artifact_root S3 object store")
     }
 
     #[must_use]
@@ -1563,6 +1627,20 @@ fn normalize_artifact_root(value: &str) -> Result<String> {
         "artifact_root S3 prefix is empty"
     );
     Ok(root.to_string())
+}
+
+fn artifact_bucket_name(artifact_root: &str) -> Result<&str> {
+    let Some((bucket, _prefix)) = artifact_root
+        .strip_prefix("s3://")
+        .and_then(|without_scheme| without_scheme.split_once('/'))
+    else {
+        bail!("artifact_root must include an S3 bucket and prefix");
+    };
+    ensure!(
+        !bucket.trim().is_empty(),
+        "artifact_root S3 bucket is empty"
+    );
+    Ok(bucket)
 }
 
 fn normalize_subpath(field: &'static str, value: &str) -> Result<String> {

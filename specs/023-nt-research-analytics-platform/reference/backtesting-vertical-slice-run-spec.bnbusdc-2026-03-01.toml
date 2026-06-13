@@ -151,6 +151,11 @@ nt_instrument_id = "BNBUSDC.BYBIT"
 [artifact_store]
 artifact_root = "s3://bolt-parquet/nt-research-analytics"
 
+[artifact_store.s3]
+region = "us-east-1"
+conditional_put = "etag"
+copy_if_not_exists = "multipart"
+
 [artifact_store.create_only_probe]
 prefix = ".writer-probe"
 object_name = "sentinel"

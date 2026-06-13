@@ -26,6 +26,11 @@ fn artifact_config_toml() -> &'static str {
     r#"
 artifact_root = "s3://bolt-ra-artifacts/prod"
 
+[s3]
+region = "us-east-1"
+conditional_put = "etag"
+copy_if_not_exists = "multipart"
+
 [create_only_probe]
 prefix = ".writer-probe"
 object_name = "sentinel"
@@ -55,6 +60,25 @@ research_analytics = 7200
 latest_pointer_storage_profile = "active"
 current_snapshot_storage_profile = "active"
 "#
+}
+
+#[test]
+fn artifact_store_builds_s3_backend_with_required_capabilities() {
+    let config = artifact_config();
+    let _store = config
+        .build_s3_object_store()
+        .expect("S3 object store builder accepts required capability config");
+}
+
+#[test]
+fn artifact_store_rejects_disabled_s3_conditional_put() {
+    let disabled = artifact_config_toml().replace(
+        "conditional_put = \"etag\"",
+        "conditional_put = \"disabled\"",
+    );
+    let err = toml::from_str::<ArtifactStoreConfig>(&disabled)
+        .expect_err("disabled conditional put must not parse as accepted artifact-store config");
+    assert!(err.to_string().contains("conditional_put"), "{err}");
 }
 
 #[derive(Debug)]

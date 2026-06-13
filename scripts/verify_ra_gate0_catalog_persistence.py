@@ -12,13 +12,25 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT_STORE = Path("crates/backtesting-vertical-slice/src/artifact_store.rs")
 OPERATOR = Path("crates/backtesting-vertical-slice/src/operator.rs")
 CONTRACT_TEST = Path("crates/backtesting-vertical-slice/tests/artifact_store_contract.rs")
+BTE_CARGO_TOML = Path("crates/backtesting-vertical-slice/Cargo.toml")
 JUSTFILE = Path("justfile")
 RUN_SPEC = Path(
     "specs/023-nt-research-analytics-platform/reference/"
     "backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
 )
 
+CARGO_TOML_REQUIRED = (
+    'object_store = { version = "=0.13.2", default-features = false, features = ["aws"] }',
+)
 ARTIFACT_STORE_REQUIRED = (
+    "object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut, S3CopyIfNotExists}",
+    "pub struct S3ArtifactStoreConfig",
+    "pub s3: S3ArtifactStoreConfig",
+    "pub fn build_s3_object_store(&self) -> Result<AmazonS3>",
+    ".with_bucket_name(",
+    ".with_region(",
+    ".with_conditional_put(S3ConditionalPut::ETagMatch)",
+    ".with_copy_if_not_exists(S3CopyIfNotExists::Multipart)",
     "pub struct CreateOnlyProbeConfig",
     "pub struct CreateOnlyProbeTranscript",
     "pub async fn persist_catalog_projection_for_source_binding",
@@ -51,6 +63,10 @@ TEST_REQUIRED = (
 )
 RUN_SPEC_REQUIRED = (
     "create_only_probe_id",
+    "[artifact_store.s3]",
+    "region",
+    "conditional_put = \"etag\"",
+    "copy_if_not_exists = \"multipart\"",
     "[artifact_store.create_only_probe]",
     "prefix",
     "object_name",
@@ -65,17 +81,35 @@ def scan_root(root: Path) -> list[str]:
     root = root.resolve()
     findings: list[str] = []
 
+    cargo_toml = root / BTE_CARGO_TOML
+    if not cargo_toml.exists():
+        findings.append(f"{BTE_CARGO_TOML}: Cargo.toml is missing")
+    else:
+        findings.extend(
+            missing_snippets(
+                BTE_CARGO_TOML,
+                cargo_toml.read_text(encoding="utf-8"),
+                CARGO_TOML_REQUIRED,
+            )
+        )
+
     artifact_store = root / ARTIFACT_STORE
     if not artifact_store.exists():
         findings.append(f"{ARTIFACT_STORE}: artifact_store.rs is missing")
     else:
+        artifact_store_text = artifact_store.read_text(encoding="utf-8")
         findings.extend(
             missing_snippets(
                 ARTIFACT_STORE,
-                artifact_store.read_text(encoding="utf-8"),
+                artifact_store_text,
                 ARTIFACT_STORE_REQUIRED,
             )
         )
+        for forbidden in ("AmazonS3Builder::from_env", "parse_url_opts"):
+            if forbidden in artifact_store_text:
+                findings.append(
+                    f"{ARTIFACT_STORE}: forbidden hidden S3 config fallback `{forbidden}`"
+                )
 
     operator = root / OPERATOR
     if not operator.exists():

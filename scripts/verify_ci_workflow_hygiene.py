@@ -577,12 +577,21 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
     errors: list[str] = []
     if not PR_CONCURRENCY_EVENT_RE.search(group_text):
         errors.append("concurrency group must branch on pull_request event")
-    if not PR_CONCURRENCY_PULL_REQUEST_BRANCH_RE.search(group_text):
-        errors.append("concurrency group must key pull_request runs by PR number")
+    if "needs." in group_text or "needs." in cancel_text:
+        errors.append("workflow-level concurrency must not reference job outputs")
+    if "pr-{0}-deferred" not in group_text or "pr-{0}-full" not in group_text:
+        errors.append("concurrency group must split deferred PR runs from full CI runs")
+    if "workflow_dispatch" not in group_text or "full" not in group_text:
+        errors.append("workflow_dispatch full CI runs must use a full-CI concurrency group")
     if not PR_CONCURRENCY_NON_PR_FALLBACK_RE.search(group_text):
         errors.append("concurrency group must keep non-PR runs isolated by ref and SHA")
-    if not any(line in cancel_text for line in PR_CONCURRENCY_CANCEL_LINES):
-        errors.append("cancel-in-progress must be limited to pull_request events")
+    if (
+        "github.event_name == 'pull_request'" not in cancel_text
+        or "github.event.pull_request.draft == true" not in cancel_text
+        or "contains(fromJSON" not in cancel_text
+        or "converted_to_draft" not in cancel_text
+    ):
+        errors.append("cancel-in-progress must be true only for deferred draft PR runs")
     return errors
 
 

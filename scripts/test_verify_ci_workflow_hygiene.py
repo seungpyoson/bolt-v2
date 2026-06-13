@@ -177,9 +177,18 @@ on:
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && format('pr-{0}-deferred', github.event.number)
+        || github.event_name == 'pull_request'
+        && format('pr-{0}-full', github.event.number)
+        || github.event_name == 'workflow_dispatch'
+        && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) }}
 
 permissions:
   contents: read
@@ -1251,6 +1260,42 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
 
+def assert_ci_concurrency_split_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "concurrency group must split deferred PR runs from full CI runs",
+            replace_once(workflow, "pr-{0}-deferred", "pr-{0}"),
+        ),
+        (
+            "workflow_dispatch full CI runs must use a full-CI concurrency group",
+            replace_once(
+                workflow,
+                "        || github.event_name == 'workflow_dispatch'\n        && format('{0}-full-ci', github.ref_name)\n",
+                "",
+            ),
+        ),
+        (
+            "cancel-in-progress must be true only for deferred draft PR runs",
+            re.sub(
+                r"  cancel-in-progress: >-\n    \$\{\{ github\.event_name == 'pull_request'\n        && github\.event\.pull_request\.draft == true\n        && contains\(fromJSON\('\[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\"\]'\), github\.event\.action\) \}\}\n",
+                "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n",
+                workflow,
+                count=1,
+            ),
+        ),
+        (
+            "workflow-level concurrency must not reference job outputs",
+            replace_once(workflow, "github.event.number", "needs.ci-policy.outputs.reason"),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
 def assert_runner_contract_rejects_missing_and_extra_jobs() -> None:
     verifier = load_verifier()
     workflow_name = ".github/workflows/ci.yml"
@@ -1562,9 +1607,18 @@ def without_pr_concurrency(workflow: str) -> str:
         """concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && format('pr-{0}-deferred', github.event.number)
+        || github.event_name == 'pull_request'
+        && format('pr-{0}-full', github.event.number)
+        || github.event_name == 'workflow_dispatch'
+        && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) }}
 
 """,
         "",
@@ -4167,18 +4221,21 @@ def main() -> int:
     assert_shell_logical_lines_handles_crlf_continuations()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(
-        "concurrency group must key pull_request runs by PR number",
-        replace_once(BASE_WORKFLOW, "format('pr-{0}', github.event.number)", "github.ref_name"),
+        "concurrency group must split deferred PR runs from full CI runs",
+        replace_once(BASE_WORKFLOW, "format('pr-{0}-deferred', github.event.number)", "github.ref_name"),
     )
     assert_error(
         "concurrency group must keep non-PR runs isolated by ref and SHA",
         replace_once(BASE_WORKFLOW, "format('{0}-{1}', github.ref_name, github.sha)", "github.ref_name"),
     )
     assert_error(
-        "cancel-in-progress must be limited to pull_request events",
+        "cancel-in-progress must be true only for deferred draft PR runs",
         replace_once(
             BASE_WORKFLOW,
-            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+            """cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) }}""",
             "cancel-in-progress: true",
         ),
     )
@@ -4188,31 +4245,27 @@ def main() -> int:
             BASE_WORKFLOW,
             """  group: >-
     ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && format('pr-{0}-deferred', github.event.number)
+        || github.event_name == 'pull_request'
+        && format('pr-{0}-full', github.event.number)
+        || github.event_name == 'workflow_dispatch'
+        && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}""",
             "  group: format('pr-{0}', github.event.number)",
         ),
     )
     assert_error(
         "concurrency group must branch on pull_request event",
-        replace_once(
-            BASE_WORKFLOW,
-            "github.event_name == 'pull_request'\n        &&",
-            "github.event_name != 'pull_request'\n        &&",
-        ),
+        BASE_WORKFLOW.replace("github.event_name == 'pull_request'", "github.event_name != 'pull_request'"),
     )
     assert_error(
-        "concurrency group must key pull_request runs by PR number",
+        "workflow_dispatch full CI runs must use a full-CI concurrency group",
         replace_once(
             BASE_WORKFLOW,
-            """  group: >-
-    ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
-        || format('{0}-{1}', github.ref_name, github.sha) }}""",
-            """  group: >-
-    ${{ github.event_name == 'pull_request'
-        && format('{0}-{1}', github.ref_name, github.sha)
-        || format('pr-{0}', github.event.number) }}""",
+            "        || github.event_name == 'workflow_dispatch'\n        && format('{0}-full-ci', github.ref_name)\n",
+            "",
         ),
     )
     assert_parse_jobs_strips_comments()
@@ -6194,6 +6247,7 @@ def main() -> int:
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
     assert_ci_policy_heavy_lane_gaps_are_reported()
     assert_gate_policy_truth_table_gaps_are_reported()
+    assert_ci_concurrency_split_gaps_are_reported()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

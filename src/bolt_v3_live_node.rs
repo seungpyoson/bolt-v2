@@ -3050,7 +3050,9 @@ mod tests {
     };
     use nautilus_core::{UUID4, UnixNanos};
     use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
-    use nautilus_model::enums::{AccountType, BookAction, CurrencyType, OrderSide, TimeInForce};
+    use nautilus_model::enums::{
+        AccountType, BookAction, CurrencyType, OrderSide, TimeInForce, TradingState,
+    };
     use nautilus_model::events::{AccountState, OrderAccepted, OrderEventAny, OrderSubmitted};
     use nautilus_model::identifiers::{AccountId, ClientOrderId, TraderId, VenueOrderId};
     use nautilus_model::orders::{LimitOrder, MarketOrder, OrderAny};
@@ -3174,6 +3176,40 @@ mod tests {
             })
         );
         assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+
+        let feed = runtime
+            .position_sizer_runtime_feed
+            .as_ref()
+            .expect("fixture should configure position-sizer runtime feed");
+        let account_state = account_state_event("POLYMARKET-001", "PUSD", 100.0, 100.0, 2_100);
+        assert!(
+            feed.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .on_account_state(&account_state)
+                .is_some(),
+            "account state should still publish sizing components once collateral facts arrive"
+        );
+        assert_eq!(
+            runtime.position_sizer_reconciled(),
+            Some(false),
+            "missing startup account cache means the pre-run empty order cache is not authoritative"
+        );
+        let state = runtime
+            .submit_admission
+            .position_sizer_state_snapshot()
+            .expect("account state should publish an unreconciled sizing state");
+        assert_eq!(state.order_lifecycle.source, "nt_order_lifecycle_seed");
+        assert!(!state.order_lifecycle.all_open_orders_attributed);
+    }
+
+    #[test]
+    fn live_node_build_does_not_apply_loss_halt_before_first_trusted_snapshot() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        assert_eq!(runtime.nt_risk_trading_state(), TradingState::Active);
     }
 
     #[test]
@@ -3393,8 +3429,25 @@ mod tests {
         total: f64,
         free: f64,
     ) {
+        let account_state = account_state_event(account_id, currency_code, total, free, 1);
+        runtime
+            .node
+            .kernel()
+            .cache()
+            .borrow_mut()
+            .update_account_state(&account_state)
+            .expect("NT cache should apply account state");
+    }
+
+    fn account_state_event(
+        account_id: &str,
+        currency_code: &str,
+        total: f64,
+        free: f64,
+        timestamp_ns: u64,
+    ) -> AccountState {
         let currency = test_currency(currency_code);
-        let account_state = AccountState::new(
+        AccountState::new(
             AccountId::from(account_id),
             AccountType::Cash,
             vec![AccountBalance::new(
@@ -3405,17 +3458,10 @@ mod tests {
             vec![],
             true,
             UUID4::default(),
-            UnixNanos::from(1),
-            UnixNanos::from(1),
+            UnixNanos::from(timestamp_ns),
+            UnixNanos::from(timestamp_ns),
             Some(currency),
-        );
-        runtime
-            .node
-            .kernel()
-            .cache()
-            .borrow_mut()
-            .update_account_state(&account_state)
-            .expect("NT cache should apply account state");
+        )
     }
 
     fn test_currency(currency_code: &str) -> Currency {

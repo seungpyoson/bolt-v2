@@ -287,8 +287,11 @@ mod tests {
     // to the shared submit admission module.
     // Re-derived after routing replace-submit through configured position
     // sizing.
+    // Re-derived after grafting #548's Cancelling/Flattening kill-switch state
+    // handling into submit-admission forced-reduction admission during the
+    // kill-switch consolidation (#673). CI-computed canonical value.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "7b064753f4677fdd506db5f5cdbd4baa70f76d58660b485a72704eb9ac6778a5";
+        "a73cfb3279f61c32726ffad89c0e0b42a009c54d67900eb5edc1934cf024ad39";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

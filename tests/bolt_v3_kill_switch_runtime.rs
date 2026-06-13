@@ -43,6 +43,14 @@ fn loaded_with_enabled_kill_switch(
     loaded.root_path = temp.path().join("root.toml");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
     loaded.root.risk.kill_switch = Some(enabled_kill_switch_config(state_path));
+    // Isolate the kill switch's own NT trading-state contribution. The shared
+    // fixture enables the loss governor, whose untrusted-snapshot startup
+    // fail-safe (on_untrusted_snapshot_trading_state = "reducing") fires during
+    // build (live_node handler(None, ..)) and would otherwise mask what the
+    // kill switch alone syncs into the RiskEngine — e.g. forcing Reducing over
+    // an Armed (healthy) recovery that must stay Active. The loss governor's own
+    // startup behavior is covered by its #658 tests.
+    loaded.root.risk.loss_governor = None;
     (loaded, temp)
 }
 

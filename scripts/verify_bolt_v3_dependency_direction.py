@@ -992,4 +992,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     raise SystemExit(main())

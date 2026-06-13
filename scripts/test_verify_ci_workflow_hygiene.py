@@ -654,12 +654,23 @@ refused_managed_commands = ["test", "clippy", "build"]
 refused_cargo_subcommands = ["b", "bench", "build", "c", "check", "clippy", "d", "doc", "fetch", "install", "nextest", "r", "run", "rustc", "t", "test", "zigbuild"]
 """
 
+LOCAL_LANE_POLICY_TOML = """
+[local_lane_policy]
+enabled = true
+allowed_ci_env = "GITHUB_ACTIONS"
+lock_dir = "/tmp/rust-verification-lanes"
+acquire_timeout_seconds = 1800
+heartbeat_seconds = 15
+poll_interval_seconds = 1
+"""
+
 BASE_RUST_VERIFICATION_POLICY = f"""
 schema_version = 2
 project_id = "bolt-v2"
 target_namespace = "bolt-v2"
 
 {LOCAL_COMPILE_POLICY_TOML}
+{LOCAL_LANE_POLICY_TOML}
 
 [remote_verification]
 poll_interval_seconds = 15
@@ -673,6 +684,7 @@ project_id = "backtesting-vertical-slice"
 target_namespace = "backtesting-vertical-slice"
 
 {LOCAL_COMPILE_POLICY_TOML}
+{LOCAL_LANE_POLICY_TOML}
 """
 
 
@@ -1009,6 +1021,9 @@ source-fence-static:
     # cargo fetch and scripts/verify_runtime_capture_yaml.py stay in source-fence
     # python3 scripts/rust_verification.py cargo --repo . -- test stays remote-only
     python3 scripts/test_verify_runtime_capture_yaml.py
+    python3 scripts/test_lane_governor.py
+    python3 scripts/test_verify_lane_governance.py
+    python3 scripts/verify_lane_governance.py
 
 source-fence: source-fence-static
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
@@ -1025,6 +1040,19 @@ source-fence: source-fence-static
     bad_errors = verifier.verify_source_fence_static_recipe(active_bad)
     if not any("must not invoke wrapper-routed Cargo" in error for error in bad_errors):
         raise AssertionError(f"source-fence-static active wrapper cargo must still fail, got: {bad_errors}")
+
+    missing_lane_check = justfile_text.replace("    python3 scripts/verify_lane_governance.py\n", "")
+    missing_errors = verifier.verify_source_fence_static_recipe(missing_lane_check)
+    if not any("must run python3 scripts/verify_lane_governance.py" in error for error in missing_errors):
+        raise AssertionError(f"source-fence-static must require lane governance meta-check, got: {missing_errors}")
+
+    commented_lane_test = justfile_text.replace(
+        "    python3 scripts/test_lane_governor.py",
+        "    # python3 scripts/test_lane_governor.py",
+    )
+    commented_errors = verifier.verify_source_fence_static_recipe(commented_lane_test)
+    if not any("must run python3 scripts/test_lane_governor.py" in error for error in commented_errors):
+        raise AssertionError(f"source-fence-static comments must not satisfy lane test wiring, got: {commented_errors}")
 
 
 def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
@@ -5645,4 +5673,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     sys.exit(main())

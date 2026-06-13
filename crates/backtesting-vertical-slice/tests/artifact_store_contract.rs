@@ -4,15 +4,19 @@ use backtesting_vertical_slice::{
     artifact_store::{
         ArtifactIndexCommitPlan, ArtifactIndexCommitState, ArtifactIndexEvent,
         ArtifactIndexPointer, ArtifactIndexSnapshot, ArtifactIndexSnapshotRow, ArtifactIndexWriter,
-        ArtifactKind, ArtifactLineageRef, ArtifactStoreConfig, CatalogDispatchConfig,
-        CatalogProjectionBinding, CreateOnlyArtifactWriter, StoredArtifactIndexPointer,
+        ArtifactKind, ArtifactLifecycleState, ArtifactLineageRef, ArtifactStorageProfile,
+        ArtifactStoreConfig, CatalogDispatchConfig, CatalogProjectionBinding,
+        CreateOnlyArtifactWriter, StoredArtifactIndexPointer,
     },
     run_manifest::MarketStructureFixture,
 };
 
 fn artifact_config() -> ArtifactStoreConfig {
-    toml::from_str(
-        r#"
+    toml::from_str(artifact_config_toml()).expect("artifact config parses")
+}
+
+fn artifact_config_toml() -> &'static str {
+    r#"
 artifact_root = "s3://bolt-ra-artifacts/prod"
 
 [subpaths]
@@ -22,9 +26,24 @@ source_proofs = "source-proofs"
 backtests = "backtests"
 artifact_index = "artifact-index"
 research_analytics = "research-analytics"
-"#,
-    )
-    .expect("artifact config parses")
+
+[lifecycle]
+retention = "forever"
+default_delete_expiration = "disabled"
+storage_profiles = ["active", "archive", "deep_archive"]
+
+[lifecycle.quiet_window_seconds]
+raw = 7200
+nt_catalog = 7200
+source_proofs = 7200
+backtests = 3600
+artifact_index = 0
+research_analytics = 7200
+
+[lifecycle.hot_index]
+latest_pointer_storage_profile = "active"
+current_snapshot_storage_profile = "active"
+"#
 }
 
 #[test]
@@ -53,6 +72,51 @@ fn rejects_local_or_non_s3_canonical_artifact_roots() {
 
     config.artifact_root = "file:///tmp/not-canonical".to_string();
     assert!(config.resolve().is_err());
+}
+
+#[test]
+fn lifecycle_config_rejects_delete_expiration_and_keeps_hot_index_active() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let policy = root.lifecycle_policy();
+
+    assert_eq!(
+        policy.state_after_quiet_window(ArtifactKind::Backtests, 3_599),
+        ArtifactLifecycleState::Active
+    );
+    assert_eq!(
+        policy.state_after_quiet_window(ArtifactKind::Backtests, 3_600),
+        ArtifactLifecycleState::Inactive
+    );
+    assert_eq!(
+        policy.hot_index_latest_pointer_storage_profile(),
+        ArtifactStorageProfile::Active
+    );
+    assert_eq!(
+        policy.hot_index_current_snapshot_storage_profile(),
+        ArtifactStorageProfile::Active
+    );
+
+    let delete_enabled = artifact_config_toml().replace(
+        "default_delete_expiration = \"disabled\"",
+        "default_delete_expiration = \"enabled\"",
+    );
+    let config: ArtifactStoreConfig =
+        toml::from_str(&delete_enabled).expect("delete-enabled config parses");
+    let err = config
+        .resolve()
+        .expect_err("default delete/expiration must be rejected");
+    assert!(err.to_string().contains("delete/expiration"), "{err}");
+
+    let missing_deep_archive = artifact_config_toml().replace(
+        "storage_profiles = [\"active\", \"archive\", \"deep_archive\"]",
+        "storage_profiles = [\"active\", \"archive\"]",
+    );
+    let config: ArtifactStoreConfig =
+        toml::from_str(&missing_deep_archive).expect("missing-profile config parses");
+    let err = config
+        .resolve()
+        .expect_err("required lifecycle profile must be rejected");
+    assert!(err.to_string().contains("deep_archive"), "{err}");
 }
 
 #[test]

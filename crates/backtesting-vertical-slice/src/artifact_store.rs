@@ -12,6 +12,7 @@ use crate::run_manifest::MarketStructureFixture;
 pub struct ArtifactStoreConfig {
     pub artifact_root: String,
     pub subpaths: ArtifactSubpaths,
+    pub lifecycle: ArtifactLifecycleConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +24,55 @@ pub struct ArtifactSubpaths {
     pub backtests: String,
     pub artifact_index: String,
     pub research_analytics: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactLifecycleConfig {
+    pub retention: String,
+    pub default_delete_expiration: String,
+    pub storage_profiles: Vec<ArtifactStorageProfile>,
+    pub quiet_window_seconds: ArtifactQuietWindowSeconds,
+    pub hot_index: ArtifactIndexHotLifecycleConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactQuietWindowSeconds {
+    pub raw: u64,
+    pub nt_catalog: u64,
+    pub source_proofs: u64,
+    pub backtests: u64,
+    pub artifact_index: u64,
+    pub research_analytics: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactIndexHotLifecycleConfig {
+    pub latest_pointer_storage_profile: ArtifactStorageProfile,
+    pub current_snapshot_storage_profile: ArtifactStorageProfile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactLifecyclePolicy {
+    quiet_window_seconds: ArtifactQuietWindowSeconds,
+    hot_index: ArtifactIndexHotLifecycleConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactStorageProfile {
+    Active,
+    Archive,
+    DeepArchive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactLifecycleState {
+    Active,
+    Inactive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +90,7 @@ pub enum ArtifactKind {
 pub struct ResolvedArtifactRoot {
     artifact_root: String,
     subpaths: ArtifactSubpaths,
+    lifecycle: ArtifactLifecyclePolicy,
 }
 
 impl ArtifactStoreConfig {
@@ -70,11 +121,17 @@ impl ArtifactStoreConfig {
         Ok(ResolvedArtifactRoot {
             artifact_root,
             subpaths,
+            lifecycle: self.lifecycle.resolve()?,
         })
     }
 }
 
 impl ResolvedArtifactRoot {
+    #[must_use]
+    pub fn lifecycle_policy(&self) -> &ArtifactLifecyclePolicy {
+        &self.lifecycle
+    }
+
     #[must_use]
     pub fn typed_root(&self, kind: ArtifactKind) -> String {
         self.join([self.subpath(kind), "v1"])
@@ -184,6 +241,95 @@ impl ResolvedArtifactRoot {
             }
         }
         uri
+    }
+}
+
+impl ArtifactLifecycleConfig {
+    fn resolve(&self) -> Result<ArtifactLifecyclePolicy> {
+        ensure!(
+            self.retention == "forever",
+            "artifact lifecycle retention must be forever"
+        );
+        ensure!(
+            self.default_delete_expiration == "disabled",
+            "artifact lifecycle delete/expiration must be disabled"
+        );
+        let mut profiles = BTreeSet::new();
+        for profile in &self.storage_profiles {
+            ensure!(
+                profiles.insert(*profile),
+                "artifact lifecycle storage_profiles must be unique"
+            );
+        }
+        for required in [
+            ArtifactStorageProfile::Active,
+            ArtifactStorageProfile::Archive,
+            ArtifactStorageProfile::DeepArchive,
+        ] {
+            ensure!(
+                profiles.contains(&required),
+                "artifact lifecycle storage_profiles must include {}",
+                required.config_label()
+            );
+        }
+        ensure!(
+            self.hot_index.latest_pointer_storage_profile == ArtifactStorageProfile::Active,
+            "artifact index latest pointer must remain in active storage"
+        );
+        ensure!(
+            self.hot_index.current_snapshot_storage_profile == ArtifactStorageProfile::Active,
+            "artifact index current snapshot must remain in active storage"
+        );
+        Ok(ArtifactLifecyclePolicy {
+            quiet_window_seconds: self.quiet_window_seconds.clone(),
+            hot_index: self.hot_index.clone(),
+        })
+    }
+}
+
+impl ArtifactLifecyclePolicy {
+    #[must_use]
+    pub fn state_after_quiet_window(
+        &self,
+        kind: ArtifactKind,
+        elapsed_seconds: u64,
+    ) -> ArtifactLifecycleState {
+        if elapsed_seconds >= self.quiet_window_seconds(kind) {
+            ArtifactLifecycleState::Inactive
+        } else {
+            ArtifactLifecycleState::Active
+        }
+    }
+
+    #[must_use]
+    pub fn hot_index_latest_pointer_storage_profile(&self) -> ArtifactStorageProfile {
+        self.hot_index.latest_pointer_storage_profile
+    }
+
+    #[must_use]
+    pub fn hot_index_current_snapshot_storage_profile(&self) -> ArtifactStorageProfile {
+        self.hot_index.current_snapshot_storage_profile
+    }
+
+    fn quiet_window_seconds(&self, kind: ArtifactKind) -> u64 {
+        match kind {
+            ArtifactKind::Raw => self.quiet_window_seconds.raw,
+            ArtifactKind::NtCatalog => self.quiet_window_seconds.nt_catalog,
+            ArtifactKind::SourceProofs => self.quiet_window_seconds.source_proofs,
+            ArtifactKind::Backtests => self.quiet_window_seconds.backtests,
+            ArtifactKind::ArtifactIndex => self.quiet_window_seconds.artifact_index,
+            ArtifactKind::ResearchAnalytics => self.quiet_window_seconds.research_analytics,
+        }
+    }
+}
+
+impl ArtifactStorageProfile {
+    fn config_label(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Archive => "archive",
+            Self::DeepArchive => "deep_archive",
+        }
     }
 }
 

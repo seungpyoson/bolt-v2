@@ -8,7 +8,7 @@ use nautilus_model::{enums::TradingState, identifiers::StrategyId};
 use serde::Deserialize;
 
 use crate::bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshot};
-use crate::bolt_v3_numeric::SHA256_HEX_DIGEST_LEN;
+use crate::bolt_v3_numeric::is_sha256_hex_digest;
 
 pub type LossGovernorHaltActionHandler = Rc<dyn Fn(Option<&LossSnapshot>, u64)>;
 
@@ -145,7 +145,7 @@ impl LossGovernorManualRecoveryEvidence {
         if self.operator_id.trim().is_empty() {
             return Err(LossGovernorManualRecoveryEvidenceError::MissingOperatorId);
         }
-        if !valid_sha256_hex(&self.evidence_sha256) {
+        if !is_sha256_hex_digest(&self.evidence_sha256) {
             return Err(LossGovernorManualRecoveryEvidenceError::InvalidEvidenceSha256);
         }
         if self.observed_at_ns == 0 {
@@ -165,13 +165,6 @@ pub enum LossGovernorManualRecoveryEvidenceError {
     ParentEvidencePath,
     InvalidEvidenceSha256,
     MissingObservedAt,
-}
-
-fn valid_sha256_hex(value: &str) -> bool {
-    value.len() == SHA256_HEX_DIGEST_LEN
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 fn validate_recovery_evidence_path(

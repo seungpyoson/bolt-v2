@@ -1,5 +1,5 @@
 use crate::{
-    bolt_v3_kill_switch::KillSwitchState, bolt_v3_numeric::SHA256_HEX_DIGEST_LEN,
+    bolt_v3_kill_switch::KillSwitchState, bolt_v3_numeric::is_sha256_hex_digest,
     bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionClaim,
 };
 use nautilus_model::enums::TradingState;
@@ -184,10 +184,6 @@ fn validate_action_metadata(
         return Err(BoltV3KillSwitchActionRouterError::MissingSourceTimestamp);
     }
     Ok(())
-}
-
-fn is_sha256_hex_digest(value: &str) -> bool {
-    value.len() == SHA256_HEX_DIGEST_LEN && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn cancel_decision(

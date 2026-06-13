@@ -1,6 +1,6 @@
 use crate::{
     bolt_v3_kill_switch::KillSwitchState,
-    bolt_v3_numeric::SHA256_HEX_DIGEST_LEN,
+    bolt_v3_numeric::is_sha256_hex_digest,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, validate_nt_order_template},
     bolt_v3_position_contract::{expected_exit_order_side_for_position, is_observed_open_side},
     bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionClaim,
@@ -432,10 +432,10 @@ fn validate_flatten_command_metadata(
     if request.action_id.trim().is_empty() {
         return Err(BoltV3KillSwitchFlattenError::MissingActionId);
     }
-    if !is_sha256_hex(&request.config_sha256) {
+    if !is_sha256_hex_digest(&request.config_sha256) {
         return Err(BoltV3KillSwitchFlattenError::InvalidConfigSha256);
     }
-    if !is_sha256_hex(&request.policy_sha256) {
+    if !is_sha256_hex_digest(&request.policy_sha256) {
         return Err(BoltV3KillSwitchFlattenError::InvalidPolicySha256);
     }
     if request.source_timestamp_unix_nanos == 0 {
@@ -487,10 +487,6 @@ fn validate_no_conflicting_position_proof(
         }
     }
     Ok(())
-}
-
-fn is_sha256_hex(value: &str) -> bool {
-    value.len() == SHA256_HEX_DIGEST_LEN && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

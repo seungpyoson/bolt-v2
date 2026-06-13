@@ -1,5 +1,5 @@
 use crate::bolt_v3_kill_switch::KillSwitchState;
-use crate::bolt_v3_numeric::SHA256_HEX_DIGEST_LEN;
+use crate::bolt_v3_numeric::is_sha256_hex_digest;
 use nautilus_model::{
     enums::OrderStatus,
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId},
@@ -471,10 +471,6 @@ fn source_timestamp_is_stale(
 ) -> bool {
     source_timestamp_unix_nanos > observed_at_unix_nanos
         || observed_at_unix_nanos - source_timestamp_unix_nanos > max_source_age_unix_nanos
-}
-
-fn is_sha256_hex_digest(value: &str) -> bool {
-    value.len() == SHA256_HEX_DIGEST_LEN && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

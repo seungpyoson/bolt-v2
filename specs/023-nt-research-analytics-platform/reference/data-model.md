@@ -162,7 +162,9 @@ that artifact and needs no separate subfamily, index, or lifecycle layer (see
 Every RA-owned artifact records owner, schema version, source refs, source
 hashes, content hash, and lifecycle state, and commits into the
 `research-analytics` kind snapshot per the Artifact Index Contract in
-`contracts.md` (the verdict-bearing `experiment-results` artifact included). This
+`contracts.md`, with lifecycle behavior governed by that file's Artifact
+Lifecycle Contract (the verdict-bearing `experiment-results` artifact included).
+This
 file and `contracts.md` are the single home for the verdict field set and the
 index/lifecycle mechanics; the project specs/plans/tasks reference them rather
 than restate them. RA does not write upstream raw, NT catalog, source-proof, or

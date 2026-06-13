@@ -193,11 +193,11 @@ not fully cover research analytics, alpha exploration, or findings.
 - No live trading or credential mutation.
 - No provider recorder or data-lake capture expansion.
 - No custom PnL/account truth.
-- No standing promotion machine (6-state enum, approved-for-config checklist,
-  promotion-package-specific lifecycle/Artifact-Index layer); a promotion gate
-  exists only when a real finding needs one. The verdict itself still rides on the
-  ordinary RA `experiment-results` artifact and the shared `research-analytics`
-  Artifact Index (see `../reference/data-model.md` and `../reference/contracts.md`).
+- No standing promotion machine (6-state enum, approved-for-config checklist, or
+  promotion-only lifecycle/Artifact-Index layer); a promotion gate exists only
+  when a real finding needs one. How the verdict is persisted and promoted is
+  defined in `../reference/data-model.md` and `../reference/contracts.md` (Result
+  And Promotion Boundary), not restated here.
 
 ## Acceptance
 

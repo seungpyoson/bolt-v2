@@ -179,22 +179,19 @@ optional optimization.
 
 ## Verdict And Re-Measurement Rules
 
-RA owns the subjective verdict; the BTE emits objective results only. The verdict
-rides on the RA `experiment-results` artifact and uses the shared
-`research-analytics` Artifact Index and lifecycle like every other RA artifact —
-there is no standing promotion machine and no separate promotion-only index or
-lifecycle layer. The artifact's verdict fields, index-commit path, and lifecycle
-behavior are defined once in `../reference/data-model.md`
+RA owns the subjective verdict; the BTE emits objective results only. How that
+verdict is persisted, indexed, lifecycle-tracked, and (only on a GO finding)
+promoted is defined once in `../reference/data-model.md`
 (ResearchAnalyticsArtifact) and `../reference/contracts.md` (Artifact Index
 Contract + Artifact Lifecycle Contract + Result And Promotion Boundary); this
-section does not restate them.
+section does not restate it.
 
 - The BTE emits an objective `BacktestResult` — the in-process NT object the
   persisted `BacktestResultContract` is built from. RA, out-of-process, reads the
   Contract and owns the SUBJECTIVE verdict on top of it.
-- A finding is recorded with the proven lead-lag lane's GO / NO-GO verdict plus a
-  re-measurement cadence, not a six-state package or an approved-for-config
-  checklist.
+- A finding is recorded with the proven lead-lag lane's verdict-plus-cadence
+  model (`../reference/leadlag-lane.md`), not a six-state package or an
+  approved-for-config checklist.
 - A promotion gate is added only WHEN a real finding exists to promote. Until
   then there is nothing to gate.
 - Notebook code cannot become production runtime. When a finding is promoted, the

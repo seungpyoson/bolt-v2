@@ -1999,9 +1999,9 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
     }
     // Quote loop appended AFTER the bars loop with NEW unique domain-separator
     // tags 27..33 (existing tags: 0,2..8 ticks; 9..18 deltas; 19..26 bars). The
-    // existing instrument/tick/delta/bar byte stream is unperturbed, so the
-    // committed PMXT reference catalog (which holds zero quote files) keeps
-    // hashing to its recorded value — this loop emits nothing for it.
+    // existing instrument/tick/delta/bar byte stream is unperturbed, so any
+    // committed reference catalog that holds zero quote files keeps hashing to
+    // its recorded value — this loop emits nothing for it.
     for quote in quotes {
         hasher.update([27u8]);
         hasher.update(quote.instrument_id.to_string().as_bytes());
@@ -2671,6 +2671,20 @@ mod tests {
             max_quantity: "1400".to_string(),
             min_notional: "5".to_string(),
             max_notional: "200000".to_string(),
+        }
+    }
+
+    /// Same venue spec as `spec()` but with `price_increment = "0.01"` (precision
+    /// 2). Used by ts_init/capture-clock validation tests whose table data values
+    /// carry 2 decimal places (e.g. "617.05"). The canonical projection path
+    /// always widens instrument precision to the data before calling
+    /// `canonical_rows_to_*`; tests that call the conversion function directly
+    /// must supply a pre-widened instrument so the precision gate in `rescaled`
+    /// does not fire before the ts_init validation under test.
+    fn spec_precision2() -> SpotInstrumentSpec {
+        SpotInstrumentSpec {
+            price_increment: "0.01".to_string(),
+            ..spec()
         }
     }
 
@@ -3862,10 +3876,13 @@ max_notional = "200000"
         // validate() does not guard capture_time, so a None availability with a
         // non-positive capture clock reaches the seam and must fail loud naming
         // the capture_time field, never silently stamping ts_init=0.
+        // Use spec_precision2() so rescaled("617.05", 2) passes and execution
+        // reaches the ts_init_nanos validation rather than dying on the
+        // precision gate first.
         let mut table = canonical_index_prices_table();
         table.rows[0].availability_time = None;
         table.rows[0].capture_time = 0;
-        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let instrument = build_currency_pair(&spec_precision2()).expect("instrument");
         let err = canonical_rows_to_index_price_updates(&table, &instrument).unwrap_err();
         assert!(err.to_string().contains("capture_time"), "{err}");
     }
@@ -3874,10 +3891,13 @@ max_notional = "200000"
     fn index_prices_fail_loud_when_availability_some_but_invalid() {
         // A present-but-invalid availability_time must fail, never fall back to
         // the (valid) capture clock.
+        // Use spec_precision2() so rescaled("617.05", 2) passes and execution
+        // reaches the ts_init_nanos validation rather than dying on the
+        // precision gate first.
         let mut table = canonical_index_prices_table();
         table.rows[0].availability_time = Some(0);
         table.rows[0].capture_time = 42;
-        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let instrument = build_currency_pair(&spec_precision2()).expect("instrument");
         let err = canonical_rows_to_index_price_updates(&table, &instrument).unwrap_err();
         assert!(err.to_string().contains("availability_time"), "{err}");
     }
@@ -4051,10 +4071,13 @@ max_notional = "200000"
         // validate() does not guard capture_time, so a None availability with a
         // non-positive capture clock reaches the seam and must fail loud naming
         // the capture_time field, never silently stamping ts_init=0.
+        // Use spec_precision2() so rescaled("617.05", 2) passes and execution
+        // reaches the ts_init_nanos validation rather than dying on the
+        // precision gate first.
         let mut table = canonical_mark_prices_table();
         table.rows[0].availability_time = None;
         table.rows[0].capture_time = 0;
-        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let instrument = build_currency_pair(&spec_precision2()).expect("instrument");
         let err = canonical_rows_to_mark_price_updates(&table, &instrument).unwrap_err();
         assert!(err.to_string().contains("capture_time"), "{err}");
     }
@@ -4063,10 +4086,13 @@ max_notional = "200000"
     fn mark_prices_fail_loud_when_availability_some_but_invalid() {
         // A present-but-invalid availability_time must fail, never fall back to
         // the (valid) capture clock.
+        // Use spec_precision2() so rescaled("617.05", 2) passes and execution
+        // reaches the ts_init_nanos validation rather than dying on the
+        // precision gate first.
         let mut table = canonical_mark_prices_table();
         table.rows[0].availability_time = Some(0);
         table.rows[0].capture_time = 42;
-        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let instrument = build_currency_pair(&spec_precision2()).expect("instrument");
         let err = canonical_rows_to_mark_price_updates(&table, &instrument).unwrap_err();
         assert!(err.to_string().contains("availability_time"), "{err}");
     }

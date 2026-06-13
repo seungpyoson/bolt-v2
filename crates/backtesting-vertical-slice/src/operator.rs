@@ -2264,18 +2264,14 @@ pub fn run_multi_table_from_run_spec(
     let conversion_manifest_hash = conversion_manifest
         .content_hash()
         .context("hash conversion manifest")?;
+    // Keep the deterministic defaults from `from_manifest` (portable
+    // output_catalog_uri; direct access = false). The transient local subroot
+    // path must never enter the byte-deterministic catalog-metadata.json; the
+    // portable execution URI is recorded later by the published-catalog proof.
     let conversion_catalog_metadata = ConversionCatalogMetadata::from_manifest(
         &conversion_manifest,
         conversion_manifest_hash.clone(),
         conversion_checkpoint_hash.clone(),
-    )
-    .with_execution_catalog_access(
-        primary
-            .subroot
-            .to_str()
-            .context("catalog subroot path is not valid UTF-8")?
-            .to_string(),
-        false,
     );
     let conversion_catalog_metadata_hash = conversion_catalog_metadata
         .content_hash()
@@ -3571,8 +3567,9 @@ mod tests {
             artifacts.output.contract.artifact_uris.nt_catalog_uri
         );
         assert_eq!(
-            metadata.execution_catalog_uri,
-            dir.path().join(CATALOG_DIR).to_str().unwrap()
+            metadata.execution_catalog_uri, metadata.output_catalog_uri,
+            "catalog-metadata.json is byte-deterministic: execution_catalog_uri \
+             must be the portable output_catalog_uri, never the transient local path"
         );
         assert!(
             !metadata.direct_s3_catalog_access_proven,

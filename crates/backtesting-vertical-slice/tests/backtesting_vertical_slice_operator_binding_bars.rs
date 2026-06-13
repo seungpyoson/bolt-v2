@@ -300,7 +300,7 @@ fn manifest(run_id: &str, catalog_inputs: Vec<ManifestCatalogInput>) -> Backtest
             .to_string(),
         execution_model: "nt_backtest_node".to_string(),
         artifact_root: "s3://synthetic-artifacts/nt-research-analytics".to_string(),
-        output_prefix: format!("s3://synthetic-artifacts/backtests/{run_id}"),
+        output_prefix: format!("s3://synthetic-artifacts/nt-research-analytics/backtests/{run_id}"),
         artifact_store: ManifestArtifactStore {
             storage_options: BTreeMap::new(),
             rust_storage_options: BTreeMap::new(),

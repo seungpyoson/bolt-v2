@@ -479,14 +479,17 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     let conversion_manifest_hash = conversion_manifest
         .content_hash()
         .context("hash conversion manifest")?;
+    // execution_catalog_uri / direct_s3_catalog_access_proven keep the
+    // deterministic defaults from `from_manifest` (the portable
+    // output_catalog_uri; direct access = false): catalog-metadata.json is a
+    // byte-deterministic artifact, so the transient local projection path must
+    // never be stamped into it. The portable execution URI is recorded later by
+    // the published-catalog proof path when (and only when) direct access is
+    // actually proven.
     let conversion_catalog_metadata = ConversionCatalogMetadata::from_manifest(
         &conversion_manifest,
         conversion_manifest_hash.clone(),
         conversion_checkpoint_hash.clone(),
-    )
-    .with_execution_catalog_access(
-        execution_catalog_uri(inputs.manifest),
-        direct_s3_catalog_access_proven(inputs.manifest),
     );
     let conversion_catalog_metadata_hash = conversion_catalog_metadata
         .content_hash()
@@ -561,24 +564,6 @@ pub(crate) fn market_structure_label(manifest: &BacktestingRunManifest) -> &'sta
         MarketStructureFixture::BinaryOption => "binary-option",
         MarketStructureFixture::PerpsSpot => "perps-spot",
     }
-}
-
-fn execution_catalog_uri(manifest: &BacktestingRunManifest) -> String {
-    let catalog_input = manifest
-        .single_catalog_input()
-        .expect("execution_catalog_uri requires one catalog input");
-    match catalog_input.catalog_fs_protocol.as_str() {
-        crate::run_manifest::CATALOG_FS_PROTOCOL_NONE => catalog_input.catalog_path.clone(),
-        protocol => format!("{protocol}://{}", catalog_input.catalog_path),
-    }
-}
-
-fn direct_s3_catalog_access_proven(manifest: &BacktestingRunManifest) -> bool {
-    let catalog_input = manifest
-        .single_catalog_input()
-        .expect("direct_s3_catalog_access_proven requires one catalog input");
-    catalog_input.catalog_fs_protocol == "s3"
-        && execution_catalog_uri(manifest).starts_with("s3://")
 }
 
 /// Prove the catalog read-back is value-faithful, not just count-equal: every

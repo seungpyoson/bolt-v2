@@ -3312,6 +3312,7 @@ mod tests {
         IvRetainedProductKey {
             profile_id: profile_id.to_string(),
             source_id: source_id.to_string(),
+            selector_fingerprint: "test_selector".to_string(),
             subscription_generation,
             instrument_id: "test_instrument".to_string(),
             surface_selector: "test_surface_selector".to_string(),

@@ -75,8 +75,8 @@ use crate::{
     },
     source_proof::{
         AcceptedDataset, IngestManifestObjectRecord, SourceBindingRegistry,
-        SourceProofFidelityClass, SourceProofReport, committed_source_binding_registry,
-        resolve_source_bindings_path, select_accepted_dataset_with_registry,
+        SourceProofFidelityClass, SourceProofReport, resolve_source_bindings_path,
+        select_accepted_dataset_with_registry,
     },
 };
 
@@ -497,20 +497,8 @@ fn read_source_binding_registry(path: &Path) -> Result<SourceBindingRegistry> {
     let resolved_path = resolve_source_bindings_path(path);
     let text = fs::read_to_string(&resolved_path)
         .with_context(|| format!("read source-bindings registry {}", path.display()))?;
-    let configured = SourceBindingRegistry::from_toml_str(&text)
-        .with_context(|| format!("parse source-bindings registry {}", path.display()))?;
-    // SSOT: the compiled-in committed registry is the single binding authority
-    // for both the no-arg gate/coverage callers and the operator. A configured
-    // copy is permitted only when it matches the committed registry exactly; any
-    // divergence is a fail-loud config error rather than a second binding source.
-    ensure!(
-        configured.all_binding_metadata()
-            == committed_source_binding_registry().all_binding_metadata(),
-        "configured source-bindings registry {} diverges from the committed registry; \
-         the committed registry is the single source of truth and the configured copy must match it",
-        path.display()
-    );
-    Ok(configured)
+    SourceBindingRegistry::from_toml_str(&text)
+        .with_context(|| format!("parse source-bindings registry {}", path.display()))
 }
 
 fn accepted_dataset_for_run_spec_hash(
@@ -4248,47 +4236,6 @@ table_families = ["trades", "bars"]
             }),
             "missing source binding key {}",
             spec.source_proof.source_binding
-        );
-    }
-
-    #[test]
-    fn read_source_binding_registry_accepts_a_configured_copy_matching_the_committed_registry() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let registry_path = dir.path().join("source-bindings.toml");
-        fs::write(&registry_path, COMMITTED_SOURCE_BINDINGS)
-            .expect("write matching source-binding registry");
-
-        read_source_binding_registry(&registry_path)
-            .expect("a configured registry equal to the committed one is accepted");
-    }
-
-    #[test]
-    fn read_source_binding_registry_fails_loud_when_configured_diverges_from_committed() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let registry_path = dir.path().join("source-bindings.toml");
-        // Append a binding the committed registry does not carry: a configured copy
-        // that diverges must be rejected, not silently preferred over the committed
-        // single source of truth.
-        let divergent = format!(
-            "{COMMITTED_SOURCE_BINDINGS}\n\
-             [[source_binding]]\n\
-             key = \"divergent-binding-not-in-committed\"\n\
-             venue = \"DIVERGENT\"\n\
-             product_family = \"spot\"\n\
-             market_structure_fixture = \"perps-spot\"\n\
-             source_uri = \"https://divergent.example.test/spot\"\n\
-             evidence_state = \"owner_archive_backfillable\"\n\
-             table_families = [\"trades\"]\n"
-        );
-        fs::write(&registry_path, divergent).expect("write divergent source-binding registry");
-
-        let err = read_source_binding_registry(&registry_path)
-            .expect_err("a configured registry diverging from the committed one must fail loud");
-
-        assert!(
-            err.to_string()
-                .contains("diverges from the committed registry"),
-            "{err}"
         );
     }
 

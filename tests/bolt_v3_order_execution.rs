@@ -203,7 +203,6 @@ fn limit_order(client_order_id: &str) -> OrderAny {
             None,
             None,
             None,
-            None,
             nautilus_core::UUID4::new(),
             nautilus_core::UnixNanos::from(1_u64),
         )

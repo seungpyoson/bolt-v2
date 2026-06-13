@@ -6,6 +6,7 @@ use bolt_v2::bolt_v3_decision_evidence::{
 use bolt_v2::bolt_v3_order_execution::{
     BoltV3CancelRoutingOutcome, BoltV3NtVenueMutationSink, BoltV3OrderExecutionMode,
     BoltV3OrderExecutionPolicy, BoltV3SubmitContext, BoltV3SubmitRoutingOutcome,
+    BoltV3SubmitRoutingRequest,
 };
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
@@ -62,10 +63,7 @@ fn live_submit_records_evidence_consumes_capacity_and_calls_nt_submit_once() {
 
     let outcome = policy
         .route_submit(
-            writer.as_ref(),
-            admission.as_ref(),
-            intent,
-            request,
+            BoltV3SubmitRoutingRequest::new(writer.as_ref(), admission.as_ref(), intent, request),
             &mut sink,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("polymarket_main")),
@@ -98,10 +96,7 @@ fn shadow_submit_records_evidence_without_consuming_capacity_or_calling_nt_submi
 
     let outcome = policy
         .route_submit(
-            writer.as_ref(),
-            admission.as_ref(),
-            intent,
-            request,
+            BoltV3SubmitRoutingRequest::new(writer.as_ref(), admission.as_ref(), intent, request),
             &mut sink,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("polymarket_main")),

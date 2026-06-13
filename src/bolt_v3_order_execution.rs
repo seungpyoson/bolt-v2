@@ -47,10 +47,7 @@ impl BoltV3OrderExecutionPolicy {
 
     pub fn route_submit<S>(
         self,
-        decision_evidence: &dyn BoltV3DecisionEvidenceWriter,
-        submit_admission: &BoltV3SubmitAdmissionState,
-        intent: BoltV3OrderIntentEvidence,
-        request: BoltV3SubmitAdmissionRequest,
+        routing: BoltV3SubmitRoutingRequest<'_>,
         sink: &mut S,
         order: OrderAny,
         context: BoltV3SubmitContext,
@@ -58,19 +55,23 @@ impl BoltV3OrderExecutionPolicy {
     where
         S: BoltV3NtVenueMutationSink + ?Sized,
     {
-        decision_evidence.record_order_intent(&intent)?;
+        routing
+            .decision_evidence
+            .record_order_intent(&routing.intent)?;
         match self.mode {
             BoltV3OrderExecutionMode::Live => {
-                let _permit = submit_admission.admit(&request)?;
+                let _permit = routing.submit_admission.admit(&routing.request)?;
                 sink.submit_order_via_nt(order, context)?;
                 Ok(BoltV3SubmitRoutingOutcome::Submitted)
             }
             BoltV3OrderExecutionMode::Shadow => {
-                submit_admission.evaluate_and_record_without_consuming_capacity(&request)?;
+                routing
+                    .submit_admission
+                    .evaluate_and_record_without_consuming_capacity(&routing.request)?;
                 log::info!(
                     "bolt-v3 submit skipped by execution policy: mode=shadow strategy_id={} client_order_id={}",
-                    request.strategy_id,
-                    request.client_order_id,
+                    routing.request.strategy_id,
+                    routing.request.client_order_id,
                 );
                 Ok(BoltV3SubmitRoutingOutcome::SkippedByPolicy)
             }
@@ -98,6 +99,29 @@ impl BoltV3OrderExecutionPolicy {
                 );
                 Ok(BoltV3CancelRoutingOutcome::SkippedByPolicy)
             }
+        }
+    }
+}
+
+pub struct BoltV3SubmitRoutingRequest<'a> {
+    decision_evidence: &'a dyn BoltV3DecisionEvidenceWriter,
+    submit_admission: &'a BoltV3SubmitAdmissionState,
+    intent: BoltV3OrderIntentEvidence,
+    request: BoltV3SubmitAdmissionRequest,
+}
+
+impl<'a> BoltV3SubmitRoutingRequest<'a> {
+    pub fn new(
+        decision_evidence: &dyn BoltV3DecisionEvidenceWriter,
+        submit_admission: &BoltV3SubmitAdmissionState,
+        intent: BoltV3OrderIntentEvidence,
+        request: BoltV3SubmitAdmissionRequest,
+    ) -> Self {
+        Self {
+            decision_evidence,
+            submit_admission,
+            intent,
+            request,
         }
     }
 }

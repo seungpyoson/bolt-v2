@@ -59,6 +59,6 @@
 - [X] T037 [US2] Update schema-current verifier in `scripts/verify_bolt_v3_schema_current.py`
 - [X] T038 [US2] Update runtime-literal audit and verifier fixtures for new diagnostics
 - [X] T039 Run local non-compile verification listed in `quickstart.md`
-- [ ] T040 Commit implementation
-- [ ] T041 Push branch and open or update a draft PR
+- [X] T040 Commit implementation
+- [X] T041 Push branch and open or update a draft PR
 - [ ] T042 Run `just verify-remote` and record exact-head CI evidence

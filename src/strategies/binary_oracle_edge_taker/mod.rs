@@ -24,7 +24,7 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use nautilus_system::trader::Trader;
-use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, nautilus_strategy};
+use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
 use rust_decimal::{
     Decimal,
     prelude::{FromPrimitive, ToPrimitive},
@@ -59,7 +59,9 @@ use crate::{
         BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, UNIT_F64, clamp_probability,
         is_non_negative_finite, is_positive_finite, notional_float_tolerance,
     },
-    bolt_v3_order_execution::{BoltV3SubmitContext, BoltV3SubmitRoutingOutcome},
+    bolt_v3_order_execution::{
+        BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
+    },
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::is_observed_open_side,
     bolt_v3_providers::{
@@ -3436,15 +3438,13 @@ impl BinaryOracleEdgeTaker {
         let policy = self.context.order_execution_policy();
         let decision_evidence = self.context.decision_evidence_arc();
         let submit_admission = self.context.submit_admission_arc();
-        policy.route_submit(
+        let routing = BoltV3SubmitRoutingRequest::new(
             decision_evidence.as_ref(),
             submit_admission.as_ref(),
             intent,
             request,
-            self,
-            order,
-            submit_context,
-        )
+        );
+        policy.route_submit(routing, self, order, submit_context)
     }
 
     fn cancel_resting_order(

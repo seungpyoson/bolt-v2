@@ -19,15 +19,9 @@ fn enabled_kill_switch_config(state_path: &str) -> KillSwitchConfigBlock {
         action_retry_timeout_ms: 5_000,
         mandatory_proof_max_age_ms: 1_000,
         manual_reset_evidence_max_age_ms: 60_000,
-        forced_reduction_policy_sha256:
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-        forced_reduction_max_live_order_count: 4,
-        forced_reduction_max_notional_per_order: "100.00".to_string(),
         authorized_operator_ids: vec!["operator-primary".to_string()],
         account_ids: vec!["POLYMARKET-001".to_string()],
         instrument_ids: vec!["BTC-USD.BINANCE".to_string()],
-        cancel: None,
-        flatten: None,
     }
 }
 
@@ -214,18 +208,6 @@ fn recovered_runtime_latch_states() -> Vec<(KillSwitchState, KillSwitchStateKind
             KillSwitchStateKind::Halted,
         ),
         (
-            KillSwitchState::Cancelling {
-                halt_id: "halt-runtime-1".to_string(),
-            },
-            KillSwitchStateKind::Cancelling,
-        ),
-        (
-            KillSwitchState::Flattening {
-                halt_id: "halt-runtime-1".to_string(),
-            },
-            KillSwitchStateKind::Flattening,
-        ),
-        (
             KillSwitchState::Flat {
                 halt_id: "halt-runtime-1".to_string(),
             },
@@ -237,18 +219,6 @@ fn recovered_runtime_latch_states() -> Vec<(KillSwitchState, KillSwitchStateKind
 fn recovered_runtime_nt_trading_states() -> Vec<(KillSwitchState, TradingState)> {
     vec![
         (halted_runtime_state(), TradingState::Reducing),
-        (
-            KillSwitchState::Cancelling {
-                halt_id: "halt-runtime-1".to_string(),
-            },
-            TradingState::Reducing,
-        ),
-        (
-            KillSwitchState::Flattening {
-                halt_id: "halt-runtime-1".to_string(),
-            },
-            TradingState::Reducing,
-        ),
         (
             KillSwitchState::Flat {
                 halt_id: "halt-runtime-1".to_string(),

@@ -86,28 +86,6 @@ class StrategyPolicyFenceTests(unittest.TestCase):
 
         self.assertIn("direct kill-switch action bypass", labels)
 
-    def test_detects_global_flatten_supervisor_imports_and_calls(self) -> None:
-        labels = self.labels_for(
-            """
-            use crate::bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenSupervisor;
-            let flatten_supervisor = BoltV3KillSwitchFlattenSupervisor;
-            let plan = flatten_supervisor.plan_flatten(request);
-            """
-        )
-
-        self.assertIn("global kill-switch flatten supervisor policy", labels)
-
-    def test_detects_global_cancel_supervisor_imports_and_calls(self) -> None:
-        labels = self.labels_for(
-            """
-            use crate::bolt_v3_kill_switch_cancel::BoltV3KillSwitchCancelSupervisor;
-            let cancel_supervisor = BoltV3KillSwitchCancelSupervisor;
-            let plan = cancel_supervisor.plan_cancel(request);
-            """
-        )
-
-        self.assertIn("global kill-switch cancel supervisor policy", labels)
-
     def test_code_rules_ignore_banned_tokens_inside_strings_and_comments(self) -> None:
         # An error/doc string or comment that *names* a banned action is not a code
         # bypass. This mirrors the production archetype validation message that

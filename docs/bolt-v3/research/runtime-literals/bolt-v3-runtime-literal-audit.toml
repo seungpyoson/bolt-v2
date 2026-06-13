@@ -6862,59 +6862,11 @@ reason = "TOML validation guard requiring a positive retry timeout before accept
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''0'''
-context = '''live_kill_switch_forced_reduction_order_count: 0,'''
-classification = "kill_switch_forced_reduction_counter_identity"
-reason = "Initial identity value for the in-memory forced-reduction live-order counter; the runtime order-count limit remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''1'''
-context = '''inner.live_kill_switch_forced_reduction_order_count += 1;'''
-classification = "kill_switch_forced_reduction_counter_increment"
-reason = "Unit increment after a forced-reduction admission decision is durably recorded; the maximum live order count remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''1'''
-context = '''.saturating_sub(1);'''
-classification = "kill_switch_forced_reduction_counter_decrement"
-reason = "Unit decrement when NT lifecycle integration reports a forced-reduction order terminal; the maximum live order count remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''64'''
-context = '''if policy_sha256.len() != 64 || !policy_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())'''
-classification = "sha256_hex_digest_length_guard"
-reason = "Fixed SHA-256 hex digest length used to validate forced-reduction policy proof hashes; not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"bolt-v3 submit admission is blocked by kill-switch state {state:?}"'''
 context = '''"bolt-v3 submit admission is blocked by kill-switch state {state:?}"'''
 classification = "diagnostic_template"
 reason = "Error-display template for the kill-switch-latched admission rejection; it carries no operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "string"
-literal = '''"kill-switch forced reduction is evaluated before normal admission"'''
-context = '''unreachable!("kill-switch forced reduction is evaluated before normal admission")'''
-classification = "diagnostic_template"
-reason = "Internal invariant diagnostic for a typed submit-admission branch that is evaluated before the normal admission path; it carries no operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "number"
-literal = '''64'''
-context = '''if block.forced_reduction_policy_sha256.len() != 64'''
-classification = "sha256_hex_digest_length_guard"
-reason = "Fixed SHA-256 hex digest length used to validate the TOML-owned forced-reduction policy hash; not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
@@ -10377,76 +10329,6 @@ classification = "sha256_hex_length"
 reason = "Canonical SHA-256 hex digest length used while validating venue spendability source binding shape, not an operator runtime value."
 
 [[allowed]]
-path = '''src/bolt_v3_validate.rs'''
-kind = '''string'''
-literal = '''"open"'''
-context = '''"open" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Open),'''
-classification = '''kill_switch_cancel_surface_config_token'''
-reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
-
-[[allowed]]
-path = '''src/bolt_v3_validate.rs'''
-kind = '''string'''
-literal = '''"inflight"'''
-context = '''"inflight" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Inflight),'''
-classification = '''kill_switch_cancel_surface_config_token'''
-reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
-
-[[allowed]]
-path = '''src/bolt_v3_validate.rs'''
-kind = '''string'''
-literal = '''"pending-cancel"'''
-context = '''"pending-cancel" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::PendingCancel),'''
-classification = '''kill_switch_cancel_surface_config_token'''
-reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
-
-[[allowed]]
-path = '''src/bolt_v3_validate.rs'''
-kind = '''string'''
-literal = '''"emulated"'''
-context = '''"emulated" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Emulated),'''
-classification = '''kill_switch_cancel_surface_config_token'''
-reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
-
-[[allowed]]
-path = '''src/bolt_v3_validate.rs'''
-kind = '''string'''
-literal = '''"algorithm-managed"'''
-context = '''"algorithm-managed" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::AlgorithmManaged),'''
-classification = '''kill_switch_cancel_surface_config_token'''
-reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
-
-[[allowed]]
-path = '''src/bolt_v3_validate.rs'''
-kind = '''string'''
-literal = '''"contingent"'''
-context = '''"contingent" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Contingent),'''
-classification = '''kill_switch_cancel_surface_config_token'''
-reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
-
-[[allowed]]
-path = '''src/bolt_v3_validate.rs'''
-kind = '''string'''
-literal = '''"accepted-but-not-terminal"'''
-context = '''"accepted-but-not-terminal" => {'''
-classification = '''kill_switch_cancel_surface_config_token'''
-reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
-
-[[allowed]]
-path = '''src/bolt_v3_kill_switch_flatten.rs'''
-kind = '''number'''
-literal = '''1'''
-context = '''for right in candidates.iter().skip(index + 1) {'''
-classification = '''kill_switch_flatten_pairwise_scan_offset'''
-reason = '''Loop offset used to compare each NT position-proof candidate pair exactly once when detecting conflicting cache/report evidence; not an operator runtime value.'''
-
-[[allowed]]
-path = '''src/bolt_v3_validate.rs'''
-kind = '''string'''
-literal = '''"order_template"'''
-context = '''"order_template",'''
-classification = '''kill_switch_flatten_order_template_diagnostic_field'''
-reason = '''Field label passed to the shared NT order-template validator for TOML validation diagnostics; not a runtime trading value.'''
 path = "src/shadow_pnl.rs"
 kind = "string"
 literal = '''"settlement inconsistency for {}: winning_side {} marks a win but settlement_price {settlement_price} is below entry_price {entry_price}"'''

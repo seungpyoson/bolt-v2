@@ -96,14 +96,12 @@ pub struct BoltV3SubmitAdmissionState {
 #[derive(Debug)]
 struct BoltV3SubmitAdmissionInner {
     kill_switch_state: KillSwitchState,
-    kill_switch_forced_reduction_policy: Option<BoltV3KillSwitchForcedReductionPolicy>,
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
     admitted_order_count: u32,
     admitted_order_count_by_execution_client: BTreeMap<String, u32>,
     admitted_entry_order_count: u32,
     admitted_risk_reducing_exit_order_count: u32,
     admitted_replace_submit_order_count: u32,
-    live_kill_switch_forced_reduction_order_count: u32,
     loss_policy: Option<LossGovernorPolicy>,
     loss_snapshot: Option<LossSnapshot>,
     position_sizer: Option<BoltV3SubmitPositionSizerState>,
@@ -361,14 +359,12 @@ impl BoltV3SubmitAdmissionState {
         Self {
             inner: Arc::new(Mutex::new(BoltV3SubmitAdmissionInner {
                 kill_switch_state: KillSwitchState::Armed,
-                kill_switch_forced_reduction_policy: None,
                 live_submit_approval_limits,
                 admitted_order_count: 0,
                 admitted_order_count_by_execution_client: BTreeMap::new(),
                 admitted_entry_order_count: 0,
                 admitted_risk_reducing_exit_order_count: 0,
                 admitted_replace_submit_order_count: 0,
-                live_kill_switch_forced_reduction_order_count: 0,
                 loss_policy,
                 loss_snapshot: None,
                 position_sizer: position_sizer.map(|config| BoltV3SubmitPositionSizerState {
@@ -1142,16 +1138,6 @@ impl BoltV3SubmitAdmissionState {
         }
     }
 
-    pub fn record_kill_switch_forced_reduction_terminal(&self) {
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned");
-        inner.live_kill_switch_forced_reduction_order_count = inner
-            .live_kill_switch_forced_reduction_order_count
-            .saturating_sub(1);
-    }
-
     pub fn replace_kill_switch_state(&self, state: KillSwitchState) {
         let mut inner = self
             .inner
@@ -1166,17 +1152,6 @@ impl BoltV3SubmitAdmissionState {
             .expect("submit admission state mutex should not be poisoned")
             .kill_switch_state
             .kind()
-    }
-
-    pub fn configure_kill_switch_forced_reduction_policy(
-        &self,
-        policy: BoltV3KillSwitchForcedReductionPolicy,
-    ) {
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned");
-        inner.kill_switch_forced_reduction_policy = Some(policy);
     }
 
     pub fn admit(
@@ -1234,9 +1209,6 @@ impl BoltV3SubmitAdmissionState {
                     BoltV3SubmitIntentKind::ReplaceSubmit => {
                         inner.admitted_replace_submit_order_count += 1;
                     }
-                    BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
-                        inner.live_kill_switch_forced_reduction_order_count += 1;
-                    }
                 }
                 Ok(BoltV3SubmitAdmissionPermit {
                     inner: self.inner.clone(),
@@ -1277,12 +1249,6 @@ impl BoltV3SubmitAdmissionState {
                         .position_sizer_rejection
                         .unwrap_or(BoltV3PositionSizerRejectReason::Rejected),
                 })
-            }
-            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
-                Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionProofInvalid)
-            }
-            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
-                Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded)
             }
         }
     }
@@ -1371,12 +1337,6 @@ impl BoltV3SubmitAdmissionState {
                         .unwrap_or(BoltV3PositionSizerRejectReason::Rejected),
                 })
             }
-            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
-                Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionProofInvalid)
-            }
-            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
-                Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded)
-            }
         }
     }
 
@@ -1385,11 +1345,6 @@ impl BoltV3SubmitAdmissionState {
         request: &BoltV3SubmitAdmissionRequest,
         now_ns: u64,
     ) -> BoltV3SubmitAdmissionEvaluation {
-        if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
-            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
-                Self::evaluate_kill_switch_forced_reduction(inner, request),
-            );
-        }
         if matches!(
             request.intent_kind,
             BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
@@ -1457,9 +1412,6 @@ impl BoltV3SubmitAdmissionState {
                 }
             }
             BoltV3SubmitIntentKind::ReplaceSubmit => {}
-            BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
-                unreachable!("kill-switch forced reduction is evaluated before normal admission")
-            }
         }
         if inner.position_sizer.is_some()
             && matches!(
@@ -1479,34 +1431,6 @@ impl BoltV3SubmitAdmissionState {
             );
         }
         BoltV3SubmitAdmissionEvaluation::without_loss_halt(BoltV3AdmissionOutcome::Admitted)
-    }
-
-    fn evaluate_kill_switch_forced_reduction(
-        inner: &BoltV3SubmitAdmissionInner,
-        request: &BoltV3SubmitAdmissionRequest,
-    ) -> BoltV3AdmissionOutcome {
-        let Some(policy) = inner.kill_switch_forced_reduction_policy.as_ref() else {
-            return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid;
-        };
-        let Some(claim) = request.kill_switch_forced_reduction.as_ref() else {
-            return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid;
-        };
-        let Some(halt_id) = forced_reduction_admissible_halt_id(&inner.kill_switch_state) else {
-            return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid;
-        };
-        if claim.halt_id() != halt_id || claim.policy_sha256() != policy.policy_sha256() {
-            return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid;
-        }
-        if request.notional <= Decimal::ZERO {
-            return BoltV3AdmissionOutcome::RejectedNonPositiveNotional;
-        }
-        if request.notional > policy.max_notional_per_order() {
-            return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded;
-        }
-        if inner.live_kill_switch_forced_reduction_order_count >= policy.max_live_order_count() {
-            return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded;
-        }
-        BoltV3AdmissionOutcome::Admitted
     }
 
     pub fn admitted_order_count(&self) -> u32 {
@@ -1601,105 +1525,6 @@ impl BoltV3SubmitAdmissionEvaluation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoltV3KillSwitchForcedReductionPolicy {
-    policy_sha256: String,
-    max_live_order_count: u32,
-    max_notional_per_order: Decimal,
-}
-
-impl BoltV3KillSwitchForcedReductionPolicy {
-    pub fn new(
-        policy_sha256: impl Into<String>,
-        max_live_order_count: u32,
-        max_notional_per_order: Decimal,
-    ) -> Result<Self, BoltV3KillSwitchForcedReductionError> {
-        let policy_sha256 = policy_sha256.into();
-        if policy_sha256.len() != 64 || !policy_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err(BoltV3KillSwitchForcedReductionError::InvalidPolicySha256);
-        }
-        if max_live_order_count == 0 {
-            return Err(BoltV3KillSwitchForcedReductionError::NonPositiveMaxLiveOrderCount);
-        }
-        if max_notional_per_order <= Decimal::ZERO {
-            return Err(BoltV3KillSwitchForcedReductionError::NonPositiveMaxNotional);
-        }
-        Ok(Self {
-            policy_sha256,
-            max_live_order_count,
-            max_notional_per_order,
-        })
-    }
-
-    pub fn policy_sha256(&self) -> &str {
-        &self.policy_sha256
-    }
-
-    pub fn max_live_order_count(&self) -> u32 {
-        self.max_live_order_count
-    }
-
-    pub fn max_notional_per_order(&self) -> Decimal {
-        self.max_notional_per_order
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoltV3KillSwitchForcedReductionClaim {
-    halt_id: String,
-    action_id: String,
-    policy_sha256: String,
-}
-
-impl BoltV3KillSwitchForcedReductionClaim {
-    pub fn new(
-        halt_id: impl Into<String>,
-        action_id: impl Into<String>,
-        policy_sha256: impl Into<String>,
-    ) -> Result<Self, BoltV3KillSwitchForcedReductionError> {
-        let halt_id = halt_id.into();
-        let action_id = action_id.into();
-        let policy_sha256 = policy_sha256.into();
-        if halt_id.trim().is_empty() {
-            return Err(BoltV3KillSwitchForcedReductionError::MissingHaltId);
-        }
-        if action_id.trim().is_empty() {
-            return Err(BoltV3KillSwitchForcedReductionError::MissingActionId);
-        }
-        if policy_sha256.len() != 64 || !policy_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err(BoltV3KillSwitchForcedReductionError::InvalidPolicySha256);
-        }
-        Ok(Self {
-            halt_id,
-            action_id,
-            policy_sha256,
-        })
-    }
-
-    pub fn halt_id(&self) -> &str {
-        &self.halt_id
-    }
-
-    pub fn action_id(&self) -> &str {
-        &self.action_id
-    }
-
-    pub fn policy_sha256(&self) -> &str {
-        &self.policy_sha256
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BoltV3KillSwitchForcedReductionError {
-    MissingHaltId,
-    MissingActionId,
-    InvalidPolicySha256,
-    NonPositiveMaxLiveOrderCount,
-    NonPositiveMaxNotional,
-}
-
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum BoltV3OrderLifecycleIntent {
     Entry,
@@ -1772,7 +1597,6 @@ impl BoltV3SubmitLifecyclePolicy {
         match intent {
             BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit => true,
             BoltV3SubmitIntentKind::ReplaceSubmit => self.replace_submit,
-            BoltV3SubmitIntentKind::KillSwitchForcedReduction => true,
         }
     }
 }
@@ -1789,7 +1613,6 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub intent_kind: BoltV3SubmitIntentKind,
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
-    pub kill_switch_forced_reduction: Option<BoltV3KillSwitchForcedReductionClaim>,
     pub position_sizing: Option<BoltV3CompiledOrderSizingEvidence>,
 }
 
@@ -2012,7 +1835,6 @@ where
         intent_kind,
         lifecycle_policy: input.lifecycle_policy,
         risk_reducing_exit_proof,
-        kill_switch_forced_reduction: None,
         position_sizing: None,
     })
 }
@@ -2272,18 +2094,6 @@ pub fn market_style_admission_ceiling_notional(
     Ok(base_quantity_admission_notional(ceiling, order_quantity))
 }
 
-fn forced_reduction_admissible_halt_id(state: &KillSwitchState) -> Option<&str> {
-    match state {
-        KillSwitchState::Halting { halt_id, .. }
-        | KillSwitchState::Halted { halt_id, .. }
-        | KillSwitchState::Flattening { halt_id } => Some(halt_id),
-        KillSwitchState::Armed
-        | KillSwitchState::Cancelling { .. }
-        | KillSwitchState::Flat { .. }
-        | KillSwitchState::FailedManualIntervention { .. } => None,
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3PositionSizerRejectReason {
     Rejected,
@@ -2333,8 +2143,6 @@ pub enum BoltV3SubmitAdmissionError {
     PositionSizingRejected {
         reason: BoltV3PositionSizerRejectReason,
     },
-    KillSwitchForcedReductionProofInvalid,
-    KillSwitchForcedReductionCapExceeded,
     EvidenceWriteFailed {
         reason: String,
     },
@@ -2405,14 +2213,6 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
                     "bolt-v3 submit admission position sizing rejected: {reason:?}"
                 )
             }
-            Self::KillSwitchForcedReductionProofInvalid => write!(
-                f,
-                "bolt-v3 submit admission kill-switch forced reduction proof is invalid"
-            ),
-            Self::KillSwitchForcedReductionCapExceeded => write!(
-                f,
-                "bolt-v3 submit admission kill-switch forced reduction cap is exceeded"
-            ),
             Self::EvidenceWriteFailed { reason } => {
                 write!(
                     f,

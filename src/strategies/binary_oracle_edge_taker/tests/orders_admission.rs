@@ -1240,7 +1240,6 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
                     true,
                 ),
                 risk_reducing_exit_proof: None,
-                kill_switch_forced_reduction: None,
                 position_sizing: None,
             },
         )

@@ -58,7 +58,8 @@ use crate::{
     },
     bolt_v3_providers::resolve_fee_provider,
     bolt_v3_strategy_registration::{
-        BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
+        BoltV3RegisteredStrategyRuntime, BoltV3StrategyRegistrationError,
+        StrategyRegistrationContext, StrategyRuntimeBinding,
     },
     strategies::{
         binary_oracle_edge_taker::{BinaryOracleEdgeTakerBuilder, KEY as STRATEGY_KIND},
@@ -400,7 +401,10 @@ impl std::error::Error for BinaryOracleEdgeTakerRuntimeConfigError {}
 pub fn register_runtime_strategy(
     node: &mut nautilus_live::node::LiveNode,
     context: StrategyRegistrationContext<'_>,
-) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
+) -> Result<BoltV3RegisteredStrategyRuntime, BoltV3StrategyRegistrationError> {
+    let parameters =
+        parameters_block(context.strategy).map_err(|error| binding_error(&context, error))?;
+    let submit_orders = parameters.submit_orders;
     let raw = raw_taker_config(context.strategy, context.loaded)
         .map_err(|error| binding_error(&context, error))?;
     let fee_provider = resolve_fee_provider(
@@ -433,14 +437,18 @@ pub fn register_runtime_strategy(
     .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
-    registry
+    let strategy_id = registry
         .register_strategy(
             BinaryOracleEdgeTakerBuilder::kind(),
             &raw,
             &build_context,
             node.kernel().trader(),
         )
-        .map_err(|error| binding_message(&context, error.to_string()))
+        .map_err(|error| binding_message(&context, error.to_string()))?;
+    Ok(BoltV3RegisteredStrategyRuntime {
+        strategy_id,
+        submit_orders,
+    })
 }
 
 pub fn raw_taker_config(

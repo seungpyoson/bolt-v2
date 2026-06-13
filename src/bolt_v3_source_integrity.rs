@@ -304,7 +304,9 @@ mod tests {
     // sizing.
     // Re-derived after grafting #548's Cancelling/Flattening kill-switch state
     // handling into submit-admission forced-reduction admission during the
-    // kill-switch consolidation (#673).
+    // kill-switch consolidation (#673), then re-derived again after REMOVING
+    // that forced-reduction admission path and the Cancelling/Flattening states
+    // per loss-governor spec FR-012/FR-017 (NT market_exit is the sole exit).
     // main-side trail (unioned on the #621 merge): re-derived after adding
     // observed admission decisions for shadow submit skips that must not consume
     // live capacity, and after merging main's shared submit-admission changes

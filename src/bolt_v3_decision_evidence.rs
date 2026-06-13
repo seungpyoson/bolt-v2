@@ -70,7 +70,6 @@ pub enum BoltV3SubmitIntentKind {
     Entry,
     RiskReducingExit,
     ReplaceSubmit,
-    KillSwitchForcedReduction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -412,8 +411,6 @@ pub enum BoltV3AdmissionOutcome {
     RejectedNotionalCapExceeded,
     RejectedInvalidRiskReducingExitProof,
     RejectedCountCapExhausted,
-    RejectedKillSwitchForcedReductionProofInvalid,
-    RejectedKillSwitchForcedReductionCapExceeded,
     RejectedPositionSizing,
 }
 
@@ -1783,8 +1780,6 @@ mod tests {
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
             BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
-            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid,
-            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded,
             BoltV3AdmissionOutcome::RejectedPositionSizing,
         ] {
             let decision = BoltV3AdmissionDecisionEvidence {
@@ -1850,12 +1845,6 @@ mod tests {
                     "rejected_invalid_risk_reducing_exit_proof"
                 }
                 BoltV3AdmissionOutcome::RejectedKillSwitchLatched => "rejected_kill_switch_latched",
-                BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
-                    "rejected_kill_switch_forced_reduction_proof_invalid"
-                }
-                BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
-                    "rejected_kill_switch_forced_reduction_cap_exceeded"
-                }
                 BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",
                 BoltV3AdmissionOutcome::RejectedPositionSizing => "rejected_position_sizing",
             };

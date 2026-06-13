@@ -2157,17 +2157,28 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             strategy.registered_strategy_id
         );
     }
-    let market_exit_strategy_ids = strategy_summary
+    // Pair each registered NT strategy id with its `submit_orders` flag so the
+    // loss-governor halt handler can suppress the NT market-exit dispatch for
+    // shadow-mode strategies (`submit_orders = false`). Calling
+    // `Trader::market_exit_strategy` mutates venue state, so it must be gated by
+    // the same "no venue mutation in shadow mode" invariant the strategy
+    // enforces at its own submit/cancel chokepoints.
+    let market_exit_strategies = strategy_summary
         .registered
         .iter()
-        .map(|strategy| StrategyId::from(strategy.registered_strategy_id.as_str()))
+        .map(|strategy| {
+            (
+                StrategyId::from(strategy.registered_strategy_id.as_str()),
+                strategy.submit_orders,
+            )
+        })
         .collect::<Vec<_>>();
     let loss_halt_action_handler = match (loss_policy.clone(), loss_halt_action_policy.as_ref()) {
         (Some(policy), Some(action_policy)) => Some(loss_governor_halt_action_handler_from_node(
             &node,
             policy,
             *action_policy,
-            market_exit_strategy_ids,
+            market_exit_strategies,
         )),
         _ => None,
     };
@@ -2475,7 +2486,7 @@ fn loss_governor_halt_action_handler_from_node(
     node: &LiveNode,
     loss_policy: LossGovernorPolicy,
     action_policy: LossGovernorHaltActionPolicy,
-    market_exit_strategy_ids: Vec<StrategyId>,
+    market_exit_strategies: Vec<(StrategyId, bool)>,
 ) -> LossGovernorHaltActionHandler {
     let risk_engine = node.kernel().risk_engine().clone();
     let trader = node.kernel().trader().clone();
@@ -2498,13 +2509,28 @@ fn loss_governor_halt_action_handler_from_node(
             return;
         }
 
-        for strategy_id in &market_exit_strategy_ids {
+        // Shadow-mode strategies (`submit_orders = false`) mutate no venue
+        // state, so the loss-governor must NOT issue an NT market exit on their
+        // behalf — the same "no venue mutation in shadow mode" invariant the
+        // strategy enforces at its own submit/cancel chokepoints. The NT
+        // risk-engine state set above is venue-neutral and already applied to
+        // every strategy. `partition_market_exit_targets` owns this gate so it
+        // is unit-tested in isolation.
+        let (dispatch_targets, suppressed_targets) =
+            partition_market_exit_targets(&market_exit_strategies);
+        for strategy_id in &suppressed_targets {
+            log::info!(
+                "loss-governor NT market exit suppressed for shadow-mode strategy {strategy_id} (submit_orders=false)"
+            );
+        }
+        for strategy_id in &dispatch_targets {
             if market_exit_latch
                 .borrow()
                 .has_dispatch_succeeded(strategy_id)
             {
                 continue;
             }
+            // FR-017 sanctioned: sole NT market-exit dispatch
             if let Err(error) = Trader::market_exit_strategy(&trader, strategy_id) {
                 log::error!(
                     "loss-governor NT market exit failed for strategy {strategy_id}: {error}"
@@ -2516,6 +2542,29 @@ fn loss_governor_halt_action_handler_from_node(
                 .mark_dispatch_succeeded(strategy_id);
         }
     })
+}
+
+/// Split registered strategies into those eligible for an NT market-exit
+/// dispatch and those suppressed because they run in shadow mode
+/// (`submit_orders == false`). Shadow-mode strategies mutate no venue state, so
+/// the loss-governor must not issue an NT market exit on their behalf — the
+/// same "no venue mutation in shadow mode" invariant the strategy enforces at
+/// its own submit/cancel chokepoints. The NT risk-engine state transition is
+/// venue-neutral and is applied upstream regardless of this split. Returns
+/// `(dispatch_targets, suppressed_targets)`.
+fn partition_market_exit_targets(
+    market_exit_strategies: &[(StrategyId, bool)],
+) -> (Vec<StrategyId>, Vec<StrategyId>) {
+    let mut dispatch = Vec::new();
+    let mut suppressed = Vec::new();
+    for (strategy_id, submit_orders) in market_exit_strategies {
+        if *submit_orders {
+            dispatch.push(strategy_id.clone());
+        } else {
+            suppressed.push(strategy_id.clone());
+        }
+    }
+    (dispatch, suppressed)
 }
 
 fn required_loss_governor_decimal(
@@ -2550,10 +2599,9 @@ fn sync_nt_trading_state_for_kill_switch(node: &mut LiveNode, state: &KillSwitch
 fn nt_trading_state_for_kill_switch_state(state: &KillSwitchState) -> Option<TradingState> {
     match state {
         KillSwitchState::Armed => None,
-        KillSwitchState::Halting { .. }
-        | KillSwitchState::Halted { .. }
-        | KillSwitchState::Cancelling { .. }
-        | KillSwitchState::Flattening { .. } => Some(TradingState::Reducing),
+        KillSwitchState::Halting { .. } | KillSwitchState::Halted { .. } => {
+            Some(TradingState::Reducing)
+        }
         KillSwitchState::Flat { .. } | KillSwitchState::FailedManualIntervention { .. } => {
             Some(TradingState::Halted)
         }
@@ -2914,6 +2962,41 @@ mod tests {
     use nautilus_model::types::{Price, Quantity};
     use rust_decimal::Decimal;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn partition_market_exit_targets_suppresses_shadow_mode_strategies() {
+        let live_a = StrategyId::from("LIVE-A");
+        let shadow = StrategyId::from("SHADOW-1");
+        let live_b = StrategyId::from("LIVE-B");
+        let (dispatch, suppressed) = partition_market_exit_targets(&[
+            (live_a.clone(), true),
+            (shadow.clone(), false),
+            (live_b.clone(), true),
+        ]);
+        assert_eq!(
+            dispatch,
+            vec![live_a, live_b],
+            "only live (submit_orders=true) strategies are eligible for NT market exit"
+        );
+        assert_eq!(
+            suppressed,
+            vec![shadow],
+            "shadow-mode (submit_orders=false) strategies must be suppressed (no venue mutation)"
+        );
+    }
+
+    #[test]
+    fn partition_market_exit_targets_suppresses_all_when_fully_shadow() {
+        let (dispatch, suppressed) = partition_market_exit_targets(&[
+            (StrategyId::from("S1"), false),
+            (StrategyId::from("S2"), false),
+        ]);
+        assert!(
+            dispatch.is_empty(),
+            "no live strategy => no NT market exit dispatched in shadow mode"
+        );
+        assert_eq!(suppressed.len(), 2);
+    }
 
     #[test]
     fn live_node_adapter_mapping_consumes_hyperliquid_live_submit_approval_artifact() {

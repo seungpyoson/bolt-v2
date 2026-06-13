@@ -430,8 +430,10 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     fn register_stub(
         node: &mut LiveNode,
         context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
-    ) -> Result<StrategyId, bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError>
-    {
+    ) -> Result<
+        bolt_v2::bolt_v3_strategy_registration::BoltV3RegisteredStrategyRuntime,
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError,
+    > {
         assert_eq!(context.strategy_kind, "stub_runtime_strategy");
         context
             .submit_admission
@@ -464,7 +466,12 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
                 message: source.to_string(),
             }
         })?;
-        Ok(strategy_id)
+        Ok(
+            bolt_v2::bolt_v3_strategy_registration::BoltV3RegisteredStrategyRuntime {
+                strategy_id,
+                submit_orders: false,
+            },
+        )
     }
 
     fn stub_strategy_kind() -> &'static str {
@@ -513,6 +520,15 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
         node.kernel().trader().borrow().strategy_ids(),
         vec![StrategyId::from("BOLT-V3-PHASE3-BINDING")]
     );
+    assert!(
+        summary
+            .registered
+            .iter()
+            .all(|registered| !registered.submit_orders),
+        "binding must thread submit_orders from registration into the summary \
+         (the stub returns submit_orders=false; a default-true regression would \
+         re-open the loss-governor shadow-mode market-exit suppression hole)"
+    );
 }
 
 #[test]
@@ -557,7 +573,6 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         intent_kind: BoltV3SubmitIntentKind::Entry,
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         risk_reducing_exit_proof: None,
-        kill_switch_forced_reduction: None,
         position_sizing: None,
     }
 }

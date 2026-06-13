@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -130,10 +129,9 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
         self.assertEqual(violations, [])
 
     def test_collect_scan_strips_cfg_test_items_before_matching(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            probe = Path(temp_dir) / "probe.rs"
-            probe.write_text(
-                """
+        violations = VERIFIER.find_violations_in_text(
+            "src/probe.rs",
+            """
                 #[cfg(test)]
                 mod tests {
                     fn helper() {
@@ -145,15 +143,63 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
                     self.close_position(position_id, None)?;
                 }
                 """,
-                encoding="utf-8",
-            )
-
-            violations = VERIFIER.find_violations_in_text(
-                "src/probe.rs",
-                VERIFIER.production_text(probe),
-            )
+        )
 
         self.assertEqual({violation.line for violation in violations}, {10})
+
+    def test_sanctioned_marker_allows_single_market_exit_dispatch(self) -> None:
+        violations = VERIFIER.find_violations_in_text(
+            "src/bolt_v3_live_node.rs",
+            """
+            // FR-017 sanctioned: sole NT market-exit dispatch
+            if let Err(error) = Trader::market_exit_strategy(&trader, strategy_id) {
+            }
+            """,
+        )
+
+        self.assertEqual(violations, [])
+
+    def test_sanctioned_marker_inline_on_call_line_is_allowed(self) -> None:
+        violations = VERIFIER.find_violations_in_text(
+            "src/bolt_v3_live_node.rs",
+            """
+            Trader::market_exit_strategy(&trader, strategy_id)?; // FR-017 sanctioned: sole NT market-exit dispatch
+            """,
+        )
+
+        self.assertEqual(violations, [])
+
+    def test_sanctioned_marker_does_not_allowlist_other_files(self) -> None:
+        violations = VERIFIER.find_violations_in_text(
+            "src/bolt_v3_other.rs",
+            """
+            // FR-017 sanctioned: sole NT market-exit dispatch
+            Trader::market_exit_strategy(&trader, strategy_id)?;
+            """,
+        )
+
+        self.assertEqual({violation.line for violation in violations}, {3})
+
+    def test_market_exit_without_marker_still_fails_in_sanctioned_file(self) -> None:
+        violations = VERIFIER.find_violations_in_text(
+            "src/bolt_v3_live_node.rs",
+            """
+            Trader::market_exit_strategy(&trader, strategy_id)?;
+            """,
+        )
+
+        self.assertEqual({violation.line for violation in violations}, {2})
+
+    def test_sanctioned_marker_does_not_allow_unrelated_lifecycle_api(self) -> None:
+        violations = VERIFIER.find_violations_in_text(
+            "src/bolt_v3_live_node.rs",
+            """
+            // FR-017 sanctioned: sole NT market-exit dispatch
+            self.close_all_positions(instrument_id, None)?;
+            """,
+        )
+
+        self.assertEqual({violation.line for violation in violations}, {3})
 
     def test_empty_source_file_set_fails_closed(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "no Rust source files"):

@@ -120,6 +120,7 @@ pub struct RuntimeParametersBlock {
     pub vwap_depth_limit_bps: u64,
     pub slippage_buffer_bps: u64,
     pub risk_lambda: f64,
+    pub sizing_ev_reference_bps: u64,
     pub exit_hysteresis_bps: i64,
     pub trade_flow_window_secs: u64,
     pub trade_flow_max_samples: u64,
@@ -147,6 +148,7 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             vwap_depth_limit_bps: u64,
             slippage_buffer_bps: u64,
             risk_lambda: f64,
+            sizing_ev_reference_bps: u64,
             exit_hysteresis_bps: i64,
             trade_flow_window_secs: u64,
             trade_flow_max_samples: u64,
@@ -205,6 +207,7 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             vwap_depth_limit_bps: wire.vwap_depth_limit_bps,
             slippage_buffer_bps: wire.slippage_buffer_bps,
             risk_lambda: wire.risk_lambda,
+            sizing_ev_reference_bps: wire.sizing_ev_reference_bps,
             exit_hysteresis_bps: wire.exit_hysteresis_bps,
             trade_flow_window_secs: wire.trade_flow_window_secs,
             trade_flow_max_samples: wire.trade_flow_max_samples,
@@ -739,6 +742,12 @@ pub fn raw_taker_config(
         parameters.runtime.slippage_buffer_bps,
     )?;
     insert_float(&mut table, "risk_lambda", parameters.runtime.risk_lambda);
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "sizing_ev_reference_bps",
+        parameters.runtime.sizing_ev_reference_bps,
+    )?;
     insert_i64(
         &mut table,
         "edge_threshold_basis_points",
@@ -1462,6 +1471,33 @@ fn validate_parameter_bounds(
         errors.push(format!(
             "{context}: parameters.edge_threshold_basis_points ({}) must be >= 0 (a negative edge threshold admits negative-edge / guaranteed-loss entries)",
             parameters.edge_threshold_basis_points
+        ));
+    }
+    // The EV sizing reference anchors the dollar scale: worst-case EV at
+    // 2*risk_lambda*reference saturates sizing at order_notional_target. A zero
+    // reference makes that scale division undefined; the runtime sizing path
+    // fails closed to a zero size and the strategy silently never submits, so
+    // the misconfiguration must fail closed at load instead.
+    if parameters.runtime.sizing_ev_reference_bps == 0 {
+        errors.push(format!(
+            "{context}: parameters.runtime.sizing_ev_reference_bps must be > 0 (sizing saturates at order_notional_target when worst-case EV reaches 2 * risk_lambda * sizing_ev_reference_bps)"
+        ));
+    }
+    if (parameters.runtime.sizing_ev_reference_bps as f64) > crate::bolt_v3_numeric::BPS_DENOMINATOR
+    {
+        errors.push(format!(
+            "{context}: parameters.runtime.sizing_ev_reference_bps must be at most {} bps",
+            crate::bolt_v3_numeric::BPS_DENOMINATOR
+        ));
+    }
+    // TOML floats legally admit negative, nan, and inf. Each loads through
+    // serde but makes the runtime sizing path fail soft to a zero size (a
+    // silently dead strategy), so each must fail closed at load. Zero stays
+    // valid: it is the deliberate caution-off escape hatch (size = cap).
+    if !crate::bolt_v3_numeric::is_non_negative_finite(parameters.runtime.risk_lambda) {
+        errors.push(format!(
+            "{context}: parameters.runtime.risk_lambda ({}) must be finite and >= 0 (zero disables risk scaling; negative/nan/inf silently size every order to zero)",
+            parameters.runtime.risk_lambda
         ));
     }
     errors

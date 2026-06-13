@@ -64,6 +64,9 @@ pub(crate) fn sanitize_open_probability(value: f64, eps: f64) -> Option<f64> {
 }
 
 pub(crate) fn sanitize_non_negative(value: f64) -> f64 {
+    // Sanitizers that feed min/max cap chains must collapse NaN and infinities
+    // to zero so ordinary comparisons cannot let non-finite values leak past a
+    // fail-closed guard.
     if value.is_finite() {
         value.max(ZERO_F64)
     } else {

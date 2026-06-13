@@ -5047,6 +5047,93 @@ def main() -> int:
         ),
     )
     assert_error(
+        "ci-provenance-emit must pass detector result from needs.detector.result",
+        replace_once(
+            BASE_WORKFLOW,
+            "--required-job detector=${{ needs.detector.result }}",
+            "--required-job detector=success\n          printf '%s\\n' '${{ needs.detector.result }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must pass build.required from needs.detector.outputs.build_required",
+        replace_once(
+            BASE_WORKFLOW,
+            "--conditional-job build.required=${{ needs.detector.outputs.build_required }}",
+            "--conditional-job build.required=true\n          printf '%s\\n' '${{ needs.detector.outputs.build_required }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must pass build.result from needs.build.result",
+        replace_once(
+            BASE_WORKFLOW,
+            "--conditional-job build.result=${{ needs.build.result }}",
+            "--conditional-job build.result=success\n          printf '%s\\n' '${{ needs.build.result }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            BASE_WORKFLOW,
+            "--nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
+            "--nextest-fingerprint-path .ci-provenance/wrong/cache-key.txt",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            BASE_WORKFLOW,
+            "          path: .ci-provenance/fingerprint",
+            "          path: .ci-provenance/downloaded",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            BASE_WORKFLOW,
+            "          path: .ci-provenance/fingerprint",
+            "          path: .ci-provenance/fingerprint-backup",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                "          path: .ci-provenance/fingerprint",
+                "          path: .ci-provenance/downloaded",
+            ),
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+            "          printf '%s\\n' 'path: .ci-provenance/fingerprint'\n"
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must record nextest fingerprint when present",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                "          pattern: nextest-archive-fingerprint-*",
+                "          pattern: nextest-archive-fingerprint-backup-*",
+            ),
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+            "          printf '%s\\n' 'pattern: nextest-archive-fingerprint-*'\n"
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must record nextest fingerprint when present",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                "        continue-on-error: true",
+                "        continue-on-error: false",
+            ),
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+            "          printf '%s\\n' 'continue-on-error: true'\n"
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
         "actions/upload-artifact must be pinned to a 40-character SHA",
         replace_once(
             BASE_WORKFLOW,

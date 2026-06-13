@@ -948,6 +948,11 @@ def block_has_input(block: list[str], name: str, value: str | None = None) -> bo
     return False
 
 
+def block_has_scalar(block: list[str], name: str, value: str) -> bool:
+    expected = f"{name}: {value}"
+    return any(strip_comment(line).strip() == expected for line in block)
+
+
 def block_input_value(block: list[str], name: str) -> str | None:
     for item_name, item_value in block_input_items(block):
         if item_name == name:
@@ -5645,15 +5650,39 @@ def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
     return "python3 scripts/ci_provenance.py emit-full-ci" in text and "--output ci-provenance.json" in text
 
 
+def ci_provenance_emit_fingerprint_download_blocks(job_lines: list[str]) -> list[list[str]]:
+    return [
+        block
+        for block in action_blocks(job_lines, "actions/download-artifact@")
+        if block_has_input(block, "pattern", "nextest-archive-fingerprint-*")
+    ]
+
+
 def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]) -> list[str]:
     text = uncommented_text(job_lines)
-    missing = []
+    errors = []
+    fingerprint_path = ".ci-provenance/fingerprint/cache-key.txt"
+    fingerprint_download_path = str(pathlib.PurePosixPath(fingerprint_path).parent)
     for need in needs:
-        if f"needs.{need}.result" not in text:
-            missing.append(need)
-    if "needs.detector.outputs.build_required" not in text:
-        missing.append("detector.build_required")
-    return missing
+        if need == "build":
+            expected = "--conditional-job build.result=${{ needs.build.result }}"
+            if expected not in text:
+                errors.append("ci-provenance-emit must pass build.result from needs.build.result")
+            continue
+        expected = f"--required-job {need}=${{{{ needs.{need}.result }}}}"
+        if expected not in text:
+            errors.append(f"ci-provenance-emit must pass {need} result from needs.{need}.result")
+    if "--conditional-job build.required=${{ needs.detector.outputs.build_required }}" not in text:
+        errors.append("ci-provenance-emit must pass build.required from needs.detector.outputs.build_required")
+    if (
+        f"--nextest-fingerprint-path {fingerprint_path}" not in text
+        or not any(
+            block_has_input(block, "path", fingerprint_download_path)
+            for block in ci_provenance_emit_fingerprint_download_blocks(job_lines)
+        )
+    ):
+        errors.append("ci-provenance-emit fingerprint download path must match emitter argument")
+    return errors
 
 
 def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) -> list[str]:
@@ -5677,11 +5706,12 @@ def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) 
 
 def ci_provenance_emit_downloads_fingerprint(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
-    return (
-        "actions/download-artifact@" in text
-        and "pattern: nextest-archive-fingerprint-*" in text
-        and "continue-on-error: true" in text
-        and "--nextest-fingerprint-path" in text
+    fingerprint_path = ".ci-provenance/fingerprint/cache-key.txt"
+    fingerprint_download_path = str(pathlib.PurePosixPath(fingerprint_path).parent)
+    return f"--nextest-fingerprint-path {fingerprint_path}" in text and any(
+        block_has_input(block, "path", fingerprint_download_path)
+        and block_has_scalar(block, "continue-on-error", "true")
+        for block in ci_provenance_emit_fingerprint_download_blocks(job_lines)
     )
 
 
@@ -6377,10 +6407,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("ci-provenance-emit must gate on full_ci_required")
         if not ci_provenance_emit_runs_emitter(emit_lines):
             errors.append("ci-provenance-emit must run provenance emitter")
-        for missing in ci_provenance_emit_checks_needs(
-            emit_lines, (*CI_PROVENANCE_REQUIRED_JOBS, "build")
-        ):
-            errors.append(f"ci-provenance-emit must evaluate needs.{missing}.result")
+        errors.extend(ci_provenance_emit_checks_needs(emit_lines, (*CI_PROVENANCE_REQUIRED_JOBS, "build")))
         errors.extend(
             ci_provenance_emit_upload_errors(
                 emit_lines,

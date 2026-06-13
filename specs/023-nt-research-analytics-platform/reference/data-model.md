@@ -116,8 +116,8 @@ data models are defined inside the numbered project specs/plans:
 - `artifact_kind`: Top-level kind: raw, nt_catalog, source_proofs, backtests,
   artifact_index, or research_analytics.
 - `artifact_subfamily`: Optional subfamily inside the top-level kind. Required
-  for Research Analytics artifacts: datasets, feature_tables,
-  experiment_results, or promotion_packages.
+  for Research Analytics artifacts: datasets, feature_tables, or
+  experiment_results.
 - `producer_project`: Project or job family that produced the artifact and owns
   its index record.
 - `manifest_uri`: Artifact-local structured manifest URI under `artifact_root`.
@@ -145,8 +145,13 @@ Research Analytics may write only these derived families under the
 - `datasets`: point-in-time research datasets.
 - `feature-tables`: point-in-time feature tables.
 - `experiment-results`: experiment metadata, metrics pointers, consumed BTE
-  result ids, and leakage reports.
-- `promotion-packages`: promotion package states and typed config artifacts.
+  result ids, leakage reports, and the RA-owned GO / NO-GO / conditional-GO
+  verdict (scope, evidence/fidelity refs, re-measurement cadence).
+
+There is no standing `promotion-packages` family: there is no standing
+PromotionPackage machine. A typed promotion-config artifact is produced only
+when a real GO finding exists to promote (see `reference/contracts.md` Result
+And Promotion Boundary and `reference/evidence.md` E-041).
 
 Every RA-owned artifact records owner, schema version, source refs, source
 hashes, content hash, lifecycle state, and Artifact Index event behavior. RA

@@ -30,9 +30,11 @@ primitive.
 
 - **L0 — Data.** NT `ParquetDataCatalog` in S3 is the single canonical input:
   `from_uri` S3 access plus the Tardis/CSV streamers and `EncodeToRecordBatch`.
-  NT's own catalog write is not durable/immutable: `write_to_parquet` is a
-  non-atomic `head()`+`PutMode::Overwrite` and `grep PutMode` over NT crates
-  returns zero hits. WE BUILD: make the already-proven venue converters write to
+  NT's own catalog write is not durable/immutable: a non-atomic `head()`
+  existence check then an unconditional `object_store.put` (overwrite-by-default;
+  `parquet.rs` / `backend/catalog.rs`) — NT names no `PutMode` at all
+  (`grep PutMode` over NT crates returns zero hits). WE BUILD: make the
+  already-proven venue converters write to
   S3 *durably and immutably* (today they reproduce-on-demand into a local catalog
   only) via the conditional create-only writer over `object_store`'s
   `PutMode::Create` (S3 If-None-Match) per
@@ -41,8 +43,9 @@ primitive.
 - **L1 — Read.** NT typed `query<T>` (instrument + time + SQL `where`
   pushdown) and `DataBackendSession` (DataFusion SQL to Arrow). WE BUILD: a thin
   reader helper of a few dozen lines over those APIs.
-- **L2 — Features.** NT indicators (~40 in the Rust indicators crate; ~90 in
-  NT's Python catalog), the `BarAggregator` family, `Clock`/`TestClock`, `Cache`,
+- **L2 — Features.** NT indicators (38 `impl Indicator for` in the Rust
+  indicators crate; 47 public names in NT's Python `indicators` package), the
+  `BarAggregator` family, `Clock`/`TestClock`, `Cache`,
   and NT-native implied-volatility / Black-Scholes greeks
   (`crates/model/src/data/greeks.rs`) as the offline-usable primitives. NT
   `DataActor` is a live actor-runtime Component (Clock/MessageBus/Cache-bound),
@@ -53,8 +56,9 @@ primitive.
   already wraps. RA never owns a runner. WE BUILD: sweep orchestration plus
   Polymarket cost realism implemented as `FeeModel` / `FillModel` /
   `LatencyModel` trait impls.
-- **L4 — Evaluate.** NT `PortfolioAnalyzer`, the `PortfolioStatistic` suite, and
-  the `register_statistic` trait. WE BUILD: domain metrics as new
+- **L4 — Evaluate.** NT `PortfolioAnalyzer`, the `PortfolioStatistic` trait
+  suite, registered via the `PortfolioAnalyzer::register_statistic` method.
+  WE BUILD: domain metrics as new
   `PortfolioStatistic` impls that run IN-PROCESS during the backtest (registered
   before the run via the BTE — the trait methods take live `&Returns`,
   `Vec<Box<dyn Order>>`, and `&[Position]` per `crates/analysis/src/statistic.rs`,
@@ -66,10 +70,13 @@ primitive.
   `catalog.list_backtest_runs`.
 - **L5 — Present.** Off-the-shelf BI (duckdb / polars over the NT catalog's Arrow
   output) and #409 `PortfolioSnapshot` as the single PnL read source. NT
-  `reporter.py` / `tearsheet.py` are Cython-kernel-only (they need a live
-  `engine.kernel.cache` and `list[Order]` / `list[Position]`), so they are NOT
-  reachable on the Rust single-engine path the single-engine invariant bans; the
-  supported presentation path is the duckdb / polars Arrow read above. WE BUILD:
+  `reporter.py` / `tearsheet.py` are Python (pandas) analysis APIs, excluded
+  because the single-engine invariant keeps RA on the Rust path and bans
+  importing NT's Python/Cython engine layer — not because they need a live cache
+  (the `reporter.py` helpers take plain `list[Order]` / `list[Position]` and
+  `create_tearsheet_from_stats` takes precomputed stats; only the engine-driven
+  `create_tearsheet` needs `engine.kernel.cache`). The supported presentation
+  path is the duckdb / polars Arrow read above. WE BUILD:
   notebook ergonomics and the dashboard product (off-the-shelf first, custom UI
   only as a fallback).
 

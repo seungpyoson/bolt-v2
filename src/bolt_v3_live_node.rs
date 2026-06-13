@@ -2443,6 +2443,17 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         submit_admission.clone(),
         loss_protection_strategy_ids,
     )?;
+    // Loss-protection recovery (`seed_from_store`) can fail closed and override
+    // the kill-switch state established by `recover_kill_switch_state_before_live_node_build`
+    // (e.g. an armed durable record with no loss snapshot becomes
+    // `FailedManualIntervention`). Re-sync the NT trading state from the final
+    // loss-protection state so the NT risk engine and the submit-admission latch
+    // agree on the halt — otherwise a fail-closed seed would latch admission while
+    // leaving NT trading `Active`.
+    if let Some(protection) = loss_protection.as_ref() {
+        let seeded_state = protection.borrow().state().clone();
+        sync_nt_trading_state_for_kill_switch(&mut node, &seeded_state);
+    }
     let runtime = BoltV3LiveNodeRuntime::new(
         node,
         summary.clone(),

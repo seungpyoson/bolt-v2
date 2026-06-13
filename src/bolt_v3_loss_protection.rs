@@ -123,6 +123,10 @@ impl KillSwitchLossProtection {
         &self.store
     }
 
+    pub fn state(&self) -> &KillSwitchState {
+        &self.state
+    }
+
     pub fn seed_from_store(&mut self) -> anyhow::Result<KillSwitchState> {
         let record = self
             .store

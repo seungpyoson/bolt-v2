@@ -44,12 +44,16 @@ def helper_source(*, duplicate_engine: bool = False, omit_session: bool = False)
     return f"""
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use nautilus_persistence::backend::session::DataBackendSession;
+use ahash::AHashMap;
 
-pub struct CatalogQuerySpec;
+pub struct CatalogQuerySpec {{
+    pub catalog_uri: String,
+    pub storage_options: Option<AHashMap<String, String>>,
+}}
 pub struct SqlBatchQuerySpec {{ pub chunk_size: usize }}
 
 pub fn query_catalog_typed<T>(spec: CatalogQuerySpec) {{
-    let mut catalog = ParquetDataCatalog::new(&spec.catalog_root, None, None, None, None);
+    let mut catalog = ParquetDataCatalog::from_uri(&spec.catalog_uri, spec.storage_options.clone(), None, None, None)?;
     let _ = catalog.query_typed_data::<T>(None, None, None, None, None, true);
     {duplicate}
 }}

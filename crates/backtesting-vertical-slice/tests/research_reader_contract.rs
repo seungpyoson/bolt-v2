@@ -119,7 +119,8 @@ fn first_parquet_file_if_any(root: &Path) -> Option<PathBuf> {
 fn typed_reader_delegates_to_nt_catalog_query() {
     let (catalog, instrument_id) = write_catalog();
     let spec = CatalogQuerySpec {
-        catalog_root: catalog.path().to_path_buf(),
+        catalog_uri: catalog.path().to_string_lossy().to_string(),
+        storage_options: None,
         instrument_ids: Some(vec![instrument_id.to_string()]),
         start: None,
         end: None,

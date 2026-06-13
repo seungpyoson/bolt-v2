@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use ahash::AHashMap;
 use anyhow::{Context, Result};
 use arrow::record_batch::RecordBatch;
 use nautilus_core::UnixNanos;
@@ -12,7 +13,8 @@ use nautilus_serialization::arrow::DecodeDataFromRecordBatch;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogQuerySpec {
-    pub catalog_root: PathBuf,
+    pub catalog_uri: String,
+    pub storage_options: Option<AHashMap<String, String>>,
     pub instrument_ids: Option<Vec<String>>,
     pub start: Option<UnixNanos>,
     pub end: Option<UnixNanos>,
@@ -25,7 +27,14 @@ pub fn query_catalog_typed<T>(spec: &CatalogQuerySpec) -> Result<Vec<T>>
 where
     T: DecodeDataFromRecordBatch + CatalogPathPrefix + TryFrom<Data>,
 {
-    let mut catalog = ParquetDataCatalog::new(&spec.catalog_root, None, None, None, None);
+    let mut catalog = ParquetDataCatalog::from_uri(
+        &spec.catalog_uri,
+        spec.storage_options.clone(),
+        None,
+        None,
+        None,
+    )
+    .context("create NautilusTrader catalog from URI")?;
     catalog
         .query_typed_data::<T>(
             spec.instrument_ids.clone(),

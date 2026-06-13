@@ -3101,7 +3101,7 @@ mod tests {
         let metadata = fixture_submit_reservation_metadata(
             "startup-known-client-order",
             "condition-fixture-yes.POLYMARKET",
-            "Buy",
+            "buy",
             "10",
             "0.4",
             "0.3",
@@ -3266,7 +3266,7 @@ mod tests {
         let metadata = fixture_submit_reservation_metadata(
             "startup-overopen-client-order",
             "condition-fixture-yes.POLYMARKET",
-            "Buy",
+            "buy",
             "10",
             "0.4",
             "0.3",

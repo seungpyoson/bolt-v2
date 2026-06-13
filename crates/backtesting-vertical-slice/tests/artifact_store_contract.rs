@@ -2,8 +2,10 @@ use object_store::{ObjectStoreExt, memory::InMemory};
 
 use backtesting_vertical_slice::{
     artifact_store::{
-        ArtifactKind, ArtifactStoreConfig, CatalogDispatchConfig, CatalogProjectionBinding,
-        CreateOnlyArtifactWriter,
+        ArtifactIndexCommitState, ArtifactIndexEvent, ArtifactIndexPointer, ArtifactIndexSnapshot,
+        ArtifactIndexSnapshotRow, ArtifactIndexWriter, ArtifactKind, ArtifactLineageRef,
+        ArtifactStoreConfig, CatalogDispatchConfig, CatalogProjectionBinding,
+        CreateOnlyArtifactWriter, StoredArtifactIndexPointer,
     },
     run_manifest::MarketStructureFixture,
 };
@@ -131,4 +133,165 @@ async fn create_only_writer_refuses_to_overwrite_existing_object() {
             .await
             .is_err()
     );
+}
+
+fn sha256(ch: char) -> String {
+    std::iter::repeat_n(ch, 64).collect()
+}
+
+fn backtest_event(root_uri: String, event_id: &str, artifact_id: &str) -> ArtifactIndexEvent {
+    ArtifactIndexEvent {
+        event_id: event_id.to_string(),
+        artifact_kind: ArtifactKind::Backtests,
+        artifact_id: artifact_id.to_string(),
+        artifact_uri: format!("{root_uri}result.json"),
+        manifest_uri: format!("{root_uri}manifest.json"),
+        producer_project: "backtesting-engine".to_string(),
+        content_sha256: sha256('a'),
+        parent_lineage: vec![ArtifactLineageRef {
+            artifact_kind: ArtifactKind::NtCatalog,
+            artifact_id: "projection-001".to_string(),
+            version: Some("v1".to_string()),
+            sha256: sha256('b'),
+        }],
+        commit_state: ArtifactIndexCommitState::Staged,
+    }
+}
+
+#[tokio::test]
+async fn artifact_index_writes_events_snapshots_and_latest_pointer_conditionally() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let writer = ArtifactIndexWriter::new(&store);
+    let event = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::BinaryOption, "run-001"),
+        "event-001",
+        "run-001",
+    );
+
+    writer
+        .put_event(&root, &event)
+        .await
+        .expect("event create succeeds");
+    writer
+        .put_event(&root, &event)
+        .await
+        .expect("same event payload is idempotent");
+
+    let snapshot = ArtifactIndexSnapshot::new(
+        "snapshot-001",
+        ArtifactKind::Backtests,
+        vec![ArtifactIndexSnapshotRow::from_event(
+            &event,
+            ArtifactIndexCommitState::Committed,
+        )],
+    )
+    .expect("snapshot is valid");
+    writer
+        .put_snapshot(&root, &snapshot)
+        .await
+        .expect("snapshot create succeeds");
+    let pointer = ArtifactIndexPointer::from_snapshot(&root, &snapshot)
+        .expect("pointer derives from snapshot");
+    writer
+        .create_latest_pointer(&root, &pointer)
+        .await
+        .expect("first pointer create succeeds");
+
+    let StoredArtifactIndexPointer {
+        pointer: current,
+        version: first_version,
+    } = writer
+        .read_latest_pointer(&root, ArtifactKind::Backtests)
+        .await
+        .expect("latest pointer reads")
+        .expect("latest pointer exists");
+    assert_eq!(current.snapshot_id, "snapshot-001");
+    assert_eq!(
+        current.snapshot_uri,
+        "s3://bolt-ra-artifacts/prod/artifact-index/v1/snapshots/kind=backtests/snapshot=snapshot-001.json"
+    );
+
+    let next_event = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::BinaryOption, "run-002"),
+        "event-002",
+        "run-002",
+    );
+    let next_snapshot = ArtifactIndexSnapshot::new(
+        "snapshot-002",
+        ArtifactKind::Backtests,
+        vec![
+            ArtifactIndexSnapshotRow::from_event(&event, ArtifactIndexCommitState::Committed),
+            ArtifactIndexSnapshotRow::from_event(&next_event, ArtifactIndexCommitState::Committed),
+        ],
+    )
+    .expect("next snapshot is valid");
+    writer
+        .put_event(&root, &next_event)
+        .await
+        .expect("next event create succeeds");
+    writer
+        .put_snapshot(&root, &next_snapshot)
+        .await
+        .expect("next snapshot create succeeds");
+    let next_pointer = ArtifactIndexPointer::from_snapshot(&root, &next_snapshot)
+        .expect("next pointer derives from snapshot");
+
+    writer
+        .update_latest_pointer(&root, &next_pointer, first_version.clone())
+        .await
+        .expect("matching pointer version updates");
+
+    let stale_update = writer
+        .update_latest_pointer(&root, &pointer, first_version)
+        .await
+        .expect_err("stale pointer version must fail");
+    assert!(
+        stale_update.to_string().contains("precondition")
+            || stale_update.to_string().contains("does not match"),
+        "{stale_update}"
+    );
+}
+
+#[tokio::test]
+async fn artifact_index_reader_rejects_hash_invalid_latest_pointer() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let writer = ArtifactIndexWriter::new(&store);
+    let event = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::PerpsSpot, "run-003"),
+        "event-003",
+        "run-003",
+    );
+    let snapshot = ArtifactIndexSnapshot::new(
+        "snapshot-003",
+        ArtifactKind::Backtests,
+        vec![ArtifactIndexSnapshotRow::from_event(
+            &event,
+            ArtifactIndexCommitState::Committed,
+        )],
+    )
+    .expect("snapshot is valid");
+    writer
+        .put_event(&root, &event)
+        .await
+        .expect("event create succeeds");
+    writer
+        .put_snapshot(&root, &snapshot)
+        .await
+        .expect("snapshot create succeeds");
+
+    let mut pointer = ArtifactIndexPointer::from_snapshot(&root, &snapshot)
+        .expect("pointer derives from snapshot");
+    pointer.snapshot_sha256 = sha256('c');
+    writer
+        .create_latest_pointer(&root, &pointer)
+        .await
+        .expect("hash-invalid pointer object can exist");
+
+    let err = writer
+        .read_verified_latest_snapshot(&root, ArtifactKind::Backtests)
+        .await
+        .expect_err("hash-invalid latest pointer must fail closed");
+    assert!(err.to_string().contains("snapshot hash"), "{err}");
 }

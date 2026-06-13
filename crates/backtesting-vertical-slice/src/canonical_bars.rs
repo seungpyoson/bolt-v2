@@ -1332,6 +1332,7 @@ pub fn normalize_jsonl_multi_interval_bars(
 /// Returns an error if a duplicate row disagrees, a derived `close_time`
 /// overflows, a row needs a derived `close_time` but `interval_nanos` is `None`,
 /// or the assembled table fails its contract.
+#[allow(clippy::too_many_arguments)]
 fn assemble_bar_table(
     transform_identity: &str,
     accepted: &AcceptedDataset,

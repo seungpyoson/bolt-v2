@@ -2976,4 +2976,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     unittest.main()

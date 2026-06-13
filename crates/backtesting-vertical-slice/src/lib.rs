@@ -23,6 +23,7 @@ pub mod artifact_store;
 pub mod canonical_trades;
 pub mod catalog_projection;
 pub mod operator;
+pub mod research_reader;
 pub mod result_contract;
 pub mod run_manifest;
 pub mod runner;

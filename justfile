@@ -85,6 +85,10 @@ verify-ra-point-in-time-leakage: check-workspace
     python3 scripts/test_verify_ra_point_in_time_leakage.py
     python3 scripts/verify_ra_point_in_time_leakage.py
 
+verify-ra-thin-reader-helper: check-workspace
+    python3 scripts/test_verify_ra_thin_reader_helper.py
+    python3 scripts/verify_ra_thin_reader_helper.py
+
 verify-bolt-v3-legacy-default-fence: check-workspace
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
     python3 scripts/verify_bolt_v3_legacy_default_fence.py
@@ -201,6 +205,8 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_ra_notebook_read_only_boundary.py
     python3 scripts/test_verify_ra_point_in_time_leakage.py
     python3 scripts/verify_ra_point_in_time_leakage.py
+    python3 scripts/test_verify_ra_thin_reader_helper.py
+    python3 scripts/verify_ra_thin_reader_helper.py
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
     python3 scripts/verify_bolt_v3_legacy_default_fence.py
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py

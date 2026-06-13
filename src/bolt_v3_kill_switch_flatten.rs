@@ -1,5 +1,6 @@
 use crate::{
     bolt_v3_kill_switch::KillSwitchState,
+    bolt_v3_numeric::SHA256_HEX_DIGEST_LEN,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, validate_nt_order_template},
     bolt_v3_position_contract::{expected_exit_order_side_for_position, is_observed_open_side},
     bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionClaim,
@@ -9,7 +10,6 @@ use nautilus_model::{
     identifiers::{AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId},
     types::Quantity,
 };
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -490,8 +490,7 @@ fn validate_no_conflicting_position_proof(
 }
 
 fn is_sha256_hex(value: &str) -> bool {
-    let expected_len = hex::encode(Sha256::digest([])).len();
-    value.len() == expected_len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == SHA256_HEX_DIGEST_LEN && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

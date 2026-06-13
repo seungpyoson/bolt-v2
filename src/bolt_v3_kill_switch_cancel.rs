@@ -1,9 +1,9 @@
 use crate::bolt_v3_kill_switch::KillSwitchState;
+use crate::bolt_v3_numeric::SHA256_HEX_DIGEST_LEN;
 use nautilus_model::{
     enums::OrderStatus,
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId},
 };
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     num::{NonZeroU32, NonZeroU64},
@@ -474,8 +474,7 @@ fn source_timestamp_is_stale(
 }
 
 fn is_sha256_hex_digest(value: &str) -> bool {
-    let expected_len = hex::encode(Sha256::digest([])).len();
-    value.len() == expected_len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == SHA256_HEX_DIGEST_LEN && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

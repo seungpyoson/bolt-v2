@@ -6,9 +6,9 @@ use std::{
 
 use nautilus_model::{enums::TradingState, identifiers::StrategyId};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 use crate::bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshot};
+use crate::bolt_v3_numeric::SHA256_HEX_DIGEST_LEN;
 
 pub type LossGovernorHaltActionHandler = Rc<dyn Fn(Option<&LossSnapshot>, u64)>;
 
@@ -168,7 +168,7 @@ pub enum LossGovernorManualRecoveryEvidenceError {
 }
 
 fn valid_sha256_hex(value: &str) -> bool {
-    value.len() == hex::encode(Sha256::digest([])).len()
+    value.len() == SHA256_HEX_DIGEST_LEN
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))

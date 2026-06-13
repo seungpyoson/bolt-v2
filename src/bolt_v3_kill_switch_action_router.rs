@@ -1,10 +1,8 @@
 use crate::{
-    bolt_v3_kill_switch::KillSwitchState,
+    bolt_v3_kill_switch::KillSwitchState, bolt_v3_numeric::SHA256_HEX_DIGEST_LEN,
     bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionClaim,
 };
 use nautilus_model::enums::TradingState;
-
-const SHA256_HEX_DIGEST_LEN: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3KillSwitchActionClass {

@@ -225,31 +225,24 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
     let mut intents = HashMap::<String, OrderIntentEvidence>::new();
     let mut admitted_entries = HashMap::<String, AdmissionDecisionEvidence>::new();
 
-    for (line_index, line) in read_jsonl_lines(path)?.into_iter().enumerate() {
+    for (line_number, line) in read_jsonl_lines(path)? {
         let envelope: EvidenceEnvelope = serde_json::from_str(&line).with_context(|| {
             format!(
-                "failed to parse decision evidence line {} in {}",
-                line_index + SHADOW_PNL_LINE_NUMBER_BASE,
+                "failed to parse decision evidence line {line_number} in {}",
                 path.display()
             )
         })?;
-        validate_evidence_header(&envelope, line_index + SHADOW_PNL_LINE_NUMBER_BASE)?;
+        validate_evidence_header(&envelope, line_number)?;
         match envelope.kind.as_str() {
             BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND => {
                 let snapshot = envelope.snapshot.ok_or_else(|| {
-                    anyhow!(
-                        "missing snapshot payload at decision evidence line {}",
-                        line_index + SHADOW_PNL_LINE_NUMBER_BASE
-                    )
+                    anyhow!("missing snapshot payload at decision evidence line {line_number}")
                 })?;
                 snapshots.insert(snapshot.client_order_id.clone(), snapshot);
             }
             BOLT_V3_ORDER_INTENT_RECORD_KIND => {
                 let intent = envelope.intent.ok_or_else(|| {
-                    anyhow!(
-                        "missing intent payload at decision evidence line {}",
-                        line_index + SHADOW_PNL_LINE_NUMBER_BASE
-                    )
+                    anyhow!("missing intent payload at decision evidence line {line_number}")
                 })?;
                 if intent.intent_kind == BoltV3OrderIntentKind::Entry {
                     intents.insert(intent.client_order_id.clone(), intent);
@@ -258,8 +251,7 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
             BOLT_V3_ADMISSION_DECISION_RECORD_KIND => {
                 let decision = envelope.decision.ok_or_else(|| {
                     anyhow!(
-                        "missing admission decision payload at decision evidence line {}",
-                        line_index + SHADOW_PNL_LINE_NUMBER_BASE
+                        "missing admission decision payload at decision evidence line {line_number}"
                     )
                 })?;
                 if decision.intent_kind == BoltV3SubmitIntentKind::Entry
@@ -293,12 +285,10 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
 fn read_settlements(path: &Path) -> Result<Vec<ShadowSettlementEvidence>> {
     read_jsonl_lines(path)?
         .into_iter()
-        .enumerate()
-        .map(|(line_index, line)| {
+        .map(|(line_number, line)| {
             serde_json::from_str(&line).with_context(|| {
                 format!(
-                    "failed to parse settlement line {} in {}",
-                    line_index + SHADOW_PNL_LINE_NUMBER_BASE,
+                    "failed to parse settlement line {line_number} in {}",
                     path.display()
                 )
             })
@@ -306,19 +296,21 @@ fn read_settlements(path: &Path) -> Result<Vec<ShadowSettlementEvidence>> {
         .collect()
 }
 
-fn read_jsonl_lines(path: &Path) -> Result<Vec<String>> {
+fn read_jsonl_lines(path: &Path) -> Result<Vec<(usize, String)>> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     BufReader::new(file)
         .lines()
         .enumerate()
-        .filter_map(|(index, line)| match line {
-            Ok(line) if line.trim().is_empty() => None,
-            Ok(line) => Some(Ok(line)),
-            Err(error) => Some(Err(anyhow!(
-                "failed to read line {} in {}: {error}",
-                index + SHADOW_PNL_LINE_NUMBER_BASE,
-                path.display()
-            ))),
+        .filter_map(|(index, line)| {
+            let line_number = index + SHADOW_PNL_LINE_NUMBER_BASE;
+            match line {
+                Ok(line) if line.trim().is_empty() => None,
+                Ok(line) => Some(Ok((line_number, line))),
+                Err(error) => Some(Err(anyhow!(
+                    "failed to read line {line_number} in {}: {error}",
+                    path.display()
+                ))),
+            }
         })
         .collect()
 }

@@ -223,6 +223,34 @@ fn shadow_pnl_report_rejects_ambiguous_settlement_without_trade_market_id() {
 }
 
 #[test]
+fn shadow_pnl_report_reports_original_line_numbers_past_blank_lines() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("order-intents.jsonl");
+    let settlements_path = temp.path().join("shadow-settlements.jsonl");
+    // A blank leading line must not shift the reported parse-error line number:
+    // the malformed record is on original line 2, not the post-filter index.
+    std::fs::write(&evidence_path, "\n{ not valid json\n").expect("fixture evidence should write");
+    std::fs::write(&settlements_path, "").expect("fixture settlements should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .args([
+            "--evidence-jsonl",
+            evidence_path.to_str().expect("utf-8 path"),
+            "--settlements-jsonl",
+            settlements_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("shadow_pnl_report should run");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(
+        stderr.contains("decision evidence line 2"),
+        "parse error must report the original 1-based line number past blank lines: {stderr}"
+    );
+}
+
+#[test]
 fn shadow_pnl_report_escapes_csv_asset_fields() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("order-intents.jsonl");

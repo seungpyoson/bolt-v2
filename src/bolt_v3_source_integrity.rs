@@ -271,8 +271,26 @@ mod tests {
     // Re-derived after merging current main (#618/#623 strategy source-set
     // state) into the consolidated NT position-sizer branch (#658), unioning the
     // main-side strategy source set with the position-sizer fixture coverage.
+    // Re-derived after adding the TOML-owned shadow-mode submit switch and
+    // preserving decision evidence before skipped NT submits.
+    // Re-derived after the shadow-submit test started seeding admission
+    // instruments before asserting no NT submit command is emitted.
+    // Re-derived after shadow skipped submits stopped retaining pending
+    // strategy exposure without an NT order.
+    // Re-derived after skipped shadow exits retained the exit-pending latch.
+    // Re-derived after shadow skipped submits stopped consuming live admission
+    // capacity while still recording admission evidence.
+    // Re-derived after merging #623's dollar-sizing strategy source roots into
+    // the shadow-mode submit switch.
+    // Re-derived after adding the shadow-mode fail-closed config guard
+    // (submit_orders=false forbids NautilusTrader-managed venue actions) and its
+    // tests in config.rs.
+    // Re-derived after bringing the archetype config translator
+    // (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs) into the strategy
+    // source set, so the sole TOML->runtime-table mapping for the shadow-mode
+    // kill switch is now tamper-evidenced alongside its validating consumer.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "56daec3fcf35bbf7b46cdab93938780c7daf8e2246d3a68dbc2f901b450f8366";
+        "213752a5951032395ef31f9b5728c4112ad03e9d3adaf60dd41e646a21a2cd0d";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -289,8 +307,12 @@ mod tests {
     // sizing.
     // Re-derived after runtime order-lifecycle updates learned to re-close the
     // position-sizer gate on unattributed live open orders.
+    // Re-derived again after adding observed admission decisions for shadow
+    // submit skips that must not consume live capacity.
+    // Re-derived after merging main's shared submit-admission changes into the
+    // shadow-mode submit switch.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "22ed4c020f33d32425faa3f17839bec07ee2d3e395df847164f4366a62297b56";
+        "285e76d348d172f90601491cf6b2090c409d16cbc5664ad489e54c0ea4310659";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -400,6 +422,7 @@ mod tests {
             registry_relative_roots(STRATEGY_KEY),
             &[
                 "src/strategies/binary_oracle_edge_taker",
+                "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
                 "src/bolt_v3_book_sizing.rs",
                 "src/bolt_v3_binary_outcome_edge.rs",
                 "src/bolt_v3_executable_cost.rs",

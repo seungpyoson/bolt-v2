@@ -1,34 +1,86 @@
 #!/usr/bin/env python3
-"""Self-tests for same-SHA main-run evidence selection."""
+"""Self-tests for same-SHA main-run deploy evidence selection."""
 
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import io
+import json
 import pathlib
 import sys
 import tempfile
+import zipfile
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "find_same_sha_main_evidence.py"
+PROVENANCE_PATH = REPO_ROOT / "scripts" / "ci_provenance.py"
+CONFIG_PATH = REPO_ROOT / "ci" / "github-actions-runners.toml"
 SHA = "a1a6be0d94e887538ebcd9afced6c94046a557d6"
+RUN_ID = 24623219988
+CHECK_SUITE_ID = 65233803543
 
 
-def load_script():
-    if not SCRIPT_PATH.exists():
-        raise AssertionError(f"missing script: {SCRIPT_PATH}")
-    spec = importlib.util.spec_from_file_location("find_same_sha_main_evidence", SCRIPT_PATH)
+def load_script(path: pathlib.Path = SCRIPT_PATH, module_name: str = "find_same_sha_main_evidence"):
+    if not path.exists():
+        raise AssertionError(f"missing script: {path}")
+    spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
-        raise AssertionError("could not load find_same_sha_main_evidence.py")
+        raise AssertionError(f"could not load {path.name}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
 
-def run_payload(**overrides):
-    payload = {
-        "id": 24623219988,
+def load_provenance():
+    return load_script(PROVENANCE_PATH, "ci_provenance")
+
+
+def workflow_digest() -> str:
+    return hashlib.sha256((REPO_ROOT / ".github" / "workflows" / "ci.yml").read_bytes()).hexdigest()
+
+
+def record_payload(**overrides: object) -> dict[str, object]:
+    provenance = load_provenance()
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "kind": "full-ci",
+        "repository": "seungpyoson/bolt-v2",
+        "workflow_path": ".github/workflows/ci.yml",
+        "workflow_digest": workflow_digest(),
+        "provenance_config_digest": provenance.provenance_config_digest(CONFIG_PATH),
+        "head_sha": SHA,
+        "tested_sha": SHA,
+        "run_id": RUN_ID,
+        "run_attempt": 1,
+        "check_suite_id": CHECK_SUITE_ID,
+        "event": "push",
+        "head_branch": "main",
+        "pull_request": {"number": None, "base_sha": None},
+        "required_jobs": {
+            "detector": "success",
+            "fmt-check": "success",
+            "deny": "success",
+            "clippy": "success",
+            "check-aarch64": "success",
+            "source-fence": "success",
+            "test-archive": "success",
+            "test-shards": "success",
+            "test": "success",
+        },
+        "conditional_jobs": {"build": {"required": True, "result": "success"}},
+        "nextest_fingerprint": None,
+        "created_at": "2026-06-13T00:00:00Z",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def run_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": RUN_ID,
         "name": "CI",
         "path": ".github/workflows/ci.yml",
         "event": "push",
@@ -36,18 +88,21 @@ def run_payload(**overrides):
         "head_sha": SHA,
         "status": "completed",
         "conclusion": "success",
-        "check_suite_id": 65233803543,
+        "run_attempt": 1,
+        "check_suite_id": CHECK_SUITE_ID,
+        "created_at": "2026-06-13T00:00:00Z",
+        "updated_at": "2026-06-13T00:10:00Z",
         "html_url": "https://github.com/seungpyoson/bolt-v2/actions/runs/24623219988",
     }
     payload.update(overrides)
     return payload
 
 
-def job(name: str, conclusion: str = "success"):
+def job(name: str, conclusion: object = "success") -> dict[str, object]:
     return {"name": name, "status": "completed", "conclusion": conclusion}
 
 
-def required_jobs():
+def jobs(gate_conclusion: object = "success") -> list[dict[str, object]]:
     return [
         job("detector"),
         job("fmt-check"),
@@ -55,24 +110,26 @@ def required_jobs():
         job("clippy"),
         job("check-aarch64"),
         job("source-fence"),
+        job("nextest archive"),
         job("nextest shard 1 of 4"),
         job("nextest shard 2 of 4"),
         job("nextest shard 3 of 4"),
         job("nextest shard 4 of 4"),
         job("test"),
         job("build"),
-        job("gate"),
+        job("gate", gate_conclusion),
     ]
 
 
-def artifact(**overrides):
-    payload = {
-        "id": 6516430716,
-        "name": "bolt-v2-binary",
+def provenance_artifact(**overrides: object) -> dict[str, object]:
+    artifact_id = overrides.get("id", 123)
+    payload: dict[str, object] = {
+        "id": artifact_id,
+        "name": "ci-provenance-attempt-1",
         "expired": False,
-        "size_in_bytes": 12631205,
+        "archive_download_url": f"artifact://{artifact_id}",
         "workflow_run": {
-            "id": 24623219988,
+            "id": RUN_ID,
             "head_branch": "main",
             "head_sha": SHA,
         },
@@ -81,183 +138,162 @@ def artifact(**overrides):
     return payload
 
 
-def select(runs, jobs=None, artifacts=None):
-    module = load_script()
-    return module.select_same_sha_main_evidence(
-        runs_payload={"workflow_runs": runs},
-        jobs_payload_by_run_id={24623219988: {"jobs": jobs if jobs is not None else required_jobs()}},
-        artifacts_payload_by_run_id={
-            24623219988: {"artifacts": artifacts if artifacts is not None else [artifact()]}
+def deploy_artifact(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": 6516430716,
+        "name": "bolt-v2-binary",
+        "expired": False,
+        "size_in_bytes": 12631205,
+        "workflow_run": {
+            "id": RUN_ID,
+            "head_branch": "main",
+            "head_sha": SHA,
         },
-        expected_sha=SHA,
-        current_run_id=24623274722,
-    )
+    }
+    payload.update(overrides)
+    return payload
 
 
-def select_with_payloads(runs, jobs_by_run_id, artifacts_by_run_id):
+def artifact_zip(record: dict[str, object]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("ci-provenance.json", json.dumps(record))
+    return buffer.getvalue()
+
+
+class FakeGitHub:
+    def __init__(
+        self,
+        *,
+        runs: list[dict[str, object]] | None = None,
+        jobs_payload: list[dict[str, object]] | None = None,
+        artifacts: list[dict[str, object]] | None = None,
+        record: dict[str, object] | None = None,
+    ) -> None:
+        self.runs = runs if runs is not None else [run_payload()]
+        self.jobs_payload = jobs_payload if jobs_payload is not None else jobs()
+        self.artifacts = artifacts if artifacts is not None else [provenance_artifact(), deploy_artifact()]
+        self.record = record if record is not None else record_payload()
+
+    def json(
+        self,
+        repo: str,
+        token: str,
+        path: str,
+        query: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        if path == "actions/runs":
+            return {"workflow_runs": self.runs}
+        if path.endswith("/jobs"):
+            return {"jobs": self.jobs_payload}
+        if path.endswith("/artifacts"):
+            return {"artifacts": self.artifacts}
+        raise AssertionError(f"unexpected JSON request {path} {query}")
+
+    def bytes(self, repo: str, token: str, url: str) -> bytes:
+        if url.startswith("artifact://"):
+            return artifact_zip(self.record)
+        if url.startswith("https://raw.githubusercontent.com/"):
+            return (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_bytes()
+        raise AssertionError(f"unexpected bytes request {url}")
+
+
+def select(fake: FakeGitHub | None = None, current_run_id: int | str | None = 24623274722):
     module = load_script()
-    return module.select_same_sha_main_evidence(
-        runs_payload={"workflow_runs": runs},
-        jobs_payload_by_run_id=jobs_by_run_id,
-        artifacts_payload_by_run_id=artifacts_by_run_id,
-        expected_sha=SHA,
-        current_run_id=24623274722,
+    fake = fake or FakeGitHub()
+    return module.resolve_same_sha_main_evidence(
+        repo="seungpyoson/bolt-v2",
+        token="token",
+        sha=SHA,
+        current_run_id=current_run_id,
+        config_path=CONFIG_PATH,
+        api_json=fake.json,
+        api_bytes=fake.bytes,
+        now=load_provenance().parse_timestamp("2026-06-13T00:30:00Z"),
     )
 
 
 def assert_raises(fragment: str, func) -> None:
     try:
         func()
-    except Exception as exc:  # noqa: BLE001 - script exposes a domain error.
+    except Exception as exc:  # noqa: BLE001 - wrapper exposes a domain error.
         if fragment not in str(exc):
-            raise AssertionError(f"expected error containing {fragment!r}, got: {exc}") from exc
+            raise AssertionError(f"expected {fragment!r}, got: {exc}") from exc
         return
     raise AssertionError(f"expected error containing {fragment!r}")
 
 
-def assert_selects_exact_main_run() -> None:
-    evidence = select([run_payload()])
-    if evidence.source_run_id != "24623219988":
+def assert_selects_exact_main_run_and_outputs() -> None:
+    module = load_script()
+    evidence = select()
+    if evidence.source_run_id != str(RUN_ID):
         raise AssertionError(evidence)
-    if evidence.check_suite_id != "65233803543":
+    if evidence.source_run_url != "https://github.com/seungpyoson/bolt-v2/actions/runs/24623219988":
+        raise AssertionError(evidence)
+    if evidence.check_suite_id != str(CHECK_SUITE_ID):
         raise AssertionError(evidence)
     if evidence.artifact_id != "6516430716":
+        raise AssertionError(evidence)
+    if evidence.artifact_name != "bolt-v2-binary":
+        raise AssertionError(evidence)
+    if evidence.artifact_size != "12631205":
         raise AssertionError(evidence)
     if evidence.source_sha != SHA:
         raise AssertionError(evidence)
 
-
-def assert_rejects_current_tag_run_as_source() -> None:
-    assert_raises(
-        "no successful main CI run",
-        lambda: select([run_payload(id=24623274722)]),
-    )
-
-
-def assert_selects_later_complete_candidate_after_newer_incomplete_candidate() -> None:
-    newer_incomplete = run_payload(id=24623219989, updated_at="2026-05-17T10:00:00Z")
-    older_complete = run_payload(id=24623219988, updated_at="2026-05-17T09:00:00Z")
-    evidence = select_with_payloads(
-        [older_complete, newer_incomplete],
-        {
-            24623219988: {"jobs": required_jobs()},
-            24623219989: {"jobs": [job_payload for job_payload in required_jobs() if job_payload["name"] != "gate"]},
-        },
-        {
-            24623219988: {"artifacts": [artifact()]},
-            24623219989: {"artifacts": [artifact(workflow_run={"id": 24623219989, "head_branch": "main", "head_sha": SHA})]},
-        },
-    )
-    if evidence.source_run_id != "24623219988":
-        raise AssertionError(evidence)
-
-
-def assert_rejects_malformed_workflow_runs_payload() -> None:
-    module = load_script()
-    assert_raises(
-        "workflow runs payload is malformed",
-        lambda: module.select_same_sha_main_evidence(
-            runs_payload={"workflow_runs": {"id": 24623219988}},
-            jobs_payload_by_run_id={},
-            artifacts_payload_by_run_id={},
-            expected_sha=SHA,
-            current_run_id=24623274722,
-        ),
-    )
-
-
-def assert_rejects_non_main_or_wrong_sha_runs() -> None:
-    assert_raises("no successful main CI run", lambda: select([run_payload(head_branch="release")]))
-    assert_raises("no successful main CI run", lambda: select([run_payload(head_sha="0" * 40)]))
-    assert_raises("no successful main CI run", lambda: select([run_payload(path=".github/workflows/summary.yml")]))
-
-
-def assert_rejects_incomplete_required_jobs() -> None:
-    broken_jobs = required_jobs()
-    broken_jobs[5] = job("source-fence", "skipped")
-    assert_raises("source-fence", lambda: select([run_payload()], jobs=broken_jobs))
-    missing_test_shard = [job_payload for job_payload in required_jobs() if job_payload["name"] != "nextest shard 4 of 4"]
-    assert_raises("test shards", lambda: select([run_payload()], jobs=missing_test_shard))
-
-
-def assert_rejects_untrusted_artifacts() -> None:
-    assert_raises("artifact expired", lambda: select([run_payload()], artifacts=[artifact(expired=True)]))
-    assert_raises("missing artifact", lambda: select([run_payload()], artifacts=[]))
-    assert_raises("ambiguous", lambda: select([run_payload()], artifacts=[artifact(), artifact(id=6516430717)]))
-    assert_raises(
-        "workflow_run payload is malformed",
-        lambda: select([run_payload()], artifacts=[artifact(workflow_run="not-an-object")]),
-    )
-    wrong_run_artifact = artifact(
-        workflow_run={"id": 24623274722, "head_branch": "main", "head_sha": SHA}
-    )
-    assert_raises("artifact run ID", lambda: select([run_payload()], artifacts=[wrong_run_artifact]))
-    wrong_branch_artifact = artifact(
-        workflow_run={"id": 24623219988, "head_branch": "release", "head_sha": SHA}
-    )
-    assert_raises("artifact branch", lambda: select([run_payload()], artifacts=[wrong_branch_artifact]))
-    wrong_sha_artifact = artifact(
-        workflow_run={"id": 24623219988, "head_branch": "main", "head_sha": "0" * 40}
-    )
-    assert_raises("artifact SHA", lambda: select([run_payload()], artifacts=[wrong_sha_artifact]))
-
-
-def assert_writes_github_output() -> None:
-    module = load_script()
-    evidence = select([run_payload()])
     with tempfile.TemporaryDirectory() as tmpdir:
         output_path = pathlib.Path(tmpdir) / "github-output"
         module.write_github_output(evidence, output_path)
         output = output_path.read_text()
     for line in (
-        "source_run_id=24623219988",
-        "check_suite_id=65233803543",
+        f"source_run_id={RUN_ID}",
+        "source_run_url=https://github.com/seungpyoson/bolt-v2/actions/runs/24623219988",
+        f"check_suite_id={CHECK_SUITE_ID}",
         "artifact_id=6516430716",
+        "artifact_name=bolt-v2-binary",
+        "artifact_size=12631205",
         f"source_sha={SHA}",
     ):
         if line not in output:
             raise AssertionError(output)
 
 
-def assert_api_failures_are_bounded() -> None:
-    module = load_script()
-    original_urlopen = module.urllib.request.urlopen
+def assert_rejects_current_tag_run_as_source() -> None:
+    assert_raises("no candidate provenance evidence", lambda: select(current_run_id=RUN_ID))
 
-    def raises_url_error(request, timeout):  # noqa: ANN001 - local fake matches urllib call shape.
-        raise module.urllib.error.URLError("offline")
 
-    class InvalidJsonResponse:
-        def __enter__(self):
-            return self
+def assert_rejects_gate_failure() -> None:
+    assert_raises("gate", lambda: select(FakeGitHub(jobs_payload=jobs(gate_conclusion="failure"))))
 
-        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001 - context manager protocol.
-            return False
 
-        def read(self) -> bytes:
-            return b"not-json"
+def assert_rejects_artifact_size_and_expiry() -> None:
+    missing_size = deploy_artifact()
+    missing_size.pop("size_in_bytes")
+    assert_raises("artifact_size", lambda: select(FakeGitHub(artifacts=[provenance_artifact(), missing_size])))
+    for value in (True, None):
+        assert_raises(
+            "expired",
+            lambda value=value: select(FakeGitHub(artifacts=[provenance_artifact(), deploy_artifact(expired=value)])),
+        )
 
-    def invalid_json(request, timeout):  # noqa: ANN001 - local fake matches urllib call shape.
-        return InvalidJsonResponse()
 
-    try:
-        module.urllib.request.urlopen = raises_url_error
-        assert_raises("GitHub API request failed", lambda: module.github_api_json("owner/repo", "token", "actions/runs"))
-        module.urllib.request.urlopen = invalid_json
-        assert_raises("GitHub API request failed", lambda: module.github_api_json("owner/repo", "token", "actions/runs"))
-    finally:
-        module.urllib.request.urlopen = original_urlopen
+def assert_rejects_artifact_binding_and_ambiguity() -> None:
+    wrong_branch = deploy_artifact(workflow_run={"id": RUN_ID, "head_branch": "release", "head_sha": SHA})
+    assert_raises("artifact branch", lambda: select(FakeGitHub(artifacts=[provenance_artifact(), wrong_branch])))
+    wrong_sha = deploy_artifact(workflow_run={"id": RUN_ID, "head_branch": "main", "head_sha": "0" * 40})
+    assert_raises("artifact SHA", lambda: select(FakeGitHub(artifacts=[provenance_artifact(), wrong_sha])))
+    assert_raises(
+        "ambiguous",
+        lambda: select(FakeGitHub(artifacts=[provenance_artifact(), deploy_artifact(), deploy_artifact(id=6516430717)])),
+    )
 
 
 def main() -> int:
-    assert_selects_exact_main_run()
+    assert_selects_exact_main_run_and_outputs()
     assert_rejects_current_tag_run_as_source()
-    assert_selects_later_complete_candidate_after_newer_incomplete_candidate()
-    assert_rejects_malformed_workflow_runs_payload()
-    assert_rejects_non_main_or_wrong_sha_runs()
-    assert_rejects_incomplete_required_jobs()
-    assert_rejects_untrusted_artifacts()
-    assert_writes_github_output()
-    assert_api_failures_are_bounded()
+    assert_rejects_gate_failure()
+    assert_rejects_artifact_size_and_expiry()
+    assert_rejects_artifact_binding_and_ambiguity()
     print("OK: same-SHA main evidence self-tests passed.")
     return 0
 

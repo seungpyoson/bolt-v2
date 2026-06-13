@@ -115,3 +115,4 @@ is_quote_quantity = false
 edge_threshold_basis_points = 100
 order_notional_target = "5.00"
 maximum_position_notional = "10.00"
+submit_orders = true

@@ -433,6 +433,266 @@ fn sha256_file(path: &Path) -> String {
     )
 }
 
+// Fix 2 — negative test for the BinaryOption bail arm in account_type_for.
+// The source-universe execution pack is wired for crypto-venue instrument
+// families (spot / perp / future) only. A BinaryOption spec reaching
+// account_type_for is a contract violation; the function must bail with an
+// informative error rather than silently falling through to a spot account type.
+#[test]
+fn execution_pack_rejects_binary_option_instrument_spec() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let template_path = temp_dir.path().join("run-spec-template.toml");
+    let source_proof_path = temp_dir.path().join("source-proof.json");
+    let object_gates_path = temp_dir.path().join("source-universe-object-gates.json");
+    let operator_inputs_path = temp_dir.path().join("source-universe-operator-inputs.json");
+    let work_order_path = temp_dir
+        .path()
+        .join("source-universe-conversion-work-order.json");
+    let output_dir = temp_dir.path().join("execution-pack");
+    let spec_path = temp_dir.path().join("source-universe-execution-pack.toml");
+
+    let template = run_spec_template();
+    fs::write(&template_path, template).expect("write template");
+    let template_spec: backtesting_vertical_slice::operator::RunSpec =
+        toml::from_str(template).expect("template parses");
+    let mut source_proof = template_spec.source_proof.clone();
+    source_proof.accepted_by = Some("source-proof-operator".to_string());
+    source_proof.accepted_at = Some("2026-06-10T00:00:00Z".to_string());
+    fs::write(
+        &source_proof_path,
+        serde_json::to_vec_pretty(&source_proof).expect("serialize proof"),
+    )
+    .expect("write source proof");
+
+    fs::write(
+        &object_gates_path,
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": "source-universe-object-gates.v1",
+            "gate_id": "source-universe-object-gates-binopt-test",
+            "status": "ready",
+            "queue_id": "source-universe-conversion-queue-binopt-test",
+            "manifest_id": "source-universe-manifest-binopt-test",
+            "universe_id": "backfill-source-universe-binopt-test",
+            "venue": "testvenue",
+            "source": "data_vision",
+            "family": "trades",
+            "table_family": "trades",
+            "queue_path": "queue.json",
+            "queue_hash": "queue-hash",
+            "work_item_count": 1,
+            "accepted_gate_count": 1,
+            "source_binding_count": 1,
+            "total_accepted_bytes": 100,
+            "source_binding_summaries": [],
+            "artifact_refs": [
+                {
+                    "role": "source_proof",
+                    "path": source_proof_path,
+                    "sha256": sha256_file(&source_proof_path)
+                }
+            ],
+            "records": []
+        }))
+        .expect("serialize gates"),
+    )
+    .expect("write object gates");
+
+    fs::write(
+        &operator_inputs_path,
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": "source-universe-operator-inputs.v1",
+            "input_id": "source-universe-operator-inputs-binopt-test",
+            "status": "ready",
+            "gate_id": "source-universe-object-gates-binopt-test",
+            "conversion_run_plan_id": "source-universe-conversion-run-plan-binopt-test",
+            "universe_id": "backfill-source-universe-binopt-test",
+            "venue": "testvenue",
+            "source": "data_vision",
+            "family": "trades",
+            "table_family": "trades",
+            "operator_run_id_prefix": "source-universe-operator-run-binopt-test",
+            "nt_venue": "TESTVENUE",
+            "converter_identity": "csv-native-trades-to-canonical-trades.v1",
+            "converter_version": "1",
+            "raw_payload_container": "csv_gzip",
+            "max_decoded_bytes": 268435456,
+            "max_source_rows": 1000000,
+            "max_projected_row_groups": 128,
+            "max_wall_seconds": 1800,
+            "planned_object_count": 1,
+            "planned_source_bytes": 100,
+            "conversion_run_count": 1,
+            "instrument_spec_count": 1,
+            "converter_mapping_count": 1,
+            "ready_input_count": 1,
+            "blocked_input_count": 0,
+            "artifact_refs": [
+                {
+                    "role": "source_universe_object_gates",
+                    "path": object_gates_path,
+                    "sha256": sha256_file(&object_gates_path)
+                }
+            ],
+            "converter_mappings": [],
+            "instrument_specs": [
+                {
+                    "instrument_key": "testvenue-prediction-market:binary_option:YES",
+                    "source_binding": "testvenue-prediction-market",
+                    "category": "binary_option",
+                    "symbol": "YES",
+                    "nt_instrument_id": "YES.TESTVENUE",
+                    "metadata_source_uri": "s3://example/metadata/testvenue.json",
+                    "instrument_spec": binary_option_instrument_spec_json()
+                }
+            ],
+            "records": [
+                {
+                    "work_item_id": "testvenue:YES:2026-03-01:object-sha",
+                    "status": "ready",
+                    "operator_run_id": "source-universe-operator-run-binopt-test-00000",
+                    "source_binding": "testvenue-prediction-market",
+                    "category": "binary_option",
+                    "symbol": "YES",
+                    "archive_date": "2026-03-01",
+                    "source_uri": "s3://example/raw/object-sha.csv.gz",
+                    "source_url": "https://data.example.invalid/YES.csv.gz",
+                    "selected_object_sha256": "object-sha",
+                    "selected_object_bytes": 100,
+                    "source_proof_id": template_spec.source_proof.source_proof_id,
+                    "source_proof_version": template_spec.source_proof.source_proof_version,
+                    "accepted_tranche_id": "tranche-object-sha",
+                    "output_prefix": "source-universe=synthetic/object=object-sha",
+                    "instrument_key": "testvenue-prediction-market:binary_option:YES",
+                    "converter_identity": "csv-native-trades-to-canonical-trades.v1",
+                    "converter_version": "1",
+                    "raw_payload_container": "csv_gzip",
+                    "max_decoded_bytes": 268435456,
+                    "max_source_rows": 1000000,
+                    "max_projected_row_groups": 128,
+                    "max_wall_seconds": 1800,
+                    "schema_columns": ["id", "timestamp", "price", "volume", "side"],
+                    "converter_csv": template_spec.converter.csv,
+                    "blocking_reasons": []
+                }
+            ],
+            "blocking_reasons": []
+        }))
+        .expect("serialize operator inputs"),
+    )
+    .expect("write operator inputs");
+
+    fs::write(
+        &work_order_path,
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": "source-universe-conversion-work-order.v1",
+            "work_order_id": "source-universe-conversion-work-order-binopt-test",
+            "status": "ready",
+            "input_id": "source-universe-operator-inputs-binopt-test",
+            "gate_id": "source-universe-object-gates-binopt-test",
+            "conversion_run_plan_id": "source-universe-conversion-run-plan-binopt-test",
+            "universe_id": "backfill-source-universe-binopt-test",
+            "venue": "testvenue",
+            "source": "data_vision",
+            "family": "trades",
+            "table_family": "trades",
+            "operator_run_id_prefix": "source-universe-operator-run-binopt-test",
+            "planned_object_count": 1,
+            "planned_source_bytes": 100,
+            "operator_input_count": 1,
+            "ready_input_count": 1,
+            "blocked_input_count": 0,
+            "conversion_run_count": 1,
+            "executable_record_count": 1,
+            "withheld_record_count": 0,
+            "executable_source_bytes": 100,
+            "withheld_source_bytes": 0,
+            "artifact_refs": [
+                {
+                    "role": "source_universe_operator_inputs",
+                    "path": operator_inputs_path,
+                    "sha256": sha256_file(&operator_inputs_path)
+                }
+            ],
+            "records": [
+                {
+                    "sequence": 0,
+                    "work_item_id": "testvenue:YES:2026-03-01:object-sha",
+                    "operator_run_id": "source-universe-operator-run-binopt-test-00000",
+                    "source_binding": "testvenue-prediction-market",
+                    "category": "binary_option",
+                    "symbol": "YES",
+                    "archive_date": "2026-03-01",
+                    "source_uri": "s3://example/raw/object-sha.csv.gz",
+                    "source_url": "https://data.example.invalid/YES.csv.gz",
+                    "selected_object_sha256": "object-sha",
+                    "selected_object_bytes": 100,
+                    "source_proof_id": template_spec.source_proof.source_proof_id,
+                    "source_proof_version": template_spec.source_proof.source_proof_version,
+                    "accepted_tranche_id": "tranche-object-sha",
+                    "output_prefix": "source-universe=synthetic/object=object-sha",
+                    "instrument_key": "testvenue-prediction-market:binary_option:YES",
+                    "converter_identity": "csv-native-trades-to-canonical-trades.v1",
+                    "converter_version": "1",
+                    "raw_payload_container": "csv_gzip",
+                    "max_decoded_bytes": 268435456,
+                    "max_source_rows": 1000000,
+                    "max_projected_row_groups": 128,
+                    "max_wall_seconds": 1800
+                }
+            ],
+            "withheld_records": [],
+            "blocking_reasons": []
+        }))
+        .expect("serialize work order"),
+    )
+    .expect("write work order");
+
+    fs::write(
+        &spec_path,
+        format!(
+            r#"pack_id = "source-universe-execution-pack-binopt-test"
+source_universe_conversion_work_order_path = "{}"
+run_spec_template_path = "{}"
+output_dir = "{}"
+record_limit = 1
+
+[venue_account_types]
+spot = "CASH"
+crypto_perpetual = "CASH"
+crypto_future = "MARGIN"
+"#,
+            work_order_path.display(),
+            template_path.display(),
+            output_dir.display(),
+        ),
+    )
+    .expect("write spec");
+
+    let err = write_source_universe_execution_pack_from_spec_file(&spec_path)
+        .expect_err("BinaryOption spec must be rejected by the execution pack");
+    let msg = err.to_string();
+    assert!(
+        msg.contains(
+            "source-universe execution pack does not support binary-option instrument specs"
+        ),
+        "error must cite the bail message from account_type_for: {msg}"
+    );
+}
+
+fn binary_option_instrument_spec_json() -> serde_json::Value {
+    json!({
+        "instrument_kind": "binary_option",
+        "nt_instrument_id": "YES.TESTVENUE",
+        "raw_symbol": "YES",
+        "asset_class": "ALTERNATIVE",
+        "currency": "USDC",
+        "activation_time_nanos": 1_700_000_000_000_000_000_u64,
+        "expiration_time_nanos": 1_700_086_400_000_000_000_u64,
+        "price_increment": "0.01",
+        "size_increment": "0.001"
+    })
+}
+
 fn crypto_perpetual_instrument_spec_json() -> serde_json::Value {
     json!({
         "instrument_kind": "crypto_perpetual",

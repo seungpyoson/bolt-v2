@@ -631,6 +631,26 @@ pub fn build_binary_option(spec: &BinaryOptionInstrumentSpec) -> Result<BinaryOp
     let size_increment = parse_quantity(&spec.size_increment, "size_increment")?;
     let price_precision = price_increment.precision;
     let size_precision = size_increment.precision;
+    // The NT catalog Arrow schema for BinaryOption does NOT encode these six
+    // fields (binary_option.rs lines 412-417 in rev 6e059dc hardcode them as
+    // `None` on decode). Accepting a spec that sets them would silently drop
+    // the configured values on the projection round-trip, violating the
+    // fail-loud rule.  Reject them here so the operator knows up front.
+    for (label, value) in [
+        ("max_notional", spec.max_notional.as_deref()),
+        ("min_notional", spec.min_notional.as_deref()),
+        ("max_price", spec.max_price.as_deref()),
+        ("min_price", spec.min_price.as_deref()),
+        ("margin_init", spec.margin_init.as_deref()),
+        ("margin_maint", spec.margin_maint.as_deref()),
+    ] {
+        ensure!(
+            value.is_none(),
+            "{label} is not supported for BinaryOption: the NT catalog Arrow schema does not \
+             persist this field (decode_binary_option_batch hardcodes it as None), so it would \
+             be silently lost on the projection round-trip"
+        );
+    }
     BinaryOption::new_checked(
         instrument_id,
         raw_symbol,
@@ -646,12 +666,12 @@ pub fn build_binary_option(spec: &BinaryOptionInstrumentSpec) -> Result<BinaryOp
         parse_optional_ustr(spec.description.as_deref(), "description")?,
         parse_optional_quantity(spec.max_quantity.as_deref(), "max_quantity")?,
         parse_optional_quantity(spec.min_quantity.as_deref(), "min_quantity")?,
-        parse_optional_money(spec.max_notional.as_deref(), currency, "max_notional")?,
-        parse_optional_money(spec.min_notional.as_deref(), currency, "min_notional")?,
-        parse_optional_price(spec.max_price.as_deref(), "max_price")?,
-        parse_optional_price(spec.min_price.as_deref(), "min_price")?,
-        parse_optional_decimal(spec.margin_init.as_deref(), "margin_init")?,
-        parse_optional_decimal(spec.margin_maint.as_deref(), "margin_maint")?,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
         parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
         parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
         None,
@@ -2161,6 +2181,12 @@ mod tests {
     }
 
     fn binary_option_spec() -> CatalogInstrumentSpec {
+        // max_notional, min_notional, max_price, min_price, margin_init, and
+        // margin_maint are intentionally absent: the NT catalog Arrow schema
+        // does not persist them for BinaryOption (decode_binary_option_batch
+        // rev 6e059dc lines 412-417 hardcodes all six as None), so
+        // build_binary_option rejects specs that set them to avoid silent
+        // data loss on the projection round-trip.
         CatalogInstrumentSpec::BinaryOption(BinaryOptionInstrumentSpec {
             instrument_kind: BinaryOptionInstrumentKind::BinaryOption,
             nt_instrument_id: "YES.TESTVENUE".to_string(),
@@ -2173,16 +2199,18 @@ mod tests {
             size_increment: "0.001".to_string(),
             outcome: Some("Yes".to_string()),
             description: Some("Bounded binary option fixture".to_string()),
+            // Distinct values so a max/min swap fails the assertion.
             max_quantity: Some("1000000".to_string()),
             min_quantity: Some("1".to_string()),
-            max_notional: Some("100000000".to_string()),
-            min_notional: Some("1".to_string()),
-            max_price: Some("1.00".to_string()),
-            min_price: Some("0.01".to_string()),
-            margin_init: Some("0".to_string()),
-            margin_maint: Some("0".to_string()),
-            maker_fee: Some("0".to_string()),
-            taker_fee: Some("0".to_string()),
+            max_notional: None,
+            min_notional: None,
+            max_price: None,
+            min_price: None,
+            margin_init: None,
+            margin_maint: None,
+            // Distinct values so a maker/taker swap fails the assertion.
+            maker_fee: Some("0.001".to_string()),
+            taker_fee: Some("0.002".to_string()),
         })
     }
 
@@ -2510,8 +2538,25 @@ mod tests {
             option.outcome.map(|o| o.to_string()),
             Some("Yes".to_string())
         );
-        assert_eq!(option.max_price(), Some(Price::from("1.00")));
-        assert_eq!(option.min_price(), Some(Price::from("0.01")));
+        assert_eq!(
+            option.description.map(|d| d.to_string()),
+            Some("Bounded binary option fixture".to_string())
+        );
+        // Distinct max/min so a quantity swap would fail.
+        assert_eq!(option.max_quantity, Some(Quantity::from("1000000")));
+        assert_eq!(option.min_quantity, Some(Quantity::from("1")));
+        // NT catalog Arrow schema does not persist these six fields for
+        // BinaryOption (rev 6e059dc lines 412-417); build_binary_option
+        // rejects specs that set them.
+        assert_eq!(option.max_notional, None);
+        assert_eq!(option.min_notional, None);
+        assert_eq!(option.max_price(), None);
+        assert_eq!(option.min_price(), None);
+        assert_eq!(option.margin_init, None);
+        assert_eq!(option.margin_maint, None);
+        // Distinct maker/taker so a fee swap would fail.
+        assert_eq!(option.maker_fee, Some(Decimal::from_str("0.001").unwrap()));
+        assert_eq!(option.taker_fee, Some(Decimal::from_str("0.002").unwrap()));
     }
 
     #[test]
@@ -2588,11 +2633,135 @@ mod tests {
 
     #[test]
     fn build_binary_option_rejects_out_of_range_notional() {
-        // A notional that parses as an f64 but exceeds NT's Money range must
-        // surface as an error, never a panic, on the accepted-data path.
+        // The NT-schema guard fires before the Money parse, so max_notional
+        // is_err() whether the value is out-of-range or merely present.
         let mut spec = binary_option_inner();
         spec.max_notional = Some("1e40".to_string());
         assert!(build_binary_option(&spec).is_err());
+    }
+
+    // Fix 1a — one negative test per NT-unsupported field.  Each confirms that
+    // build_binary_option rejects a spec where the field is set, with an error
+    // message naming the field and citing the NT catalog round-trip limitation.
+    #[test]
+    fn build_binary_option_rejects_max_notional() {
+        let mut spec = binary_option_inner();
+        spec.max_notional = Some("100000".to_string());
+        let err = build_binary_option(&spec).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("max_notional"),
+            "error must name the field: {msg}"
+        );
+        assert!(
+            msg.contains("NT catalog Arrow schema does not persist"),
+            "error must cite the round-trip reason: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_binary_option_rejects_min_notional() {
+        let mut spec = binary_option_inner();
+        spec.min_notional = Some("1".to_string());
+        let err = build_binary_option(&spec).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("min_notional"),
+            "error must name the field: {msg}"
+        );
+        assert!(
+            msg.contains("NT catalog Arrow schema does not persist"),
+            "error must cite the round-trip reason: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_binary_option_rejects_max_price() {
+        let mut spec = binary_option_inner();
+        spec.max_price = Some("1.00".to_string());
+        let err = build_binary_option(&spec).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("max_price"),
+            "error must name the field: {msg}"
+        );
+        assert!(
+            msg.contains("NT catalog Arrow schema does not persist"),
+            "error must cite the round-trip reason: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_binary_option_rejects_min_price() {
+        let mut spec = binary_option_inner();
+        spec.min_price = Some("0.01".to_string());
+        let err = build_binary_option(&spec).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("min_price"),
+            "error must name the field: {msg}"
+        );
+        assert!(
+            msg.contains("NT catalog Arrow schema does not persist"),
+            "error must cite the round-trip reason: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_binary_option_rejects_margin_init() {
+        let mut spec = binary_option_inner();
+        spec.margin_init = Some("0.05".to_string());
+        let err = build_binary_option(&spec).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("margin_init"),
+            "error must name the field: {msg}"
+        );
+        assert!(
+            msg.contains("NT catalog Arrow schema does not persist"),
+            "error must cite the round-trip reason: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_binary_option_rejects_margin_maint() {
+        let mut spec = binary_option_inner();
+        spec.margin_maint = Some("0.03".to_string());
+        let err = build_binary_option(&spec).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("margin_maint"),
+            "error must name the field: {msg}"
+        );
+        assert!(
+            msg.contains("NT catalog Arrow schema does not persist"),
+            "error must cite the round-trip reason: {msg}"
+        );
+    }
+
+    // Fix 4 — parse_optional_ustr empty-when-present rejection.
+    #[test]
+    fn build_binary_option_rejects_empty_outcome() {
+        let mut spec = binary_option_inner();
+        spec.outcome = Some(String::new());
+        let err = build_binary_option(&spec).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("outcome must not be empty when present"),
+            "error must name the field and state the rule: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_binary_option_rejects_whitespace_only_description() {
+        let mut spec = binary_option_inner();
+        spec.description = Some("   ".to_string());
+        let err = build_binary_option(&spec).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("description must not be empty when present"),
+            "error must name the field and state the rule: {msg}"
+        );
     }
 
     #[test]
@@ -2854,6 +3023,57 @@ max_notional = "200000"
         assert_eq!(instruments[0].size_precision(), 4);
         assert_eq!(instruments[0].price_increment(), Price::from("0.010"));
         assert_eq!(instruments[0].size_increment(), Quantity::from("0.0010"));
+
+        // Fix 1b — per-field round-trip assertions for fields the NT catalog
+        // Arrow schema DOES persist for BinaryOption (rev 6e059dc lines 408-419).
+        // All six NT-unsupported fields (max_notional, min_notional, max_price,
+        // min_price, margin_init, margin_maint) are rejected by build_binary_option
+        // before the instrument is written, so they can never enter the catalog; the
+        // round-trip assertion for them is the rejection test, not a read-back check.
+        // Full InstrumentAny equality cannot pin field values here because
+        // BinaryOption::PartialEq compares only `id` (rev 6e059dc line 248-254),
+        // so per-field assertions are required.
+        let InstrumentAny::BinaryOption(option) = &instruments[0] else {
+            panic!("expected BinaryOption after catalog round-trip");
+        };
+        assert_eq!(
+            option.outcome.map(|o| o.to_string()),
+            Some("Yes".to_string()),
+            "outcome must survive catalog round-trip"
+        );
+        assert_eq!(
+            option.description.map(|d| d.to_string()),
+            Some("Bounded binary option fixture".to_string()),
+            "description must survive catalog round-trip"
+        );
+        assert_eq!(
+            option.max_quantity,
+            Some(Quantity::from("1000000")),
+            "max_quantity must survive catalog round-trip"
+        );
+        assert_eq!(
+            option.min_quantity,
+            Some(Quantity::from("1")),
+            "min_quantity must survive catalog round-trip"
+        );
+        assert_eq!(
+            option.maker_fee,
+            Some(Decimal::from_str("0.001").unwrap()),
+            "maker_fee must survive catalog round-trip"
+        );
+        assert_eq!(
+            option.taker_fee,
+            Some(Decimal::from_str("0.002").unwrap()),
+            "taker_fee must survive catalog round-trip"
+        );
+        // These six are rejected by build_binary_option (and therefore can never
+        // reach the catalog write path), so they must decode as None here.
+        assert_eq!(option.max_notional, None);
+        assert_eq!(option.min_notional, None);
+        assert_eq!(option.max_price(), None);
+        assert_eq!(option.min_price(), None);
+        assert_eq!(option.margin_init, None);
+        assert_eq!(option.margin_maint, None);
     }
 
     #[test]

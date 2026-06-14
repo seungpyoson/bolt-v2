@@ -74,6 +74,7 @@ S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejecte
 LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS = {"build", "clippy", "test"}
 LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS = set(CARGO_DISK_PREFLIGHT_SUBCOMMANDS) | set(CARGO_ALIAS_SUBCOMMANDS)
 YAML_ANCHOR_PATTERN = r"&[A-Za-z0-9_.-]+"
+YAML_KEY_PATTERN = r"""(?:[A-Za-z0-9_.-]+|'[^']*(?:''[^']*)*'|"(?:[^"\\]|\\.)*")"""
 YAML_STEP_ITEM_RE = re.compile(rf"^-\s+(?:{YAML_ANCHOR_PATTERN}(?:\s+|$))?")
 YAML_RUN_LINE_RE = re.compile(rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*(.*?)\s*$")
 YAML_FOLDED_RUN_LINE_RE = re.compile(
@@ -1152,7 +1153,7 @@ def block_step_property_indent(block: list[str]) -> int | None:
         if not clean.strip():
             continue
         match = re.match(
-            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?[A-Za-z0-9_.-]+:\s*.*$",
+            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?{YAML_KEY_PATTERN}:\s*.*$",
             clean,
         )
         if match is None:
@@ -1172,22 +1173,22 @@ def block_top_level_items(block: list[str]) -> dict[str, str] | None:
         if not clean.strip():
             continue
         step_match = re.match(
-            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?([A-Za-z0-9_.-]+):\s*(.*?)\s*$",
+            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?({YAML_KEY_PATTERN}):\s*(.*?)\s*$",
             clean,
         )
         if step_match is not None:
             if len(step_match.group(1)) != step_item_indent:
                 continue
-            key = step_match.group(2)
+            key = unquote_yaml_scalar(step_match.group(2))
             value = step_match.group(3)
         else:
             indent = len(clean) - len(clean.lstrip(" "))
             if indent != property_indent:
                 continue
-            item_match = re.match(r"^\s*([A-Za-z0-9_.-]+):\s*(.*?)\s*$", clean)
+            item_match = re.match(rf"^\s*({YAML_KEY_PATTERN}):\s*(.*?)\s*$", clean)
             if item_match is None:
                 continue
-            key = item_match.group(1)
+            key = unquote_yaml_scalar(item_match.group(1))
             value = item_match.group(2)
         if key in items:
             return None
@@ -1208,8 +1209,13 @@ def block_nested_mapping_items(block: list[str], parent_key: str) -> dict[str, s
             continue
         indent = len(clean) - len(clean.lstrip(" "))
         if parent_indent is None:
-            parent_match = re.match(rf"^\s*{re.escape(parent_key)}:\s*$", clean)
-            if parent_match is not None and indent == property_indent:
+            parent_match = re.match(rf"^\s*({YAML_KEY_PATTERN}):\s*(.*?)\s*$", clean)
+            if (
+                parent_match is not None
+                and indent == property_indent
+                and unquote_yaml_scalar(parent_match.group(1)) == parent_key
+                and unquote_yaml_scalar(parent_match.group(2)) == ""
+            ):
                 parent_indent = indent
             continue
         if indent <= parent_indent:
@@ -1218,10 +1224,10 @@ def block_nested_mapping_items(block: list[str], parent_key: str) -> dict[str, s
             item_indent = indent
         if indent != item_indent:
             continue
-        item_match = re.match(r"^\s*([A-Za-z0-9_.-]+):\s*(.*?)\s*$", clean)
+        item_match = re.match(rf"^\s*({YAML_KEY_PATTERN}):\s*(.*?)\s*$", clean)
         if item_match is None:
             continue
-        key = item_match.group(1)
+        key = unquote_yaml_scalar(item_match.group(1))
         if key in items:
             return None
         items[key] = unquote_yaml_scalar(item_match.group(2))

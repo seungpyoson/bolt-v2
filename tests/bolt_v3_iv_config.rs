@@ -493,7 +493,7 @@ fn audit_policy_profile_id_must_match_owning_profile() {
     let mut config = load_iv_config_from_toml(valid_iv_toml()).unwrap();
     config.profiles[0].audit_policy.profile_id = "configured-other-profile".to_string();
 
-    let errors = validate_iv_root_config(&config).unwrap_err();
+    let errors = validate_iv_root_config(&config);
 
     assert!(errors.iter().any(|message| {
         message.contains("audit_policy.profile_id must match owning profile_id")

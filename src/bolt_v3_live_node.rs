@@ -130,7 +130,8 @@ use crate::{
         resolve_bolt_v3_secrets, resolve_bolt_v3_secrets_with,
     },
     bolt_v3_strategy_registration::{
-        BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
+        BoltV3StrategyExecutionControls, BoltV3StrategyRegistrationError,
+        register_bolt_v3_strategies_on_node_with_bindings,
         register_bolt_v3_strategies_on_node_with_iv_runtime_bindings,
     },
     bolt_v3_submit_admission::{BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState},
@@ -3207,6 +3208,10 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::from_mode(
             loaded.root.runtime.order_execution_mode,
         );
+    let strategy_execution_controls = BoltV3StrategyExecutionControls {
+        submit_admission: submit_admission.clone(),
+        order_execution_policy,
+    };
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
@@ -3263,8 +3268,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             loaded,
             resolved,
             crate::bolt_v3_archetypes::runtime_bindings(),
-            submit_admission.clone(),
-            order_execution_policy,
+            strategy_execution_controls,
             decision_evidence.clone(),
             iv_runtime,
         )
@@ -3274,8 +3278,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             loaded,
             resolved,
             crate::bolt_v3_archetypes::runtime_bindings(),
-            submit_admission.clone(),
-            order_execution_policy,
+            strategy_execution_controls,
             decision_evidence.clone(),
         )
     }

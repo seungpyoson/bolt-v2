@@ -35,6 +35,12 @@ pub struct StrategyRuntimeBinding {
 }
 
 #[derive(Clone)]
+pub struct BoltV3StrategyExecutionControls {
+    pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    pub order_execution_policy: BoltV3OrderExecutionPolicy,
+}
+
+#[derive(Clone)]
 pub struct StrategyRegistrationContext<'a> {
     pub loaded: &'a LoadedBoltV3Config,
     pub strategy: &'a LoadedStrategy,
@@ -307,8 +313,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
-    submit_admission: Arc<BoltV3SubmitAdmissionState>,
-    order_execution_policy: BoltV3OrderExecutionPolicy,
+    execution_controls: BoltV3StrategyExecutionControls,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     if loaded.strategies.is_empty() {
@@ -321,8 +326,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
         loaded,
         resolved,
         bindings,
-        submit_admission,
-        order_execution_policy,
+        execution_controls,
         decision_evidence,
         iv_query_handles,
     )
@@ -333,8 +337,7 @@ pub fn register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
-    submit_admission: Arc<BoltV3SubmitAdmissionState>,
-    order_execution_policy: BoltV3OrderExecutionPolicy,
+    execution_controls: BoltV3StrategyExecutionControls,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     iv_runtime: &IvRuntimeEngine,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
@@ -351,8 +354,7 @@ pub fn register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
         loaded,
         resolved,
         bindings,
-        submit_admission,
-        order_execution_policy,
+        execution_controls,
         decision_evidence,
         iv_query_handles,
     )
@@ -363,8 +365,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
-    submit_admission: Arc<BoltV3SubmitAdmissionState>,
-    order_execution_policy: BoltV3OrderExecutionPolicy,
+    execution_controls: BoltV3StrategyExecutionControls,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
@@ -390,9 +391,9 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
                 strategy_kind: (binding.strategy_kind)(),
                 resolved,
                 decision_evidence: decision_evidence.clone(),
-                submit_admission: submit_admission.clone(),
+                submit_admission: execution_controls.submit_admission.clone(),
                 iv_query_handles: iv_query_handles.clone(),
-                order_execution_policy,
+                order_execution_policy: execution_controls.order_execution_policy,
                 realized_volatility_runtime: realized_volatility_runtime.clone(),
             },
         )?;

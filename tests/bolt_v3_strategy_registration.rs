@@ -768,6 +768,7 @@ legs = [
   {{ outcome_label = "away", side_label = "operator-positive", payout_per_unit = "1" }},
   {{ outcome_label = "away", side_label = "operator-inverse", payout_per_unit = "1" }},
 ]
+attestation_sha256 = "{digest}"
 "#
     )
 }

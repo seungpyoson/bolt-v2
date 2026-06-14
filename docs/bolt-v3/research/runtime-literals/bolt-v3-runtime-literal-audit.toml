@@ -6773,20 +6773,12 @@ classification = "kill_switch_store_schema_version"
 reason = "Durable state-file schema version for forward-compatible recovery; not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_kill_switch_store.rs"
+path = "src/bolt_v3_atomic_io.rs"
 kind = "string"
 literal = '''"tmp"'''
 context = '''temp_path.set_extension("tmp");'''
-classification = "kill_switch_store_atomic_write_temp_extension"
-reason = "Internal same-directory temporary file extension used before atomic rename; the durable state path itself is TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_kill_switch_store.rs"
-kind = "string"
-literal = '''b"\n"'''
-context = '''.and_then(|()| file.write_all(b"\n"))'''
-classification = "kill_switch_store_json_trailing_newline"
-reason = "Deterministic JSON formatting newline for the durable state file; not an operator runtime value."
+classification = "shared_atomic_io_temp_extension"
+reason = "Internal same-directory temporary file extension used before atomic rename; durable paths remain TOML-owned by callers."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"

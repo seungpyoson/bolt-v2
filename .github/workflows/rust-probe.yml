@@ -1,0 +1,121 @@
+name: Rust Probe
+
+# Manual-only: run one constrained Rust compile/test probe on an ephemeral runner.
+# This workflow is debugging feedback only and is not merge proof.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_tier:
+        description: Ubicloud runner tier to use
+        required: true
+        type: choice
+        default: heavy
+        options:
+          - heavy
+          - light
+      ref:
+        description: Git ref to checkout (branch, tag, or SHA)
+        required: true
+        type: string
+        default: main
+      mode:
+        description: Probe mode to run
+        required: true
+        type: choice
+        default: check-lib
+        options:
+          - check-lib
+          - check-test-target
+          - nextest-no-run-test-target
+          - nextest-test-target
+          - nextest-test-target-name
+      test_target:
+        description: Integration test target name for test-target modes
+        required: false
+        type: string
+        default: ""
+      test_name:
+        description: Test name for nextest-test-target-name
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: rust-probe
+  cancel-in-progress: true
+
+env:
+  JUST_VERSION: "1.49.0"
+  CARGO_TERM_COLOR: always
+  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
+
+permissions:
+  contents: read
+
+jobs:
+  probe-heavy:
+    name: probe-heavy
+    if: ${{ inputs.runner_tier == 'heavy' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-build-values: "true"
+          include-deny-version: "true"
+          include-nextest-version: "true"
+
+      - name: Install cargo-nextest
+        if: ${{ startsWith(inputs.mode, 'nextest-') }}
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Run Rust Probe
+        shell: bash
+        env:
+          RUST_PROBE_MODE: ${{ inputs.mode }}
+          RUST_PROBE_TEST_TARGET: ${{ inputs.test_target }}
+          RUST_PROBE_TEST_NAME: ${{ inputs.test_name }}
+        run: bash .github/scripts/run-rust-probe.sh
+
+  probe-light:
+    name: probe-light
+    if: ${{ inputs.runner_tier == 'light' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-build-values: "true"
+          include-deny-version: "true"
+          include-nextest-version: "true"
+
+      - name: Install cargo-nextest
+        if: ${{ startsWith(inputs.mode, 'nextest-') }}
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Run Rust Probe
+        shell: bash
+        env:
+          RUST_PROBE_MODE: ${{ inputs.mode }}
+          RUST_PROBE_TEST_TARGET: ${{ inputs.test_target }}
+          RUST_PROBE_TEST_NAME: ${{ inputs.test_name }}
+        run: bash .github/scripts/run-rust-probe.sh

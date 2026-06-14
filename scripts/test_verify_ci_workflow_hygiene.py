@@ -1601,8 +1601,8 @@ def assert_runner_contract_requires_meter_workflows_for_managed_workflows() -> N
         config_text = original_config.read_text()
         config_path.write_text(
             config_text.replace(
-                'included_workflows = ["ci", "backtester_ci", "ci_runner_debug"]',
-                'included_workflows = ["ci", "ci_runner_debug"]',
+                'included_workflows = ["ci", "backtester_ci", "ci_runner_debug", "rust_probe"]',
+                'included_workflows = ["ci", "ci_runner_debug", "rust_probe"]',
             ),
             encoding="utf-8",
         )
@@ -4824,6 +4824,113 @@ def assert_ci_lint_runs_command_understanding_tests() -> None:
         raise AssertionError("ci-lint-workflow must run command understanding self-tests")
 
 
+def assert_ci_lint_runs_rust_probe_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_run_rust_probe.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run Rust Probe runner self-tests")
+
+
+def assert_github_scripts_are_repo_automation_fenced() -> None:
+    verifier = load_verifier()
+    expected_glob = (verifier.REPO_ROOT / ".github" / "scripts", "*.sh")
+    if expected_glob not in verifier.DEFAULT_REPO_AUTOMATION_GLOBS:
+        raise AssertionError(".github/scripts/*.sh must be covered by repo automation globs")
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    if ".github/scripts/*.sh" not in justfile:
+        raise AssertionError("ci-lint-workflow must scan .github/scripts/*.sh")
+
+    raw_cargo_message = "repo automation raw Cargo must use managed rust_verification wrapper"
+    probe_script = (REPO_ROOT / ".github" / "scripts" / "run-rust-probe.sh").read_text(encoding="utf-8")
+    clean_errors = verifier.verify_repo_automation_texts({".github/scripts/run-rust-probe.sh": probe_script})
+    if any(raw_cargo_message in error for error in clean_errors):
+        raise AssertionError(f"Rust Probe wrapper argv arrays must not be treated as raw cargo: {clean_errors!r}")
+
+    raw_errors = verifier.verify_repo_automation_texts(
+        {".github/scripts/future-sibling.sh": "#!/usr/bin/env bash\ncargo build\n"}
+    )
+    if not any(raw_cargo_message in error for error in raw_errors):
+        raise AssertionError(f".github/scripts raw cargo drift was silent: {raw_errors!r}")
+
+    array_errors = verifier.verify_repo_automation_texts(
+        {".github/scripts/argv-array.sh": "#!/usr/bin/env bash\nprobe_args=(nextest run --locked --test target)\n"}
+    )
+    if any(raw_cargo_message in error for error in array_errors):
+        raise AssertionError(f"plain argv array data must not be treated as a launch: {array_errors!r}")
+
+    wrapper_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/wrapper-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(nextest run --locked --test target)\n"
+                'python3 scripts/rust_verification.py cargo --repo . -- "${probe_args[@]}"\n'
+            )
+        }
+    )
+    if any(raw_cargo_message in error for error in wrapper_array_errors):
+        raise AssertionError(f"wrapper-routed argv array data must stay allowed: {wrapper_array_errors!r}")
+
+    wrapper_star_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/wrapper-star-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(nextest run --locked --test target)\n"
+                'python3 scripts/rust_verification.py cargo --repo . -- "${probe_args[*]}"\n'
+            )
+        }
+    )
+    if any(raw_cargo_message in error for error in wrapper_star_array_errors):
+        raise AssertionError(f"wrapper-routed star argv array data must stay allowed: {wrapper_star_array_errors!r}")
+
+    cargo_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/cargo-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(cargo build --release)\n"
+                '"${probe_args[@]}"\n'
+            )
+        }
+    )
+    if not any(raw_cargo_message in error for error in cargo_array_errors):
+        raise AssertionError(f"cargo array execution raw cargo drift was silent: {cargo_array_errors!r}")
+
+    nextest_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/nextest-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(nextest run --locked --test target)\n"
+                '"${probe_args[@]}"\n'
+            )
+        }
+    )
+    if not any(raw_cargo_message in error for error in nextest_array_errors):
+        raise AssertionError(f"nextest array execution raw cargo drift was silent: {nextest_array_errors!r}")
+
+    star_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/star-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(nextest run --locked --test target)\n"
+                '"${probe_args[*]}"\n'
+            )
+        }
+    )
+    if not any(raw_cargo_message in error for error in star_array_errors):
+        raise AssertionError(f"star array execution raw cargo drift was silent: {star_array_errors!r}")
+
+    cargo_array_data_errors = verifier.verify_repo_automation_texts(
+        {".github/scripts/cargo-array-data.sh": "#!/usr/bin/env bash\nprobe_args=(cargo install --git https://example.invalid/tool.git)\n"}
+    )
+    if not any(raw_cargo_message in error for error in cargo_array_data_errors):
+        raise AssertionError(f"cargo-led argv array data raw cargo drift was silent: {cargo_array_data_errors!r}")
+
+    substitution_errors = verifier.verify_repo_automation_texts(
+        {".github/scripts/array-substitution.sh": "#!/usr/bin/env bash\nprobe_args=($(cargo build))\n"}
+    )
+    if not any(raw_cargo_message in error for error in substitution_errors):
+        raise AssertionError(f"array command substitution raw cargo drift was silent: {substitution_errors!r}")
+
+
 def assert_cargo_zigbuild_probe_has_no_redundant_true() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     redundant = 'test -x "$HOME/.cargo/bin/cargo-zigbuild" && true'
@@ -4836,6 +4943,8 @@ def main() -> int:
     assert_ci_lint_runs_verify_remote_tests()
     assert_ci_lint_runs_ci_provenance_tests()
     assert_ci_lint_runs_command_understanding_tests()
+    assert_ci_lint_runs_rust_probe_tests()
+    assert_github_scripts_are_repo_automation_fenced()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})

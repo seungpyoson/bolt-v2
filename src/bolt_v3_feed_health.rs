@@ -110,7 +110,9 @@ mod tests {
     fn none_reference_ts_is_maximally_stale() {
         let mut inputs = fresh_ok();
         inputs.last_reference_ts_ms = None;
-        assert!(evaluate_forced_flat_predicates(&inputs).contains(&ForcedFlatReason::StaleReference));
+        assert!(
+            evaluate_forced_flat_predicates(&inputs).contains(&ForcedFlatReason::StaleReference)
+        );
     }
 
     #[test]
@@ -124,7 +126,9 @@ mod tests {
     fn fast_venue_incoherent_requires_staleness() {
         let mut inputs = fresh_ok();
         inputs.fast_venue_incoherent = true; // but reference is fresh
-        assert!(!evaluate_forced_flat_predicates(&inputs)
-            .contains(&ForcedFlatReason::FastVenueIncoherent));
+        assert!(
+            !evaluate_forced_flat_predicates(&inputs)
+                .contains(&ForcedFlatReason::FastVenueIncoherent)
+        );
     }
 }

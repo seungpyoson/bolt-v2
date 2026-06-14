@@ -2967,7 +2967,44 @@ def persistent_shell_assignment_values(tokens: list[str]) -> tuple[dict[str, str
     assignments, assignment_index = shell_declaration_assignment_values_from_tokens(tokens)
     if assignments and assignment_index == len(tokens):
         return assignments, True
+    assignments, assignment_index = shell_array_assignment_values_from_tokens(tokens)
+    if assignments and assignment_index == len(tokens):
+        return assignments, True
     return {}, False
+
+
+def shell_array_assignment_values_from_tokens(tokens: list[str]) -> tuple[dict[str, str], int]:
+    assignments: dict[str, str] = {}
+    cursor = 0
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if not shell_assignment_word(token) or not token.endswith("="):
+            break
+        name, value = token.split("=", 1)
+        if value:
+            break
+        cursor += 1
+        if cursor >= len(tokens) or tokens[cursor] != "(":
+            break
+        cursor += 1
+        depth = 1
+        parts: list[str] = []
+        while cursor < len(tokens) and depth:
+            current = tokens[cursor]
+            if current == "(":
+                depth += 1
+                parts.append(current)
+            elif current == ")":
+                depth -= 1
+                if depth:
+                    parts.append(current)
+            else:
+                parts.append(current)
+            cursor += 1
+        if depth:
+            break
+        assignments[name] = " ".join(parts)
+    return assignments, cursor
 
 
 def shell_variable_reference_token(token: str) -> str | None:
@@ -2976,6 +3013,9 @@ def shell_variable_reference_token(token: str) -> str | None:
     if match:
         return match.group(1)
     match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", clean)
+    if match:
+        return match.group(1)
+    match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\[(?:@|\*)\]\}", clean)
     if match:
         return match.group(1)
     match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-?+=].*)\}", clean)
@@ -3337,8 +3377,9 @@ def tokens_have_repo_automation_raw_cargo(
     for payload in shell_command_substitution_payloads(tokens):
         if tokens_have_raw_cargo_launch(payload, variables=variables):
             return True
-    if tokens_are_shell_array_assignment(tokens):
-        return False
+    array_assignments, array_assignment_index = shell_array_assignment_values_from_tokens(tokens)
+    if array_assignments and array_assignment_index == len(tokens):
+        return array_assignment_values_have_cargo_executable(array_assignments)
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
         segment_variables = dict(variables)
@@ -3346,6 +3387,13 @@ def tokens_have_repo_automation_raw_cargo(
             if token in SHELL_COMMAND_BOUNDARIES:
                 assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
                 if is_persistent_assignment:
+                    array_assignments, array_assignment_index = shell_array_assignment_values_from_tokens(segment)
+                    if (
+                        array_assignments
+                        and array_assignment_index == len(segment)
+                        and array_assignment_values_have_cargo_executable(array_assignments)
+                    ):
+                        return True
                     segment_variables.update(assignments)
                     segment = []
                     continue
@@ -3361,26 +3409,46 @@ def tokens_have_repo_automation_raw_cargo(
 
 
 def tokens_are_shell_array_assignment(tokens: list[str]) -> bool:
-    if len(tokens) < 4 or tokens[0] in SHELL_COMMAND_BOUNDARIES:
+    assignments, assignment_index = shell_array_assignment_values_from_tokens(tokens)
+    return bool(assignments) and assignment_index == len(tokens)
+
+
+def array_assignment_values_have_cargo_executable(assignments: dict[str, str]) -> bool:
+    return any(tokens_have_cargo_executable_launch(command_tokens(value)) for value in assignments.values())
+
+
+def tokens_have_cargo_executable_launch(tokens: list[str], *, depth: int = 0) -> bool:
+    if depth > 6:
+        return True
+    tokens = strip_shell_redirections(tokens)
+    if not tokens:
         return False
-    index = 0
-    while index < len(tokens):
-        if not shell_assignment_word(tokens[index]) or not tokens[index].endswith("="):
-            return False
-        index += 1
-        if index >= len(tokens) or tokens[index] != "(":
-            return False
-        depth = 1
-        index += 1
-        while index < len(tokens) and depth:
-            if tokens[index] == "(":
-                depth += 1
-            elif tokens[index] == ")":
-                depth -= 1
-            index += 1
-        if depth:
-            return False
-    return True
+    if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
+        segment: list[str] = []
+        for token in tokens:
+            if token in SHELL_COMMAND_BOUNDARIES:
+                if tokens_have_cargo_executable_launch(segment, depth=depth + 1):
+                    return True
+                segment = []
+                continue
+            segment.append(token)
+        return tokens_have_cargo_executable_launch(segment, depth=depth + 1)
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index:
+        return assignment_index < len(tokens) and tokens_have_cargo_executable_launch(
+            tokens[assignment_index:],
+            depth=depth + 1,
+        )
+    executable = pathlib.Path(tokens[0]).name
+    if executable in RECURSIVE_WRAPPER_EXECUTABLES:
+        inner = wrapper_inner_tokens(tokens)
+        if inner is not None:
+            return tokens_have_cargo_executable_launch(inner, depth=depth + 1)
+    if executable == "env":
+        inner = env_inner_tokens(tokens)
+        if inner is not None:
+            return tokens_have_cargo_executable_launch(inner, depth=depth + 1)
+    return executable == "cargo"
 
 
 def is_managed_just_recipe_guard(recipe: str, stripped_line: str) -> bool:

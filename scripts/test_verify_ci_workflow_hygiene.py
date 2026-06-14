@@ -4371,6 +4371,60 @@ def assert_github_scripts_are_repo_automation_fenced() -> None:
     if any(raw_cargo_message in error for error in array_errors):
         raise AssertionError(f"plain argv array data must not be treated as a launch: {array_errors!r}")
 
+    wrapper_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/wrapper-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(nextest run --locked --test target)\n"
+                'python3 scripts/rust_verification.py cargo --repo . -- "${probe_args[@]}"\n'
+            )
+        }
+    )
+    if any(raw_cargo_message in error for error in wrapper_array_errors):
+        raise AssertionError(f"wrapper-routed argv array data must stay allowed: {wrapper_array_errors!r}")
+
+    cargo_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/cargo-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(cargo build --release)\n"
+                '"${probe_args[@]}"\n'
+            )
+        }
+    )
+    if not any(raw_cargo_message in error for error in cargo_array_errors):
+        raise AssertionError(f"cargo array execution raw cargo drift was silent: {cargo_array_errors!r}")
+
+    nextest_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/nextest-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(nextest run --locked --test target)\n"
+                '"${probe_args[@]}"\n'
+            )
+        }
+    )
+    if not any(raw_cargo_message in error for error in nextest_array_errors):
+        raise AssertionError(f"nextest array execution raw cargo drift was silent: {nextest_array_errors!r}")
+
+    star_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/star-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(nextest run --locked --test target)\n"
+                '"${probe_args[*]}"\n'
+            )
+        }
+    )
+    if not any(raw_cargo_message in error for error in star_array_errors):
+        raise AssertionError(f"star array execution raw cargo drift was silent: {star_array_errors!r}")
+
+    cargo_array_data_errors = verifier.verify_repo_automation_texts(
+        {".github/scripts/cargo-array-data.sh": "#!/usr/bin/env bash\nprobe_args=(cargo install --git https://example.invalid/tool.git)\n"}
+    )
+    if not any(raw_cargo_message in error for error in cargo_array_data_errors):
+        raise AssertionError(f"cargo-led argv array data raw cargo drift was silent: {cargo_array_data_errors!r}")
+
     substitution_errors = verifier.verify_repo_automation_texts(
         {".github/scripts/array-substitution.sh": "#!/usr/bin/env bash\nprobe_args=($(cargo build))\n"}
     )

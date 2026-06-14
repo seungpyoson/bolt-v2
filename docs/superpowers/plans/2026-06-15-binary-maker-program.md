@@ -6,7 +6,7 @@
 > `superpowers:subagent-driven-development`. This document fixes the slice
 > decomposition, the §16-decision → slice mapping, the dependency order, and the
 > definition of done. Implement slices in the order given; do not start a slice
-> until its `Depends` slices are merged.
+> until its `Depends` slices are committed on the single program branch.
 
 **Goal:** Build the venue/instrument-agnostic market-making platform on
 NautilusTrader, proving it with the Polymarket binary up/down outcome token as the
@@ -42,8 +42,11 @@ pipeline source branch `codex/reference-price-architecture` @ `d4159c0a9`.
 - **Local cargo is REFUSED** — verification is CI-only via `just verify-remote` /
   `just source-fence`. Fast local gates only (fmt/clippy/source-fence/targeted);
   push and let CI run the full suite. Never wait on a local full run.
-- **ONE BRANCH / PR = ONE SLICE.** Each slice is its own branch off the prior merged
-  slice (or `main` where `Depends: none`), its own PR, its own declared scope.
+- **ONE BRANCH / PR FOR THE WHOLE PROGRAM** (user directive, 2026-06-15). All slices
+  ship on a single branch (`feat/488-generic-maker`) and a single draft PR (#716);
+  the declared scope is the #488 binary-oracle maker program. Slices are
+  dependency-ordered build units within it — each CI-green + adversarially reviewed
+  (Codex + internal) as it lands — not separate PRs.
 - Every `lib/`-style module that writes shared state needs unit tests before merge.
 
 ---
@@ -205,10 +208,18 @@ check). This does not block Slices 0–7.
 
 ## Execution model
 
-- One branch + PR per slice (`feat/488-<slice>`), off the prior merged slice.
+- **One branch + one draft PR for the whole program** (`feat/488-generic-maker`,
+  PR #716) — user directive, 2026-06-15. Declared scope = the #488 binary-oracle maker.
 - Each slice plan is fully bite-sized TDD (failing test → run-fail → minimal impl →
-  run-pass → commit), executed via `superpowers:subagent-driven-development`.
+  run-pass → commit), executed via `superpowers:subagent-driven-development`, and
+  committed sequentially on the single branch.
+- Each slice gets a Codex adversarial review **and** an internal adversarial review as
+  it lands; every finding is FIXED or DISPROVEN before the next slice. Quality is
+  checked continuously — only the merge is deferred.
 - Fast local gates (fmt/clippy/`just source-fence`/targeted tests) before push; CI
-  runs the full suite remotely.
-- Merge each slice (user-gated `MERGE-TO-MAIN`) before starting the next on the
-  critical path; parallel slices (5, 9) may branch off Slice 1 concurrently.
+  runs the full suite remotely on every push to the branch.
+- **No intermediate merges to `main`.** The program merges once, under the user-gated
+  `MERGE-TO-MAIN`, after Slice 10's backtest go-live gate passes. Latest `main` is
+  integrated into the branch (with source-integrity seal re-recording) as a discrete
+  verified step before that merge. Parallel slices (5, 9) are committed concurrently
+  on the same branch.

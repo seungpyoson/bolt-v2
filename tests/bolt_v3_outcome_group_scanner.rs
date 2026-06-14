@@ -54,9 +54,9 @@ fn scanner_accepts_all_true_complete_set_when_edge_exceeds_threshold() {
     assert!(result.admissible);
     assert_eq!(result.block_reason, None);
     assert_eq!(result.guaranteed_payout.round_dp(6), dec!(1));
-    assert_eq!(result.total_adjusted_cost.round_dp(6), dec!(0.8));
-    assert_eq!(result.absolute_edge.round_dp(6), dec!(0.2));
-    assert_eq!(result.edge_bps.round_dp(0), dec!(2500));
+    assert_eq!(result.total_adjusted_cost.round_dp(6), dec!(0.808));
+    assert_eq!(result.absolute_edge.round_dp(6), dec!(0.192));
+    assert_eq!(result.edge_bps.round_dp(0), dec!(2376));
     assert_eq!(
         result
             .state_payouts
@@ -83,7 +83,7 @@ fn scanner_evaluates_all_false_and_mixed_role_baskets_from_payout_matrix() {
     ));
     assert!(all_false.admissible);
     assert_eq!(all_false.guaranteed_payout.round_dp(6), dec!(1));
-    assert_eq!(all_false.absolute_edge.round_dp(6), dec!(0.4));
+    assert_eq!(all_false.absolute_edge.round_dp(6), dec!(0.394));
 
     let mixed = scan_outcome_group_candidate(scan_input(
         &group,

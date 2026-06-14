@@ -46,8 +46,8 @@ const TIER1_CONVERSION_WORK_ORDERS_PREFIX: &str =
     "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/";
 const TIER1_BATCH_EXECUTION_REPORTS_PREFIX: &str =
     "specs/023-nt-research-analytics-platform/reference/source-universe-batch-execution-reports/";
-pub const TIER1_PMXT_CONVERSION_QUEUE_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/";
-pub const TIER1_BYBIT_CONVERSION_RUN_PLAN_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/";
+const TIER1_PMXT_CONVERSION_QUEUE_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/";
+const TIER1_BYBIT_CONVERSION_RUN_PLAN_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/";
 pub const TIER1_PMXT_CONVERSION_QUEUE_PATH: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json";
 pub const TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json";
 const TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/backfill-source-universes/binance-data-vision-trades-2026-03-01-all-instruments/";

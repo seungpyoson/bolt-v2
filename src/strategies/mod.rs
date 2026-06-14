@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 pub mod binary_oracle_edge_taker;
+pub mod complete_set_arbitrage;
 pub mod registry;
 
 use registry::StrategyRegistry;

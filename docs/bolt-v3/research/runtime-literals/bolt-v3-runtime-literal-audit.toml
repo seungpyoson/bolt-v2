@@ -11422,3 +11422,99 @@ literal = '''b"basket_execution_stuck"'''
 context = '''KillSwitchHaltTriggerKind::BasketExecutionStuck => b"basket_execution_stuck".as_slice(),'''
 classification = "hash_domain_variant"
 reason = "Stable kill-switch halt-id hash component for the dedicated basket-execution stuck trigger."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"ioc"'''
+context = '''"ioc" => Some(Self::Ioc),'''
+classification = "source_schema_enum_value"
+reason = "Supported complete-set submit_mode value mapped to a pinned NT order-template contract."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"max_basket_notional"'''
+context = '''"max_basket_notional",'''
+classification = "source_schema_field"
+reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"max_open_baskets"'''
+context = '''"max_open_baskets",'''
+classification = "source_schema_field"
+reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"max_repair_attempts"'''
+context = '''"max_repair_attempts",'''
+classification = "source_schema_field"
+reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"max_unwind_attempts"'''
+context = '''"max_unwind_attempts",'''
+classification = "source_schema_field"
+reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"min_edge_bps"'''
+context = '''"min_edge_bps",'''
+classification = "source_schema_field"
+reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"parameters.runtime.submit_mode.ioc.order_template"'''
+context = '''"parameters.runtime.submit_mode.ioc.order_template",'''
+classification = "validation_diagnostic_path"
+reason = "Field path supplied to NT order-template validation for the supported complete-set submit mode."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"runtime"'''
+context = '''.get("runtime")'''
+classification = "source_schema_field"
+reason = "Complete-set parameters table key used to locate TOML-owned runtime controls."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"slippage_buffer_bps"'''
+context = '''"slippage_buffer_bps",'''
+classification = "source_schema_field"
+reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"submit_mode"'''
+context = '''"submit_mode",'''
+classification = "source_schema_field"
+reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"submit_mode"'''
+context = '''.and_then(|runtime| runtime.get("submit_mode"))'''
+classification = "source_schema_field"
+reason = "Complete-set parameters.runtime field lookup used to render unsupported submit-mode diagnostics."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"vwap_depth_limit_bps"'''
+context = '''"vwap_depth_limit_bps",'''
+classification = "source_schema_field"
+reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."

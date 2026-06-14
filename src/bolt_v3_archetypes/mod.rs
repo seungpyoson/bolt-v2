@@ -21,6 +21,7 @@
 //! change.
 
 pub mod binary_oracle_edge_taker;
+pub mod complete_set_arbitrage;
 
 use std::collections::BTreeSet;
 

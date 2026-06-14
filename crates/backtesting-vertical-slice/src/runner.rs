@@ -18,6 +18,7 @@ use bolt_v2::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3StrategyInputEvidenceSnapshot,
     },
+    bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     strategies::{
         binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder,
@@ -58,6 +59,7 @@ use super::{
     run_manifest::{
         BacktestingRunManifest, NtSurfaceClassification, STRATEGY_BINARY_ORACLE_EDGE_TAKER,
         STRATEGY_HURST_VPIN_DIRECTIONAL, STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
+        STRATEGY_PARAM_ORDER_EXECUTION_MODE,
     },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
 };
@@ -269,6 +271,20 @@ fn add_manifest_strategy(
                 fee_bps >= Decimal::ZERO,
                 "strategy parameter {PARAM_FEE_BPS} must be non-negative"
             );
+            let order_execution_mode_raw = strategy
+                .parameters
+                .get(STRATEGY_PARAM_ORDER_EXECUTION_MODE)
+                .with_context(|| {
+                    format!("strategy parameter {STRATEGY_PARAM_ORDER_EXECUTION_MODE} is required")
+                })?;
+            let order_execution_mode: BoltV3OrderExecutionMode =
+                toml::Value::String(order_execution_mode_raw.clone())
+                    .try_into()
+                    .with_context(|| {
+                        format!(
+                            "invalid {STRATEGY_PARAM_ORDER_EXECUTION_MODE} {order_execution_mode_raw:?}"
+                        )
+                    })?;
             let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> =
                 Arc::new(BacktestDecisionEvidenceWriter);
             let submit_admission =
@@ -278,6 +294,7 @@ fn add_manifest_strategy(
                 fee_provider,
                 decision_evidence,
                 submit_admission,
+                BoltV3OrderExecutionPolicy::from_mode(order_execution_mode),
                 Venue::from(manifest.venue.nt_venue.as_str()),
             );
             let strategy =

@@ -15,9 +15,12 @@
 use std::{collections::BTreeMap, fmt::Debug, str::FromStr};
 
 use anyhow::{Result, bail};
-use bolt_v2::strategies::{
-    binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder, production_strategy_registry,
-    registry::StrategyBuilder,
+use bolt_v2::{
+    bolt_v3_order_execution::BoltV3OrderExecutionMode,
+    strategies::{
+        binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder, production_strategy_registry,
+        registry::StrategyBuilder,
+    },
 };
 use nautilus_backtest::config::{
     BacktestDataConfig, BacktestRunConfig, BacktestVenueConfig, NautilusDataType,
@@ -50,6 +53,8 @@ pub const STRATEGY_PARAM_TRADE_SIZE: &str = "trade_size";
 pub const STRATEGY_PARAM_CONFIG_TOML: &str = "config_toml";
 /// Strategy parameter key for the backtest fee-provider assumption.
 pub const STRATEGY_PARAM_FEE_BPS: &str = "fee_bps";
+/// Strategy parameter key for the Bolt-v3 order execution policy mode.
+pub const STRATEGY_PARAM_ORDER_EXECUTION_MODE: &str = "order_execution_mode";
 /// Strategy parameter key for the number of delivered trades before the entry order.
 pub const STRATEGY_PARAM_ENTRY_AFTER_TRADES: &str = "entry_after_trades";
 /// Strategy parameter key for the number of further delivered trades before the close.
@@ -122,7 +127,11 @@ pub fn registered_strategy_parameters(registry_key: &str) -> Option<&'static [&'
             Some(&[STRATEGY_PARAM_BAR_TYPE, STRATEGY_PARAM_TRADE_SIZE])
         }
         STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
-            Some(&[STRATEGY_PARAM_CONFIG_TOML, STRATEGY_PARAM_FEE_BPS])
+            Some(&[
+                STRATEGY_PARAM_CONFIG_TOML,
+                STRATEGY_PARAM_FEE_BPS,
+                STRATEGY_PARAM_ORDER_EXECUTION_MODE,
+            ])
         }
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => Some(&[
             STRATEGY_PARAM_TRADE_SIZE,
@@ -886,15 +895,32 @@ fn validate_strategy_source(
                 .map_err(|_| ManifestError::MissingField("strategy.parameters.bar_type"))?;
         }
         STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
-            for parameter in [STRATEGY_PARAM_CONFIG_TOML, STRATEGY_PARAM_FEE_BPS] {
+            for parameter in [
+                STRATEGY_PARAM_CONFIG_TOML,
+                STRATEGY_PARAM_FEE_BPS,
+                STRATEGY_PARAM_ORDER_EXECUTION_MODE,
+            ] {
                 if !strategy.parameters.contains_key(parameter) {
                     return Err(ManifestError::MissingField(match parameter {
                         STRATEGY_PARAM_CONFIG_TOML => "strategy.parameters.config_toml",
                         STRATEGY_PARAM_FEE_BPS => "strategy.parameters.fee_bps",
+                        STRATEGY_PARAM_ORDER_EXECUTION_MODE => {
+                            "strategy.parameters.order_execution_mode"
+                        }
                         _ => unreachable!(),
                     }));
                 }
             }
+            let order_execution_mode = strategy
+                .parameters
+                .get(STRATEGY_PARAM_ORDER_EXECUTION_MODE)
+                .expect("presence checked above");
+            let _order_execution_mode: BoltV3OrderExecutionMode =
+                toml::Value::String(order_execution_mode.clone())
+                    .try_into()
+                    .map_err(|_| {
+                        ManifestError::MissingField("strategy.parameters.order_execution_mode")
+                    })?;
             let fee_bps = strategy
                 .parameters
                 .get(STRATEGY_PARAM_FEE_BPS)

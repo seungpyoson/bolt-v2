@@ -49,6 +49,24 @@ max_source_bytes_per_run = 2000000000
         plan.gate_id,
         "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
     );
+    let expected_object_gates_path = Path::new(
+        "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json",
+    );
+    assert_eq!(plan.object_gates_path, expected_object_gates_path);
+    assert!(
+        plan.object_gates_path.is_relative(),
+        "run-plan object_gates_path must be portable across checkouts"
+    );
+    let object_gates_artifact = plan
+        .artifact_refs
+        .iter()
+        .find(|artifact_ref| artifact_ref.role == "source_universe_object_gates")
+        .expect("run plan records the source-universe object-gates artifact");
+    assert_eq!(object_gates_artifact.path, expected_object_gates_path);
+    assert!(
+        object_gates_artifact.path.is_relative(),
+        "run-plan object-gates artifact ref path must be portable across checkouts"
+    );
     assert_eq!(plan.object_count, 5_857);
     assert_eq!(plan.planned_object_count, 5_857);
     assert_eq!(plan.source_binding_count, 3);

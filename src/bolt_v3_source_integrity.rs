@@ -301,8 +301,10 @@ mod tests {
     // sink private and moved the live/shadow sink tests into the gated module.
     // Re-derived after committing the submit-admission permit only after the
     // shared order-execution policy's live NT submit succeeds.
+    // Re-derived again after aligning the shared policy test helper with the
+    // consolidated reservation-evidence writer trait.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "43c060f9071f605312123beb1d23734119911412a26c731794024d0407780f9c";
+        "fcd5937f47f38cffbaeb3d8ea863ec92486fde78c6833d76d66e389e7a86fd34";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

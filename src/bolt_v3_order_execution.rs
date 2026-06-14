@@ -263,7 +263,9 @@ mod tests {
     use crate::{
         bolt_v3_decision_evidence::{
             BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
-            BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot,
+            BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+            BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+            BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         },
         bolt_v3_submit_admission::{
             BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionRequest,
@@ -317,6 +319,27 @@ mod tests {
                 .lock()
                 .expect("recording admission mutex should not be poisoned")
                 .push(decision.clone());
+            Ok(())
+        }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &BoltV3SubmitReservationMetadataEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &BoltV3SubmitReservationFillEvidence,
+        ) -> Result<()> {
             Ok(())
         }
     }
@@ -487,6 +510,7 @@ mod tests {
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_proof: None,
             kill_switch_forced_reduction: None,
+            position_sizing: None,
         }
     }
 

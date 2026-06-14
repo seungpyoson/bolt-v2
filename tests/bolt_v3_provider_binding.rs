@@ -1764,14 +1764,18 @@ fn configure_outcome_group_strategy(
     group_sources: Vec<String>,
 ) {
     let strategy = &mut loaded.strategies[0];
-    strategy.config.strategy_archetype = "complete_set_arbitrage".to_string();
+    strategy.config.strategy_archetype = toml::from_str::<
+        bolt_v2::bolt_v3_config::StrategyArchetypeKey,
+    >("\"complete_set_arbitrage\"")
+    .expect("complete-set archetype key should parse");
     strategy.config.execution_client_id = ClientId::from("polymarket_main");
     strategy.config.target = toml::toml! {
         configured_target_id = "complete_set_target"
         kind = "static_outcome_group"
         rotating_market_family = "outcome_group"
         group_sources = group_sources
-    };
+    }
+    .into();
 }
 
 fn outcome_event_source(

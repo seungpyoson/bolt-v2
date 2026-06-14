@@ -65,9 +65,10 @@ DIRECT_NT_VENUE_MUTATION_RULE = Rule(
     "direct NT venue mutation call",
     re.compile(
         r"(?:\.\s*|(?<![A-Za-z0-9_])"
-        r"(?:Self|[A-Z][A-Za-z0-9_]*)\s*::\s*|<[^>\n]+>\s*::\s*)"
+        r"(?:Self|[A-Za-z_][A-Za-z0-9_]*"
+        r"(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*::\s*|<[^>\n]+>\s*::\s*)"
         rf"(?:{NT_VENUE_MUTATION_METHOD_PATTERN})"
-        r"(?=\s*(?:\(|;|,|\)|$))"
+        r"(?=\s*(?:::<|\(|;|,|\)|$))"
     ),
 )
 
@@ -157,24 +158,32 @@ def is_test_source_file(path) -> bool:
     return "tests" in relative.parts
 
 
-def source_files_for_strategy_policy_fence() -> list:
-    return [
-        path
-        for path in source_set_files(STRATEGY_SOURCE_ROOTS)
-        if not is_test_source_file(path)
-    ]
-
-
-def source_files_for_mutation_fence() -> list:
-    src_root = REPO_ROOT / "src"
+def production_rust_files_under(relative_root: str) -> list:
+    root = REPO_ROOT / relative_root
     files = []
-    for path in src_root.rglob("*.rs"):
+    for path in root.rglob("*.rs"):
         if path.is_symlink():
             raise ValueError(f"source root contains a symlink: {path}")
         if path.is_file() and not is_test_source_file(path):
             files.append(path)
     files.sort(key=lambda path: path.relative_to(REPO_ROOT).as_posix().encode("utf-8"))
     return files
+
+
+def source_files_for_strategy_policy_fence() -> list:
+    files = {
+        path
+        for path in source_set_files(STRATEGY_SOURCE_ROOTS)
+        if not is_test_source_file(path)
+    }
+    files.update(production_rust_files_under("src/strategies"))
+    return sorted(
+        files, key=lambda path: path.relative_to(REPO_ROOT).as_posix().encode("utf-8")
+    )
+
+
+def source_files_for_mutation_fence() -> list:
+    return production_rust_files_under("src")
 
 
 def find_violations_in_text(

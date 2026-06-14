@@ -127,6 +127,22 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             "aliases, inherent-qualified forms, and method pointers must be fenced",
         )
 
+    def test_detects_lowercase_alias_qualified_nt_venue_mutation_calls(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            use nautilus_trading::Strategy as nt_strategy;
+            nt_strategy::submit_order(self, order, None, Some(client_id), None)?;
+            let submit = nt_strategy::submit_order;
+            Self::submit_order::<Probe>(self, order, None, Some(client_id), None)?;
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            3,
+            "lowercase aliases and turbofish-qualified mutation calls must be fenced",
+        )
+
     def test_detects_raw_sink_wrapper_methods_outside_policy_boundary(self) -> None:
         direct_violations = self.direct_nt_violations_for(
             """
@@ -202,6 +218,29 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         self.assertNotIn(
             "src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs",
             scanned,
+        )
+
+    def test_strategy_policy_fence_scans_future_strategy_modules(self) -> None:
+        probe = VERIFIER.REPO_ROOT / "src/strategies/__policy_fence_probe.rs"
+        probe.write_text(
+            "fn bypass(mode: BoltV3OrderExecutionMode) {\n"
+            "    let _policy = BoltV3OrderExecutionPolicy::from_mode(mode);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        try:
+            violations = [
+                violation
+                for violation in VERIFIER.collect_violations()
+                if violation.path == "src/strategies/__policy_fence_probe.rs"
+            ]
+        finally:
+            probe.unlink(missing_ok=True)
+
+        self.assertEqual(
+            [violation.label for violation in violations],
+            ["strategy-local execution policy construction"],
+            "future strategy modules must not escape strategy-policy rules",
         )
 
     def test_shared_policy_does_not_blanket_impl_raw_sink_for_every_strategy(self) -> None:

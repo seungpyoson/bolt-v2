@@ -124,3 +124,30 @@ The fence now separates strategy-policy rules from a repo-wide production-source
 ### Verdict
 
 VERDICT: READY FOR FINAL REMOTE CI
+
+---
+
+## Internal Review Follow-up Disposition
+
+**Reviewer**: Codex internal adversarial review
+**Date**: 2026-06-14
+**Trigger**: Internal review against exact PR head `bc3ba9672a7fb7c3766da85660dc9fa5a9c5df0b` found remaining verifier coverage gaps.
+
+### Findings Disposition
+
+#### H3 - Strategy-policy rules did not cover future strategy modules
+
+**Status**: Fixed in implementation follow-up
+
+The strategy-policy fence now scans the registered strategy source roots plus every production Rust file under `src/strategies/**/*.rs`. A regression test creates a temporary future strategy module and proves `collect_violations()` catches strategy-local execution policy construction there.
+
+#### M1 - Lowercase Strategy aliases escaped direct-mutation detection
+
+**Status**: Fixed in implementation follow-up
+
+The direct NT mutation qualifier regex now accepts ordinary Rust identifier/path qualifiers instead of only `Self` and UpperCamel aliases, and it recognizes turbofish-qualified mutation references. Regression coverage includes lowercase `Strategy as nt_strategy` calls and method references.
+
+### Checks
+
+- Red verification: the two new tests failed before the verifier change.
+- Green verification: `python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py` and `python3 scripts/verify_bolt_v3_strategy_policy_fence.py` passed after the fix.

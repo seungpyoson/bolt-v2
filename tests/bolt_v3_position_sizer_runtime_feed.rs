@@ -1321,6 +1321,77 @@ fn fill_event_for_rebuilt_reservation_revalues_residual() {
 }
 
 #[test]
+fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let _ = feed.on_account_state(&account_state(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        900,
+        100.0,
+    ));
+    seed_venue_spendability(&mut feed, 925);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    let mut reservation = open_order_reservation(
+        "client-order-1",
+        "client-order-1#rebuilt",
+        Decimal::new(43, 1),
+    );
+    reservation.recovered_from_startup = true;
+    let rebuild =
+        admission.rebuild_position_sizing_open_order_reservations(vec![reservation], 1_000);
+    assert!(rebuild.accepted);
+
+    let reconciliation = feed
+        .on_order_event(&OrderEventAny::Filled(
+            order_filled_event_with_reconciliation(
+                "client-order-1",
+                "trade-1",
+                1_100,
+                AccountId::from("ACCOUNT-001"),
+                Quantity::from(4),
+                OrderSide::Buy,
+                InstrumentId::from("instrument-yes.VENUE-A"),
+                true,
+            ),
+        ))
+        .expect("startup reconciliation fill should be accepted as already accounted");
+    assert!(reconciliation.accepted);
+    assert_eq!(reconciliation.action, PositionSizingLifecycleAction::None);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+
+    let duplicate = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_200,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("seen reconciliation trade id should stay idempotent");
+    assert!(duplicate.accepted);
+    assert_eq!(duplicate.action, PositionSizingLifecycleAction::None);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+}
+
+#[test]
 fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);

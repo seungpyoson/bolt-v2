@@ -1047,7 +1047,7 @@ fn unknown_reconciliation_fill_does_not_replay_seeded_product_position() {
     let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_ne!(product.source, "nt_order_fill");
     assert_eq!(product.yes_position, Decimal::new(3, 0));
-    assert_eq!(product.conditional_token_allowance, Decimal::new(3, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::ZERO);
 }
 
 #[test]

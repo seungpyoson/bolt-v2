@@ -1637,6 +1637,13 @@ fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
     {
         errors.push("risk.kill_switch.account_ids must not contain empty values".to_string());
     }
+    for account_id in &block.account_ids {
+        if AccountId::new_checked(account_id).is_err() {
+            errors.push(format!(
+                "risk.kill_switch.account_ids[`{account_id}`] is not a valid Nautilus account ID"
+            ));
+        }
+    }
     if block.instrument_ids.is_empty() {
         errors.push("risk.kill_switch.instrument_ids must not be empty when enabled".to_string());
     }
@@ -2178,6 +2185,17 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             errors.push(format!(
                 "{context}: order_id_tag `{}` is already used by another listed strategy",
                 strategy.order_id_tag
+            ));
+        }
+
+        if strategy.market_exit_interval_ms == 0 {
+            errors.push(format!(
+                "{context}: market_exit_interval_ms must be positive"
+            ));
+        }
+        if strategy.market_exit_max_attempts == 0 {
+            errors.push(format!(
+                "{context}: market_exit_max_attempts must be positive (NT treats 0 as finalize-on-first-tick, abandoning the close)"
             ));
         }
 

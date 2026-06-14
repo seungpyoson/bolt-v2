@@ -60,6 +60,8 @@ pub struct KillSwitchLossProtectionSnapshot {
     pub daily_bucket: Option<u64>,
     pub daily_realized_pnl: Decimal,
     pub cumulative_position_pnl: BTreeMap<String, KillSwitchCumulativePositionPnlSnapshot>,
+    pub closed_position_pnl: BTreeMap<String, KillSwitchCumulativePositionPnlSnapshot>,
+    pub adjusted_position_pnl: BTreeMap<String, KillSwitchCumulativePositionPnlSnapshot>,
     pub pending_halt_actions: Option<KillSwitchPendingHaltActionsSnapshot>,
 }
 
@@ -286,6 +288,10 @@ struct PersistedKillSwitchLossProtectionSnapshot {
     daily_bucket: Option<u64>,
     daily_realized_pnl: String,
     cumulative_position_pnl: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
+    #[serde(default)]
+    closed_position_pnl: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
+    #[serde(default)]
+    adjusted_position_pnl: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_halt_actions: Option<KillSwitchPendingHaltActionsSnapshot>,
 }
@@ -296,24 +302,46 @@ struct PersistedCumulativePositionPnlSnapshot {
     last_observed_at_unix_nanos: u64,
 }
 
+fn persist_pnl_map(
+    map: &BTreeMap<String, KillSwitchCumulativePositionPnlSnapshot>,
+) -> BTreeMap<String, PersistedCumulativePositionPnlSnapshot> {
+    map.iter()
+        .map(|(position_id, value)| {
+            (
+                position_id.clone(),
+                PersistedCumulativePositionPnlSnapshot {
+                    realized_pnl: value.realized_pnl.to_string(),
+                    last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                },
+            )
+        })
+        .collect()
+}
+
+fn restore_pnl_map(
+    map: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
+) -> Result<BTreeMap<String, KillSwitchCumulativePositionPnlSnapshot>, ()> {
+    let mut restored = BTreeMap::new();
+    for (position_id, value) in map {
+        restored.insert(
+            position_id,
+            KillSwitchCumulativePositionPnlSnapshot {
+                realized_pnl: Decimal::from_str(&value.realized_pnl).map_err(|_| ())?,
+                last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+            },
+        );
+    }
+    Ok(restored)
+}
+
 impl From<&KillSwitchLossProtectionSnapshot> for PersistedKillSwitchLossProtectionSnapshot {
     fn from(snapshot: &KillSwitchLossProtectionSnapshot) -> Self {
         Self {
             daily_bucket: snapshot.daily_bucket,
             daily_realized_pnl: snapshot.daily_realized_pnl.to_string(),
-            cumulative_position_pnl: snapshot
-                .cumulative_position_pnl
-                .iter()
-                .map(|(position_id, value)| {
-                    (
-                        position_id.clone(),
-                        PersistedCumulativePositionPnlSnapshot {
-                            realized_pnl: value.realized_pnl.to_string(),
-                            last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
-                        },
-                    )
-                })
-                .collect(),
+            cumulative_position_pnl: persist_pnl_map(&snapshot.cumulative_position_pnl),
+            closed_position_pnl: persist_pnl_map(&snapshot.closed_position_pnl),
+            adjusted_position_pnl: persist_pnl_map(&snapshot.adjusted_position_pnl),
             pending_halt_actions: snapshot.pending_halt_actions,
         }
     }
@@ -323,20 +351,12 @@ impl TryFrom<PersistedKillSwitchLossProtectionSnapshot> for KillSwitchLossProtec
     type Error = ();
 
     fn try_from(snapshot: PersistedKillSwitchLossProtectionSnapshot) -> Result<Self, Self::Error> {
-        let mut cumulative_position_pnl = BTreeMap::new();
-        for (position_id, value) in snapshot.cumulative_position_pnl {
-            cumulative_position_pnl.insert(
-                position_id,
-                KillSwitchCumulativePositionPnlSnapshot {
-                    realized_pnl: Decimal::from_str(&value.realized_pnl).map_err(|_| ())?,
-                    last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
-                },
-            );
-        }
         Ok(Self {
             daily_bucket: snapshot.daily_bucket,
             daily_realized_pnl: Decimal::from_str(&snapshot.daily_realized_pnl).map_err(|_| ())?,
-            cumulative_position_pnl,
+            cumulative_position_pnl: restore_pnl_map(snapshot.cumulative_position_pnl)?,
+            closed_position_pnl: restore_pnl_map(snapshot.closed_position_pnl)?,
+            adjusted_position_pnl: restore_pnl_map(snapshot.adjusted_position_pnl)?,
             pending_halt_actions: snapshot.pending_halt_actions,
         })
     }

@@ -2242,8 +2242,10 @@ fn configure_bolt_v3_kill_switch_loss_protection(
     let mut protection =
         KillSwitchLossProtection::new(config, submit_admission, store, action_sink)
             .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
+    let recovery_action_clock_unix_nanos =
+        current_unix_nanos().map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
     protection
-        .seed_from_store()
+        .seed_from_store(recovery_action_clock_unix_nanos)
         .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
     Ok(Some(Rc::new(RefCell::new(protection))))
 }

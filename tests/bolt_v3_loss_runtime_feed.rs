@@ -10,9 +10,11 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitLifecyclePolicy,
 };
 use nautilus_common::msgbus::publish_portfolio_snapshot;
-use nautilus_core::{UUID4, UnixNanos};
+use nautilus_core::{UUID4, UnixNanos, nanos::DurationNanos};
 use nautilus_model::enums::{AccountType, OrderSide, PositionAdjustmentType, PositionSide};
-use nautilus_model::events::{PortfolioSnapshot, PositionAdjusted, PositionChanged, PositionEvent};
+use nautilus_model::events::{
+    PortfolioSnapshot, PositionAdjusted, PositionChanged, PositionClosed, PositionEvent,
+};
 use nautilus_model::identifiers::{
     AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId,
 };
@@ -318,6 +320,121 @@ fn published_snapshot_invokes_configured_halt_action_handler() {
     assert_eq!(recorded[0], (1_000, Some(Decimal::new(-50, 0))));
 }
 
+#[test]
+fn loss_governor_feed_keeps_worst_position_pnl_across_positions() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-010");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 1_000,
+        },
+        admission,
+    );
+
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, 0.0, 0.0, 1_000.0))
+        .expect("portfolio baseline should publish");
+
+    // Two concurrent open positions: the first leg carries a large loss, the
+    // second leg a benign loss that arrives LAST. The worst (most negative) leg
+    // must drive per_trade_pnl regardless of event ordering, so a benign event
+    // on one position can never mask a larger loss on the other.
+    let first_leg = feed
+        .on_position_event(&changed_position_event_for(
+            account_id,
+            "POSITION-LOSS-WORST",
+            1_100,
+            -20.0,
+        ))
+        .expect("first open position should publish its per-trade loss");
+    assert_eq!(first_leg.per_trade_pnl, Some(Decimal::new(-20, 0)));
+
+    let second_leg = feed
+        .on_position_event(&changed_position_event_for(
+            account_id,
+            "POSITION-LOSS-BENIGN",
+            1_200,
+            -1.0,
+        ))
+        .expect("second open position should publish the worst-of-N per-trade loss");
+    assert_eq!(second_leg.per_trade_pnl, Some(Decimal::new(-20, 0)));
+
+    // Closing the benign leg leaves the worst leg unchanged; closing the worst
+    // leg falls back to the next-worst open position.
+    let after_benign_close = feed
+        .on_position_event(&closed_position_event_for(
+            account_id,
+            "POSITION-LOSS-BENIGN",
+            1_300,
+            -1.0,
+        ))
+        .expect("closing the benign leg should retain the worst open leg");
+    assert_eq!(after_benign_close.per_trade_pnl, Some(Decimal::new(-20, 0)));
+
+    let after_worst_close = feed
+        .on_position_event(&closed_position_event_for(
+            account_id,
+            "POSITION-LOSS-WORST",
+            1_400,
+            -20.0,
+        ))
+        .expect("closing the last open leg should fall back to the zero baseline");
+    assert_eq!(after_worst_close.per_trade_pnl, Some(Decimal::ZERO));
+}
+
+#[test]
+fn loss_governor_feed_fails_closed_on_corrupt_portfolio_heartbeat() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-011");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission.clone(),
+    );
+
+    // A good heartbeat publishes a complete snapshot and admits below-limit entry.
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, -4.0, -3.0, 1_000.0))
+        .expect("good portfolio heartbeat should publish a complete loss snapshot");
+    admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 1_100)
+        .expect("fresh below-limit snapshot should admit entry submit");
+
+    // A corrupt heartbeat (empty money facts that cannot be summed) after good
+    // facts were published must INVALIDATE the cached snapshot by publishing a
+    // cleared, all-None snapshot, rather than silently leaving the prior good
+    // snapshot live.
+    let cleared = feed
+        .on_portfolio_snapshot(&empty_money_portfolio_snapshot(account_id, 1_200))
+        .expect("corrupt heartbeat after good facts must publish a cleared snapshot");
+    assert_eq!(cleared.per_trade_pnl, None);
+    assert_eq!(cleared.daily_pnl, None);
+    assert_eq!(cleared.rolling_pnl, None);
+    assert_eq!(cleared.current_equity, None);
+    assert_eq!(cleared.peak_equity, None);
+
+    let latest = feed
+        .latest_snapshot()
+        .cloned()
+        .expect("cleared snapshot should be retained as the latest published snapshot");
+    assert_eq!(latest.daily_pnl, None);
+
+    // The configured limits with all-None facts trip staleness, so the next
+    // admission fails closed instead of admitting on stale facts.
+    admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 1_300)
+        .expect_err("cleared all-None snapshot must fail admission closed");
+}
+
 fn loss_policy() -> LossGovernorPolicy {
     LossGovernorPolicy {
         max_snapshot_age_ns: 1_000,
@@ -410,6 +527,75 @@ fn changed_position_event(
         unrealized_pnl: Money::new(unrealized_pnl, Currency::USD()),
         event_id: UUID4::default(),
         ts_opened: UnixNanos::from(1),
+        ts_event: UnixNanos::from(ts_event),
+        ts_init: UnixNanos::from(ts_event),
+    })
+}
+
+fn changed_position_event_for(
+    account_id: AccountId,
+    position_id: &str,
+    ts_event: u64,
+    unrealized_pnl: f64,
+) -> PositionEvent {
+    PositionEvent::PositionChanged(PositionChanged {
+        trader_id: TraderId::from("TRADER-LOSS-001"),
+        strategy_id: StrategyId::from("STRATEGY-LOSS-001"),
+        instrument_id: InstrumentId::from("INSTRUMENT-LOSS-001.SIM"),
+        position_id: PositionId::from(position_id),
+        account_id,
+        opening_order_id: ClientOrderId::from("ORDER-LOSS-001"),
+        entry: OrderSide::Buy,
+        side: PositionSide::Long,
+        signed_qty: 1.0,
+        quantity: Quantity::from("1"),
+        peak_quantity: Quantity::from("1"),
+        last_qty: Quantity::from("1"),
+        last_px: Price::from("1.00"),
+        currency: Currency::USD(),
+        avg_px_open: 1.0,
+        avg_px_close: None,
+        realized_return: 0.0,
+        realized_pnl: None,
+        unrealized_pnl: Money::new(unrealized_pnl, Currency::USD()),
+        event_id: UUID4::default(),
+        ts_opened: UnixNanos::from(1),
+        ts_event: UnixNanos::from(ts_event),
+        ts_init: UnixNanos::from(ts_event),
+    })
+}
+
+fn closed_position_event_for(
+    account_id: AccountId,
+    position_id: &str,
+    ts_event: u64,
+    realized_pnl: f64,
+) -> PositionEvent {
+    PositionEvent::PositionClosed(PositionClosed {
+        trader_id: TraderId::from("TRADER-LOSS-001"),
+        strategy_id: StrategyId::from("STRATEGY-LOSS-001"),
+        instrument_id: InstrumentId::from("INSTRUMENT-LOSS-001.SIM"),
+        position_id: PositionId::from(position_id),
+        account_id,
+        opening_order_id: ClientOrderId::from("ORDER-LOSS-001"),
+        closing_order_id: Some(ClientOrderId::from("ORDER-LOSS-CLOSE-001")),
+        entry: OrderSide::Buy,
+        side: PositionSide::Flat,
+        signed_qty: 0.0,
+        quantity: Quantity::from("0"),
+        peak_quantity: Quantity::from("1"),
+        last_qty: Quantity::from("1"),
+        last_px: Price::from("1.00"),
+        currency: Currency::USD(),
+        avg_px_open: 1.0,
+        avg_px_close: Some(1.0),
+        realized_return: 0.0,
+        realized_pnl: Some(Money::new(realized_pnl, Currency::USD())),
+        unrealized_pnl: Money::new(0.0, Currency::USD()),
+        duration: DurationNanos::from(1_u64),
+        event_id: UUID4::default(),
+        ts_opened: UnixNanos::from(1),
+        ts_closed: Some(UnixNanos::from(ts_event)),
         ts_event: UnixNanos::from(ts_event),
         ts_init: UnixNanos::from(ts_event),
     })

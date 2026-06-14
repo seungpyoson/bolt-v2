@@ -1,4 +1,10 @@
-use std::{cell::RefCell, collections::VecDeque, fmt, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    fmt,
+    rc::Rc,
+    sync::Arc,
+};
 
 use nautilus_common::msgbus::{
     TypedHandler, subscribe_portfolio_snapshot, subscribe_position_events,
@@ -6,7 +12,7 @@ use nautilus_common::msgbus::{
 };
 use nautilus_model::{
     events::{PortfolioSnapshot, PositionEvent},
-    identifiers::AccountId,
+    identifiers::{AccountId, PositionId},
     types::{Currency, Money},
 };
 use rust_decimal::Decimal;
@@ -46,8 +52,15 @@ struct LossGovernorRuntimeFeedState {
     daily_pnl: Option<TimedDecimal>,
     rolling_samples: VecDeque<TimedDecimal>,
     rolling_pnl: Option<TimedDecimal>,
-    per_trade_pnl: Option<TimedDecimal>,
-    per_trade_pnl_source: Option<PerTradePnlSource>,
+    // Worst-of-N per-trade loss across concurrent OPEN positions: tracked per
+    // `PositionId`, opened on `PositionOpened` (at zero) / updated on
+    // `PositionChanged` / removed on `PositionClosed`. The published per-trade
+    // figure is the most negative (min) leg across all open positions, so a
+    // benign event on one position can never mask a larger loss on another.
+    position_pnls: HashMap<PositionId, TimedDecimal>,
+    // Zero-baseline per-trade fact established by a portfolio snapshot, used only
+    // when there are no open positions to derive a worst-of-N figure from.
+    portfolio_baseline_per_trade: Option<TimedDecimal>,
     current_equity: Option<TimedDecimal>,
     peak_equity: Option<TimedDecimal>,
     latest_snapshot: Option<LossSnapshot>,
@@ -72,12 +85,6 @@ impl TimedDecimal {
 enum PeakEquityAction {
     Preserve,
     RebaselineToCurrent,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PerTradePnlSource {
-    PortfolioBaseline,
-    PositionEvent,
 }
 
 #[must_use]
@@ -171,14 +178,28 @@ impl LossGovernorRuntimeFeed {
             return None;
         }
 
-        let currency = portfolio_currency(snapshot)?;
-        if !self.state.accept_currency(currency) {
-            return None;
-        }
-
         let observed_at_ns = snapshot.ts_event.as_u64();
-        let daily_pnl = daily_pnl(snapshot, currency)?;
-        let current_equity = total_equity(snapshot, currency)?;
+
+        // Fail-closed contract: any corrupt/un-summable portfolio heartbeat
+        // (unresolvable account currency, currency mismatch against the
+        // established account currency, or money facts that cannot be summed)
+        // must INVALIDATE the cached portfolio facts and publish a cleared,
+        // all-None snapshot so the next admission trips `snapshot_is_stale`.
+        // Returning `None` here would leave the prior good snapshot live and
+        // keep admitting on stale facts.
+        let Some(currency) = portfolio_currency(snapshot) else {
+            return self.invalidate_portfolio_facts(observed_at_ns);
+        };
+        if !self.state.accept_currency(currency) {
+            return self.invalidate_portfolio_facts(observed_at_ns);
+        }
+        let Some(daily_pnl) = daily_pnl(snapshot, currency) else {
+            return self.invalidate_portfolio_facts(observed_at_ns);
+        };
+        let Some(current_equity) = total_equity(snapshot, currency) else {
+            return self.invalidate_portfolio_facts(observed_at_ns);
+        };
+
         let peak_equity_action = self.state.update_rolling_pnl(
             daily_pnl,
             current_equity,
@@ -186,10 +207,12 @@ impl LossGovernorRuntimeFeed {
             self.config.rolling_window_ns,
         );
         self.state.daily_pnl = Some(TimedDecimal::new(daily_pnl, observed_at_ns));
-        if self.state.per_trade_pnl_source != Some(PerTradePnlSource::PositionEvent) {
-            self.state.per_trade_pnl = Some(TimedDecimal::new(Decimal::ZERO, observed_at_ns));
-            self.state.per_trade_pnl_source = Some(PerTradePnlSource::PortfolioBaseline);
-        }
+        // Seed the zero per-trade baseline used while no positions are open. The
+        // worst-of-N derivation in `per_trade_pnl()` ignores this baseline as
+        // soon as any position is being tracked, so the baseline can never mask
+        // an open per-trade loss.
+        self.state.portfolio_baseline_per_trade =
+            Some(TimedDecimal::new(Decimal::ZERO, observed_at_ns));
 
         self.state.current_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
         match (peak_equity_action, self.state.peak_equity) {
@@ -219,16 +242,30 @@ impl LossGovernorRuntimeFeed {
         if position_fact.account_id != self.config.account_id {
             return None;
         }
-        if !self.state.accept_currency(position_fact.currency) {
-            return None;
-        }
 
-        if let Some(per_trade_pnl) = position_fact.per_trade_pnl {
-            self.state.per_trade_pnl = Some(TimedDecimal::new(
-                per_trade_pnl,
-                position_fact.observed_at_ns,
-            ));
-            self.state.per_trade_pnl_source = Some(PerTradePnlSource::PositionEvent);
+        match position_fact.kind {
+            // Open / change carry an absolute trade-level PnL for one position;
+            // start tracking it (PositionOpened seeds zero) or update its value.
+            // A currency that mismatches the established account currency is
+            // dropped fail-closed (no per-position fact is recorded), matching
+            // the portfolio path's currency discipline.
+            PositionPnlKind::Absolute(per_trade_pnl) => {
+                if !self.state.accept_currency(position_fact.currency) {
+                    return None;
+                }
+                self.state.position_pnls.insert(
+                    position_fact.position_id,
+                    TimedDecimal::new(per_trade_pnl, position_fact.observed_at_ns),
+                );
+            }
+            // Close removes the leg from the worst-of-N set; the per-trade figure
+            // falls back to the next-worst open position, or the zero baseline.
+            PositionPnlKind::Closed => {
+                self.state.position_pnls.remove(&position_fact.position_id);
+            }
+            // Adjustments (e.g. commission deltas) are not a trade-level PnL
+            // source: they must never overwrite the worst-of-open selection.
+            PositionPnlKind::Adjustment => {}
         }
 
         self.publish_if_complete()
@@ -240,7 +277,7 @@ impl LossGovernorRuntimeFeed {
     }
 
     fn publish_if_complete(&mut self) -> Option<LossSnapshot> {
-        let per_trade_pnl = self.state.per_trade_pnl?;
+        let per_trade_pnl = self.state.per_trade_pnl()?;
         let daily_pnl = self.state.daily_pnl?;
         let rolling_pnl = self.state.rolling_pnl?;
         let current_equity = self.state.current_equity?;
@@ -259,6 +296,33 @@ impl LossGovernorRuntimeFeed {
             rolling_pnl: Some(rolling_pnl.value),
             current_equity: Some(current_equity.value),
             peak_equity: Some(peak_equity.value),
+        };
+        self.submit_admission.update_loss_snapshot(snapshot.clone());
+        self.state.latest_snapshot = Some(snapshot.clone());
+        Some(snapshot)
+    }
+
+    /// Invalidate cached portfolio facts on a corrupt/un-summable heartbeat and
+    /// publish a cleared, all-None snapshot so the next admission fails closed.
+    ///
+    /// Returns `None` (publishing nothing) only when no good snapshot has ever
+    /// been published — there are no live facts to invalidate, and the consumer
+    /// already fails closed on an absent snapshot.
+    fn invalidate_portfolio_facts(&mut self, observed_at_ns: u64) -> Option<LossSnapshot> {
+        self.state.invalidate_portfolio_facts();
+
+        if self.state.latest_snapshot.is_none() {
+            return None;
+        }
+
+        let snapshot = LossSnapshot {
+            source: LOSS_RUNTIME_FEED_SOURCE.to_string(),
+            observed_at_ns,
+            per_trade_pnl: None,
+            daily_pnl: None,
+            rolling_pnl: None,
+            current_equity: None,
+            peak_equity: None,
         };
         self.submit_admission.update_loss_snapshot(snapshot.clone());
         self.state.latest_snapshot = Some(snapshot.clone());
@@ -296,7 +360,7 @@ impl fmt::Debug for LossGovernorRuntimeFeed {
 }
 
 impl LossGovernorRuntimeFeedState {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             currency: None,
             previous_daily_pnl: None,
@@ -304,12 +368,43 @@ impl LossGovernorRuntimeFeedState {
             daily_pnl: None,
             rolling_samples: VecDeque::new(),
             rolling_pnl: None,
-            per_trade_pnl: None,
-            per_trade_pnl_source: None,
+            position_pnls: HashMap::new(),
+            portfolio_baseline_per_trade: None,
             current_equity: None,
             peak_equity: None,
             latest_snapshot: None,
         }
+    }
+
+    /// Worst-of-N per-trade loss across concurrent open positions.
+    ///
+    /// Selects the most negative (min) PnL across all tracked open positions so a
+    /// benign event on one leg can never mask a larger loss on another; ties on
+    /// value break to the oldest observation. When no positions are open, falls
+    /// back to the zero per-trade baseline established by a portfolio snapshot.
+    fn per_trade_pnl(&self) -> Option<TimedDecimal> {
+        self.position_pnls
+            .values()
+            .copied()
+            .min_by(|left, right| {
+                left.value
+                    .cmp(&right.value)
+                    .then_with(|| left.observed_at_ns.cmp(&right.observed_at_ns))
+            })
+            .or(self.portfolio_baseline_per_trade)
+    }
+
+    /// Clear the cached portfolio facts on a corrupt heartbeat so the feed
+    /// republishes from scratch on the next good snapshot. Open per-position
+    /// facts and peak equity are preserved, mirroring the original governor.
+    fn invalidate_portfolio_facts(&mut self) {
+        self.previous_daily_pnl = None;
+        self.previous_total_equity = None;
+        self.daily_pnl = None;
+        self.rolling_samples.clear();
+        self.rolling_pnl = None;
+        self.portfolio_baseline_per_trade = None;
+        self.current_equity = None;
     }
 
     fn accept_currency(&mut self, currency: Currency) -> bool {
@@ -371,38 +466,61 @@ impl LossGovernorRuntimeFeedState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PositionPnlFact {
     account_id: AccountId,
+    position_id: PositionId,
     currency: Currency,
-    per_trade_pnl: Option<Decimal>,
+    kind: PositionPnlKind,
     observed_at_ns: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PositionPnlKind {
+    /// Absolute trade-level PnL for one open position (seeded at zero on open,
+    /// updated on change). Drives the worst-of-N per-trade selection.
+    Absolute(Decimal),
+    /// The position is closed and must leave the worst-of-N set.
+    Closed,
+    /// A non-PnL adjustment (e.g. commission) that must not overwrite the
+    /// worst-of-open selection.
+    Adjustment,
 }
 
 fn position_pnl_fact(event: &PositionEvent) -> Option<PositionPnlFact> {
     match event {
-        PositionEvent::PositionOpened(_) => None,
+        // Start tracking the position at zero so a later benign change cannot
+        // resurrect a stale value, matching the original governor's open-at-zero.
+        PositionEvent::PositionOpened(opened) => Some(PositionPnlFact {
+            account_id: opened.account_id,
+            position_id: opened.position_id,
+            currency: opened.currency,
+            kind: PositionPnlKind::Absolute(Decimal::ZERO),
+            observed_at_ns: opened.ts_event.as_u64(),
+        }),
         PositionEvent::PositionChanged(changed) => Some(PositionPnlFact {
             account_id: changed.account_id,
+            position_id: changed.position_id,
             currency: changed.unrealized_pnl.currency,
-            per_trade_pnl: Some(combined_position_pnl(
+            kind: PositionPnlKind::Absolute(combined_position_pnl(
                 changed.realized_pnl,
                 changed.unrealized_pnl,
             )?),
             observed_at_ns: changed.ts_event.as_u64(),
         }),
+        // Close removes the leg regardless of PnL combinability; the per-trade
+        // figure falls back to the next-worst open position or the baseline.
         PositionEvent::PositionClosed(closed) => Some(PositionPnlFact {
             account_id: closed.account_id,
+            position_id: closed.position_id,
             currency: closed.unrealized_pnl.currency,
-            per_trade_pnl: Some(combined_position_pnl(
-                closed.realized_pnl,
-                closed.unrealized_pnl,
-            )?),
+            kind: PositionPnlKind::Closed,
             observed_at_ns: closed.ts_event.as_u64(),
         }),
         PositionEvent::PositionAdjusted(adjusted) => {
             let pnl_change = adjusted.pnl_change?;
             Some(PositionPnlFact {
                 account_id: adjusted.account_id,
+                position_id: adjusted.position_id,
                 currency: pnl_change.currency,
-                per_trade_pnl: None,
+                kind: PositionPnlKind::Adjustment,
                 observed_at_ns: adjusted.ts_event.as_u64(),
             })
         }

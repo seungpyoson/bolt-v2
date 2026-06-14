@@ -330,6 +330,33 @@ fn realized_volatility_validation_rejects_strategy_missing_surface_reference() {
 }
 
 #[test]
+fn strategy_validation_rejects_zero_market_exit_max_attempts() {
+    let errors = realized_volatility_validation_errors(|loaded| {
+        loaded.strategies[0].config.market_exit_max_attempts = 0;
+    });
+    assert!(
+        errors
+            .iter()
+            .any(|message| message.contains("market_exit_max_attempts must be positive")),
+        "zero market_exit_max_attempts must be rejected (NT treats 0 as finalize-on-first-tick, \
+         abandoning the forced close): {errors:?}"
+    );
+}
+
+#[test]
+fn strategy_validation_rejects_zero_market_exit_interval_ms() {
+    let errors = realized_volatility_validation_errors(|loaded| {
+        loaded.strategies[0].config.market_exit_interval_ms = 0;
+    });
+    assert!(
+        errors
+            .iter()
+            .any(|message| message.contains("market_exit_interval_ms must be positive")),
+        "zero market_exit_interval_ms must be rejected: {errors:?}"
+    );
+}
+
+#[test]
 fn runtime_mapping_emits_surface_id_and_signal_data_for_surfaced_mode() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

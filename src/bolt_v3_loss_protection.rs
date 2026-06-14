@@ -91,6 +91,8 @@ pub struct KillSwitchLossProtection {
     daily_bucket: Option<u64>,
     daily_realized_pnl: Decimal,
     cumulative_position_pnl: BTreeMap<String, CumulativePositionPnl>,
+    closed_position_pnl: BTreeMap<String, CumulativePositionPnl>,
+    adjusted_position_pnl: BTreeMap<String, CumulativePositionPnl>,
     pending_halt_actions: Option<PendingHaltActions>,
 }
 
@@ -110,6 +112,8 @@ impl KillSwitchLossProtection {
             daily_bucket: None,
             daily_realized_pnl: Decimal::ZERO,
             cumulative_position_pnl: BTreeMap::new(),
+            closed_position_pnl: BTreeMap::new(),
+            adjusted_position_pnl: BTreeMap::new(),
             pending_halt_actions: None,
         })
     }
@@ -122,7 +126,10 @@ impl KillSwitchLossProtection {
         &self.state
     }
 
-    pub fn seed_from_store(&mut self) -> anyhow::Result<KillSwitchState> {
+    pub fn seed_from_store(
+        &mut self,
+        recovery_action_clock_unix_nanos: u64,
+    ) -> anyhow::Result<KillSwitchState> {
         let record = self
             .store
             .load_recovery_record()
@@ -151,6 +158,20 @@ impl KillSwitchLossProtection {
         }
         self.admission.replace_kill_switch_state(state.clone());
         self.state = state.clone();
+        if matches!(state, KillSwitchState::Halting { .. }) && self.pending_halt_actions.is_none() {
+            if let Err(error) = self.emit_halt_actions(&state) {
+                self.pending_halt_actions = Some(PendingHaltActions {
+                    state: state.clone(),
+                    next_retry_at_unix_nanos: recovery_action_clock_unix_nanos,
+                    retry_deadline_unix_nanos: add_millis(
+                        recovery_action_clock_unix_nanos,
+                        self.config.action_retry_timeout_ms,
+                    ),
+                });
+                self.persist_runtime_snapshot_or_fail_closed()?;
+                log::error!("kill switch recovery halt action dispatch failed: {error:?}");
+            }
+        }
         Ok(state)
     }
 
@@ -186,51 +207,153 @@ impl KillSwitchLossProtection {
             return Ok(None);
         }
         let observed = if observation.cumulative_realized_pnl {
-            let previous_record = self
-                .cumulative_position_pnl
-                .get(&observation.position_id)
-                .cloned();
-            if let Some(previous) = &previous_record {
-                if observation.observed.observed_at_unix_nanos
-                    < previous.last_observed_at_unix_nanos
-                {
-                    return Ok(None);
-                }
-                if observation.observed.observed_at_unix_nanos
-                    == previous.last_observed_at_unix_nanos
-                    && observation.observed.realized_pnl == previous.realized_pnl
-                {
-                    if observation.closes_position {
-                        self.cumulative_position_pnl
-                            .remove(&observation.position_id);
-                        self.persist_runtime_snapshot_or_fail_closed()?;
-                    }
-                    return Ok(None);
-                }
-            }
-            let previous = previous_record
-                .map(|previous| previous.realized_pnl)
-                .unwrap_or(Decimal::ZERO);
-            if observation.closes_position {
-                self.cumulative_position_pnl
-                    .remove(&observation.position_id);
-            } else {
-                self.cumulative_position_pnl.insert(
-                    observation.position_id.clone(),
-                    CumulativePositionPnl {
-                        realized_pnl: observation.observed.realized_pnl,
-                        last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
-                    },
-                );
-            }
-            RealizedPnlObservation {
-                realized_pnl: observation.observed.realized_pnl - previous,
-                ..observation.observed
-            }
+            let Some(observed) = self.record_cumulative_position_observation(&observation)? else {
+                return Ok(None);
+            };
+            observed
         } else {
+            if self.is_duplicate_adjusted_position_observation(&observation) {
+                return Ok(None);
+            }
             observation.observed
         };
         self.record_current_bucket_realized_pnl(observed)
+    }
+
+    fn record_cumulative_position_observation(
+        &mut self,
+        observation: &PositionRealizedPnlObservation,
+    ) -> anyhow::Result<Option<RealizedPnlObservation>> {
+        if observation.closes_position {
+            return self.record_closed_position_observation(observation);
+        }
+
+        if let Some(closed) = self.closed_position_pnl.get(&observation.position_id) {
+            if observation.observed.observed_at_unix_nanos <= closed.last_observed_at_unix_nanos {
+                return Ok(None);
+            }
+            self.closed_position_pnl.remove(&observation.position_id);
+        }
+
+        let previous_record = self
+            .cumulative_position_pnl
+            .get(&observation.position_id)
+            .cloned();
+        if let Some(previous) = &previous_record {
+            if observation.observed.observed_at_unix_nanos < previous.last_observed_at_unix_nanos {
+                return Ok(None);
+            }
+            if observation.observed.observed_at_unix_nanos == previous.last_observed_at_unix_nanos
+                && observation.observed.realized_pnl == previous.realized_pnl
+            {
+                return Ok(None);
+            }
+        }
+        let previous = previous_record
+            .map(|previous| previous.realized_pnl)
+            .unwrap_or(Decimal::ZERO);
+        self.cumulative_position_pnl.insert(
+            observation.position_id.clone(),
+            CumulativePositionPnl {
+                realized_pnl: observation.observed.realized_pnl,
+                last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+            },
+        );
+        Ok(Some(RealizedPnlObservation {
+            realized_pnl: observation.observed.realized_pnl - previous,
+            ..observation.observed
+        }))
+    }
+
+    fn record_closed_position_observation(
+        &mut self,
+        observation: &PositionRealizedPnlObservation,
+    ) -> anyhow::Result<Option<RealizedPnlObservation>> {
+        if let Some(previous) = self
+            .cumulative_position_pnl
+            .get(&observation.position_id)
+            .cloned()
+        {
+            if observation.observed.observed_at_unix_nanos < previous.last_observed_at_unix_nanos {
+                return Ok(None);
+            }
+            self.cumulative_position_pnl
+                .remove(&observation.position_id);
+            self.closed_position_pnl.insert(
+                observation.position_id.clone(),
+                CumulativePositionPnl {
+                    realized_pnl: observation.observed.realized_pnl,
+                    last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+                },
+            );
+            if observation.observed.observed_at_unix_nanos == previous.last_observed_at_unix_nanos
+                && observation.observed.realized_pnl == previous.realized_pnl
+            {
+                self.persist_runtime_snapshot_or_fail_closed()?;
+                return Ok(None);
+            }
+            return Ok(Some(RealizedPnlObservation {
+                realized_pnl: observation.observed.realized_pnl - previous.realized_pnl,
+                ..observation.observed
+            }));
+        }
+
+        if let Some(previous) = self
+            .closed_position_pnl
+            .get(&observation.position_id)
+            .cloned()
+        {
+            if observation.observed.observed_at_unix_nanos < previous.last_observed_at_unix_nanos {
+                return Ok(None);
+            }
+            if observation.observed.realized_pnl == previous.realized_pnl {
+                return Ok(None);
+            }
+            self.closed_position_pnl.insert(
+                observation.position_id.clone(),
+                CumulativePositionPnl {
+                    realized_pnl: observation.observed.realized_pnl,
+                    last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+                },
+            );
+            return Ok(Some(RealizedPnlObservation {
+                realized_pnl: observation.observed.realized_pnl - previous.realized_pnl,
+                ..observation.observed
+            }));
+        }
+
+        self.closed_position_pnl.insert(
+            observation.position_id.clone(),
+            CumulativePositionPnl {
+                realized_pnl: observation.observed.realized_pnl,
+                last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+            },
+        );
+        Ok(Some(observation.observed))
+    }
+
+    fn is_duplicate_adjusted_position_observation(
+        &mut self,
+        observation: &PositionRealizedPnlObservation,
+    ) -> bool {
+        if let Some(previous) = self.adjusted_position_pnl.get(&observation.position_id) {
+            if observation.observed.observed_at_unix_nanos < previous.last_observed_at_unix_nanos {
+                return true;
+            }
+            if observation.observed.observed_at_unix_nanos == previous.last_observed_at_unix_nanos
+                && observation.observed.realized_pnl == previous.realized_pnl
+            {
+                return true;
+            }
+        }
+        self.adjusted_position_pnl.insert(
+            observation.position_id.clone(),
+            CumulativePositionPnl {
+                realized_pnl: observation.observed.realized_pnl,
+                last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+            },
+        );
+        false
     }
 
     pub fn record_realized_pnl(
@@ -410,6 +533,32 @@ impl KillSwitchLossProtection {
                     )
                 })
                 .collect(),
+            closed_position_pnl: self
+                .closed_position_pnl
+                .iter()
+                .map(|(position_id, value)| {
+                    (
+                        position_id.clone(),
+                        KillSwitchCumulativePositionPnlSnapshot {
+                            realized_pnl: value.realized_pnl,
+                            last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                        },
+                    )
+                })
+                .collect(),
+            adjusted_position_pnl: self
+                .adjusted_position_pnl
+                .iter()
+                .map(|(position_id, value)| {
+                    (
+                        position_id.clone(),
+                        KillSwitchCumulativePositionPnlSnapshot {
+                            realized_pnl: value.realized_pnl,
+                            last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                        },
+                    )
+                })
+                .collect(),
             pending_halt_actions: self.pending_halt_actions.as_ref().map(|pending| {
                 KillSwitchPendingHaltActionsSnapshot {
                     next_retry_at_unix_nanos: pending.next_retry_at_unix_nanos,
@@ -424,6 +573,32 @@ impl KillSwitchLossProtection {
         self.daily_realized_pnl = snapshot.daily_realized_pnl;
         self.cumulative_position_pnl = snapshot
             .cumulative_position_pnl
+            .into_iter()
+            .map(|(position_id, value)| {
+                (
+                    position_id,
+                    CumulativePositionPnl {
+                        realized_pnl: value.realized_pnl,
+                        last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                    },
+                )
+            })
+            .collect();
+        self.closed_position_pnl = snapshot
+            .closed_position_pnl
+            .into_iter()
+            .map(|(position_id, value)| {
+                (
+                    position_id,
+                    CumulativePositionPnl {
+                        realized_pnl: value.realized_pnl,
+                        last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                    },
+                )
+            })
+            .collect();
+        self.adjusted_position_pnl = snapshot
+            .adjusted_position_pnl
             .into_iter()
             .map(|(position_id, value)| {
                 (

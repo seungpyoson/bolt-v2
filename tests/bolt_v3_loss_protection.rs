@@ -462,7 +462,7 @@ fn daily_realized_pnl_survives_restart_until_utc_bucket_rolls_forward() {
 
     assert_eq!(
         restarted
-            .seed_from_store()
+            .seed_from_store(1_717_200_000_000_000_000)
             .expect("restart should recover armed loss snapshot"),
         KillSwitchState::Armed
     );
@@ -527,7 +527,7 @@ fn cumulative_position_baseline_survives_restart_without_current_day_false_posit
     )
     .expect("loss protection should initialize after restart");
     restarted
-        .seed_from_store()
+        .seed_from_store(NANOS_PER_UTC_DAY)
         .expect("restart should recover cumulative baseline");
 
     assert!(
@@ -813,6 +813,147 @@ fn halt_persistence_failure_invalidates_preexisting_permissive_store() {
             .expect("store should no longer recover Armed"),
         KillSwitchRecoveryState::FailClosed { .. }
     ));
+}
+
+#[test]
+fn duplicate_closed_position_replay_after_prune_counts_once() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-duplicate-close-replay");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(30, 0)),
+        admission.clone(),
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    protection
+        .record_position_event(&changed_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -20.0,
+            1,
+        ))
+        .expect("open position cumulative pnl should record");
+    assert!(
+        protection
+            .record_position_event(&closed_position_event(
+                "POLYMARKET-001",
+                "BTC-USD.BINANCE",
+                -25.0,
+                3,
+            ))
+            .expect("first close should add only the close delta")
+            .is_none()
+    );
+
+    assert!(
+        protection
+            .record_position_event(&closed_position_event(
+                "POLYMARKET-001",
+                "BTC-USD.BINANCE",
+                -25.0,
+                2,
+            ))
+            .expect("duplicate close replay should be ignored")
+            .is_none()
+    );
+    assert!(admission.admit(&entry_request()).is_ok());
+    assert!(actions.actions().is_empty());
+}
+
+#[test]
+fn duplicate_adjusted_position_replay_counts_delta_once() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-duplicate-adjusted-replay");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(15, 0)),
+        admission.clone(),
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    protection
+        .record_position_event(&adjusted_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -10.0,
+            1,
+        ))
+        .expect("first adjustment should record below limit");
+    protection
+        .record_position_event(&adjusted_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -10.0,
+            1,
+        ))
+        .expect("duplicate adjustment should not double count");
+    assert!(admission.admit(&entry_request()).is_ok());
+
+    let latched = protection
+        .record_position_event(&adjusted_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -6.0,
+            2,
+        ))
+        .expect("new adjustment should be counted")
+        .expect("total unique adjustments should breach");
+
+    assert!(matches!(latched, KillSwitchState::Halting { .. }));
+    assert_eq!(actions.actions().len(), 1);
+}
+
+#[test]
+fn halting_recovery_without_pending_snapshot_reissues_flatten() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-halting-recovery-flatten");
+    let path = temp.path().join("kill-switch.json");
+    let store = KillSwitchStore::new(path.clone(), TEST_MAX_STATE_FILE_BYTES);
+    store
+        .write_state(&KillSwitchState::Halting {
+            halt_id: "halt-1".to_string(),
+            trigger: KillSwitchHaltTrigger::loss_governor_breach(
+                "nt_position_event",
+                1_717_200_000_000_000_000,
+                "max_utc_daily_realized_loss",
+            ),
+        })
+        .expect("halting state without loss snapshot should persist");
+
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(50, 0)),
+        admission,
+        KillSwitchStore::new(path, TEST_MAX_STATE_FILE_BYTES),
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    let recovered = protection
+        .seed_from_store(1_717_200_000_000_000_000)
+        .expect("halting recovery should seed");
+
+    assert!(matches!(recovered, KillSwitchState::Halting { .. }));
+    assert_eq!(actions.actions().len(), 1);
 }
 
 #[derive(Debug, Default)]

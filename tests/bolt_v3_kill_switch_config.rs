@@ -124,6 +124,37 @@ instrument_ids = ["BTC-USD.BINANCE"]
 }
 
 #[test]
+fn enabled_kill_switch_rejects_malformed_account_id() {
+    let root: BoltV3RootConfig = toml::from_str(&root_with_kill_switch(
+        r#"
+[risk.kill_switch]
+enabled = true
+state_path = "state/kill-switch.json"
+max_state_file_bytes = 65536
+max_utc_daily_realized_loss = "250.00"
+action_retry_interval_ms = 250
+action_retry_timeout_ms = 5000
+mandatory_proof_max_age_ms = 1000
+manual_reset_evidence_max_age_ms = 60000
+authorized_operator_ids = ["operator-primary"]
+account_ids = ["NOT_AN_ACCOUNT_ID"]
+instrument_ids = ["BTC-USD.BINANCE"]
+"#,
+    ))
+    .unwrap();
+
+    let errors = validate_root_only(&root);
+
+    assert!(
+        errors.iter().any(|error| error.contains(
+            "risk.kill_switch.account_ids[`NOT_AN_ACCOUNT_ID`] is not a valid Nautilus account ID"
+        )),
+        "enabled kill switch must reject a malformed account id (a malformed id silently matches zero \
+         PositionEvents and neuters the hard breaker): {errors:?}"
+    );
+}
+
+#[test]
 fn enabled_kill_switch_rejects_empty_instrument_scope() {
     let root: BoltV3RootConfig = toml::from_str(&root_with_kill_switch(
         r#"

@@ -150,6 +150,8 @@ fn armed_zero_loss_snapshot() -> KillSwitchLossProtectionSnapshot {
         daily_bucket: None,
         daily_realized_pnl: Decimal::ZERO,
         cumulative_position_pnl: BTreeMap::new(),
+        closed_position_pnl: BTreeMap::new(),
+        adjusted_position_pnl: BTreeMap::new(),
         pending_halt_actions: None,
     }
 }

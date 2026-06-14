@@ -265,27 +265,31 @@ FINGERPRINT_REUSE_JOB_IF_VALUE = (
 FINGERPRINT_REUSE_ALLOWED_OUTPUT = (
     "fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}"
 )
-FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ENVELOPE = (
-    "name: Detect fingerprint-reuse governance changes",
-    "id: fingerprint_reuse_inputs_changed",
-    "if: github.event_name == 'pull_request'",
-    "shell: bash",
-    "run: |",
+FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ALLOWED_KEYS = frozenset(
+    ("name", "id", "if", "shell", "run")
 )
-FINGERPRINT_REUSE_ALLOWED_STEP_ENVELOPE = (
-    "name: Determine fingerprint reuse allowance",
-    "id: fingerprint_reuse_allowed",
-    "shell: bash",
-    "run: |",
+FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_SCALARS = {
+    "id": "fingerprint_reuse_inputs_changed",
+    "if": "github.event_name == 'pull_request'",
+    "shell": "bash",
+    "run": "|",
+}
+FINGERPRINT_REUSE_ALLOWED_STEP_ALLOWED_KEYS = frozenset(("name", "id", "shell", "run"))
+FINGERPRINT_REUSE_ALLOWED_STEP_SCALARS = {
+    "id": "fingerprint_reuse_allowed",
+    "shell": "bash",
+    "run": "|",
+}
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_ALLOWED_KEYS = frozenset(
+    ("name", "id", "shell", "env", "run")
 )
-NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_ENVELOPE = (
-    "name: Resolve nextest fingerprint reuse",
-    "id: reuse",
-    "shell: bash",
-    "env:",
-    "GITHUB_TOKEN: ${{ github.token }}",
-    "run: >",
-)
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_SCALARS = {
+    "id": "reuse",
+    "shell": "bash",
+    "env": "",
+    "run": ">",
+}
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_ENV = {"GITHUB_TOKEN": "${{ github.token }}"}
 FINGERPRINT_REUSE_INPUTS_CHANGED_RUN = """base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
 head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
 git fetch --no-tags origin \\
@@ -1142,13 +1146,110 @@ def block_run_body_matches(block: list[str], expected: str) -> bool:
     return normalize_script_text(block_run_body(block)) == normalize_script_text(expected)
 
 
-def block_has_canonical_lines(block: list[str], expected_lines: tuple[str, ...]) -> bool:
-    actual = {
-        strip_comment(line).strip().removeprefix("- ").strip()
-        for line in block
-        if strip_comment(line).strip()
-    }
-    return all(expected in actual for expected in expected_lines)
+def block_step_property_indent(block: list[str]) -> int | None:
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        match = re.match(
+            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?[A-Za-z0-9_.-]+:\s*.*$",
+            clean,
+        )
+        if match is None:
+            return None
+        return len(match.group(1)) + 2
+    return None
+
+
+def block_top_level_items(block: list[str]) -> dict[str, str] | None:
+    property_indent = block_step_property_indent(block)
+    if property_indent is None:
+        return None
+    step_item_indent = property_indent - 2
+    items: dict[str, str] = {}
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        step_match = re.match(
+            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?([A-Za-z0-9_.-]+):\s*(.*?)\s*$",
+            clean,
+        )
+        if step_match is not None:
+            if len(step_match.group(1)) != step_item_indent:
+                continue
+            key = step_match.group(2)
+            value = step_match.group(3)
+        else:
+            indent = len(clean) - len(clean.lstrip(" "))
+            if indent != property_indent:
+                continue
+            item_match = re.match(r"^\s*([A-Za-z0-9_.-]+):\s*(.*?)\s*$", clean)
+            if item_match is None:
+                continue
+            key = item_match.group(1)
+            value = item_match.group(2)
+        if key in items:
+            return None
+        items[key] = unquote_yaml_scalar(value)
+    return items
+
+
+def block_nested_mapping_items(block: list[str], parent_key: str) -> dict[str, str] | None:
+    property_indent = block_step_property_indent(block)
+    if property_indent is None:
+        return None
+    parent_indent: int | None = None
+    item_indent: int | None = None
+    items: dict[str, str] = {}
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if parent_indent is None:
+            parent_match = re.match(rf"^\s*{re.escape(parent_key)}:\s*$", clean)
+            if parent_match is not None and indent == property_indent:
+                parent_indent = indent
+            continue
+        if indent <= parent_indent:
+            break
+        if item_indent is None:
+            item_indent = indent
+        if indent != item_indent:
+            continue
+        item_match = re.match(r"^\s*([A-Za-z0-9_.-]+):\s*(.*?)\s*$", clean)
+        if item_match is None:
+            continue
+        key = item_match.group(1)
+        if key in items:
+            return None
+        items[key] = unquote_yaml_scalar(item_match.group(2))
+    return items
+
+
+def block_has_canonical_step_envelope(
+    block: list[str],
+    allowed_keys: frozenset[str],
+    required_scalars: dict[str, str],
+    nested_mappings: dict[str, dict[str, str]] | None = None,
+) -> bool:
+    items = block_top_level_items(block)
+    if items is None:
+        return False
+    actual_keys = set(items)
+    if actual_keys - set(allowed_keys):
+        return False
+    if not set(required_scalars).issubset(actual_keys):
+        return False
+    for key, expected in required_scalars.items():
+        if items.get(key) != expected:
+            return False
+    for parent_key, expected_items in (nested_mappings or {}).items():
+        actual_items = block_nested_mapping_items(block, parent_key)
+        if actual_items != expected_items:
+            return False
+    return True
 
 
 def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
@@ -5914,9 +6015,11 @@ def fingerprint_reuse_resolver_is_canonical(job_lines: list[str]) -> bool:
 
 def fingerprint_reuse_resolver_envelope_is_canonical(job_lines: list[str]) -> bool:
     reuse_step = unique_step_with_id(job_lines, "reuse")
-    return reuse_step is not None and block_has_canonical_lines(
+    return reuse_step is not None and block_has_canonical_step_envelope(
         reuse_step,
-        NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_ENVELOPE,
+        NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_ALLOWED_KEYS,
+        NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_SCALARS,
+        {"env": NEXTEST_FINGERPRINT_REUSE_RESOLVER_ENV},
     )
 
 
@@ -6343,9 +6446,10 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
             allowance_text = block_text
     if FINGERPRINT_REUSE_ALLOWED_OUTPUT not in text:
         errors.append("detector must expose fingerprint_reuse_allowed")
-    if fingerprint_inputs_block is None or not block_has_canonical_lines(
+    if fingerprint_inputs_block is None or not block_has_canonical_step_envelope(
         fingerprint_inputs_block,
-        FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ENVELOPE,
+        FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ALLOWED_KEYS,
+        FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_SCALARS,
     ):
         errors.append("detector fingerprint-reuse governance step must match canonical envelope")
     if fingerprint_inputs_block is None or not block_run_body_matches(
@@ -6358,9 +6462,10 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
         errors.append("detector must detect fingerprint-reuse governance changes")
     if fingerprint_inputs_text and not detector_maps_changed_to_any_changed(fingerprint_inputs_text):
         errors.append("detector must map fingerprint-reuse governance changes to any_changed=true")
-    if allowance_block is None or not block_has_canonical_lines(
+    if allowance_block is None or not block_has_canonical_step_envelope(
         allowance_block,
-        FINGERPRINT_REUSE_ALLOWED_STEP_ENVELOPE,
+        FINGERPRINT_REUSE_ALLOWED_STEP_ALLOWED_KEYS,
+        FINGERPRINT_REUSE_ALLOWED_STEP_SCALARS,
     ):
         errors.append("detector fingerprint-reuse allowance step must match canonical envelope")
     if allowance_block is None or not block_run_body_matches(

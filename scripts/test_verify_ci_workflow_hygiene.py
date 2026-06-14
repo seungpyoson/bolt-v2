@@ -4382,6 +4382,29 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
             "        if: github.event_name == 'pull_request'\n",
         ),
     )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        shell: bash\n",
+            """        shell: bash
+        working-directory: /tmp
+        continue-on-error: true
+""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        if: github.event_name == 'pull_request'\n",
+            """        if: github.event_name == 'pull_request'
+        if: false
+""",
+        ),
+    )
 
     narrowed_pathspec = replace_once_after(
         BASE_WORKFLOW,
@@ -4476,6 +4499,15 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         "        run: |",
     )
     assert_error("nextest-fingerprint-reuse resolver step must match canonical envelope", resolver_pipe_scalar)
+    resolver_extra_workdir = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        "        shell: bash\n",
+        """        shell: bash
+        working-directory: /tmp
+""",
+    )
+    assert_error("nextest-fingerprint-reuse resolver step must match canonical envelope", resolver_extra_workdir)
     fabricated_reuse_outputs = replace_once_after(
         BASE_WORKFLOW,
         "  nextest-fingerprint-reuse:",
@@ -4510,6 +4542,17 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
             """          fi""",
             """          fi
           printf 'value=true\\n' >> "$GITHUB_OUTPUT\"""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse allowance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Determine fingerprint reuse allowance",
+            "        shell: bash\n",
+            """        shell: bash
+        continue-on-error: true
+""",
         ),
     )
 

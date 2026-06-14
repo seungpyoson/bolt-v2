@@ -166,6 +166,7 @@ pub struct NtCatalogCapabilityControls {
     pub copy_if_not_exists_probe_succeeded: bool,
 }
 pub struct NtCatalogReadBackEvidence {
+    pub catalog_uri: String,
     pub query_files_succeeded: bool,
     pub query_files_result_count: usize,
     pub query_instruments_succeeded: bool,
@@ -198,6 +199,7 @@ impl NtCatalogCapabilityProofDocument {
     pub fn validate(&self, artifact_root: &ResolvedArtifactRoot) {
         self.proof.direct_s3_catalog_access_proven(artifact_root);
         let _evidence = &self.evidence;
+        let _catalog_uri = self.evidence.read_back.catalog_uri.clone();
     }
 }
 
@@ -313,6 +315,7 @@ fn successful_capability_evidence() -> NtCatalogCapabilityEvidence {
         ssm_credentials_write_reopen_query_succeeded: true,
         nt_catalog_storage_option_keys: vec!["region".to_string()],
         read_back: NtCatalogReadBackEvidence {
+            catalog_uri: String::from("s3://bucket/nt-catalog-synthetic-proof/v1/proof=synthetic-capability-proof/"),
             query_files_succeeded: true,
             query_files_result_count: 1,
             query_instruments_succeeded: true,
@@ -340,6 +343,8 @@ fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
     let _completed = plan.completed_proof_from_evidence(&evidence);
     let mut mismatched_storage_options_evidence = evidence.clone();
     mismatched_storage_options_evidence.nt_catalog_storage_option_keys = vec!["endpoint_url".to_string()];
+    let mut mismatched_read_back_catalog_uri_evidence = evidence.clone();
+    mismatched_read_back_catalog_uri_evidence.read_back.catalog_uri = artifact_root.nt_catalog_projection_root("canonical-projection");
     evidence.read_back.query_instruments_succeeded = false;
     evidence.read_back.query_files_result_count = 0;
     evidence.read_back.binary_option_instrument_id

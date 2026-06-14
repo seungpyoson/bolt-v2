@@ -73,6 +73,9 @@ fn committed_capability_proof_fixture() -> CommittedCapabilityProofFixture {
 
 fn successful_capability_evidence(root: &ResolvedArtifactRoot) -> NtCatalogCapabilityEvidence {
     let probe_id = "capability-proof-test-probe";
+    let catalog_uri = root
+        .nt_catalog_synthetic_proof_root("synthetic-capability-proof")
+        .expect("synthetic proof root");
     NtCatalogCapabilityEvidence {
         no_cloud_feature_gate_failed: true,
         ambient_credentials_scrubbed: true,
@@ -80,6 +83,7 @@ fn successful_capability_evidence(root: &ResolvedArtifactRoot) -> NtCatalogCapab
         ssm_credentials_write_reopen_query_succeeded: true,
         nt_catalog_storage_option_keys: vec!["region".to_string()],
         read_back: NtCatalogReadBackEvidence {
+            catalog_uri,
             query_files_succeeded: true,
             query_files_result_count: 1,
             query_instruments_succeeded: true,
@@ -326,6 +330,10 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
         .resolve()
         .expect("committed artifact root");
     let evidence = successful_capability_evidence(&committed_root);
+    assert_eq!(
+        evidence.read_back.catalog_uri,
+        plan.synthetic_catalog_root_uri
+    );
     let committed_proof = fixture
         .nt_catalog_capability_proof
         .completed_proof_from_evidence(&fixture.artifact_store, &evidence)
@@ -345,6 +353,20 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
             )
             .is_err(),
         "capability proof must reject NT storage option evidence that differs from the plan"
+    );
+    let mut mismatched_read_back_catalog_uri_evidence = evidence.clone();
+    mismatched_read_back_catalog_uri_evidence
+        .read_back
+        .catalog_uri = committed_root.nt_catalog_projection_root("canonical-projection");
+    assert!(
+        fixture
+            .nt_catalog_capability_proof
+            .completed_proof_from_evidence(
+                &fixture.artifact_store,
+                &mismatched_read_back_catalog_uri_evidence
+            )
+            .is_err(),
+        "capability proof must reject read-back evidence from outside the synthetic catalog root"
     );
     let mut missing_query_evidence = evidence.clone();
     missing_query_evidence.read_back.query_instruments_succeeded = false;

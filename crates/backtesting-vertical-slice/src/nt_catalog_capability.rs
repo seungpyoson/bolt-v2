@@ -179,6 +179,7 @@ impl NtCatalogCapabilityControls {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NtCatalogReadBackEvidence {
+    pub catalog_uri: String,
     pub query_files_succeeded: bool,
     pub query_files_result_count: usize,
     pub query_instruments_succeeded: bool,
@@ -191,6 +192,7 @@ pub struct NtCatalogReadBackEvidence {
 
 impl NtCatalogReadBackEvidence {
     fn validate(&self) -> Result<()> {
+        ensure_read_back_catalog_uri(&self.catalog_uri)?;
         ensure!(
             self.query_files_succeeded,
             "capability evidence must prove NT query_files read-back"
@@ -222,6 +224,39 @@ impl NtCatalogReadBackEvidence {
         validate_read_back_instrument_id("perps-spot", self.perps_spot_instrument_id.as_str())?;
         Ok(())
     }
+}
+
+fn ensure_read_back_catalog_uri(catalog_uri: &str) -> Result<()> {
+    let trimmed = catalog_uri.trim();
+    ensure!(
+        !trimmed.is_empty(),
+        "capability evidence must include the NT read-back catalog URI"
+    );
+    ensure!(
+        trimmed == catalog_uri,
+        "capability evidence NT read-back catalog URI must not include surrounding whitespace"
+    );
+    ensure!(
+        catalog_uri.starts_with("s3://"),
+        "capability evidence NT read-back catalog URI must be an S3 URI"
+    );
+    ensure!(
+        !catalog_uri.chars().any(char::is_whitespace),
+        "capability evidence NT read-back catalog URI must not contain whitespace"
+    );
+    Ok(())
+}
+
+fn ensure_read_back_catalog_uri_matches(
+    catalog_uri: &str,
+    synthetic_catalog_root_uri: &str,
+) -> Result<()> {
+    ensure_read_back_catalog_uri(catalog_uri)?;
+    ensure!(
+        catalog_uri == synthetic_catalog_root_uri,
+        "capability proof read-back catalog URI must match synthetic catalog root"
+    );
+    Ok(())
 }
 
 fn validate_read_back_instrument_id(label: &str, instrument_id: &str) -> Result<()> {
@@ -392,6 +427,10 @@ impl NtCatalogCapabilityRunSpec {
     ) -> Result<NtCatalogCapabilityProof> {
         let controls = NtCatalogCapabilityControls::from_evidence(evidence)?;
         let proof = self.completed_proof(artifact_store, controls)?;
+        ensure_read_back_catalog_uri_matches(
+            &evidence.read_back.catalog_uri,
+            &proof.synthetic_catalog_root_uri,
+        )?;
         ensure_evidence_storage_options_match(
             &proof.storage_options_keys,
             &evidence.nt_catalog_storage_option_keys,
@@ -461,6 +500,10 @@ impl NtCatalogCapabilityProofDocument {
             self.proof.controls == controls,
             "capability proof document controls must match observed evidence"
         );
+        ensure_read_back_catalog_uri_matches(
+            &self.evidence.read_back.catalog_uri,
+            &self.proof.synthetic_catalog_root_uri,
+        )?;
         ensure_evidence_storage_options_match(
             &self.proof.storage_options_keys,
             &self.evidence.nt_catalog_storage_option_keys,

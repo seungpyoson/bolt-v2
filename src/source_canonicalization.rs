@@ -563,13 +563,18 @@ pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
         key: STRATEGY_KEY,
         relative_roots: &[
             "src/strategies/binary_oracle_edge_taker",
+            // The first outcome-group strategy shell is production-registered,
+            // so it is also covered by the strategy policy fence even though
+            // its shared outcome-group mechanics stay in OUTCOME_GROUP roots.
+            "src/strategies/complete_set_arbitrage",
             // The archetype translates operator TOML into the runtime config
-            // table that carries `submit_orders` and the NautilusTrader-managed
-            // venue-action knobs. It is the sole producer of that table, so it
-            // belongs under the same tamper-evidence as the consumer
-            // (`config.rs`) that validates the shadow-mode kill switch — a
-            // mistranslation here must rotate the digest.
+            // table that carries the NautilusTrader-managed venue-action knobs.
+            // It is the sole producer of that table, so it belongs under the same
+            // tamper-evidence as the consumer (`config.rs`) that validates them.
             "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+            // The shared policy is the only approved Bolt-v3 strategy-originated
+            // NT submit/cancel mutation boundary.
+            "src/bolt_v3_order_execution.rs",
             "src/bolt_v3_book_sizing.rs",
             "src/bolt_v3_binary_outcome_edge.rs",
             "src/bolt_v3_executable_cost.rs",

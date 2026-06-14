@@ -287,6 +287,17 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
   - `Live`
 - any other value fails validation
 
+#### `order_execution_mode`
+
+- type: string enum
+- required: yes
+- allowed values:
+  - `live`
+  - `shadow`
+- `live` records order intent, evaluates submit admission, and forwards admitted submits/cancels to NautilusTrader
+- `shadow` records order intent and submit-admission evidence without consuming live submit capacity or forwarding submit/cancel mutations to NautilusTrader
+- `shadow` rejects every loaded strategy unless `manage_stop`, `manage_gtd_expiry`, and `manage_contingent_orders` are `false` and `external_order_claims` is empty
+
 ### `[nautilus]`
 
 The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-level `LiveNodeConfig` surfaces not represented here are intentionally disabled or empty in the Bolt-v3 builder path (`instance_id`, `cache`, `msgbus`, `portfolio`, `emulator`, `streaming`, `loop_debug`, `data_clients`, and `exec_clients`). They are not inherited from `LiveNodeConfig::default()`. Duration-valued TOML fields use explicit `_secs` suffixes because the operator file stores integer seconds; the Rust mapper converts those integers into NautilusTrader `Duration` fields such as `delay_post_stop` and `timeout_shutdown`.
@@ -1520,6 +1531,7 @@ strategy_files = [
 
 [runtime]
 mode = "Live"
+order_execution_mode = "live"
 
 [nautilus]
 load_state = true

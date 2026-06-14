@@ -261,6 +261,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                     "src/strategies/binary_oracle_edge_taker",
                     // The archetype is the sole TOML->runtime-table translator.
                     "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+                    "src/bolt_v3_order_execution.rs",
                     "src/bolt_v3_book_sizing.rs",
                     "src/bolt_v3_binary_outcome_edge.rs",
                     "src/bolt_v3_executable_cost.rs",

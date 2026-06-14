@@ -4,17 +4,14 @@
 //! Admission, venue mutation, fillability, sizing, rounding, and repair/unwind
 //! remain in shared outcome-group execution modules.
 
-use std::{any::type_name, cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 use anyhow::{Context, Result};
-use nautilus_common::{
-    actor::DataActor, component::Component, messages::execution::SubmitOrderList,
-};
+use nautilus_common::{actor::DataActor, component::Component};
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     enums::{OmsType as NtOmsType, TimeInForce},
     identifiers::{InstrumentId, StrategyId},
-    orders::OrderList,
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
@@ -345,9 +342,10 @@ pub fn register_runtime_strategy(
 }
 
 pub fn nt_submit_contract() -> CompleteSetNtSubmitContract {
+    let contract = crate::bolt_v3_order_execution::nt_order_management_contract();
     CompleteSetNtSubmitContract {
-        order_list_type: type_name::<OrderList>(),
-        submit_order_list_type: type_name::<SubmitOrderList>(),
+        order_list_type: contract.order_list_type,
+        submit_order_list_type: contract.submit_order_list_type,
     }
 }
 

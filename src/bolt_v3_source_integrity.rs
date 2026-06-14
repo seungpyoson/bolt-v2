@@ -278,16 +278,29 @@ mod tests {
     // Re-derived after merging #623's dollar-sizing strategy source roots into
     // the shadow-mode submit switch.
     // Re-derived after adding the shadow-mode fail-closed config guard
-    // (submit_orders=false forbids NautilusTrader-managed venue actions) and its
-    // tests in config.rs.
+    // (runtime.order_execution_mode=shadow forbids NautilusTrader-managed venue
+    // actions) and its tests in config.rs.
     // Re-derived after bringing the archetype config translator
     // (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs) into the strategy
-    // source set, so the sole TOML->runtime-table mapping for the shadow-mode
-    // kill switch is now tamper-evidenced alongside its validating consumer.
+    // source set, so the TOML->runtime-table mapping for venue-action knobs is
+    // now tamper-evidenced alongside its validating consumer.
+    // Re-derived after moving shadow submit/cancel gating from
+    // binary-oracle-local `submit_orders` into the shared root-owned order
+    // execution policy, removing the stale strategy-local field, and bringing
+    // the shared execution-policy boundary into the gated strategy source set.
+    // Re-derived after split strategy tests imported the NT Strategy trait for
+    // direct callback method resolution.
+    // Re-derived again after CI contract tests were aligned with the current
+    // split-test inventory and shared execution-policy source-set boundary.
+    // Re-derived after the shared execution policy made its raw NT mutation
+    // sink private and moved the live/shadow sink tests into the gated module.
     // Re-derived after merging main into the shared outcome-group substrate
     // branch.
+    // Re-derived after adding the production complete-set strategy shell to the
+    // strategy policy source set and moving NT command type evidence under the
+    // shared order-execution boundary.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "d9b0385dddccb8c3ed81315fb919b5ce944ba9e4e1ec6cf8963b27cc583430d4";
+        "ddf9b9c9de9cd84f3ab8860754ccf8b69d0def0e72d458437b98228a8f4f7f8f";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -312,8 +325,11 @@ mod tests {
     // outcome-group normalizer root. Re-derived after PR review tightened
     // non-standard payout and positive-side binding validation. Re-derived
     // after merging main into the shared outcome-group substrate branch.
+    // Re-derived after the NT order-management contract moved to the shared
+    // order-execution boundary while basket execution and complete-set shell
+    // delegate to it.
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "5aa6f4c829534088df57946bfe7a2e0d66b29413e12182293b405a49060f6796";
+        "80f84c7d1c2c25c93cd996d7ddd0557dac39326e8d99d5a6efa576dab31bb5a1";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -443,7 +459,9 @@ mod tests {
             registry_relative_roots(STRATEGY_KEY),
             &[
                 "src/strategies/binary_oracle_edge_taker",
+                "src/strategies/complete_set_arbitrage",
                 "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+                "src/bolt_v3_order_execution.rs",
                 "src/bolt_v3_book_sizing.rs",
                 "src/bolt_v3_binary_outcome_edge.rs",
                 "src/bolt_v3_executable_cost.rs",

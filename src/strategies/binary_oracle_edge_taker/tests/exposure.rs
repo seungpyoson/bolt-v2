@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use nautilus_trading::Strategy;
 
 #[test]
 fn position_events_update_live_position_state() {
@@ -893,6 +894,7 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
             fee_provider,
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission,
+            crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         );
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -1286,12 +1288,12 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
             fee_provider,
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission,
+            crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         );
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
-        // Shadow mode: record what would trade, mutate no venue state.
-        strategy.config.submit_orders = false;
+        set_shadow_order_execution_policy(&mut strategy);
         strategy.active.phase = SelectionPhase::Freeze;
         let cache = register_test_strategy(&mut strategy);
         add_active_instruments_to_cache(&strategy, &cache);
@@ -1367,8 +1369,7 @@ fn position_closed_in_shadow_mode_suppresses_resting_entry_cancel() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
-    // Shadow mode: record what would trade, mutate no venue state.
-    strategy.config.submit_orders = false;
+    set_shadow_order_execution_policy(&mut strategy);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     let (exec_handler, exec_messages) =

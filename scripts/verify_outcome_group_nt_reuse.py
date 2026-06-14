@@ -294,6 +294,14 @@ OPAQUE_PROOF_VARIANT_RE = re.compile(
     r"|NormalizedPriceScaleEvidence|PriceScaleAssertionSource|OrderConstraintSource)::",
     re.MULTILINE,
 )
+NT_ORDER_LIST_CONTRACT_RE = re.compile(r"\bnt_order_management_contract\s*\(", re.MULTILINE)
+
+
+def references_nt_order_list_contract(text: str) -> bool:
+    return (
+        bool(re.search(r"\bOrderList\b", text))
+        and bool(re.search(r"\bSubmitOrderList\b", text))
+    ) or bool(NT_ORDER_LIST_CONTRACT_RE.search(text))
 
 
 def validate_source_file(root: Path, path: Path) -> list[str]:
@@ -325,8 +333,10 @@ def validate_source_file(root: Path, path: Path) -> list[str]:
         or "complete_set_arbitrage" in relative_path
         or "outcome_group_execution" in relative_path
     ):
-        if not re.search(r"\bOrderList\b", text) or not re.search(r"\bSubmitOrderList\b", text):
-            findings.append(f"{relative_path}: basket execution must reference NT OrderList/SubmitOrderList")
+        if not references_nt_order_list_contract(text):
+            findings.append(
+                f"{relative_path}: basket execution must reference NT OrderList/SubmitOrderList or delegate to nt_order_management_contract"
+            )
         add_pattern_findings(relative_path, text, PER_LEG_SUBMIT_RE, "per-leg submit loop", findings)
         add_pattern_findings(relative_path, text, DIRECT_VENUE_SUBMIT_RE, "direct venue submit path", findings)
 

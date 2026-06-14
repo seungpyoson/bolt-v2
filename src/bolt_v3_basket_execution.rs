@@ -1,9 +1,6 @@
-use std::{any::type_name, collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt};
 
-use nautilus_common::messages::execution::{
-    BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, SubmitOrderList,
-};
-use nautilus_model::{enums::OrderSide, orders::OrderList};
+use nautilus_model::enums::OrderSide;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -16,7 +13,14 @@ use crate::{
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
+pub use crate::bolt_v3_order_execution::BoltV3NtOrderManagementContract;
+use crate::bolt_v3_order_execution::nt_order_management_contract as shared_nt_order_management_contract;
+
 pub const REPAIR_EDGE_INEQUALITY: &str = "min(M * (filled_qty + repair_qty)) - (filled_cost + repair_cost) preserves admitted absolute edge floor and normalized edge_bps floor";
+
+pub fn nt_order_management_contract() -> BoltV3NtOrderManagementContract {
+    shared_nt_order_management_contract()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoltV3BasketExecutionConfig {
@@ -601,27 +605,6 @@ pub enum BoltV3ExternalReportClass {
     StrategyOwned,
     Unclaimed,
     EngineClassifiedExternal,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoltV3NtOrderManagementContract {
-    pub order_list_type: &'static str,
-    pub submit_order_list_type: &'static str,
-    pub cancel_order_type: &'static str,
-    pub batch_cancel_orders_type: &'static str,
-    pub cancel_all_orders_type: &'static str,
-    pub modify_order_type: &'static str,
-}
-
-pub fn nt_order_management_contract() -> BoltV3NtOrderManagementContract {
-    BoltV3NtOrderManagementContract {
-        order_list_type: type_name::<OrderList>(),
-        submit_order_list_type: type_name::<SubmitOrderList>(),
-        cancel_order_type: type_name::<CancelOrder>(),
-        batch_cancel_orders_type: type_name::<BatchCancelOrders>(),
-        cancel_all_orders_type: type_name::<CancelAllOrders>(),
-        modify_order_type: type_name::<ModifyOrder>(),
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

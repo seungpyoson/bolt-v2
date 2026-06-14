@@ -310,6 +310,11 @@ class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
                 "src/bolt_v3_outcome_group_scanner.rs": good_execution_source(),
                 "src/bolt_v3_basket_repair.rs": good_execution_source(),
                 "src/bolt_v3_basket_store.rs": good_execution_source(),
+                "src/strategies/complete_set_arbitrage/mod.rs": """
+                    fn nt_submit_contract() {
+                        crate::bolt_v3_order_execution::nt_order_management_contract();
+                    }
+                """,
             }
         )
 

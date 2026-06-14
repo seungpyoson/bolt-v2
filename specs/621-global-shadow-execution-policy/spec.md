@@ -27,13 +27,13 @@ As a strategy author, I need a shared execution policy and venue-mutation routin
 
 **Why this priority**: Repo rule 9 rejects strategy-owned submit mechanics. PR #621 guarded submit and cancel inside `binary_oracle_edge_taker`, which works for that strategy but does not create reusable architecture or prevent future direct calls to other NT mutation APIs.
 
-**Independent Test**: Source inspection, focused tests, and a source-fence verifier show strategies read execution mode only through `StrategyBuildContext` and cannot directly call NT venue mutation APIs outside the shared execution module.
+**Independent Test**: Source inspection, focused tests, and a source-fence verifier show strategies read execution mode only through `StrategyBuildContext` and production source cannot directly call NT venue mutation APIs outside the shared execution module.
 
 **Acceptance Scenarios**:
 
 1. **Given** any strategy receives `StrategyBuildContext`, **When** it submits a compiled NT order through the shared helper, **Then** the helper records evidence, applies submit admission, chooses live versus shadow routing, and returns one typed outcome.
 2. **Given** a strategy needs to cancel a resting order, **When** it calls the shared cancel helper, **Then** shadow mode suppresses the NT cancel and live mode allows the existing NT cancel call.
-3. **Given** a strategy tries to call NT mutation APIs directly, **When** source-fence/static verification runs, **Then** it fails unless the call is inside `src/bolt_v3_order_execution.rs`.
+3. **Given** production source tries to call NT mutation APIs directly, **When** source-fence/static verification runs, **Then** it fails unless the call is inside `src/bolt_v3_order_execution.rs`.
 4. **Given** the shared execution module is inspected, **When** imports are reviewed, **Then** it contains no strategy, market-family, provider, or venue-specific policy.
 
 ### User Story 3 - Fail Closed Around NT-Managed Venue Actions (Priority: P3)
@@ -82,7 +82,7 @@ As an operator, I need the PR #621 shadow PnL report to keep working from admitt
 - **FR-003**: System MUST carry the global execution mode through `StrategyBuildContext` so every strategy receives the same policy object.
 - **FR-004**: System MUST provide a shared order-submit routing helper that records order intent, records submit-admission evidence, applies admission, and decides whether to call NT submit based on the global policy.
 - **FR-005**: System MUST provide a shared cancel routing helper or shared policy method so strategy code does not branch on strategy-local shadow config before NT cancel calls.
-- **FR-006**: System MUST add a source-fence/static verifier that rejects direct strategy calls to NT venue-mutation APIs outside `src/bolt_v3_order_execution.rs`, including `submit_order`, `submit_order_list`, `modify_order`, `cancel_order`, `cancel_orders`, `cancel_all_orders`, `close_position`, and `close_all_positions`.
+- **FR-006**: System MUST add a source-fence/static verifier that rejects direct production-source calls to NT venue-mutation APIs outside `src/bolt_v3_order_execution.rs`, including current pinned NT Strategy mutation methods, raw adapter wrapper names, and near-neighbor parameterized/in-place variants.
 - **FR-007**: System MUST preserve the existing single NT submit path and must not introduce a parallel submit path.
 - **FR-008**: System MUST preserve compiled-order-based submit admission from `src/bolt_v3_submit_admission.rs`.
 - **FR-009**: System MUST reject shadow mode with `manage_stop`, `manage_gtd_expiry`, `manage_contingent_orders`, or non-empty `external_order_claims` for every loaded strategy, and MUST document why other pinned NT `StrategyConfig` fields are not independent venue-mutation enablers.
@@ -98,7 +98,7 @@ As an operator, I need the PR #621 shadow PnL report to keep working from admitt
 - **SubmitContext**: Shared NT submit arguments outside the compiled order: optional `client_id`, optional `position_id`, and optional `params`.
 - **SubmitRoutingOutcome**: Shared outcome indicating whether NT submit was performed or suppressed by shadow mode.
 - **CancelRoutingOutcome**: Shared outcome indicating whether NT cancel was performed or suppressed by shadow mode.
-- **VenueMutationFence**: Source-fence/static rule that prevents strategies from bypassing shared execution policy with direct NT venue mutation calls.
+- **VenueMutationFence**: Source-fence/static rule that prevents production source from bypassing shared execution policy with direct NT venue mutation calls outside the policy module.
 - **ManagedVenueActionGuard**: Config validation rule rejecting NT-managed venue-action knobs under shadow mode.
 
 ## Success Criteria
@@ -110,7 +110,7 @@ As an operator, I need the PR #621 shadow PnL report to keep working from admitt
 - **SC-003**: Focused tests prove shadow mode emits no Bolt-strategy-originated NT `SubmitOrder` or `CancelOrder` while still recording order-intent and admission evidence.
 - **SC-004**: Focused tests prove live mode still emits NT submit through the existing single submit path.
 - **SC-005**: Config tests prove shadow mode rejects every NT-managed venue-action knob listed in FR-008.
-- **SC-006**: Source-fence/static verification fails on direct strategy calls to known NT venue mutation APIs outside the shared execution module.
+- **SC-006**: Source-fence/static verification fails on direct production-source calls to known NT venue mutation APIs outside the shared execution module.
 - **SC-007**: All four required reviews, including internal self-review, return approval with no unresolved blockers before implementation starts.
 
 ## Assumptions

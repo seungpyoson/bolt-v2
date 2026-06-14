@@ -73,9 +73,9 @@ Values:
 
 ## VenueMutationFence
 
-Source-fence/static rule over production strategy code.
+Source-fence/static rule over production Rust source.
 
-Forbidden direct strategy calls outside `src/bolt_v3_order_execution.rs`:
+Forbidden direct calls outside `src/bolt_v3_order_execution.rs` include:
 
 - `submit_order(...)`
 - `submit_order_list(...)`
@@ -85,6 +85,8 @@ Forbidden direct strategy calls outside `src/bolt_v3_order_execution.rs`:
 - `cancel_all_orders(...)`
 - `close_position(...)`
 - `close_all_positions(...)`
+- private raw-adapter wrapper names such as `submit_order_via_nt(...)` and `cancel_order_via_nt(...)`
+- near-neighbor parameterized or in-place mutation variants such as `submit_order_with_params(...)`, `cancel_order_with_params(...)`, and `modify_order_in_place(...)`
 
 The current implementation slice only needs shared submit and cancel helpers because the current production strategy only calls `submit_order(...)` and `cancel_order(...)`. If a future strategy needs another NT mutation API, the fence must fail until that action is routed through `src/bolt_v3_order_execution.rs` with tests for live and shadow behavior.
 

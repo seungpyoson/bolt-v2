@@ -99,11 +99,11 @@ The policy provides:
 - source-fence/static guard for every strategy-callable NT venue mutation API
 - shared `SubmitContext` type currently local to `binary_oracle_edge_taker`
 
-The submit helper accepts already-built order intent, already-built admission request, shared decision evidence, shared submit-admission state, and a closure that performs the NT `submit_order(...)` call. In live mode it records evidence, admits, consumes capacity, and runs the closure. In shadow mode it records evidence, evaluates admission without consuming capacity, skips the closure, and returns a typed skipped outcome.
+The submit helper accepts already-built order intent, already-built admission request, shared decision evidence, shared submit-admission state, a mutable NT `Strategy` reference, and `SubmitContext`. In live mode it records evidence, admits, consumes capacity, and runs NT submit through a module-private adapter. In shadow mode it records evidence, evaluates admission without consuming capacity, skips the adapter, and returns a typed skipped outcome.
 
-The cancel helper accepts a closure that performs the NT `cancel_order(...)` call. In live mode it runs the closure. In shadow mode it skips the closure and returns a typed skipped outcome.
+The cancel helper accepts a mutable NT `Strategy` reference. In live mode it runs NT cancel through the same module-private adapter. In shadow mode it skips the adapter and returns a typed skipped outcome.
 
-The source-fence guard rejects direct production strategy calls to `submit_order`, `submit_order_list`, `modify_order`, `cancel_order`, `cancel_orders`, `cancel_all_orders`, `close_position`, and `close_all_positions` outside `src/bolt_v3_order_execution.rs`. The current slice implements submit and cancel helpers because those are the only production calls today. Future use of submit-list, modify, batch cancel, cancel-all, or close helpers must add shared routing plus live/shadow tests before strategy code can call them.
+The source-fence guard rejects direct production source calls to `submit_order`, `submit_order_list`, `modify_order`, `cancel_order`, `cancel_orders`, `cancel_all_orders`, `close_position`, and `close_all_positions` outside `src/bolt_v3_order_execution.rs`, including method syntax, type-qualified/UFCS syntax, alias-qualified syntax, and method-pointer references. It also fences private raw-adapter names and near-neighbor mutation method variants before future NT bumps can use them. The current slice implements submit and cancel helpers because those are the only production calls today. Future use of submit-list, modify, batch cancel, cancel-all, or close helpers must add shared routing plus live/shadow tests before strategy code can call them.
 
 ### Strategy Build Context
 
@@ -149,15 +149,15 @@ This remains a structural safety rule because these NT-managed features can muta
 ### Phase 2 - Shared Routing
 
 1. Add failing shared-module tests for live submit, shadow submit, live cancel, and shadow cancel outcomes.
-2. Add failing source-fence/static verifier tests that reject direct strategy calls to NT venue mutation APIs.
+2. Add failing source-fence/static verifier tests that reject direct production-source calls to NT venue mutation APIs.
 3. Add `src/bolt_v3_order_execution.rs`.
 4. Move `SubmitContext` out of `binary_oracle_edge_taker` into the shared module.
 5. Update `binary_oracle_edge_taker` to call shared routing helpers.
 
 ### Phase 3 - Strategy Migration
 
-1. Add failing tests proving no production strategy code reads `submit_orders` or calls NT venue mutation APIs directly.
-2. Add an integration-level red test proving a shadow entry reaches the decision-evidence sink and submit admission without touching the NT submit closure.
+1. Add failing tests proving no production strategy code reads `submit_orders` and no production source calls NT venue mutation APIs outside the shared policy module.
+2. Add an integration-level red test proving a shadow entry reaches the decision-evidence sink and submit admission without touching the private NT submit adapter.
 3. Remove `submit_orders` from strategy config and archetype parameter mapping.
 4. Update existing shadow-mode entry, exit, forced-flat, and external-close tests to configure shadow mode through context.
 5. Preserve shadow PnL evidence behavior.

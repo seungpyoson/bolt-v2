@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Verify binary-oracle strategy policy stays config-owned.
+"""Verify Bolt-v3 strategy policy stays config-owned.
 
-This gate covers Phase 9 hardcode-policy regressions in the production strategy
-source. The strategy root may be a single file or a directory of `.rs` files;
-it is resolved layout-independently through the shared gated-source-root
-registry so the gate follows file moves. Each file's production text — comments
-and `#[cfg(test)]` code excluded via the shared production-text helper — is
-scanned individually so violations are reported against the file that actually
-contains them.
+This gate covers strategy-local hardcode-policy regressions in the registered
+strategy source roots and direct NT venue-mutation bypasses across all
+production `src/**/*.rs` files. Each file's production text — comments and
+`#[cfg(test)]` code excluded via the shared production-text helper — is scanned
+individually so violations are reported against the file that actually contains
+them.
 """
 
 from __future__ import annotations
@@ -34,7 +33,45 @@ class Violation:
     excerpt: str
 
 
-FORBIDDEN_RULES: tuple[Rule, ...] = (
+NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
+    # Current pinned NautilusTrader Strategy venue-mutation methods.
+    "submit_order",
+    "submit_order_list",
+    "modify_order",
+    "cancel_order",
+    "cancel_orders",
+    "cancel_all_orders",
+    "close_position",
+    "close_all_positions",
+    # Private Bolt wrapper names stay fenced everywhere outside the policy module.
+    "submit_order_via_nt",
+    "cancel_order_via_nt",
+    # Near-neighbor variants are fenced before a future NT bump can use them.
+    "submit_order_with_params",
+    "submit_order_list_with_params",
+    "modify_order_with_params",
+    "cancel_order_with_params",
+    "cancel_orders_with_params",
+    "cancel_all_orders_with_params",
+    "modify_order_in_place",
+)
+
+NT_VENUE_MUTATION_METHOD_PATTERN = "|".join(
+    re.escape(name)
+    for name in sorted(NT_VENUE_MUTATION_METHOD_NAMES, key=len, reverse=True)
+)
+
+DIRECT_NT_VENUE_MUTATION_RULE = Rule(
+    "direct NT venue mutation call",
+    re.compile(
+        r"(?:\.\s*|(?<![A-Za-z0-9_])"
+        r"(?:Self|[A-Z][A-Za-z0-9_]*)\s*::\s*|<[^>\n]+>\s*::\s*)"
+        rf"(?:{NT_VENUE_MUTATION_METHOD_PATTERN})"
+        r"(?=\s*(?:\(|;|,|\)|$))"
+    ),
+)
+
+STRATEGY_POLICY_RULES: tuple[Rule, ...] = (
     Rule(
         "dead runtime-selection bus path",
         re.compile(
@@ -88,13 +125,20 @@ FORBIDDEN_RULES: tuple[Rule, ...] = (
         ),
     ),
     Rule(
-        "direct NT venue mutation call",
+        "strategy-local execution policy construction",
         re.compile(
-            r"(?:\.\s*|(?<![A-Za-z0-9_])Strategy\s*::\s*|<[^>\n]*\bStrategy\b[^>\n]*>\s*::\s*)"
-            r"(?:submit_order|submit_order_list|modify_order|cancel_order|cancel_orders|"
-            r"cancel_all_orders|close_position|close_all_positions)\s*\("
+            r"\bBoltV3OrderExecutionPolicy\s*::\s*(?:live|shadow|from_mode)\s*\("
         ),
     ),
+    Rule(
+        "strategy-local execution policy override",
+        re.compile(r"\.with_order_execution_policy\s*\("),
+    ),
+)
+
+FORBIDDEN_RULES: tuple[Rule, ...] = (
+    *STRATEGY_POLICY_RULES,
+    DIRECT_NT_VENUE_MUTATION_RULE,
 )
 
 ALLOWED_DIRECT_NT_MUTATION_PATHS = frozenset(
@@ -108,9 +152,36 @@ def line_number(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
 
 
-def find_violations_in_text(path: str, text: str) -> list[Violation]:
+def is_test_source_file(path) -> bool:
+    relative = path.relative_to(REPO_ROOT)
+    return "tests" in relative.parts
+
+
+def source_files_for_strategy_policy_fence() -> list:
+    return [
+        path
+        for path in source_set_files(STRATEGY_SOURCE_ROOTS)
+        if not is_test_source_file(path)
+    ]
+
+
+def source_files_for_mutation_fence() -> list:
+    src_root = REPO_ROOT / "src"
+    files = []
+    for path in src_root.rglob("*.rs"):
+        if path.is_symlink():
+            raise ValueError(f"source root contains a symlink: {path}")
+        if path.is_file() and not is_test_source_file(path):
+            files.append(path)
+    files.sort(key=lambda path: path.relative_to(REPO_ROOT).as_posix().encode("utf-8"))
+    return files
+
+
+def find_violations_in_text(
+    path: str, text: str, rules: tuple[Rule, ...] = FORBIDDEN_RULES
+) -> list[Violation]:
     violations: list[Violation] = []
-    for rule in FORBIDDEN_RULES:
+    for rule in rules:
         if (
             rule.label == "direct NT venue mutation call"
             and path in ALLOWED_DIRECT_NT_MUTATION_PATHS
@@ -134,9 +205,16 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
 
 def collect_violations() -> list[Violation]:
     violations: list[Violation] = []
-    for path in source_set_files(STRATEGY_SOURCE_ROOTS):
+    for path in source_files_for_strategy_policy_fence():
         rel = str(path.relative_to(REPO_ROOT))
-        violations.extend(find_violations_in_text(rel, production_text(path)))
+        violations.extend(
+            find_violations_in_text(rel, production_text(path), STRATEGY_POLICY_RULES)
+        )
+    for path in source_files_for_mutation_fence():
+        rel = str(path.relative_to(REPO_ROOT))
+        violations.extend(
+            find_violations_in_text(rel, production_text(path), (DIRECT_NT_VENUE_MUTATION_RULE,))
+        )
     return violations
 
 

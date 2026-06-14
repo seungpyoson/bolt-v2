@@ -59,13 +59,13 @@ The plan/spec packet is approved for external adversarial review. Implementation
 
 The first packet could let a future strategy call another NT mutation API directly. The revised contract now defines the full pinned NT strategy mutation surface: `submit_order`, `submit_order_list`, `modify_order`, `cancel_order`, `cancel_orders`, `cancel_all_orders`, `close_position`, and `close_all_positions`.
 
-The revised architecture does not add speculative wrappers for unused NT methods. Instead, it implements submit/cancel for current production call sites and adds a source-fence/static verifier that rejects direct strategy calls to every listed method until a shared helper and live/shadow tests exist.
+The revised architecture does not add speculative wrappers for unused NT methods. Instead, it implements submit/cancel for current production call sites and adds a source-fence/static verifier that rejects direct production-source calls to every listed method until a shared helper and live/shadow tests exist.
 
 #### C2 - No source-fence enforces helper usage
 
 **Status**: Fixed in revised packet
 
-The revised spec, plan, data model, contract, and task list require a source-fence/static verifier. The verifier must fail production strategy code that directly calls known NT venue mutation APIs outside `src/bolt_v3_order_execution.rs`.
+The revised spec, plan, data model, contract, and task list require a source-fence/static verifier. The verifier must fail production source that directly calls known NT venue mutation APIs outside `src/bolt_v3_order_execution.rs`.
 
 #### C3 - NT managed-action reject list was asserted, not audited
 
@@ -92,3 +92,35 @@ The revised spec narrows the provable invariant to Bolt-strategy-originated NT v
 VERDICT: APPROVE
 
 The revised plan/spec packet is approved for a second external adversarial review pass. Implementation remains blocked until Gemini, Grok, and Claude approve the revised packet with no unresolved blockers.
+
+---
+
+## Final PR Review Disposition
+
+**Reviewer**: External adversarial review synthesis
+**Date**: 2026-06-14
+**Trigger**: Final PR review against head `67343c036ea94e138ea0287797a774b900dade5f` returned additional structural fence findings.
+
+### Blocking Findings Disposition
+
+#### H1 - Public blanket raw NT mutation sink widened the bypass surface
+
+**Status**: Fixed in implementation follow-up
+
+The review found that the public `BoltV3NtVenueMutationSink` blanket implementation exposed `submit_order_via_nt(...)` and `cancel_order_via_nt(...)` as callable methods on every NT `Strategy`. The fix makes the raw mutation sink trait and NT strategy adapter module-private inside `src/bolt_v3_order_execution.rs`; public routing accepts a mutable NT `Strategy` reference and constructs the private adapter internally.
+
+#### H2 - Direct NT mutation fence was qualifier- and root-specific
+
+**Status**: Fixed in implementation follow-up
+
+The fence now separates strategy-policy rules from a repo-wide production-source direct-mutation scan. Direct NT mutation calls are rejected outside `src/bolt_v3_order_execution.rs` across production `src/**/*.rs`, including method syntax, type-qualified/UFCS syntax, alias-qualified syntax, method-pointer references, private raw-adapter names, and near-neighbor mutation method variants. Strategy code is also fenced from constructing or overriding execution policy locally.
+
+### Checks
+
+- Boundary check: raw NT mutation helper methods are private to `src/bolt_v3_order_execution.rs`.
+- Enforcement check: source-fence tests include `_via_nt`, alias-qualified, type-qualified, method-pointer, near-neighbor method, exact allowlist, and production-source scan coverage.
+- Documentation check: contract and plan now describe the private-adapter implementation rather than a public closure/sink surface.
+
+### Verdict
+
+VERDICT: READY FOR FINAL REMOTE CI

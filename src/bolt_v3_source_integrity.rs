@@ -292,8 +292,10 @@ mod tests {
     // direct callback method resolution.
     // Re-derived again after CI contract tests were aligned with the current
     // split-test inventory and shared execution-policy source-set boundary.
+    // Re-derived after the shared execution policy made its raw NT mutation
+    // sink private and moved the live/shadow sink tests into the gated module.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "2e2a8c726ff28c861748292aa99c5c66aa8b1e418e51f1fd332a0c691c1149ec";
+        "0f8a86315a8f5998dc3cc9b40773278c0720c9e112d60a6978606f4533459dbe";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

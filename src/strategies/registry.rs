@@ -145,6 +145,7 @@ impl StrategyBuildContext {
         self.order_execution_policy
     }
 
+    #[cfg(test)]
     pub fn with_order_execution_policy(mut self, policy: BoltV3OrderExecutionPolicy) -> Self {
         self.order_execution_policy = policy;
         self

@@ -800,16 +800,19 @@ Evidence: implemented in `0a0a7925fcff0417a268f31b22366b8bd964cd01` with root-ex
 
 **Files:**
 - Modify `src/bolt_v3_archetypes/mod.rs`
+- Add `src/strategy_runtime_bindings.rs`
 - Modify `src/strategies/mod.rs`
 - Modify `src/strategies/registry.rs` only if a new concrete strategy entry point is required by the existing registry API.
 - Modify `src/bolt_v3_strategy_registration.rs` only if the generic registration context needs a shared dependency.
 - Test `tests/bolt_v3_strategy_registration.rs`
 
-- [ ] Add `complete_set_arbitrage::KEY`, validation binding, runtime binding, and a `StrategyBuilder` implementation that uses the source files created in Task 8.
-- [ ] Add the binding to `RUNTIME_BINDINGS` and `VALIDATION_BINDINGS` in `src/bolt_v3_archetypes/mod.rs` only after `OUTCOME_GROUP_KEY` and `GOLDEN_OUTCOME_GROUP_DIGEST` exist and pass their value-stability/exact-membership tests.
-- [ ] Register `CompleteSetArbitrageBuilder` in `src/strategies/mod.rs::production_strategy_registry()` only after the source-integrity key covers the archetype and strategy shell.
-- [ ] Resolve fee provider, execution venue, `StrategyBuildContext`, and NT `Trader.add_strategy()` handoff in the archetype binding.
-- [ ] Add an end-to-end node-binding test proving the strategy is reachable from a root `strategy_files` entry after source-integrity registration, not before it.
+- [x] Add `complete_set_arbitrage::KEY`, validation binding, runtime binding, and a `StrategyBuilder` implementation that uses the source files created in Task 8.
+- [x] Add the validation binding to `VALIDATION_BINDINGS` in `src/bolt_v3_archetypes/mod.rs` and the runtime binding to `src/strategy_runtime_bindings.rs` only after `OUTCOME_GROUP_KEY` and `GOLDEN_OUTCOME_GROUP_DIGEST` exist and pass their value-stability/exact-membership tests. Runtime aggregation stays outside `src/bolt_v3_archetypes/mod.rs` so the dependency-direction fence keeps shared `bolt_v3_*` modules from importing the concrete strategy layer.
+- [x] Register `CompleteSetArbitrageBuilder` in `src/strategies/mod.rs::production_strategy_registry()` only after the source-integrity key covers the archetype and strategy shell.
+- [x] Resolve fee provider, execution venue, `StrategyBuildContext`, and NT `Trader.add_strategy()` handoff in the strategy runtime binding.
+- [x] Add an end-to-end node-binding test proving the strategy is reachable from a root `strategy_files` entry after source-integrity registration, not before it.
+
+Evidence: implemented in `6928feca0c4d2527a31589b243443ec0d6b220ca`. Local `git diff --check`, `cargo fmt --check`, `just fmt-check`, and `just source-fence-static` passed before push; `just verify-remote` passed on PR #703 for exact head `6928feca0c4d2527a31589b243443ec0d6b220ca`.
 
 ### Task 11: Hyperliquid HIP-4 OutcomeGroup Normalizer
 

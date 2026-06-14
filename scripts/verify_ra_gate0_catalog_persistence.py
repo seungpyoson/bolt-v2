@@ -24,20 +24,26 @@ RUN_SPEC = Path(
 )
 
 CARGO_TOML_REQUIRED = (
+    'aws-config = "=1.8.18"',
+    'aws-sdk-ssm = { version = "=1.113.0", default-features = false, features = ["default-https-client", "rt-tokio"] }',
     'object_store = { version = "=0.13.2", default-features = false, features = ["aws"] }',
 )
 ARTIFACT_STORE_REQUIRED = (
     "AHashMap<String, String>",
     "object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut, S3CopyIfNotExists}",
     "pub struct S3ArtifactStoreConfig",
+    "pub struct S3ArtifactStoreCredentials",
     "pub s3: S3ArtifactStoreConfig",
     "pub catalog_projection_manifest_object: String",
-    "pub fn build_s3_object_store(&self) -> Result<AmazonS3>",
+    "pub fn build_s3_object_store_with_credentials",
     "pub fn nt_catalog_storage_options(&self) -> Result<AHashMap<String, String>>",
     "pub fn nt_catalog_storage_options(&self) -> AHashMap<String, String>",
     ".insert(\"region\".to_string(),",
     ".with_bucket_name(",
     ".with_region(",
+    ".with_access_key_id(",
+    ".with_secret_access_key(",
+    ".with_token(",
     ".with_conditional_put(S3ConditionalPut::ETagMatch)",
     ".with_copy_if_not_exists(S3CopyIfNotExists::Multipart)",
     "pub struct CreateOnlyProbeConfig",
@@ -78,9 +84,18 @@ ARTIFACT_STORE_REQUIRED = (
     "fs::read(",
 )
 CAPABILITY_PROOF_REQUIRED = (
+    "use aws_config::BehaviorVersion",
+    "use aws_sdk_ssm::{Client as SsmClient, config::Region}",
+    "S3ArtifactStoreCredentials",
     "pub const NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION",
     "pub const SYNTHETIC_SOURCE_PROOF_ID",
     "pub const REQUIRED_AMBIENT_AWS_CREDENTIAL_ENV_VARS",
+    "pub struct NtCatalogSsmCredentialResolver",
+    "pub async fn from_region",
+    "pub async fn resolve(",
+    "refs: &NtCatalogSsmParameterRefs",
+    "async fn resolve_required_parameter",
+    ".with_decryption(true)",
     "pub struct NtCatalogCapabilityRunSpec",
     "pub struct NtCatalogCapabilityPlan",
     "pub struct NtCatalogCapabilityProofArtifact",
@@ -158,10 +173,16 @@ OPERATOR_REQUIRED = (
 )
 MAIN_REQUIRED = (
     "run_from_run_spec_with_artifact_store",
-    ".build_s3_object_store()",
+    "NtCatalogSsmCredentialResolver",
+    "NtCatalogSsmCredentialResolver::from_region",
+    ".resolve(&spec.nt_catalog_capability_proof.ssm_parameter_refs)",
+    ".build_s3_object_store_with_credentials(&credentials)",
     "#[tokio::main",
 )
 TEST_REQUIRED = (
+    "S3ArtifactStoreCredentials",
+    "s3_credentials_reject_blank_resolved_values",
+    ".build_s3_object_store_with_credentials(&credentials)",
     "create_only_probe_requires_duplicate_create_rejection",
     "persists_catalog_projection_directory_with_create_only_dispatch",
     "rejects_duplicate_catalog_projection_bytes",
@@ -374,9 +395,12 @@ def scan_root(root: Path) -> list[str]:
     if not main_rs.exists():
         findings.append(f"{MAIN_RS}: main.rs is missing")
     else:
-        findings.extend(
-            missing_snippets(MAIN_RS, main_rs.read_text(encoding="utf-8"), MAIN_REQUIRED)
-        )
+        main_text = main_rs.read_text(encoding="utf-8")
+        findings.extend(missing_snippets(MAIN_RS, main_text, MAIN_REQUIRED))
+        if ".build_s3_object_store()" in main_text:
+            findings.append(
+                f"{MAIN_RS}: runtime S3 object store must use SSM-resolved explicit credentials"
+            )
 
     test_file = root / CONTRACT_TEST
     if not test_file.exists():

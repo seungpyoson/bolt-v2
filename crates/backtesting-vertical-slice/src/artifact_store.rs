@@ -32,6 +32,13 @@ pub struct S3ArtifactStoreConfig {
     pub copy_if_not_exists: S3CopyIfNotExistsMode,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct S3ArtifactStoreCredentials {
+    access_key_id: String,
+    secret_access_key: String,
+    session_token: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum S3ConditionalPutMode {
@@ -199,9 +206,12 @@ impl ArtifactStoreConfig {
     /// # Errors
     ///
     /// Returns an error when the artifact root or S3 capability config is invalid.
-    pub fn build_s3_object_store(&self) -> Result<AmazonS3> {
+    pub fn build_s3_object_store_with_credentials(
+        &self,
+        credentials: &S3ArtifactStoreCredentials,
+    ) -> Result<AmazonS3> {
         let resolved = self.resolve()?;
-        resolved.build_s3_object_store()
+        resolved.build_s3_object_store_with_credentials(credentials)
     }
 
     /// # Errors
@@ -228,10 +238,58 @@ impl S3ArtifactStoreConfig {
     }
 }
 
+impl S3ArtifactStoreCredentials {
+    /// # Errors
+    ///
+    /// Returns an error if any resolved credential value is empty or includes
+    /// surrounding whitespace.
+    pub fn new(
+        access_key_id: String,
+        secret_access_key: String,
+        session_token: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            access_key_id: ensure_resolved_credential_value(
+                "artifact_store.s3.access_key_id",
+                access_key_id,
+            )?,
+            secret_access_key: ensure_resolved_credential_value(
+                "artifact_store.s3.secret_access_key",
+                secret_access_key,
+            )?,
+            session_token: session_token
+                .map(|value| {
+                    ensure_resolved_credential_value("artifact_store.s3.session_token", value)
+                })
+                .transpose()?,
+        })
+    }
+
+    #[must_use]
+    pub fn access_key_id(&self) -> &str {
+        &self.access_key_id
+    }
+
+    #[must_use]
+    pub fn secret_access_key(&self) -> &str {
+        &self.secret_access_key
+    }
+
+    #[must_use]
+    pub fn session_token(&self) -> Option<&str> {
+        self.session_token.as_deref()
+    }
+}
+
 impl ResolvedArtifactRoot {
     #[must_use]
     pub fn artifact_root_uri(&self) -> &str {
         &self.artifact_root
+    }
+
+    #[must_use]
+    pub fn s3_region(&self) -> &str {
+        &self.s3.region
     }
 
     #[must_use]
@@ -242,13 +300,22 @@ impl ResolvedArtifactRoot {
     /// # Errors
     ///
     /// Returns an error when the configured S3 object store cannot be built.
-    pub fn build_s3_object_store(&self) -> Result<AmazonS3> {
+    pub fn build_s3_object_store_with_credentials(
+        &self,
+        credentials: &S3ArtifactStoreCredentials,
+    ) -> Result<AmazonS3> {
         let bucket_name = artifact_bucket_name(&self.artifact_root)?;
-        AmazonS3Builder::new()
+        let mut builder = AmazonS3Builder::new()
             .with_bucket_name(bucket_name)
             .with_region(self.s3.region.as_str())
+            .with_access_key_id(credentials.access_key_id())
+            .with_secret_access_key(credentials.secret_access_key())
             .with_conditional_put(S3ConditionalPut::ETagMatch)
-            .with_copy_if_not_exists(S3CopyIfNotExists::Multipart)
+            .with_copy_if_not_exists(S3CopyIfNotExists::Multipart);
+        if let Some(token) = credentials.session_token() {
+            builder = builder.with_token(token);
+        }
+        builder
             .build()
             .context("build artifact_root S3 object store")
     }
@@ -1890,6 +1957,19 @@ fn artifact_bucket_name(artifact_root: &str) -> Result<&str> {
         "artifact_root S3 bucket is empty"
     );
     Ok(bucket)
+}
+
+fn ensure_resolved_credential_value(field: &'static str, value: String) -> Result<String> {
+    let trimmed = value.trim();
+    ensure!(
+        !trimmed.is_empty(),
+        "{field} must resolve to a non-empty value"
+    );
+    ensure!(
+        trimmed == value,
+        "{field} must not contain leading or trailing whitespace"
+    );
+    Ok(value)
 }
 
 fn normalize_subpath(field: &'static str, value: &str) -> Result<String> {

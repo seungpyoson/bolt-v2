@@ -13,8 +13,8 @@ use backtesting_vertical_slice::{
         ArtifactIndexWriteAuthority, ArtifactIndexWriter, ArtifactKind, ArtifactLifecycleState,
         ArtifactLineageRef, ArtifactStorageProfile, ArtifactStoreConfig, CatalogDispatchConfig,
         CatalogProjectionBinding, CreateOnlyArtifactWriter, CreateOnlyProbeTranscript,
-        CreateOnlyWriteDisposition, ResolvedArtifactRoot, StoredArtifactIndexPointer,
-        persist_catalog_projection_for_source_binding,
+        CreateOnlyWriteDisposition, ResolvedArtifactRoot, S3ArtifactStoreCredentials,
+        StoredArtifactIndexPointer, persist_catalog_projection_for_source_binding,
     },
     nt_catalog_capability::{
         NtCatalogCapabilityControls, NtCatalogCapabilityEvidence, NtCatalogCapabilityProof,
@@ -162,9 +162,44 @@ current_snapshot_storage_profile = "active"
 #[test]
 fn artifact_store_builds_s3_backend_with_required_capabilities() {
     let config = artifact_config();
+    let credentials = S3ArtifactStoreCredentials::new(
+        "configured-access-key".to_string(),
+        "configured-secret-key".to_string(),
+        Some("configured-session-token".to_string()),
+    )
+    .expect("test credentials are non-empty");
     let _store = config
-        .build_s3_object_store()
+        .build_s3_object_store_with_credentials(&credentials)
         .expect("S3 object store builder accepts required capability config");
+}
+
+#[test]
+fn s3_credentials_reject_blank_resolved_values() {
+    let blank_access_key = match S3ArtifactStoreCredentials::new(
+        String::from(" "),
+        String::from("configured-secret-key"),
+        Some(String::from("configured-session-token")),
+    ) {
+        Ok(_) => panic!("blank access key must be rejected"),
+        Err(err) => err,
+    };
+    assert!(
+        blank_access_key.to_string().contains("access_key_id"),
+        "{blank_access_key}"
+    );
+
+    let blank_session_token = match S3ArtifactStoreCredentials::new(
+        String::from("configured-access-key"),
+        String::from("configured-secret-key"),
+        Some(String::from(" ")),
+    ) {
+        Ok(_) => panic!("blank session token must be rejected"),
+        Err(err) => err,
+    };
+    assert!(
+        blank_session_token.to_string().contains("session_token"),
+        "{blank_session_token}"
+    );
 }
 
 #[test]

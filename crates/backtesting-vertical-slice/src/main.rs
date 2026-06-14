@@ -13,7 +13,10 @@ use std::{fs, path::PathBuf};
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use backtesting_vertical_slice::operator::{RunSpec, run_from_run_spec_with_artifact_store};
+use backtesting_vertical_slice::{
+    nt_catalog_capability::NtCatalogSsmCredentialResolver,
+    operator::{RunSpec, run_from_run_spec_with_artifact_store},
+};
 
 #[derive(Parser)]
 #[command(about = "Run the NautilusTrader backtesting vertical slice over an accepted dataset.")]
@@ -38,7 +41,13 @@ async fn main() -> Result<()> {
     let gz_bytes = fs::read(&cli.object_gz)
         .with_context(|| format!("read object {}", cli.object_gz.display()))?;
 
-    let store = spec.artifact_store.build_s3_object_store()?;
+    let artifact_root = spec.artifact_store.resolve()?;
+    let credential_resolver =
+        NtCatalogSsmCredentialResolver::from_region(artifact_root.s3_region()).await?;
+    let credentials = credential_resolver
+        .resolve(&spec.nt_catalog_capability_proof.ssm_parameter_refs)
+        .await?;
+    let store = artifact_root.build_s3_object_store_with_credentials(&credentials)?;
     let artifacts =
         run_from_run_spec_with_artifact_store(&spec, &gz_bytes, &cli.output_dir, &store).await?;
     let output = &artifacts.output;

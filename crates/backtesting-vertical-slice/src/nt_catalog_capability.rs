@@ -1,13 +1,15 @@
 use std::collections::BTreeSet;
 
-use anyhow::{Result, ensure};
+use anyhow::{Result, anyhow, ensure};
+use aws_config::BehaviorVersion;
+use aws_sdk_ssm::{Client as SsmClient, config::Region};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
     artifact_store::{
         ArtifactStoreConfig, CreateOnlyArtifactWriter, CreateOnlyProbeTranscript,
-        CreateOnlyWriteDisposition, ResolvedArtifactRoot,
+        CreateOnlyWriteDisposition, ResolvedArtifactRoot, S3ArtifactStoreCredentials,
     },
     run_manifest::MarketStructureFixture,
 };
@@ -43,6 +45,99 @@ pub struct NtCatalogSsmParameterRefs {
     pub secret_access_key: String,
     #[serde(default)]
     pub session_token: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NtCatalogSsmCredentialResolver {
+    client: SsmClient,
+}
+
+impl NtCatalogSsmCredentialResolver {
+    /// # Errors
+    ///
+    /// Returns an error if the configured AWS region is empty.
+    pub async fn from_region(region: &str) -> Result<Self> {
+        ensure!(
+            !region.trim().is_empty(),
+            "SSM credential resolver region must not be empty"
+        );
+        ensure!(
+            region.trim() == region,
+            "SSM credential resolver region must not include surrounding whitespace"
+        );
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .region(Region::new(region.to_string()))
+            .load()
+            .await;
+        Ok(Self {
+            client: SsmClient::new(&config),
+        })
+    }
+
+    #[must_use]
+    pub fn new(client: SsmClient) -> Self {
+        Self { client }
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the configured SSM refs are invalid, a parameter
+    /// cannot be fetched with decryption enabled, or a resolved credential
+    /// value is empty.
+    pub async fn resolve(
+        &self,
+        refs: &NtCatalogSsmParameterRefs,
+    ) -> Result<S3ArtifactStoreCredentials> {
+        refs.validate()?;
+        let access_key_id = self
+            .resolve_required_parameter(
+                "ssm_parameter_refs.access_key_id",
+                refs.access_key_id.as_str(),
+            )
+            .await?;
+        let secret_access_key = self
+            .resolve_required_parameter(
+                "ssm_parameter_refs.secret_access_key",
+                refs.secret_access_key.as_str(),
+            )
+            .await?;
+        let session_token = if let Some(session_token_ref) = &refs.session_token {
+            Some(
+                self.resolve_required_parameter(
+                    "ssm_parameter_refs.session_token",
+                    session_token_ref.as_str(),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        S3ArtifactStoreCredentials::new(access_key_id, secret_access_key, session_token)
+    }
+
+    async fn resolve_required_parameter(
+        &self,
+        field: &'static str,
+        parameter_ref: &str,
+    ) -> Result<String> {
+        let response = self
+            .client
+            .get_parameter()
+            .name(parameter_ref)
+            .with_decryption(true)
+            .send()
+            .await
+            .map_err(|error| {
+                let source = aws_sdk_ssm::error::DisplayErrorContext(&error).to_string();
+                let redacted_source = source.replace(parameter_ref, "[configured-ssm-parameter]");
+                anyhow!("AWS SSM GetParameter failed for {field}: {redacted_source}")
+            })?;
+        response
+            .parameter()
+            .and_then(|parameter| parameter.value())
+            .map(ToString::to_string)
+            .ok_or_else(|| anyhow!("AWS SSM GetParameter returned no value for {field}"))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

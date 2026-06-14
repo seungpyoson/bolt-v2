@@ -37,6 +37,7 @@ use ahash::AHashMap;
 use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut, S3CopyIfNotExists};
 
 pub struct S3ArtifactStoreConfig;
+pub struct S3ArtifactStoreCredentials;
 pub struct CreateOnlyProbeConfig {
     pub copy_source_object_name: String,
     pub copy_dest_object_name: String,
@@ -56,10 +57,16 @@ pub struct ArtifactSubpaths {
 }
 
 impl ArtifactStoreConfig {
-    pub fn build_s3_object_store(&self) -> Result<AmazonS3> {
+    pub fn build_s3_object_store_with_credentials(
+        &self,
+        credentials: &S3ArtifactStoreCredentials,
+    ) -> Result<AmazonS3> {
         AmazonS3Builder::new()
             .with_bucket_name("configured-bucket")
             .with_region("configured-region")
+            .with_access_key_id(credentials.access_key_id())
+            .with_secret_access_key(credentials.secret_access_key())
+            .with_token(credentials.session_token().unwrap())
             .with_conditional_put(S3ConditionalPut::ETagMatch)
             .with_copy_if_not_exists(S3CopyIfNotExists::Multipart)
             .build()
@@ -156,8 +163,11 @@ pub async fn persist_catalog_projection_for_source_binding() {
 
 def compliant_capability_proof() -> str:
     return """
+use aws_config::BehaviorVersion;
+use aws_sdk_ssm::{Client as SsmClient, config::Region};
+
 use crate::{
-    artifact_store::{CreateOnlyArtifactWriter, CreateOnlyProbeTranscript, ResolvedArtifactRoot},
+    artifact_store::{CreateOnlyArtifactWriter, CreateOnlyProbeTranscript, ResolvedArtifactRoot, S3ArtifactStoreCredentials},
     run_manifest::MarketStructureFixture,
 };
 
@@ -167,6 +177,44 @@ pub const REQUIRED_AMBIENT_AWS_CREDENTIAL_ENV_VARS: &[&str] = &["AWS_ACCESS_KEY_
 
 pub enum NtCatalogCredentialSource { Ssm }
 pub struct NtCatalogSsmParameterRefs;
+pub struct NtCatalogSsmCredentialResolver {
+    client: SsmClient,
+}
+
+impl NtCatalogSsmCredentialResolver {
+    pub async fn from_region(region: &str) -> Self {
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .region(Region::new(region.to_string()))
+            .load()
+            .await;
+        Self { client: SsmClient::new(&config) }
+    }
+
+    pub async fn resolve(&self, refs: &NtCatalogSsmParameterRefs) -> S3ArtifactStoreCredentials {
+        let _access_key_id = self
+            .resolve_required_parameter("ssm_parameter_refs.access_key_id", "path")
+            .await;
+        let _secret_access_key = self
+            .resolve_required_parameter("ssm_parameter_refs.secret_access_key", "path")
+            .await;
+        let _session_token = self
+            .resolve_required_parameter("ssm_parameter_refs.session_token", "path")
+            .await;
+        let _refs = refs;
+        S3ArtifactStoreCredentials
+    }
+
+    async fn resolve_required_parameter(&self, label: &str, path: &str) -> String {
+        self.client
+            .get_parameter()
+            .name(path)
+            .with_decryption(true)
+            .send()
+            .await
+            .unwrap();
+        label.to_string()
+    }
+}
 pub struct AmbientCredentialScrubPlan {
     pub unset_env_vars: Vec<String>,
     pub profile_file_paths_redirected: bool,
@@ -312,11 +360,17 @@ pub fn run_from_run_spec_with_artifact_store() {{
 
 def compliant_main() -> str:
     return """
+use backtesting_vertical_slice::nt_catalog_capability::NtCatalogSsmCredentialResolver;
 use backtesting_vertical_slice::operator::run_from_run_spec_with_artifact_store;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let store = spec.artifact_store.build_s3_object_store()?;
+    let artifact_root = spec.artifact_store.resolve()?;
+    let resolver = NtCatalogSsmCredentialResolver::from_region(artifact_root.s3_region()).await?;
+    let credentials = resolver
+        .resolve(&spec.nt_catalog_capability_proof.ssm_parameter_refs)
+        .await?;
+    let store = artifact_root.build_s3_object_store_with_credentials(&credentials)?;
     let _artifacts =
         run_from_run_spec_with_artifact_store(&spec, &gz_bytes, &output_dir, &store).await?;
 }
@@ -325,6 +379,18 @@ async fn main() {
 
 def compliant_test() -> str:
     return """
+fn s3_credentials_reject_blank_resolved_values() {
+    let credentials = S3ArtifactStoreCredentials::new(
+        "configured-access-key".to_string(),
+        "configured-secret-key".to_string(),
+        Some("configured-session-token".to_string()),
+    )
+    .unwrap();
+    let _store = artifact_config()
+        .build_s3_object_store_with_credentials(&credentials)
+        .expect("S3 object store builder accepts explicit SSM credentials");
+}
+
 fn create_only_probe_requires_duplicate_create_rejection() {
     let _store = InMemory::new();
 }
@@ -443,7 +509,14 @@ def write_compliant_tree(root: Path) -> None:
     write_file(
         root,
         "crates/backtesting-vertical-slice/Cargo.toml",
-        'object_store = { version = "=0.13.2", default-features = false, features = ["aws"] }\n',
+        "\n".join(
+            [
+                'aws-config = "=1.8.18"',
+                'aws-sdk-ssm = { version = "=1.113.0", default-features = false, features = ["default-https-client", "rt-tokio"] }',
+                'object_store = { version = "=0.13.2", default-features = false, features = ["aws"] }',
+                "",
+            ]
+        ),
     )
     write_file(
         root,
@@ -613,12 +686,32 @@ def test_cli_fails_with_actionable_output() -> None:
     assert "ArtifactStoreConfig" in result.stderr
 
 
+def test_cli_rejects_ambient_object_store_builder() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_compliant_tree(root)
+        main_rs = root / "crates/backtesting-vertical-slice/src/main.rs"
+        main_rs.write_text(
+            compliant_main().replace(
+                "artifact_root.build_s3_object_store_with_credentials(&credentials)",
+                "spec.artifact_store.build_s3_object_store()",
+            ),
+            encoding="utf-8",
+        )
+
+        findings = verifier.scan_root(root)
+
+    assert any("SSM-resolved explicit credentials" in finding for finding in findings)
+
+
 def main() -> int:
     tests = [
         test_compliant_tree_passes,
         test_missing_persistence_helper_is_a_finding,
         test_run_spec_rejects_top_level_catalog_projection_manifest_object,
         test_cli_fails_with_actionable_output,
+        test_cli_rejects_ambient_object_store_builder,
     ]
     for test in tests:
         test()

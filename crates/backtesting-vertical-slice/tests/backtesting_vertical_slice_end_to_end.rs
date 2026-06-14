@@ -443,10 +443,9 @@ fn accepted_data_flows_through_to_objective_result_contract() {
         contract.claim_limits
     );
     assert!(
-        contract
-            .claim_limits
-            .iter()
-            .any(|limit| { limit.contains("NT unsupported_for_now surface venue.fill_model") }),
+        contract.claim_limits.iter().any(|limit| {
+            limit.contains("NT unsupported_for_now surface venue.settlement_prices")
+        }),
         "contract must record unsupported NT surfaces: {:?}",
         contract.claim_limits
     );

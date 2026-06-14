@@ -3592,8 +3592,17 @@ mod tests {
         );
         assert!(
             parsed.resolved_nt_surfaces.iter().any(|surface| {
-                surface.classification == NtSurfaceClassification::UnsupportedForNow
+                surface.classification == NtSurfaceClassification::PassThrough
                     && surface.surface == "venue.fill_model"
+                    && surface.resolved_value == "None"
+            }),
+            "{:?}",
+            parsed.resolved_nt_surfaces
+        );
+        assert!(
+            parsed.resolved_nt_surfaces.iter().any(|surface| {
+                surface.classification == NtSurfaceClassification::UnsupportedForNow
+                    && surface.surface == "venue.settlement_prices"
             }),
             "{:?}",
             parsed.resolved_nt_surfaces
@@ -4503,12 +4512,9 @@ table_families = ["trades", "bars"]
             limit.contains("NT pass_through surface catalog.catalog_path")
                 && limit.contains("s3://bolt-parquet/nt-research-analytics/backtests/")
         }));
-        assert!(
-            contract
-                .claim_limits
-                .iter()
-                .any(|limit| { limit.contains("NT unsupported_for_now surface venue.fill_model") })
-        );
+        assert!(contract.claim_limits.iter().any(|limit| {
+            limit.contains("NT unsupported_for_now surface venue.settlement_prices")
+        }));
     }
 
     #[test]

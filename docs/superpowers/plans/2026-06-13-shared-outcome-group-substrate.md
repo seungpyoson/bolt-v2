@@ -631,10 +631,12 @@ Completion evidence: local `just fmt-check`, `git diff --check`, and `just sourc
 - Modify `src/lib.rs`
 - Test `tests/bolt_v3_atomic_io.rs`
 
-- [ ] Write tests for temp-write, fsync, rename, parent-directory sync, permission mode, write failure cleanup, and existing kill-switch store behavior through the shared helper.
-- [ ] Promote the current kill-switch atomic-write pattern into a shared `pub(crate)` helper module.
-- [ ] Update kill-switch store to use the shared helper before basket store exists.
-- [ ] Do not duplicate atomic-write logic in basket storage.
+Completion evidence: local `just fmt-check`, `git diff --check`, and `just source-fence-static` passed; exact-head remote verification passed for PR #703 at `8ee26abf72e3ff3ae94aebe62654f616e90ecb87`.
+
+- [x] Write tests for temp-write, fsync, rename, parent-directory sync, permission mode, write failure cleanup, and existing kill-switch store behavior through the shared helper.
+- [x] Promote the current kill-switch atomic-write pattern into a shared `pub(crate)` helper module.
+- [x] Update kill-switch store to use the shared helper before basket store exists.
+- [x] Do not duplicate atomic-write logic in basket storage.
 
 ### Task 3: Config-Driven Outcome Sources
 

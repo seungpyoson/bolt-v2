@@ -317,8 +317,10 @@ mod tests {
     // submit admission.
     // Re-derived after covered sell reservations were reduced to additive
     // fee/slippage liability only.
+    // Re-derived after allowing empty terminal NT lifecycle evidence to
+    // re-open a previously re-closed position-sizer gate.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "7053f2546ef9f998cc85afa58ebdf86e7c0bb500aadcc37e250bf8ba46012639";
+        "8371b49954d774be4873f5acb6d677408d1d33b41637cded6e9ced899f3fd1ff";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

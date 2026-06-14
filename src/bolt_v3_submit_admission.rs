@@ -2626,8 +2626,7 @@ fn refresh_position_sizer_state_from_components(
     {
         position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
     }
-    if position_sizer.state.is_none()
-        && !position_sizer.gate.is_reconciled()
+    if !position_sizer.gate.is_reconciled()
         && position_sizer.client_order_reservations.is_empty()
         && components.order_lifecycle.open_order_count == 0
         && components.order_lifecycle.all_open_orders_attributed

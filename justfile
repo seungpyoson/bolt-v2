@@ -101,6 +101,10 @@ verify-ra-leadlag-catalog-lift: check-workspace
     python3 scripts/test_verify_ra_leadlag_catalog_lift.py
     python3 scripts/verify_ra_leadlag_catalog_lift.py
 
+verify-ra-sweep-orchestration: check-workspace
+    python3 scripts/test_verify_ra_sweep_orchestration.py
+    python3 scripts/verify_ra_sweep_orchestration.py
+
 verify-dashboard-customer-jobs: check-workspace
     python3 scripts/test_verify_dashboard_customer_jobs.py
     python3 scripts/verify_dashboard_customer_jobs.py
@@ -237,6 +241,8 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_ra_bte_phase_prerequisite.py
     python3 scripts/test_verify_ra_leadlag_catalog_lift.py
     python3 scripts/verify_ra_leadlag_catalog_lift.py
+    python3 scripts/test_verify_ra_sweep_orchestration.py
+    python3 scripts/verify_ra_sweep_orchestration.py
     python3 scripts/test_verify_dashboard_customer_jobs.py
     python3 scripts/verify_dashboard_customer_jobs.py
     python3 scripts/test_verify_dashboard_field_source_matrix.py

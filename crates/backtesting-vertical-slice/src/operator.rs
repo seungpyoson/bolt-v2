@@ -106,7 +106,7 @@ pub const ACCEPTED_SOURCE_PROOF_FILE: &str = "accepted-source-proof.json";
 pub const PUBLISHED_CATALOG_PROOF_FILE: &str = "published-catalog-proof.json";
 
 /// Config-driven dataset facts for one operator run.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunSpec {
     /// Ingest capture timestamp (RFC 3339).
     pub capture_time_utc: String,
@@ -186,7 +186,7 @@ impl RunSpec {
 /// unchanged (the run-spec hash is the SHA-256 of the raw TOML bytes, so their
 /// hashes never move). A multi-instrument object keys specs by
 /// `canonical_instrument_key` exactly as the canonical rows carry it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RunSpecInstrumentSpecs {
     // Boxed: `CatalogInstrumentSpec` is ~480 bytes while the keyed map is ~24,
@@ -226,7 +226,7 @@ impl RunSpecInstrumentSpecs {
 /// [`RunSpecInstrumentSpecs`]: `Single` binds one identity to every row and
 /// `Keyed` maps the source's configured instrument-key values to identities
 /// (feeding the bar/delta keyed-identity resolution at normalization).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RunSpecInstrumentIdentities {
     Single(CanonicalInstrumentIdentity),
@@ -286,7 +286,7 @@ impl RunSpecInstrumentIdentities {
 
 /// Selector provenance hashes carried by an L2 replay run-spec, minted by the
 /// upstream selection lane that produced the accepted object.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunSpecSelectorProvenance {
     pub event_count_ledger_hash: String,
     pub selected_asset_ids_hash: String,

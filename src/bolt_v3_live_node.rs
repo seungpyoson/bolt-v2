@@ -2164,12 +2164,14 @@ impl KillSwitchLossActionSink for NtMarketExitLossActionSink {
         // Move the NT risk engine to `Reducing` before any exit so the venue
         // admits the reduce-only exits, mirroring the soft loss-governor path.
         self.trading_state.enter_reducing();
-        let mut succeeded = self
+        let mut succeeded = BTreeSet::new();
+        if let Some(dispatched) = self
             .dispatched_strategies_by_halt
             .borrow()
             .get(&action.halt_id)
-            .cloned()
-            .unwrap_or_default();
+        {
+            succeeded.clone_from(dispatched);
+        }
         let result = dispatch_shadow_aware_market_exit(
             self.dispatcher.as_ref(),
             &self.market_exit_strategies,

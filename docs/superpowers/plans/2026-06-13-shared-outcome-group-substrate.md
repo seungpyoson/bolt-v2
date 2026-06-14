@@ -704,15 +704,17 @@ Completion evidence: local `cargo fmt`, `just fmt-check`, `git diff --check`, an
 - Create `src/bolt_v3_outcome_group_scanner.rs`
 - Test `tests/bolt_v3_outcome_group_scanner.rs`
 
-- [ ] Write tests for all-role-true, all-role-false, mixed-role baskets, void/refund rows, NT `OrderBook`/`OrderBookDepth10`/`BookLevel` adapter coverage, insufficient depth, stale book, missing book timestamps, normalized price scale rejection, fee inclusion, minimum fillable depth sizing, config-owned minimum quantity rejection when NT Polymarket min quantity is `None`, config-owned minimum notional rejection, quantity-step/precision rejection, Decimal/f64 fee conversion boundary, Decimal/f64 price conversion boundary, non-positive candidate-cost rejection, non-positive edge, `edge_bps` threshold admission/rejection, and absolute-edge-vs-bps mismatch rejection.
-- [ ] Implement payout-vector evaluation from `PayoutMatrix`.
-- [ ] Reuse `bolt_v3_executable_cost::price_exact_size_vwap` and `bolt_v3_executable_cost::executable_cost_breakdown` for per-leg executable depth and adjusted cost.
-- [ ] Implement only the timestamped NT `OrderBook`/`OrderBookDepth10`/`BookLevel` to `ExecutableBookQuote` adapter and basket aggregation logic around the existing per-leg helper functions; reject any attempt to persist or maintain an independent Bolt order book.
-- [ ] Use existing `FeeProvider` to resolve fee inputs by instrument; do not introduce a parallel fee model.
-- [ ] Convert `FeeProvider::fee_bps` Decimal outputs to f64 bps at one explicit boundary, then convert adjusted costs back to Decimal settlement-currency values for basket comparison.
-- [ ] Use executable depth, not display or Gamma prices.
-- [ ] Validate proposed leg quantities against `OutcomeLegOrderConstraints` floors plus NT instrument quantity step, precision, and order-template constraints; reject the entire basket if any leg cannot be submitted at the scanned size.
-- [ ] Return scanner evidence with grouping proof, costs, fees, state payouts, guaranteed payout, absolute edge, normalized `edge_bps`, min-depth cap, freshness readings, and block reason.
+Completion evidence: local `cargo fmt`, `git diff --check`, `just fmt-check`, and `just source-fence-static` passed; exact-head remote verification passed for PR #703 at `d7abab1d394c0e50acd36ad9dcc5427fce9f781b`.
+
+- [x] Write tests for all-role-true, all-role-false, mixed-role baskets, void/refund rows, NT `OrderBook`/`OrderBookDepth10`/`BookLevel` adapter coverage, insufficient depth, stale book, missing book timestamps, normalized price scale rejection, fee inclusion, minimum fillable depth sizing, config-owned minimum quantity rejection when NT Polymarket min quantity is `None`, config-owned minimum notional rejection, quantity-step/precision rejection, Decimal/f64 fee conversion boundary, Decimal/f64 price conversion boundary, non-positive candidate-cost rejection, non-positive edge, `edge_bps` threshold admission/rejection, and absolute-edge-vs-bps mismatch rejection.
+- [x] Implement payout-vector evaluation from `PayoutMatrix`.
+- [x] Reuse `bolt_v3_executable_cost::price_exact_size_vwap` and `bolt_v3_executable_cost::executable_cost_breakdown` for per-leg executable depth and adjusted cost.
+- [x] Implement only the timestamped NT `OrderBook`/`OrderBookDepth10`/`BookLevel` to `ExecutableBookQuote` adapter and basket aggregation logic around the existing per-leg helper functions; reject any attempt to persist or maintain an independent Bolt order book.
+- [x] Accept per-instrument Decimal fee-bps inputs resolved by the strategy layer from existing `FeeProvider`; do not introduce a parallel fee model.
+- [x] Convert resolved `FeeProvider::fee_bps` Decimal outputs to f64 bps at one explicit boundary, then convert adjusted costs back to Decimal settlement-currency values for basket comparison.
+- [x] Use executable depth, not display or Gamma prices.
+- [x] Validate proposed leg quantities against `OutcomeLegOrderConstraints` floors plus NT instrument quantity step, precision, and order-template constraints; reject the entire basket if any leg cannot be submitted at the scanned size.
+- [x] Return scanner evidence with grouping proof, costs, fees, state payouts, guaranteed payout, absolute edge, normalized `edge_bps`, min-depth cap, freshness readings, and block reason.
 
 ### Task 6: Basket Admission
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify Bolt does not wire NautilusTrader venue-mutating control paths.
 
-Shadow mode forbids venue mutation under `submit_orders=false`. The NT
+Shadow mode forbids venue mutation under `runtime.order_execution_mode=shadow`. The NT
 `StrategyCommand::ExitMarket` control endpoint can route to `market_exit()`,
 which is outside Bolt's submit/cancel chokepoints, so Bolt production source
 must not wire a sender for that command or call equivalent market-exit/close

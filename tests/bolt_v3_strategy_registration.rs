@@ -64,6 +64,7 @@ fn assert_unsupported_executable_entry_order_shape(raw: &toml::Value, label: &st
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
     assert!(
@@ -373,27 +374,20 @@ fn runtime_mapping_emits_surface_id_and_signal_data_for_surfaced_mode() {
 }
 
 #[test]
-fn runtime_mapping_preserves_submit_orders_switch() {
+fn runtime_mapping_omits_strategy_local_submit_orders_switch() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     insert_realized_volatility_surface(&mut loaded.root, valid_realized_volatility_surface());
     loaded.strategies[0].config.realized_volatility_surface_id = Some("<surface_id>".to_string());
-    loaded.strategies[0]
-        .config
-        .parameters
-        .as_table_mut()
-        .expect("fixture parameters should be a table")
-        .insert("submit_orders".to_string(), toml::Value::Boolean(false));
 
     let raw = binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[0], &loaded)
-        .expect("submit_orders should map into runtime config");
+        .expect("runtime config should map without stale strategy-local execution policy");
 
-    assert_eq!(
-        raw.as_table()
+    assert!(
+        !raw.as_table()
             .expect("runtime config should be a table")
-            .get("submit_orders")
-            .and_then(toml::Value::as_bool),
-        Some(false)
+            .contains_key("submit_orders"),
+        "runtime config must not retain stale strategy-local execution policy"
     );
 }
 
@@ -418,6 +412,7 @@ fn surfaced_runtime_config_builds_without_legacy_realized_volatility_fields() {
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
@@ -502,6 +497,7 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
             &resolved,
             TEST_BINDINGS,
             admission.clone(),
+            bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             decision_evidence.clone(),
         )
         .expect("configured strategy should register through matching runtime binding");
@@ -1052,6 +1048,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
@@ -1215,6 +1212,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
@@ -1454,6 +1452,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
@@ -1526,6 +1525,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_tri
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)

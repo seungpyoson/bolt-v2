@@ -26,7 +26,7 @@ just ci-runner-minutes --repo <owner>/<repo> --days 1 --json
 
 The meter reads workflow runs, jobs, artifacts, and PR draft events through `gh` API data. Runner labels, metered workflows, and meter API limits are mapped from `ci/github-actions-runners.toml`; the script does not carry a second runner-label or page-limit registry. The configured meter workflows are `ci`, `backtester_ci`, and `ci_runner_debug`.
 
-Fingerprint evidence is provenance-based. Runs before this instrumentation have no `nextest-archive-fingerprint-*` artifact, so the meter reports them as `fingerprint-unknown` instead of reconstructing cache keys from logs or historical checkouts. The meter reads the fingerprint from the artifact name; the workflow hygiene verifier keeps that name structurally identical to the `cache-key.txt` body at publish time. If one run ever publishes multiple matching fingerprint artifacts, the meter reports `fingerprint-ambiguous` and does not choose one.
+Fingerprint evidence is provenance-based. Runs before this instrumentation have no `nextest-archive-fingerprint-*` artifact, so the meter reports them as `fingerprint-unknown` instead of reconstructing cache keys from logs or historical checkouts. The meter reads the fingerprint from the artifact name; the workflow publishes the same GitHub-evaluated fingerprint as a `test-archive` job output for reuse decisions and as the artifact name/body for measurement before repo-controlled setup or build steps run. If one run ever publishes multiple matching fingerprint artifacts, the meter reports `fingerprint-ambiguous` and does not choose one.
 
 ### Meter Limitations
 
@@ -37,6 +37,8 @@ Fingerprint evidence is provenance-based. Runs before this instrumentation have 
 - Runner-minutes for labels absent from `ci/github-actions-runners.toml` are reported under `unknown` so reconciliation gaps stay visible.
 
 The nextest cache/fingerprint expression remains inline in `.github/workflows/ci.yml` because GitHub Actions evaluates `hashFiles(...)` inside workflow YAML. The hygiene verifier enforces structural identity across the cache restore key, cache save key, fingerprint file, and fingerprint artifact name so version, shard, or input drift fails CI.
+
+Fingerprint reuse is available only on pull request runs. It is disabled on pull requests that change the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests. Those PRs, plus branch `workflow_dispatch` full-CI runs, must run the normal nextest shards so PR-controlled reuse logic cannot decide to skip test execution outside the diff guard.
 
 ## Baseline Evidence
 
@@ -134,9 +136,22 @@ If Ubicloud exposes a per-repo or project runner/vCPU cap, set the first cap to 
 
 ### Lever A: test-result reuse by fingerprint
 
-Decision: no-go for implementation in this PR; gather post-instrumentation evidence first.
+Decision: go. Slice A implements safe nextest shard reuse by fingerprint for `.github/workflows/ci.yml`.
 
-The one-day lookback had 34 CI runs without fingerprint artifacts and 0 CI runs with known fingerprints. That is expected because prior runs did not publish the nextest fingerprint. This PR adds the fingerprint artifact, so a later lookback can measure fingerprint-identical spend without log scraping or historical checkouts.
+Post-instrumentation evidence found real duplicate nextest spend:
+
+| Metric | Count |
+| --- | ---: |
+| v1 fingerprint artifacts | 130 |
+| unique fingerprints | 94 |
+| repeated fingerprint groups | 19 |
+| reruns beyond first occurrence | 36 |
+| reruns after prior successful same-fingerprint run | 32 |
+| duplicate nextest shard runner-minutes | ~1,422 |
+
+The workflow now resolves the current nextest fingerprint from the secure `test-archive` job output after publishing `nextest-archive-fingerprint-*` for metering evidence. If a bounded search finds a newer-prior successful CI run with exactly one matching fingerprint artifact, exactly one matching CI provenance artifact, matching workflow/config digests, successful required job evidence, and the same parsed nextest fingerprint, the four `nextest shard` jobs are skipped. The `test` aggregate and `gate` jobs accept that path only when resolver outputs identify the reused source run, source SHA, and provenance artifact. Fingerprint reuse is disabled on `refs/heads/main` so main pushes still emit exact-SHA CI provenance for tag deploy reuse. Missing, malformed, ambiguous, expired, failed, cancelled, in-progress, wrong-workflow, wrong-OS, wrong-arch, wrong-profile, wrong-shard-count, wrong-schema, or otherwise unverifiable evidence falls back to normal full nextest shards.
+
+Policy override: set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to force the full-CI policy path for PRs while preserving the validated fingerprint reuse path for investigation. Revert the Slice A workflow/provenance commits if reuse itself must be removed. Branch `workflow_dispatch` runs always execute the nextest shards. Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; it does not make cache hits proof and does not bypass the validated reuse requirement.
 
 ### Lever B: full CI on demand
 
@@ -171,7 +186,7 @@ Draft fork PRs fail closed because upstream `workflow_dispatch` cannot safely ta
 draft fork PRs cannot dispatch upstream full CI; mark the PR ready for review or have a maintainer move the branch into the upstream repository
 ```
 
-Rollback switches:
+Policy switches:
 
 - Set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to make draft PRs run full CI again without reverting the whole slice.
 - Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; set it only for an explicit provenance-emitter incident response where full CI evidence should not be blocked by artifact emission.
@@ -190,9 +205,8 @@ When dashboard access is available:
 
 ## Close Status
 
-This Slice 1 PR should not close #648 by itself. Remaining close requirements:
+This Slice A PR should not close #648 by itself. Remaining close requirements:
 
 - Verify and document the Ubicloud-side cap setting path, or document from dashboard/API evidence that no such control exists.
 - Reconcile one day of meter output against Ubicloud dashboard spend.
-- Collect post-instrumentation fingerprint evidence and re-run Lever A quantification.
 - Implement Lever B only in a separate focused PR if the owner accepts the measured go decision.

@@ -9,6 +9,7 @@ import importlib.util
 import io
 import hashlib
 import json
+import os
 import pathlib
 import queue
 import socketserver
@@ -22,8 +23,11 @@ import zipfile
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "ci_provenance.py"
 SHA = "a1a6be0d94e887538ebcd9afced6c94046a557d6"
+OTHER_SHA = "b" * 40
 RUN_ID = 24623219988
 CHECK_SUITE_ID = 65233803543
+NEXTEST_FINGERPRINT = f"nextest-archive-v1-Linux-X64-test-profile-shards-4-{'a' * 64}"
+NEXTEST_FINGERPRINT_ARTIFACT = f"nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-{'a' * 64}"
 
 CONFIG_TOML = """
 schema_version = 1
@@ -267,8 +271,25 @@ def run_cli(args: list[str]) -> tuple[int, str, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        code = module.main(args)
+        try:
+            code = module.main(args)
+        except SystemExit as exc:
+            code = int(exc.code or 0)
     return code, stdout.getvalue(), stderr.getvalue()
+
+
+@contextlib.contextmanager
+def patched_env(values: dict[str, str]):
+    old_values = {key: os.environ.get(key) for key in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for key, value in old_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def assert_fails(fragment: str, args: list[str]) -> None:
@@ -327,6 +348,18 @@ def valid_record(module, config_path: pathlib.Path) -> dict[str, object]:
     }
 
 
+def record_with_fingerprint(
+    module,
+    config_path: pathlib.Path,
+    fingerprint: object = NEXTEST_FINGERPRINT,
+    **overrides: object,
+) -> dict[str, object]:
+    record = valid_record(module, config_path)
+    record["nextest_fingerprint"] = fingerprint
+    record.update(overrides)
+    return record
+
+
 def run_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "id": RUN_ID,
@@ -356,6 +389,24 @@ def provenance_artifact(**overrides: object) -> dict[str, object]:
         "name": f"ci-provenance-attempt-{run_attempt}",
         "expired": False,
         "archive_download_url": f"artifact://{artifact_id}",
+        "workflow_run": {
+            "id": run_id,
+            "head_branch": "main",
+            "head_sha": SHA,
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def fingerprint_artifact(**overrides: object) -> dict[str, object]:
+    artifact_id = overrides.get("id", 456)
+    run_id = overrides.get("run_id", RUN_ID)
+    name = overrides.get("name", NEXTEST_FINGERPRINT_ARTIFACT)
+    payload: dict[str, object] = {
+        "id": artifact_id,
+        "name": name,
+        "expired": False,
         "workflow_run": {
             "id": run_id,
             "head_branch": "main",
@@ -403,11 +454,13 @@ class FakeGitHub:
         jobs_by_run_id: dict[int, dict[str, object]] | None = None,
         artifacts_by_run_id: dict[int, dict[str, object]] | None = None,
         records_by_artifact_id: dict[int, dict[str, object]] | None = None,
+        workflow_bytes: bytes | None = None,
     ) -> None:
         self.runs_pages = runs_pages
         self.jobs_by_run_id = jobs_by_run_id or {}
         self.artifacts_by_run_id = artifacts_by_run_id or {}
         self.records_by_artifact_id = records_by_artifact_id or {}
+        self.workflow_bytes = workflow_bytes
         self.queries: list[tuple[str, dict[str, str] | None]] = []
 
     def json(
@@ -418,7 +471,7 @@ class FakeGitHub:
         query: dict[str, str] | None = None,
     ) -> dict[str, object]:
         self.queries.append((path, query))
-        if path == "actions/runs":
+        if path in {"actions/runs", "actions/workflows/ci.yml/runs"}:
             if not isinstance(self.runs_pages, list):
                 return {"workflow_runs": self.runs_pages}
             page = int((query or {}).get("page", "1"))
@@ -437,6 +490,8 @@ class FakeGitHub:
             artifact_id = int(url.removeprefix("artifact://"))
             return artifact_zip(self.records_by_artifact_id[artifact_id])
         if url.startswith("https://raw.githubusercontent.com/"):
+            if self.workflow_bytes is not None:
+                return self.workflow_bytes
             return (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_bytes()
         raise AssertionError(f"unexpected bytes request {url}")
 
@@ -455,6 +510,49 @@ def assert_invalid_shard_count_fails() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML.replace("shard_count = 4", "shard_count = 0"))
         assert_fails("shard_count", ["emit-full-ci", "--config", str(config)])
+
+
+def assert_emit_full_ci_records_nextest_fingerprint_argument() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+
+        def fake_api_json(repo: str, token: str, path: str, query: dict[str, str] | None = None) -> dict[str, object]:
+            if path == f"actions/runs/{RUN_ID}":
+                return run_payload()
+            raise AssertionError((repo, token, path, query))
+
+        with patched_env(
+            {
+                "GITHUB_REPOSITORY": "seungpyoson/bolt-v2",
+                "GITHUB_TOKEN": "token",
+                "GITHUB_RUN_ID": str(RUN_ID),
+                "GITHUB_RUN_ATTEMPT": "1",
+                "GITHUB_SHA": SHA,
+                "GITHUB_EVENT_NAME": "push",
+            }
+        ):
+            record = module.emit_full_ci_record(
+                config=module.load_config(config),
+                config_path=config,
+                required_job_values=[
+                    "detector=success",
+                    "fmt-check=success",
+                    "deny=success",
+                    "clippy=success",
+                    "check-aarch64=success",
+                    "source-fence=success",
+                    "test-archive=success",
+                    "test-shards=success",
+                    "test=success",
+                ],
+                conditional_job_values=["build.required=true", "build.result=success"],
+                nextest_fingerprint=NEXTEST_FINGERPRINT,
+                api_json=fake_api_json,
+            )
+        if record["nextest_fingerprint"] != NEXTEST_FINGERPRINT:
+            raise AssertionError(record)
 
 
 def assert_literal_shard_count_template_loads() -> None:
@@ -489,8 +587,358 @@ def assert_unknown_record_schema_fails() -> None:
         )
 
 
-def assert_resolve_fingerprint_is_rejected() -> None:
-    assert_fails("resolve-fingerprint is not supported", ["resolve-fingerprint"])
+def resolve_fingerprint_with_fake(
+    module,
+    config_path: pathlib.Path,
+    fake: FakeGitHub,
+    *,
+    current_fingerprint: str = NEXTEST_FINGERPRINT,
+    current_run_id: int = RUN_ID + 999,
+    now: str = "2026-06-13T00:30:00Z",
+):
+    return module.resolve_fingerprint_reuse(
+        repo="seungpyoson/bolt-v2",
+        token="token",
+        current_fingerprint=current_fingerprint,
+        current_run_id=current_run_id,
+        config=module.load_config(config_path),
+        config_path=config_path,
+        api_json=fake.json,
+        api_bytes=fake.bytes,
+        now=module.parse_timestamp(now),
+    )
+
+
+def assert_fingerprint_reuse_prior_green_returns_reuse() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = record_with_fingerprint(module, config)
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={
+                RUN_ID: {
+                    "artifacts": [
+                        fingerprint_artifact(id=11),
+                        provenance_artifact(id=12),
+                    ]
+                }
+            },
+            records_by_artifact_id={12: record},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not True:
+            raise AssertionError(result)
+        if result.source_run_id != str(RUN_ID):
+            raise AssertionError(result)
+        if result.source_sha != SHA:
+            raise AssertionError(result)
+        if result.source_artifact_id != "12":
+            raise AssertionError(result)
+        if "matched" not in result.reason:
+            raise AssertionError(result)
+        if not fake.queries or fake.queries[0][0] != "actions/workflows/ci.yml/runs":
+            raise AssertionError(fake.queries)
+
+
+def assert_fingerprint_reuse_no_prior_run_returns_no_reuse() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        result = resolve_fingerprint_with_fake(module, config, FakeGitHub(runs_pages=[[]]))
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if result.source_run_id or result.source_sha or result.source_artifact_id:
+            raise AssertionError(result)
+        if "no prior successful" not in result.reason:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_rejects_failed_cancelled_and_wrong_workflow_runs() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        cases = [
+            ("failed", run_payload(conclusion="failure")),
+            ("cancelled", run_payload(conclusion="cancelled")),
+            ("in-progress", run_payload(status="in_progress", conclusion=None)),
+            ("wrong workflow", run_payload(path=".github/workflows/backtester-ci.yml")),
+        ]
+        for label, run in cases:
+            result = resolve_fingerprint_with_fake(module, config, FakeGitHub(runs_pages=[[run]]))
+            if result.reuse_found is not False:
+                raise AssertionError((label, result))
+
+
+def assert_fingerprint_reuse_rejects_ambiguous_and_expired_artifacts() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = record_with_fingerprint(module, config)
+        cases = [
+            (
+                "ambiguous fingerprint",
+                {
+                    "artifacts": [
+                        fingerprint_artifact(id=1),
+                        fingerprint_artifact(id=2),
+                        provenance_artifact(id=3),
+                    ]
+                },
+                {3: record},
+            ),
+            (
+                "expired fingerprint",
+                {"artifacts": [fingerprint_artifact(expired=True), provenance_artifact(id=4)]},
+                {4: record},
+            ),
+            (
+                "expired provenance",
+                {"artifacts": [fingerprint_artifact(id=5), provenance_artifact(id=6, expired=True)]},
+                {6: record},
+            ),
+        ]
+        for label, artifacts, records in cases:
+            fake = FakeGitHub(
+                runs_pages=[[run_payload()]],
+                artifacts_by_run_id={RUN_ID: artifacts},
+                records_by_artifact_id=records,
+            )
+            result = resolve_fingerprint_with_fake(module, config, fake)
+            if result.reuse_found is not False:
+                raise AssertionError((label, result))
+            if label.split()[0] not in result.reason:
+                raise AssertionError((label, result))
+
+
+def assert_fingerprint_reuse_requires_exact_fingerprint_components() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        variants = [
+            NEXTEST_FINGERPRINT.replace("Linux", "macOS"),
+            NEXTEST_FINGERPRINT.replace("X64", "ARM64"),
+            NEXTEST_FINGERPRINT.replace("test-profile", "default-profile"),
+            NEXTEST_FINGERPRINT.replace("shards-4", "shards-8"),
+            NEXTEST_FINGERPRINT.replace("v1", "v2", 1),
+        ]
+        for fingerprint in variants:
+            record = record_with_fingerprint(module, config, fingerprint=fingerprint)
+            artifact_name = fingerprint.replace("nextest-archive-", "nextest-archive-fingerprint-", 1)
+            fake = FakeGitHub(
+                runs_pages=[[run_payload()]],
+                artifacts_by_run_id={
+                    RUN_ID: {
+                        "artifacts": [
+                            fingerprint_artifact(id=1, name=artifact_name),
+                            provenance_artifact(id=2),
+                        ]
+                    }
+                },
+                records_by_artifact_id={2: record},
+            )
+            result = resolve_fingerprint_with_fake(module, config, fake)
+            if result.reuse_found is not False:
+                raise AssertionError((fingerprint, result))
+
+
+def assert_fingerprint_reuse_rejects_source_workflow_digest_drift() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        source_workflow_bytes = b"name: CI\n# source workflow bytes differ from current checkout\n"
+        record = record_with_fingerprint(module, config)
+        record["workflow_digest"] = hashlib.sha256(source_workflow_bytes).hexdigest()
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
+            },
+            records_by_artifact_id={2: record},
+            workflow_bytes=source_workflow_bytes,
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if "workflow digest" not in result.reason:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_malformed_fingerprint_fails_closed() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        result = resolve_fingerprint_with_fake(
+            module,
+            config,
+            FakeGitHub(runs_pages=[[run_payload()]]),
+            current_fingerprint="not-a-nextest-fingerprint",
+        )
+        if result.reuse_found is not False or "malformed current fingerprint" not in result.reason:
+            raise AssertionError(result)
+
+        record = record_with_fingerprint(module, config, fingerprint="not-a-nextest-fingerprint")
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            artifacts_by_run_id={RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}},
+            records_by_artifact_id={2: record},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_rejects_failed_source_shard_through_resolver() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = record_with_fingerprint(module, config)
+        failed_jobs = required_job_payloads()
+        for job in failed_jobs:
+            if job["name"] == "nextest shard 2 of 4":
+                job["conclusion"] = "failure"
+                break
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            jobs_by_run_id={RUN_ID: {"jobs": failed_jobs}},
+            artifacts_by_run_id={
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
+            },
+            records_by_artifact_id={2: record},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if "nextest shard 2 of 4" not in result.reason:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_source_run_must_be_trusted_main_push() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        pr_run = run_payload()
+        pr_run["event"] = "pull_request"
+        pr_run["head_branch"] = "attacker/fingerprint-reuse"
+        if module.run_matches_fingerprint_reuse(pr_run, config, current_run_id=None):
+            raise AssertionError("fingerprint reuse must not source evidence from pull_request runs")
+        branch_run = run_payload()
+        branch_run["event"] = config.deploy_source_event
+        branch_run["head_branch"] = "feature/not-main"
+        if module.run_matches_fingerprint_reuse(branch_run, config, current_run_id=None):
+            raise AssertionError("fingerprint reuse must not source evidence from non-main branch runs")
+
+
+def assert_missing_current_fingerprint_arg_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        code, stdout, stderr = run_cli(
+            [
+                "resolve-fingerprint",
+                "--config",
+                str(config),
+                "--repo",
+                "seungpyoson/bolt-v2",
+                "--token",
+                "token",
+                "--current-run-id",
+                str(RUN_ID),
+            ]
+        )
+        if code != 0:
+            raise AssertionError((code, stdout, stderr))
+        if stderr:
+            raise AssertionError(stderr)
+        expected = {
+            "reuse_found=false",
+            "source_run_id=",
+            "source_sha=",
+            "source_artifact_id=",
+            "reason=missing current fingerprint",
+        }
+        if set(stdout.splitlines()) != expected:
+            raise AssertionError(stdout)
+
+
+def assert_nextest_fingerprint_path_args_are_rejected() -> None:
+    assert_fails("unrecognized arguments", ["emit-full-ci", "--nextest-fingerprint-path", "cache-key.txt"])
+    assert_fails("unrecognized arguments", ["resolve-fingerprint", "--current-fingerprint-path", "cache-key.txt"])
+
+
+def assert_fingerprint_reuse_api_errors_fail_closed() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+
+        def failing_api_json(repo, token, path, query):  # noqa: ARG001 - test fake matches API shape.
+            raise module.ProvenanceError("GitHub API request failed for actions/workflows/ci.yml/runs")
+
+        result = module.resolve_fingerprint_reuse(
+            repo="seungpyoson/bolt-v2",
+            token="token",
+            current_fingerprint=NEXTEST_FINGERPRINT,
+            current_run_id=RUN_ID + 999,
+            config=module.load_config(config),
+            config_path=config,
+            api_json=failing_api_json,
+            api_bytes=lambda _repo, _token, _url: b"",
+            now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+        )
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if "fingerprint reuse lookup failed" not in result.reason:
+            raise AssertionError(result)
+
+
+def assert_fingerprint_reuse_selects_newest_valid_prior_green() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        older = record_with_fingerprint(module, config, run_id=RUN_ID)
+        newer = record_with_fingerprint(
+            module,
+            config,
+            run_id=RUN_ID + 1,
+            head_sha=OTHER_SHA,
+            tested_sha=OTHER_SHA,
+        )
+        fake = FakeGitHub(
+            runs_pages=[
+                [
+                    run_payload(id=RUN_ID + 1, head_sha=OTHER_SHA, updated_at="2026-06-13T00:20:00Z"),
+                    run_payload(id=RUN_ID, updated_at="2026-06-13T00:10:00Z"),
+                ]
+            ],
+            artifacts_by_run_id={
+                RUN_ID + 1: {
+                    "artifacts": [
+                        fingerprint_artifact(
+                            id=21,
+                            run_id=RUN_ID + 1,
+                            workflow_run={"id": RUN_ID + 1, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                        provenance_artifact(
+                            id=22,
+                            run_id=RUN_ID + 1,
+                            workflow_run={"id": RUN_ID + 1, "head_branch": "main", "head_sha": OTHER_SHA},
+                        ),
+                    ]
+                },
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=11), provenance_artifact(id=12)]},
+            },
+            records_by_artifact_id={12: older, 22: newer},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.source_run_id != str(RUN_ID + 1) or result.source_sha != OTHER_SHA:
+            raise AssertionError(result)
 
 
 def assert_top_level_help_is_supported() -> None:
@@ -1123,22 +1571,26 @@ def assert_test_archive_and_build_rules() -> None:
         )
 
 
-def assert_directory_nextest_fingerprint_is_ignored() -> None:
-    module = load_script()
-    with tempfile.TemporaryDirectory() as tmp:
-        directory = pathlib.Path(tmp) / "cache-key.txt"
-        directory.mkdir()
-        if module.read_nextest_fingerprint(directory) is not None:
-            raise AssertionError("directory fingerprint path should be ignored")
-
-
 def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
     assert_invalid_shard_count_fails()
+    assert_emit_full_ci_records_nextest_fingerprint_argument()
     assert_literal_shard_count_template_loads()
     assert_unknown_record_schema_fails()
-    assert_resolve_fingerprint_is_rejected()
+    assert_fingerprint_reuse_prior_green_returns_reuse()
+    assert_fingerprint_reuse_no_prior_run_returns_no_reuse()
+    assert_fingerprint_reuse_rejects_failed_cancelled_and_wrong_workflow_runs()
+    assert_fingerprint_reuse_rejects_ambiguous_and_expired_artifacts()
+    assert_fingerprint_reuse_requires_exact_fingerprint_components()
+    assert_fingerprint_reuse_rejects_source_workflow_digest_drift()
+    assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
+    assert_fingerprint_reuse_rejects_failed_source_shard_through_resolver()
+    assert_fingerprint_reuse_source_run_must_be_trusted_main_push()
+    assert_missing_current_fingerprint_arg_fails_closed()
+    assert_nextest_fingerprint_path_args_are_rejected()
+    assert_fingerprint_reuse_api_errors_fail_closed()
+    assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
     assert_ci_policy_outputs_matrix()
     assert_config_digest_is_canonical()
@@ -1166,7 +1618,6 @@ def main() -> int:
     assert_job_evidence_success_passes()
     assert_shard_job_failures_rejected()
     assert_test_archive_and_build_rules()
-    assert_directory_nextest_fingerprint_is_ignored()
     print("OK: CI provenance self-tests passed.")
     return 0
 

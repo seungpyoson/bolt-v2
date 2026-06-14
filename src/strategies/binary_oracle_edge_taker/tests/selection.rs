@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use nautilus_trading::Strategy;
 
 #[test]
 fn switch_resets_only_active_market_state() {

@@ -408,7 +408,7 @@ fn stuck_basket_trips_dedicated_kill_switch_and_blocks_new_admission() {
         .expect_err("latched basket kill switch must block new entry admission");
     assert_eq!(
         blocked.to_string(),
-        "submit admission rejected because kill switch is latched in state Halted"
+        "bolt-v3 submit admission is blocked by kill-switch state Halted"
     );
 }
 

@@ -1118,7 +1118,7 @@ mod tests {
     }
 
     #[test]
-    fn release_rejects_when_existing_reservation_belongs_to_another_pool() {
+    fn release_rejects_unknown_when_request_exists_only_in_another_pool() {
         let first_pool = pool();
         let second_pool = CapitalPoolSnapshot {
             pool_id: "other-capital-pool".to_string(),
@@ -1140,7 +1140,7 @@ mod tests {
         assert!(!decision.accepted);
         assert_eq!(
             decision.reason,
-            Some(super::ReservationRejectionReason::PoolMismatch)
+            Some(super::ReservationRejectionReason::UnknownRelease)
         );
         assert_eq!(
             ledger.live_reserved_liability(&first_pool.pool_id),

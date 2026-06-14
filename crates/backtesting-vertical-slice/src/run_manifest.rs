@@ -126,13 +126,11 @@ pub fn registered_strategy_parameters(registry_key: &str) -> Option<&'static [&'
         STRATEGY_HURST_VPIN_DIRECTIONAL => {
             Some(&[STRATEGY_PARAM_BAR_TYPE, STRATEGY_PARAM_TRADE_SIZE])
         }
-        STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
-            Some(&[
-                STRATEGY_PARAM_CONFIG_TOML,
-                STRATEGY_PARAM_FEE_BPS,
-                STRATEGY_PARAM_ORDER_EXECUTION_MODE,
-            ])
-        }
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER => Some(&[
+            STRATEGY_PARAM_CONFIG_TOML,
+            STRATEGY_PARAM_FEE_BPS,
+            STRATEGY_PARAM_ORDER_EXECUTION_MODE,
+        ]),
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => Some(&[
             STRATEGY_PARAM_TRADE_SIZE,
             STRATEGY_PARAM_ENTRY_AFTER_TRADES,

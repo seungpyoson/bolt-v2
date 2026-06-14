@@ -277,14 +277,15 @@ fn add_manifest_strategy(
                 .with_context(|| {
                     format!("strategy parameter {STRATEGY_PARAM_ORDER_EXECUTION_MODE} is required")
                 })?;
-            let order_execution_mode: BoltV3OrderExecutionMode =
-                toml::Value::String(order_execution_mode_raw.clone())
-                    .try_into()
-                    .with_context(|| {
-                        format!(
-                            "invalid {STRATEGY_PARAM_ORDER_EXECUTION_MODE} {order_execution_mode_raw:?}"
-                        )
-                    })?;
+            let order_execution_mode: BoltV3OrderExecutionMode = toml::Value::String(
+                order_execution_mode_raw.clone(),
+            )
+            .try_into()
+            .with_context(|| {
+                format!(
+                    "invalid {STRATEGY_PARAM_ORDER_EXECUTION_MODE} {order_execution_mode_raw:?}"
+                )
+            })?;
             let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> =
                 Arc::new(BacktestDecisionEvidenceWriter);
             let submit_admission =

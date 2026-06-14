@@ -793,6 +793,32 @@ def assert_fingerprint_reuse_malformed_fingerprint_fails_closed() -> None:
             raise AssertionError(result)
 
 
+def assert_fingerprint_reuse_rejects_failed_source_shard_through_resolver() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        record = record_with_fingerprint(module, config)
+        failed_jobs = required_job_payloads()
+        for job in failed_jobs:
+            if job["name"] == "nextest shard 2 of 4":
+                job["conclusion"] = "failure"
+                break
+        fake = FakeGitHub(
+            runs_pages=[[run_payload()]],
+            jobs_by_run_id={RUN_ID: {"jobs": failed_jobs}},
+            artifacts_by_run_id={
+                RUN_ID: {"artifacts": [fingerprint_artifact(id=1), provenance_artifact(id=2)]}
+            },
+            records_by_artifact_id={2: record},
+        )
+        result = resolve_fingerprint_with_fake(module, config, fake)
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if "nextest shard 2 of 4" not in result.reason:
+            raise AssertionError(result)
+
+
 def assert_missing_current_fingerprint_arg_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -1543,6 +1569,7 @@ def main() -> int:
     assert_fingerprint_reuse_requires_exact_fingerprint_components()
     assert_fingerprint_reuse_rejects_source_workflow_digest_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
+    assert_fingerprint_reuse_rejects_failed_source_shard_through_resolver()
     assert_missing_current_fingerprint_arg_fails_closed()
     assert_nextest_fingerprint_path_args_are_rejected()
     assert_fingerprint_reuse_api_errors_fail_closed()

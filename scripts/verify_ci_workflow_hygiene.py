@@ -255,6 +255,7 @@ NEXTEST_REUSE_MISS_EXPR = "needs.nextest-fingerprint-reuse.outputs.reuse_found !
 MAIN_BRANCH_SKIP_EXPR = "github.ref != 'refs/heads/main'"
 BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
 FINGERPRINT_REUSE_ALLOWED_EXPR = "needs.detector.outputs.fingerprint_reuse_allowed == 'true'"
+FINGERPRINT_REUSE_PR_EVENT_EXPR = "github.event_name == 'pull_request'"
 FINGERPRINT_REUSE_ALLOWED_OUTPUT = (
     "fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}"
 )
@@ -267,7 +268,6 @@ FINGERPRINT_REUSE_GOVERNANCE_PATHS = (
     "scripts/verify_ci_workflow_hygiene.py",
     "scripts/test_verify_ci_workflow_hygiene.py",
 )
-FINGERPRINT_REUSE_PATH_TOKEN_BOUNDARY_RE = re.compile(r"(?=\s|[)\"']|$)")
 BUILD_IF_RE = re.compile(
     r"^    if:\s*\$\{\{\s*"
     r"needs\.ci-policy\.outputs\.full_ci_required\s*==\s*['\"]true['\"]\s*&&\s*"
@@ -379,6 +379,9 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'examples/**'",
     "'crates/**'",
     "'specs/**/*.md'",
+    "'config/**'",
+    "'contracts/**'",
+    "'docs/bolt-v3/**'",
 )
 TEST_ARCHIVE_KEY_PREFIX = "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
 TEST_ARCHIVE_FINGERPRINT_PREFIX = "nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
@@ -1030,6 +1033,21 @@ def uncommented_text(lines: list[str]) -> str:
 
 def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
     return any(pattern.match(strip_comment(line)) for line in lines)
+
+
+def job_if_value(job_lines: list[str]) -> str:
+    for line in job_lines:
+        clean = strip_comment(line).rstrip()
+        if clean.strip() == "steps:":
+            return ""
+        match = re.match(r"^    if:\s*(?P<value>.*?)\s*$", clean)
+        if match is not None:
+            return match.group("value")
+    return ""
+
+
+def step_has_id(block: list[str], step_id: str) -> bool:
+    return any(re.match(rf"^\s+id:\s*{re.escape(step_id)}\s*$", strip_comment(line)) for line in block)
 
 
 def has_run_command(lines: list[str], command: str) -> bool:
@@ -5762,11 +5780,15 @@ def fingerprint_reuse_resolver_uses_bash(job_lines: list[str]) -> bool:
 
 
 def fingerprint_reuse_skips_main_branch(job_lines: list[str]) -> bool:
-    return MAIN_BRANCH_SKIP_EXPR in uncommented_text(job_lines)
+    return MAIN_BRANCH_SKIP_EXPR in job_if_value(job_lines)
 
 
 def fingerprint_reuse_gates_on_detector_allowed(job_lines: list[str]) -> bool:
-    return FINGERPRINT_REUSE_ALLOWED_EXPR in uncommented_text(job_lines)
+    return FINGERPRINT_REUSE_ALLOWED_EXPR in job_if_value(job_lines)
+
+
+def fingerprint_reuse_gates_on_pull_request(job_lines: list[str]) -> bool:
+    return FINGERPRINT_REUSE_PR_EVENT_EXPR in job_if_value(job_lines)
 
 
 def test_shards_skip_on_fingerprint_reuse(job_lines: list[str]) -> bool:
@@ -6038,9 +6060,17 @@ def gate_checks_nextest_fingerprint_reuse(gate_text: str) -> list[str]:
         errors.append("gate must branch on nextest fingerprint reuse")
         return errors
     reuse_body = sections[0]
-    if '"${{ needs.nextest-fingerprint-reuse.result }}" != "success"' not in reuse_body:
+    if not branch_exits_reachable(
+        reuse_body,
+        "if",
+        '"${{ needs.nextest-fingerprint-reuse.result }}" != "success"',
+    ):
         errors.append("gate must require nextest fingerprint reuse resolver success")
-    if '"${{ needs.ci-provenance-emit.result }}" != "skipped"' not in reuse_body:
+    if not branch_exits_reachable(
+        reuse_body,
+        "if",
+        '"${{ needs.ci-provenance-emit.result }}" != "skipped"',
+    ):
         errors.append("gate must require ci-provenance-emit skipped on nextest fingerprint reuse")
     if "nextest shards reused from run" not in reuse_body:
         errors.append("gate must log nextest fingerprint reuse provenance")
@@ -6117,6 +6147,24 @@ def detector_forces_build_on_workflow_dispatch(job_lines: list[str]) -> bool:
     return branch is not None and 'echo "value=true" >> "$GITHUB_OUTPUT"' in branch
 
 
+def git_diff_pathspecs(block_text: str) -> tuple[str, ...] | None:
+    normalized = re.sub(r"\\\s*\n\s*", " ", block_text)
+    match = re.search(r"git\s+diff\s+--name-only\b.*?\s--\s(?P<paths>.*?)\)", normalized, re.DOTALL)
+    if match is None:
+        return None
+    return tuple(token for token in command_tokens(match.group("paths")) if token)
+
+
+def detector_maps_changed_to_any_changed(block_text: str) -> bool:
+    chain = if_chain_bodies(block_text, '-n "$changed"')
+    if chain is None:
+        return False
+    return (
+        'echo "any_changed=true" >> "$GITHUB_OUTPUT"' in chain.get(("if", '-n "$changed"'), "")
+        and 'echo "any_changed=false" >> "$GITHUB_OUTPUT"' in chain.get(("else", ""), "")
+    )
+
+
 def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
     errors: list[str] = []
     text = uncommented_text(job_lines)
@@ -6124,30 +6172,32 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
     allowance_text = ""
     for block in step_blocks(job_lines):
         block_text = uncommented_text(block)
-        if "id: fingerprint_reuse_inputs_changed" in block_text:
+        if step_has_id(block, "fingerprint_reuse_inputs_changed"):
             fingerprint_inputs_text = block_text
-        if "id: fingerprint_reuse_allowed" in block_text:
+        if step_has_id(block, "fingerprint_reuse_allowed"):
             allowance_text = block_text
     if FINGERPRINT_REUSE_ALLOWED_OUTPUT not in text:
         errors.append("detector must expose fingerprint_reuse_allowed")
-    if not fingerprint_inputs_text or not all(
-        re.search(
-            rf"(?<!\S){re.escape(path)}{FINGERPRINT_REUSE_PATH_TOKEN_BOUNDARY_RE.pattern}",
-            fingerprint_inputs_text,
-        )
-        for path in FINGERPRINT_REUSE_GOVERNANCE_PATHS
-    ):
+    pathspecs = git_diff_pathspecs(fingerprint_inputs_text) if fingerprint_inputs_text else None
+    if pathspecs != FINGERPRINT_REUSE_GOVERNANCE_PATHS:
         errors.append("detector must detect fingerprint-reuse governance changes")
-    allowance_branch = branch_body(
-        allowance_text,
-        "if",
-        '"${{ github.event_name }}" == "pull_request" && "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true"',
-    )
-    if (
-        not allowance_text
-        or allowance_branch is None
-        or 'echo "value=false" >> "$GITHUB_OUTPUT"' not in allowance_branch
-        or 'echo "value=true" >> "$GITHUB_OUTPUT"' not in allowance_text
+    if fingerprint_inputs_text and not detector_maps_changed_to_any_changed(fingerprint_inputs_text):
+        errors.append("detector must map fingerprint-reuse governance changes to any_changed=true")
+    allowance_chain = if_chain_bodies(allowance_text, '"${{ github.event_name }}" != "pull_request"')
+    if allowance_chain is None:
+        errors.append("detector must deny fingerprint reuse outside pull_request")
+    elif (
+        'echo "value=false" >> "$GITHUB_OUTPUT"'
+        not in allowance_chain.get(("if", '"${{ github.event_name }}" != "pull_request"'), "")
+        or 'echo "value=false" >> "$GITHUB_OUTPUT"'
+        not in allowance_chain.get(
+            (
+                "elif",
+                '"${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true"',
+            ),
+            "",
+        )
+        or 'echo "value=true" >> "$GITHUB_OUTPUT"' not in allowance_chain.get(("else", ""), "")
     ):
         errors.append("detector must determine fingerprint_reuse_allowed")
     return errors
@@ -6557,6 +6607,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest-fingerprint-reuse must use always()")
         if not job_gates_on_full_ci_required(reuse_lines):
             errors.append("nextest-fingerprint-reuse must gate on full_ci_required")
+        if not fingerprint_reuse_gates_on_pull_request(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must be PR-only")
         if not fingerprint_reuse_skips_main_branch(reuse_lines):
             errors.append("nextest-fingerprint-reuse must skip main branch")
         if not fingerprint_reuse_gates_on_detector_allowed(reuse_lines):

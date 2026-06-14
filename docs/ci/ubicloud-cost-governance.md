@@ -38,7 +38,7 @@ Fingerprint evidence is provenance-based. Runs before this instrumentation have 
 
 The nextest cache/fingerprint expression remains inline in `.github/workflows/ci.yml` because GitHub Actions evaluates `hashFiles(...)` inside workflow YAML. The hygiene verifier enforces structural identity across the cache restore key, cache save key, fingerprint file, and fingerprint artifact name so version, shard, or input drift fails CI.
 
-Fingerprint reuse is disabled on pull requests that change the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests. Those PRs must run the normal nextest shards so PR-controlled reuse logic cannot decide to skip test execution.
+Fingerprint reuse is available only on pull request runs. It is disabled on pull requests that change the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests. Those PRs, plus branch `workflow_dispatch` full-CI runs, must run the normal nextest shards so PR-controlled reuse logic cannot decide to skip test execution outside the diff guard.
 
 ## Baseline Evidence
 
@@ -151,7 +151,7 @@ Post-instrumentation evidence found real duplicate nextest spend:
 
 The workflow now resolves the current nextest fingerprint from the secure `test-archive` job output after publishing `nextest-archive-fingerprint-*` for metering evidence. If a bounded search finds a newer-prior successful CI run with exactly one matching fingerprint artifact, exactly one matching CI provenance artifact, matching workflow/config digests, successful required job evidence, and the same parsed nextest fingerprint, the four `nextest shard` jobs are skipped. The `test` aggregate and `gate` jobs accept that path only when resolver outputs identify the reused source run, source SHA, and provenance artifact. Fingerprint reuse is disabled on `refs/heads/main` so main pushes still emit exact-SHA CI provenance for tag deploy reuse. Missing, malformed, ambiguous, expired, failed, cancelled, in-progress, wrong-workflow, wrong-OS, wrong-arch, wrong-profile, wrong-shard-count, wrong-schema, or otherwise unverifiable evidence falls back to normal full nextest shards.
 
-Rollback switch: set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to force full CI for PRs while preserving the resolver code path for investigation, or revert the Slice A workflow/provenance commits if reuse itself must be removed. Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; it does not make cache hits proof and does not bypass the validated reuse requirement.
+Rollback switch: set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to force the full-CI policy path for PRs while preserving the validated fingerprint reuse path for investigation, or revert the Slice A workflow/provenance commits if reuse itself must be removed. Branch `workflow_dispatch` runs always execute the nextest shards. Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; it does not make cache hits proof and does not bypass the validated reuse requirement.
 
 ### Lever B: full CI on demand
 
@@ -205,7 +205,7 @@ When dashboard access is available:
 
 ## Close Status
 
-This Slice 1 PR should not close #648 by itself. Remaining close requirements:
+This Slice A PR should not close #648 by itself. Remaining close requirements:
 
 - Verify and document the Ubicloud-side cap setting path, or document from dashboard/API evidence that no such control exists.
 - Reconcile one day of meter output against Ubicloud dashboard spend.

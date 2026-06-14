@@ -311,9 +311,10 @@ mod tests {
     // on disk. Re-derived after Task 10 activated the complete-set runtime
     // binding and production strategy shell, then after Task 11 added the HIP-4
     // outcome-group normalizer root. Re-derived after PR review tightened
-    // non-standard payout and positive-side binding validation.
+    // non-standard payout and positive-side binding validation. Re-derived
+    // after merging main into the shared outcome-group substrate branch.
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "93d6dabd44f6e673cc30bff9e67ea89b16327c5a8d010693346919464b7c96ee";
+        "5aa6f4c829534088df57946bfe7a2e0d66b29413e12182293b405a49060f6796";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

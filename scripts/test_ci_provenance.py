@@ -732,6 +732,41 @@ def assert_fingerprint_reuse_malformed_fingerprint_fails_closed() -> None:
             raise AssertionError(result)
 
 
+def assert_missing_current_fingerprint_path_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        missing = tmp_path / "missing-cache-key.txt"
+        code, stdout, stderr = run_cli(
+            [
+                "resolve-fingerprint",
+                "--config",
+                str(config),
+                "--repo",
+                "seungpyoson/bolt-v2",
+                "--token",
+                "token",
+                "--current-run-id",
+                str(RUN_ID),
+                "--current-fingerprint-path",
+                str(missing),
+            ]
+        )
+        if code != 0:
+            raise AssertionError((code, stdout, stderr))
+        if stderr:
+            raise AssertionError(stderr)
+        expected = {
+            "reuse_found=false",
+            "source_run_id=",
+            "source_sha=",
+            "source_artifact_id=",
+            "reason=missing current fingerprint",
+        }
+        if set(stdout.splitlines()) != expected:
+            raise AssertionError(stdout)
+
+
 def assert_fingerprint_reuse_selects_newest_valid_prior_green() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1428,6 +1463,7 @@ def main() -> int:
     assert_fingerprint_reuse_requires_exact_fingerprint_components()
     assert_fingerprint_reuse_rejects_source_workflow_digest_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
+    assert_missing_current_fingerprint_path_fails_closed()
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
     assert_ci_policy_outputs_matrix()

@@ -1261,6 +1261,8 @@ def resolve_fingerprint_reuse(
     api_bytes=github_api_bytes,
     now: datetime.datetime | None = None,
 ) -> FingerprintReuseResolution:
+    if current_fingerprint is None:
+        return no_fingerprint_reuse("missing current fingerprint")
     try:
         parsed_current = parse_nextest_fingerprint(current_fingerprint, label="current")
     except ProvenanceError:

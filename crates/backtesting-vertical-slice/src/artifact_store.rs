@@ -534,6 +534,7 @@ pub struct CatalogProjectionBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistedCatalogProjectionObject {
+    pub relative_path: String,
     pub uri: String,
     pub sha256: String,
     pub byte_len: usize,
@@ -543,6 +544,7 @@ pub struct PersistedCatalogProjectionObject {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistedCatalogProjection {
     pub catalog_root_uri: String,
+    pub manifest_sha256: String,
     pub binding: CatalogProjectionBinding,
     pub objects: Vec<PersistedCatalogProjectionObject>,
 }
@@ -650,18 +652,35 @@ pub async fn persist_catalog_projection_for_source_binding(
             .await
             .with_context(|| format!("persist catalog object {uri}"))?;
         objects.push(PersistedCatalogProjectionObject {
+            relative_path: relative_key,
             uri,
             sha256,
             byte_len,
             create_only_write,
         });
     }
-    objects.sort_by(|left, right| left.uri.cmp(&right.uri));
+    objects.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let manifest_sha256 = catalog_projection_manifest_sha256(&objects);
     Ok(PersistedCatalogProjection {
         catalog_root_uri,
+        manifest_sha256,
         binding,
         objects,
     })
+}
+
+fn catalog_projection_manifest_sha256(objects: &[PersistedCatalogProjectionObject]) -> String {
+    let mut lines = objects
+        .iter()
+        .map(|object| {
+            format!(
+                "{}\t{}\t{}\n",
+                object.relative_path, object.byte_len, object.sha256
+            )
+        })
+        .collect::<Vec<_>>();
+    lines.sort();
+    sha256_bytes(lines.concat().as_bytes())
 }
 
 fn collect_regular_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {

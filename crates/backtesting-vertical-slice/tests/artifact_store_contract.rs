@@ -48,6 +48,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+fn expected_catalog_projection_manifest_sha256(entries: &[(&str, usize, &str)]) -> String {
+    let mut lines = entries
+        .iter()
+        .map(|(relative_path, byte_len, sha256)| format!("{relative_path}\t{byte_len}\t{sha256}\n"))
+        .collect::<Vec<_>>();
+    lines.sort();
+    sha256_hex(lines.concat().as_bytes())
+}
+
 fn committed_run_spec_for(gz_bytes: &[u8]) -> RunSpec {
     let mut spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
     let object_hash = sha256_hex(gz_bytes);
@@ -689,6 +698,24 @@ async fn persists_catalog_projection_directory_with_create_only_dispatch() {
         "projection-run-123"
     );
     assert_eq!(persisted.objects.len(), 2);
+    let metadata_sha256 = sha256_hex(br#"{"schema":"nt"}"#);
+    let catalog_sha256 = sha256_hex(b"trade-ticks");
+    assert_eq!(
+        persisted.manifest_sha256,
+        expected_catalog_projection_manifest_sha256(&[
+            (
+                "data/trade_tick/instrument=BTC-USD.BINARY/part-000.parquet",
+                b"trade-ticks".len(),
+                &catalog_sha256
+            ),
+            (
+                "metadata.json",
+                br#"{"schema":"nt"}"#.len(),
+                &metadata_sha256
+            ),
+        ]),
+        "catalog projection manifest hash must be derived from sorted relative path, size, and object hash"
+    );
     assert!(
         persisted
             .objects
@@ -707,6 +734,10 @@ async fn persists_catalog_projection_directory_with_create_only_dispatch() {
         .iter()
         .find(|object| object.uri.ends_with("/part-000.parquet"))
         .expect("catalog parquet object");
+    assert_eq!(
+        catalog_object.relative_path,
+        "data/trade_tick/instrument=BTC-USD.BINARY/part-000.parquet"
+    );
     let object_path = root
         .object_path_for_uri(&catalog_object.uri)
         .expect("uri under artifact root");
@@ -741,7 +772,7 @@ async fn rejects_duplicate_catalog_projection_bytes() {
     fs::write(&catalog_file, b"first").expect("first catalog data");
 
     let store = InMemory::new();
-    persist_catalog_projection_for_source_binding(
+    let first = persist_catalog_projection_for_source_binding(
         &store,
         &root,
         &dispatch,
@@ -759,6 +790,10 @@ async fn rejects_duplicate_catalog_projection_bytes() {
     )
     .await
     .expect("same catalog bytes are idempotent");
+    assert_eq!(
+        idempotent.manifest_sha256, first.manifest_sha256,
+        "same catalog bytes must produce the same sorted projection manifest hash"
+    );
     assert!(
         idempotent
             .objects

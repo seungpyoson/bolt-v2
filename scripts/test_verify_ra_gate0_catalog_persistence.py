@@ -93,7 +93,14 @@ pub enum CreateOnlyWriteDisposition {
 }
 
 pub struct PersistedCatalogProjectionObject {
+    pub relative_path: String,
     pub create_only_write: CreateOnlyWriteDisposition,
+}
+
+pub struct PersistedCatalogProjection {
+    pub manifest_sha256: String,
+    pub binding: CatalogProjectionBinding,
+    pub objects: Vec<PersistedCatalogProjectionObject>,
 }
 
 impl CreateOnlyArtifactWriter {
@@ -109,8 +116,10 @@ pub async fn persist_catalog_projection_for_source_binding() {
     let _root = dispatch.catalog_root_for(source_binding, artifact_root)?;
     pub binding: CatalogProjectionBinding,
     let _persisted = PersistedCatalogProjection {
+        manifest_sha256: catalog_projection_manifest_sha256(&objects),
         binding,
         objects: vec![PersistedCatalogProjectionObject {
+            relative_path: String::from("data/trade_tick/part-000.parquet"),
             create_only_write: CreateOnlyWriteDisposition::Created,
         }],
     };
@@ -283,7 +292,10 @@ fn create_only_probe_requires_duplicate_create_rejection() {
 
 fn persists_catalog_projection_directory_with_create_only_dispatch() {
     let _store = InMemory::new();
+    let _expected_manifest_sha256 = expected_catalog_projection_manifest_sha256(&[]);
     persist_catalog_projection_for_source_binding();
+    let _manifest_sha256 = persisted.manifest_sha256;
+    let _relative_path = persisted.objects[0].relative_path.clone();
 }
 
 fn rejects_duplicate_catalog_projection_bytes() {}
@@ -298,6 +310,8 @@ fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
     let _persisted_source_binding = persisted.binding.source_binding;
     let _persisted_market_structure = persisted.binding.market_structure_fixture;
     let _persisted_projection_id = persisted.binding.catalog_projection_id;
+    let _manifest_sha256 = persisted.manifest_sha256;
+    let _relative_path = persisted.objects[0].relative_path.clone();
     let _created = CreateOnlyWriteDisposition::Created;
     let _already_existed = CreateOnlyWriteDisposition::AlreadyExistedSamePayload;
     let _create_only_write = persisted.objects[0].create_only_write;

@@ -303,8 +303,10 @@ mod tests {
     // shared order-execution policy's live NT submit succeeds.
     // Re-derived again after aligning the shared policy test helper with the
     // consolidated reservation-evidence writer trait.
+    // Re-derived after adding behavioral rollback coverage to the shared
+    // execution policy.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "fcd5937f47f38cffbaeb3d8ea863ec92486fde78c6833d76d66e389e7a86fd34";
+        "4096ff5fc33e5a3b47d6494430b46ae75d69aa974ce3e676e538f4d919f140d8";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -333,8 +335,10 @@ mod tests {
     // fee/slippage liability only.
     // Re-derived after allowing empty terminal NT lifecycle evidence to
     // re-open a previously re-closed position-sizer gate.
+    // Re-derived after adding bounded fill/order dedupe retention and checked
+    // reservation liability arithmetic.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "8371b49954d774be4873f5acb6d677408d1d33b41637cded6e9ced899f3fd1ff";
+        "cd99a44637245b9d781114c6f4c296b60f878d9a839682d3981aa902665c1808";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

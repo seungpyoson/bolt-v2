@@ -569,7 +569,11 @@ pub struct CreateOnlyProbeTranscript {
 }
 
 impl CatalogDispatchConfig {
-    fn binding_for(&self, source_binding: &str) -> Result<&CatalogProjectionBinding> {
+    fn binding_for(
+        &self,
+        source_binding: &str,
+        expected_market_structure_fixture: MarketStructureFixture,
+    ) -> Result<&CatalogProjectionBinding> {
         let mut matches = self
             .bindings
             .iter()
@@ -586,6 +590,12 @@ impl CatalogDispatchConfig {
             &binding.catalog_projection_id,
             PathTokenMode::AllowEquals,
         )?;
+        ensure!(
+            binding.market_structure_fixture == expected_market_structure_fixture,
+            "catalog dispatch market_structure_fixture mismatch for {source_binding:?}: expected {:?}, configured {:?}",
+            expected_market_structure_fixture,
+            binding.market_structure_fixture
+        );
         Ok(binding)
     }
 
@@ -596,9 +606,10 @@ impl CatalogDispatchConfig {
     pub fn catalog_root_for(
         &self,
         source_binding: &str,
+        expected_market_structure_fixture: MarketStructureFixture,
         artifact_root: &ResolvedArtifactRoot,
     ) -> Result<String> {
-        let binding = self.binding_for(source_binding)?;
+        let binding = self.binding_for(source_binding, expected_market_structure_fixture)?;
         Ok(artifact_root.nt_catalog_projection_root(&binding.catalog_projection_id))
     }
 }
@@ -613,6 +624,7 @@ pub async fn persist_catalog_projection_for_source_binding(
     artifact_root: &ResolvedArtifactRoot,
     dispatch: &CatalogDispatchConfig,
     source_binding: &str,
+    expected_market_structure_fixture: MarketStructureFixture,
     local_catalog_root: &Path,
 ) -> Result<PersistedCatalogProjection> {
     ensure!(
@@ -620,7 +632,9 @@ pub async fn persist_catalog_projection_for_source_binding(
         "local catalog projection root {} is not a directory",
         local_catalog_root.display()
     );
-    let binding = dispatch.binding_for(source_binding)?.clone();
+    let binding = dispatch
+        .binding_for(source_binding, expected_market_structure_fixture)?
+        .clone();
     let catalog_root_uri = artifact_root.nt_catalog_projection_root(&binding.catalog_projection_id);
     let mut file_paths = Vec::new();
     collect_regular_files(local_catalog_root, local_catalog_root, &mut file_paths)?;

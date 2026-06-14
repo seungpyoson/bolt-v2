@@ -617,10 +617,14 @@ fn dispatches_source_bindings_to_catalog_projection_roots_without_venue_paths() 
     };
 
     let binary = dispatch
-        .catalog_root_for("binary-official", &root)
+        .catalog_root_for(
+            "binary-official",
+            MarketStructureFixture::BinaryOption,
+            &root,
+        )
         .expect("binary binding dispatches");
     let perps = dispatch
-        .catalog_root_for("perps-official", &root)
+        .catalog_root_for("perps-official", MarketStructureFixture::PerpsSpot, &root)
         .expect("perps binding dispatches");
 
     assert_eq!(
@@ -633,7 +637,24 @@ fn dispatches_source_bindings_to_catalog_projection_roots_without_venue_paths() 
     );
     assert!(!binary.contains("official"));
     assert!(!perps.contains("official"));
-    assert!(dispatch.catalog_root_for("missing-binding", &root).is_err());
+    assert!(
+        dispatch
+            .catalog_root_for(
+                "missing-binding",
+                MarketStructureFixture::BinaryOption,
+                &root
+            )
+            .is_err()
+    );
+    let mismatch_err = dispatch
+        .catalog_root_for("binary-official", MarketStructureFixture::PerpsSpot, &root)
+        .expect_err("fixture mismatches must not dispatch to a durable catalog root");
+    assert!(
+        mismatch_err
+            .to_string()
+            .contains("market_structure_fixture mismatch"),
+        "{mismatch_err}"
+    );
 }
 
 #[tokio::test]
@@ -711,6 +732,7 @@ async fn persists_catalog_projection_directory_with_create_only_dispatch() {
         &root,
         &dispatch,
         "binary-official",
+        MarketStructureFixture::BinaryOption,
         temp.path(),
     )
     .await
@@ -809,6 +831,7 @@ async fn rejects_duplicate_catalog_projection_bytes() {
         &root,
         &dispatch,
         "binary-official",
+        MarketStructureFixture::BinaryOption,
         temp.path(),
     )
     .await
@@ -818,6 +841,7 @@ async fn rejects_duplicate_catalog_projection_bytes() {
         &root,
         &dispatch,
         "binary-official",
+        MarketStructureFixture::BinaryOption,
         temp.path(),
     )
     .await
@@ -841,12 +865,47 @@ async fn rejects_duplicate_catalog_projection_bytes() {
         &root,
         &dispatch,
         "binary-official",
+        MarketStructureFixture::BinaryOption,
         temp.path(),
     )
     .await
     .expect_err("duplicate projection bytes must be rejected");
 
     assert!(err.to_string().contains("differs"), "{err}");
+}
+
+#[tokio::test]
+async fn rejects_catalog_dispatch_fixture_mismatch() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = CatalogDispatchConfig {
+        bindings: vec![CatalogProjectionBinding {
+            source_binding: "binary-official".to_string(),
+            market_structure_fixture: MarketStructureFixture::BinaryOption,
+            catalog_projection_id: "projection-run-123".to_string(),
+        }],
+    };
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let catalog_file = temp.path().join("data/trade_tick/part-000.parquet");
+    fs::create_dir_all(catalog_file.parent().expect("parent")).expect("catalog directory");
+    fs::write(&catalog_file, b"fixture-mismatch").expect("catalog data");
+
+    let store = InMemory::new();
+    let err = persist_catalog_projection_for_source_binding(
+        &store,
+        &root,
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::PerpsSpot,
+        temp.path(),
+    )
+    .await
+    .expect_err("market_structure_fixture mismatch must reject catalog persistence");
+
+    assert!(
+        err.to_string()
+            .contains("market_structure_fixture mismatch"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -861,7 +920,11 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         .expect("artifact root resolves");
     let expected_catalog_root = spec
         .catalog_dispatch
-        .catalog_root_for(&spec.source_proof.source_binding, &artifact_root)
+        .catalog_root_for(
+            &spec.source_proof.source_binding,
+            spec.manifest.market_structure_fixture,
+            &artifact_root,
+        )
         .expect("source binding dispatches");
 
     let artifacts = run_from_run_spec_with_artifact_store(&spec, &gz, output_dir.path(), &store)

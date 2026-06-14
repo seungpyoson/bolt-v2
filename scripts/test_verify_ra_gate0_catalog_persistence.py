@@ -84,7 +84,17 @@ fn nt_catalog_synthetic_proof_root() {
 }
 
 impl CatalogDispatchConfig {
-    pub fn catalog_root_for(&self) {}
+    pub fn catalog_root_for(
+        &self,
+        expected_market_structure_fixture: MarketStructureFixture,
+    ) {
+        let binding = CatalogProjectionBinding {
+            source_binding: String::new(),
+            market_structure_fixture: expected_market_structure_fixture,
+            catalog_projection_id: String::new(),
+        };
+        assert!(binding.market_structure_fixture == expected_market_structure_fixture);
+    }
 }
 
 pub enum CreateOnlyWriteDisposition {
@@ -113,8 +123,10 @@ impl CreateOnlyArtifactWriter {
 
 pub async fn persist_catalog_projection_for_source_binding() {
     let _dispatch: CatalogDispatchConfig;
-    let _root = dispatch.catalog_root_for(source_binding, artifact_root)?;
+    let expected_market_structure_fixture = MarketStructureFixture::BinaryOption;
+    let _root = dispatch.catalog_root_for(source_binding, expected_market_structure_fixture, artifact_root)?;
     pub binding: CatalogProjectionBinding,
+    assert!(binding.market_structure_fixture == expected_market_structure_fixture);
     let _persisted = PersistedCatalogProjection {
         manifest_sha256: catalog_projection_manifest_sha256(&objects),
         binding,
@@ -303,6 +315,11 @@ fn persists_catalog_projection_directory_with_create_only_dispatch() {
 
 fn rejects_duplicate_catalog_projection_bytes() {}
 
+fn rejects_catalog_dispatch_fixture_mismatch() {
+    let _expected_fixture = MarketStructureFixture::PerpsSpot;
+    let _mismatch_message = "market_structure_fixture mismatch";
+}
+
 fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
     let _store = InMemory::new();
     let artifacts = run_from_run_spec_with_artifact_store();
@@ -312,6 +329,7 @@ fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
     let _persisted_catalog_objects = artifacts.persisted_catalog_objects;
     let _persisted_source_binding = persisted.binding.source_binding;
     let _persisted_market_structure = persisted.binding.market_structure_fixture;
+    let _expected_fixture = MarketStructureFixture::PerpsSpot;
     let _persisted_projection_id = persisted.binding.catalog_projection_id;
     let _manifest_sha256 = persisted.manifest_sha256;
     let _relative_path = persisted.objects[0].relative_path.clone();

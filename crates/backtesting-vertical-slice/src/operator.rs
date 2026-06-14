@@ -256,6 +256,7 @@ pub async fn run_from_run_spec_with_artifact_store(
         &artifact_root,
         &spec.catalog_dispatch,
         &spec.source_proof.source_binding,
+        spec.manifest.market_structure_fixture,
         &artifacts.catalog_root,
     )
     .await?;

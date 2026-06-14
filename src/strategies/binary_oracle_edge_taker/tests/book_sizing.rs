@@ -259,7 +259,7 @@ fn entry_gate_blocks_when_active_outcome_book_is_strictly_crossed() {
 #[test]
 fn task5_missing_liquidity_is_thin_book() {
     let reasons = evaluate_forced_flat_predicates(&ForcedFlatInputs {
-        phase: SelectionPhase::Active,
+        frozen: false,
         metadata_matches_selection: true,
         last_reference_ts_ms: Some(1_000),
         now_ms: 1_250,

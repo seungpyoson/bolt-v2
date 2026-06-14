@@ -14,7 +14,7 @@ use crate::{
     },
 };
 
-use super::{OutcomeFeeState, SelectionPhase};
+use super::OutcomeFeeState;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct OpenPositionState {
@@ -359,58 +359,4 @@ pub(super) enum ExposureOccupancy {
     ExitPending,
     UnsupportedObserved,
     BlindRecovery,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ForcedFlatReason {
-    Freeze,
-    StaleReference,
-    ThinBook,
-    MetadataMismatch,
-    FastVenueIncoherent,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct ForcedFlatInputs {
-    pub(super) phase: SelectionPhase,
-    pub(super) metadata_matches_selection: bool,
-    pub(super) last_reference_ts_ms: Option<u64>,
-    pub(super) now_ms: u64,
-    pub(super) stale_reference_after_ms: u64,
-    pub(super) liquidity_available: Option<f64>,
-    pub(super) min_liquidity_required: f64,
-    pub(super) fast_venue_incoherent: bool,
-}
-
-pub(super) fn evaluate_forced_flat_predicates(inputs: &ForcedFlatInputs) -> Vec<ForcedFlatReason> {
-    let mut reasons = Vec::new();
-    // Defense-in-depth (A14): a MISSING reference timestamp is the maximally
-    // stale condition — the strategy has never observed a reference quote — so
-    // it must classify as stale, not fresh. `is_none_or` returns `true` for the
-    // `None` case (no reference ever) AND for an observed-but-aged reference,
-    // and `false` only for a reference observed within the freshness bound.
-    let reference_stale = inputs.last_reference_ts_ms.is_none_or(|last_ts_ms| {
-        inputs.now_ms.saturating_sub(last_ts_ms) > inputs.stale_reference_after_ms
-    });
-
-    if inputs.phase == SelectionPhase::Freeze {
-        reasons.push(ForcedFlatReason::Freeze);
-    }
-    if reference_stale {
-        reasons.push(ForcedFlatReason::StaleReference);
-    }
-    if inputs
-        .liquidity_available
-        .is_none_or(|liquidity| !liquidity.is_finite() || liquidity < inputs.min_liquidity_required)
-    {
-        reasons.push(ForcedFlatReason::ThinBook);
-    }
-    if !inputs.metadata_matches_selection {
-        reasons.push(ForcedFlatReason::MetadataMismatch);
-    }
-    if inputs.fast_venue_incoherent && reference_stale {
-        reasons.push(ForcedFlatReason::FastVenueIncoherent);
-    }
-
-    reasons
 }

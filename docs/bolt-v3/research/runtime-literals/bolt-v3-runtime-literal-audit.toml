@@ -759,6 +759,14 @@ reason = "This is the JSONL envelope discriminator for admission-decision record
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
+literal = '''"basket_admission_decision"'''
+context = '''const BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND: &str = "basket_admission_decision";'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL envelope discriminator for basket-admission decision records and is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
 literal = '''"CARGO_PKG_VERSION"'''
 context = '''pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");'''
 classification = "decision_evidence_gate_version_source"
@@ -1832,9 +1840,17 @@ reason = "Each admitted order for an approved execution client consumes exactly 
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''0'''
-context = '''.unwrap_or(0)'''
+context = '''.unwrap_or(0);'''
 classification = "submit_admission_counter_identity"
 reason = "A missing per-client live-submit approval counter means no orders have been admitted for that execution client yet; the cap remains artifact-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''0'''
+context = '''.or_insert(0);'''
+classification = "submit_admission_counter_identity"
+reason = "The per-client live-submit approval counter starts empty on first admitted basket for that execution client; the cap remains artifact-owned."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"

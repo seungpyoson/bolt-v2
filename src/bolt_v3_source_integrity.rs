@@ -278,8 +278,10 @@ mod tests {
     // Re-derived again after adding checked fee-inclusive admission arithmetic.
     // Re-derived after moving entry limit-notional guarding into shared submit
     // admission.
+    // Re-derived after Task 6 added basket submit-slot reservation on the shared
+    // submit-admission gate.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "765681e898d3e6ab3c957031b30d2aefe82722ff2dccabfe6bdd85b3ee0b9131";
+        "466c7d50f06fa4a21c67a2252386118e876ab593527376480283b216caf6e741";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

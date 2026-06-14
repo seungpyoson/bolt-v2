@@ -1,6 +1,7 @@
 use crate::bolt_v3_decision_evidence::{
-    BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
-    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, compiled_order_price_source,
+    BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
+    BoltV3BasketAdmissionOutcome, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+    BoltV3OrderIntentKind, compiled_order_price_source,
 };
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use crate::bolt_v3_numeric::{is_positive_finite, notional_float_tolerance};
@@ -64,6 +65,17 @@ pub fn validate_no_exchange_mutations(
 pub struct BoltV3LiveSubmitApprovalLimits {
     pub max_order_count: u32,
     pub max_order_notional: Decimal,
+}
+
+pub fn live_submit_count_cap_outcome(
+    current_count: u32,
+    claim_count: u32,
+    max_order_count: u32,
+) -> BoltV3AdmissionOutcome {
+    match current_count.checked_add(claim_count) {
+        Some(total) if total <= max_order_count => BoltV3AdmissionOutcome::Admitted,
+        Some(_) | None => BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+    }
 }
 
 #[derive(Debug)]
@@ -216,9 +228,127 @@ impl BoltV3SubmitAdmissionState {
         }
     }
 
+    pub fn reserve_basket_submit_slots(
+        &self,
+        execution_client_id: &str,
+        claims: &[BoltV3BasketSubmitSlotClaim],
+        evidence: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+
+        let mut outcome = if claims.is_empty() {
+            BoltV3AdmissionOutcome::RejectedNonPositiveNotional
+        } else {
+            BoltV3AdmissionOutcome::Admitted
+        };
+        let mut rejected_intent = claims
+            .first()
+            .map(|claim| claim.intent_kind)
+            .unwrap_or(BoltV3SubmitIntentKind::Entry);
+
+        for claim in claims {
+            let view =
+                BoltV3SubmitAdmissionRequestView::from_basket_claim(execution_client_id, claim);
+            outcome = Self::evaluate_view(&inner, &view);
+            if outcome != BoltV3AdmissionOutcome::Admitted {
+                rejected_intent = claim.intent_kind;
+                break;
+            }
+        }
+
+        let claim_count = match u32::try_from(claims.len()) {
+            Ok(value) => value,
+            Err(_) => {
+                outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                u32::MAX
+            }
+        };
+
+        if outcome == BoltV3AdmissionOutcome::Admitted {
+            if inner
+                .admitted_order_count
+                .checked_add(claim_count)
+                .is_none()
+            {
+                outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+            }
+        }
+
+        if outcome == BoltV3AdmissionOutcome::Admitted {
+            if let Some(limits) = inner.live_submit_approval_limits.get(execution_client_id) {
+                let current_count = inner
+                    .admitted_order_count_by_execution_client
+                    .get(execution_client_id)
+                    .copied()
+                    .unwrap_or(0);
+                outcome = live_submit_count_cap_outcome(
+                    current_count,
+                    claim_count,
+                    limits.max_order_count,
+                );
+            }
+        }
+
+        let mut evidence = evidence.clone();
+        evidence.outcome = basket_outcome_from_submit_outcome(outcome.clone());
+        self.decision_evidence
+            .record_basket_admission_decision(&evidence)
+            .map_err(|err| BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                reason: format!("{err:#}"),
+            })?;
+
+        if outcome != BoltV3AdmissionOutcome::Admitted {
+            return Err(submit_admission_error_from_outcome(
+                outcome,
+                inner.kill_switch_state.kind(),
+                rejected_intent,
+            ));
+        }
+
+        inner.admitted_order_count = inner
+            .admitted_order_count
+            .checked_add(claim_count)
+            .ok_or(BoltV3SubmitAdmissionError::CountCapExhausted)?;
+        let client_count = inner
+            .admitted_order_count_by_execution_client
+            .entry(execution_client_id.to_string())
+            .or_insert(0);
+        *client_count = client_count
+            .checked_add(claim_count)
+            .ok_or(BoltV3SubmitAdmissionError::CountCapExhausted)?;
+        for claim in claims {
+            match claim.intent_kind {
+                BoltV3SubmitIntentKind::Entry => {
+                    inner.admitted_entry_order_count += 1;
+                }
+                BoltV3SubmitIntentKind::RiskReducingExit => {
+                    inner.admitted_risk_reducing_exit_order_count += 1;
+                }
+                BoltV3SubmitIntentKind::ReplaceSubmit => {
+                    inner.admitted_replace_submit_order_count += 1;
+                }
+                BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
+                    inner.live_kill_switch_forced_reduction_order_count += 1;
+                }
+            }
+        }
+
+        Ok(BoltV3SubmitAdmissionPermit(()))
+    }
+
     fn evaluate(
         inner: &BoltV3SubmitAdmissionInner,
         request: &BoltV3SubmitAdmissionRequest,
+    ) -> BoltV3AdmissionOutcome {
+        Self::evaluate_view(inner, &BoltV3SubmitAdmissionRequestView::from(request))
+    }
+
+    fn evaluate_view(
+        inner: &BoltV3SubmitAdmissionInner,
+        request: &BoltV3SubmitAdmissionRequestView<'_>,
     ) -> BoltV3AdmissionOutcome {
         if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
             return Self::evaluate_kill_switch_forced_reduction(inner, request);
@@ -238,17 +368,18 @@ impl BoltV3SubmitAdmissionState {
         }
         if let Some(limits) = inner
             .live_submit_approval_limits
-            .get(&request.execution_client_id)
+            .get(request.execution_client_id)
         {
             if request.notional > limits.max_order_notional {
                 return BoltV3AdmissionOutcome::RejectedNotionalCapExceeded;
             }
-            if inner
+            let current_count = inner
                 .admitted_order_count_by_execution_client
-                .get(&request.execution_client_id)
+                .get(request.execution_client_id)
                 .copied()
-                .unwrap_or(0)
-                >= limits.max_order_count
+                .unwrap_or(0);
+            if live_submit_count_cap_outcome(current_count, 1, limits.max_order_count)
+                == BoltV3AdmissionOutcome::RejectedCountCapExhausted
             {
                 return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
             }
@@ -259,7 +390,11 @@ impl BoltV3SubmitAdmissionState {
                 let Some(proof) = request.risk_reducing_exit_proof.as_ref() else {
                     return BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof;
                 };
-                if !proof.is_valid_for(request) {
+                if !proof.is_valid_for_shape(
+                    request.instrument_id,
+                    request.order_side,
+                    request.order_quantity,
+                ) {
                     return BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof;
                 }
             }
@@ -273,7 +408,7 @@ impl BoltV3SubmitAdmissionState {
 
     fn evaluate_kill_switch_forced_reduction(
         inner: &BoltV3SubmitAdmissionInner,
-        request: &BoltV3SubmitAdmissionRequest,
+        request: &BoltV3SubmitAdmissionRequestView<'_>,
     ) -> BoltV3AdmissionOutcome {
         let Some(policy) = inner.kill_switch_forced_reduction_policy.as_ref() else {
             return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid;
@@ -304,6 +439,62 @@ impl BoltV3SubmitAdmissionState {
             .lock()
             .expect("submit admission state mutex should not be poisoned")
             .admitted_order_count
+    }
+}
+
+fn basket_outcome_from_submit_outcome(
+    outcome: BoltV3AdmissionOutcome,
+) -> BoltV3BasketAdmissionOutcome {
+    match outcome {
+        BoltV3AdmissionOutcome::Admitted => BoltV3BasketAdmissionOutcome::Admitted,
+        BoltV3AdmissionOutcome::RejectedKillSwitchLatched
+        | BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed
+        | BoltV3AdmissionOutcome::RejectedNonPositiveNotional
+        | BoltV3AdmissionOutcome::RejectedNotionalCapExceeded
+        | BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof
+        | BoltV3AdmissionOutcome::RejectedCountCapExhausted
+        | BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid
+        | BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
+            BoltV3BasketAdmissionOutcome::RejectedSubmitSlots
+        }
+    }
+}
+
+fn submit_admission_error_from_outcome(
+    outcome: BoltV3AdmissionOutcome,
+    kill_switch_state: KillSwitchStateKind,
+    intent: BoltV3SubmitIntentKind,
+) -> BoltV3SubmitAdmissionError {
+    match outcome {
+        BoltV3AdmissionOutcome::Admitted => {
+            unreachable!("admitted outcome does not convert to a submit admission error")
+        }
+        BoltV3AdmissionOutcome::RejectedKillSwitchLatched => {
+            BoltV3SubmitAdmissionError::KillSwitchLatched {
+                state: kill_switch_state,
+            }
+        }
+        BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
+            BoltV3SubmitAdmissionError::SubmitLifecycleDisallowed { intent }
+        }
+        BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
+            BoltV3SubmitAdmissionError::NonPositiveNotional
+        }
+        BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => {
+            BoltV3SubmitAdmissionError::NotionalCapExceeded
+        }
+        BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof => {
+            BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof
+        }
+        BoltV3AdmissionOutcome::RejectedCountCapExhausted => {
+            BoltV3SubmitAdmissionError::CountCapExhausted
+        }
+        BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
+            BoltV3SubmitAdmissionError::KillSwitchForcedReductionProofInvalid
+        }
+        BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
+            BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
+        }
     }
 }
 
@@ -436,15 +627,20 @@ pub struct BoltV3RiskReducingExitPositionInput<'a> {
 }
 
 impl BoltV3RiskReducingExitProof {
-    fn is_valid_for(&self, request: &BoltV3SubmitAdmissionRequest) -> bool {
-        self.instrument_id == request.instrument_id
-            && self.exit_order_side == request.order_side
-            && self.exit_quantity == request.order_quantity
+    fn is_valid_for_shape(
+        &self,
+        instrument_id: &str,
+        order_side: OrderSide,
+        order_quantity: Decimal,
+    ) -> bool {
+        self.instrument_id == instrument_id
+            && self.exit_order_side == order_side
+            && self.exit_quantity == order_quantity
             && self.position_quantity > Decimal::ZERO
             && self.exit_quantity > Decimal::ZERO
             && self.exit_quantity <= self.position_quantity
             && matches!(
-                (self.position_side, self.exit_order_side),
+                (self.position_side, order_side),
                 (PositionSide::Long, OrderSide::Sell) | (PositionSide::Short, OrderSide::Buy)
             )
     }
@@ -499,6 +695,65 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
     pub kill_switch_forced_reduction: Option<BoltV3KillSwitchForcedReductionClaim>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3BasketSubmitSlotClaim {
+    pub client_order_id: String,
+    pub instrument_id: String,
+    pub notional: Decimal,
+    pub order_side: OrderSide,
+    pub order_quantity: Decimal,
+    pub intent_kind: BoltV3SubmitIntentKind,
+    pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+    pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
+}
+
+struct BoltV3SubmitAdmissionRequestView<'a> {
+    execution_client_id: &'a str,
+    instrument_id: &'a str,
+    notional: Decimal,
+    order_side: OrderSide,
+    order_quantity: Decimal,
+    intent_kind: BoltV3SubmitIntentKind,
+    lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+    risk_reducing_exit_proof: Option<&'a BoltV3RiskReducingExitProof>,
+    kill_switch_forced_reduction: Option<&'a BoltV3KillSwitchForcedReductionClaim>,
+}
+
+impl<'a> From<&'a BoltV3SubmitAdmissionRequest> for BoltV3SubmitAdmissionRequestView<'a> {
+    fn from(request: &'a BoltV3SubmitAdmissionRequest) -> Self {
+        Self {
+            execution_client_id: &request.execution_client_id,
+            instrument_id: &request.instrument_id,
+            notional: request.notional,
+            order_side: request.order_side,
+            order_quantity: request.order_quantity,
+            intent_kind: request.intent_kind,
+            lifecycle_policy: request.lifecycle_policy,
+            risk_reducing_exit_proof: request.risk_reducing_exit_proof.as_ref(),
+            kill_switch_forced_reduction: request.kill_switch_forced_reduction.as_ref(),
+        }
+    }
+}
+
+impl<'a> BoltV3SubmitAdmissionRequestView<'a> {
+    fn from_basket_claim(
+        execution_client_id: &'a str,
+        claim: &'a BoltV3BasketSubmitSlotClaim,
+    ) -> Self {
+        Self {
+            execution_client_id,
+            instrument_id: &claim.instrument_id,
+            notional: claim.notional,
+            order_side: claim.order_side,
+            order_quantity: claim.order_quantity,
+            intent_kind: claim.intent_kind,
+            lifecycle_policy: claim.lifecycle_policy,
+            risk_reducing_exit_proof: claim.risk_reducing_exit_proof.as_ref(),
+            kill_switch_forced_reduction: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

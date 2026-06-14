@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-perpetual-native-trades:LTCUSD_PERP:2026-03-01:5607c68e4f71a284cd8228404af9a369976a434a45c7dfb09b865ee2335f483b:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-perpetual-native-trades:LTCUSD_PERP:2026-03-01:5607c68e4f71a284cd8228404af9a369976a434a45c7dfb09b865ee2335f483b:source-proof-scope",
+  "source_proof_scope_report_hash": "7cbb60f8f44e8268663a2d1850133aa8267ed68e34b476e0ae00d362a99f1c41",
+  "source_proof_id": "source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-coin-m-perpetual-native-trades",
+  "table_family": "trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-coin_m_perpetual",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 286295,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=LTCUSD_PERP/object=5607c68e4f71a284cd8228404af9a369976a434a45c7dfb09b865ee2335f483b.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/LTCUSD_PERP/LTCUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "5607c68e4f71a284cd8228404af9a369976a434a45c7dfb09b865ee2335f483b",
+      "bytes": 286295,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

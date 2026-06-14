@@ -1,0 +1,257 @@
+{
+  "schema_version": 1,
+  "evidence_id": "source-proof-fidelity-evaluation-backtesting-engine-2026-06-08",
+  "observed_at_utc": "2026-06-07T21:25:31Z",
+  "task": "BACKTESTING_ENGINE-025",
+  "scope": {
+    "purpose": "Evaluate the highest-fidelity historical market data available for each fixture before accepting weaker replay.",
+    "not_source_selection": true,
+    "not_backfill_authorization": true,
+    "not_nt_mapping_acceptance": true,
+    "applies_to_fixture_types": [
+      "binary-option",
+      "perps-spot"
+    ],
+    "selection_remains_blocked_by": [
+      "BACKTESTING_ENGINE-022",
+      "BACKTESTING_ENGINE-027"
+    ]
+  },
+  "source_fetches": [
+    {
+      "source_id": "binance-public-data-readme",
+      "url": "https://raw.githubusercontent.com/binance/binance-public-data/master/README.md",
+      "sha256": "085ab91377aa9325d44f4c7ad27cce4ab381e158403e1d7df2bad39d1a66f7c6",
+      "observed_facts": [
+        "The Binance public data README states that Binance Data Collection offers public market data as daily or monthly files.",
+        "The checked README lists spot AggTrades, Klines, and Trades; the Trades files come from /api/v3/historicalTrades.",
+        "No spot order book, depth, or L2 archive family was found in the checked README."
+      ]
+    },
+    {
+      "source_id": "tardis-binance-docs",
+      "url": "https://docs.tardis.dev/historical-data-details/binance",
+      "sha256": "49b062377497b68dc8fb46d9966db9f1128d5610b22128af4e5ad6d22c31d01a",
+      "observed_facts": [
+        "The checked Tardis Binance docs include an incremental_book_L2 BTCUSDT sample dated 2019-12-01.",
+        "The checked docs list the depth channel as incremental order book updates and depthSnapshot as generated initial order book snapshots.",
+        "The checked docs state sequence-number validation for Binance order book incremental updates."
+      ]
+    },
+    {
+      "source_id": "tardis-binance-exchange-metadata",
+      "url": "https://api.tardis.dev/v1/exchanges/binance",
+      "sha256": "0e9cf4b72944801ce460edd477c305342bf3b9bc239216c92ebd8eddd1a7197e",
+      "observed_facts": [
+        "availableChannels are trade, depth, depthSnapshot, bookTicker, aggTrade, ticker, borrowInterest, recentTrades, and tokenNav.",
+        "The metadata response listed 3297 spot symbols.",
+        "BTCUSDT has trades, incremental_book_L2, quotes, book_snapshot_5, book_snapshot_25, and book_ticker data from 2019-03-30 to 2026-06-07."
+      ]
+    },
+    {
+      "source_id": "pmxt-root-index",
+      "url": "https://archive.pmxt.dev/",
+      "sha256": "ba0800ace2ff70efc27a0ea229e2b49f86a428332733a67c05f6e050bc53b14a",
+      "observed_facts": [
+        "The PMXT archive describes free hourly snapshots of Polymarket, Kalshi, Limitless, and Opinion orderbook data in Parquet format.",
+        "The archive page states the data is updated every hour.",
+        "The archive page footer states CC BY 4.0 licensing and commercial use allowed with attribution."
+      ]
+    },
+    {
+      "source_id": "pmxt-kalshi-index",
+      "url": "https://archive.pmxt.dev/Kalshi",
+      "sha256": "9773e940469d01ebfad6f6116f3f3aa12e597909376caf1d1da78093b0ee0fbd",
+      "observed_facts": [
+        "The checked Kalshi index page listed hourly kalshi_orderbook_YYYY-MM-DDTHH.parquet objects.",
+        "The parsed sample had 100 visible objects, average 54.8 MB per hour, minimum 14.6 MB, and maximum 126.8 MB.",
+        "The visible sample extrapolates to about 1.28 GB per day and 0.46 TB per year before conversion, catalog writes, validation scans, and downstream analytics."
+      ]
+    },
+    {
+      "source_id": "tardis-hyperliquid-docs",
+      "url": "https://docs.tardis.dev/historical-data-details/hyperliquid",
+      "sha256": "5b42f93694bdbfd1771d715a412945e70deed3afff1ea01473bf808383ccb42b",
+      "observed_facts": [
+        "The checked Tardis Hyperliquid docs include incremental_book_L2 and trades samples for BTC dated 2024-12-01.",
+        "The checked docs list l2Book as an order book snapshot stream.",
+        "The checked docs list bbo as available since 2025-06-26."
+      ]
+    },
+    {
+      "source_id": "tardis-hyperliquid-exchange-metadata",
+      "url": "https://api.tardis.dev/v1/exchanges/hyperliquid",
+      "sha256": "72f501d24df80468131185adba1603c46c3ce224d9eeddcc8c20e09fd9545f11",
+      "observed_facts": [
+        "availableChannels are trades, l2Book, bbo, activeAssetCtx, and activeSpotAssetCtx.",
+        "The metadata response listed 694 available symbols: 393 perpetual and 301 spot.",
+        "The dataset symbols summary listed 393 perpetual symbols and 301 spot symbols with incremental_book_L2.",
+        "The dataset symbols summary listed 300 spot symbols whose ids begin with @ and have incremental_book_L2.",
+        "This metadata does not by itself bind HIP-4 outcomeMeta outcome ids or #encoded current outcome books to historical dataset symbols."
+      ]
+    },
+    {
+      "source_id": "hyperliquid-historical-data-docs",
+      "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/historical-data",
+      "sha256": "1ce839548778da7ed61f0b594277135b9957b2f87c5381be0a3d842afd87728d",
+      "observed_facts": [
+        "The checked Hyperliquid docs state the requester pays transfer costs.",
+        "The checked docs state historical data is uploaded approximately once a month, with no timely-update guarantee and possible missing data.",
+        "The checked docs state L2 book snapshots are available in market_data and asset contexts are available in asset_ctxs; no other historical data sets are provided via S3."
+      ]
+    },
+    {
+      "source_id": "hyperliquid-hip4-existing-current-proof",
+      "url": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.hyperliquid-hip4-outcome-meta.2026-06-08.json",
+      "sha256": "0a5e29e2dc97b5117307e4323ea899f5a8fd1fcf44a0bd2aa851e3ade3eb7695",
+      "observed_facts": [
+        "The current outcomeMeta sample has top-level outcomes and questions keys.",
+        "Outcome rows expose description, name, outcome, quoteToken, and sideSpecs.",
+        "The sample remains bounded/current-only until historical archive coverage and parser fidelity are proven."
+      ]
+    },
+    {
+      "source_id": "hyperliquid-hip4-existing-nt-mapping-proof",
+      "url": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.hyperliquid-hip4-outcome-meta.2026-06-08.json",
+      "sha256": "b764fbaf876ec2e09819cb2652f4e15ece1ed9c966ac9c93ef0140f2abdc0cff",
+      "observed_facts": [
+        "The checked NT BinaryOption instrument mapping requires activation_ns, expiration_ns, precision fields, and increment fields not present in outcomeMeta.",
+        "The current market data probe used outcome 101 side 0 encoded as #1010 and reached current l2Book/candle data.",
+        "The mapping conclusion blocks instrument and replay mapping until source-backed checked fields and accepted historical replay coverage exist."
+      ]
+    }
+  ],
+  "fixture_evaluations": [
+    {
+      "fixture_type": "perps-spot",
+      "current_fixture_source_binding": "binance-spot-native-trades",
+      "current_fixture_fidelity": "TRADE_REPLAY",
+      "highest_fidelity_candidate_status": "paid_vendor_l2_candidate_pending_source_selection",
+      "official_or_free_candidates": [
+        {
+          "source_binding": "binance-spot-native-trades",
+          "source_family": "official_public_archive",
+          "candidate_fidelity": "TRADE_REPLAY",
+          "classification": "ACCEPTED_LOWER_FIDELITY_PENDING_SELECTION",
+          "reason": "The official public archive evidence proves trades/aggTrades/klines, not historical L2 order book data."
+        }
+      ],
+      "paid_or_vendor_candidates": [
+        {
+          "source_binding": "paid-crypto-l2-fallback",
+          "provider": "Tardis Binance",
+          "source_family": "vendor_historical_l2",
+          "candidate_fidelity": "L2_REPLAY",
+          "classification": "PENDING_MORE_PROOF",
+          "reason": "Tardis proves Binance depth/incremental_book_L2 availability for BTCUSDT, but source selection still requires accepted license, cost, exact symbol/window coverage, sample-to-NT catalog mapping, and storage proof."
+        }
+      ],
+      "selection_guard": "Do not select the official lower-fidelity Binance trade archive for execution-quality claims while the Tardis L2 candidate remains unaccepted; trade replay may only support explicit lower-fidelity claims."
+    },
+    {
+      "fixture_type": "binary-option",
+      "current_fixture_source_binding": "polymarket-parquet-archive-index",
+      "current_fixture_fidelity": "L2_REPLAY",
+      "highest_fidelity_candidate_status": "one_off_l2_bootstrap_data_pending_nt_projection",
+      "official_or_free_candidates": [
+        {
+          "source_binding": "polymarket-parquet-archive-index",
+          "source_family": "official_or_free_public_archive",
+          "candidate_fidelity": "L2_REPLAY",
+          "classification": "ONE_OFF_BACKFILL_DATA_ONLY",
+          "usage_scope": "one_off_backfill_data",
+          "reason": "PMXT Polymarket is retained only as bounded selected-source/bootstrap evidence. It must not be promoted into durable broad source selection; reusable Polymarket instrument and parser behavior must come from pinned NT nautilus-polymarket surfaces."
+        }
+      ],
+      "paid_or_vendor_candidates": [
+        {
+          "source_binding": "paid-polymarket-fallback",
+          "provider": "Telonex or comparable paid Polymarket source",
+          "source_family": "paid_vendor_prediction_market_history",
+          "candidate_fidelity": "L2_REPLAY",
+          "classification": "PENDING_MORE_PROOF",
+          "reason": "Paid Polymarket alternatives are separate durable-history candidates only if a broad historical L2 replay requirement is explicitly accepted; they are not unlocked by one-off PMXT bootstrap evidence."
+        }
+      ],
+      "selection_guard": "Do not select PMXT Polymarket as a durable broad backfill source. Use it only for explicitly configured one-off selected-source proof data; durable Polymarket catalog/backtest paths must reuse pinned NT Polymarket provider/parser surfaces and pass separate source-proof acceptance."
+    },
+    {
+      "fixture_type": "binary-option",
+      "current_fixture_source_binding": "kalshi-official-historical-api",
+      "current_fixture_fidelity": "TRADE_BAR_REPLAY",
+      "highest_fidelity_candidate_status": "official_free_l2_candidate_found_after_lower_fidelity_fixture",
+      "official_or_free_candidates": [
+        {
+          "source_binding": "kalshi-official-historical-api",
+          "source_family": "official_historical_api",
+          "candidate_fidelity": "TRADE_BAR_REPLAY",
+          "classification": "ACCEPTED_LOWER_FIDELITY_PENDING_SELECTION",
+          "reason": "Existing Kalshi endpoint proof found historical markets/trades/candlesticks but did not prove historical orderbook snapshots or deltas."
+        },
+        {
+          "source_binding": "pmxt-kalshi-orderbook-archive",
+          "source_family": "official_or_free_public_archive",
+          "candidate_fidelity": "L2_REPLAY",
+          "classification": "ONE_OFF_BACKFILL_DATA_ONLY",
+          "usage_scope": "one_off_backfill_data",
+          "reason": "The PMXT Kalshi archive is evidence for bounded one-off backfill/projection experiments only. It is not selected as a reusable durable Kalshi L2 source without a separate source-proofed plan."
+        }
+      ],
+      "paid_or_vendor_candidates": [],
+      "selection_guard": "Do not treat PMXT Kalshi as a standing blocker or durable source candidate. Official Kalshi lower-fidelity paths may proceed only through explicit claim limits; any one-off PMXT Kalshi use needs its own bounded proof artifact."
+    },
+    {
+      "fixture_type": "binary-option",
+      "current_fixture_source_binding": "hyperliquid-hip4-outcome-meta",
+      "current_fixture_fidelity": "METADATA_ONLY",
+      "highest_fidelity_candidate_status": "historical_outcome_replay_unproven",
+      "official_or_free_candidates": [
+        {
+          "source_binding": "hyperliquid-hip4-outcome-meta",
+          "source_family": "official_current_api",
+          "candidate_fidelity": "METADATA_ONLY",
+          "classification": "PENDING_MORE_PROOF",
+          "reason": "Current outcomeMeta and current encoded book/candle probes do not prove historical HIP-4 outcome L2/trade replay coverage or checked NT BinaryOption instrument fields."
+        },
+        {
+          "source_binding": "hyperliquid-official-archive",
+          "source_family": "official_requester_pays_archive",
+          "candidate_fidelity": "L2_REPLAY",
+          "classification": "PENDING_MORE_PROOF",
+          "reason": "Official docs prove market_data L2 book snapshots exist for covered assets, but requester-pays, monthly lag, possible missing data, exact HIP-4 outcome symbol coverage, and #encoded outcome sample paths remain unproven."
+        }
+      ],
+      "paid_or_vendor_candidates": [
+        {
+          "source_binding": "paid-crypto-l2-fallback",
+          "provider": "Tardis Hyperliquid",
+          "source_family": "vendor_historical_l2",
+          "candidate_fidelity": "L2_REPLAY",
+          "classification": "PENDING_MORE_PROOF",
+          "reason": "Tardis proves generic Hyperliquid l2Book and dataset L2 availability for perpetual and spot symbols, but does not yet prove that HIP-4 outcomeMeta outcome ids or #encoded current outcome books map to historical Tardis dataset symbols."
+        }
+      ],
+      "selection_guard": "Keep HIP-4 historical execution-quality replay as unproven and use FORWARD_CAPTURE_PENDING unless exact outcome history, checked instrument fields, NT mapping, license, cost, and storage proof pass."
+    }
+  ],
+  "slow_backfill_controls": [
+    "Run source-proof and coverage-ledger checks before object download or conversion.",
+    "Reject any candidate with unresolved source, license, schema, coverage, NT mapping, storage, or cost gates before broad backfill.",
+    "Use archive index/object metadata to estimate bytes before downloading payloads.",
+    "Start with representative samples and schema inspection, not whole-history pulls.",
+    "Cap every proof run by fixture, source binding, data family, time window, object count, and byte budget.",
+    "Record idempotent manifests, source object hashes, object byte counts, and gap reasons before publishing canonical data.",
+    "Do not choose a source by venue name; choose by accepted source-proof state, fidelity, claim limits, NT mapping, and cost proof.",
+    "Do not use lower-fidelity data for execution-quality claims; lower-fidelity outputs must carry explicit claim limits."
+  ],
+  "task_conclusion": {
+    "status": "complete_for_planning_evaluation",
+    "completed_task": "BACKTESTING_ENGINE-025",
+    "reason": "The highest-fidelity currently evidenced historical candidates are identified per fixture, weaker replay is explicitly blocked from execution-quality use, and source selection/backfill remain gated by BTE-022 and BTE-027.",
+    "open_follow_on_tasks": [
+      "BACKTESTING_ENGINE-022",
+      "BACKTESTING_ENGINE-027",
+      "BACKTESTING_ENGINE-028"
+    ]
+  }
+}

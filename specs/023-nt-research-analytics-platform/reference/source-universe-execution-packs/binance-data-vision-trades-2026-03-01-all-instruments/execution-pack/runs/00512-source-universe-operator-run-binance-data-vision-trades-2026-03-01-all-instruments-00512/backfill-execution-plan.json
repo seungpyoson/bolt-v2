@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00512:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:FORTHUSDT:2026-03-01:362e0e238f932f33842495b7dfc25c3c4b82a5a761c7f4f1d05e88f945c6e0c8:accepted-tranche",
+  "accepted_tranche_manifest_hash": "d2eb2ae5d59fdd535ff7b0d26b266acbca6dac46900c45fa51dd621fc823ce30",
+  "run_spec_hash": "0bbf13a0468fe96b48239237700b73c334b725a2f655ae3b2c1e3e8a9513ba67",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00512",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=FORTHUSDT/dt=2026-03-01/object=362e0e238f932f33842495b7dfc25c3c4b82a5a761c7f4f1d05e88f945c6e0c8",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 37058,
+  "max_object_bytes": 37058,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=FORTHUSDT/object=362e0e238f932f33842495b7dfc25c3c4b82a5a761c7f4f1d05e88f945c6e0c8.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/FORTHUSDT/FORTHUSDT-trades-2026-03-01.zip",
+      "sha256": "362e0e238f932f33842495b7dfc25c3c4b82a5a761c7f4f1d05e88f945c6e0c8",
+      "bytes": 37058,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

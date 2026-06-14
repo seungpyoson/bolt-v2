@@ -1,0 +1,200 @@
+{
+  "schema_version": "backfill-source-universe-object-manifest.v1",
+  "manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-coin_m_delivery",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments",
+  "universe_id": "backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments",
+  "venue": "binance",
+  "source": "data-vision",
+  "family": "native_trades",
+  "table_family": "native_trades",
+  "staging_snapshot": "2026-03-01",
+  "staging_prefix": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/",
+  "category": "coin_m_delivery",
+  "source_binding": "binance-coin-m-delivery-native-trades",
+  "object_count": 10,
+  "accepted_bytes": 939173,
+  "first_archive_date": "2026-03-01",
+  "last_archive_date": "2026-03-01",
+  "payload_records": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_delivery/dt=2026-03-01/symbol=BNBUSD_260327/object=4684edb4e6402718ce5e55754e5a8b55df6787bc748bb501d221327a4c6024b0.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/BNBUSD_260327/BNBUSD_260327-trades-2026-03-01.zip",
+      "sha256": "4684edb4e6402718ce5e55754e5a8b55df6787bc748bb501d221327a4c6024b0",
+      "bytes": 11067,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_delivery",
+      "symbol": "BNBUSD_260327",
+      "source_binding": "binance-coin-m-delivery-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_delivery/dt=2026-03-01/symbol=BNBUSD_260626/object=a0e917aee7d953fca3385e748255aceb830aa254c58d5ad29e4de13e1d8d3c4d.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/BNBUSD_260626/BNBUSD_260626-trades-2026-03-01.zip",
+      "sha256": "a0e917aee7d953fca3385e748255aceb830aa254c58d5ad29e4de13e1d8d3c4d",
+      "bytes": 14076,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_delivery",
+      "symbol": "BNBUSD_260626",
+      "source_binding": "binance-coin-m-delivery-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_delivery/dt=2026-03-01/symbol=BTCUSD_260327/object=6556c3daf2d288c8f04212aca893549499fbf63284d4adaf71a53faa8f6fdccb.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/BTCUSD_260327/BTCUSD_260327-trades-2026-03-01.zip",
+      "sha256": "6556c3daf2d288c8f04212aca893549499fbf63284d4adaf71a53faa8f6fdccb",
+      "bytes": 257829,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_delivery",
+      "symbol": "BTCUSD_260327",
+      "source_binding": "binance-coin-m-delivery-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_delivery/dt=2026-03-01/symbol=BTCUSD_260626/object=5aa48736a199142e7a97279e6f02b9fc9c00edfbaa190dcb42ef3326ed86aa5f.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/BTCUSD_260626/BTCUSD_260626-trades-2026-03-01.zip",
+      "sha256": "5aa48736a199142e7a97279e6f02b9fc9c00edfbaa190dcb42ef3326ed86aa5f",
+      "bytes": 275245,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_delivery",
+      "symbol": "BTCUSD_260626",
+      "source_binding": "binance-coin-m-delivery-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_delivery/dt=2026-03-01/symbol=ETHUSD_260327/object=f65fee79ba8faa0c922de869acd57ecb2af0278704d574a02fd173343bd05a82.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/ETHUSD_260327/ETHUSD_260327-trades-2026-03-01.zip",
+      "sha256": "f65fee79ba8faa0c922de869acd57ecb2af0278704d574a02fd173343bd05a82",
+      "bytes": 140540,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_delivery",
+      "symbol": "ETHUSD_260327",
+      "source_binding": "binance-coin-m-delivery-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_delivery/dt=2026-03-01/symbol=ETHUSD_260626/object=1cc73a62ccf461f0dc6ad467c605a42c6371ed6d4d81a3e782f237fd863bcaa2.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/ETHUSD_260626/ETHUSD_260626-trades-2026-03-01.zip",
+      "sha256": "1cc73a62ccf461f0dc6ad467c605a42c6371ed6d4d81a3e782f237fd863bcaa2",
+      "bytes": 129625,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_delivery",
+      "symbol": "ETHUSD_260626",
+      "source_binding": "binance-coin-m-delivery-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_delivery/dt=2026-03-01/symbol=SOLUSD_260327/object=873341c0cccd0032b49c5c42fc3e5509b8deeb0a496a3bdbd71df642909592c5.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/SOLUSD_260327/SOLUSD_260327-trades-2026-03-01.zip",
+      "sha256": "873341c0cccd0032b49c5c42fc3e5509b8deeb0a496a3bdbd71df642909592c5",
+      "bytes": 7100,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_delivery",
+      "symbol": "SOLUSD_260327",
+      "source_binding": "binance-coin-m-delivery-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_delivery/dt=2026-03-01/symbol=SOLUSD_260626/object=a3847739142ba4aff8691e700e6910928f5eb2a93078aed2264b87798df71f47.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/SOLUSD_260626/SOLUSD_260626-trades-2026-03-01.zip",
+      "sha256": "a3847739142ba4aff8691e700e6910928f5eb2a93078aed2264b87798df71f47",
+      "bytes": 8365,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_delivery",
+      "symbol": "SOLUSD_260626",
+      "source_binding": "binance-coin-m-delivery-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_delivery/dt=2026-03-01/symbol=XRPUSD_260327/object=c55522a43c383945fa64b30c7360740bd4cc06ed326650929ed39811e338f884.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/XRPUSD_260327/XRPUSD_260327-trades-2026-03-01.zip",
+      "sha256": "c55522a43c383945fa64b30c7360740bd4cc06ed326650929ed39811e338f884",
+      "bytes": 49507,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_delivery",
+      "symbol": "XRPUSD_260327",
+      "source_binding": "binance-coin-m-delivery-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_delivery/dt=2026-03-01/symbol=XRPUSD_260626/object=e8f7e92bdd8d44d3cf426e09b0fe3205f64c7088b9a072c87edb3569adc35cec.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/XRPUSD_260626/XRPUSD_260626-trades-2026-03-01.zip",
+      "sha256": "e8f7e92bdd8d44d3cf426e09b0fe3205f64c7088b9a072c87edb3569adc35cec",
+      "bytes": 45819,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_delivery",
+      "symbol": "XRPUSD_260626",
+      "source_binding": "binance-coin-m-delivery-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    }
+  ]
+}

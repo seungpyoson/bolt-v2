@@ -274,9 +274,7 @@ jobs:
         id: build_required
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            echo "value=true" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
           elif [[ "${{ steps.build_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
@@ -1346,12 +1344,13 @@ def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
 
 
 def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
+    # Negative test: removing workflow_dispatch from the combined if-arm must trigger the guard.
+    # The production shape is: if [[ "..." == "push" || "..." == "workflow_dispatch" ]]; then
+    # Stripping the || clause leaves only push coverage and breaks the workflow_dispatch invariant.
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
-    forced_branch = """          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "value=true" >> "$GITHUB_OUTPUT"
-"""
-    mutated = workflow.replace(forced_branch, "", 1)
+    dispatch_clause = ' || "${{ github.event_name }}" == "workflow_dispatch"'
+    mutated = workflow.replace(dispatch_clause, "", 1)
     errors = verifier.verify_workflow(mutated)
     if not any("detector must force build_required=true for workflow_dispatch full CI" in error for error in errors):
         raise AssertionError(f"expected workflow_dispatch detector guard error, got: {errors}")

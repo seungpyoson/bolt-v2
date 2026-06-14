@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00483:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:FETTRY:2026-03-01:e1eb88e029644fe02a8e8eecc14052c3e0f07b1bc7705b904ec22a495a22bc30:accepted-tranche",
+  "accepted_tranche_manifest_hash": "be288f5a9cc79d1eb522eb4a4ca4445fbc44e7005173e0f3909d84a3ae768abd",
+  "run_spec_hash": "e743dc5e6a646fb6254ddd5facbb250f63c095bd3cf65021284fc2383bb22cd1",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00483",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=FETTRY/dt=2026-03-01/object=e1eb88e029644fe02a8e8eecc14052c3e0f07b1bc7705b904ec22a495a22bc30",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 40864,
+  "max_object_bytes": 40864,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=FETTRY/object=e1eb88e029644fe02a8e8eecc14052c3e0f07b1bc7705b904ec22a495a22bc30.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/FETTRY/FETTRY-trades-2026-03-01.zip",
+      "sha256": "e1eb88e029644fe02a8e8eecc14052c3e0f07b1bc7705b904ec22a495a22bc30",
+      "bytes": 40864,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

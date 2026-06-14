@@ -1,0 +1,30 @@
+{
+  "schema_version": "source-universe-batch-execution-report.v1",
+  "batch_id": "binance-data-vision-trades-2026-03-01-all-instruments-retry-decoded-1g-seq-00279",
+  "status": "completed",
+  "pack_id": "source-universe-execution-pack-binance-data-vision-trades-2026-03-01-all-instruments",
+  "universe_id": "backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments",
+  "venue": "binance",
+  "selected_record_count": 1,
+  "completed_record_count": 1,
+  "failed_record_count": 0,
+  "total_canonical_rows": 5312013,
+  "total_nt_catalog_rows": 5312013,
+  "records": [
+    {
+      "sequence": 279,
+      "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00279",
+      "source_binding": "binance-spot-native-trades",
+      "category": "spot",
+      "symbol": "BTCUSDT",
+      "archive_date": "2026-03-01",
+      "selected_object_sha256": "ebb7189a440329f16ca0df90543d0541342400255b5dad7c86c3b2cbecfee360",
+      "selected_object_bytes": 39959491,
+      "canonical_rows": 5312013,
+      "nt_catalog_rows": 5312013,
+      "catalog_hash": "288539b228f67bb75e807106b464cfc14281eb7a86efdb0c8a28a26e092d6207",
+      "output_dir": "/private/tmp/bolt-v2-source-universe-binance-full/retry-decoded-1g-seq-00279/source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00279"
+    }
+  ],
+  "failures": []
+}

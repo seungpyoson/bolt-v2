@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:DOGEUSDT-26JUN26:2026-05-15:4673727a3999378d5841b5c2fae3e9a2075db812c1f3367967e287e5076cdbdb:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:DOGEUSDT-26JUN26:2026-05-15:4673727a3999378d5841b5c2fae3e9a2075db812c1f3367967e287e5076cdbdb:source-proof-scope",
+  "source_proof_scope_report_hash": "1172be2859baef046af0bc5b3a4e76a80dee94f48158b88d8084736422076c6e",
+  "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-linear-tick-trades",
+  "table_family": "trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-category-linear",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 10444,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-15/symbol=DOGEUSDT-26JUN26/object=4673727a3999378d5841b5c2fae3e9a2075db812c1f3367967e287e5076cdbdb.csv.gz",
+      "source_url": "https://public.bybit.com/trading/DOGEUSDT-26JUN26/DOGEUSDT-26JUN262026-05-15.csv.gz",
+      "sha256": "4673727a3999378d5841b5c2fae3e9a2075db812c1f3367967e287e5076cdbdb",
+      "bytes": 10444,
+      "archive_date": "2026-05-15"
+    }
+  ],
+  "blocking_issues": []
+}

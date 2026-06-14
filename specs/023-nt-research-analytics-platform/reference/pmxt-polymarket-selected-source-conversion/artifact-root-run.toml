@@ -1,0 +1,63 @@
+output_dir = "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run"
+catalog_root = "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/nt-catalog"
+manifest_path = "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/manifest.toml"
+normalized_schema_version = "pmxt-selected-source-l2-trades.v1"
+direct_s3_catalog_access_proven = false
+acceptance_mode = "manual"
+accepted_by = "source-proof-reviewer"
+accepted_at = "2026-06-10T14:30:00Z"
+created_at = "2026-06-10T14:30:00Z"
+claim_limits = [
+  "one-off PMXT selected-source sample only",
+  "PMXT is not accepted as canonical reusable backfill input",
+  "no dynamic tick-size replay claim",
+  "no expanded coverage claim",
+  "TradeTick claim is limited to the selected one-off last_trade_price row",
+]
+
+[selected_source]
+source_binding = "polymarket-parquet-archive-index"
+usage_scope = "one_off_backfill_data"
+selected_condition_id = "0x92889d49761307073d461289d01208c3b19292d17da937c0f57501c7b7efa50d"
+selected_token_id = "73895424095742155573626958367283533358717984717096075221396743226794070701077"
+gamma_markets_json_path = "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/metadata/gamma-markets.json"
+selected_source_parquet_path = "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source.parquet"
+selected_source_report_path = "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json"
+
+[selected_source.schema]
+timestamp_received_column = "timestamp_received"
+timestamp_column = "timestamp"
+market_column = "market"
+event_type_column = "event_type"
+asset_id_column = "asset_id"
+bids_column = "bids"
+asks_column = "asks"
+price_column = "price"
+size_column = "size"
+side_column = "side"
+best_bid_column = "best_bid"
+best_ask_column = "best_ask"
+buy_side = "BUY"
+sell_side = "SELL"
+book_event_type = "book"
+price_change_event_type = "price_change"
+last_trade_price_event_type = "last_trade_price"
+transaction_hash_column = "transaction_hash"
+fee_rate_bps_column = "fee_rate_bps"
+ignored_event_types = []
+forbidden_ignored_event_types = ["tick_size_change"]
+
+[fingerprint]
+source_proof_id = "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08"
+source_proof_version = 1
+accepted_object_sha256 = "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e"
+converter_identity = "pmxt-one-off-selected-source-l2-to-nt.v1"
+converter_version = "1"
+converter_config_hash = "d01d62323e7112a30bd21ba0e647347fd779139d4c65471d9d5b782384fd3a45"
+
+[artifact_uris]
+source_proof_uri = "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
+canonical_table_uri = "file:///Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source.parquet"
+nt_catalog_uri = "file:///Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/nt-catalog"
+catalog_metadata_uri = "file:///Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/catalog-metadata.json"
+result_contract_uri = "file:///Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/backtest-result-contract.json"

@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01277:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:VELODROMEUSDT:2026-03-01:e0756e884399328443bfd2198af7e0fc4512ca5b95f8fa12fcbdb23512abb392:accepted-tranche",
+  "accepted_tranche_manifest_hash": "27d82f8107b33138379d8034e70b602dd23c6b7a511f1dcbac3d599f7e0b5dda",
+  "run_spec_hash": "eb5014b1316dbf3c83e8234eef9c3a9b587c9f13199e790cf9a8b4e71984dd10",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01277",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=VELODROMEUSDT/dt=2026-03-01/object=e0756e884399328443bfd2198af7e0fc4512ca5b95f8fa12fcbdb23512abb392",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 48447,
+  "max_object_bytes": 48447,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=VELODROMEUSDT/object=e0756e884399328443bfd2198af7e0fc4512ca5b95f8fa12fcbdb23512abb392.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/VELODROMEUSDT/VELODROMEUSDT-trades-2026-03-01.zip",
+      "sha256": "e0756e884399328443bfd2198af7e0fc4512ca5b95f8fa12fcbdb23512abb392",
+      "bytes": 48447,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

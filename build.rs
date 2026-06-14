@@ -74,9 +74,9 @@ fn emit_git_head_rerun_paths(manifest_dir: &Path) {
 /// re-triggers the build.
 fn emit_canonical_source_artifacts(manifest_dir: &Path) {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
-    for path in canonical_source_rerun_paths(manifest_dir)
-        .expect("canonical source rerun paths should collect")
-    {
+    let rerun_paths = canonical_source_rerun_paths(manifest_dir)
+        .unwrap_or_else(|error| panic!("canonical source rerun paths should collect: {error}"));
+    for path in rerun_paths {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     for entry in source_canonicalization::GATED_SOURCE_ROOTS {
@@ -121,11 +121,28 @@ pub fn canonical_source_rerun_paths(manifest_dir: &Path) -> io::Result<Vec<PathB
 }
 
 fn collect_canonical_source_rerun_paths(path: &Path, paths: &mut Vec<PathBuf>) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "canonical source rerun path metadata {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
     let file_type = metadata.file_type();
     if file_type.is_dir() {
         paths.push(path.to_path_buf());
-        let mut entries = fs::read_dir(path)?
+        let mut entries = fs::read_dir(path)
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "canonical source rerun path directory {}: {error}",
+                        path.display()
+                    ),
+                )
+            })?
             .map(|entry| entry.map(|entry| entry.path()))
             .collect::<io::Result<Vec<_>>>()?;
         entries.sort();

@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01420:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:1000BONKUSDT:2026-03-01:f4b1cbf1ac2a2c225d01a88e480a4f69c3c78a7bb7bc68056d04377fa8c0ddc3:accepted-tranche",
+  "accepted_tranche_manifest_hash": "1e9f4ae77738238c2843cf513b836f07d6cd207e2a13ff7c1e06aa8a7eda6690",
+  "run_spec_hash": "1d71ce7dfee7bf6296a50997b1304bba346df0d14e9e0eab98c012221b99e483",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01420",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=1000BONKUSDT/dt=2026-03-01/object=f4b1cbf1ac2a2c225d01a88e480a4f69c3c78a7bb7bc68056d04377fa8c0ddc3",
+  "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-usd-m-perpetual-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 3830376,
+  "max_object_bytes": 3830376,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=1000BONKUSDT/object=f4b1cbf1ac2a2c225d01a88e480a4f69c3c78a7bb7bc68056d04377fa8c0ddc3.zip",
+      "source_url": "https://data.binance.vision/data/futures/um/daily/trades/1000BONKUSDT/1000BONKUSDT-trades-2026-03-01.zip",
+      "sha256": "f4b1cbf1ac2a2c225d01a88e480a4f69c3c78a7bb7bc68056d04377fa8c0ddc3",
+      "bytes": 3830376,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

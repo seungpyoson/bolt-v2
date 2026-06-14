@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-02036:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-perpetual-native-trades:UNIUSD_PERP:2026-03-01:6695e21fdbc28a4fb11742ac37760012dbaf38b257284c51b136008402ae6b37:accepted-tranche",
+  "accepted_tranche_manifest_hash": "f0815b44acd5c2d6c556ebdf390bc2b99f13c6c5d3a90b9d9239982ba4641b7b",
+  "run_spec_hash": "6073fe2ae1c4c2314fe7875c95106c2ec673f18ba384439f539100061d432518",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-02036",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=coin_m_perpetual/symbol=UNIUSD_PERP/dt=2026-03-01/object=6695e21fdbc28a4fb11742ac37760012dbaf38b257284c51b136008402ae6b37",
+  "source_proof_id": "source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-coin-m-perpetual-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 280374,
+  "max_object_bytes": 280374,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=UNIUSD_PERP/object=6695e21fdbc28a4fb11742ac37760012dbaf38b257284c51b136008402ae6b37.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/UNIUSD_PERP/UNIUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "6695e21fdbc28a4fb11742ac37760012dbaf38b257284c51b136008402ae6b37",
+      "bytes": 280374,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

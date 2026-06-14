@@ -1,0 +1,123 @@
+{
+  "source_proof_id": "source-proof-hyperliquid-hip4-outcome-meta-binary-option-pending-2026-06-08",
+  "source_proof_version": 1,
+  "contract_version": "backfill-table-contract.v1",
+  "schema_version": "backfill-source-proof.v1",
+  "status": "pending",
+  "source_binding": "hyperliquid-hip4-outcome-meta",
+  "venue": "hyperliquid",
+  "product_family": "prediction_market_outcome",
+  "product_category": "binary-option",
+  "table_family": "prediction_market_outcomes",
+  "evidence_state": "bounded_or_current_only",
+  "source_candidate_class": "official_free",
+  "source_selection_status": "PENDING_MORE_PROOF",
+  "fixture_type": "binary-option",
+  "requested_time_range": {
+    "start_utc": "2025-06-01T00:00:00Z",
+    "end_utc": "2026-06-01T00:00:00Z"
+  },
+  "coverage_time_range": {
+    "start_utc": "2026-06-08T00:00:00Z",
+    "end_utc": "2026-06-08T00:00:00Z"
+  },
+  "instrument_universe_id": "hyperliquid-hip4-outcome-meta-current-only-pending-2026-06-08",
+  "raw_sample_uri": "https://api.hyperliquid.xyz/info#request_json.type=outcomeMeta&observed_at_utc=2026-06-07T19:59:21Z",
+  "raw_sample_hash": "2a9884457e2a3118e7497a7d41dee840846526fcd50d43c0e8cfd262be67c846",
+  "schema_sample_uri": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.hyperliquid-hip4-outcome-meta.2026-06-08.json",
+  "schema_sample_hash": "0a5e29e2dc97b5117307e4323ea899f5a8fd1fcf44a0bd2aa851e3ade3eb7695",
+  "license_ref": "pending://source-proofs/v1/source_binding=hyperliquid-hip4-outcome-meta/proof=source-proof-hyperliquid-hip4-outcome-meta-binary-option-pending-2026-06-08/version=1/license-or-terms-evidence",
+  "license_scope": "unknown",
+  "retention_ref": "pending://source-proofs/v1/source_binding=hyperliquid-hip4-outcome-meta/proof=source-proof-hyperliquid-hip4-outcome-meta-binary-option-pending-2026-06-08/version=1/retention-freshness-evidence",
+  "cost_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-cost-estimate.backtesting-engine.2026-06-08.json evidence_id=source-proof-cost-estimate-backtesting-engine-2026-06-08; pending exact accepted outcome/window cost proof",
+  "nt_mapping_status": "not_applicable",
+  "fidelity_class": "METADATA_ONLY",
+  "l2_replay_evidence": {},
+  "forbidden_claims": [
+    "No NT catalog or backtest input from this pending binary-option metadata-only proof.",
+    "No historical replay coverage claims from current-only outcome metadata.",
+    "No L2/L3 order-book replay, execution-quality, queue-position, liquidity, fillability, or sizing claims.",
+    "No quote-token, instrument-parser, or normalized BinaryOption mapping claims until parser-fidelity proof passes."
+  ],
+  "claim_limits": [
+    {
+      "id": "binary-option-source-proof-claim-limit-001",
+      "severity": "blocking",
+      "claim": "No NT catalog or backtest input from this pending binary-option metadata-only proof.",
+      "reason": "The report records an official/free candidate before license, retention, coverage, storage, and parser/mapping checks have passed; it is not accepted canonical input.",
+      "evidence_ref": "source-proof://source-proof-hyperliquid-hip4-outcome-meta-binary-option-pending-2026-06-08/status"
+    },
+    {
+      "id": "binary-option-source-proof-claim-limit-002",
+      "severity": "blocking",
+      "claim": "No historical replay coverage claims from current-only outcome metadata.",
+      "reason": "The configured source-binding evidence state is bounded_or_current_only and historical HIP-4 outcome archive coverage remains pending.",
+      "evidence_ref": "source-binding://hyperliquid-hip4-outcome-meta/evidence_state"
+    },
+    {
+      "id": "binary-option-source-proof-claim-limit-003",
+      "severity": "blocking",
+      "claim": "No L2/L3 order-book replay, execution-quality, queue-position, liquidity, fillability, or sizing claims.",
+      "reason": "The candidate report has METADATA_ONLY fidelity and carries no historical source-order-preserving order-book deltas or sufficient-cadence snapshots.",
+      "evidence_ref": "source-proof://source-proof-hyperliquid-hip4-outcome-meta-binary-option-pending-2026-06-08/fidelity"
+    },
+    {
+      "id": "binary-option-source-proof-claim-limit-004",
+      "severity": "blocking",
+      "claim": "No quote-token, instrument-parser, or normalized BinaryOption mapping claims until parser-fidelity proof passes.",
+      "reason": "The outcomeMeta sample exposes outcome labels and quote token, but not activation/expiration timestamps or price/size increments required for checked NautilusTrader BinaryOption construction.",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.hyperliquid-hip4-outcome-meta.2026-06-08.json sha256=b764fbaf876ec2e09819cb2652f4e15ece1ed9c966ac9c93ef0140f2abdc0cff"
+    }
+  ],
+  "gap_policy_id": "",
+  "required_checks": {
+    "source_access": {
+      "outcome": "passed",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.hyperliquid-hip4-outcome-meta.2026-06-08.json response_sha256=2a9884457e2a3118e7497a7d41dee840846526fcd50d43c0e8cfd262be67c846"
+    },
+    "license": {
+      "outcome": "pending",
+      "evidence_ref": "pending durable license or terms evidence for storage and derived-table use"
+    },
+    "schema": {
+      "outcome": "passed",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.hyperliquid-hip4-outcome-meta.2026-06-08.json top_keys=outcomes,questions outcome_shape=outcome,name,description,sideSpecs,quoteToken"
+    },
+    "time_semantics": {
+      "outcome": "pending",
+      "evidence_ref": "pending event, capture, and availability timestamp mapping for outcome metadata"
+    },
+    "instrument_universe": {
+      "outcome": "pending",
+      "evidence_ref": "pending proof of binary-option instruments active during the requested window, including expired or delisted outcomes where required"
+    },
+    "coverage": {
+      "outcome": "pending",
+      "evidence_ref": "pending historical coverage proof for requested one-year binary-option replay window"
+    },
+    "retention_freshness": {
+      "outcome": "pending",
+      "evidence_ref": "pending retention, archive freshness, or update-lag evidence for the requested proof window"
+    },
+    "granularity": {
+      "outcome": "pending",
+      "evidence_ref": "pending proof that available data reaches the requested replay table family and is not weaker metadata only"
+    },
+    "completeness": {
+      "outcome": "pending",
+      "evidence_ref": "pending row counts, page counts, checksums, and gap threshold evidence"
+    },
+    "nt_mapping": {
+      "outcome": "not_applicable",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.hyperliquid-hip4-outcome-meta.2026-06-08.json sha256=b764fbaf876ec2e09819cb2652f4e15ece1ed9c966ac9c93ef0140f2abdc0cff"
+    },
+    "cost": {
+      "outcome": "pending",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-cost-estimate.backtesting-engine.2026-06-08.json evidence_id=source-proof-cost-estimate-backtesting-engine-2026-06-08; pending exact accepted outcome/window cost proof"
+    },
+    "storage": {
+      "outcome": "pending",
+      "evidence_ref": "pending artifact-root staging proof for raw sample, schema sample, manifest, and source proof evidence"
+    }
+  }
+}

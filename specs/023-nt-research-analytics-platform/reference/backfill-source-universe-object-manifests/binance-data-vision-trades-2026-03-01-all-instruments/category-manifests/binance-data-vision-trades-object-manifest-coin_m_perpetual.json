@@ -1,0 +1,524 @@
+{
+  "schema_version": "backfill-source-universe-object-manifest.v1",
+  "manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-coin_m_perpetual",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments",
+  "universe_id": "backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments",
+  "venue": "binance",
+  "source": "data-vision",
+  "family": "native_trades",
+  "table_family": "native_trades",
+  "staging_snapshot": "2026-03-01",
+  "staging_prefix": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/",
+  "category": "coin_m_perpetual",
+  "source_binding": "binance-coin-m-perpetual-native-trades",
+  "object_count": 28,
+  "accepted_bytes": 23588863,
+  "first_archive_date": "2026-03-01",
+  "last_archive_date": "2026-03-01",
+  "payload_records": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=AAVEUSD_PERP/object=d055dc92dd5bc9276f679f8fcafd3f2211450aefa9a2401691799da639015451.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/AAVEUSD_PERP/AAVEUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "d055dc92dd5bc9276f679f8fcafd3f2211450aefa9a2401691799da639015451",
+      "bytes": 414789,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "AAVEUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=ADAUSD_PERP/object=6595370b5e4d47ae395355238f831ab29437743291695db56a7cb650c34fc1c1.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/ADAUSD_PERP/ADAUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "6595370b5e4d47ae395355238f831ab29437743291695db56a7cb650c34fc1c1",
+      "bytes": 547979,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "ADAUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=ALGOUSD_PERP/object=71570c038095f92d41a42884e11dd93a7bebf5fdb58f5006fe4bbbab2bb8a228.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/ALGOUSD_PERP/ALGOUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "71570c038095f92d41a42884e11dd93a7bebf5fdb58f5006fe4bbbab2bb8a228",
+      "bytes": 63633,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "ALGOUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=APTUSD_PERP/object=00ce8b15a11b8bc58f2207535f341f93a656eb3b2a7d1967ef174723ec08bf78.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/APTUSD_PERP/APTUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "00ce8b15a11b8bc58f2207535f341f93a656eb3b2a7d1967ef174723ec08bf78",
+      "bytes": 84597,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "APTUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=ATOMUSD_PERP/object=871a086fa9b5080d8a38d8dc35118c3e59b56660cc0e93d8d079873e9fb6593a.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/ATOMUSD_PERP/ATOMUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "871a086fa9b5080d8a38d8dc35118c3e59b56660cc0e93d8d079873e9fb6593a",
+      "bytes": 87007,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "ATOMUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=AVAXUSD_PERP/object=18a4af77631b6e054f568937c1ff85c5b52d07ca5af8779f5d3d900e78ecaa7b.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/AVAXUSD_PERP/AVAXUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "18a4af77631b6e054f568937c1ff85c5b52d07ca5af8779f5d3d900e78ecaa7b",
+      "bytes": 122483,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "AVAXUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=BCHUSD_PERP/object=db61764f6e123240029087fea3c5d133e71e2e3fcc8cce7bdaa78ec35968290d.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/BCHUSD_PERP/BCHUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "db61764f6e123240029087fea3c5d133e71e2e3fcc8cce7bdaa78ec35968290d",
+      "bytes": 381166,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "BCHUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=BNBUSD_PERP/object=9d5ea14c64b8ae2a8f05761079edf56bb14405849f89117f2d236ed58e602d1f.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/BNBUSD_PERP/BNBUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "9d5ea14c64b8ae2a8f05761079edf56bb14405849f89117f2d236ed58e602d1f",
+      "bytes": 1020365,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "BNBUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=BTCUSD_PERP/object=c93457470d3d119fe2ffe06915fedd46d936b2d8eaa231d17ff02777529733d9.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/BTCUSD_PERP/BTCUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "c93457470d3d119fe2ffe06915fedd46d936b2d8eaa231d17ff02777529733d9",
+      "bytes": 5221954,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "BTCUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=DOGEUSD_PERP/object=8af274b01f813a586861b56c8ad05378edb724d90aa8b921287ea8d63999b736.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/DOGEUSD_PERP/DOGEUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "8af274b01f813a586861b56c8ad05378edb724d90aa8b921287ea8d63999b736",
+      "bytes": 1327825,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "DOGEUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=DOTUSD_PERP/object=c47e6b68b6f4602b4884df15ba73fb48f755df8501eb033c9deae5844d4bdcbf.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/DOTUSD_PERP/DOTUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "c47e6b68b6f4602b4884df15ba73fb48f755df8501eb033c9deae5844d4bdcbf",
+      "bytes": 254021,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "DOTUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=ENSUSD_PERP/object=81fd179d02a6af19ac035acf23f5419dd5242b3637d708d7dce2810ab47472f5.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/ENSUSD_PERP/ENSUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "81fd179d02a6af19ac035acf23f5419dd5242b3637d708d7dce2810ab47472f5",
+      "bytes": 68604,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "ENSUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=ETCUSD_PERP/object=e3b7a529bb8cf653a37ae8e590ce303c4a321087d41de47733ed897ea0bcc268.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/ETCUSD_PERP/ETCUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "e3b7a529bb8cf653a37ae8e590ce303c4a321087d41de47733ed897ea0bcc268",
+      "bytes": 188797,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "ETCUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=ETHUSD_PERP/object=66736e95a0782c9ce68cf5204375de34fb0f3a1a4aef96ac3fdc2651b5bdba9e.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/ETHUSD_PERP/ETHUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "66736e95a0782c9ce68cf5204375de34fb0f3a1a4aef96ac3fdc2651b5bdba9e",
+      "bytes": 7207530,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "ETHUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=FILUSD_PERP/object=edb0292d86f6ea3ccd588e29067e8b14be633ad03bfd7f1b927560ff71083324.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/FILUSD_PERP/FILUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "edb0292d86f6ea3ccd588e29067e8b14be633ad03bfd7f1b927560ff71083324",
+      "bytes": 189836,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "FILUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=LINKUSD_PERP/object=9008a8a60ce17067ec3ef2a1efc95c773c30f5ec68b3fbe3f7ac1d02af4fbcb1.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/LINKUSD_PERP/LINKUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "9008a8a60ce17067ec3ef2a1efc95c773c30f5ec68b3fbe3f7ac1d02af4fbcb1",
+      "bytes": 676680,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "LINKUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=LTCUSD_PERP/object=5607c68e4f71a284cd8228404af9a369976a434a45c7dfb09b865ee2335f483b.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/LTCUSD_PERP/LTCUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "5607c68e4f71a284cd8228404af9a369976a434a45c7dfb09b865ee2335f483b",
+      "bytes": 286295,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "LTCUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=NEARUSD_PERP/object=844539d77cee5356af1bb6741a566d7c208e7ab08cdbd54d90f9f4a4be3a872c.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/NEARUSD_PERP/NEARUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "844539d77cee5356af1bb6741a566d7c208e7ab08cdbd54d90f9f4a4be3a872c",
+      "bytes": 176642,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "NEARUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=OPUSD_PERP/object=d279343cd6f5b20f686978ce9346d88c62ccd80d20826b107a1d6f0028430236.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/OPUSD_PERP/OPUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "d279343cd6f5b20f686978ce9346d88c62ccd80d20826b107a1d6f0028430236",
+      "bytes": 188556,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "OPUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=SANDUSD_PERP/object=ee2235f9440248e289dbadfbf5f085e6b943c7d40928ec2a302cd6769f7cfda4.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/SANDUSD_PERP/SANDUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "ee2235f9440248e289dbadfbf5f085e6b943c7d40928ec2a302cd6769f7cfda4",
+      "bytes": 57896,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "SANDUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=SOLUSD_PERP/object=602c814660f3298acf3d364246a5d10b192eadc27a414a3f6fe96fa2eab5ba60.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/SOLUSD_PERP/SOLUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "602c814660f3298acf3d364246a5d10b192eadc27a414a3f6fe96fa2eab5ba60",
+      "bytes": 1654791,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "SOLUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=SUIUSD_PERP/object=ca58341e5c820fda13f44dd7e03cd5a2b699bc9a1c1decd59cc3381ee51997a9.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/SUIUSD_PERP/SUIUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "ca58341e5c820fda13f44dd7e03cd5a2b699bc9a1c1decd59cc3381ee51997a9",
+      "bytes": 776869,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "SUIUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=TRXUSD_PERP/object=56b6aa3a254a65453a1e9b5b0173b797ecded713403134ff1b1826959fbfbe99.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/TRXUSD_PERP/TRXUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "56b6aa3a254a65453a1e9b5b0173b797ecded713403134ff1b1826959fbfbe99",
+      "bytes": 50294,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "TRXUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=UNIUSD_PERP/object=6695e21fdbc28a4fb11742ac37760012dbaf38b257284c51b136008402ae6b37.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/UNIUSD_PERP/UNIUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "6695e21fdbc28a4fb11742ac37760012dbaf38b257284c51b136008402ae6b37",
+      "bytes": 280374,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "UNIUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=WIFUSD_PERP/object=1017311f0fb375bdd4f376edc0de5ef658191639a98c97f27a755a3737116412.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/WIFUSD_PERP/WIFUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "1017311f0fb375bdd4f376edc0de5ef658191639a98c97f27a755a3737116412",
+      "bytes": 228378,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "WIFUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=WLDUSD_PERP/object=a48a381c51d8d2a95eaf8f88492c8e8b8b4def991871c6931c369e8b3aab6949.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/WLDUSD_PERP/WLDUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "a48a381c51d8d2a95eaf8f88492c8e8b8b4def991871c6931c369e8b3aab6949",
+      "bytes": 108675,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "WLDUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=XLMUSD_PERP/object=1bc96ece63bf45364e974680d6749add34867c7d70240853f1df1d144f0529b6.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/XLMUSD_PERP/XLMUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "1bc96ece63bf45364e974680d6749add34867c7d70240853f1df1d144f0529b6",
+      "bytes": 355568,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "XLMUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    },
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=XRPUSD_PERP/object=ef565bc85133d0c5a538021da7656f9ec336d997301abae34126ca5928b68f62.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/XRPUSD_PERP/XRPUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "ef565bc85133d0c5a538021da7656f9ec336d997301abae34126ca5928b68f62",
+      "bytes": 1567259,
+      "archive_date": "2026-03-01",
+      "category": "coin_m_perpetual",
+      "symbol": "XRPUSD_PERP",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ]
+    }
+  ]
+}

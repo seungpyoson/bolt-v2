@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ACTUSDT:2026-03-01:ff5c77cfbb5a3406f1d09d00c9792de31ca3153df229ed37ad688718c9c3ddb9:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ACTUSDT:2026-03-01:ff5c77cfbb5a3406f1d09d00c9792de31ca3153df229ed37ad688718c9c3ddb9:source-proof-scope",
+  "source_proof_scope_report_hash": "f3743f31c7c66e72f9d4956dcb4d92f9de07f1cc962f3b282d99a3b1b4e7bc77",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-spot",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 98853,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=ACTUSDT/object=ff5c77cfbb5a3406f1d09d00c9792de31ca3153df229ed37ad688718c9c3ddb9.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/ACTUSDT/ACTUSDT-trades-2026-03-01.zip",
+      "sha256": "ff5c77cfbb5a3406f1d09d00c9792de31ca3153df229ed37ad688718c9c3ddb9",
+      "bytes": 98853,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

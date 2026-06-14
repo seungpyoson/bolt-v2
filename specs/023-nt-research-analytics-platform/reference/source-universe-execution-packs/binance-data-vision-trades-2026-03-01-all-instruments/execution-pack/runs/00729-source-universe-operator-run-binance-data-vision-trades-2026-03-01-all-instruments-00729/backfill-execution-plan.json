@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00729:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:MANATRY:2026-03-01:41c33220febdc4d3a3fa977c3dece0d48e315ee8122f251d997ebb779b71c969:accepted-tranche",
+  "accepted_tranche_manifest_hash": "6a8fa6f08a9708014eed5bc69810b8eccdaaf76a4717663acd62695ed3855464",
+  "run_spec_hash": "a26a0ec64ee3c41aeca9b91ae3cbe8ff30b9466bb1603c9ce0b6df3819ad9a32",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00729",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=MANATRY/dt=2026-03-01/object=41c33220febdc4d3a3fa977c3dece0d48e315ee8122f251d997ebb779b71c969",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 15787,
+  "max_object_bytes": 15787,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=MANATRY/object=41c33220febdc4d3a3fa977c3dece0d48e315ee8122f251d997ebb779b71c969.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/MANATRY/MANATRY-trades-2026-03-01.zip",
+      "sha256": "41c33220febdc4d3a3fa977c3dece0d48e315ee8122f251d997ebb779b71c969",
+      "bytes": 15787,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

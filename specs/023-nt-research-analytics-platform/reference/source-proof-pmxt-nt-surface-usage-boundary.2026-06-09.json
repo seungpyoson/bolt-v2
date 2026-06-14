@@ -1,0 +1,112 @@
+{
+  "schema_version": "source-proof-pmxt-nt-surface-usage-boundary.v1",
+  "created_at_utc": "2026-06-08T22:27:25Z",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "source_binding": "polymarket-parquet-archive-index",
+  "status": "nt_polymarket_surfaces_used_where_public_batch_archive_gap_remains",
+  "decision": "The current PMXT one-off path is not a custom backtesting engine. It reuses pinned NautilusTrader Polymarket parser/model surfaces, ParquetDataCatalog, and BacktestNode wherever NT exposes them for this bounded historical proof. Bolt-owned PMXT code remains necessary only at the raw historical archive boundary: configured Parquet column decoding, selected-source/report-chain validation, duplicate historical trade observation policy, provenance, and claim-limit enforcement.",
+  "pinned_nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+  "nt_surfaces_reused_by_current_pmxt_one_off_path": [
+    {
+      "surface": "nautilus_polymarket::http::parse::parse_gamma_market",
+      "nt_source": "nt://crates/adapters/polymarket/src/http/parse.rs:88",
+      "repo_use": "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:729",
+      "purpose": "Decode Gamma market metadata into NT Polymarket instrument definitions."
+    },
+    {
+      "surface": "nautilus_polymarket::http::parse::create_instrument_from_def",
+      "nt_source": "nt://crates/adapters/polymarket/src/http/parse.rs:179",
+      "repo_use": "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:744",
+      "purpose": "Create NT InstrumentAny::BinaryOption for the selected Polymarket token."
+    },
+    {
+      "surface": "nautilus_polymarket::websocket::parse::parse_book_snapshot",
+      "nt_source": "nt://crates/adapters/polymarket/src/websocket/parse.rs:62",
+      "repo_use": "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:771",
+      "purpose": "Convert selected PMXT book snapshot rows into NT OrderBookDelta batches with NT snapshot semantics."
+    },
+    {
+      "surface": "nautilus_polymarket::websocket::parse::parse_book_deltas",
+      "nt_source": "nt://crates/adapters/polymarket/src/websocket/parse.rs:137",
+      "repo_use": "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:805",
+      "purpose": "Convert selected PMXT price_change rows into NT OrderBookDelta batches."
+    },
+    {
+      "surface": "nautilus_model::data::TradeTick and NT Price/Quantity/TradeId model types",
+      "nt_source": "nt://crates/model",
+      "repo_use": "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:939",
+      "purpose": "Represent selected PMXT last_trade_price rows as NT-native TradeTick values."
+    },
+    {
+      "surface": "nautilus_persistence::backend::catalog::ParquetDataCatalog",
+      "nt_source": "nt://crates/persistence/src/backend/catalog.rs:154",
+      "repo_use": "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:1022",
+      "purpose": "Write selected PMXT instruments, OrderBookDelta rows, and TradeTick rows into an NT catalog."
+    },
+    {
+      "surface": "nautilus_backtest::node::BacktestNode",
+      "nt_source": "nt://crates/backtest/src/node.rs:53",
+      "repo_use": "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:1455",
+      "purpose": "Consume the verified NT catalog through the NT backtest path and produce BacktestResult evidence."
+    }
+  ],
+  "nt_surfaces_checked_but_not_available_as_direct_pmxt_batch_reader": [
+    {
+      "surface": "nautilus_polymarket::http::data_api::PolymarketDataApiHttpClient",
+      "nt_source": "nt://crates/adapters/polymarket/src/http/data_api.rs:75",
+      "finding": "This is an HTTP Data API historical trade client, not a PMXT hourly Parquet L2 archive reader."
+    },
+    {
+      "surface": "nautilus_polymarket::http::data_api::parse_trade_ticks",
+      "nt_source": "nt://crates/adapters/polymarket/src/http/data_api.rs:272",
+      "finding": "This parser is private to the NT Polymarket crate and expects Data API trade models, not PMXT last_trade_price Parquet rows."
+    },
+    {
+      "surface": "nautilus_polymarket::http::data_api::build_polymarket_trade_id",
+      "nt_source": "nt://crates/adapters/polymarket/src/http/data_api.rs:55",
+      "finding": "The helper is pub(crate), so Bolt cannot call it directly. The PMXT one-off adapter mirrors its transaction_hash+asset+sequence shape and adds duplicate-observation collapse because PMXT rows can include repeated observations with distinct timestamp_received values."
+    },
+    {
+      "surface": "BacktestDataConfig timed InstrumentAny replay",
+      "nt_source": "nt://crates/backtest/src/node.rs:525",
+      "finding": "BacktestDataConfig dispatch supports market data classes such as OrderBookDelta, TradeTick, InstrumentStatus, and InstrumentClose, but not scheduled InstrumentAny definition updates. This leaves dynamic tick-size replay unresolved for full PMXT L2 acceptance."
+    }
+  ],
+  "bolt_owned_boundaries_that_remain_valid": [
+    "Decode configured PMXT Parquet columns and event families from the selected-source schema.",
+    "Validate selected-source report hashes, source binding, usage_scope, selected asset hash, and artifact-root provenance.",
+    "Collapse exact duplicate historical trade observations before creating NT TradeTick values.",
+    "Mirror pinned NT's historical transaction_hash+asset+sequence TradeId shape until NT exposes a public reusable helper or batch PMXT reader.",
+    "Reject or block tick_size_change claims until a timed instrument-epoch replay path or source-proof-bound exclusion policy is accepted.",
+    "Keep PMXT scoped to one_off_backfill_data; do not promote it to canonical broad backfill evidence from the bounded proof."
+  ],
+  "rejected_alternatives": [
+    {
+      "alternative": "Build a custom backtesting engine for PMXT",
+      "reason": "NT already provides ParquetDataCatalog, BacktestNode, OrderBookDelta, TradeTick, and Polymarket parser/model surfaces needed for the bounded one-off proof."
+    },
+    {
+      "alternative": "Treat the NT Polymarket live adapter as a PMXT batch archive reader",
+      "reason": "Pinned NT exposes live websocket/data-api clients and parsers, not a PMXT hourly Parquet archive ingestion path."
+    },
+    {
+      "alternative": "Ignore PMXT duplicate historical trade observations",
+      "reason": "PMXT can repeat semantic trade rows with different timestamp_received values; counting them twice would overstate historical volume."
+    },
+    {
+      "alternative": "Claim full PMXT dynamic tick-size replay through standard BacktestNode catalog data configs",
+      "reason": "Standard BacktestDataConfig catalog replay does not schedule InstrumentAny updates as timestamped Data items."
+    }
+  ],
+  "next_required_evidence": [
+    "For one-off selected PMXT proofs, keep proving catalog read-back and BacktestNode consumption through NT ParquetDataCatalog instead of a custom engine.",
+    "Before broad PMXT backfill, prove manifest/index-only coverage, accepted source proof, bounded byte/row/time budgets, and dynamic tick-size replay or a source-proof-bound no-tick-size-change universe.",
+    "If NT later exposes a public PMXT archive reader or public historical trade-id helper, replace the mirrored Bolt adapter code with the NT surface and update this boundary artifact."
+  ],
+  "does_not_close": [
+    "BACKTESTING_ENGINE-022",
+    "durable Polymarket source acceptance",
+    "broad PMXT backfill authorization",
+    "dynamic tick-size L2 replay"
+  ]
+}

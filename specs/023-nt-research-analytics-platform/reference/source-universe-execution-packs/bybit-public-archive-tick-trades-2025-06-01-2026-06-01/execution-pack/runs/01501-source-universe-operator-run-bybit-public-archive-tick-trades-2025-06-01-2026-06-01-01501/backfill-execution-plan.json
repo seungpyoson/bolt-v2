@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-01501:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:BTCUSDT-26JUN26:2026-04-09:6a34430e142a736a9547b0b862c0e9d91d4eea43452cb9fabaf07a0b27749356:accepted-tranche",
+  "accepted_tranche_manifest_hash": "bc8a4477fbc56adb93d7e25a3d4aa9fb99e00b3d45547b9b23223b3b532f37d4",
+  "run_spec_hash": "4074bb1d057c118072968ea636c2dd92fc0f7b21fb785bd82b72c1e425e08f35",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-01501",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=linear/symbol=BTCUSDT-26JUN26/dt=2026-04-09/object=6a34430e142a736a9547b0b862c0e9d91d4eea43452cb9fabaf07a0b27749356",
+  "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-linear-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 25496,
+  "max_object_bytes": 25496,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-04-09/symbol=BTCUSDT-26JUN26/object=6a34430e142a736a9547b0b862c0e9d91d4eea43452cb9fabaf07a0b27749356.csv.gz",
+      "source_url": "https://public.bybit.com/trading/BTCUSDT-26JUN26/BTCUSDT-26JUN262026-04-09.csv.gz",
+      "sha256": "6a34430e142a736a9547b0b862c0e9d91d4eea43452cb9fabaf07a0b27749356",
+      "bytes": 25496,
+      "archive_date": "2026-04-09"
+    }
+  ],
+  "blocking_issues": []
+}

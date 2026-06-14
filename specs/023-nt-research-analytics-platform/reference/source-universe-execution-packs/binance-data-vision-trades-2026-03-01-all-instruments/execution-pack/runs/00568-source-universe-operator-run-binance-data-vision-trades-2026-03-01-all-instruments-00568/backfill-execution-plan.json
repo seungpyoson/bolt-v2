@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00568:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:HEMITRY:2026-03-01:c17b0b7899eb649c3310e5863417b941b39b31613b384cd41ff61a1e02567320:accepted-tranche",
+  "accepted_tranche_manifest_hash": "f0efa458ce44cb3c8c6230158aa1f322d3dbb335c7beeca751c34c72cb4989af",
+  "run_spec_hash": "8421713346ccba6221c570a4700cfe2a5af759e2636a14464ce9c9ac12baa0b6",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00568",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=HEMITRY/dt=2026-03-01/object=c17b0b7899eb649c3310e5863417b941b39b31613b384cd41ff61a1e02567320",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 47494,
+  "max_object_bytes": 47494,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=HEMITRY/object=c17b0b7899eb649c3310e5863417b941b39b31613b384cd41ff61a1e02567320.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/HEMITRY/HEMITRY-trades-2026-03-01.zip",
+      "sha256": "c17b0b7899eb649c3310e5863417b941b39b31613b384cd41ff61a1e02567320",
+      "bytes": 47494,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

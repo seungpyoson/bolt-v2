@@ -1,0 +1,104 @@
+{
+  "schema_version": "source-archive-discovery-seed.v1",
+  "discovery_id": "source-archive-discovery-seed-binance-data-vision-trades-current",
+  "status": "ready",
+  "venue": "binance",
+  "source": "data-vision",
+  "window_start": "2026-03-01",
+  "window_end": "2026-03-01",
+  "source_binding_count": 5,
+  "representative_object_count": 5,
+  "total_representative_object_bytes": 52653072,
+  "product_families": [
+    "coin_m_delivery",
+    "coin_m_perpetual",
+    "spot",
+    "usd_m_delivery",
+    "usd_m_perpetual"
+  ],
+  "table_families": [
+    "native_trades"
+  ],
+  "bindings": [
+    {
+      "source_binding": "binance-spot-native-trades",
+      "product_family": "spot",
+      "table_family": "native_trades",
+      "source_uri_template": "https://data.binance.vision/data/spot/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
+      "list_prefix": "data/spot/daily/trades/",
+      "representative_object": {
+        "symbol": "BNBUSDC",
+        "archive_date": "2026-03-01",
+        "source_url": "https://data.binance.vision/data/spot/daily/trades/BNBUSDC/BNBUSDC-trades-2026-03-01.zip",
+        "http_status": 200,
+        "content_length_bytes": 1066394,
+        "last_modified": "Mon, 02 Mar 2026 01:44:18 GMT",
+        "etag": "\"9d0041d892547376d469443621cc4aa9\""
+      }
+    },
+    {
+      "source_binding": "binance-usd-m-perpetual-native-trades",
+      "product_family": "usd_m_perpetual",
+      "table_family": "native_trades",
+      "source_uri_template": "https://data.binance.vision/data/futures/um/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
+      "list_prefix": "data/futures/um/daily/trades/",
+      "representative_object": {
+        "symbol": "BTCUSDT",
+        "archive_date": "2026-03-01",
+        "source_url": "https://data.binance.vision/data/futures/um/daily/trades/BTCUSDT/BTCUSDT-trades-2026-03-01.zip",
+        "http_status": 200,
+        "content_length_bytes": 45927411,
+        "last_modified": "Mon, 02 Mar 2026 07:26:15 GMT",
+        "etag": "\"e0c93fa3c9a194e084f832dfed999c65-6\""
+      }
+    },
+    {
+      "source_binding": "binance-usd-m-delivery-native-trades",
+      "product_family": "usd_m_delivery",
+      "table_family": "native_trades",
+      "source_uri_template": "https://data.binance.vision/data/futures/um/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
+      "list_prefix": "data/futures/um/daily/trades/",
+      "representative_object": {
+        "symbol": "BTCUSDT_260327",
+        "archive_date": "2026-03-01",
+        "source_url": "https://data.binance.vision/data/futures/um/daily/trades/BTCUSDT_260327/BTCUSDT_260327-trades-2026-03-01.zip",
+        "http_status": 200,
+        "content_length_bytes": 179484,
+        "last_modified": "Mon, 02 Mar 2026 07:26:15 GMT",
+        "etag": "\"83d3ca7459cf50729472cbf6f387ca29\""
+      }
+    },
+    {
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "product_family": "coin_m_perpetual",
+      "table_family": "native_trades",
+      "source_uri_template": "https://data.binance.vision/data/futures/cm/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
+      "list_prefix": "data/futures/cm/daily/trades/",
+      "representative_object": {
+        "symbol": "BTCUSD_PERP",
+        "archive_date": "2026-03-01",
+        "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/BTCUSD_PERP/BTCUSD_PERP-trades-2026-03-01.zip",
+        "http_status": 200,
+        "content_length_bytes": 5221954,
+        "last_modified": "Mon, 02 Mar 2026 06:59:53 GMT",
+        "etag": "\"698fe5b690263611e694709036e6ba23\""
+      }
+    },
+    {
+      "source_binding": "binance-coin-m-delivery-native-trades",
+      "product_family": "coin_m_delivery",
+      "table_family": "native_trades",
+      "source_uri_template": "https://data.binance.vision/data/futures/cm/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
+      "list_prefix": "data/futures/cm/daily/trades/",
+      "representative_object": {
+        "symbol": "BTCUSD_260327",
+        "archive_date": "2026-03-01",
+        "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/BTCUSD_260327/BTCUSD_260327-trades-2026-03-01.zip",
+        "http_status": 200,
+        "content_length_bytes": 257829,
+        "last_modified": "Mon, 02 Mar 2026 06:59:53 GMT",
+        "etag": "\"d6d4dc25e6d529dc91f257b64662ff68\""
+      }
+    }
+  ]
+}

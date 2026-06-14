@@ -1,0 +1,61 @@
+{
+  "schema_version": "polymarket-nt-metadata-gate-report.v2",
+  "created_date": "2026-06-08",
+  "purpose": "Fail-closed gate for the selected one-off PMXT Polymarket source rows before NT BinaryOption/catalog projection.",
+  "usage_scope": "one_off_backfill_data",
+  "source_binding": "polymarket-parquet-archive-index",
+  "selected_token_id": "73895424095742155573626958367283533358717984717096075221396743226794070701077",
+  "selected_condition_id": "0x92889d49761307073d461289d01208c3b19292d17da937c0f57501c7b7efa50d",
+  "nt_required_surface": {
+    "parser": "nautilus_polymarket::http::parse::parse_gamma_market",
+    "model": "nautilus_polymarket::http::models::GammaMarket",
+    "required_source_fields": [
+      "conditionId",
+      "clobTokenIds",
+      "outcomes",
+      "question",
+      "startDate",
+      "endDate",
+      "acceptingOrders",
+      "orderPriceMinTickSize",
+      "orderMinSize"
+    ]
+  },
+  "gamma_gate_result": {
+    "spec_path": "/private/tmp/pmxt-selected-gamma-backed-metadata-gate.toml",
+    "report_path": "/private/tmp/pmxt-selected-gamma-backed-metadata-gate-report.json",
+    "report_file_sha256": "10a17ca45912d92f0f6b303196dc762f6493d2ca013746a1f4dbe8ab57bfb523",
+    "gamma_markets_path": "/private/tmp/pmxt-selected-gamma-backed-gamma-by-condition.json",
+    "gamma_markets_sha256": "a01313cb3897c881c48d110a0486ac105b2818fc74c0b79e3f8bfbfdbe78d9b3",
+    "gamma_market_count": 1,
+    "matching_gamma_market_count": 1,
+    "nt_instrument_def_count": 2,
+    "selected_token_nt_def_count": 1,
+    "status": "accepted",
+    "blocking_issues": []
+  },
+  "official_endpoint_probes": [
+    {
+      "endpoint": "https://clob.polymarket.com/markets-by-token/73895424095742155573626958367283533358717984717096075221396743226794070701077",
+      "http_status": 200,
+      "response_bytes": 286,
+      "sha256": "75c66bc3a3672a47b2b559420fc1cb1dfc193f0f4b19eea671004b8e95fe513e",
+      "selected_condition_id": "0x92889d49761307073d461289d01208c3b19292d17da937c0f57501c7b7efa50d",
+      "selected_token_role": "secondary_token_id",
+      "finding": "Binds selected token to condition and sibling token; Gamma remains the source used by NT's parser."
+    },
+    {
+      "endpoint": "https://gamma-api.polymarket.com/markets?condition_ids=0x92889d49761307073d461289d01208c3b19292d17da937c0f57501c7b7efa50d",
+      "http_status": 200,
+      "response_bytes": 7098,
+      "sha256": "a01313cb3897c881c48d110a0486ac105b2818fc74c0b79e3f8bfbfdbe78d9b3",
+      "selected_match_count": 1,
+      "finding": "Returned one GammaMarket containing the selected condition and token."
+    }
+  ],
+  "decision": {
+    "status": "accepted",
+    "allowed_next_step": "Use the source-backed GammaMarket through nautilus_polymarket::http::parse::parse_gamma_market for the selected one-off PMXT projection proof.",
+    "forbidden_next_step": "Do not synthesize a BinaryOption from PMXT rows or CLOB-only abbreviated fields."
+  }
+}

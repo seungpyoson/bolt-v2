@@ -1,0 +1,193 @@
+{
+  "schema_version": 1,
+  "evidence_id": "source-proof-nt-catalog-mapping-evaluation-backtesting-engine-binance-bnbusdc-2026-04-01-2026-06-10",
+  "observed_at_utc": "2026-06-10T00:00:00Z",
+  "task": "BACKTESTING_ENGINE-022",
+  "scope": {
+    "purpose": "Evaluate whether shortlisted source samples map to NT-compatible catalog classes and the ParquetDataCatalog input path.",
+    "not_source_selection": true,
+    "not_backfill_authorization": true,
+    "not_converter_implementation": true,
+    "task_status_after_this_artifact": "date_specific_binance_2026_03_02_mapping_ready_broad_task_open"
+  },
+  "nt_surface_evidence": {
+    "nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+    "parquet_catalog_api": {
+      "catalog_from_uri": "nautilus_persistence::backend::catalog::ParquetDataCatalog::from_uri",
+      "write_api": "nautilus_persistence::backend::catalog::ParquetDataCatalog::write_to_parquet<T>",
+      "instrument_write_api": "nautilus_persistence::backend::catalog::ParquetDataCatalog::write_instruments",
+      "typed_read_api": "nautilus_persistence::backend::catalog::ParquetDataCatalog::query_typed_data<T>",
+      "source_refs": [
+        "nt://crates/persistence/src/backend/catalog.rs#write_to_parquet",
+        "nt://crates/persistence/src/backend/catalog.rs#query_typed_data",
+        "nt://crates/backtest/src/node.rs#create_catalog"
+      ]
+    },
+    "nt_backtestnode_dispatch_data_classes": [
+      "QuoteTick",
+      "TradeTick",
+      "Bar",
+      "OrderBookDelta",
+      "OrderBookDepth10",
+      "MarkPriceUpdate",
+      "IndexPriceUpdate",
+      "InstrumentStatus",
+      "InstrumentClose"
+    ],
+    "current_bte_manifest_exposure": {
+      "accepted_data_classes": [
+        "TradeTick",
+        "OrderBookDelta"
+      ],
+      "rejected_for_now": [
+        "QuoteTick",
+        "Bar",
+        "OrderBookDepth10",
+        "MarkPriceUpdate",
+        "IndexPriceUpdate",
+        "InstrumentStatus",
+        "InstrumentClose"
+      ],
+      "reason": "run_manifest.rs maps TradeTick and OrderBookDelta into NautilusDataType, supports configured instrument_ids and multiple [[catalog_inputs]], and rejects unmapped data_type strings. Fidelity matching accepts TradeTick for TRADE_REPLAY and requires OrderBookDelta for L2_REPLAY while allowing supplemental TradeTick.",
+      "source_refs": [
+        "repo://crates/backtesting-vertical-slice/src/run_manifest.rs#to_nt_data_config",
+        "repo://crates/backtesting-vertical-slice/src/run_manifest.rs#ensure_data_type_matches_fidelity"
+      ]
+    }
+  },
+  "source_sample_mapping_status": [
+    {
+      "source_binding": "binance-spot-native-trades",
+      "source_proof_id": "source-proof-binance-spot-native-trades-bnbusdc-2026-04-01",
+      "source_proof_version": 1,
+      "usage_scope": "canonical_backfill_input",
+      "fixture_type": "perps-spot",
+      "table_family": "trades",
+      "source_sample_status": "sample_and_accepted_object_available",
+      "candidate_nt_data_classes": [
+        "TradeTick"
+      ],
+      "nt_data_class_evidence_refs": {
+        "TradeTick": [
+          "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-04-01.json",
+          "repo://specs/023-nt-research-analytics-platform/reference/binance-bnbusdc-2026-04-01-accepted-publication-evidence.2026-06-10.json"
+        ]
+      },
+      "current_bte_status": "accepted",
+      "parquet_catalog_status": "proven",
+      "evidence_refs": [
+        "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-04-01.json",
+        "repo://specs/023-nt-research-analytics-platform/reference/binance-bnbusdc-2026-04-01-accepted-publication-evidence.2026-06-10.json"
+      ],
+      "decision": "NT catalog/backtest input path is proven for this date-specific accepted source proof by the accepted 2026-04-01 canonical conversion, NT TradeTick catalog projection, query_typed_data read-back, BacktestNode iteration evidence, publication, and direct S3 catalog read-back."
+    },
+    {
+      "source_binding": "polymarket-parquet-archive-index",
+      "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
+      "source_proof_version": 1,
+      "usage_scope": "one_off_backfill_data",
+      "fixture_type": "binary-option",
+      "table_family": "order_book_snapshot_deltas",
+      "source_sample_status": "sample_schema_available",
+      "candidate_nt_data_classes": [
+        "OrderBookDelta",
+        "TradeTick"
+      ],
+      "nt_data_class_evidence_refs": {
+        "OrderBookDelta": [
+          "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json",
+          "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json",
+          "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json"
+        ],
+        "TradeTick": [
+          "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json",
+          "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-trade-id-policy-status.2026-06-08.json",
+          "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json"
+        ]
+      },
+      "current_bte_status": "one_off_current_artifact_proven_broad_backfill_blocked",
+      "parquet_catalog_status": "one_off_current_artifact_proven_broad_backfill_blocked",
+      "dependency_wiring_status": {
+        "root_bolt_v2_dependency": "Cargo.toml pins nautilus-polymarket at NT revision 6e059dcbb59ac1e582132fc431a581936c216c3c",
+        "backtesting_vertical_slice_dependency": "crates/backtesting-vertical-slice/Cargo.toml uses pinned NT Polymarket parser/provider surfaces for the bounded one-off path, while broad source acceptance remains outside this proof.",
+        "decision": "BTE can claim bounded one-off NT Polymarket parser/provider reuse for the selected PMXT sample only. Broad backfill remains blocked until expanded coverage, throughput, dynamic tick-size replay, and reusable source acceptance are proven."
+      },
+      "evidence_refs": [
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json",
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json",
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json"
+      ],
+      "decision": "Do not build a custom BinaryOption instrument mapper. The selected PMXT sample has bounded one-off NT parser/provider, OrderBookDelta, TradeTick, ParquetDataCatalog read-back, BacktestNode, and result-contract evidence. Do not start broad PMXT backfill until reusable coverage, throughput, dynamic tick-size replay, and acceptance proof are committed."
+    },
+    {
+      "source_binding": "kalshi-official-historical-api",
+      "source_proof_id": "source-proof-kalshi-official-historical-binary-option-pending-2026-06-08",
+      "source_proof_version": 1,
+      "fixture_type": "binary-option",
+      "table_family": "bars",
+      "source_sample_status": "historical_market_trade_candlestick_shapes_available",
+      "candidate_nt_data_classes": [
+        "Bar",
+        "TradeTick"
+      ],
+      "current_bte_status": "pending",
+      "parquet_catalog_status": "not_proven",
+      "evidence_refs": [
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-endpoint-inspection.kalshi-official-historical-api.2026-06-08.json",
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.kalshi-official-historical-pending.v1.json"
+      ],
+      "decision": "Official Kalshi historical data may support lower-fidelity Bar or TradeTick projection, but BTE currently admits only TradeTick and has no staged sample-to-catalog read-back proof for Kalshi. Historical L2 order-book replay is not proven from the official API."
+    },
+    {
+      "source_binding": "pmxt-kalshi-orderbook-archive",
+      "fixture_type": "binary-option",
+      "table_family": "order_book_snapshot_deltas",
+      "source_sample_status": "sample_schema_available",
+      "candidate_nt_data_classes": [
+        "OrderBookDelta",
+        "OrderBookDepth10"
+      ],
+      "current_bte_status": "candidate_not_registered_as_accepted_source_proof",
+      "parquet_catalog_status": "not_proven",
+      "evidence_refs": [
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fidelity-evaluation.backtesting-engine.2026-06-08.json",
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.pmxt-kalshi-orderbook.2026-06-08.json"
+      ],
+      "decision": "Treat as a higher-fidelity Kalshi candidate discovered by BTE-025, not as selected input. The bounded sample proves orderbook_snapshot/orderbook_delta schema, but it has no trades, no accepted BinaryOption instrument mapping, null source timestamps on snapshot rows, and no NT catalog read-back."
+    },
+    {
+      "source_binding": "hyperliquid-hip4-outcome-meta",
+      "source_proof_id": "source-proof-hyperliquid-hip4-outcome-meta-binary-option-pending-2026-06-08",
+      "source_proof_version": 1,
+      "fixture_type": "binary-option",
+      "table_family": "prediction_market_outcomes",
+      "source_sample_status": "current_metadata_only",
+      "candidate_nt_data_classes": [],
+      "current_bte_status": "not_applicable_for_replay_mapping",
+      "parquet_catalog_status": "not_applicable",
+      "evidence_refs": [
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.hyperliquid-hip4-outcome-meta.2026-06-08.json",
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.hyperliquid-hip4-outcome-meta.2026-06-08.json"
+      ],
+      "decision": "Keep as metadata-only/current-only. It cannot become NT replay catalog input until source-backed checked BinaryOption fields and accepted historical outcome replay coverage exist."
+    }
+  ],
+  "non_hardcoding_rules_for_the_next_mapping_work": [
+    "Add NT data-class support by table family and source schema contract, not by venue name.",
+    "Keep concrete source bindings in TOML/proof artifacts and keep runtime mapping selected through source proof, not code constants.",
+    "Reuse NT instrument providers/parsers where NT already owns a venue instrument model.",
+    "Only build Bolt-owned adapters for raw-source-to-NT-typed data projection when NT does not already provide that raw-source parser.",
+    "Each new data class must have ParquetDataCatalog write and query_typed_data read-back proof before BacktestNode input is accepted."
+  ],
+  "task_conclusion": {
+    "status": "open",
+    "reason": "BTE-022 is proven for the TradeTick perps/spot native-trades path and for one bounded PMXT Polymarket OrderBookDelta/TradeTick selected-source artifact. Broad binary-option L2/bar paths remain pending or not applicable until reusable coverage, source acceptance, and catalog read-back proof are committed.",
+    "next_required_evidence": [
+      "expanded PMXT Polymarket coverage, throughput, dynamic tick-size replay, and reusable source acceptance proof before any broad PMXT backfill",
+      "committed canonical-source readiness gate that keeps PMXT one-off evidence separate from accepted broad source bindings",
+      "PMXT Kalshi source-backed BinaryOption instrument mapping, timestamp policy, and OrderBookDelta/OrderBookDepth10 catalog proof before any Kalshi L2 claim",
+      "Kalshi lower-fidelity Bar or TradeTick staged catalog proof only if lower-fidelity acceptance is explicitly allowed",
+      "HIP-4 exact historical outcome replay coverage and checked BinaryOption field proof before any replay mapping"
+    ]
+  }
+}

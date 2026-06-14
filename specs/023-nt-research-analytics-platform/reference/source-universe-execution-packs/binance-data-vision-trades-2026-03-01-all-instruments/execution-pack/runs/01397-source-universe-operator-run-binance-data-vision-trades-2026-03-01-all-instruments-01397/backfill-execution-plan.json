@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01397:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ZILIDR:2026-03-01:fd86d950a9a759246f6c082b8aff4131d22f23647c4cb9db24c2b959ddff9013:accepted-tranche",
+  "accepted_tranche_manifest_hash": "072058c30960eaee22f7a17aedcb5a2852e9b92e715df7e483a37ad4025a1c62",
+  "run_spec_hash": "b368a24da31369e4ee739d56d54373ca834add5416dfbc4564d7e22a7f0ad247",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01397",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ZILIDR/dt=2026-03-01/object=fd86d950a9a759246f6c082b8aff4131d22f23647c4cb9db24c2b959ddff9013",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 1268,
+  "max_object_bytes": 1268,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=ZILIDR/object=fd86d950a9a759246f6c082b8aff4131d22f23647c4cb9db24c2b959ddff9013.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/ZILIDR/ZILIDR-trades-2026-03-01.zip",
+      "sha256": "fd86d950a9a759246f6c082b8aff4131d22f23647c4cb9db24c2b959ddff9013",
+      "bytes": 1268,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

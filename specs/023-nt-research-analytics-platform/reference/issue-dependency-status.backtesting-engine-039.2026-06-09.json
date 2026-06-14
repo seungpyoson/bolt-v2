@@ -1,0 +1,119 @@
+{
+  "schema_version": "issue-dependency-status.v1",
+  "task_id": "BACKTESTING_ENGINE-039",
+  "status": "repo_dependency_links_refreshed_no_github_mutation",
+  "recorded_at": "2026-06-09",
+  "fetched_at_utc": "2026-06-08T18:48:41Z",
+  "repository": "seungpyoson/bolt-v2",
+  "source_spec": "specs/023-nt-research-analytics-platform/1-backtesting-engine/spec.md",
+  "decision": "Backtesting Engine implementation review must treat these issue relationships as live scope boundaries. This branch records the current issue state and updates local spec links, but does not mutate GitHub issues because repo planning rules require explicit approval for issue mutation.",
+  "github_mutation_performed": false,
+  "github_mutation_authorized": false,
+  "dependencies": [
+    {
+      "issue": 19,
+      "title": "Data lake: attach lineage metadata to normalized lake builds",
+      "url": "https://github.com/seungpyoson/bolt-v2/issues/19",
+      "state": "open",
+      "updated_at": "2026-04-11T03:31:19Z",
+      "bte_relation": "Related lineage dependency for raw evidence, catalog projection, and result-contract provenance. Backtesting Engine records hashes and pointers but must not claim to close normalized-lake lineage scope."
+    },
+    {
+      "issue": 23,
+      "title": "Data lake: bridge NT instrument stream spool into normalized instruments Parquet",
+      "url": "https://github.com/seungpyoson/bolt-v2/issues/23",
+      "state": "open",
+      "updated_at": "2026-04-11T03:31:37Z",
+      "bte_relation": "Dependency context for instrument/catalog completeness. Backtesting Engine can prove NT catalog input for selected artifacts but must not claim normalized instrument-spool bridge closure."
+    },
+    {
+      "issue": 24,
+      "title": "[Epic] NT-first data lake v1: post-Task-4 modular follow-ons",
+      "url": "https://github.com/seungpyoson/bolt-v2/issues/24",
+      "state": "open",
+      "updated_at": "2026-04-11T03:36:18Z",
+      "bte_relation": "Parent data-lake epic. Backtesting Engine must avoid redefining canonical lake layout and must keep raw/catalog/source-proof/backtest artifact boundaries explicit."
+    },
+    {
+      "issue": 34,
+      "title": "[Epic] Flexible Polymarket strategy platform: one active ruleset now, many later",
+      "url": "https://github.com/seungpyoson/bolt-v2/issues/34",
+      "state": "open",
+      "updated_at": "2026-04-17T08:43:38Z",
+      "bte_relation": "Strategy-platform consumer context. Backtesting Engine may execute configured NT-compatible strategies but must not encode strategy-promotion decisions or close platform scope."
+    },
+    {
+      "issue": 112,
+      "title": "[Epic][P2] Kalshi venue integration: catalog, data capture, and execution",
+      "url": "https://github.com/seungpyoson/bolt-v2/issues/112",
+      "state": "open",
+      "updated_at": "2026-04-12T00:35:57Z",
+      "bte_relation": "Kalshi venue/source context. Backtesting Engine treats Kalshi historical data as source-proof gated and does not implement venue integration here."
+    },
+    {
+      "issue": 115,
+      "title": "[P1] Add Hyperliquid HIP-4 outcome contracts venue adapter",
+      "url": "https://github.com/seungpyoson/bolt-v2/issues/115",
+      "state": "open",
+      "updated_at": "2026-04-12T00:36:22Z",
+      "bte_relation": "HIP-4 venue context. Current NT evidence can inform catalog/backtest planning, but production adapter and settlement scope remain outside this branch."
+    },
+    {
+      "issue": 127,
+      "title": "Phase 3f: add native Polymarket order_book_depths support",
+      "url": "https://github.com/seungpyoson/bolt-v2/issues/127",
+      "state": "open",
+      "updated_at": "2026-04-12T05:17:32Z",
+      "bte_relation": "Polymarket depth support constraint. PMXT one-off evidence can use OrderBookDelta/TradeTick projection, but native Polymarket OrderBookDepth10 support is not claimed."
+    },
+    {
+      "issue": 148,
+      "title": "normalized_sink inline capture path - evaluate sidecar extraction",
+      "url": "https://github.com/seungpyoson/bolt-v2/issues/148",
+      "state": "open",
+      "updated_at": "2026-04-12T14:49:15Z",
+      "bte_relation": "Capture-isolation risk context. Backtesting Engine must not add live capture or provider-recorder scope while proving offline catalog/backtest paths."
+    },
+    {
+      "issue": 158,
+      "title": "Sidecar collectors for market data NT adapters drop across all exchanges",
+      "url": "https://github.com/seungpyoson/bolt-v2/issues/158",
+      "state": "open",
+      "updated_at": "2026-04-14T07:04:21Z",
+      "bte_relation": "Analytics-adjacent data-source context. Backtesting Engine source proofs may record gaps, but sidecar collector implementation is separate."
+    },
+    {
+      "issue": 236,
+      "title": "Epic: Bolt-v2 hard-reset rebuild on thin NT layer",
+      "url": "https://github.com/seungpyoson/bolt-v2/issues/236",
+      "state": "open",
+      "updated_at": "2026-05-30T01:19:36Z",
+      "bte_relation": "Architecture parent for thin NT ownership. Backtesting Engine must stay NT-first and avoid custom simulation or dual catalog paths."
+    },
+    {
+      "issue": 254,
+      "title": "P0: Track Polymarket V2 adoption blockers before live enablement",
+      "url": "https://github.com/seungpyoson/bolt-v2/issues/254",
+      "state": "open",
+      "updated_at": "2026-04-30T11:16:34Z",
+      "bte_relation": "Polymarket V2 readiness context. Backtesting Engine must not infer production V2 readiness from PMXT one-off or NT parser evidence."
+    },
+    {
+      "issue": 407,
+      "title": "Define controlled Polymarket broad-discovery mode",
+      "url": "https://github.com/seungpyoson/bolt-v2/issues/407",
+      "state": "open",
+      "updated_at": "2026-05-20T00:34:35Z",
+      "bte_relation": "Controlled discovery boundary. Backtesting Engine must keep source/instrument selection TOML/proof bounded and must not silently widen Polymarket coverage."
+    }
+  ],
+  "open_dependency_count": 12,
+  "closed_dependency_count": 0,
+  "review_boundary": [
+    "Do not claim this Backtesting Engine branch closes any listed issue.",
+    "Use these links as scope and dependency boundaries during implementation review.",
+    "Post GitHub issue comments or update issue bodies only after explicit user approval.",
+    "If GitHub mutation is later approved, comments should link this branch or PR and state the exact BTE slice and remaining accepted scope."
+  ],
+  "bte_039_repo_side_dependency_audit_complete": true
+}

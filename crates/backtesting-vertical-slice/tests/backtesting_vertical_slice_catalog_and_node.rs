@@ -22,27 +22,38 @@ use nautilus_backtest::{
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::TradeTick,
-    enums::{AccountType, AggressorSide, BookType, OmsType},
+    data::{OrderBookDelta, TradeTick, order::BookOrder},
+    enums::{
+        AccountType, AggressorSide, AssetClass, BookAction, BookType, OmsType, OrderSide,
+        RecordFlag,
+    },
     identifiers::{InstrumentId, Symbol, TradeId, Venue},
-    instruments::{CurrencyPair, Instrument, InstrumentAny},
+    instruments::{BinaryOption, CurrencyPair, Instrument, InstrumentAny},
     types::{Currency, Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
+use rust_decimal::Decimal;
 use tempfile::TempDir;
 use ustr::Ustr;
 
 const RUN_IDENTIFIER: &str = "backtesting-vertical-slice-stack-proof";
+const L2_RUN_IDENTIFIER: &str = "backtesting-vertical-slice-l2-delta-proof";
 const VENUE_NAME: &str = "BYBIT";
+const L2_VENUE_NAME: &str = "TESTVENUE";
+const L2_SYMBOL: &str = "YES";
 const RAW_SYMBOL: &str = "BTCUSDT";
 const BASE_CURRENCY: &str = "BTC";
 const QUOTE_CURRENCY: &str = "USDT";
+const L2_SETTLEMENT_CURRENCY: &str = "USD";
 const PRICE_PRECISION: u8 = 2;
 const SIZE_PRECISION: u8 = 3;
+const L2_SIZE_PRECISION: u8 = 6;
 const TRADE_COUNT: usize = 64;
+const L2_DELTA_COUNT: usize = 2;
 const BASE_TIMESTAMP_NANOS: u64 = 1_740_787_200_000_000_000; // 2025-03-01T00:00:00Z
 const TRADE_INTERVAL_NANOS: u64 = 1_000_000_000;
+const L2_BASE_TIMESTAMP_NANOS: u64 = 1_772_323_201_665_000_000;
 
 fn proof_instrument() -> CurrencyPair {
     let instrument_id = InstrumentId::new(Symbol::from(RAW_SYMBOL), Venue::from(VENUE_NAME));
@@ -94,6 +105,120 @@ fn synthetic_trades(instrument_id: InstrumentId) -> Vec<TradeTick> {
             )
         })
         .collect()
+}
+
+fn proof_binary_option() -> BinaryOption {
+    let instrument_id = InstrumentId::new(Symbol::from(L2_SYMBOL), Venue::from(L2_VENUE_NAME));
+    let ts_init = UnixNanos::from(1_000_000_000u64);
+    BinaryOption::new_checked(
+        instrument_id,
+        Symbol::from(L2_SYMBOL),
+        AssetClass::Alternative,
+        Currency::from(L2_SETTLEMENT_CURRENCY),
+        UnixNanos::from(0),
+        UnixNanos::from(2_000_000_000u64),
+        PRICE_PRECISION,
+        L2_SIZE_PRECISION,
+        Price::from("0.01"),
+        Quantity::from("0.000001"),
+        Some(Ustr::from("Yes")),
+        Some(Ustr::from("Bounded binary option fixture")),
+        None,
+        Some(Quantity::from("1")),
+        None,
+        None,
+        Some(Price::from("1.00")),
+        Some(Price::from("0.01")),
+        None,
+        None,
+        Some(Decimal::ZERO),
+        Some(Decimal::ZERO),
+        None,
+        ts_init,
+        ts_init,
+    )
+    .expect("binary option")
+}
+
+fn synthetic_l2_deltas(instrument_id: InstrumentId) -> Vec<OrderBookDelta> {
+    let ts_event = UnixNanos::from(L2_BASE_TIMESTAMP_NANOS);
+    let ts_init = UnixNanos::from(1_000_000_000u64);
+    vec![
+        OrderBookDelta::clear(instrument_id, 0, ts_event, ts_init),
+        OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Add,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("0.49"),
+                Quantity::from("10.000000"),
+                0,
+            ),
+            RecordFlag::F_LAST as u8,
+            0,
+            ts_event,
+            ts_init,
+        )
+        .expect("bid delta"),
+    ]
+}
+
+fn binary_option_l2_node_iterations() -> usize {
+    let instrument = proof_binary_option();
+    let instrument_id = instrument.id;
+    let deltas = synthetic_l2_deltas(instrument_id);
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let catalog_path = temp_dir.path().to_str().expect("utf-8 path").to_string();
+
+    let mut catalog = ParquetDataCatalog::new(temp_dir.path(), None, None, None, None);
+    catalog
+        .write_instruments(vec![InstrumentAny::BinaryOption(instrument)])
+        .expect("write binary option instrument");
+    catalog
+        .write_to_parquet(deltas.clone(), None, None, None)
+        .expect("write L2 deltas");
+
+    let loaded: Vec<OrderBookDelta> = catalog
+        .query_typed_data::<OrderBookDelta>(
+            Some(vec![instrument_id.to_string()]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .expect("query L2 deltas");
+    assert_eq!(loaded.len(), deltas.len(), "catalog must return L2 deltas");
+    assert_eq!(loaded[0].instrument_id, instrument_id);
+
+    let venue_config = BacktestVenueConfig::builder()
+        .name(Ustr::from(L2_VENUE_NAME))
+        .oms_type(OmsType::Netting)
+        .account_type(AccountType::Cash)
+        .book_type(BookType::L2_MBP)
+        .starting_balances(vec![format!("1_000_000 {L2_SETTLEMENT_CURRENCY}")])
+        .build();
+
+    let data_config = BacktestDataConfig::builder()
+        .data_type(NautilusDataType::OrderBookDelta)
+        .catalog_path(catalog_path)
+        .instrument_id(instrument_id)
+        .build();
+
+    let run_config = BacktestRunConfig::builder()
+        .id(L2_RUN_IDENTIFIER.to_string())
+        .venues(vec![venue_config])
+        .data(vec![data_config])
+        .build();
+
+    let mut node = BacktestNode::new(vec![run_config]).expect("construct L2 backtest node");
+    node.build().expect("build L2 backtest node");
+    let results = node.run().expect("run L2 backtest node");
+
+    assert_eq!(results.len(), 1, "exactly one configured run must execute");
+    assert_eq!(results[0].run_config_id.as_deref(), Some(L2_RUN_IDENTIFIER));
+    results[0].iterations
 }
 
 #[test]
@@ -181,5 +306,14 @@ fn catalog_round_trips_trade_ticks_and_node_runs_compiled_strategy() {
     assert_eq!(
         result.iterations, TRADE_COUNT,
         "engine must iterate exactly once per projected trade tick"
+    );
+}
+
+#[test]
+fn catalog_round_trips_binary_option_l2_deltas_and_node_consumes_them() {
+    assert_eq!(
+        binary_option_l2_node_iterations(),
+        L2_DELTA_COUNT,
+        "engine must iterate exactly once per projected L2 order-book delta"
     );
 }

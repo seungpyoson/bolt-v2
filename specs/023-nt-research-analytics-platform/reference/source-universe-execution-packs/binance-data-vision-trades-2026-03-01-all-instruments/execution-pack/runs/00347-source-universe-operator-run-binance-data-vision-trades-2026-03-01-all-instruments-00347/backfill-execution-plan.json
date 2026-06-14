@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00347:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:CYBERFDUSD:2026-03-01:44a96b46787029307eef128af7a40a1693c096a2ab61b87b0811809a5d69ed34:accepted-tranche",
+  "accepted_tranche_manifest_hash": "706ce0f70f9aa39a184b3e5830e09eb94d367505aa92c395b3d8d4ad0c355cfe",
+  "run_spec_hash": "8c0a6817fa2f110614c58bbb89f22923da6fff0cd6b130fa1012ee2db1839a65",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00347",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=CYBERFDUSD/dt=2026-03-01/object=44a96b46787029307eef128af7a40a1693c096a2ab61b87b0811809a5d69ed34",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 777,
+  "max_object_bytes": 777,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=CYBERFDUSD/object=44a96b46787029307eef128af7a40a1693c096a2ab61b87b0811809a5d69ed34.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/CYBERFDUSD/CYBERFDUSD-trades-2026-03-01.zip",
+      "sha256": "44a96b46787029307eef128af7a40a1693c096a2ab61b87b0811809a5d69ed34",
+      "bytes": 777,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

@@ -1,0 +1,133 @@
+{
+  "schema_version": "source-proof-nt-mapping-inspection.v1",
+  "source_binding": "hyperliquid-hip4-outcome-meta",
+  "market_structure_fixture": "binary-option",
+  "observed_at_utc": "2026-06-07T20:14:45Z",
+  "nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+  "nt_instrument_model": {
+    "class": "nautilus_model::instruments::BinaryOption",
+    "catalog_instrument_container": "nautilus_model::instruments::InstrumentAny::BinaryOption",
+    "catalog_write_api": "nautilus_persistence::backend::catalog::ParquetDataCatalog::write_instruments",
+    "required_checked_fields": [
+      "instrument_id",
+      "raw_symbol",
+      "asset_class",
+      "currency",
+      "activation_ns",
+      "expiration_ns",
+      "price_precision",
+      "size_precision",
+      "price_increment",
+      "size_increment"
+    ]
+  },
+  "nt_replay_data_classes": [
+    "QuoteTick",
+    "TradeTick",
+    "Bar",
+    "OrderBookDelta",
+    "OrderBookDepth10",
+    "MarkPriceUpdate",
+    "IndexPriceUpdate",
+    "InstrumentStatus",
+    "InstrumentClose"
+  ],
+  "outcome_meta_sample": {
+    "source_uri": "https://api.hyperliquid.xyz/info",
+    "request_json": {
+      "type": "outcomeMeta"
+    },
+    "present_outcome_fields": [
+      "outcome",
+      "name",
+      "description",
+      "sideSpecs",
+      "quoteToken"
+    ],
+    "present_question_fields": [
+      "question",
+      "name",
+      "description",
+      "fallbackOutcome",
+      "namedOutcomes",
+      "settledNamedOutcomes"
+    ],
+    "unique_quote_tokens": [
+      "USDC"
+    ],
+    "outcome_count": 62,
+    "question_count": 3,
+    "missing_for_checked_binary_option": [
+      "activation_ns",
+      "expiration_ns",
+      "price_precision",
+      "size_precision",
+      "price_increment",
+      "size_increment"
+    ]
+  },
+  "current_market_data_probe": {
+    "outcome": 101,
+    "side": 0,
+    "encoding": 1010,
+    "spot_coin": "#1010",
+    "l2_book_probe": {
+      "source_uri": "https://api.hyperliquid.xyz/info",
+      "request_json": {
+        "type": "l2Book",
+        "coin": "#1010"
+      },
+      "observed_book_time_ms": 1780863218583,
+      "bid_level_count": 9,
+      "ask_level_count": 6,
+      "first_bid_shape": [
+        "px",
+        "sz",
+        "n"
+      ],
+      "first_ask_shape": [
+        "px",
+        "sz",
+        "n"
+      ]
+    },
+    "candle_probe": {
+      "source_uri": "https://api.hyperliquid.xyz/info",
+      "request_json": {
+        "type": "candleSnapshot",
+        "req": {
+          "coin": "#1010",
+          "interval": "1m",
+          "startTime": 1780243200000,
+          "endTime": 1780863600000
+        }
+      },
+      "row_count": 5124,
+      "first_row_shape": [
+        "t",
+        "T",
+        "s",
+        "i",
+        "o",
+        "c",
+        "h",
+        "l",
+        "v",
+        "n"
+      ],
+      "first_row_time_ms": 1780554120000,
+      "last_row_time_ms": 1780861500000
+    }
+  },
+  "mapping_conclusion": {
+    "instrument_mapping_status": "blocked",
+    "replay_mapping_status": "blocked",
+    "reason": "outcomeMeta proves current outcome discovery fields, but not enough checked BinaryOption instrument fields and not accepted historical replay coverage",
+    "required_next_evidence": [
+      "source-backed activation and expiration timestamps for each outcome side",
+      "source-backed price and size increment or precision rules",
+      "accepted historical market data source for Bar, OrderBookDepth10, OrderBookDelta, QuoteTick, or TradeTick replay",
+      "or an approved non-replay signal/input contract with explicit claim limits"
+    ]
+  }
+}

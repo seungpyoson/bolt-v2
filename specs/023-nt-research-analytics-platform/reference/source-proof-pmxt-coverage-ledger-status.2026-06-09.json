@@ -1,0 +1,74 @@
+{
+  "schema_version": "source-proof-pmxt-coverage-ledger-status.v1",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "status": "rejected_under_pending_source_proof",
+  "recorded_at_utc": "2026-06-08T21:41:52Z",
+  "scope": {
+    "question": "Can the current PMXT coverage ledger authorize canonical or broad Polymarket L2 backfill?",
+    "answer": "No. The ledger is useful rejected evidence: it proves coverage-axis metadata can be derived from the committed SourceProofReport without payload download, but both records are rejected because the PMXT source proof remains pending.",
+    "usage_scope": "one_off_backfill_data",
+    "broad_backfill_allowed": false,
+    "canonical_ready": false
+  },
+  "source_proof": {
+    "source_proof_path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
+    "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
+    "source_proof_version": 1,
+    "source_binding": "polymarket-parquet-archive-index",
+    "source_proof_status": "pending",
+    "table_family": "order_book_snapshot_deltas"
+  },
+  "ledger_run": {
+    "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin backfill_coverage_ledger -- --spec /private/tmp/bte-pmxt-coverage-ledger-source-proof-20260609/pmxt-coverage-ledger.toml",
+    "spec_path": "/private/tmp/bte-pmxt-coverage-ledger-source-proof-20260609/pmxt-coverage-ledger.toml",
+    "spec_file_sha256": "d6209aa6d444cd12c9ea43bd8b7bf494f05ffb7ffbfb1e42a10a232b24c89134",
+    "ledger_path": "/private/tmp/bte-pmxt-coverage-ledger-source-proof-20260609/ledger-output/backfill-coverage-ledger.json",
+    "ledger_file_sha256": "7dc20194f826eb9c05ec99c27cdb86057f775e1486d688a73cc2924659a4c2cf",
+    "payload_downloaded": false,
+    "raw_manifest_mutated": false
+  },
+  "coverage_summary": {
+    "coverage_axis": "timestamp_received",
+    "total_records": 2,
+    "rejected_records": 2,
+    "accepted_records": 0,
+    "canonical_ready_records": 0,
+    "accepted_objects": 0,
+    "accepted_bytes": 0,
+    "physical_only_objects": 0,
+    "physical_only_bytes": 0,
+    "blocking_issue_count": 2,
+    "blocking_issues": [
+      "source_proof_not_accepted"
+    ]
+  },
+  "records": [
+    {
+      "record_id": "archive-s3-run-00a4deb49a46a973",
+      "status": "rejected",
+      "canonical_ready": false,
+      "blocking_issues": [
+        "source_proof_not_accepted"
+      ]
+    },
+    {
+      "record_id": "archive-s3-accept-streaming-orphans-da5876ae6d4b54cc",
+      "status": "rejected",
+      "canonical_ready": false,
+      "blocking_issues": [
+        "source_proof_not_accepted"
+      ]
+    }
+  ],
+  "claim_limits": [
+    "This artifact does not accept PMXT as a durable source.",
+    "This artifact does not authorize canonical-ready PMXT backfill.",
+    "This artifact does not prove one-year or expanded coverage.",
+    "This artifact does not prove dynamic tick-size replay or an accepted bounded-exclusion policy."
+  ],
+  "next_required_evidence": [
+    "Accept a durable Polymarket SourceProofReport before any coverage ledger can become canonical-ready.",
+    "Record expanded coverage, retention/freshness, completeness, storage, and exact accepted-window cost evidence under that accepted source proof.",
+    "Prove dynamic tick-size replay or accept a source-proof-bound no-tick-size-change exclusion policy before broad L2 replay claims."
+  ]
+}

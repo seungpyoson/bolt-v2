@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01573:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:CRVUSDT:2026-03-01:b6819f6f620f149b85a5a9c47c60e1d4b966e446b91e0e2d5af8eec5311a06b7:accepted-tranche",
+  "accepted_tranche_manifest_hash": "515c5c561f30b0a2ff81ea3f74e7a5cf1d1a688832a839860142838c60903dfb",
+  "run_spec_hash": "ff9bac08d9ea3474f870aa1a3eed32d271a360776810ea43e5e38ed28480026a",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01573",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=CRVUSDT/dt=2026-03-01/object=b6819f6f620f149b85a5a9c47c60e1d4b966e446b91e0e2d5af8eec5311a06b7",
+  "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-usd-m-perpetual-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 758641,
+  "max_object_bytes": 758641,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=CRVUSDT/object=b6819f6f620f149b85a5a9c47c60e1d4b966e446b91e0e2d5af8eec5311a06b7.zip",
+      "source_url": "https://data.binance.vision/data/futures/um/daily/trades/CRVUSDT/CRVUSDT-trades-2026-03-01.zip",
+      "sha256": "b6819f6f620f149b85a5a9c47c60e1d4b966e446b91e0e2d5af8eec5311a06b7",
+      "bytes": 758641,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

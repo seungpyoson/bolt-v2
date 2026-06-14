@@ -6,6 +6,7 @@
 
 use crate::bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey};
 use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter;
+use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_live::node::LiveNode;
@@ -32,6 +33,7 @@ pub struct StrategyRegistrationContext<'a> {
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    pub order_execution_policy: BoltV3OrderExecutionPolicy,
     pub realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
 }
 
@@ -111,6 +113,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    order_execution_policy: BoltV3OrderExecutionPolicy,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     let mut summary = BoltV3StrategyRegistrationSummary::empty();
@@ -139,6 +142,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
                 resolved,
                 decision_evidence: decision_evidence.clone(),
                 submit_admission: submit_admission.clone(),
+                order_execution_policy,
                 realized_volatility_runtime: realized_volatility_runtime.clone(),
             },
         )?;

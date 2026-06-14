@@ -137,6 +137,21 @@ pub struct SourceUniverseExecutionPackRecord {
     pub execution_plan_sha256: String,
 }
 
+impl SourceUniverseExecutionPackRecord {
+    /// The on-disk artifact paths this record advertises: its run spec, accepted
+    /// tranche manifest, and execution plan. Single source of truth for which
+    /// files a record points at, so eviction/restore tooling and the eviction
+    /// guard test enumerate the full set rather than a hand-picked subset. Add
+    /// any new artifact-path field here so every consumer stays exhaustive.
+    pub fn artifact_paths(&self) -> [&Path; 3] {
+        [
+            &self.run_spec_path,
+            &self.accepted_tranche_path,
+            &self.execution_plan_path,
+        ]
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceUniverseExecutionPack {

@@ -527,59 +527,63 @@ fn decision_evidence_path_rejects_absolute_or_parent_traversal() {
 }
 
 #[test]
-fn binary_oracle_edge_taker_records_evidence_then_admission_before_only_direct_submit_call() {
+fn binary_oracle_edge_taker_routes_evidence_admission_and_submit_through_shared_policy() {
     // Whole-module text via the A0 source-integrity owner (single canonical
     // order across digest + text). At A0 the single-file identity case
     // reproduces the prior `include_str!` text byte-for-byte, so the
     // intra-file `.find()` ordering below stays valid. The migrating split
     // slice (A3/A6/A7) discharges the forward order-sensitivity constraint.
-    let source = support::module_source_text(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
-    let source = source.as_str();
-    let evidence_index = source
-        .find(".record_order_intent(&intent)")
-        .expect("strategy must record decision evidence");
-    let admission_index = source
-        .find(".submit_admission().admit(&request)")
-        .expect("strategy wrapper must submit through admission");
-    let submit_index = source
-        .find(
-            "self.submit_order(\n            order,\n            submit_context.position_id,\n            submit_context.client_id,\n            submit_context.params,\n        )",
-        )
-        .expect("strategy wrapper must thread submit context into the only direct NT submit call");
+    let strategy_source =
+        support::module_source_text(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
+    let strategy_source = strategy_source.as_str();
+    let execution_source = include_str!("../src/bolt_v3_order_execution.rs");
+    let evidence_index = execution_source
+        .find(".record_order_intent(&routing.intent)")
+        .expect("shared execution policy must record decision evidence");
+    let admission_index = execution_source
+        .find("routing.submit_admission.admit(&routing.request)")
+        .expect("shared execution policy must submit through admission");
+    let submit_index = execution_source
+        .find("sink.submit_order_via_nt(order, context)")
+        .expect("shared execution policy must delegate to the NT mutation sink");
 
     assert!(
         evidence_index < admission_index && admission_index < submit_index,
         "decision evidence must be recorded before submit admission before NT submit"
     );
-    let strategy_input_index = source
+    let strategy_input_index = strategy_source
         .find(".record_strategy_input_snapshot(&strategy_input_snapshot)")
         .expect("entry strategy input snapshot must be recorded");
-    let evidence_wrapper_call_after_strategy_input = source[strategy_input_index..]
-        .find("self.submit_order_with_decision_evidence(\n                    intent,\n                    order,\n                    SubmitContext::with_client_id(client_id),\n                )")
+    let evidence_wrapper_call_after_strategy_input = strategy_source[strategy_input_index..]
+        .find("self.submit_order_with_decision_evidence(\n                    intent,\n                    order,\n                    BoltV3SubmitContext::with_client_id(client_id),\n                )")
         .expect("entry path must submit through evidence wrapper");
     assert!(
         evidence_wrapper_call_after_strategy_input > 0,
         "entry strategy input snapshot must be recorded before order-intent evidence wrapper"
     );
-    // This intentionally scans the whole strategy source, including in-file
-    // tests, because no code path should bypass the evidence wrapper.
+    // This intentionally scans the strategy source set, including in-file tests,
+    // but excludes the shared NT mutation sink itself because the sink is the
+    // approved policy boundary verified above.
+    let strategy_source_without_execution_sink = strategy_source.replace(execution_source, "");
     assert_eq!(
-        source.matches("self.submit_order(").count(),
-        1,
-        "direct NT submit calls must stay inside evidence wrapper only"
+        strategy_source_without_execution_sink
+            .matches("self.submit_order(")
+            .count(),
+        0,
+        "strategy code must not call NT submit directly"
     );
 }
 
 #[test]
-fn binary_oracle_edge_taker_exit_submit_threads_managed_position_id_to_nt() {
+fn binary_oracle_edge_taker_exit_submit_threads_managed_position_id_to_shared_policy() {
     let source = support::module_source_text(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
     let source = source.as_str();
 
     assert!(
         source.contains(
-            "SubmitContext::with_client_id_and_position_id(\n                client_id,\n                managed_position.position.position_id,\n            )"
+            "BoltV3SubmitContext::with_client_id_and_position_id(\n                client_id,\n                managed_position.position.position_id,\n            )"
         ),
-        "exit submits must pass the managed PositionId into NT submit_order"
+        "exit submits must pass the managed PositionId into shared execution policy"
     );
 }
 
@@ -593,6 +597,7 @@ fn strategy_build_context_requires_decision_evidence_value() {
                 NoopDecisionEvidenceWriter,
             )),
         ),
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
 

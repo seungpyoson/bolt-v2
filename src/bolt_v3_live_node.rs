@@ -3378,8 +3378,8 @@ mod tests {
     #[test]
     fn partition_market_exit_targets_suppresses_all_when_fully_shadow() {
         let (dispatch, suppressed) = partition_market_exit_targets(&[
-            (StrategyId::from("S1"), false),
-            (StrategyId::from("S2"), false),
+            (StrategyId::from("S1-001"), false),
+            (StrategyId::from("S2-001"), false),
         ]);
         assert!(
             dispatch.is_empty(),

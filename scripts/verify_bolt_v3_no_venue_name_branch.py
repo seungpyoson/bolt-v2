@@ -288,6 +288,14 @@ def _match_arm_positions(scan_text: str) -> list[int]:
                 if depth == 0:
                     break  # end of the match body
                 depth -= 1
+                if depth == 0 and not in_pattern:
+                    # A block-bodied arm (`pat => { .. }`) closes its body here
+                    # and, per Rust, needs no trailing comma. The next character
+                    # begins a new arm pattern, so resume pattern context;
+                    # otherwise `in_pattern` would stay False and the following
+                    # arm's pattern would never be scanned (fence false-negative).
+                    in_pattern = True
+                    arm_start = k + 1
             elif depth == 0 and in_pattern and ch == "=" and k + 1 < n and scan_text[k + 1] == ">":
                 pattern = _GUARD.split(scan_text[arm_start:k], maxsplit=1)[0]
                 for lit in _LIT_RE.finditer(pattern):

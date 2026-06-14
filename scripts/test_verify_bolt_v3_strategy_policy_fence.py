@@ -19,11 +19,11 @@ SPEC.loader.exec_module(VERIFIER)
 
 
 class StrategyPolicyFenceTests(unittest.TestCase):
+    def violations_for(self, source: str) -> list[object]:
+        return VERIFIER.find_violations_in_text("probe.rs", source)
+
     def labels_for(self, source: str) -> set[str]:
-        return {
-            violation.label
-            for violation in VERIFIER.find_violations_in_text("probe.rs", source)
-        }
+        return {violation.label for violation in self.violations_for(source)}
 
     def test_detects_removed_policy_hardcodes(self) -> None:
         labels = self.labels_for(
@@ -72,6 +72,30 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         )
 
         self.assertIn("direct NT venue mutation call", labels)
+
+    def test_detects_ufcs_direct_nt_venue_mutation_calls_from_strategy_source(self) -> None:
+        direct_violations = [
+            violation
+            for violation in self.violations_for(
+                """
+                <Self as Strategy>::submit_order(self, order, None, Some(client_id), None)?;
+                <Self as Strategy>::submit_order_list(self, order_list, None, Some(client_id), None)?;
+                <Self as Strategy>::modify_order(self, client_order_id, None, None, None, None)?;
+                <Self as Strategy>::cancel_order(self, client_order_id, Some(client_id), None)?;
+                <Self as Strategy>::cancel_orders(self, &client_order_ids, Some(client_id), None)?;
+                <Self as Strategy>::cancel_all_orders(self, None, Some(client_id), None)?;
+                <Self as Strategy>::close_position(self, instrument_id, position_id, Some(client_id), None)?;
+                <Self as Strategy>::close_all_positions(self, instrument_id, Some(client_id), None)?;
+                """
+            )
+            if violation.label == "direct NT venue mutation call"
+        ]
+
+        self.assertEqual(
+            len(direct_violations),
+            8,
+            "every forbidden NT mutation API must be detected through UFCS syntax",
+        )
 
     def test_source_roots_include_shared_order_execution_policy(self) -> None:
         self.assertIn(

@@ -289,8 +289,11 @@ mod tests {
     // (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs) into the strategy
     // source set, so the sole TOML->runtime-table mapping for the shadow-mode
     // kill switch is now tamper-evidenced alongside its validating consumer.
+    // Re-derived after committing the submit-admission permit only after the
+    // production NT submit succeeds, plus source-locking that ordering without
+    // embedding the direct-submit sentinel in test text.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "213752a5951032395ef31f9b5728c4112ad03e9d3adaf60dd41e646a21a2cd0d";
+        "7e6edbf456c9f80704c75744bfdf9f09ad8a705b7f484d09ca70ed20de52c6c1";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

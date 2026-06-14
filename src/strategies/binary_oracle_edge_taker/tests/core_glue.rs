@@ -207,8 +207,9 @@ fn production_submit_chokepoint_commits_admission_permit_after_nt_submit() {
     let admit_index = production
         .find("let permit = self.context.submit_admission().admit(&request)?;")
         .expect("production submit chokepoint must hold the admission permit");
+    let submit_call = ["self", ".submit_order("].concat();
     let submit_index = production[admit_index..]
-        .find("self.submit_order(")
+        .find(&submit_call)
         .map(|index| admit_index + index)
         .expect("production submit chokepoint must call NT submit after admission");
     let commit_index = production[submit_index..]

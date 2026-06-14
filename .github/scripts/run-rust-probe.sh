@@ -22,8 +22,8 @@ if [ ! -d "$workspace" ]; then
   reject "GITHUB_WORKSPACE must be an existing directory"
 fi
 
-target_regex='^[A-Za-z0-9_.-]+$'
-name_regex='^[A-Za-z0-9_:.@/-]+$'
+target_regex='^[A-Za-z0-9_][A-Za-z0-9_.-]*$'
+name_regex='^[A-Za-z0-9_][A-Za-z0-9_:.@/-]*$'
 
 require_target() {
   if [ -z "$test_target" ]; then

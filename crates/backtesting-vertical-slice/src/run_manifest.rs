@@ -2726,7 +2726,7 @@ fn market_structure_fixture_matches_source_fixture(
         (manifest_fixture, accepted_fixture),
         (
             MarketStructureFixture::BinaryOption,
-            FixtureType::PredictionMarket
+            FixtureType::BinaryOption | FixtureType::PredictionMarket
         ) | (MarketStructureFixture::PerpsSpot, FixtureType::PerpsSpot)
     )
 }
@@ -4245,6 +4245,18 @@ mod tests {
                 accepted_fixture: FixtureType::PerpsSpot,
             }
         );
+    }
+
+    #[test]
+    fn binary_option_fixture_accepts_current_source_proof_fixture_type() {
+        let mut manifest = valid_manifest();
+        manifest.market_structure_fixture = MarketStructureFixture::BinaryOption;
+        let mut accepted = accepted_dataset();
+        accepted.fixture_type = FixtureType::BinaryOption;
+
+        manifest
+            .validate(&accepted)
+            .expect("binary-option manifest accepts binary-option proof");
     }
 
     #[test]

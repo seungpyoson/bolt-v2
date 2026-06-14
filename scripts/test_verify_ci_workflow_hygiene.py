@@ -19,7 +19,7 @@ VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 SYNC_CI_DEBUG_SSH_PATH = REPO_ROOT / "scripts" / "sync_ci_debug_ssh_secret.py"
 DEBUG_WORKFLOW_PATH = ".github/workflows/ci-runner-debug.yml"
 SSH_RUNNER_ACTION = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
-GATE_NEEDS = "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]"
+GATE_NEEDS = "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]"
 GATE_NAME = """name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
@@ -241,6 +241,7 @@ jobs:
     name: detector
     outputs:
       build_required: ${{ steps.build_required.outputs.value }}
+      fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}
     runs-on: ubuntu-latest
     steps:
       # detector probe insertion point
@@ -249,6 +250,30 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         run: echo "any_changed=false" >> "$GITHUB_OUTPUT"
+
+      - name: Detect fingerprint-reuse governance changes
+        id: fingerprint_reuse_inputs_changed
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
+          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin \
+            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
+            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
+            .github/workflows/ci.yml \
+            .github/actions/setup-environment/action.yml \
+            ci/github-actions-runners.toml \
+            scripts/ci_provenance.py \
+            scripts/test_ci_provenance.py \
+            scripts/verify_ci_workflow_hygiene.py \
+            scripts/test_verify_ci_workflow_hygiene.py)"
+          if [[ -n "$changed" ]]; then
+            echo "any_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Determine build requirement
         id: build_required
@@ -260,6 +285,18 @@ jobs:
             echo "value=true" >> "$GITHUB_OUTPUT"
           else
             echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine fingerprint reuse allowance
+        id: fingerprint_reuse_allowed
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=true" >> "$GITHUB_OUTPUT"
           fi
 
   fmt-check:
@@ -396,9 +433,25 @@ jobs:
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
+    outputs:
+      nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
     steps:
+      - name: Publish nextest archive fingerprint
+        id: nextest-fingerprint
+        run: |
+          fingerprint="nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}"
+          mkdir -p .nextest-archive-fingerprint
+          printf '%s\\n' "$fingerprint" > .nextest-archive-fingerprint/cache-key.txt
+          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+      - name: Upload nextest archive fingerprint
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          path: .nextest-archive-fingerprint/cache-key.txt
+          if-no-files-found: error
+          retention-days: 30
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
@@ -416,7 +469,7 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
       - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
@@ -433,7 +486,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -441,22 +494,33 @@ jobs:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           if-no-files-found: error
           retention-days: 1
-      - name: Publish nextest archive fingerprint
-        run: |
-          mkdir -p .nextest-archive-fingerprint
-          printf '%s\\n' "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}" > .nextest-archive-fingerprint/cache-key.txt
-      - name: Upload nextest archive fingerprint
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
-          path: .nextest-archive-fingerprint/cache-key.txt
-          if-no-files-found: error
-          retention-days: 30
+  nextest-fingerprint-reuse:
+    name: nextest fingerprint reuse
+    needs: [ci-policy, detector, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    outputs:
+      reuse_found: ${{ steps.reuse.outputs.reuse_found }}
+      source_run_id: ${{ steps.reuse.outputs.source_run_id }}
+      source_sha: ${{ steps.reuse.outputs.source_sha }}
+      source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}
+      reason: ${{ steps.reuse.outputs.reason }}
+    steps:
+      - name: Resolve nextest fingerprint reuse
+        id: reuse
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >
+          python3 scripts/ci_provenance.py resolve-fingerprint
+          --current-run-id "${{ github.run_id }}"
+          --current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+          | tee -a "$GITHUB_OUTPUT"
 
   test-shards:
     name: nextest shard ${{ matrix.shard }} of 4
-    needs: [ci-policy, test-archive]
-    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
+    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -491,11 +555,34 @@ jobs:
 
   test:
     name: test
-    needs: [ci-policy, test-shards]
+    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - run: |
+          if [[ "${{ needs.test-archive.result }}" != "success" ]]; then
+            exit 1
+          fi
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
+          if [[ "$reuse_found" == "true" ]]; then
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_run_id"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_sha"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_artifact_id }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_artifact_id"
+              exit 1
+            fi
+            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}"
+            exit 0
+          fi
           if [[ "${{ needs.test-shards.result }}" != "success" ]]; then
             exit 1
           fi
@@ -575,16 +662,10 @@ jobs:
 
   ci-provenance-emit:
     name: ci-provenance-emit
-    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        continue-on-error: true
-        with:
-          pattern: nextest-archive-fingerprint-*
-          path: .ci-provenance/fingerprint
-          merge-multiple: true
       - name: Emit CI provenance
         run: >
           python3 scripts/ci_provenance.py emit-full-ci
@@ -600,7 +681,7 @@ jobs:
           --required-job test=${{ needs.test.result }}
           --conditional-job build.required=${{ needs.detector.outputs.build_required }}
           --conditional-job build.result=${{ needs.build.result }}
-          --nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt
+          --nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
       - name: Upload CI provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -631,7 +712,7 @@ jobs:
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
           && 'gate-deferred'
           || 'gate' }}
-    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -639,6 +720,7 @@ jobs:
           policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
           full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
           ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
           if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
             exit 1
           fi
@@ -667,6 +749,9 @@ jobs:
             if [[ "${{ needs.test.result }}" != "skipped" ]]; then
               exit 1
             fi
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "skipped" ]]; then
+              exit 1
+            fi
             if [[ "${{ needs.build.result }}" != "skipped" ]]; then
               exit 1
             fi
@@ -692,11 +777,23 @@ jobs:
           else
             exit 1
           fi
-          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
-            if [[ "$ignore_emit_failure" == "true" ]]; then
-              echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
-            else
+          if [[ "$reuse_found" == "true" ]]; then
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
               exit 1
+            fi
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+              echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
+              exit 1
+            fi
+            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
+          else
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
+              if [[ "$ignore_emit_failure" == "true" ]]; then
+                echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
+              else
+                exit 1
+              fi
             fi
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
@@ -1000,6 +1097,24 @@ def replace_once(text: str, old: str, new: str) -> str:
     return text.replace(old, new, 1)
 
 
+def replace_once_after(text: str, anchor: str, old: str, new: str) -> str:
+    index = text.find(anchor)
+    if index == -1:
+        raise AssertionError(f"fixture anchor not found: {anchor!r}")
+    before = text[:index]
+    after = text[index:]
+    return before + replace_once(after, old, new)
+
+
+def without_once_after(text: str, anchor: str, old: str) -> str:
+    index = text.find(anchor)
+    if index == -1:
+        raise AssertionError(f"fixture anchor not found: {anchor!r}")
+    before = text[:index]
+    after = text[index:]
+    return before + after.replace(old, "", 1)
+
+
 def repo_workflow_text(path: str) -> str:
     return (REPO_ROOT / path).read_text().replace("\r\n", "\n")
 
@@ -1284,16 +1399,16 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             "test-shards needs ci-policy",
             replace_once(
                 workflow,
-                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive]",
-                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: test-archive",
+                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]",
+                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [test-archive, nextest-fingerprint-reuse]",
             ),
         ),
         (
             "test needs ci-policy",
             replace_once(
                 workflow,
-                "  test:\n    name: test\n    needs: [ci-policy, test-shards]",
-                "  test:\n    name: test\n    needs: test-shards",
+                "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]",
+                "  test:\n    name: test\n    needs: [test-archive, nextest-fingerprint-reuse, test-shards]",
             ),
         ),
         (
@@ -1308,16 +1423,16 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             "ci-provenance-emit needs ci-policy",
             replace_once(
                 workflow,
-                "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
-                "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
+                "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
+                "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
             ),
         ),
         (
             "ci-provenance-emit must gate on full_ci_required",
             replace_once(
                 workflow,
-                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
-                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
             ),
         ),
         (
@@ -4157,6 +4272,378 @@ def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
     ], good_errors
 
 
+def remove_fragment_if_present(text: str, fragment: str) -> str:
+    return text.replace(fragment, "", 1) if fragment in text else text
+
+
+def remove_all_fragments_if_present(text: str, fragment: str) -> str:
+    return text.replace(fragment, "") if fragment in text else text
+
+
+def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
+    for cache_input in (
+        "'config/**'",
+        "'contracts/**'",
+        "'docs/bolt-v3/**'",
+        "'.config/**'",
+        "'.github/**'",
+        "'scripts/**'",
+        "'specs/023-nt-order-intent-layer/**'",
+        "'specs/023-nt-research-analytics-platform/reference/**'",
+    ):
+        assert_error(
+            "test-archive fingerprint must include Rust and test graph inputs",
+            remove_all_fragments_if_present(BASE_WORKFLOW, f", {cache_input}"),
+        )
+
+    assert_error(
+        "nextest-fingerprint-reuse must be PR-only",
+        remove_fragment_if_present(BASE_WORKFLOW, " && github.event_name == 'pull_request'"),
+    )
+    assert_error(
+        "detector must deny fingerprint reuse outside pull_request",
+        remove_fragment_if_present(
+            BASE_WORKFLOW,
+            """          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          elif """,
+        ),
+    )
+
+    assert_error(
+        "detector must map fingerprint-reuse governance changes to any_changed=true",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            """          if [[ -n "$changed" ]]; then
+            echo "any_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          fi""",
+            """          if [[ -n "$changed" ]]; then
+            echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "any_changed=true" >> "$GITHUB_OUTPUT"
+          fi""",
+        ),
+    )
+    assert_error(
+        "detector must map fingerprint-reuse governance changes to any_changed=true",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            """          if [[ -n "$changed" ]]; then
+            echo "any_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          fi""",
+            """          if [[ -n "$changed" ]]; then
+            echo "any_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "any_changed=false" >> "$GITHUB_OUTPUT\"""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical script",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            """          if [[ -n "$changed" ]]; then""",
+            """          changed=""
+          if [[ -n "$changed" ]]; then""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical script",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            """          fi""",
+            """          fi
+          printf 'any_changed=false\\n' >> "$GITHUB_OUTPUT\"""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        if: github.event_name == 'pull_request'",
+            "        if: false",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        without_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        if: github.event_name == 'pull_request'\n",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        shell: bash\n",
+            """        shell: bash
+        working-directory: /tmp
+        continue-on-error: true
+""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        shell: bash\n",
+            """        shell: bash
+        "working-directory" : /tmp
+        "continue-on-error" : true
+""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        shell: bash\n",
+            """        shell: bash
+        "working-directory": /tmp
+        "continue-on-error": true
+""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        if: github.event_name == 'pull_request'\n",
+            """        if: github.event_name == 'pull_request'
+        if: false
+""",
+        ),
+    )
+
+    narrowed_pathspec = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Detect fingerprint-reuse governance changes",
+        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/github-actions-runners.toml             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/workflows/ci.yml)
+          echo "decoy paths: .github/actions/setup-environment/action.yml ci/github-actions-runners.toml scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py\"""",
+    )
+    assert_error(
+        "detector must detect fingerprint-reuse governance changes",
+        narrowed_pathspec,
+    )
+    git_diff_decoy_pathspec = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Detect fingerprint-reuse governance changes",
+        """          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
+        """          echo "$(git diff --name-only "${base_ref}...${head_ref}" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/github-actions-runners.toml scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
+          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
+    )
+    git_diff_decoy_pathspec = replace_once_after(
+        git_diff_decoy_pathspec,
+        "      - name: Detect fingerprint-reuse governance changes",
+        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/github-actions-runners.toml             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/workflows/ci.yml)""",
+    )
+    assert_error("detector must detect fingerprint-reuse governance changes", git_diff_decoy_pathspec)
+
+    relocated_job_if = replace_once(
+        BASE_WORKFLOW,
+        " && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main'",
+        "",
+    )
+    relocated_job_if = replace_once_after(
+        relocated_job_if,
+        "  nextest-fingerprint-reuse:",
+        "      - name: Resolve nextest fingerprint reuse",
+        """      - name: decoy needs.detector.outputs.fingerprint_reuse_allowed == 'true' github.ref != 'refs/heads/main'
+        run: echo "job-if decoy"
+
+      - name: Resolve nextest fingerprint reuse""",
+    )
+    assert_error("nextest-fingerprint-reuse must skip main branch", relocated_job_if)
+    assert_error("nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed", relocated_job_if)
+    folded_job_if = replace_once(
+        BASE_WORKFLOW,
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main'\n      || github.event_name == 'pull_request' }}",
+    )
+    assert_error("nextest-fingerprint-reuse must use the canonical job if", folded_job_if)
+    folded_job_if_with_canonical_first_line = replace_once(
+        BASE_WORKFLOW,
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}\n      || github.event_name == 'pull_request'",
+    )
+    assert_error("nextest-fingerprint-reuse must use the canonical job if", folded_job_if_with_canonical_first_line)
+
+    decoy_step = replace_once_after(
+        narrowed_pathspec,
+        "      - name: Determine build requirement",
+        "      - name: Determine build requirement",
+        """      - name: Decoy fingerprint reuse inputs
+        run: |
+          echo "id: fingerprint_reuse_inputs_changed"
+          echo ".github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/github-actions-runners.toml scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py"
+
+      - name: Determine build requirement""",
+    )
+    assert_error("detector must detect fingerprint-reuse governance changes", decoy_step)
+
+    stale_fingerprint_with_decoy = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        '          --current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
+        '          --current-fingerprint "stale-fingerprint"',
+    )
+    stale_fingerprint_with_decoy = replace_once_after(
+        stale_fingerprint_with_decoy,
+        "  nextest-fingerprint-reuse:",
+        "      - name: Resolve nextest fingerprint reuse",
+        f"""      - name: Decoy resolver command
+        run: |
+          echo 'python3 scripts/ci_provenance.py resolve-fingerprint --current-run-id "${{{{ github.run_id }}}}" --current-fingerprint "${{{{ needs.test-archive.outputs.nextest_fingerprint }}}}" | tee -a "$GITHUB_OUTPUT"'
+
+      - name: Resolve nextest fingerprint reuse""",
+    )
+    assert_error("nextest-fingerprint-reuse must use secure current nextest fingerprint output", stale_fingerprint_with_decoy)
+    assert_error("nextest-fingerprint-reuse must run ci_provenance.py resolve-fingerprint", stale_fingerprint_with_decoy)
+    resolver_pipe_scalar = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        "        run: >",
+        "        run: |",
+    )
+    assert_error("nextest-fingerprint-reuse resolver step must match canonical envelope", resolver_pipe_scalar)
+    resolver_extra_workdir = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        "        shell: bash\n",
+        """        shell: bash
+        working-directory: /tmp
+""",
+    )
+    assert_error("nextest-fingerprint-reuse resolver step must match canonical envelope", resolver_extra_workdir)
+    resolver_extra_quoted_env = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        "          GITHUB_TOKEN: ${{ github.token }}\n",
+        """          GITHUB_TOKEN: ${{ github.token }}
+          "EXTRA": injected
+""",
+    )
+    assert_error("nextest-fingerprint-reuse resolver step must match canonical envelope", resolver_extra_quoted_env)
+    resolver_extra_quoted_env_spaced_colon = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        "          GITHUB_TOKEN: ${{ github.token }}\n",
+        """          GITHUB_TOKEN: ${{ github.token }}
+          "EXTRA" : injected
+""",
+    )
+    assert_error(
+        "nextest-fingerprint-reuse resolver step must match canonical envelope",
+        resolver_extra_quoted_env_spaced_colon,
+    )
+    fabricated_reuse_outputs = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        """          | tee -a "$GITHUB_OUTPUT\"""",
+        """          | tee -a "$GITHUB_OUTPUT"
+          ; echo "reuse_found=true" >> "$GITHUB_OUTPUT"
+          ; echo "source_run_id=1" >> "$GITHUB_OUTPUT"
+          ; echo "source_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >> "$GITHUB_OUTPUT"
+          ; echo "source_artifact_id=1" >> "$GITHUB_OUTPUT\"""",
+    )
+    assert_error("nextest-fingerprint-reuse resolver step must match canonical script", fabricated_reuse_outputs)
+
+    assert_error(
+        "detector must determine fingerprint_reuse_allowed",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Determine fingerprint reuse allowance",
+            """          else
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          fi""",
+            """          else
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "value=true" >> "$GITHUB_OUTPUT\"""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse allowance step must match canonical script",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Determine fingerprint reuse allowance",
+            """          fi""",
+            """          fi
+          printf 'value=true\\n' >> "$GITHUB_OUTPUT\"""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse allowance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Determine fingerprint reuse allowance",
+            "        shell: bash\n",
+            """        shell: bash
+        continue-on-error: true
+""",
+        ),
+    )
+
+    assert_error(
+        "gate must require nextest fingerprint reuse resolver success",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "  gate:",
+            """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
+              exit 1
+            fi""",
+            """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+            fi""",
+        ),
+    )
+    assert_error(
+        "gate must require nextest fingerprint reuse resolver success",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "  gate:",
+            """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
+              exit 1
+            fi""",
+            """            false || exit 0
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
+              exit 1
+            fi""",
+        ),
+    )
+    assert_error(
+        "gate must use canonical nextest fingerprint reuse branch",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "  gate:",
+            """          if [[ "$reuse_found" == "true" ]]; then
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then""",
+            """          if [[ "$reuse_found" == "true" ]]; then
+            eval 'exit 0'
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then""",
+        ),
+    )
+
+
 def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
     verifier = load_verifier()
     advisory = BASE_ADVISORY_WORKFLOW.replace(
@@ -4766,19 +5253,19 @@ def main() -> int:
         replace_once(
             replace_once(
                 BASE_WORKFLOW,
-                "'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md'",
-                "'tests/**'",
+                "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+                "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
             ),
-            "'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md'",
-            "'tests/**'",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
         ),
     )
     assert_error(
         "test-archive cache must not use restore-keys",
         replace_once(
             BASE_WORKFLOW,
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - name: Install cargo-nextest",
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
         ),
     )
     # #400: every managed-target cache must declare a restore-keys prefix fallback.
@@ -4940,18 +5427,46 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Publish nextest archive fingerprint
+        id: nextest-fingerprint
         run: |
+          fingerprint="nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}"
           mkdir -p .nextest-archive-fingerprint
-          printf '%s\\n' "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}" > .nextest-archive-fingerprint/cache-key.txt
+          printf '%s\\n' "$fingerprint" > .nextest-archive-fingerprint/cache-key.txt
+          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
       - name: Upload nextest archive fingerprint
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           path: .nextest-archive-fingerprint/cache-key.txt
           if-no-files-found: error
           retention-days: 30
 """,
             "",
+        ),
+    )
+    assert_error(
+        "test-archive must expose secure nextest fingerprint output",
+        replace_once(
+            BASE_WORKFLOW,
+            "    outputs:\n      nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must expose exactly one secure nextest fingerprint output",
+        replace_once(
+            BASE_WORKFLOW,
+            '          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"',
+            '          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"\n'
+            '          echo "nextest_fingerprint=stale" >> "$GITHUB_OUTPUT"',
+        ),
+    )
+    assert_error(
+        "test-archive must publish nextest fingerprint before repo-controlled steps",
+        replace_once(
+            BASE_WORKFLOW,
+            "    steps:\n      - name: Publish nextest archive fingerprint",
+            "    steps:\n      - uses: ./.github/actions/setup-environment\n      - name: Publish nextest archive fingerprint",
         ),
     )
     assert_error(
@@ -4994,10 +5509,61 @@ def main() -> int:
         ),
     )
     assert_error(
+        "detector must expose fingerprint_reuse_allowed",
+        replace_once(
+            BASE_WORKFLOW,
+            "      fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}\n",
+            "",
+        ),
+    )
+    assert_error(
+        "detector must detect fingerprint-reuse governance changes",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "scripts/ci_provenance.py",
+            "scripts/not_ci_provenance.py",
+        ),
+    )
+    for governed_path, replacement in (
+        (".github/actions/setup-environment/action.yml", ".github/actions/not-setup-environment/action.yml"),
+        ("ci/github-actions-runners.toml", "ci/not-github-actions-runners.toml"),
+    ):
+        assert_error(
+            "detector must detect fingerprint-reuse governance changes",
+            replace_once_after(
+                BASE_WORKFLOW,
+                "      - name: Detect fingerprint-reuse governance changes",
+                governed_path,
+                replacement,
+            ),
+        )
+    assert_error(
+        "detector must determine fingerprint_reuse_allowed",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Determine fingerprint reuse allowance",
+            '            echo "value=true" >> "$GITHUB_OUTPUT"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "nextest-fingerprint-reuse needs detector",
+        replace_once(
+            BASE_WORKFLOW,
+            "  nextest-fingerprint-reuse:\n    name: nextest fingerprint reuse\n    needs: [ci-policy, detector, test-archive]",
+            "  nextest-fingerprint-reuse:\n    name: nextest fingerprint reuse\n    needs: [ci-policy, test-archive]",
+        ),
+    )
+    assert_error(
+        "nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed",
+        replace_once(BASE_WORKFLOW, " && needs.detector.outputs.fingerprint_reuse_allowed == 'true'", ""),
+    )
+    assert_error(
         "test-shards needs test-archive",
         replace_once(
             BASE_WORKFLOW,
-            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive]",
+            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]",
             "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: ci-policy",
         ),
     )
@@ -5005,8 +5571,16 @@ def main() -> int:
         "test needs test-shards",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: [ci-policy, test-shards]",
+            "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]",
             "  test:\n    name: test\n    needs: ci-policy",
+        ),
+    )
+    assert_error(
+        "nextest-fingerprint-reuse resolver must use bash",
+        without_once_after(
+            BASE_WORKFLOW,
+            "      - name: Resolve nextest fingerprint reuse",
+            "        shell: bash\n",
         ),
     )
     assert_error(
@@ -5017,8 +5591,8 @@ def main() -> int:
         "test must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: [ci-policy, test-shards]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
-            "  test:\n    name: test\n    needs: [ci-policy, test-shards]",
+            "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]",
         ),
     )
     assert_error(
@@ -5053,8 +5627,20 @@ def main() -> int:
         "source-fence must run just source-fence",
         replace_once(BASE_WORKFLOW, "- run: just source-fence", "- run: echo source-fence"),
     )
-    for job in ("fmt-check", "deny", "clippy", "source-fence", "test-archive", "test-shards", "test"):
+    for job in ("fmt-check", "deny", "clippy", "source-fence", "test-archive", "nextest-fingerprint-reuse", "test-shards", "test"):
         assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))
+    assert_error(
+        "nextest-fingerprint-reuse must skip main branch",
+        replace_once(BASE_WORKFLOW, " && github.ref != 'refs/heads/main'", ""),
+    )
+    assert_error(
+        "nextest-fingerprint-reuse must use secure current nextest fingerprint output",
+        replace_once(
+            BASE_WORKFLOW,
+            '--current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
+            "--current-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
+        ),
+    )
     assert_error(
         "fmt-check must run just fmt-check",
         replace_once(BASE_WORKFLOW, "- run: just fmt-check", "- run: echo skip fmt-check"),
@@ -5135,16 +5721,16 @@ def main() -> int:
         "ci-provenance-emit needs source-fence",
         replace_once(
             BASE_WORKFLOW,
-            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
-            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, test-archive, test-shards, test, build]",
+            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
+            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
         ),
     )
     assert_error(
         "ci-provenance-emit must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
-            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
         ),
     )
     assert_error(
@@ -5172,66 +5758,19 @@ def main() -> int:
         ),
     )
     assert_error(
-        "ci-provenance-emit fingerprint download path must match emitter argument",
+        "ci-provenance-emit must record nextest fingerprint when present",
         replace_once(
             BASE_WORKFLOW,
+            '--nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
+            '--nextest-fingerprint ""',
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must use secure nextest fingerprint output",
+        replace_once(
+            BASE_WORKFLOW,
+            '--nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
             "--nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
-            "--nextest-fingerprint-path .ci-provenance/wrong/cache-key.txt",
-        ),
-    )
-    assert_error(
-        "ci-provenance-emit fingerprint download path must match emitter argument",
-        replace_once(
-            BASE_WORKFLOW,
-            "          path: .ci-provenance/fingerprint",
-            "          path: .ci-provenance/downloaded",
-        ),
-    )
-    assert_error(
-        "ci-provenance-emit fingerprint download path must match emitter argument",
-        replace_once(
-            BASE_WORKFLOW,
-            "          path: .ci-provenance/fingerprint",
-            "          path: .ci-provenance/fingerprint-backup",
-        ),
-    )
-    assert_error(
-        "ci-provenance-emit fingerprint download path must match emitter argument",
-        replace_once(
-            replace_once(
-                BASE_WORKFLOW,
-                "          path: .ci-provenance/fingerprint",
-                "          path: .ci-provenance/downloaded",
-            ),
-            "          python3 scripts/ci_provenance.py emit-full-ci",
-            "          printf '%s\\n' 'path: .ci-provenance/fingerprint'\n"
-            "          python3 scripts/ci_provenance.py emit-full-ci",
-        ),
-    )
-    assert_error(
-        "ci-provenance-emit must record nextest fingerprint when present",
-        replace_once(
-            replace_once(
-                BASE_WORKFLOW,
-                "          pattern: nextest-archive-fingerprint-*",
-                "          pattern: nextest-archive-fingerprint-backup-*",
-            ),
-            "          python3 scripts/ci_provenance.py emit-full-ci",
-            "          printf '%s\\n' 'pattern: nextest-archive-fingerprint-*'\n"
-            "          python3 scripts/ci_provenance.py emit-full-ci",
-        ),
-    )
-    assert_error(
-        "ci-provenance-emit must record nextest fingerprint when present",
-        replace_once(
-            replace_once(
-                BASE_WORKFLOW,
-                "        continue-on-error: true",
-                "        continue-on-error: false",
-            ),
-            "          python3 scripts/ci_provenance.py emit-full-ci",
-            "          printf '%s\\n' 'continue-on-error: true'\n"
-            "          python3 scripts/ci_provenance.py emit-full-ci",
         ),
     )
     assert_error(
@@ -6469,6 +7008,7 @@ def main() -> int:
     )
     assert_v6_deploy_artifact_s3_stays_allowed()
     assert_v6_red_workflow_policy_gaps()
+    assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported()
     assert_ci_provenance_config_contract()
     assert_runner_contract_rejects_missing_and_extra_jobs()
     assert_runner_contract_rejects_unmapped_workflow_jobs()

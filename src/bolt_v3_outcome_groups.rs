@@ -288,6 +288,7 @@ pub enum OutcomeGroupValidationError {
     UnknownTerminalStateLabel(String),
     MissingPayoutRow(TerminalStateId),
     MissingNonStandardPayoutVector(TerminalStateId),
+    DuplicateNonStandardPayoutVector(TerminalStateId),
     PayoutMatrixDimensionMismatch { terminal_state_id: TerminalStateId },
     PayoutMatrixValueMismatch { terminal_state_id: TerminalStateId },
     UnknownTerminalState(TerminalStateId),
@@ -339,6 +340,10 @@ impl OutcomeGroupValidationError {
 
     pub fn is_missing_non_standard_vector(&self) -> bool {
         matches!(self, Self::MissingNonStandardPayoutVector(_))
+    }
+
+    pub fn is_duplicate_non_standard_vector(&self) -> bool {
+        matches!(self, Self::DuplicateNonStandardPayoutVector(_))
     }
 
     pub fn is_matrix_dimension_mismatch(&self) -> bool {
@@ -810,22 +815,38 @@ fn validate_payout_matrix_shape(group: &OutcomeGroup) -> Result<(), OutcomeGroup
 }
 
 fn validate_non_standard_payouts(group: &OutcomeGroup) -> Result<(), OutcomeGroupValidationError> {
+    let mut non_standard_states = BTreeSet::new();
     for (terminal_state_id, terminal_state) in &group.terminal_states {
-        if terminal_state.kind.is_standard() {
-            continue;
+        if !terminal_state.kind.is_standard() {
+            non_standard_states.insert(terminal_state_id.clone());
         }
-        let vector = group
-            .settlement_rules
-            .non_standard_terminal_payouts
-            .iter()
-            .find(|vector| vector.terminal_state_id == *terminal_state_id)
-            .ok_or_else(|| {
-                OutcomeGroupValidationError::MissingNonStandardPayoutVector(
-                    terminal_state_id.clone(),
-                )
-            })?;
+    }
+
+    let mut seen_vectors = BTreeSet::new();
+    for vector in &group.settlement_rules.non_standard_terminal_payouts {
+        if !non_standard_states.contains(&vector.terminal_state_id) {
+            return Err(OutcomeGroupValidationError::UnknownTerminalState(
+                vector.terminal_state_id.clone(),
+            ));
+        }
+        if !seen_vectors.insert(vector.terminal_state_id.clone()) {
+            return Err(
+                OutcomeGroupValidationError::DuplicateNonStandardPayoutVector(
+                    vector.terminal_state_id.clone(),
+                ),
+            );
+        }
         validate_attested_payout_vector(group, vector)?;
     }
+
+    for terminal_state_id in non_standard_states {
+        if !seen_vectors.contains(&terminal_state_id) {
+            return Err(OutcomeGroupValidationError::MissingNonStandardPayoutVector(
+                terminal_state_id,
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -955,6 +976,11 @@ fn validate_positive_side_bindings(
                 )
             })?
             .clone();
+        if !group.terminal_states[&terminal_state_id].kind.is_standard() {
+            return Err(OutcomeGroupValidationError::PayoutMatrixValueMismatch {
+                terminal_state_id,
+            });
+        }
         if !seen_states.insert(terminal_state_id.clone()) {
             return Err(OutcomeGroupValidationError::DuplicatePositiveSideBinding(
                 terminal_state_id,

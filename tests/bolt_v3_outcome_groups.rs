@@ -244,6 +244,49 @@ fn valid_group_with_void_vector_passes_and_derives_standard_rows() {
 }
 
 #[test]
+fn duplicate_or_extraneous_non_standard_payout_vectors_reject() {
+    let mut duplicate = valid_group();
+    duplicate
+        .settlement_rules
+        .non_standard_terminal_payouts
+        .push(duplicate.settlement_rules.non_standard_terminal_payouts[0].clone());
+    assert!(
+        ValidatedOutcomeGroup::validate(&duplicate)
+            .is_err_and(|err| err.is_duplicate_non_standard_vector())
+    );
+
+    let mut extraneous = valid_group();
+    let mut vector = payout_vector();
+    vector.terminal_state_id = "ghost".to_string();
+    extraneous
+        .settlement_rules
+        .non_standard_terminal_payouts
+        .push(vector);
+    assert!(
+        ValidatedOutcomeGroup::validate(&extraneous)
+            .is_err_and(|err| err.is_unknown_terminal_state())
+    );
+}
+
+#[test]
+fn positive_side_bindings_must_target_standard_terminal_states() {
+    let mut group = valid_group();
+    if let Some(RoleBindingProof::OperatorAttested {
+        positive_side_bindings,
+        attestation_sha256,
+        ..
+    }) = group.role_binding_proof.as_mut()
+    {
+        positive_side_bindings[0].terminal_state_label = "Refund".to_string();
+        *attestation_sha256 = role_binding_attestation_sha256(positive_side_bindings);
+    }
+
+    assert!(
+        ValidatedOutcomeGroup::validate(&group).is_err_and(|err| err.is_matrix_value_mismatch())
+    );
+}
+
+#[test]
 fn missing_grouping_proof_rejects() {
     let mut group = valid_group();
     group.grouping_proof = None;

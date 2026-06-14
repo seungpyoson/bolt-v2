@@ -286,9 +286,10 @@ mod tests {
     // substrate source-integrity task after every first-slice source root exists
     // on disk. Re-derived after Task 10 activated the complete-set runtime
     // binding and production strategy shell, then after Task 11 added the HIP-4
-    // outcome-group normalizer root.
+    // outcome-group normalizer root. Re-derived after PR review tightened
+    // non-standard payout and positive-side binding validation.
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "c8a94e657ad05e0b7889332430464b484103dca8807bbb3a4e827eafa5fd09f9";
+        "93d6dabd44f6e673cc30bff9e67ea89b16327c5a8d010693346919464b7c96ee";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

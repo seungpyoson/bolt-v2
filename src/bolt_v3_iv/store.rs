@@ -371,9 +371,10 @@ impl IvStore {
         {
             return Err(IvStoreError::InvalidIvValue);
         }
+        let mut indexed_basis = false;
         for basis_value in &payload.basis_values {
             if !self.accepts_iv(basis_value.iv, &payload.convention) {
-                return Err(IvStoreError::InvalidIvValue);
+                continue;
             }
 
             let point = IvPoint {
@@ -394,6 +395,10 @@ impl IvStore {
                 underlying_price: payload.underlying_price,
                 open_interest: payload.open_interest,
             });
+            indexed_basis = true;
+        }
+        if !indexed_basis {
+            return Err(IvStoreError::InvalidIvValue);
         }
 
         Ok(())
@@ -482,12 +487,13 @@ impl IvStore {
         raw_event: &IvRawEvent,
         payload: &IvAggregateGreeksPayload,
     ) -> Result<(), IvStoreError> {
-        if payload.aggregate_iv.as_ref().is_some_and(|aggregate_iv| {
-            !self.accepts_iv(aggregate_iv.value, &aggregate_iv.convention)
-        }) || payload.greeks.has_non_finite_value()
-        {
+        if payload.greeks.has_non_finite_value() {
             return Err(IvStoreError::InvalidIvValue);
         }
+        let aggregate_iv = payload
+            .aggregate_iv
+            .clone()
+            .filter(|aggregate_iv| self.accepts_iv(aggregate_iv.value, &aggregate_iv.convention));
 
         self.aggregate_greeks.push(IvAggregateGreeks {
             profile_id: raw_event.profile_id.clone(),
@@ -495,7 +501,7 @@ impl IvStore {
             aggregate_key: payload.aggregate_key.clone(),
             underlying_selectors: payload.underlying_selectors.clone(),
             greeks: payload.greeks,
-            aggregate_iv: payload.aggregate_iv.clone(),
+            aggregate_iv,
             ts_event_ns: raw_event.provenance.ts_event_ns,
             ts_init_ns: raw_event.provenance.ts_init_ns,
             provenance: raw_event.provenance.clone(),

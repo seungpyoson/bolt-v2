@@ -2,9 +2,9 @@ use bolt_v2::bolt_v3_iv::{
     bounds::{IvBoundUnit, IvConventionBounds, IvNumericBounds},
     health::IvSourceHealthState,
     ingest::{
-        IvAggregateGreeksPayload, IvBasisValue, IvCustomIvPayload, IvGreekValues, IvIngestEvent,
-        IvOptionChainQuotePayload, IvOptionChainSlicePayload, IvOptionChainStrikePayload,
-        IvOptionGreeksPayload, IvRawPayload,
+        IvAggregateGreeksPayload, IvAggregateIvValue, IvBasisValue, IvCustomIvPayload,
+        IvGreekValues, IvIngestEvent, IvOptionChainQuotePayload, IvOptionChainSlicePayload,
+        IvOptionChainStrikePayload, IvOptionGreeksPayload, IvRawPayload,
     },
     provenance::validate_iv_provenance,
     store::{IvStore, IvStoreError},
@@ -130,6 +130,34 @@ fn option_greeks_ingest_rejects_values_outside_configured_input_bounds() {
     );
     assert!(store.iv_points().is_empty());
     assert!(store.greeks_points().is_empty());
+}
+
+#[test]
+fn option_greeks_ingest_skips_out_of_bounds_basis_and_indexes_valid_basis() {
+    let mut payload = greeks_payload();
+    payload.basis_values[0].iv = 0.61;
+    let mut store = IvStore::with_input_bounds(input_bounds(0.60));
+
+    store
+        .ingest_event(base_event(
+            IvSourceKind::OptionGreeks,
+            IvRawPayload::OptionGreeks(payload.clone()),
+        ))
+        .unwrap();
+
+    assert_eq!(store.raw_events().len(), 1);
+    assert_eq!(
+        store.raw_events()[0].payload,
+        IvRawPayload::OptionGreeks(payload)
+    );
+    assert_eq!(store.iv_points().len(), 2);
+    assert!(store.iv_points().iter().all(|point| point.iv <= 0.60));
+    assert!(
+        store
+            .iv_points()
+            .iter()
+            .all(|point| point.basis != IvBasis::Mark)
+    );
 }
 
 #[test]
@@ -442,6 +470,38 @@ fn aggregate_greeks_events_are_preserved_and_indexed_as_products() {
     );
     assert_eq!(store.aggregate_greeks()[0].greeks.vega, Some(2.5));
     validate_iv_provenance(&store.aggregate_greeks()[0].provenance).unwrap();
+}
+
+#[test]
+fn aggregate_greeks_out_of_bounds_optional_iv_is_omitted_without_dropping_greeks() {
+    let mut store = IvStore::with_input_bounds(input_bounds(0.60));
+
+    store
+        .ingest_event(base_event(
+            IvSourceKind::AggregateGreeks,
+            IvRawPayload::AggregateGreeks(IvAggregateGreeksPayload {
+                aggregate_key: "configured-aggregate-key".to_string(),
+                underlying_selectors: vec!["configured-underlying-selector".to_string()],
+                greeks: IvGreekValues {
+                    delta: Some(1.25),
+                    gamma: Some(0.15),
+                    vega: Some(2.5),
+                    theta: None,
+                    rho: None,
+                },
+                aggregate_iv: Some(IvAggregateIvValue {
+                    value: 0.75,
+                    convention: configured_convention(),
+                }),
+                nt_custom_data_json: None,
+            }),
+        ))
+        .unwrap();
+
+    assert_eq!(store.raw_events().len(), 1);
+    assert_eq!(store.aggregate_greeks().len(), 1);
+    assert_eq!(store.aggregate_greeks()[0].aggregate_iv, None);
+    assert_eq!(store.aggregate_greeks()[0].greeks.vega, Some(2.5));
 }
 
 #[test]

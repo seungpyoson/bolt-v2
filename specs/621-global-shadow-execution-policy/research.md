@@ -52,7 +52,7 @@ This conflicts with repo rules:
 
 **Decision**: Add `src/bolt_v3_order_execution.rs` to own execution mode, submit context, submit routing, cancel routing, and the source-fenced strategy-originated venue-mutation chokepoint.
 
-**Rationale**: `src/bolt_v3_order_intent.rs` intentionally stops at NT `OrderFactory -> OrderAny`. `src/bolt_v3_submit_admission.rs` owns admission math and state. A separate execution-policy module can bridge evidence, admission, policy, and the final NT mutation without contaminating order construction. The current production strategy only calls `submit_order(...)` and `cancel_order(...)`, but the policy boundary must also prevent future direct calls to other NT mutation methods.
+**Rationale**: `src/bolt_v3_order_intent.rs` intentionally stops at NT `OrderFactory -> OrderAny`. `src/bolt_v3_submit_admission.rs` owns admission math and state. A separate execution-policy module can bridge evidence, admission, policy, and the final NT mutation without contaminating order construction. The current production strategy only calls `submit_order(...)` and `cancel_order(...)`; this PR routes those calls through the shared policy and adds source-fence guardrails for known direct bypass forms.
 
 **Alternatives considered**:
 
@@ -60,20 +60,20 @@ This conflicts with repo rules:
 - Extend only `bolt_v3_submit_admission.rs`. Rejected because cancel suppression is not submit admission, and combining them would blur admission with execution routing.
 - Wrap NT adapters or risk engine. Rejected because PR #621 needs decision evidence and would-be-trade admission evidence before suppression, and NT-managed cancel paths can bypass a submit-only guard.
 
-## Decision 2A: Source-Fence All Strategy-Originated NT Venue Mutations
+## Decision 2A: Source-Fence Known Direct Strategy-Originated NT Venue Mutation Forms
 
-**Decision**: Add a source-fence/static verifier that rejects direct production strategy calls to NT strategy mutation APIs outside `src/bolt_v3_order_execution.rs`.
+**Decision**: Add a source-fence/static verifier that rejects known direct production strategy calls to NT strategy mutation APIs and policy-fabrication patterns outside allowlisted shared-policy/runtime boundaries.
 
 **Pinned NT evidence**: NautilusTrader rev `7c2aafb30fb143069c915a3f2057bb12174405f6` exposes these strategy-callable mutation methods in `crates/trading/src/strategy/mod.rs`: `submit_order`, `submit_order_list`, `modify_order`, `cancel_order`, `cancel_orders`, `cancel_all_orders`, `close_position`, and `close_all_positions`.
 
-**Current Bolt evidence**: A repository search finds production strategy calls only at `src/strategies/binary_oracle_edge_taker/mod.rs`: `self.submit_order(...)` and `self.cancel_order(...)`. This slice therefore implements shared submit and cancel routing, but the verifier must already reject every listed method so future strategies cannot bypass the shared policy by using submit-list, modify, batch cancel, cancel-all, or close helpers directly.
+**Current Bolt evidence**: A repository search finds production strategy calls only at `src/strategies/binary_oracle_edge_taker/mod.rs`: `self.submit_order(...)` and `self.cancel_order(...)`. This slice therefore implements shared submit and cancel routing. The verifier rejects known direct variants so common regressions fail loudly during CI and review.
 
-**Rationale**: A helper contract without a source-fence is convention-only. The repo already uses source-fence/static verification for architecture boundaries, so the durable enforcement belongs in that same verification layer.
+**Rationale**: A helper contract without a source-fence is convention-only. The repo already uses source-fence/static verification for architecture boundaries, so known direct bypass forms should be guarded there. The verifier is not a complete proof over every public NautilusTrader transport layer; future arbitrary-strategy compile-time isolation is tracked in issue #710.
 
 **Alternatives considered**:
 
 - Implement wrappers for all eight NT methods immediately. Rejected for this slice because six methods have no production call site; adding live behavior for unused paths would create speculative API surface.
-- Scope the invariant to current submit/cancel call sites only. Rejected because it would let the next strategy reintroduce strategy-bound execution policy through another NT mutation method.
+- Claim regex completeness over every public NT transport layer. Rejected because NautilusTrader exposes lower-level msgbus and handler APIs that cannot be exhaustively fenced by name; issue #710 tracks the structural isolation required before adding another production strategy with a compile-time no-bypass guarantee.
 
 ## Decision 3: StrategyBuildContext Carries Policy
 

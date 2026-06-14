@@ -27,7 +27,7 @@
 - [X] T014 [US2] Write failing shared live-submit routing test in `src/bolt_v3_order_execution.rs`
 - [X] T015 [US2] Write failing shared shadow-submit routing test in `src/bolt_v3_order_execution.rs`
 - [X] T016 [US2] Write failing shared live-cancel and shadow-cancel routing tests in `src/bolt_v3_order_execution.rs`
-- [X] T017 [US2] Write failing source-fence/static verifier tests rejecting direct production-source calls to NT venue mutation APIs outside `src/bolt_v3_order_execution.rs`
+- [X] T017 [US2] Write failing source-fence/static verifier tests rejecting known direct production-source venue-mutation and policy-fabrication bypass forms outside allowlisted boundaries
 - [X] T018 [US2] Create `src/bolt_v3_order_execution.rs` with execution mode, policy, shared submit context, submit routing, and cancel routing
 - [X] T019 [US2] Export `bolt_v3_order_execution` from `src/lib.rs`
 
@@ -39,7 +39,7 @@
 - [X] T023 [US1] Remove `submit_orders` from `src/strategies/binary_oracle_edge_taker/config.rs`
 - [X] T024 [US1] Remove `submit_orders` from `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`
 - [X] T025 [US1] Remove `submit_orders` from strategy TOML files under `config/strategies/` and `tests/fixtures/bolt_v3/strategies/`
-- [X] T026 [US2] Add source-level guard proving production strategy code does not read `submit_orders` and production source does not directly call NT venue-mutation APIs outside the shared policy module
+- [X] T026 [US2] Add source-level guard proving production strategy code does not read `submit_orders` and known direct venue-mutation bypass forms fail outside the shared policy module
 - [X] T027 [US4] Add an integration-level shadow wiring test proving strategy evidence/admission reaches the shared path without invoking the private NT submit adapter
 - [X] T028 [US4] Update existing shadow-mode evidence tests to configure shadow through `StrategyBuildContext`
 

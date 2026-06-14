@@ -2,11 +2,12 @@
 """Verify Bolt-v3 strategy policy stays config-owned.
 
 This gate covers strategy-local hardcode-policy regressions in the registered
-strategy source roots and direct NT venue-mutation bypasses across all
-production `src/**/*.rs` files. Each file's production text — comments and
-`#[cfg(test)]` code excluded via the shared production-text helper — is scanned
-individually so violations are reported against the file that actually contains
-them.
+strategy source roots and known direct NT venue-mutation bypass forms across
+production `src/**/*.rs` files. It is a CI guardrail for reviewed source, not a
+complete firewall over every public NautilusTrader transport API. Each file's
+production text — comments and `#[cfg(test)]` code excluded via the shared
+production-text helper — is scanned individually so violations are reported
+against the file that actually contains them.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
     "send_exec_command",
     "send_emulator_command",
     "send_algo_command",
-    # Raw msgbus command transport is the primitive underneath OrderManager.
+    # Common raw msgbus command transport helpers underneath OrderManager.
     "send_trading_command",
     "send_any",
     "send_any_value",

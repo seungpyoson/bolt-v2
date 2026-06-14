@@ -24,7 +24,7 @@ Responsibilities:
 - expose whether venue mutation is allowed
 - route submit behavior through live or shadow outcome
 - route cancel behavior through live or shadow outcome
-- provide the only allowed strategy-to-NT venue mutation chokepoint
+- provide the only approved chokepoint for the currently shipped production strategy's submit/cancel venue mutation path
 
 Non-responsibilities:
 
@@ -75,7 +75,9 @@ Values:
 
 Source-fence/static rule over production Rust source.
 
-Forbidden direct calls outside `src/bolt_v3_order_execution.rs` include:
+The fence rejects known direct venue-mutation and policy-fabrication patterns outside allowlisted shared-policy/runtime boundaries. It is a CI guardrail for common regressions, not a complete proof that arbitrary future strategy code cannot reach every public NautilusTrader transport layer.
+
+Forbidden known direct calls outside `src/bolt_v3_order_execution.rs` include:
 
 - `submit_order(...)`
 - `submit_order_list(...)`
@@ -87,8 +89,9 @@ Forbidden direct calls outside `src/bolt_v3_order_execution.rs` include:
 - `close_all_positions(...)`
 - private raw-adapter wrapper names such as `submit_order_via_nt(...)` and `cancel_order_via_nt(...)`
 - near-neighbor parameterized or in-place mutation variants such as `submit_order_with_params(...)`, `cancel_order_with_params(...)`, and `modify_order_in_place(...)`
+- common raw command transport helpers such as `send_trading_command(...)`, `send_any(...)`, and `send_any_value(...)`
 
-The current implementation slice only needs shared submit and cancel helpers because the current production strategy only calls `submit_order(...)` and `cancel_order(...)`. If a future strategy needs another NT mutation API, the fence must fail until that action is routed through `src/bolt_v3_order_execution.rs` with tests for live and shadow behavior.
+The current implementation slice only needs shared submit and cancel helpers because the current production strategy only calls `submit_order(...)` and `cancel_order(...)`. If a future strategy needs another NT mutation API, review must either route that action through `src/bolt_v3_order_execution.rs` with live/shadow tests or complete the compile-time isolation work tracked in issue #710. The fence remains a detector for known bad forms; source-integrity review is the authoritative control for future strategy changes under this PR scope.
 
 ## ManagedVenueActionGuard
 

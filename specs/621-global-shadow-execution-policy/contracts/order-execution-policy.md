@@ -19,7 +19,7 @@ Invalid or missing values fail config loading. A `submit_orders` key under any s
 
 ## Strategy-Originated Venue Mutation Surface
 
-All Bolt strategy-originated NT venue mutation APIs must route through `src/bolt_v3_order_execution.rs`.
+For PR #695, the currently shipped production strategy's submit/cancel venue mutation path must route through `src/bolt_v3_order_execution.rs`. The source fence rejects known direct bypass patterns, but it is not a complete firewall over every public NautilusTrader transport API available to arbitrary future strategy code.
 
 The pinned NT strategy surface includes these strategy-callable mutation methods:
 
@@ -32,7 +32,7 @@ The pinned NT strategy surface includes these strategy-callable mutation methods
 - `close_position(...)`
 - `close_all_positions(...)`
 
-The current implementation slice provides explicit submit and cancel routing because current production code only uses `submit_order(...)` and `cancel_order(...)`. A source-fence/static verifier must reject direct calls to any listed method from production source outside `src/bolt_v3_order_execution.rs`; it also fences private raw-adapter wrapper names and near-neighbor parameterized/in-place mutation variants. Adding support for another method requires adding a shared helper and live/shadow tests before any strategy may call it.
+The current implementation slice provides explicit submit and cancel routing because current production code only uses `submit_order(...)` and `cancel_order(...)`. A source-fence/static verifier rejects known direct calls to listed methods, private raw-adapter wrapper names, near-neighbor parameterized/in-place mutation variants, common command-transport helpers, and policy-fabrication forms outside allowlisted boundaries. Adding support for another method requires adding a shared helper and live/shadow tests before the reviewed strategy may call it. A stronger guarantee for arbitrary future strategies requires the compile-time isolation work tracked in issue #710.
 
 ## Shared Submit Contract
 
@@ -83,10 +83,9 @@ Shadow behavior:
 
 ## Source-Fence Contract
 
-Verification must fail if production source outside `src/bolt_v3_order_execution.rs`
-directly calls any listed NT venue mutation method or private raw-adapter method.
-Strategy source must also fail if it constructs or overrides execution policy locally
-instead of using `StrategyBuildContext`.
+Verification must fail if production source outside allowlisted boundaries uses known direct NT venue-mutation helpers, private raw-adapter methods, common raw command transports, or local execution-policy fabrication forms.
+
+This verifier is a guardrail, not the authoritative future-strategy safety proof. Future strategy safety under this PR scope comes from source-integrity review of registered production strategy roots. A compile-time guarantee that future strategies cannot import NautilusTrader venue-mutation APIs is tracked separately in issue #710.
 
 ## Boundary Contract
 

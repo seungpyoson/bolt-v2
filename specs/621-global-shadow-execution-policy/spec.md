@@ -2,7 +2,7 @@
 
 **Feature Branch**: `codex/621-global-shadow-mode`
 **Created**: 2026-06-13
-**Status**: Implemented; review gate passed and exact-head PR CI passed
+**Status**: Implemented; scope corrected after adversarial review and exact-head PR CI passed
 **Input**: User request to review merged PR #621 and make the shadow/no-submit behavior global, shared, and no longer bound to `binary_oracle_edge_taker`.
 
 ## User Scenarios & Testing
@@ -13,7 +13,7 @@ As an operator, I need to switch the bolt-v3 runtime between live venue mutation
 
 **Why this priority**: PR #621 added the safety behavior but placed `submit_orders` under each strategy's `[parameters]`. That violates grouping by lifecycle: shadow mode is a runtime execution policy, not a strategy signal parameter.
 
-**Independent Test**: A root config with shadow mode causes all loaded strategies to record order intent and admission evidence without emitting Bolt-strategy-originated NT venue mutations.
+**Independent Test**: A root config with shadow mode causes the shipped, source-integrity-locked production strategy to record order intent and admission evidence without emitting Bolt-strategy-originated NT venue mutations.
 
 **Acceptance Scenarios**:
 
@@ -25,15 +25,15 @@ As an operator, I need to switch the bolt-v3 runtime between live venue mutation
 
 As a strategy author, I need a shared execution policy and venue-mutation routing helper so strategies produce intent and strategy-local signal state while execution gating lives outside strategy modules.
 
-**Why this priority**: Repo rule 9 rejects strategy-owned submit mechanics. PR #621 guarded submit and cancel inside `binary_oracle_edge_taker`, which works for that strategy but does not create reusable architecture or prevent future direct calls to other NT mutation APIs.
+**Why this priority**: Repo rule 9 rejects strategy-owned submit mechanics. PR #621 guarded submit and cancel inside `binary_oracle_edge_taker`; this feature moves those existing production calls behind a shared policy and adds guardrail source fences for common direct-bypass forms.
 
-**Independent Test**: Source inspection, focused tests, and a source-fence verifier show strategies read execution mode only through `StrategyBuildContext` and production source cannot directly call NT venue mutation APIs outside the shared execution module.
+**Independent Test**: Source inspection, focused tests, and a source-fence verifier show the shipped production strategy reads execution mode only through `StrategyBuildContext`, routes submit/cancel through the shared execution module, and does not use known direct NT venue-mutation bypass forms outside that module.
 
 **Acceptance Scenarios**:
 
 1. **Given** any strategy receives `StrategyBuildContext`, **When** it submits a compiled NT order through the shared helper, **Then** the helper records evidence, applies submit admission, chooses live versus shadow routing, and returns one typed outcome.
 2. **Given** a strategy needs to cancel a resting order, **When** it calls the shared cancel helper, **Then** shadow mode suppresses the NT cancel and live mode allows the existing NT cancel call.
-3. **Given** production source tries to call NT mutation APIs directly, **When** source-fence/static verification runs, **Then** it fails unless the call is inside `src/bolt_v3_order_execution.rs`.
+3. **Given** production source uses a known direct NT mutation helper or policy-fabrication pattern, **When** source-fence/static verification runs, **Then** it fails unless the use is inside an allowlisted boundary.
 4. **Given** the shared execution module is inspected, **When** imports are reviewed, **Then** it contains no strategy, market-family, provider, or venue-specific policy.
 
 ### User Story 3 - Fail Closed Around NT-Managed Venue Actions (Priority: P3)
@@ -70,7 +70,7 @@ As an operator, I need the PR #621 shadow PnL report to keep working from admitt
 - Live mode must preserve PR #621 behavior for evidence ordering: build admission request, record order intent, record admission decision, then call NT submit.
 - Shadow mode must still surface admission rejections as errors where current strategy behavior relies on those errors to clear pending state.
 - Cancel suppression must apply to both forced-flat pending-entry cancels and external-position-close pending-entry cancels.
-- The shadow invariant covers Bolt-strategy-originated NT venue mutations and NT `StrategyConfig` managed-action knobs on loaded strategies. It does not claim to firewall operator/manual exchange activity or adapter-level behavior outside the loaded Bolt strategies.
+- The shadow invariant covers the shipped production strategy's reviewed submit/cancel path and NT `StrategyConfig` managed-action knobs on loaded strategies. It does not claim to firewall operator/manual exchange activity, adapter-level behavior, or every public NautilusTrader transport API reachable by arbitrary future strategy code.
 - The shared module must not become a venue capability matrix or an NT lifecycle reimplementation.
 
 ## Requirements
@@ -82,7 +82,7 @@ As an operator, I need the PR #621 shadow PnL report to keep working from admitt
 - **FR-003**: System MUST carry the global execution mode through `StrategyBuildContext` so every strategy receives the same policy object.
 - **FR-004**: System MUST provide a shared order-submit routing helper that records order intent, records submit-admission evidence, applies admission, and decides whether to call NT submit based on the global policy.
 - **FR-005**: System MUST provide a shared cancel routing helper or shared policy method so strategy code does not branch on strategy-local shadow config before NT cancel calls.
-- **FR-006**: System MUST add a source-fence/static verifier that rejects direct production-source calls to NT venue-mutation APIs outside `src/bolt_v3_order_execution.rs`, including current pinned NT Strategy mutation methods, raw adapter wrapper names, and near-neighbor parameterized/in-place variants.
+- **FR-006**: System MUST add a source-fence/static verifier that rejects known direct production-source NT venue-mutation and policy-fabrication patterns outside allowlisted shared-policy/runtime boundaries. This verifier is a guardrail for common regressions, not a complete firewall over every public NautilusTrader transport API.
 - **FR-007**: System MUST preserve the existing single NT submit path and must not introduce a parallel submit path.
 - **FR-008**: System MUST preserve compiled-order-based submit admission from `src/bolt_v3_submit_admission.rs`.
 - **FR-009**: System MUST reject shadow mode with `manage_stop`, `manage_gtd_expiry`, `manage_contingent_orders`, or non-empty `external_order_claims` for every loaded strategy, and MUST document why other pinned NT `StrategyConfig` fields are not independent venue-mutation enablers.
@@ -98,7 +98,7 @@ As an operator, I need the PR #621 shadow PnL report to keep working from admitt
 - **SubmitContext**: Shared NT submit arguments outside the compiled order: optional `client_id`, optional `position_id`, and optional `params`.
 - **SubmitRoutingOutcome**: Shared outcome indicating whether NT submit was performed or suppressed by shadow mode.
 - **CancelRoutingOutcome**: Shared outcome indicating whether NT cancel was performed or suppressed by shadow mode.
-- **VenueMutationFence**: Source-fence/static rule that prevents production source from bypassing shared execution policy with direct NT venue mutation calls outside the policy module.
+- **VenueMutationFence**: Source-fence/static guardrail that rejects known direct NT venue-mutation and policy-fabrication patterns outside allowlisted shared-policy/runtime boundaries.
 - **ManagedVenueActionGuard**: Config validation rule rejecting NT-managed venue-action knobs under shadow mode.
 
 ## Success Criteria
@@ -110,12 +110,12 @@ As an operator, I need the PR #621 shadow PnL report to keep working from admitt
 - **SC-003**: Focused tests prove shadow mode emits no Bolt-strategy-originated NT `SubmitOrder` or `CancelOrder` while still recording order-intent and admission evidence.
 - **SC-004**: Focused tests prove live mode still emits NT submit through the existing single submit path.
 - **SC-005**: Config tests prove shadow mode rejects every NT-managed venue-action knob listed in FR-008.
-- **SC-006**: Source-fence/static verification fails on direct production-source calls to known NT venue mutation APIs outside the shared execution module.
+- **SC-006**: Source-fence/static verification fails on known direct venue-mutation and policy-fabrication bypass forms outside allowlisted boundaries.
 - **SC-007**: All four required reviews, including internal self-review, return approval with no unresolved blockers before implementation starts.
 
 ## Assumptions
 
 - PR #621's `shadow_pnl_report` and settlement join behavior remain in scope only to preserve compatibility with the new global mode.
 - This feature does not add live exchange support, new venues, new order variants, or a venue capability matrix.
-- The first implementation slice updates `binary_oracle_edge_taker` as the only production strategy, but the architecture must be strategy-agnostic for the next strategy to use.
+- The first implementation slice guarantees the currently shipped, source-integrity-locked `binary_oracle_edge_taker` strategy. A compile-time guarantee that arbitrary future strategies cannot reach NautilusTrader venue-mutation APIs is out of scope for this PR and tracked separately in GitHub issue #710.
 - Exact compile/test proof will use the repo's remote-first verification flow after implementation is committed and pushed.

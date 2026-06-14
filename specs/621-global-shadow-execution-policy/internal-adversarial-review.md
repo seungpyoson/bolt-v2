@@ -197,17 +197,21 @@ The strategy policy fence now fails any production strategy source root under `s
 
 #### H7 - Raw msgbus trading-command injection primitive was not fenced
 
-**Status**: Fixed in implementation follow-up
+**Status**: Common forms fenced; regex completeness explicitly out of scope
 
 The prior H4 fix fenced `StrategyCore` / `OrderManager` wrapper names but did not fence the raw `nautilus_common::msgbus` trading-command primitive those wrappers call. The direct NT mutation fence now also covers `send_trading_command`, `send_any`, `send_any_value`, risk/exec/emulator/algo execute queue endpoint accessors, and the `TradingCommand` mutation surface names outside `src/bolt_v3_order_execution.rs`.
 
+Subsequent adversarial review correctly found lower public NautilusTrader msgbus layers such as `get_message_bus() -> get_endpoint(...) -> handle(...)`. This PR no longer claims regex completeness over every public NT transport. The scoped guarantee is the current shipped, source-integrity-locked `binary_oracle_edge_taker` strategy plus source-fence guardrails for known/common bypass forms. Compile-time future-strategy isolation is tracked in issue #710.
+
 #### H8 - Execution-policy fabrication checks were strategy-path scoped
 
-**Status**: Fixed in implementation follow-up
+**Status**: Guardrail fixed for known production-source forms; future-strategy isolation tracked separately
 
-Execution-policy construction, type-reference, and override rules now run across production `src/**/*.rs`, not only registered strategy roots and `src/strategies/**`. Only the known policy/config/load/registration boundary files are allowlisted. The fence also rejects registry entries that try to register a builder through `crate::...` or `super::...` outside the `crate::strategies::...` module tree, so a registered strategy cannot bypass the strategy-tree/source-integrity assumptions by living under an arbitrary `src/foo.rs` path.
+Execution-policy construction, type-reference, and override rules now run across production `src/**/*.rs`, not only registered strategy roots and `src/strategies/**`. Only the known policy/config/load/registration boundary files are allowlisted. The fence also rejects known registry entries that try to register a builder through `crate::...` or `super::...` outside the `crate::strategies::...` module tree, so common outside-tree registration regressions fail loudly.
+
+This remains a source-review guardrail, not a formal proof for arbitrary future strategies. Issue #710 is the structural follow-up that must be resolved before adding a second production strategy requiring compile-time isolation from NT venue-mutation APIs.
 
 ### Checks
 
 - Red verification: raw msgbus command injection and outside-tree registry tests failed before the verifier change.
-- CI plan: push this follow-up and use exact-head remote CI as the authoritative green check.
+- Scope correction: spec, contract, plan, data model, and review prompt now state that regex fences are guardrails and that future arbitrary-strategy compile-time isolation is out of scope for #695 and tracked in issue #710.

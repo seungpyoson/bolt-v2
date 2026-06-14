@@ -1646,6 +1646,7 @@ dependencies = [
  "arrow",
  "aws-config",
  "aws-sdk-ssm",
+ "async-trait",
  "bolt-v2",
  "bytes",
  "chrono",

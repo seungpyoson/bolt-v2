@@ -8,7 +8,7 @@
 #
 # Format: lines starting with '#' are comments; blank lines are ignored;
 # '[key]' starts a source set whose key must match the STRATEGY_KEY /
-# SUBMIT_ADMISSION_KEY / OUTCOME_GROUP_KEY constants in
+# SUBMIT_ADMISSION_KEY / OUTCOME_GROUP_KEY / MAKER_KEY constants in
 # src/source_canonicalization.rs; every other line is a repo-relative root — a
 # single .rs file OR a directory of .rs files. Edit this file (and nothing else)
 # to change which sources are gated.
@@ -51,3 +51,6 @@ src/bolt_v3_archetypes/complete_set_arbitrage.rs
 src/bolt_v3_market_families/outcome_group.rs
 src/strategy_bindings.rs
 src/strategies/complete_set_arbitrage
+
+[maker]
+src/strategies/binary_oracle_maker

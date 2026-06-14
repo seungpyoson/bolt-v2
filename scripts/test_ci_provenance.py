@@ -453,7 +453,7 @@ class FakeGitHub:
         query: dict[str, str] | None = None,
     ) -> dict[str, object]:
         self.queries.append((path, query))
-        if path == "actions/runs":
+        if path in {"actions/runs", "actions/workflows/ci.yml/runs"}:
             if not isinstance(self.runs_pages, list):
                 return {"workflow_runs": self.runs_pages}
             page = int((query or {}).get("page", "1"))
@@ -577,6 +577,8 @@ def assert_fingerprint_reuse_prior_green_returns_reuse() -> None:
             raise AssertionError(result)
         if "matched" not in result.reason:
             raise AssertionError(result)
+        if not fake.queries or fake.queries[0][0] != "actions/workflows/ci.yml/runs":
+            raise AssertionError(fake.queries)
 
 
 def assert_fingerprint_reuse_no_prior_run_returns_no_reuse() -> None:

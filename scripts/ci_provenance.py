@@ -782,6 +782,11 @@ def run_matches_fingerprint_reuse(
     )
 
 
+def workflow_runs_path(config: ProvenanceConfig) -> str:
+    workflow_file = pathlib.PurePosixPath(config.workflow_path).name
+    return f"actions/workflows/{workflow_file}/runs"
+
+
 def workflow_digest_from_github(
     repo: str,
     token: str,
@@ -1271,7 +1276,7 @@ def resolve_fingerprint_reuse(
         runs_payload = api_json(
             repo,
             token,
-            "actions/runs",
+            workflow_runs_path(config),
             {
                 "per_page": str(config.workflow_runs_per_page),
                 "page": str(page),

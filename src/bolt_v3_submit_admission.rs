@@ -117,6 +117,7 @@ struct BoltV3SubmitPositionSizerState {
     collateral_currency: String,
     capital_pool: CapitalPoolSnapshot,
     policy: SizingPolicy,
+    dedupe_retention_ns: u64,
     state: Option<NtDerivedSizingState>,
     latest_reservation_mutation_observed_at_ns: Option<u64>,
     gate: PositionSizingAdmissionGate,
@@ -379,6 +380,7 @@ impl BoltV3SubmitAdmissionState {
                     collateral_currency: config.collateral_currency,
                     capital_pool: config.capital_pool,
                     policy: config.policy,
+                    dedupe_retention_ns: config.dedupe_retention_ns,
                     state: None,
                     latest_reservation_mutation_observed_at_ns: None,
                     gate: PositionSizingAdmissionGate::unreconciled(),
@@ -912,7 +914,6 @@ impl BoltV3SubmitAdmissionState {
         let Some(position_sizer) = inner.position_sizer.as_mut() else {
             return BoltV3SubmitPositionSizingLifecycleDecision::unknown();
         };
-        let dedupe_retention_ns = position_sizer.dedupe_retention_ns;
         let Some(index) = position_sizer
             .client_order_reservations
             .get(&update.client_order_id)
@@ -974,6 +975,7 @@ impl BoltV3SubmitAdmissionState {
         let Some(position_sizer) = inner.position_sizer.as_mut() else {
             return BoltV3SubmitPositionSizingLifecycleDecision::unknown();
         };
+        let dedupe_retention_ns = position_sizer.dedupe_retention_ns;
         let Some(index) = position_sizer
             .client_order_reservations
             .get(&update.client_order_id)

@@ -897,6 +897,12 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         conversion_manifest_path: inputs.conversion_manifest_path,
         conversion_checkpoint_path: inputs.conversion_checkpoint_path,
         catalog_metadata_path: inputs.catalog_metadata_path,
+        canonical_catalog_uri: None,
+        nt_catalog_capability_plan: None,
+        nt_catalog_capability_proof_artifact: None,
+        create_only_probe_transcript: None,
+        persisted_catalog_projection: None,
+        persisted_catalog_objects: Vec::new(),
         output,
     })
 }

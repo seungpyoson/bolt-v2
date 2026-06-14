@@ -609,7 +609,7 @@ fn complete_set_live_node_build_registers_strategy_from_strategy_files_after_sou
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("complete-set LiveNode build should register after source-integrity coverage");
 
-    assert_eq!(summary.registered.len(), 1);
+    assert_eq!(summary.clients.len(), 1);
     assert_eq!(
         node.registered_strategy_ids(),
         vec![StrategyId::from("complete_set_arbitrage-901")]

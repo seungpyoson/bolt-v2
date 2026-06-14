@@ -113,6 +113,7 @@ fn portable_artifact_uris(manifest: &BacktestingRunManifest) -> ResultArtifactUr
             CANONICAL_ARTIFACT_FILE,
         ),
         nt_catalog_uri: portable_artifact_uri(&manifest.output_prefix, CATALOG_DIR),
+        nt_catalog_manifest_uri: None,
         result_contract_uri: portable_artifact_uri(&manifest.output_prefix, RESULT_CONTRACT_FILE),
     }
 }
@@ -263,14 +264,20 @@ pub async fn run_from_run_spec_with_artifact_store(
     )
     .await?;
 
+    artifacts.output.contract.catalog_hash = persisted.manifest_sha256.clone();
     artifacts.output.contract.artifact_uris.nt_catalog_uri = persisted.catalog_root_uri.clone();
+    artifacts
+        .output
+        .contract
+        .artifact_uris
+        .nt_catalog_manifest_uri = Some(persisted.manifest_uri.clone());
     fs::write(
         &artifacts.contract_path,
         serde_json::to_string_pretty(&artifacts.output.contract)
             .context("serialize durable result contract")?,
     )
     .with_context(|| format!("write {}", artifacts.contract_path.display()))?;
-    artifacts.canonical_catalog_uri = Some(persisted.catalog_root_uri);
+    artifacts.canonical_catalog_uri = Some(persisted.catalog_root_uri.clone());
     artifacts.nt_catalog_capability_plan = Some(nt_catalog_capability_plan);
     artifacts.create_only_probe_transcript = Some(create_only_probe_transcript);
     artifacts.persisted_catalog_objects = persisted.objects.clone();

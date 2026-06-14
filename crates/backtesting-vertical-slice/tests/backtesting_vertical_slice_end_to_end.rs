@@ -202,6 +202,7 @@ fn accepted_data_flows_through_to_objective_result_contract() {
                 .to_string(),
             canonical_table_uri: canonical_path.to_string_lossy().to_string(),
             nt_catalog_uri: catalog_path.clone(),
+            nt_catalog_manifest_uri: None,
             result_contract_uri:
                 "s3://bolt-parquet/nt-research-analytics/backtests/end-to-end/result.json"
                     .to_string(),
@@ -305,6 +306,7 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
                 .to_string(),
             canonical_table_uri: full_canonical.to_string_lossy().to_string(),
             nt_catalog_uri: full_catalog_path.clone(),
+            nt_catalog_manifest_uri: None,
             result_contract_uri: "s3://bolt-parquet/nt-research-analytics/backtests/win/r.json"
                 .to_string(),
         },
@@ -343,6 +345,7 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
                 .to_string(),
             canonical_table_uri: canonical_path.to_string_lossy().to_string(),
             nt_catalog_uri: catalog_path.clone(),
+            nt_catalog_manifest_uri: None,
             result_contract_uri: "s3://bolt-parquet/nt-research-analytics/backtests/win/r2.json"
                 .to_string(),
         },

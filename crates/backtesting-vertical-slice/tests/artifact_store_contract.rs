@@ -22,6 +22,7 @@ use backtesting_vertical_slice::{
         NtCatalogReadBackEvidence,
     },
     operator::{RunSpec, run_from_run_spec, run_from_run_spec_with_artifact_store},
+    result_contract::BacktestResultContract,
     run_manifest::MarketStructureFixture,
 };
 use flate2::{Compression, write::GzEncoder};
@@ -810,6 +811,15 @@ async fn persists_catalog_projection_directory_with_create_only_dispatch() {
         manifest_json["binding"]["source_binding"].as_str(),
         Some(persisted.binding.source_binding.as_str())
     );
+    let manifest_objects = manifest_json["objects"]
+        .as_array()
+        .expect("projection manifest objects array");
+    assert!(
+        manifest_objects
+            .iter()
+            .all(|object| object.get("create_only_write").is_none()),
+        "projection manifest bytes must not include per-run create-only dispositions"
+    );
     assert!(
         persisted
             .objects
@@ -909,7 +919,7 @@ async fn rejects_duplicate_catalog_projection_bytes() {
     .await
     .expect_err("duplicate projection bytes must be rejected");
 
-    assert!(err.to_string().contains("differs"), "{err}");
+    assert!(format!("{err:#}").contains("different payload"), "{err:#}");
 }
 
 #[tokio::test]
@@ -1054,6 +1064,34 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
                 })
                 .collect::<Vec<_>>()
         )
+    );
+    assert_eq!(
+        artifacts.output.contract.catalog_hash,
+        persisted_projection.manifest_sha256
+    );
+    assert_eq!(
+        artifacts
+            .output
+            .contract
+            .artifact_uris
+            .nt_catalog_manifest_uri
+            .as_deref(),
+        Some(persisted_projection.manifest_uri.as_str())
+    );
+    let persisted_contract_json =
+        fs::read_to_string(&artifacts.contract_path).expect("durable contract json");
+    let persisted_contract: BacktestResultContract =
+        serde_json::from_str(&persisted_contract_json).expect("durable contract parses");
+    assert_eq!(
+        persisted_contract.catalog_hash,
+        persisted_projection.manifest_sha256
+    );
+    assert_eq!(
+        persisted_contract
+            .artifact_uris
+            .nt_catalog_manifest_uri
+            .as_deref(),
+        Some(persisted_projection.manifest_uri.as_str())
     );
     assert!(
         artifacts

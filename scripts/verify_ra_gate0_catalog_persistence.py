@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -61,6 +62,7 @@ ARTIFACT_STORE_REQUIRED = (
     "pub create_only_write: CreateOnlyWriteDisposition",
     "catalog_projection_manifest_object_uri",
     "CatalogProjectionManifestDocument",
+    "CatalogProjectionManifestObject",
     "catalog-projection-manifest-v1",
     "expected_market_structure_fixture",
     "binding.market_structure_fixture == expected_market_structure_fixture",
@@ -223,7 +225,9 @@ TEST_REQUIRED = (
     "CreateOnlyWriteDisposition::AlreadyExistedSamePayload",
     "create_only_write",
     "create_only_probe_transcript",
+    "artifacts.output.contract.catalog_hash",
     "artifact_uris.nt_catalog_uri",
+    "nt_catalog_manifest_uri",
     "InMemory::new",
     "persist_catalog_projection_for_source_binding",
 )
@@ -275,6 +279,30 @@ RUN_SPEC_REQUIRED = (
 
 def missing_snippets(path: Path, text: str, snippets: tuple[str, ...]) -> list[str]:
     return [f"{path}: missing `{snippet}`" for snippet in snippets if snippet not in text]
+
+
+def validate_run_spec_toml(path: Path, text: str) -> list[str]:
+    try:
+        parsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        return [f"{path}: invalid TOML: {exc}"]
+
+    findings = []
+    artifact_store = parsed.get("artifact_store")
+    if not isinstance(artifact_store, dict):
+        findings.append(f"{path}: missing [artifact_store] table")
+        return findings
+    if "catalog_projection_manifest_object" in parsed:
+        findings.append(
+            f"{path}: catalog_projection_manifest_object must live under [artifact_store]"
+        )
+    if artifact_store.get("catalog_projection_manifest_object") != (
+        "catalog-projection-manifest.json"
+    ):
+        findings.append(
+            f"{path}: missing [artifact_store].catalog_projection_manifest_object"
+        )
+    return findings
 
 
 def scan_root(root: Path) -> list[str]:
@@ -352,9 +380,9 @@ def scan_root(root: Path) -> list[str]:
     if not run_spec.exists():
         findings.append(f"{RUN_SPEC}: committed run spec is missing")
     else:
-        findings.extend(
-            missing_snippets(RUN_SPEC, run_spec.read_text(encoding="utf-8"), RUN_SPEC_REQUIRED)
-        )
+        run_spec_text = run_spec.read_text(encoding="utf-8")
+        findings.extend(missing_snippets(RUN_SPEC, run_spec_text, RUN_SPEC_REQUIRED))
+        findings.extend(validate_run_spec_toml(RUN_SPEC, run_spec_text))
 
     justfile = root / JUSTFILE
     if not justfile.exists():

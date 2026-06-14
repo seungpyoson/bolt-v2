@@ -548,7 +548,7 @@ pub struct CatalogProjectionBinding {
     pub catalog_projection_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistedCatalogProjectionObject {
     pub relative_path: String,
     pub uri: String,
@@ -573,7 +573,15 @@ struct CatalogProjectionManifestDocument<'a> {
     catalog_root_uri: &'a str,
     manifest_sha256: &'a str,
     binding: &'a CatalogProjectionBinding,
-    objects: &'a [PersistedCatalogProjectionObject],
+    objects: Vec<CatalogProjectionManifestObject<'a>>,
+}
+
+#[derive(Serialize)]
+struct CatalogProjectionManifestObject<'a> {
+    relative_path: &'a str,
+    uri: &'a str,
+    sha256: &'a str,
+    byte_len: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -714,7 +722,15 @@ pub async fn persist_catalog_projection_for_source_binding(
         catalog_root_uri: catalog_root_uri.as_str(),
         manifest_sha256: manifest_sha256.as_str(),
         binding: &binding,
-        objects: &objects,
+        objects: objects
+            .iter()
+            .map(|object| CatalogProjectionManifestObject {
+                relative_path: object.relative_path.as_str(),
+                uri: object.uri.as_str(),
+                sha256: object.sha256.as_str(),
+                byte_len: object.byte_len,
+            })
+            .collect(),
     })
     .context("serialize catalog projection manifest")?;
     let (_version, manifest_create_only_write) = writer

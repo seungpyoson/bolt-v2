@@ -122,6 +122,8 @@ pub struct ResultArtifactUris {
     pub source_proof_uri: String,
     pub canonical_table_uri: String,
     pub nt_catalog_uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nt_catalog_manifest_uri: Option<String>,
     pub result_contract_uri: String,
 }
 
@@ -362,6 +364,7 @@ mod tests {
                 source_proof_uri: "s3://.../source-proofs/p.json".to_string(),
                 canonical_table_uri: "s3://.../trades.parquet".to_string(),
                 nt_catalog_uri: "s3://.../nt-catalog/".to_string(),
+                nt_catalog_manifest_uri: None,
                 result_contract_uri: "s3://.../backtests/run/result.json".to_string(),
             },
             created_at: "2026-06-02T00:00:00Z".to_string(),

@@ -109,6 +109,7 @@ pub struct PersistedCatalogProjectionObject {
 }
 
 pub struct CatalogProjectionManifestDocument;
+pub struct CatalogProjectionManifestObject;
 
 pub struct PersistedCatalogProjection {
     pub manifest_uri: String,
@@ -356,7 +357,9 @@ fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
     let _already_existed = CreateOnlyWriteDisposition::AlreadyExistedSamePayload;
     let _create_only_write = persisted.objects[0].create_only_write;
     let _create_only_probe_transcript = artifacts.create_only_probe_transcript;
+    let _catalog_hash = artifacts.output.contract.catalog_hash;
     let _nt_catalog_uri = artifacts.output.contract.artifact_uris.nt_catalog_uri;
+    let _nt_catalog_manifest_uri = artifacts.output.contract.artifact_uris.nt_catalog_manifest_uri;
 }
 
 fn resolves_synthetic_nt_catalog_proof_root_outside_canonical_catalog() {}
@@ -467,7 +470,6 @@ def write_compliant_tree(root: Path) -> None:
         ),
         """
 create_only_probe_id = "probe-run"
-catalog_projection_manifest_object = "catalog-projection-manifest.json"
 
 [nt_catalog_capability_proof]
 proof_run_id = "synthetic-capability-proof"
@@ -501,6 +503,9 @@ imds_blocked = true
 access_key_id = "/bolt-v2/research/catalog/aws-access-key-id"
 secret_access_key = "/bolt-v2/research/catalog/aws-secret-access-key"
 session_token = "/bolt-v2/research/catalog/aws-session-token"
+
+[artifact_store]
+catalog_projection_manifest_object = "catalog-projection-manifest.json"
 
 [artifact_store.s3]
 region = "us-east-1"
@@ -551,6 +556,32 @@ def test_missing_persistence_helper_is_a_finding() -> None:
     assert any("persist_catalog_projection_for_source_binding" in finding for finding in findings)
 
 
+def test_run_spec_rejects_top_level_catalog_projection_manifest_object() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_compliant_tree(root)
+        run_spec = root / (
+            "specs/023-nt-research-analytics-platform/reference/"
+            "backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
+        )
+        run_spec.write_text(
+            (
+                'catalog_projection_manifest_object = "catalog-projection-manifest.json"\n'
+                + run_spec.read_text(encoding="utf-8").replace(
+                    "[artifact_store]\n"
+                    'catalog_projection_manifest_object = "catalog-projection-manifest.json"\n',
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
+
+        findings = verifier.scan_root(root)
+
+    assert any("must live under [artifact_store]" in finding for finding in findings)
+
+
 def test_cli_fails_with_actionable_output() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -568,6 +599,7 @@ def main() -> int:
     tests = [
         test_compliant_tree_passes,
         test_missing_persistence_helper_is_a_finding,
+        test_run_spec_rejects_top_level_catalog_projection_manifest_object,
         test_cli_fails_with_actionable_output,
     ]
     for test in tests:

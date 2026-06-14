@@ -39,6 +39,13 @@ These repo-level rules are in addition to any higher-level agent instructions.
 - CPU-heavy local verifier lanes self-serialize: every `scripts/verify_*.py` / `scripts/test_*.py` entry point acquires the per-repo machine-level lane lock declared in `ci/rust-verification.toml` `[local_lane_policy]` before doing work. Concurrent local runs queue with stderr heartbeats and fail loud at the policy timeout; CI (`allowed_ci_env`) bypasses the lock; a holder that is a process ancestor passes through. Coverage drift is a CI failure via `scripts/verify_lane_governance.py` in `source-fence-static`.
 - Residual local bypasses remain outside the accidental-use guard: absolute-path cargo invocation, `rustup run <toolchain> cargo ...`, cross-repo invocations issued outside this repo such as `cargo --manifest-path <repo>/Cargo.toml ...` or `cargo -C <repo> ...`, already-running daemons with old environments, non-no-mistakes daemon managers whose `PATH` does not include the shim directory, processes that never load shell startup files, and direct `rustc` execution.
 
+## Rust Probe Policy
+
+- Full CI is proof. Rust Probe is debugging.
+- Agents may use Rust Probe only when cheap local checks cannot answer the question.
+- Before running Rust Probe, state: (1) changed files, (2) suspected failure class, (3) selected mode, (4) selected test target/name, (5) why this is the smallest sufficient probe.
+- Limits: max 2 Rust Probe runs before stopping to explain root cause; full CI may run only after the slice is coherent; Rust Probe success is not merge readiness; Rust Probe must not replace the required `gate`; do not run full CI just to discover ordinary compiler errors.
+
 ## Review Bar
 
 - Every unique substantive issue counts as a finding regardless of severity. Do not downgrade real issues into “just notes” or treat “tracked” as “resolved” unless the finding is actually fixed or the user explicitly waives it.

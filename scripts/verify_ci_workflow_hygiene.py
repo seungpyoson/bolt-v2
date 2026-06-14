@@ -51,6 +51,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/backtester-ci.yml": "backtester_ci",
     "ci-runner-debug.yml": "ci_runner_debug",
     ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
+    "rust-probe.yml": "rust_probe",
+    ".github/workflows/rust-probe.yml": "rust_probe",
     "actionlint.yml": "actionlint",
     ".github/workflows/actionlint.yml": "actionlint",
     "advisory.yml": "advisory",
@@ -67,6 +69,7 @@ DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / "justfile",)
 DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / "scripts", "*.sh"),
     (REPO_ROOT / "tests", "*.sh"),
+    (REPO_ROOT / ".github" / "scripts", "*.sh"),
     (REPO_ROOT / ".github" / "actions", "*/action.yml"),
     (REPO_ROOT / ".github" / "actions", "*/action.yaml"),
 )
@@ -74,6 +77,7 @@ S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejecte
 LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS = {"build", "clippy", "test"}
 LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS = set(CARGO_DISK_PREFLIGHT_SUBCOMMANDS) | set(CARGO_ALIAS_SUBCOMMANDS)
 YAML_ANCHOR_PATTERN = r"&[A-Za-z0-9_.-]+"
+YAML_KEY_PATTERN = r"""(?:[A-Za-z0-9_.-]+|'[^']*(?:''[^']*)*'|"(?:[^"\\]|\\.)*")"""
 YAML_STEP_ITEM_RE = re.compile(rf"^-\s+(?:{YAML_ANCHOR_PATTERN}(?:\s+|$))?")
 YAML_RUN_LINE_RE = re.compile(rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*(.*?)\s*$")
 YAML_FOLDED_RUN_LINE_RE = re.compile(
@@ -101,6 +105,7 @@ REQUIRED_JOBS = (
     "check-aarch64",
     "source-fence",
     "test-archive",
+    "nextest-fingerprint-reuse",
     "test-shards",
     "test",
     "build",
@@ -170,13 +175,23 @@ CI_PROVENANCE_POLICY_EXPECTED = {
 assert set(CI_PROVENANCE_POLICY_ROWS) == set(
     CI_PROVENANCE_POLICY_EXPECTED
 ), "CI_PROVENANCE_POLICY_ROWS and CI_PROVENANCE_POLICY_EXPECTED keys must match"
-TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build", "ci-provenance-emit")
+TAG_SKIPPED_JOBS = (
+    "fmt-check",
+    "deny",
+    "clippy",
+    "source-fence",
+    "nextest-fingerprint-reuse",
+    "test",
+    "build",
+    "ci-provenance-emit",
+)
 TAG_SKIP_REQUIRED_JOBS = (
     "fmt-check",
     "deny",
     "clippy",
     "source-fence",
     "test-archive",
+    "nextest-fingerprint-reuse",
     "test-shards",
     "test",
     "ci-provenance-emit",
@@ -240,7 +255,92 @@ TAG_SKIP_ALWAYS_IF_RE = re.compile(
 SAME_SHA_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
 FULL_CI_REQUIRED_EXPR = "needs.ci-policy.outputs.full_ci_required == 'true'"
 TAG_REUSE_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'tag_reuse'"
+NEXTEST_REUSE_MISS_EXPR = "needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true'"
+MAIN_BRANCH_SKIP_EXPR = "github.ref != 'refs/heads/main'"
 BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
+FINGERPRINT_REUSE_ALLOWED_EXPR = "needs.detector.outputs.fingerprint_reuse_allowed == 'true'"
+FINGERPRINT_REUSE_PR_EVENT_EXPR = "github.event_name == 'pull_request'"
+FINGERPRINT_REUSE_JOB_IF_VALUE = (
+    "${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' "
+    "&& github.event_name == 'pull_request' "
+    "&& needs.detector.outputs.fingerprint_reuse_allowed == 'true' "
+    "&& github.ref != 'refs/heads/main' }}"
+)
+FINGERPRINT_REUSE_ALLOWED_OUTPUT = (
+    "fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}"
+)
+FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ALLOWED_KEYS = frozenset(
+    ("name", "id", "if", "shell", "run")
+)
+FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_SCALARS = {
+    "id": "fingerprint_reuse_inputs_changed",
+    "if": "github.event_name == 'pull_request'",
+    "shell": "bash",
+    "run": "|",
+}
+FINGERPRINT_REUSE_ALLOWED_STEP_ALLOWED_KEYS = frozenset(("name", "id", "shell", "run"))
+FINGERPRINT_REUSE_ALLOWED_STEP_SCALARS = {
+    "id": "fingerprint_reuse_allowed",
+    "shell": "bash",
+    "run": "|",
+}
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_ALLOWED_KEYS = frozenset(
+    ("name", "id", "shell", "env", "run")
+)
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_SCALARS = {
+    "id": "reuse",
+    "shell": "bash",
+    "env": "",
+    "run": ">",
+}
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_ENV = {"GITHUB_TOKEN": "${{ github.token }}"}
+FINGERPRINT_REUSE_INPUTS_CHANGED_RUN = """base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
+head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
+git fetch --no-tags origin \\
+  "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \\
+  "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
+  .github/workflows/ci.yml \\
+  .github/actions/setup-environment/action.yml \\
+  ci/github-actions-runners.toml \\
+  scripts/ci_provenance.py \\
+  scripts/test_ci_provenance.py \\
+  scripts/verify_ci_workflow_hygiene.py \\
+  scripts/test_verify_ci_workflow_hygiene.py)"
+if [[ -n "$changed" ]]; then
+  echo "any_changed=true" >> "$GITHUB_OUTPUT"
+else
+  echo "any_changed=false" >> "$GITHUB_OUTPUT"
+fi"""
+FINGERPRINT_REUSE_ALLOWED_RUN = """if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+  echo "value=false" >> "$GITHUB_OUTPUT"
+elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
+  echo "value=false" >> "$GITHUB_OUTPUT"
+else
+  echo "value=true" >> "$GITHUB_OUTPUT"
+fi"""
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN = """python3 scripts/ci_provenance.py resolve-fingerprint
+--current-run-id "${{ github.run_id }}"
+--current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+| tee -a "$GITHUB_OUTPUT\""""
+GATE_NEXTEST_FINGERPRINT_REUSE_BRANCH = """if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+  echo "nextest fingerprint reuse resolver did not succeed"
+  exit 1
+fi
+if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+  echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
+  exit 1
+fi
+echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}\""""
+FINGERPRINT_REUSE_GOVERNANCE_PATHS = (
+    ".github/workflows/ci.yml",
+    ".github/actions/setup-environment/action.yml",
+    "ci/github-actions-runners.toml",
+    "scripts/ci_provenance.py",
+    "scripts/test_ci_provenance.py",
+    "scripts/verify_ci_workflow_hygiene.py",
+    "scripts/test_verify_ci_workflow_hygiene.py",
+)
 BUILD_IF_RE = re.compile(
     r"^    if:\s*\$\{\{\s*"
     r"needs\.ci-policy\.outputs\.full_ci_required\s*==\s*['\"]true['\"]\s*&&\s*"
@@ -339,6 +439,7 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'rust-toolchain.toml'",
     "'.cargo/config.toml'",
     "'.config/nextest.toml'",
+    "'.config/**'",
     "'ci/rust-verification.toml'",
     "'scripts/rust_verification.py'",
     "'scripts/command_understanding.py'",
@@ -349,11 +450,24 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'benches/**'",
     "'examples/**'",
     "'crates/**'",
+    "'.github/**'",
+    "'scripts/**'",
     "'specs/**/*.md'",
+    "'specs/023-nt-order-intent-layer/**'",
+    "'specs/023-nt-research-analytics-platform/reference/**'",
+    "'config/**'",
+    "'contracts/**'",
+    "'docs/bolt-v3/**'",
 )
 TEST_ARCHIVE_KEY_PREFIX = "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
 TEST_ARCHIVE_FINGERPRINT_PREFIX = "nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
 TEST_ARCHIVE_FINGERPRINT_PATH = ".nextest-archive-fingerprint/cache-key.txt"
+TEST_ARCHIVE_FINGERPRINT_OUTPUT = "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+TEST_ARCHIVE_FINGERPRINT_JOB_OUTPUT = (
+    "nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}"
+)
+TEST_ARCHIVE_FINGERPRINT_STEP_ID = "id: nextest-fingerprint"
+TEST_ARCHIVE_FINGERPRINT_OUTPUT_WRITE = 'echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"'
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
     "'.github/actions/setup-environment/action.yml'",
@@ -978,8 +1092,189 @@ def uncommented_text(lines: list[str]) -> str:
     return "\n".join(strip_comment(line) for line in lines)
 
 
+def normalize_script_text(text: str) -> str:
+    text = re.sub(r"\\\s*\n\s*", " ", text)
+    lines = [line.rstrip() for line in text.strip("\n").splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    indents = [len(line) - len(line.lstrip(" ")) for line in lines if line.strip()]
+    margin = min(indents) if indents else 0
+    normalized_lines = [line[margin:] if line.strip() else "" for line in lines]
+    return "\n".join(re.sub(r"(?<=\S) {2,}(?=\S)", " ", line) for line in normalized_lines)
+
+
+def block_run_body(block: list[str]) -> str:
+    for index, line in enumerate(block):
+        clean = strip_comment(line).rstrip()
+        match = YAML_RUN_LINE_RE.match(clean)
+        if match is None:
+            continue
+        scalar = match.group(2).strip()
+        if not scalar.startswith(("|", ">")):
+            return unquote_yaml_scalar(scalar)
+        run_indent = len(match.group(1))
+        body_lines: list[str] = []
+        for nested in block[index + 1 :]:
+            nested_clean = strip_comment(nested).rstrip()
+            if not nested_clean.strip():
+                body_lines.append("")
+                continue
+            indent = len(nested_clean) - len(nested_clean.lstrip(" "))
+            if indent <= run_indent:
+                break
+            body_lines.append(nested_clean)
+        return normalize_script_text("\n".join(body_lines))
+    return ""
+
+
+def block_run_body_matches(block: list[str], expected: str) -> bool:
+    return normalize_script_text(block_run_body(block)) == normalize_script_text(expected)
+
+
+def block_step_property_indent(block: list[str]) -> int | None:
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        match = re.match(
+            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?{YAML_KEY_PATTERN}\s*:\s*.*$",
+            clean,
+        )
+        if match is None:
+            return None
+        return len(match.group(1)) + 2
+    return None
+
+
+def block_top_level_items(block: list[str]) -> dict[str, str] | None:
+    property_indent = block_step_property_indent(block)
+    if property_indent is None:
+        return None
+    step_item_indent = property_indent - 2
+    items: dict[str, str] = {}
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        step_match = re.match(
+            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$",
+            clean,
+        )
+        if step_match is not None:
+            if len(step_match.group(1)) != step_item_indent:
+                continue
+            key = unquote_yaml_scalar(step_match.group(2))
+            value = step_match.group(3)
+        else:
+            indent = len(clean) - len(clean.lstrip(" "))
+            if indent != property_indent:
+                continue
+            item_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+            if item_match is None:
+                return None
+            key = unquote_yaml_scalar(item_match.group(1))
+            value = item_match.group(2)
+        if key in items:
+            return None
+        items[key] = unquote_yaml_scalar(value)
+    return items
+
+
+def block_nested_mapping_items(block: list[str], parent_key: str) -> dict[str, str] | None:
+    property_indent = block_step_property_indent(block)
+    if property_indent is None:
+        return None
+    parent_indent: int | None = None
+    item_indent: int | None = None
+    items: dict[str, str] = {}
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if parent_indent is None:
+            parent_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+            if (
+                parent_match is not None
+                and indent == property_indent
+                and unquote_yaml_scalar(parent_match.group(1)) == parent_key
+                and unquote_yaml_scalar(parent_match.group(2)) == ""
+            ):
+                parent_indent = indent
+            continue
+        if indent <= parent_indent:
+            break
+        if item_indent is None:
+            item_indent = indent
+        if indent != item_indent:
+            continue
+        item_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if item_match is None:
+            return None
+        key = unquote_yaml_scalar(item_match.group(1))
+        if key in items:
+            return None
+        items[key] = unquote_yaml_scalar(item_match.group(2))
+    return items
+
+
+def block_has_canonical_step_envelope(
+    block: list[str],
+    allowed_keys: frozenset[str],
+    required_scalars: dict[str, str],
+    nested_mappings: dict[str, dict[str, str]] | None = None,
+) -> bool:
+    items = block_top_level_items(block)
+    if items is None:
+        return False
+    actual_keys = set(items)
+    if actual_keys - set(allowed_keys):
+        return False
+    if not set(required_scalars).issubset(actual_keys):
+        return False
+    for key, expected in required_scalars.items():
+        if items.get(key) != expected:
+            return False
+    for parent_key, expected_items in (nested_mappings or {}).items():
+        actual_items = block_nested_mapping_items(block, parent_key)
+        if actual_items != expected_items:
+            return False
+    return True
+
+
 def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
     return any(pattern.match(strip_comment(line)) for line in lines)
+
+
+def job_if_value(job_lines: list[str]) -> str:
+    for index, line in enumerate(job_lines):
+        clean = strip_comment(line).rstrip()
+        if clean.strip() == "steps:":
+            return ""
+        match = re.match(r"^    if:\s*(?P<value>.*?)\s*$", clean)
+        if match is not None:
+            value = match.group("value")
+            for child in job_lines[index + 1 :]:
+                child_clean = strip_comment(child).rstrip()
+                if not child_clean.strip():
+                    continue
+                indent = len(child_clean) - len(child_clean.lstrip(" "))
+                if indent <= 4:
+                    break
+                return f"{value}\n{child_clean.strip()}"
+            return value
+    return ""
+
+
+def step_has_id(block: list[str], step_id: str) -> bool:
+    return any(re.match(rf"^\s+id:\s*{re.escape(step_id)}\s*$", strip_comment(line)) for line in block)
+
+
+def unique_step_with_id(job_lines: list[str], step_id: str) -> list[str] | None:
+    matches = [block for block in step_blocks(job_lines) if step_has_id(block, step_id)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def has_run_command(lines: list[str], command: str) -> bool:
@@ -1084,6 +1379,7 @@ def nextest_archive_key_identity(text: str) -> str | None:
 
 def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
     blocks = step_blocks(job_lines)
+    job_text = uncommented_text(job_lines)
     cache_blocks = [
         block
         for block in (
@@ -1092,16 +1388,22 @@ def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
         )
         if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
     ]
-    run_blocks = [
-        block
-        for block in blocks
+    run_block_indices = [
+        index
+        for index, block in enumerate(blocks)
         if TEST_ARCHIVE_FINGERPRINT_PATH in uncommented_text(block)
         and TEST_ARCHIVE_KEY_PREFIX in uncommented_text(block)
     ]
+    run_blocks = [blocks[index] for index in run_block_indices]
+    upload_block_indices = [
+        index
+        for index, block in enumerate(blocks)
+        if "actions/upload-artifact@" in uncommented_text(block)
+        and block_has_input(block, "path", TEST_ARCHIVE_FINGERPRINT_PATH)
+    ]
     upload_blocks = [
-        block
-        for block in action_blocks(job_lines, "actions/upload-artifact@")
-        if block_has_input(block, "path", TEST_ARCHIVE_FINGERPRINT_PATH)
+        blocks[index]
+        for index in upload_block_indices
     ]
     upload_names = [block_input_value(block, "name") or "" for block in upload_blocks]
 
@@ -1112,6 +1414,25 @@ def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
 
     run_text = "\n".join(uncommented_text(block) for block in run_blocks)
     names_text = "\n".join(upload_names)
+    if (
+        TEST_ARCHIVE_FINGERPRINT_JOB_OUTPUT not in job_text
+        or TEST_ARCHIVE_FINGERPRINT_STEP_ID not in run_text
+        or TEST_ARCHIVE_FINGERPRINT_OUTPUT_WRITE not in run_text
+    ):
+        return ["test-archive must expose secure nextest fingerprint output"]
+    if run_text.count("nextest_fingerprint=") != 1 or run_text.count("$GITHUB_OUTPUT") != 1:
+        return ["test-archive must expose exactly one secure nextest fingerprint output"]
+    repo_controlled_indices = [
+        index
+        for index, block in enumerate(blocks)
+        if "./.github/actions/setup-environment" in uncommented_text(block)
+        or 'just test-archive "$NEXTEST_ARCHIVE_PATH"' in uncommented_text(block)
+    ]
+    if repo_controlled_indices and (
+        min(run_block_indices) >= min(repo_controlled_indices)
+        or min(upload_block_indices) >= min(repo_controlled_indices)
+    ):
+        return ["test-archive must publish nextest fingerprint before repo-controlled steps"]
     if not all(fragment in run_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
         return ["test-archive fingerprint must include Rust and test graph inputs"]
     if not all(fragment in names_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
@@ -3119,7 +3440,44 @@ def persistent_shell_assignment_values(tokens: list[str]) -> tuple[dict[str, str
     assignments, assignment_index = shell_declaration_assignment_values_from_tokens(tokens)
     if assignments and assignment_index == len(tokens):
         return assignments, True
+    assignments, assignment_index = shell_array_assignment_values_from_tokens(tokens)
+    if assignments and assignment_index == len(tokens):
+        return assignments, True
     return {}, False
+
+
+def shell_array_assignment_values_from_tokens(tokens: list[str]) -> tuple[dict[str, str], int]:
+    assignments: dict[str, str] = {}
+    cursor = 0
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if not shell_assignment_word(token) or not token.endswith("="):
+            break
+        name, value = token.split("=", 1)
+        if value:
+            break
+        cursor += 1
+        if cursor >= len(tokens) or tokens[cursor] != "(":
+            break
+        cursor += 1
+        depth = 1
+        parts: list[str] = []
+        while cursor < len(tokens) and depth:
+            current = tokens[cursor]
+            if current == "(":
+                depth += 1
+                parts.append(current)
+            elif current == ")":
+                depth -= 1
+                if depth:
+                    parts.append(current)
+            else:
+                parts.append(current)
+            cursor += 1
+        if depth:
+            break
+        assignments[name] = " ".join(parts)
+    return assignments, cursor
 
 
 def shell_variable_reference_token(token: str) -> str | None:
@@ -3128,6 +3486,9 @@ def shell_variable_reference_token(token: str) -> str | None:
     if match:
         return match.group(1)
     match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", clean)
+    if match:
+        return match.group(1)
+    match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\[(?:@|\*)\]\}", clean)
     if match:
         return match.group(1)
     match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-?+=].*)\}", clean)
@@ -3505,6 +3866,9 @@ def tokens_have_repo_automation_raw_cargo(
     for payload in shell_command_substitution_payloads(tokens):
         if tokens_have_raw_cargo_launch(payload, variables=variables):
             return True
+    array_assignments, array_assignment_index = shell_array_assignment_values_from_tokens(tokens)
+    if array_assignments and array_assignment_index == len(tokens):
+        return array_assignment_values_have_cargo_executable(array_assignments)
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
         segment_variables = dict(variables)
@@ -3512,6 +3876,13 @@ def tokens_have_repo_automation_raw_cargo(
             if token in SHELL_COMMAND_BOUNDARIES:
                 assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
                 if is_persistent_assignment:
+                    array_assignments, array_assignment_index = shell_array_assignment_values_from_tokens(segment)
+                    if (
+                        array_assignments
+                        and array_assignment_index == len(segment)
+                        and array_assignment_values_have_cargo_executable(array_assignments)
+                    ):
+                        return True
                     segment_variables.update(assignments)
                     segment = []
                     continue
@@ -3524,6 +3895,49 @@ def tokens_have_repo_automation_raw_cargo(
     if tokens_are_rust_version_probe(tokens):
         return False
     return tokens_have_raw_cargo_launch(tokens, variables=variables)
+
+
+def tokens_are_shell_array_assignment(tokens: list[str]) -> bool:
+    assignments, assignment_index = shell_array_assignment_values_from_tokens(tokens)
+    return bool(assignments) and assignment_index == len(tokens)
+
+
+def array_assignment_values_have_cargo_executable(assignments: dict[str, str]) -> bool:
+    return any(tokens_have_cargo_executable_launch(command_tokens(value)) for value in assignments.values())
+
+
+def tokens_have_cargo_executable_launch(tokens: list[str], *, depth: int = 0) -> bool:
+    if depth > 6:
+        return True
+    tokens = strip_shell_redirections(tokens)
+    if not tokens:
+        return False
+    if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
+        segment: list[str] = []
+        for token in tokens:
+            if token in SHELL_COMMAND_BOUNDARIES:
+                if tokens_have_cargo_executable_launch(segment, depth=depth + 1):
+                    return True
+                segment = []
+                continue
+            segment.append(token)
+        return tokens_have_cargo_executable_launch(segment, depth=depth + 1)
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index:
+        return assignment_index < len(tokens) and tokens_have_cargo_executable_launch(
+            tokens[assignment_index:],
+            depth=depth + 1,
+        )
+    executable = pathlib.Path(tokens[0]).name
+    if executable in RECURSIVE_WRAPPER_EXECUTABLES:
+        inner = wrapper_inner_tokens(tokens)
+        if inner is not None:
+            return tokens_have_cargo_executable_launch(inner, depth=depth + 1)
+    if executable == "env":
+        inner = env_inner_tokens(tokens)
+        if inner is not None:
+            return tokens_have_cargo_executable_launch(inner, depth=depth + 1)
+    return executable == "cargo"
 
 
 def is_managed_just_recipe_guard(recipe: str, stripped_line: str) -> bool:
@@ -6772,24 +7186,107 @@ def same_sha_job_runs_resolver(job_lines: list[str]) -> bool:
     return "id: evidence" in text and "python3 scripts/find_same_sha_main_evidence.py" in text
 
 
+def fingerprint_reuse_job_has_outputs(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    required = (
+        "reuse_found: ${{ steps.reuse.outputs.reuse_found }}",
+        "source_run_id: ${{ steps.reuse.outputs.source_run_id }}",
+        "source_sha: ${{ steps.reuse.outputs.source_sha }}",
+        "source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}",
+        "reason: ${{ steps.reuse.outputs.reason }}",
+    )
+    return all(item in text for item in required)
+
+
+def fingerprint_reuse_job_uses_secure_current_fingerprint(job_lines: list[str]) -> bool:
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    if reuse_step is None:
+        return False
+    downloads_current_fingerprint = any(
+        block_has_input(block, "pattern", "nextest-archive-fingerprint-*")
+        for block in action_blocks(job_lines, "actions/download-artifact@")
+    )
+    return (
+        block_run_body_matches(reuse_step, NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN)
+        and not downloads_current_fingerprint
+    )
+
+
+def fingerprint_reuse_job_runs_resolver(job_lines: list[str]) -> bool:
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    if reuse_step is None:
+        return False
+    return block_run_body_matches(reuse_step, NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN)
+
+
+def fingerprint_reuse_resolver_is_canonical(job_lines: list[str]) -> bool:
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    return reuse_step is not None and block_run_body_matches(
+        reuse_step,
+        NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN,
+    )
+
+
+def fingerprint_reuse_resolver_envelope_is_canonical(job_lines: list[str]) -> bool:
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    return reuse_step is not None and block_has_canonical_step_envelope(
+        reuse_step,
+        NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_ALLOWED_KEYS,
+        NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_SCALARS,
+        {"env": NEXTEST_FINGERPRINT_REUSE_RESOLVER_ENV},
+    )
+
+
+def fingerprint_reuse_resolver_uses_bash(job_lines: list[str]) -> bool:
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    if reuse_step is None:
+        return False
+    text = uncommented_text(reuse_step)
+    return "id: reuse" in text and "shell: bash" in text
+
+
+def fingerprint_reuse_uses_canonical_job_if(job_lines: list[str]) -> bool:
+    return job_if_value(job_lines) == FINGERPRINT_REUSE_JOB_IF_VALUE
+
+
+def fingerprint_reuse_skips_main_branch(job_lines: list[str]) -> bool:
+    return MAIN_BRANCH_SKIP_EXPR in job_if_value(job_lines)
+
+
+def fingerprint_reuse_gates_on_detector_allowed(job_lines: list[str]) -> bool:
+    return FINGERPRINT_REUSE_ALLOWED_EXPR in job_if_value(job_lines)
+
+
+def fingerprint_reuse_gates_on_pull_request(job_lines: list[str]) -> bool:
+    return FINGERPRINT_REUSE_PR_EVENT_EXPR in job_if_value(job_lines)
+
+
+def test_shards_skip_on_fingerprint_reuse(job_lines: list[str]) -> bool:
+    return NEXTEST_REUSE_MISS_EXPR in uncommented_text(job_lines)
+
+
+def test_accepts_fingerprint_reuse(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    required = (
+        'reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"',
+        'if [[ "$reuse_found" == "true" ]]; then',
+        '"${{ needs.nextest-fingerprint-reuse.result }}" != "success"',
+        "nextest fingerprint reuse did not expose source_run_id",
+        "nextest fingerprint reuse did not expose source_sha",
+        "nextest fingerprint reuse did not expose source_artifact_id",
+        "nextest shards reused from run",
+    )
+    return all(item in text for item in required)
+
+
 def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "python3 scripts/ci_provenance.py emit-full-ci" in text and "--output ci-provenance.json" in text
 
 
-def ci_provenance_emit_fingerprint_download_blocks(job_lines: list[str]) -> list[list[str]]:
-    return [
-        block
-        for block in action_blocks(job_lines, "actions/download-artifact@")
-        if block_has_input(block, "pattern", "nextest-archive-fingerprint-*")
-    ]
-
-
 def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]) -> list[str]:
     text = uncommented_text(job_lines)
     errors = []
-    fingerprint_path = ".ci-provenance/fingerprint/cache-key.txt"
-    fingerprint_download_path = str(pathlib.PurePosixPath(fingerprint_path).parent)
     for need in needs:
         if need == "build":
             expected = "--conditional-job build.result=${{ needs.build.result }}"
@@ -6802,13 +7299,10 @@ def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]
     if "--conditional-job build.required=${{ needs.detector.outputs.build_required }}" not in text:
         errors.append("ci-provenance-emit must pass build.required from needs.detector.outputs.build_required")
     if (
-        f"--nextest-fingerprint-path {fingerprint_path}" not in text
-        or not any(
-            block_has_input(block, "path", fingerprint_download_path)
-            for block in ci_provenance_emit_fingerprint_download_blocks(job_lines)
-        )
+        f'--nextest-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"' not in text
+        or "--nextest-fingerprint-path" in text
     ):
-        errors.append("ci-provenance-emit fingerprint download path must match emitter argument")
+        errors.append("ci-provenance-emit must use secure nextest fingerprint output")
     return errors
 
 
@@ -6831,14 +7325,11 @@ def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) 
     return errors
 
 
-def ci_provenance_emit_downloads_fingerprint(job_lines: list[str]) -> bool:
+def ci_provenance_emit_records_secure_fingerprint(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
-    fingerprint_path = ".ci-provenance/fingerprint/cache-key.txt"
-    fingerprint_download_path = str(pathlib.PurePosixPath(fingerprint_path).parent)
-    return f"--nextest-fingerprint-path {fingerprint_path}" in text and any(
-        block_has_input(block, "path", fingerprint_download_path)
-        and block_has_scalar(block, "continue-on-error", "true")
-        for block in ci_provenance_emit_fingerprint_download_blocks(job_lines)
+    return (
+        f'--nextest-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"' in text
+        and "--nextest-fingerprint-path" not in text
     )
 
 
@@ -7027,6 +7518,34 @@ def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
     return errors
 
 
+def gate_checks_nextest_fingerprint_reuse(gate_text: str) -> list[str]:
+    errors: list[str] = []
+    if 'reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"' not in gate_text:
+        errors.append("gate must read nextest fingerprint reuse output")
+    reuse_chain = if_chain_bodies(gate_standard_body(gate_text), '"$reuse_found" == "true"')
+    if reuse_chain is None:
+        errors.append("gate must branch on nextest fingerprint reuse")
+        return errors
+    reuse_body = reuse_chain.get(("if", '"$reuse_found" == "true"'), "")
+    if normalize_script_text(reuse_body) != normalize_script_text(GATE_NEXTEST_FINGERPRINT_REUSE_BRANCH):
+        errors.append("gate must use canonical nextest fingerprint reuse branch")
+    if not branch_exits_reachable(
+        reuse_body,
+        "if",
+        '"${{ needs.nextest-fingerprint-reuse.result }}" != "success"',
+    ):
+        errors.append("gate must require nextest fingerprint reuse resolver success")
+    if not branch_exits_reachable(
+        reuse_body,
+        "if",
+        '"${{ needs.ci-provenance-emit.result }}" != "skipped"',
+    ):
+        errors.append("gate must require ci-provenance-emit skipped on nextest fingerprint reuse")
+    if "nextest shards reused from run" not in reuse_body:
+        errors.append("gate must log nextest fingerprint reuse provenance")
+    return errors
+
+
 def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
     errors: list[str] = []
     if GATE_DEFERRED_NAME_EXPRESSION not in gate_text:
@@ -7095,6 +7614,99 @@ def detector_forces_build_on_workflow_dispatch(job_lines: list[str]) -> bool:
         '"${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch"',
     )
     return branch is not None and 'echo "value=true" >> "$GITHUB_OUTPUT"' in branch
+
+
+def git_diff_pathspecs(block_text: str) -> tuple[str, ...] | None:
+    normalized = re.sub(r"\\\s*\n\s*", " ", block_text)
+    matches = [
+        tuple(token for token in command_tokens(match.group("paths")) if token)
+        for match in re.finditer(
+            r"git\s+diff\s+--name-only\b.*?\s--\s(?P<paths>.*?)\)",
+            normalized,
+            re.DOTALL,
+        )
+    ]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def detector_maps_changed_to_any_changed(block_text: str) -> bool:
+    chain = if_chain_bodies(block_text, '-n "$changed"')
+    if chain is None:
+        return False
+    true_write = 'echo "any_changed=true" >> "$GITHUB_OUTPUT"'
+    false_write = 'echo "any_changed=false" >> "$GITHUB_OUTPUT"'
+    return (
+        true_write in chain.get(("if", '-n "$changed"'), "")
+        and false_write in chain.get(("else", ""), "")
+        and block_text.count(true_write) == 1
+        and block_text.count(false_write) == 1
+    )
+
+
+def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
+    errors: list[str] = []
+    text = uncommented_text(job_lines)
+    fingerprint_inputs_text = ""
+    allowance_text = ""
+    fingerprint_inputs_block = unique_step_with_id(job_lines, "fingerprint_reuse_inputs_changed")
+    allowance_block = unique_step_with_id(job_lines, "fingerprint_reuse_allowed")
+    for block in step_blocks(job_lines):
+        block_text = uncommented_text(block)
+        if step_has_id(block, "fingerprint_reuse_inputs_changed"):
+            fingerprint_inputs_text = block_text
+        if step_has_id(block, "fingerprint_reuse_allowed"):
+            allowance_text = block_text
+    if FINGERPRINT_REUSE_ALLOWED_OUTPUT not in text:
+        errors.append("detector must expose fingerprint_reuse_allowed")
+    if fingerprint_inputs_block is None or not block_has_canonical_step_envelope(
+        fingerprint_inputs_block,
+        FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ALLOWED_KEYS,
+        FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_SCALARS,
+    ):
+        errors.append("detector fingerprint-reuse governance step must match canonical envelope")
+    if fingerprint_inputs_block is None or not block_run_body_matches(
+        fingerprint_inputs_block,
+        FINGERPRINT_REUSE_INPUTS_CHANGED_RUN,
+    ):
+        errors.append("detector fingerprint-reuse governance step must match canonical script")
+    pathspecs = git_diff_pathspecs(fingerprint_inputs_text) if fingerprint_inputs_text else None
+    if pathspecs != FINGERPRINT_REUSE_GOVERNANCE_PATHS:
+        errors.append("detector must detect fingerprint-reuse governance changes")
+    if fingerprint_inputs_text and not detector_maps_changed_to_any_changed(fingerprint_inputs_text):
+        errors.append("detector must map fingerprint-reuse governance changes to any_changed=true")
+    if allowance_block is None or not block_has_canonical_step_envelope(
+        allowance_block,
+        FINGERPRINT_REUSE_ALLOWED_STEP_ALLOWED_KEYS,
+        FINGERPRINT_REUSE_ALLOWED_STEP_SCALARS,
+    ):
+        errors.append("detector fingerprint-reuse allowance step must match canonical envelope")
+    if allowance_block is None or not block_run_body_matches(
+        allowance_block,
+        FINGERPRINT_REUSE_ALLOWED_RUN,
+    ):
+        errors.append("detector fingerprint-reuse allowance step must match canonical script")
+    allowance_chain = if_chain_bodies(allowance_text, '"${{ github.event_name }}" != "pull_request"')
+    if allowance_chain is None:
+        errors.append("detector must deny fingerprint reuse outside pull_request")
+    elif (
+        'echo "value=false" >> "$GITHUB_OUTPUT"'
+        not in allowance_chain.get(("if", '"${{ github.event_name }}" != "pull_request"'), "")
+        or 'echo "value=false" >> "$GITHUB_OUTPUT"'
+        not in allowance_chain.get(
+            (
+                "elif",
+                '"${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true"',
+            ),
+            "",
+        )
+        or 'echo "value=true" >> "$GITHUB_OUTPUT"' not in allowance_chain.get(("else", ""), "")
+        or allowance_text.count('echo "value=false" >> "$GITHUB_OUTPUT"') != 2
+        or allowance_text.count('echo "value=true" >> "$GITHUB_OUTPUT"') != 1
+    ):
+        errors.append("detector must determine fingerprint_reuse_allowed")
+    return errors
 
 
 def deploy_verifies_downloaded_artifact_checksum(job_lines: list[str]) -> bool:
@@ -7167,18 +7779,25 @@ def shell_line_exit_codes(line: str) -> list[str | None]:
     tokens = command_tokens(line)
     cursor = 0
     at_command_start = True
-    previous_boundary: str | None = None
     while cursor < len(tokens):
         token = tokens[cursor]
         if token in SHELL_COMMAND_BOUNDARIES:
             at_command_start = True
-            previous_boundary = token
             cursor += 1
             continue
-        if at_command_start and pathlib.Path(token).name == "exit":
-            if previous_boundary != "||":
-                code = tokens[cursor + 1] if cursor + 1 < len(tokens) and re.fullmatch(r"[0-9]+", tokens[cursor + 1]) else None
-                codes.append(code)
+        token_name = pathlib.Path(token).name
+        if at_command_start and token_name == "exit":
+            code = tokens[cursor + 1] if cursor + 1 < len(tokens) and re.fullmatch(r"[0-9]+", tokens[cursor + 1]) else None
+            codes.append(code)
+        elif (
+            at_command_start
+            and token_name in {"command", "eval"}
+            and cursor + 1 < len(tokens)
+            and pathlib.Path(tokens[cursor + 1]).name == "exit"
+        ):
+            code_index = cursor + 2
+            code = tokens[code_index] if code_index < len(tokens) and re.fullmatch(r"[0-9]+", tokens[code_index]) else None
+            codes.append(code)
         at_command_start = False
         cursor += 1
     return codes
@@ -7187,11 +7806,19 @@ def shell_line_exit_codes(line: str) -> list[str | None]:
 def shell_line_has_exit_command(line: str) -> bool:
     tokens = command_tokens(line)
     at_command_start = True
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if token in SHELL_COMMAND_BOUNDARIES:
             at_command_start = True
             continue
-        if at_command_start and pathlib.Path(token).name == "exit":
+        token_name = pathlib.Path(token).name
+        if at_command_start and token_name == "exit":
+            return True
+        if (
+            at_command_start
+            and token_name in {"command", "eval"}
+            and index + 1 < len(tokens)
+            and pathlib.Path(tokens[index + 1]).name == "exit"
+        ):
             return True
         at_command_start = False
     return False
@@ -7377,6 +8004,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.append("fmt-check must not need detector")
     if "detector" in jobs and not detector_forces_build_on_workflow_dispatch(jobs["detector"]):
         errors.append("detector must force build_required=true for workflow_dispatch full CI")
+    if "detector" in jobs:
+        errors.extend(detector_fingerprint_reuse_errors(jobs["detector"]))
 
     if "ci-policy" in jobs:
         errors.extend(ci_policy_job_errors(jobs["ci-policy"]))
@@ -7410,6 +8039,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must not need source-fence")
     if "test-shards" in jobs and "test-archive" not in extract_needs(jobs["test-shards"]):
         errors.append("test-shards needs test-archive")
+    if "test-shards" in jobs and "nextest-fingerprint-reuse" not in extract_needs(jobs["test-shards"]):
+        errors.append("test-shards needs nextest-fingerprint-reuse")
 
     if "clippy" in jobs:
         clippy_text = uncommented_text(jobs["clippy"])
@@ -7484,12 +8115,48 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must build through just test-archive")
         errors.extend(test_archive_fingerprint_errors(archive_lines))
 
+    if "nextest-fingerprint-reuse" in jobs:
+        reuse_lines = jobs["nextest-fingerprint-reuse"]
+        reuse_needs = extract_needs(reuse_lines)
+        if "ci-policy" not in reuse_needs:
+            errors.append("nextest-fingerprint-reuse needs ci-policy")
+        if "detector" not in reuse_needs:
+            errors.append("nextest-fingerprint-reuse needs detector")
+        if "test-archive" not in reuse_needs:
+            errors.append("nextest-fingerprint-reuse needs test-archive")
+        if not job_if_uses_always(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must use always()")
+        if not job_gates_on_full_ci_required(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must gate on full_ci_required")
+        if not fingerprint_reuse_uses_canonical_job_if(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must use the canonical job if")
+        if not fingerprint_reuse_gates_on_pull_request(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must be PR-only")
+        if not fingerprint_reuse_skips_main_branch(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must skip main branch")
+        if not fingerprint_reuse_gates_on_detector_allowed(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed")
+        if not fingerprint_reuse_job_has_outputs(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must expose reuse provenance outputs")
+        if not fingerprint_reuse_resolver_envelope_is_canonical(reuse_lines):
+            errors.append("nextest-fingerprint-reuse resolver step must match canonical envelope")
+        if not fingerprint_reuse_resolver_is_canonical(reuse_lines):
+            errors.append("nextest-fingerprint-reuse resolver step must match canonical script")
+        if not fingerprint_reuse_job_uses_secure_current_fingerprint(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must use secure current nextest fingerprint output")
+        if not fingerprint_reuse_job_runs_resolver(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must run ci_provenance.py resolve-fingerprint")
+        if not fingerprint_reuse_resolver_uses_bash(reuse_lines):
+            errors.append("nextest-fingerprint-reuse resolver must use bash")
+
     if "test-shards" in jobs:
         test_shards_needs = extract_needs(jobs["test-shards"])
         if "ci-policy" not in test_shards_needs:
             errors.append("test-shards needs ci-policy")
         if not job_gates_on_full_ci_required(jobs["test-shards"]):
             errors.append("test-shards must gate on full_ci_required")
+        if not test_shards_skip_on_fingerprint_reuse(jobs["test-shards"]):
+            errors.append("test-shards must skip on validated nextest fingerprint reuse")
         test_lines = jobs["test-shards"]
         test_text = uncommented_text(test_lines)
         if not has_line_matching(test_lines, TEST_FAIL_FAST_FALSE_RE):
@@ -7525,8 +8192,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test must gate on full_ci_required")
         if "test-shards" not in test_needs:
             errors.append("test needs test-shards")
+        if "test-archive" not in test_needs:
+            errors.append("test needs test-archive")
+        if "nextest-fingerprint-reuse" not in test_needs:
+            errors.append("test needs nextest-fingerprint-reuse")
         if not gate_checks_lane_success(test_text, "test-shards"):
             errors.append("test must check needs.test-shards.result")
+        if not test_accepts_fingerprint_reuse(jobs["test"]):
+            errors.append("test must accept validated nextest fingerprint reuse")
         if not job_if_uses_always(jobs["test"]):
             errors.append("test must use always()")
 
@@ -7549,6 +8222,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         for job in (*CI_PROVENANCE_REQUIRED_JOBS, "build"):
             if job not in emit_needs:
                 errors.append(f"ci-provenance-emit needs {job}")
+        if "nextest-fingerprint-reuse" not in emit_needs:
+            errors.append("ci-provenance-emit needs nextest-fingerprint-reuse")
         if "gate" in emit_needs:
             errors.append("ci-provenance-emit must not need gate")
         if not job_if_uses_always(emit_lines):
@@ -7557,6 +8232,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("ci-provenance-emit must skip tag reuse")
         if not job_gates_on_full_ci_required(emit_lines):
             errors.append("ci-provenance-emit must gate on full_ci_required")
+        if NEXTEST_REUSE_MISS_EXPR not in uncommented_text(emit_lines):
+            errors.append("ci-provenance-emit must skip validated nextest fingerprint reuse")
         if not ci_provenance_emit_runs_emitter(emit_lines):
             errors.append("ci-provenance-emit must run provenance emitter")
         errors.extend(ci_provenance_emit_checks_needs(emit_lines, (*CI_PROVENANCE_REQUIRED_JOBS, "build")))
@@ -7566,7 +8243,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 configured_ci_provenance_retention_days(),
             )
         )
-        if not ci_provenance_emit_downloads_fingerprint(emit_lines):
+        if not ci_provenance_emit_records_secure_fingerprint(emit_lines):
             errors.append("ci-provenance-emit must record nextest fingerprint when present")
 
     if "same-sha-main-evidence" in jobs:
@@ -7597,8 +8274,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"gate must check needs.{job}.result")
         if "same-sha-main-evidence" not in gate_needs:
             errors.append("gate needs same-sha-main-evidence")
+        if "nextest-fingerprint-reuse" not in gate_needs:
+            errors.append("gate needs nextest-fingerprint-reuse")
         errors.extend(gate_policy_truth_table_errors(gate_text))
         errors.extend(gate_checks_same_sha_reuse(gate_text))
+        errors.extend(gate_checks_nextest_fingerprint_reuse(gate_text))
         if not has_line_matching(jobs["gate"], GATE_IF_RE):
             errors.append("gate must use always()")
         if "nextest_fingerprint" in gate_text:

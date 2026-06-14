@@ -22,7 +22,13 @@ import zipfile
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
-SUPPORTED_MODES = {"ci-policy", "emit-full-ci", "resolve-exact-sha", "validate-record"}
+SUPPORTED_MODES = {
+    "ci-policy",
+    "emit-full-ci",
+    "resolve-exact-sha",
+    "resolve-fingerprint",
+    "validate-record",
+}
 POLICY_VALUES = {"full", "defer", "tag_reuse"}
 POLICY_ROWS = (
     "draft_pr_synchronize",
@@ -38,6 +44,14 @@ POLICY_ROWS = (
 )
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+NEXTEST_FINGERPRINT_RE = re.compile(
+    r"^nextest-archive-v(?P<schema>[1-9][0-9]*)-"
+    r"(?P<os>[A-Za-z0-9_.-]+)-"
+    r"(?P<arch>[A-Za-z0-9_.-]+)-"
+    r"(?P<profile>[A-Za-z0-9_.-]+)-profile-shards-"
+    r"(?P<shards>[1-9][0-9]*)-"
+    r"(?P<digest>[0-9a-f]{64})$"
+)
 GITHUB_API_HEADERS = {
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
@@ -101,6 +115,15 @@ class ResolvedEvidence:
     run: dict[str, object]
     artifact: dict[str, object]
     record: dict[str, object]
+
+
+@dataclasses.dataclass(frozen=True)
+class FingerprintReuseResolution:
+    reuse_found: bool
+    source_run_id: str
+    source_sha: str
+    source_artifact_id: str
+    reason: str
 
 
 def require_table(parent: dict[str, object], key: str, prefix: str) -> dict[str, object]:
@@ -744,6 +767,28 @@ def run_matches_exact_sha(
     )
 
 
+def run_matches_fingerprint_reuse(
+    run: dict[str, object],
+    config: ProvenanceConfig,
+    current_run_id: int | str | None,
+) -> bool:
+    if current_run_id is not None and as_text(run.get("id")) == as_text(current_run_id):
+        return False
+    return (
+        as_text(run.get("name")) == config.workflow_name
+        and as_text(run.get("path")) == config.workflow_path
+        and as_text(run.get("event")) == config.deploy_source_event
+        and as_text(run.get("head_branch")) == config.deploy_source_branch
+        and as_text(run.get("status")) == "completed"
+        and as_text(run.get("conclusion")) == "success"
+    )
+
+
+def workflow_runs_path(config: ProvenanceConfig) -> str:
+    workflow_file = pathlib.PurePosixPath(config.workflow_path).name
+    return f"actions/workflows/{workflow_file}/runs"
+
+
 def workflow_digest_from_github(
     repo: str,
     token: str,
@@ -755,20 +800,34 @@ def workflow_digest_from_github(
     return hashlib.sha256(api_bytes(repo, token, url)).hexdigest()
 
 
+def validate_artifact_run_metadata(
+    artifact: dict[str, object],
+    run: dict[str, object],
+    *,
+    label: str,
+) -> None:
+    run_id = as_text(run.get("id"))
+    if artifact.get("expired") is not False:
+        raise ProvenanceError(f"source run {run_id} {label} artifact expired or has unknown expiry state")
+    workflow_run = artifact.get("workflow_run")
+    if not isinstance(workflow_run, dict):
+        raise ProvenanceError(f"source run {run_id} {label} artifact workflow_run payload is malformed")
+    if as_text(workflow_run.get("id")) != run_id:
+        raise ProvenanceError(f"{label} artifact run ID does not match source run {run_id}")
+    if as_text(workflow_run.get("head_sha")) != as_text(run.get("head_sha")):
+        raise ProvenanceError(f"{label} artifact SHA does not match source run {run_id}")
+
+
 def validate_artifact_metadata(
     artifact: dict[str, object],
     run: dict[str, object],
     config: ProvenanceConfig,
     requested_sha: str,
 ) -> None:
-    run_id = as_text(run.get("id"))
-    if artifact.get("expired") is not False:
-        raise ProvenanceError(f"source run {run_id} provenance artifact expired or has unknown expiry state")
+    validate_artifact_run_metadata(artifact, run, label="provenance")
     workflow_run = artifact.get("workflow_run")
     if not isinstance(workflow_run, dict):
-        raise ProvenanceError(f"source run {run_id} artifact workflow_run payload is malformed")
-    if as_text(workflow_run.get("id")) != run_id:
-        raise ProvenanceError(f"artifact run ID does not match source run {run_id}")
+        raise ProvenanceError("provenance artifact workflow_run payload is malformed")
     if as_text(workflow_run.get("head_branch")) != config.deploy_source_branch:
         raise ProvenanceError(
             f"artifact branch is {as_text(workflow_run.get('head_branch'))}, expected {config.deploy_source_branch}"
@@ -777,6 +836,24 @@ def validate_artifact_metadata(
         raise ProvenanceError(
             f"artifact SHA {as_text(workflow_run.get('head_sha'))} does not match expected {requested_sha}"
         )
+
+
+def parse_nextest_fingerprint(value: object, *, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ProvenanceError(f"malformed {label} fingerprint")
+    if NEXTEST_FINGERPRINT_RE.fullmatch(value) is None:
+        raise ProvenanceError(f"malformed {label} fingerprint")
+    return value
+
+
+def fingerprint_from_artifact_name(artifact: dict[str, object], config: ProvenanceConfig) -> str | None:
+    name = artifact.get("name")
+    if not isinstance(name, str) or not name.startswith(config.fingerprint_artifact_prefix):
+        return None
+    suffix = name[len(config.fingerprint_artifact_prefix):]
+    if not suffix:
+        raise ProvenanceError("malformed source fingerprint artifact")
+    return parse_nextest_fingerprint(f"nextest-archive-{suffix}", label="source artifact")
 
 
 def validate_record_matches_run(record: dict[str, object], run: dict[str, object]) -> None:
@@ -1033,6 +1110,257 @@ def resolve_exact_sha_evidence(
     raise ProvenanceError(f"no valid provenance evidence found for exact SHA {requested_sha}")
 
 
+def no_fingerprint_reuse(reason: str) -> FingerprintReuseResolution:
+    return FingerprintReuseResolution(
+        reuse_found=False,
+        source_run_id="",
+        source_sha="",
+        source_artifact_id="",
+        reason=reason,
+    )
+
+
+def matching_artifacts(
+    artifacts: list[object],
+    *,
+    name: str | None = None,
+    prefix: str | None = None,
+) -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        artifact_name = artifact.get("name")
+        if not isinstance(artifact_name, str):
+            continue
+        if name is not None and artifact_name == name:
+            matches.append(artifact)
+        elif prefix is not None and artifact_name.startswith(prefix):
+            matches.append(artifact)
+    return matches
+
+
+def artifact_id_text(artifact: dict[str, object]) -> str:
+    return str(positive_int_value(artifact.get("id"), "artifact id"))
+
+
+def validate_fingerprint_candidate(
+    *,
+    repo: str,
+    token: str,
+    run: dict[str, object],
+    current_fingerprint: str,
+    config: ProvenanceConfig,
+    config_path: pathlib.Path,
+    api_json,
+    api_bytes,
+) -> FingerprintReuseResolution:
+    run_id = positive_int_value(run.get("id"), "workflow run id")
+    run_attempt = positive_int_value(run.get("run_attempt"), "workflow run run_attempt")
+    artifacts_payload = api_json(
+        repo,
+        token,
+        f"actions/runs/{run_id}/artifacts",
+        {"per_page": str(config.run_artifacts_per_page)},
+    )
+    artifacts = artifacts_payload.get("artifacts")
+    if not isinstance(artifacts, list):
+        return no_fingerprint_reuse(f"source run {run_id} artifacts payload is malformed")
+    try:
+        require_complete_first_page(
+            artifacts_payload,
+            artifacts,
+            per_page=config.run_artifacts_per_page,
+            label=f"source run {run_id} artifacts",
+        )
+    except ProvenanceError as exc:
+        return no_fingerprint_reuse(str(exc))
+
+    fingerprint_matches = matching_artifacts(artifacts, prefix=config.fingerprint_artifact_prefix)
+    if len(fingerprint_matches) != 1:
+        if not fingerprint_matches:
+            return no_fingerprint_reuse(f"source run {run_id} has no fingerprint artifact")
+        return no_fingerprint_reuse(f"source run {run_id} has ambiguous fingerprint artifacts")
+    fingerprint_artifact = fingerprint_matches[0]
+
+    expected_name = provenance_artifact_name(config, run_attempt)
+    provenance_matches = matching_artifacts(artifacts, name=expected_name)
+    if len(provenance_matches) != 1:
+        if not provenance_matches:
+            return no_fingerprint_reuse(f"source run {run_id} has no provenance artifact")
+        return no_fingerprint_reuse(f"source run {run_id} has ambiguous provenance artifacts")
+    provenance_artifact = provenance_matches[0]
+
+    try:
+        validate_artifact_run_metadata(fingerprint_artifact, run, label="fingerprint")
+        validate_artifact_run_metadata(provenance_artifact, run, label="provenance")
+        artifact_fingerprint = fingerprint_from_artifact_name(fingerprint_artifact, config)
+        archive_url = require_record_string(provenance_artifact, "archive_download_url")
+        record = artifact_record_from_zip(api_bytes(repo, token, archive_url))
+        if positive_int_value(record.get("run_attempt"), "record run_attempt") != run_attempt:
+            return no_fingerprint_reuse("record run_attempt does not match source run attempt")
+        tested_sha = require_record_sha(record, "tested_sha")
+        expected_workflow_digest = workflow_digest_from_github(
+            repo, token, config, tested_sha, api_bytes
+        )
+        validate_record_schema(
+            record,
+            config,
+            config_path=config_path,
+            expected_workflow_digest=expected_workflow_digest,
+        )
+        if require_record_digest(record, "workflow_digest") != workflow_file_digest(config):
+            return no_fingerprint_reuse(f"source run {run_id} workflow digest does not match current workflow")
+        validate_record_matches_run(record, run)
+        record_fingerprint = parse_nextest_fingerprint(
+            record.get("nextest_fingerprint"), label="source record"
+        )
+        if artifact_fingerprint != record_fingerprint:
+            return no_fingerprint_reuse(f"source run {run_id} fingerprint artifact does not match provenance")
+        if record_fingerprint != current_fingerprint:
+            return no_fingerprint_reuse(f"source run {run_id} fingerprint does not match current run")
+    except ProvenanceError as exc:
+        return no_fingerprint_reuse(str(exc))
+
+    jobs_payload = api_json(
+        repo,
+        token,
+        f"actions/runs/{run_id}/jobs",
+        {"per_page": str(config.run_jobs_per_page)},
+    )
+    jobs = jobs_payload.get("jobs")
+    if not isinstance(jobs, list):
+        return no_fingerprint_reuse(f"source run {run_id} jobs payload is malformed")
+    try:
+        require_complete_first_page(
+            jobs_payload,
+            jobs,
+            per_page=config.run_jobs_per_page,
+            label=f"source run {run_id} jobs",
+        )
+        validate_job_evidence(jobs_payload, config, record, deploy_reuse_requested=False)
+    except ProvenanceError as exc:
+        return no_fingerprint_reuse(str(exc))
+
+    return FingerprintReuseResolution(
+        reuse_found=True,
+        source_run_id=str(run_id),
+        source_sha=require_record_sha(record, "tested_sha"),
+        source_artifact_id=artifact_id_text(provenance_artifact),
+        reason=f"matched source run {run_id}",
+    )
+
+
+def resolve_fingerprint_reuse(
+    *,
+    repo: str,
+    token: str,
+    current_fingerprint: str | None,
+    current_run_id: int | str | None,
+    config: ProvenanceConfig,
+    config_path: pathlib.Path = DEFAULT_CONFIG,
+    api_json=github_api_json,
+    api_bytes=github_api_bytes,
+    now: datetime.datetime | None = None,
+) -> FingerprintReuseResolution:
+    if current_fingerprint is None:
+        return no_fingerprint_reuse("missing current fingerprint")
+    try:
+        parsed_current = parse_nextest_fingerprint(current_fingerprint, label="current")
+    except ProvenanceError:
+        return no_fingerprint_reuse("malformed current fingerprint")
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(seconds=config.max_lookback_age_seconds)
+    last_reason = "no prior successful CI run with matching fingerprint"
+    candidates: list[dict[str, object]] = []
+    page_limit_exhausted = False
+
+    try:
+        for page in range(1, config.max_lookback_pages + 1):
+            runs_payload = api_json(
+                repo,
+                token,
+                workflow_runs_path(config),
+                {
+                    "per_page": str(config.workflow_runs_per_page),
+                    "page": str(page),
+                    "sort": "created",
+                    "direction": "desc",
+                },
+            )
+            runs = runs_payload.get("workflow_runs")
+            if not isinstance(runs, list):
+                raise ProvenanceError("workflow runs payload is malformed")
+            if not runs:
+                break
+            page_has_fresh_run = False
+            page_has_old_run = False
+            for run in runs:
+                if not isinstance(run, dict):
+                    raise ProvenanceError("workflow runs payload is malformed")
+                created_at = run.get("created_at")
+                if not isinstance(created_at, str):
+                    raise ProvenanceError("workflow run created_at must be a string")
+                if parse_timestamp(created_at) < cutoff:
+                    page_has_old_run = True
+                    continue
+                page_has_fresh_run = True
+                if run_matches_fingerprint_reuse(run, config, current_run_id):
+                    candidates.append(run)
+            if page_has_old_run and not page_has_fresh_run:
+                last_reason = "lookback age limit exhausted before reusable fingerprint evidence was found"
+                break
+            if len(runs) < config.workflow_runs_per_page:
+                break
+        else:
+            page_limit_exhausted = True
+    except ProvenanceError as exc:
+        return no_fingerprint_reuse(f"fingerprint reuse lookup failed: {exc}")
+
+    if page_limit_exhausted:
+        last_reason = "lookback page limit exhausted before reusable fingerprint evidence was found"
+
+    try:
+        candidates.sort(
+            key=lambda run: (
+                as_text(run.get("created_at")),
+                as_text(run.get("updated_at")),
+                positive_int_value(run.get("id"), "workflow run id"),
+            ),
+            reverse=True,
+        )
+        for run in candidates:
+            result = validate_fingerprint_candidate(
+                repo=repo,
+                token=token,
+                run=run,
+                current_fingerprint=parsed_current,
+                config=config,
+                config_path=config_path,
+                api_json=api_json,
+                api_bytes=api_bytes,
+            )
+            if result.reuse_found:
+                return result
+            last_reason = result.reason
+    except ProvenanceError as exc:
+        return no_fingerprint_reuse(f"fingerprint reuse lookup failed: {exc}")
+
+    return no_fingerprint_reuse(last_reason)
+
+
+def output_resolution_lines(result: FingerprintReuseResolution) -> str:
+    values = {
+        "reuse_found": str(result.reuse_found).lower(),
+        "source_run_id": result.source_run_id,
+        "source_sha": result.source_sha,
+        "source_artifact_id": result.source_artifact_id,
+        "reason": result.reason.replace("\n", " "),
+    }
+    return "".join(f"{key}={value}\n" for key, value in values.items())
+
+
 def require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
@@ -1095,13 +1423,6 @@ def parse_conditional_job_results(values: list[str], config: ProvenanceConfig) -
     return conditional_jobs
 
 
-def read_nextest_fingerprint(path: pathlib.Path | None) -> str | None:
-    if path is None or not path.is_file():
-        return None
-    value = path.read_text(encoding="utf-8").strip()
-    return value or None
-
-
 def pull_request_metadata_from_env(event_name: str) -> dict[str, object]:
     if event_name != "pull_request":
         return {"number": None, "base_sha": None}
@@ -1120,7 +1441,7 @@ def emit_full_ci_record(
     config_path: pathlib.Path,
     required_job_values: list[str],
     conditional_job_values: list[str],
-    nextest_fingerprint_path: pathlib.Path | None,
+    nextest_fingerprint: str | None,
     api_json=github_api_json,
 ) -> dict[str, object]:
     repo = require_env("GITHUB_REPOSITORY")
@@ -1139,6 +1460,9 @@ def emit_full_ci_record(
     if head_branch is not None and not isinstance(head_branch, str):
         raise ProvenanceError("current workflow run head_branch is malformed")
 
+    if nextest_fingerprint is not None:
+        nextest_fingerprint = parse_nextest_fingerprint(nextest_fingerprint, label="current")
+
     record = {
         "schema_version": config.schema_version,
         "kind": "full-ci",
@@ -1156,7 +1480,7 @@ def emit_full_ci_record(
         "pull_request": pull_request_metadata_from_env(event_name),
         "required_jobs": parse_required_job_results(required_job_values, config),
         "conditional_jobs": parse_conditional_job_results(conditional_job_values, config),
-        "nextest_fingerprint": read_nextest_fingerprint(nextest_fingerprint_path),
+        "nextest_fingerprint": nextest_fingerprint,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     validate_record_schema(record, config, config_path=config_path)
@@ -1175,7 +1499,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--output", type=pathlib.Path)
         parser.add_argument("--required-job", action="append", default=[])
         parser.add_argument("--conditional-job", action="append", default=[])
-        parser.add_argument("--nextest-fingerprint-path", type=pathlib.Path)
+        parser.add_argument("--nextest-fingerprint")
     if mode == "validate-record":
         parser.add_argument("--record", type=pathlib.Path, required=True)
     if mode == "resolve-exact-sha":
@@ -1183,6 +1507,11 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--token")
         parser.add_argument("--sha")
         parser.add_argument("--current-run-id")
+    if mode == "resolve-fingerprint":
+        parser.add_argument("--repo")
+        parser.add_argument("--token")
+        parser.add_argument("--current-run-id")
+        parser.add_argument("--current-fingerprint")
     return parser
 
 
@@ -1194,9 +1523,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Usage: ci_provenance.py <mode> [options]\nSupported modes: {modes}", file=sys.stderr)
         return 2
     mode, rest = argv[0], argv[1:]
-    if mode == "resolve-fingerprint":
-        print("ERROR: resolve-fingerprint is not supported in Slice 2", file=sys.stderr)
-        return 2
     if mode not in SUPPORTED_MODES:
         print(f"ERROR: unknown mode {mode!r}", file=sys.stderr)
         return 2
@@ -1224,7 +1550,7 @@ def main(argv: list[str] | None = None) -> int:
                 config_path=args.config,
                 required_job_values=args.required_job,
                 conditional_job_values=args.conditional_job,
-                nextest_fingerprint_path=args.nextest_fingerprint_path,
+                nextest_fingerprint=args.nextest_fingerprint,
             )
             encoded = json.dumps(record, sort_keys=True, indent=2) + "\n"
             if args.output is None:
@@ -1245,6 +1571,16 @@ def main(argv: list[str] | None = None) -> int:
                 current_run_id=args.current_run_id or os.environ.get("GITHUB_RUN_ID"),
             )
             print(json.dumps(evidence.record, sort_keys=True))
+        elif mode == "resolve-fingerprint":
+            result = resolve_fingerprint_reuse(
+                repo=args.repo or require_env("GITHUB_REPOSITORY"),
+                token=args.token or require_env("GITHUB_TOKEN"),
+                current_fingerprint=args.current_fingerprint,
+                current_run_id=args.current_run_id or require_env("GITHUB_RUN_ID"),
+                config=config,
+                config_path=args.config,
+            )
+            print(output_resolution_lines(result), end="")
         return 0
     except ProvenanceError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

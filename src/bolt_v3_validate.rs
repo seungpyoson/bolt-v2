@@ -173,6 +173,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_risk_block(&root.risk));
     errors.extend(validate_order_rate_within_venue_egress(root));
     errors.extend(validate_persistence_block(&root.persistence));
+    errors.extend(validate_position_sizer_recovery_evidence(root));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_clients_block(&root.clients));
     errors.extend(validate_realized_volatility_surfaces(root));
@@ -1811,6 +1812,38 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
         &block.decision_evidence.order_intents_relative_path,
     ) {
         errors.push(message);
+    }
+    if block
+        .decision_evidence
+        .recovery_evidence_max_bytes
+        .is_some_and(|max_bytes| max_bytes == 0)
+    {
+        errors.push(
+            "persistence.decision_evidence.recovery_evidence_max_bytes must be a positive integer"
+                .to_string(),
+        );
+    }
+    errors
+}
+
+fn validate_position_sizer_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let enforced_submit_admission = root
+        .risk
+        .capital_pools
+        .as_ref()
+        .is_some_and(|pools| pools.iter().any(|pool| pool.enforce_submit_admission));
+    if enforced_submit_admission
+        && root
+            .persistence
+            .decision_evidence
+            .recovery_evidence_max_bytes
+            .is_none()
+    {
+        errors.push(
+            "persistence.decision_evidence.recovery_evidence_max_bytes must be configured when risk.capital_pools enables submit admission enforcement"
+                .to_string(),
+        );
     }
     errors
 }

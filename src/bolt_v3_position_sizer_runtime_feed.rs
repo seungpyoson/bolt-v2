@@ -16,6 +16,7 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::{
+    bolt_v3_observed_dedupe::prune_observed_dedupe_entries,
     bolt_v3_position_sizer::ProductSizingSnapshot,
     bolt_v3_sizing_state::{
         OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot, VenueSpendabilitySnapshot,
@@ -419,6 +420,10 @@ impl PositionSizerRuntimeFeed {
             && !fill.reconciliation
             && !trade_id.trim().is_empty()
             && fill_quantity > Decimal::ZERO
+            && self
+                .component_builder
+                .product_observed_at_ns()
+                .is_none_or(|product_observed_at_ns| observed_at_ns >= product_observed_at_ns)
             && self.record_new_position_fill_trade_id(fill_trade_key, observed_at_ns);
         if fill_changes_position || unknown_external_fill_changes_position {
             self.component_builder.record_fill_position_delta(
@@ -491,16 +496,6 @@ impl PositionSizerRuntimeFeed {
             .update_position_sizing_nt_components(components.clone());
         Some(components)
     }
-}
-
-fn prune_observed_dedupe_entries<K: Ord>(
-    entries: &mut BTreeMap<K, u64>,
-    now_ns: u64,
-    retention_ns: u64,
-) {
-    entries.retain(|_, observed_at_ns| {
-        *observed_at_ns > now_ns || now_ns - *observed_at_ns <= retention_ns
-    });
 }
 
 impl PositionSizerRuntimeComponentBuilder {
@@ -778,6 +773,12 @@ impl PositionSizerRuntimeComponentBuilder {
         snapshot.observed_at_ns = observed_at_ns;
     }
 
+    fn product_observed_at_ns(&self) -> Option<u64> {
+        match &self.product_state {
+            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => Some(snapshot.observed_at_ns),
+        }
+    }
+
     fn components(
         &self,
         _config: &PositionSizerRuntimeFeedConfig,
@@ -838,7 +839,8 @@ fn is_live_order_event(event: &OrderEventAny) -> bool {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{PositionFillTradeKey, prune_observed_dedupe_entries};
+    use super::PositionFillTradeKey;
+    use crate::bolt_v3_observed_dedupe::prune_observed_dedupe_entries;
 
     #[test]
     fn observed_dedupe_pruning_removes_only_entries_older_than_retention() {

@@ -994,6 +994,56 @@ fn unknown_external_fill_updates_product_position_once_without_reservation_lifec
 }
 
 #[test]
+fn old_external_fill_replay_after_dedupe_eviction_does_not_double_count_product_position() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "external-order-1",
+            "external-trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(3),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "external-order-2",
+            "external-trade-2",
+            1_700,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(2),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "external-order-1",
+            "external-trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(3),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("old external replay should leave newer product state intact");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.observed_at_ns, 1_700);
+    assert_eq!(product.yes_position, Decimal::new(5, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(5, 0));
+}
+
+#[test]
 fn external_fill_dedupe_keys_by_instrument_and_trade_id() {
     let (admission, mut feed) = committed_submit_runtime_feed();
 

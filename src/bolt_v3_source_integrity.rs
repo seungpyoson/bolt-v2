@@ -337,8 +337,10 @@ mod tests {
     // re-open a previously re-closed position-sizer gate.
     // Re-derived after adding bounded fill/order dedupe retention and checked
     // reservation liability arithmetic.
+    // Re-derived after uncommitted submit permits learned to roll back
+    // admission counters as well as position-sizer reservations.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "cd99a44637245b9d781114c6f4c296b60f878d9a839682d3981aa902665c1808";
+        "04eb7b31a15d19520b30d2c87ca4f6bfbc8efa2e158e5cb0c83b4939f36c5297";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

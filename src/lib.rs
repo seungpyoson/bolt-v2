@@ -24,6 +24,7 @@ pub mod bolt_v3_numeric;
 pub mod bolt_v3_operator_artifacts;
 pub mod bolt_v3_order_execution;
 pub mod bolt_v3_order_intent;
+mod bolt_v3_observed_dedupe;
 pub mod bolt_v3_position_contract;
 pub mod bolt_v3_position_sizer;
 pub mod bolt_v3_position_sizer_runtime_feed;

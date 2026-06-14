@@ -7,6 +7,8 @@
 
 **PR #507 Scope Note**: PR #507 implemented the pure loss-governor and positional-sizing core, plus the configured loss-governor gate in shared submit admission. It wires `[risk.loss_governor]` into `bolt_v3_live_node`, subscribes a configured NT portfolio/position/account runtime feed that publishes loss snapshots to submit admission, rejects entry/replace risk before NT submit on missing/stale/breached loss facts, leaves risk-reducing exits eligible under existing caps, records current decision-evidence halt fields, applies configured loss-halt actions through NT `RiskEngine::set_trading_state`, and exposes a live runtime manual-recovery method that can return NT risk state to `Active` only with fresh accepted loss evidence and bounded operator evidence. Active market exit is not part of this slice; any future active market-exit path must call NautilusTrader's owned `Trader::market_exit_strategy` primitive directly from a real live boundary. NT `Halted`/`Reducing` by itself does not prove the account is flat. The external operator clear-to-Active command surface remains later work.
 
+**Feed Silence Rule**: Total NT feed silence is enforced at the submit-admission layer by the same stale/missing `LossSnapshot` rejection used for stale events. This slice applies NT trading-state changes only when a loss-runtime event produces a halt-action evaluation; it does not run a separate timer that escalates `RiskEngine` state solely because no events arrived.
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Fresh Loss Snapshot Admission (Priority: P1)

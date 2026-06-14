@@ -5824,6 +5824,57 @@ fn rejects_enabled_loss_governor_zero_manual_recovery_evidence_path_limit() {
 }
 
 #[test]
+fn rejects_enabled_loss_governor_missing_threshold_fields() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for (field, line) in [
+        ("max_per_trade_loss", "max_per_trade_loss = \"2.50\"\n"),
+        ("max_daily_loss", "max_daily_loss = \"7.50\"\n"),
+        ("max_rolling_loss", "max_rolling_loss = \"10.00\"\n"),
+        ("max_drawdown", "max_drawdown = \"15.00\"\n"),
+    ] {
+        let mutated = replace_in_fixture_root(line, "");
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("missing loss threshold fixture should parse");
+        let messages = validate_root_only(&root);
+        let label = format!("risk.loss_governor.{field}");
+
+        assert!(
+            messages.iter().any(|message| {
+                message.contains(&label) && message.contains("must be configured when enabled")
+            }),
+            "enabled loss governor should require {label}: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_enabled_loss_governor_non_positive_thresholds() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for (field, original) in [
+        ("max_per_trade_loss", "max_per_trade_loss = \"2.50\""),
+        ("max_daily_loss", "max_daily_loss = \"7.50\""),
+        ("max_rolling_loss", "max_rolling_loss = \"10.00\""),
+        ("max_drawdown", "max_drawdown = \"15.00\""),
+    ] {
+        let replacement = format!("{field} = \"0\"");
+        let mutated = replace_in_fixture_root(original, &replacement);
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("zero loss threshold fixture should parse");
+        let messages = validate_root_only(&root);
+        let label = format!("risk.loss_governor.{field}");
+
+        assert!(
+            messages.iter().any(|message| {
+                message.contains(&label) && message.contains("positive decimal")
+            }),
+            "enabled loss governor should reject non-positive {label}: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn enforced_submit_admission_uses_nt_account_spendability_without_source_binding() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
@@ -5840,6 +5891,72 @@ fn enforced_submit_admission_uses_nt_account_spendability_without_source_binding
             .iter()
             .any(|message| message.contains("venue_spendability_source")),
         "enforced submit admission should use NT account spendability without requiring a source binding: {messages:#?}"
+    );
+}
+
+#[test]
+fn enforced_submit_admission_rejects_missing_recovery_evidence_max_bytes() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("enforced submit-admission fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("persistence.decision_evidence.recovery_evidence_max_bytes")
+                && message.contains("must be configured")
+        }),
+        "enforced submit admission should require bounded recovery evidence reads: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_zero_decision_evidence_recovery_evidence_max_bytes() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
+        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"\nrecovery_evidence_max_bytes = 0",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("zero recovery evidence cap fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("persistence.decision_evidence.recovery_evidence_max_bytes")
+                && message.contains("positive integer")
+        }),
+        "recovery evidence max bytes must reject zero: {messages:#?}"
+    );
+}
+
+#[test]
+fn enforced_submit_admission_accepts_positive_recovery_evidence_max_bytes() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    )
+    .replace(
+        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
+        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"\nrecovery_evidence_max_bytes = 1048576",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("positive recovery evidence cap fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        !messages.iter().any(|message| {
+            message.contains("persistence.decision_evidence.recovery_evidence_max_bytes")
+        }),
+        "positive recovery evidence cap should satisfy enforced submit admission: {messages:#?}"
     );
 }
 
@@ -5862,6 +5979,58 @@ fn enforced_submit_admission_rejects_zero_dedupe_retention() {
         }),
         "capital pool dedupe retention must reject zero: {messages:#?}"
     );
+}
+
+#[test]
+fn capital_pool_rejects_non_positive_thresholds() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for (section, label, original, replacement) in [
+        (
+            "[[risk.capital_pools]]",
+            "risk.capital_pools[polymarket-prediction-live].max_pool_liability",
+            "max_pool_liability = \"25.00\"",
+            "max_pool_liability = \"0\"",
+        ),
+        (
+            "[[risk.capital_pools]]",
+            "risk.capital_pools[polymarket-prediction-live].max_snapshot_age_ns",
+            "max_snapshot_age_ns = 5000000000",
+            "max_snapshot_age_ns = 0",
+        ),
+        (
+            "[risk.capital_pools.sizing_policy]",
+            "risk.capital_pools[polymarket-prediction-live].sizing_policy.min_remaining_pool_balance",
+            "min_remaining_pool_balance = \"1.00\"",
+            "min_remaining_pool_balance = \"0\"",
+        ),
+        (
+            "[risk.capital_pools.sizing_policy.fee_slippage]",
+            "risk.capital_pools[polymarket-prediction-live].sizing_policy.fee_slippage.max_fee_liability",
+            "max_fee_liability = \"0.10\"",
+            "max_fee_liability = \"0\"",
+        ),
+        (
+            "[risk.capital_pools.sizing_policy.fee_slippage]",
+            "risk.capital_pools[polymarket-prediction-live].sizing_policy.fee_slippage.max_slippage_liability",
+            "max_slippage_liability = \"0.20\"",
+            "max_slippage_liability = \"0\"",
+        ),
+    ] {
+        let mutated = replace_in_fixture_section(section, &[(original, replacement)]);
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("non-positive capital pool threshold fixture should parse");
+        let messages = validate_root_only(&root);
+
+        assert!(
+            messages.iter().any(|message| {
+                message.contains(label)
+                    && (message.contains("positive decimal")
+                        || message.contains("positive integer"))
+            }),
+            "capital pool threshold {label} should reject non-positive values: {messages:#?}"
+        );
+    }
 }
 
 #[test]

@@ -12,6 +12,7 @@ use crate::bolt_v3_loss_governor::{
     LossGovernorPolicy, LossHaltReason, LossSnapshot, evaluate_loss_admission,
 };
 use crate::bolt_v3_numeric::{is_positive_finite, notional_float_tolerance};
+use crate::bolt_v3_observed_dedupe::prune_observed_dedupe_entries;
 use crate::bolt_v3_position_sizer::{
     IntentLiquidity, IntentOrderKind, IntentSide, PositionSizingAdmissionGate,
     PositionSizingGateInputs, PositionSizingLifecycleAction, PositionSizingLifecycleKind,
@@ -1294,9 +1295,14 @@ impl BoltV3SubmitAdmissionState {
                         inner.live_kill_switch_forced_reduction_order_count += 1;
                     }
                 }
+                let counter_rollback = Some(BoltV3SubmitAdmissionCounterRollback {
+                    execution_client_id: request.execution_client_id.clone(),
+                    intent_kind: request.intent_kind,
+                });
                 Ok(BoltV3SubmitAdmissionPermit {
                     inner: self.inner.clone(),
                     rollback: evaluation.rollback,
+                    counter_rollback,
                     committed: false,
                 })
             }
@@ -1577,6 +1583,7 @@ impl BoltV3SubmitAdmissionState {
 pub struct BoltV3SubmitAdmissionPermit {
     inner: Arc<Mutex<BoltV3SubmitAdmissionInner>>,
     rollback: Option<BoltV3PositionSizerReservationRollback>,
+    counter_rollback: Option<BoltV3SubmitAdmissionCounterRollback>,
     committed: bool,
 }
 
@@ -1584,6 +1591,7 @@ impl BoltV3SubmitAdmissionPermit {
     pub fn commit_submitted(mut self) {
         self.committed = true;
         self.rollback = None;
+        self.counter_rollback = None;
     }
 }
 
@@ -1592,15 +1600,23 @@ impl Drop for BoltV3SubmitAdmissionPermit {
         if self.committed {
             return;
         }
-        let Some(rollback) = self.rollback.as_ref() else {
-            return;
-        };
         let mut inner = self
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        rollback_position_sizer_reservation(&mut inner, rollback);
+        if let Some(counter_rollback) = self.counter_rollback.as_ref() {
+            rollback_admission_counters(&mut inner, counter_rollback);
+        }
+        if let Some(rollback) = self.rollback.as_ref() {
+            rollback_position_sizer_reservation(&mut inner, rollback);
+        }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BoltV3SubmitAdmissionCounterRollback {
+    execution_client_id: String,
+    intent_kind: BoltV3SubmitIntentKind,
 }
 
 #[derive(Debug)]
@@ -2687,16 +2703,6 @@ fn checked_lifecycle_liability(
         .checked_add(additive_liability)
 }
 
-fn prune_observed_dedupe_entries<K: Ord>(
-    entries: &mut BTreeMap<K, u64>,
-    now_ns: u64,
-    retention_ns: u64,
-) {
-    entries.retain(|_, observed_at_ns| {
-        *observed_at_ns > now_ns || now_ns - *observed_at_ns <= retention_ns
-    });
-}
-
 fn refresh_position_sizer_state_from_components(
     position_sizer: &mut BoltV3SubmitPositionSizerState,
     mut components: BoltV3SubmitPositionSizingNtComponents,
@@ -2900,6 +2906,46 @@ fn rollback_position_sizer_reservation(
             .remove(&rollback.client_order_id);
     }
     refresh_position_sizer_reservation_snapshot(position_sizer, rollback.observed_at_ns);
+}
+
+fn rollback_admission_counters(
+    inner: &mut BoltV3SubmitAdmissionInner,
+    rollback: &BoltV3SubmitAdmissionCounterRollback,
+) {
+    inner.admitted_order_count = inner.admitted_order_count.saturating_sub(1);
+    let mut remove_execution_client = false;
+    if let Some(count) = inner
+        .admitted_order_count_by_execution_client
+        .get_mut(&rollback.execution_client_id)
+    {
+        *count = count.saturating_sub(1);
+        remove_execution_client = *count == 0;
+    }
+    if remove_execution_client {
+        inner
+            .admitted_order_count_by_execution_client
+            .remove(&rollback.execution_client_id);
+    }
+    match rollback.intent_kind {
+        BoltV3SubmitIntentKind::Entry => {
+            inner.admitted_entry_order_count =
+                inner.admitted_entry_order_count.saturating_sub(1);
+        }
+        BoltV3SubmitIntentKind::RiskReducingExit => {
+            inner.admitted_risk_reducing_exit_order_count = inner
+                .admitted_risk_reducing_exit_order_count
+                .saturating_sub(1);
+        }
+        BoltV3SubmitIntentKind::ReplaceSubmit => {
+            inner.admitted_replace_submit_order_count =
+                inner.admitted_replace_submit_order_count.saturating_sub(1);
+        }
+        BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
+            inner.live_kill_switch_forced_reduction_order_count = inner
+                .live_kill_switch_forced_reduction_order_count
+                .saturating_sub(1);
+        }
+    }
 }
 
 fn map_sized_rejection(

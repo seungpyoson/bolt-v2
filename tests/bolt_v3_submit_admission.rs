@@ -263,7 +263,9 @@ fn ungated_submit_admission_allows_production_submit() {
     let result = admission.admit(&request);
     let nt_submit_called = result.is_ok();
 
-    result.expect("ungated production admission should allow a valid submit");
+    result
+        .expect("ungated production admission should allow a valid submit")
+        .commit_submitted();
     assert!(nt_submit_called, "NT submit may be reached after admission");
     assert_eq!(admission.admitted_order_count(), 1);
 }
@@ -277,7 +279,8 @@ fn limited_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
 
     admission
         .admit(&request)
-        .expect("first within-cap submit should admit");
+        .expect("first within-cap submit should admit")
+        .commit_submitted();
     nt_submit_calls += 1;
 
     let second = admission.admit(&request);
@@ -292,6 +295,26 @@ fn limited_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
     ));
     assert_eq!(admission.admitted_order_count(), 1);
     assert_eq!(nt_submit_calls, 1, "second NT submit must not be reached");
+}
+
+#[test]
+fn dropped_uncommitted_permit_rolls_back_live_submit_count_slot() {
+    let admission = limited_admission(1, Decimal::new(1, 0));
+    let request = submit_request(Decimal::new(1, 0));
+
+    {
+        let _permit = admission
+            .admit(&request)
+            .expect("within-cap submit should reserve a count slot");
+        assert_eq!(admission.admitted_order_count(), 1);
+    }
+
+    assert_eq!(admission.admitted_order_count(), 0);
+    admission
+        .admit(&request)
+        .expect("dropped permit should release the count slot for retry")
+        .commit_submitted();
+    assert_eq!(admission.admitted_order_count(), 1);
 }
 
 #[test]
@@ -324,7 +347,8 @@ fn live_submit_approval_limits_bound_provider_submit_before_nt_submit() {
             "hyperliquid_perps",
             Decimal::new(25, 0),
         ))
-        .expect("first order within provider approval limits should admit");
+        .expect("first order within provider approval limits should admit")
+        .commit_submitted();
 
     let exhausted = admission.admit(&submit_request_for_execution_client(
         "hyperliquid_perps",
@@ -360,7 +384,8 @@ fn notional_equal_to_cap_is_admitted() {
 
     admission
         .admit(&submit_request(Decimal::new(1, 0)))
-        .expect("notional equal to cap should admit");
+        .expect("notional equal to cap should admit")
+        .commit_submitted();
 
     assert_eq!(admission.admitted_order_count(), 1);
 }
@@ -411,7 +436,8 @@ fn fee_inclusive_notional_admits_same_base_when_fee_is_zero() {
     );
     admission
         .admit(&submit_request(admission_notional))
-        .expect("within-cap zero-fee admission notional must be admitted");
+        .expect("within-cap zero-fee admission notional must be admitted")
+        .commit_submitted();
     assert_eq!(admission.admitted_order_count(), 1);
 }
 
@@ -764,7 +790,8 @@ fn strategy_build_context_carries_shared_submit_admission_handle() {
     context
         .submit_admission()
         .admit(&submit_request(Decimal::new(1, 0)))
-        .expect("shared context admission should allow ungated production submits");
+        .expect("shared context admission should allow ungated production submits")
+        .commit_submitted();
     assert_eq!(admission.admitted_order_count(), 1);
 }
 
@@ -1221,7 +1248,8 @@ fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("entry at the configured cap should consume the entry slot");
+        .expect("entry at the configured cap should consume the entry slot")
+        .commit_submitted();
 
     admission
         .admit(&submit_request_with_kind_and_exit_proof(
@@ -1229,7 +1257,8 @@ fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_
             BoltV3SubmitIntentKind::RiskReducingExit,
             Some(valid_risk_reducing_exit_proof()),
         ))
-        .expect("verified risk-reducing exit should admit within provider limits");
+        .expect("verified risk-reducing exit should admit within provider limits")
+        .commit_submitted();
     let outcomes: Vec<BoltV3AdmissionOutcome> = writer
         .admission_decisions()
         .into_iter()
@@ -1255,7 +1284,8 @@ fn unproven_risk_reducing_exit_fails_closed_before_notional_bypass() {
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("entry at the configured cap should admit");
+        .expect("entry at the configured cap should admit")
+        .commit_submitted();
 
     let exit = admission
         .admit(&submit_request_with_kind(
@@ -1392,7 +1422,8 @@ fn second_entry_exhausts_entry_slot_even_when_exit_slot_is_unused() {
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("first entry should admit");
+        .expect("first entry should admit")
+        .commit_submitted();
 
     let second_entry = admission
         .admit(&submit_request_with_kind(
@@ -1430,14 +1461,16 @@ fn second_verified_risk_reducing_exit_exhausts_exit_slot() {
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("entry should admit");
+        .expect("entry should admit")
+        .commit_submitted();
     admission
         .admit(&submit_request_with_kind_and_exit_proof(
             Decimal::new(264, 2),
             BoltV3SubmitIntentKind::RiskReducingExit,
             Some(valid_risk_reducing_exit_proof()),
         ))
-        .expect("first verified risk-reducing exit should admit");
+        .expect("first verified risk-reducing exit should admit")
+        .commit_submitted();
 
     let second_exit = admission
         .admit(&submit_request_with_kind_and_exit_proof(
@@ -1477,21 +1510,24 @@ fn replace_submit_uses_replace_slot_after_entry_and_exit_slots_are_consumed() {
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("entry should admit");
+        .expect("entry should admit")
+        .commit_submitted();
     admission
         .admit(&submit_request_with_kind_and_exit_proof(
             Decimal::new(264, 2),
             BoltV3SubmitIntentKind::RiskReducingExit,
             Some(valid_risk_reducing_exit_proof()),
         ))
-        .expect("risk-reducing exit should admit");
+        .expect("risk-reducing exit should admit")
+        .commit_submitted();
 
     admission
         .admit(&submit_request_with_kind(
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::ReplaceSubmit,
         ))
-        .expect("replace-submit must use the independent replace slot");
+        .expect("replace-submit must use the independent replace slot")
+        .commit_submitted();
 
     assert_eq!(admission.admitted_order_count(), 3);
 }
@@ -1569,7 +1605,8 @@ fn armed_kill_switch_preserves_existing_entry_admission_behavior() {
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("armed kill switch must preserve normal entry admission");
+        .expect("armed kill switch must preserve normal entry admission")
+        .commit_submitted();
 
     assert_eq!(admission.admitted_order_count(), 1);
 }
@@ -1631,14 +1668,16 @@ fn ordinary_risk_reducing_exit_while_latched_still_obeys_normal_count_cap() {
             Decimal::new(1, 1),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("entry submit should consume the only entry slot");
+        .expect("entry submit should consume the only entry slot")
+        .commit_submitted();
     admission
         .admit(&submit_request_with_kind_and_exit_proof(
             Decimal::new(264, 2),
             BoltV3SubmitIntentKind::RiskReducingExit,
             Some(valid_risk_reducing_exit_proof()),
         ))
-        .expect("verified exit should consume the only ordinary exit slot");
+        .expect("verified exit should consume the only ordinary exit slot")
+        .commit_submitted();
     admission.replace_kill_switch_state(halted_kill_switch_state());
 
     let exit = admission
@@ -1719,7 +1758,8 @@ fn valid_forced_reduction_while_latched_bypasses_normal_count_and_notional_caps(
             Decimal::new(1, 1),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("entry submit should consume the only normal count slot");
+        .expect("entry submit should consume the only normal count slot")
+        .commit_submitted();
     admission.replace_kill_switch_state(halted_kill_switch_state());
     admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
 
@@ -1728,7 +1768,8 @@ fn valid_forced_reduction_while_latched_bypasses_normal_count_and_notional_caps(
             Decimal::new(10, 0),
             forced_reduction_claim("halt-1"),
         ))
-        .expect("valid forced reduction should bypass normal count and notional caps");
+        .expect("valid forced reduction should bypass normal count and notional caps")
+        .commit_submitted();
 
     let decisions = writer.admission_decisions();
     assert_eq!(
@@ -1753,7 +1794,8 @@ fn forced_reduction_live_count_releases_terminal_order_before_next_admission() {
             Decimal::new(10, 0),
             forced_reduction_claim("halt-1"),
         ))
-        .expect("first live forced reduction should be admitted");
+        .expect("first live forced reduction should be admitted")
+        .commit_submitted();
 
     let capped = admission
         .admit(&forced_reduction_request(
@@ -1773,7 +1815,42 @@ fn forced_reduction_live_count_releases_terminal_order_before_next_admission() {
             Decimal::new(10, 0),
             forced_reduction_claim("halt-1"),
         ))
-        .expect("terminal forced reduction should release the live cap");
+        .expect("terminal forced reduction should release the live cap")
+        .commit_submitted();
+}
+
+#[test]
+fn dropped_uncommitted_forced_reduction_permit_rolls_back_live_cap() {
+    let admission = limited_admission(1, Decimal::new(1, 0));
+    admission.replace_kill_switch_state(halted_kill_switch_state());
+    admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
+
+    {
+        let _permit = admission
+            .admit(&forced_reduction_request(
+                Decimal::new(10, 0),
+                forced_reduction_claim("halt-1"),
+            ))
+            .expect("valid forced reduction should reserve the live cap");
+        let capped = admission
+            .admit(&forced_reduction_request(
+                Decimal::new(10, 0),
+                forced_reduction_claim("halt-1"),
+            ))
+            .expect_err("uncommitted forced reduction should hold the live cap");
+        assert!(matches!(
+            capped,
+            BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
+        ));
+    }
+
+    admission
+        .admit(&forced_reduction_request(
+            Decimal::new(10, 0),
+            forced_reduction_claim("halt-1"),
+        ))
+        .expect("dropped forced-reduction permit should release the live cap")
+        .commit_submitted();
 }
 
 #[test]
@@ -1794,7 +1871,8 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
 
     admission
         .admit(&submit_request(Decimal::new(1, 0)))
-        .expect("first valid submit should admit");
+        .expect("first valid submit should admit")
+        .commit_submitted();
     admission
         .admit(&submit_request(Decimal::ZERO))
         .expect_err("zero notional must reject");
@@ -1803,7 +1881,8 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
         .expect_err("over-cap notional must reject");
     admission
         .admit(&submit_request(Decimal::new(1, 0)))
-        .expect("first within-cap submit should admit");
+        .expect("first within-cap submit should admit")
+        .commit_submitted();
     admission
         .admit(&submit_request(Decimal::new(1, 0)))
         .expect_err("second submit must exhaust count cap");
@@ -1893,7 +1972,8 @@ fn admit_serializes_while_admission_evidence_is_in_flight() {
     first_handle
         .join()
         .expect("first admission thread should not panic")
-        .expect("first admission should pass");
+        .expect("first admission should pass")
+        .commit_submitted();
     let second = second_result_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("second admission should complete after first evidence write is released");

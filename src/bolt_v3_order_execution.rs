@@ -458,6 +458,7 @@ mod tests {
             admission.position_sizer_live_reserved_liability(),
             Some(Decimal::ZERO)
         );
+        assert_eq!(admission.admitted_order_count(), 0);
         assert!(!admission.position_sizer_has_live_reservation("O-19700101-000000-001-ROLLBACK-1"));
     }
 

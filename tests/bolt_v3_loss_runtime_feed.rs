@@ -53,7 +53,8 @@ fn nt_runtime_feed_publishes_fresh_portfolio_loss_snapshot_to_submit_admission()
 
     admission
         .admit_at(&submit_request(Decimal::new(1, 0)), 1_100)
-        .expect("fresh below-limit NT-derived snapshot should admit entry submit");
+        .expect("fresh below-limit NT-derived snapshot should admit entry submit")
+        .commit_submitted();
     assert_eq!(admission.admitted_order_count(), 1);
     assert_eq!(writer.admission_decisions().len(), 1);
 }
@@ -89,7 +90,8 @@ fn subscribed_nt_events_update_submit_admission_loss_snapshot() {
     assert_eq!(snapshot.observed_at_ns, 2_000);
     admission
         .admit_at(&submit_request(Decimal::new(1, 0)), 2_100)
-        .expect("subscribed NT-derived snapshot should admit entry submit");
+        .expect("subscribed NT-derived snapshot should admit entry submit")
+        .commit_submitted();
 }
 
 #[test]
@@ -127,7 +129,8 @@ fn subscribed_account_state_without_portfolio_snapshot_updates_loss_snapshot() {
     assert_eq!(snapshot.peak_equity, Some(Decimal::new(1_000, 0)));
     admission
         .admit_at(&submit_request(Decimal::new(1, 0)), 2_100)
-        .expect("account-state-derived loss snapshot should admit entry submit");
+        .expect("account-state-derived loss snapshot should admit entry submit")
+        .commit_submitted();
 }
 
 #[test]
@@ -463,7 +466,8 @@ fn position_opened_resets_completed_position_per_trade_pnl() {
     assert_eq!(opened.per_trade_pnl, Some(Decimal::ZERO));
     admission
         .admit_at(&submit_request(Decimal::new(1, 0)), 1_350)
-        .expect("fresh new position baseline should admit entry submit");
+        .expect("fresh new position baseline should admit entry submit")
+        .commit_submitted();
 }
 
 #[test]
@@ -497,7 +501,8 @@ fn account_state_heartbeat_refreshes_position_event_per_trade_timestamp() {
 
     admission
         .admit_at(&submit_request(Decimal::new(1, 0)), 2_200)
-        .expect("fresh below-limit position-event pnl should admit entry submit");
+        .expect("fresh below-limit position-event pnl should admit entry submit")
+        .commit_submitted();
 }
 
 #[test]
@@ -532,7 +537,8 @@ fn stale_peak_timestamp_does_not_make_fresh_portfolio_snapshot_stale() {
 
     admission
         .admit_at(&submit_request(Decimal::new(1, 0)), 3_050)
-        .expect("fresh below-limit drawdown snapshot should admit entry submit");
+        .expect("fresh below-limit drawdown snapshot should admit entry submit")
+        .commit_submitted();
 }
 
 #[test]

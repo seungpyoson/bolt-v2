@@ -46,7 +46,10 @@ pub struct KillSwitchRecoveryRecord {
 pub struct KillSwitchLossProtectionSnapshot {
     pub daily_bucket: Option<u64>,
     pub daily_realized_pnl: Decimal,
+    pub daily_realized_pnl_by_bucket: BTreeMap<u64, Decimal>,
     pub cumulative_position_pnl: BTreeMap<String, KillSwitchCumulativePositionPnlSnapshot>,
+    pub closed_position_pnl: BTreeMap<String, KillSwitchCumulativePositionPnlSnapshot>,
+    pub adjusted_position_pnl: BTreeMap<String, KillSwitchCumulativePositionPnlSnapshot>,
     pub pending_halt_actions: Option<KillSwitchPendingHaltActionsSnapshot>,
 }
 
@@ -78,7 +81,7 @@ impl KillSwitchStore {
 
     pub fn from_root_config_path(root_path: &Path, config: &KillSwitchConfigBlock) -> Self {
         Self::new(
-            resolve_root_relative_path(root_path, &config.store_path),
+            resolve_root_relative_path(root_path, &config.state_path),
             config.max_state_file_bytes,
         )
     }
@@ -272,7 +275,10 @@ struct PersistedKillSwitchState {
 struct PersistedKillSwitchLossProtectionSnapshot {
     daily_bucket: Option<u64>,
     daily_realized_pnl: String,
+    daily_realized_pnl_by_bucket: BTreeMap<u64, String>,
     cumulative_position_pnl: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
+    closed_position_pnl: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
+    adjusted_position_pnl: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_halt_actions: Option<KillSwitchPendingHaltActionsSnapshot>,
 }
@@ -288,8 +294,39 @@ impl From<&KillSwitchLossProtectionSnapshot> for PersistedKillSwitchLossProtecti
         Self {
             daily_bucket: snapshot.daily_bucket,
             daily_realized_pnl: snapshot.daily_realized_pnl.to_string(),
+            daily_realized_pnl_by_bucket: snapshot
+                .daily_realized_pnl_by_bucket
+                .iter()
+                .map(|(bucket, realized_pnl)| (*bucket, realized_pnl.to_string()))
+                .collect(),
             cumulative_position_pnl: snapshot
                 .cumulative_position_pnl
+                .iter()
+                .map(|(position_id, value)| {
+                    (
+                        position_id.clone(),
+                        PersistedCumulativePositionPnlSnapshot {
+                            realized_pnl: value.realized_pnl.to_string(),
+                            last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                        },
+                    )
+                })
+                .collect(),
+            closed_position_pnl: snapshot
+                .closed_position_pnl
+                .iter()
+                .map(|(position_id, value)| {
+                    (
+                        position_id.clone(),
+                        PersistedCumulativePositionPnlSnapshot {
+                            realized_pnl: value.realized_pnl.to_string(),
+                            last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                        },
+                    )
+                })
+                .collect(),
+            adjusted_position_pnl: snapshot
+                .adjusted_position_pnl
                 .iter()
                 .map(|(position_id, value)| {
                     (
@@ -310,6 +347,11 @@ impl TryFrom<PersistedKillSwitchLossProtectionSnapshot> for KillSwitchLossProtec
     type Error = ();
 
     fn try_from(snapshot: PersistedKillSwitchLossProtectionSnapshot) -> Result<Self, Self::Error> {
+        let mut daily_realized_pnl_by_bucket = BTreeMap::new();
+        for (bucket, realized_pnl) in snapshot.daily_realized_pnl_by_bucket {
+            daily_realized_pnl_by_bucket
+                .insert(bucket, Decimal::from_str(&realized_pnl).map_err(|_| ())?);
+        }
         let mut cumulative_position_pnl = BTreeMap::new();
         for (position_id, value) in snapshot.cumulative_position_pnl {
             cumulative_position_pnl.insert(
@@ -320,10 +362,33 @@ impl TryFrom<PersistedKillSwitchLossProtectionSnapshot> for KillSwitchLossProtec
                 },
             );
         }
+        let mut closed_position_pnl = BTreeMap::new();
+        for (position_id, value) in snapshot.closed_position_pnl {
+            closed_position_pnl.insert(
+                position_id,
+                KillSwitchCumulativePositionPnlSnapshot {
+                    realized_pnl: Decimal::from_str(&value.realized_pnl).map_err(|_| ())?,
+                    last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                },
+            );
+        }
+        let mut adjusted_position_pnl = BTreeMap::new();
+        for (position_id, value) in snapshot.adjusted_position_pnl {
+            adjusted_position_pnl.insert(
+                position_id,
+                KillSwitchCumulativePositionPnlSnapshot {
+                    realized_pnl: Decimal::from_str(&value.realized_pnl).map_err(|_| ())?,
+                    last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                },
+            );
+        }
         Ok(Self {
             daily_bucket: snapshot.daily_bucket,
             daily_realized_pnl: Decimal::from_str(&snapshot.daily_realized_pnl).map_err(|_| ())?,
+            daily_realized_pnl_by_bucket,
             cumulative_position_pnl,
+            closed_position_pnl,
+            adjusted_position_pnl,
             pending_halt_actions: snapshot.pending_halt_actions,
         })
     }

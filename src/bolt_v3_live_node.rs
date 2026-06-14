@@ -110,10 +110,7 @@ use crate::{
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
     },
-    bolt_v3_submit_admission::{
-        BoltV3KillSwitchForcedReductionPolicy, BoltV3LiveSubmitApprovalLimits,
-        BoltV3SubmitAdmissionState,
-    },
+    bolt_v3_submit_admission::{BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState},
     bolt_v3_validate::parse_decimal_string,
     nt_runtime_capture::{
         NtRuntimeCaptureGuards, position_events_pattern, wire_nt_runtime_capture,
@@ -2129,29 +2126,10 @@ fn configure_bolt_v3_kill_switch_loss_protection(
                 "risk.kill_switch.daily_realized_loss_limit parse failed: {reason}"
             ))
         })?;
-    let forced_reduction_max_notional = parse_decimal_string(
-        &kill_switch.forced_reduction_max_notional_per_order,
-    )
-    .map_err(|reason| {
-        BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
-            "risk.kill_switch.forced_reduction_max_notional_per_order parse failed: {reason}"
-        ))
-    })?;
-    let forced_reduction_policy = BoltV3KillSwitchForcedReductionPolicy::new(
-        kill_switch.forced_reduction_policy_sha256.clone(),
-        kill_switch.forced_reduction_max_live_order_count,
-        forced_reduction_max_notional,
-    )
-    .map_err(|error| {
-        BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
-            "risk.kill_switch forced-reduction policy is invalid: {error:?}"
-        ))
-    })?;
     let config = KillSwitchLossProtectionConfig {
         daily_realized_loss_limit,
         action_retry_interval_ms: kill_switch.action_retry_interval_ms,
         action_retry_timeout_ms: kill_switch.action_retry_timeout_ms,
-        forced_reduction_policy,
         policy_sha256: kill_switch.forced_reduction_policy_sha256.clone(),
         account_ids: kill_switch.account_ids.clone(),
         instrument_ids: kill_switch.instrument_ids.clone(),

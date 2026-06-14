@@ -1259,15 +1259,15 @@ fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
     }
 
     let mut errors = Vec::new();
-    let store_path = Path::new(block.store_path.trim());
-    if store_path.as_os_str().is_empty()
-        || store_path.is_absolute()
-        || store_path
+    let state_path = Path::new(block.state_path.trim());
+    if state_path.as_os_str().is_empty()
+        || state_path.is_absolute()
+        || state_path
             .components()
             .any(|component| matches!(component, std::path::Component::ParentDir))
     {
         errors.push(
-            "risk.kill_switch.store_path must be a non-empty relative path under the configured root"
+            "risk.kill_switch.state_path must be a non-empty relative path under the configured root"
                 .to_string(),
         );
     }

@@ -17,9 +17,8 @@ use bolt_v2::{
         seed_admission_from_kill_switch_store,
     },
     bolt_v3_submit_admission::{
-        BoltV3KillSwitchForcedReductionPolicy, BoltV3SubmitAdmissionError,
-        BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-        BoltV3SubmitLifecyclePolicy,
+        BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
+        BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
     },
 };
 use nautilus_core::UUID4;
@@ -328,12 +327,17 @@ fn failed_halt_actions_retry_after_configured_interval_until_success() {
     )
     .expect("loss protection should initialize");
 
+    let breach_time = 1_717_200_000_000_000_000;
+
     protection
-        .record_realized_pnl(RealizedPnlObservation {
-            source: "nt_position_event",
-            observed_at_unix_nanos: 1_717_200_000_000_000_000,
-            realized_pnl: Decimal::new(-2, 0),
-        })
+        .record_realized_pnl_at(
+            RealizedPnlObservation {
+                source: "nt_position_event",
+                observed_at_unix_nanos: breach_time,
+                realized_pnl: Decimal::new(-2, 0),
+            },
+            breach_time,
+        )
         .expect_err("first flatten dispatch should fail");
     assert_eq!(actions.flatten_attempts(), 1);
     assert!(matches!(
@@ -344,12 +348,9 @@ fn failed_halt_actions_retry_after_configured_interval_until_success() {
     ));
 
     protection
-        .record_realized_pnl(RealizedPnlObservation {
-            source: "nt_position_event",
-            observed_at_unix_nanos: 1_717_200_000_000_000_000
-                + (TEST_ACTION_RETRY_INTERVAL_MS * NANOS_PER_MILLISECOND),
-            realized_pnl: Decimal::ZERO,
-        })
+        .poll_pending_halt_actions(
+            breach_time + (TEST_ACTION_RETRY_INTERVAL_MS * NANOS_PER_MILLISECOND),
+        )
         .expect("configured action retry should succeed");
 
     assert_eq!(actions.flatten_attempts(), 2);
@@ -359,6 +360,56 @@ fn failed_halt_actions_retry_after_configured_interval_until_success() {
             state: KillSwitchStateKind::Halting
         })
     ));
+}
+
+#[test]
+fn position_observations_do_not_drive_pending_halt_action_retries() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-no-event-driven-retry");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(FlakyLossActionSink::new(1));
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(1, 0)),
+        admission,
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+    let breach_time = 1_717_200_000_000_000_000;
+
+    protection
+        .record_realized_pnl_at(
+            RealizedPnlObservation {
+                source: "nt_position_event",
+                observed_at_unix_nanos: breach_time,
+                realized_pnl: Decimal::new(-2, 0),
+            },
+            breach_time,
+        )
+        .expect_err("first flatten dispatch should fail");
+    assert_eq!(actions.flatten_attempts(), 1);
+
+    protection
+        .record_realized_pnl(RealizedPnlObservation {
+            source: "nt_position_event",
+            observed_at_unix_nanos: breach_time
+                + (TEST_ACTION_RETRY_INTERVAL_MS * NANOS_PER_MILLISECOND),
+            realized_pnl: Decimal::ZERO,
+        })
+        .expect("position observation should not drive retry while halting");
+    assert_eq!(actions.flatten_attempts(), 1);
+
+    protection
+        .poll_pending_halt_actions(
+            breach_time + (TEST_ACTION_RETRY_INTERVAL_MS * NANOS_PER_MILLISECOND),
+        )
+        .expect("timer poll should drive the retry");
+    assert_eq!(actions.flatten_attempts(), 2);
 }
 
 #[test]
@@ -425,6 +476,42 @@ fn daily_realized_pnl_survives_restart_until_utc_bucket_rolls_forward() {
             state: KillSwitchStateKind::Halting
         })
     ));
+}
+
+#[test]
+fn halting_recovery_without_pending_snapshot_reissues_flatten() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-halting-recovery-flatten");
+    let path = temp.path().join("kill-switch.json");
+    let store = KillSwitchStore::new(path.clone(), TEST_MAX_STATE_FILE_BYTES);
+    store
+        .write_state(&KillSwitchState::Halting {
+            halt_id: "halt-1".to_string(),
+            trigger: KillSwitchHaltTrigger::loss_governor_breach(
+                "bolt_v3.loss_governor",
+                1_717_200_000_000_000_000,
+                "daily_realized_loss_limit",
+            ),
+        })
+        .expect("halting state without loss snapshot should persist");
+
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(50, 0)),
+        admission,
+        KillSwitchStore::new(path, TEST_MAX_STATE_FILE_BYTES),
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    let recovered = protection
+        .seed_from_store()
+        .expect("halting recovery should seed");
+
+    assert!(matches!(recovered, KillSwitchState::Halting { .. }));
+    assert_eq!(actions.actions().len(), 1);
 }
 
 #[test]
@@ -535,6 +622,45 @@ fn stale_utc_bucket_events_do_not_clear_current_day_loss_accumulator() {
 }
 
 #[test]
+fn older_bucket_loss_after_rollforward_is_still_accounted() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-older-bucket-loss");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(50, 0)),
+        admission,
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    protection
+        .record_realized_pnl(RealizedPnlObservation {
+            source: "nt_position_event",
+            observed_at_unix_nanos: NANOS_PER_UTC_DAY + 1,
+            realized_pnl: Decimal::ZERO,
+        })
+        .expect("next-day observation should roll the active bucket forward");
+
+    let latched = protection
+        .record_realized_pnl(RealizedPnlObservation {
+            source: "nt_position_event",
+            observed_at_unix_nanos: NANOS_PER_UTC_DAY - 1,
+            realized_pnl: Decimal::new(-51, 0),
+        })
+        .expect("late prior-day loss should still be evaluated")
+        .expect("late prior-day loss should breach its own bucket");
+
+    assert!(matches!(latched, KillSwitchState::Halting { .. }));
+}
+
+#[test]
 fn closed_position_prunes_cumulative_baseline_before_position_id_reuse() {
     let temp = support::TempCaseDir::new("bolt-v3-loss-protection-prune-closed");
     let store = KillSwitchStore::new(
@@ -633,6 +759,111 @@ fn duplicate_closed_position_event_still_prunes_cumulative_baseline() {
 }
 
 #[test]
+fn duplicate_closed_position_replay_after_prune_counts_once() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-duplicate-close-replay");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(30, 0)),
+        admission.clone(),
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    protection
+        .record_position_event(&changed_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -20.0,
+            1,
+        ))
+        .expect("open position cumulative pnl should record");
+    assert!(
+        protection
+            .record_position_event(&closed_position_event(
+                "POLYMARKET-001",
+                "BTC-USD.BINANCE",
+                -25.0,
+                3,
+            ))
+            .expect("first close should add only the close delta")
+            .is_none()
+    );
+
+    assert!(
+        protection
+            .record_position_event(&closed_position_event(
+                "POLYMARKET-001",
+                "BTC-USD.BINANCE",
+                -25.0,
+                2,
+            ))
+            .expect("duplicate close replay should be ignored")
+            .is_none()
+    );
+    assert!(admission.admit(&entry_request()).is_ok());
+    assert!(actions.actions().is_empty());
+}
+
+#[test]
+fn duplicate_adjusted_position_replay_counts_delta_once() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-duplicate-adjusted-replay");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(15, 0)),
+        admission.clone(),
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    protection
+        .record_position_event(&adjusted_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -10.0,
+            1,
+        ))
+        .expect("first adjustment should record below limit");
+    protection
+        .record_position_event(&adjusted_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -10.0,
+            1,
+        ))
+        .expect("duplicate adjustment should not double count");
+    assert!(admission.admit(&entry_request()).is_ok());
+
+    let latched = protection
+        .record_position_event(&adjusted_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -6.0,
+            2,
+        ))
+        .expect("new adjustment should be counted")
+        .expect("total unique adjustments should breach");
+
+    assert!(matches!(latched, KillSwitchState::Halting { .. }));
+    assert_eq!(actions.actions().len(), 1);
+}
+
+#[test]
 fn pending_halt_actions_retry_from_timer_without_new_position_events() {
     let temp = support::TempCaseDir::new("bolt-v3-loss-protection-timer-retry");
     let store = KillSwitchStore::new(
@@ -653,11 +884,14 @@ fn pending_halt_actions_retry_from_timer_without_new_position_events() {
     let breach_time = 1_717_200_000_000_000_000;
 
     protection
-        .record_realized_pnl(RealizedPnlObservation {
-            source: "nt_position_event",
-            observed_at_unix_nanos: breach_time,
-            realized_pnl: Decimal::new(-2, 0),
-        })
+        .record_realized_pnl_at(
+            RealizedPnlObservation {
+                source: "nt_position_event",
+                observed_at_unix_nanos: breach_time,
+                realized_pnl: Decimal::new(-2, 0),
+            },
+            breach_time,
+        )
         .expect_err("first flatten dispatch should fail");
     assert_eq!(actions.flatten_attempts(), 1);
 
@@ -691,11 +925,14 @@ fn pending_halt_action_timeout_persists_failed_manual_intervention() {
     let breach_time = 1_717_200_000_000_000_000;
 
     protection
-        .record_realized_pnl(RealizedPnlObservation {
-            source: "nt_position_event",
-            observed_at_unix_nanos: breach_time,
-            realized_pnl: Decimal::new(-2, 0),
-        })
+        .record_realized_pnl_at(
+            RealizedPnlObservation {
+                source: "nt_position_event",
+                observed_at_unix_nanos: breach_time,
+                realized_pnl: Decimal::new(-2, 0),
+            },
+            breach_time,
+        )
         .expect_err("first flatten dispatch should fail");
     protection
         .poll_pending_halt_actions(
@@ -831,12 +1068,6 @@ fn loss_config(daily_realized_loss_limit: Decimal) -> KillSwitchLossProtectionCo
         daily_realized_loss_limit,
         action_retry_interval_ms: TEST_ACTION_RETRY_INTERVAL_MS,
         action_retry_timeout_ms: TEST_ACTION_RETRY_TIMEOUT_MS,
-        forced_reduction_policy: BoltV3KillSwitchForcedReductionPolicy::new(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            4,
-            Decimal::new(100, 0),
-        )
-        .expect("forced-reduction policy should be valid"),
         policy_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .to_string(),
         account_ids: vec!["POLYMARKET-001".to_string()],

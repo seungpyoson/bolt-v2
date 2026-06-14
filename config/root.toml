@@ -410,7 +410,7 @@ default_max_notional_per_order = "10.00"
 
 [risk.kill_switch]
 enabled = false
-store_path = "state/kill-switch.json"
+state_path = "state/kill-switch.json"
 max_state_file_bytes = 65536
 daily_realized_loss_limit = "250.00"
 action_retry_interval_ms = 250

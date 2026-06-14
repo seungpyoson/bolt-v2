@@ -83,7 +83,7 @@ fn persisted_state_round_trips_with_schema_version() {
 }
 
 #[test]
-fn config_relative_store_path_recovers_missing_evidence_fail_closed() {
+fn config_relative_state_path_recovers_missing_evidence_fail_closed() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let root_path = temp.path().join("root.toml");
     let root_toml = format!(
@@ -92,7 +92,7 @@ fn config_relative_store_path_recovers_missing_evidence_fail_closed() {
         r#"
 [risk.kill_switch]
 enabled = true
-store_path = "state/kill-switch.json"
+state_path = "state/kill-switch.json"
 max_state_file_bytes = 65536
 daily_realized_loss_limit = "250.00"
 action_retry_interval_ms = 250

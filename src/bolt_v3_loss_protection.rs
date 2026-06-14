@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, rc::Rc, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    rc::Rc,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::anyhow;
 use nautilus_model::{events::PositionEvent, types::Money};
@@ -14,7 +19,7 @@ use crate::{
         KillSwitchPendingHaltActionsSnapshot, KillSwitchRecoveryReason, KillSwitchRecoveryState,
         KillSwitchStore,
     },
-    bolt_v3_submit_admission::{BoltV3KillSwitchForcedReductionPolicy, BoltV3SubmitAdmissionState},
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
 const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;
@@ -30,7 +35,6 @@ pub struct KillSwitchLossProtectionConfig {
     pub daily_realized_loss_limit: Decimal,
     pub action_retry_interval_ms: u64,
     pub action_retry_timeout_ms: u64,
-    pub forced_reduction_policy: BoltV3KillSwitchForcedReductionPolicy,
     pub policy_sha256: String,
     pub account_ids: Vec<String>,
     pub instrument_ids: Vec<String>,
@@ -93,7 +97,10 @@ pub struct KillSwitchLossProtection {
     state: KillSwitchState,
     daily_bucket: Option<u64>,
     daily_realized_pnl: Decimal,
+    daily_realized_pnl_by_bucket: BTreeMap<u64, Decimal>,
     cumulative_position_pnl: BTreeMap<String, CumulativePositionPnl>,
+    closed_position_pnl: BTreeMap<String, CumulativePositionPnl>,
+    adjusted_position_pnl: BTreeMap<String, CumulativePositionPnl>,
     pending_halt_actions: Option<PendingHaltActions>,
 }
 
@@ -104,8 +111,6 @@ impl KillSwitchLossProtection {
         store: KillSwitchStore,
         action_sink: Rc<dyn KillSwitchLossActionSink>,
     ) -> anyhow::Result<Self> {
-        admission
-            .configure_kill_switch_forced_reduction_policy(config.forced_reduction_policy.clone());
         Ok(Self {
             config,
             admission,
@@ -114,7 +119,10 @@ impl KillSwitchLossProtection {
             state: KillSwitchState::Armed,
             daily_bucket: None,
             daily_realized_pnl: Decimal::ZERO,
+            daily_realized_pnl_by_bucket: BTreeMap::new(),
             cumulative_position_pnl: BTreeMap::new(),
+            closed_position_pnl: BTreeMap::new(),
+            adjusted_position_pnl: BTreeMap::new(),
             pending_halt_actions: None,
         })
     }
@@ -124,6 +132,13 @@ impl KillSwitchLossProtection {
     }
 
     pub fn seed_from_store(&mut self) -> anyhow::Result<KillSwitchState> {
+        self.seed_from_store_at(current_unix_nanos_u64()?)
+    }
+
+    pub fn seed_from_store_at(
+        &mut self,
+        action_clock_unix_nanos: u64,
+    ) -> anyhow::Result<KillSwitchState> {
         let record = self
             .store
             .load_recovery_record()
@@ -152,6 +167,20 @@ impl KillSwitchLossProtection {
         }
         self.admission.replace_kill_switch_state(state.clone());
         self.state = state.clone();
+        if matches!(state, KillSwitchState::Halting { .. }) && self.pending_halt_actions.is_none() {
+            if let Err(error) = self.emit_halt_actions(&state) {
+                self.pending_halt_actions = Some(PendingHaltActions {
+                    state: state.clone(),
+                    next_retry_at_unix_nanos: action_clock_unix_nanos,
+                    retry_deadline_unix_nanos: add_millis(
+                        action_clock_unix_nanos,
+                        self.config.action_retry_timeout_ms,
+                    ),
+                });
+                self.persist_runtime_snapshot_or_fail_closed()?;
+                log::error!("kill switch recovery halt action dispatch failed: {error:?}");
+            }
+        }
         Ok(state)
     }
 
@@ -180,83 +209,64 @@ impl KillSwitchLossProtection {
             return Ok(None);
         }
         if !matches!(self.state, KillSwitchState::Armed) {
-            self.poll_pending_halt_actions(observation.observed.observed_at_unix_nanos)?;
             return Ok(None);
         }
-        if !self.accept_observation_bucket(observation.observed.observed_at_unix_nanos) {
-            return Ok(None);
-        }
+        let action_clock_unix_nanos = current_unix_nanos_u64()?;
+        let bucket = self.observe_bucket(observation.observed.observed_at_unix_nanos);
         let observed = if observation.cumulative_realized_pnl {
-            let previous_record = self
-                .cumulative_position_pnl
-                .get(&observation.position_id)
-                .cloned();
-            if let Some(previous) = &previous_record {
-                if observation.observed.observed_at_unix_nanos
-                    < previous.last_observed_at_unix_nanos
-                {
-                    return Ok(None);
-                }
-                if observation.observed.observed_at_unix_nanos
-                    == previous.last_observed_at_unix_nanos
-                    && observation.observed.realized_pnl == previous.realized_pnl
-                {
-                    if observation.closes_position {
-                        self.cumulative_position_pnl
-                            .remove(&observation.position_id);
-                        self.persist_runtime_snapshot_or_fail_closed()?;
-                    }
-                    return Ok(None);
-                }
-            }
-            let previous = previous_record
-                .map(|previous| previous.realized_pnl)
-                .unwrap_or(Decimal::ZERO);
-            if observation.closes_position {
-                self.cumulative_position_pnl
-                    .remove(&observation.position_id);
-            } else {
-                self.cumulative_position_pnl.insert(
-                    observation.position_id.clone(),
-                    CumulativePositionPnl {
-                        realized_pnl: observation.observed.realized_pnl,
-                        last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
-                    },
-                );
-            }
-            RealizedPnlObservation {
-                realized_pnl: observation.observed.realized_pnl - previous,
-                ..observation.observed
-            }
+            let Some(observed) = self.record_cumulative_position_observation(&observation)? else {
+                return Ok(None);
+            };
+            observed
         } else {
+            if self.is_duplicate_adjusted_position_observation(&observation) {
+                return Ok(None);
+            }
             observation.observed
         };
-        self.record_current_bucket_realized_pnl(observed)
+        self.record_bucket_realized_pnl(bucket, observed, action_clock_unix_nanos)
     }
 
     pub fn record_realized_pnl(
         &mut self,
         observation: RealizedPnlObservation,
     ) -> anyhow::Result<Option<KillSwitchState>> {
-        if !matches!(self.state, KillSwitchState::Armed) {
-            self.poll_pending_halt_actions(observation.observed_at_unix_nanos)?;
-            return Ok(None);
-        }
-
-        if !self.accept_observation_bucket(observation.observed_at_unix_nanos) {
-            return Ok(None);
-        }
-        self.record_current_bucket_realized_pnl(observation)
+        self.record_realized_pnl_at(observation, current_unix_nanos_u64()?)
     }
 
-    fn record_current_bucket_realized_pnl(
+    pub fn record_realized_pnl_at(
         &mut self,
         observation: RealizedPnlObservation,
+        action_clock_unix_nanos: u64,
     ) -> anyhow::Result<Option<KillSwitchState>> {
-        self.daily_realized_pnl += observation.realized_pnl;
+        if !matches!(self.state, KillSwitchState::Armed) {
+            return Ok(None);
+        }
 
-        if self.daily_realized_pnl >= Decimal::ZERO
-            || -self.daily_realized_pnl < self.config.daily_realized_loss_limit
+        let bucket = self.observe_bucket(observation.observed_at_unix_nanos);
+        self.record_bucket_realized_pnl(bucket, observation, action_clock_unix_nanos)
+    }
+
+    fn record_bucket_realized_pnl(
+        &mut self,
+        bucket: u64,
+        observation: RealizedPnlObservation,
+        action_clock_unix_nanos: u64,
+    ) -> anyhow::Result<Option<KillSwitchState>> {
+        let daily_realized_pnl = {
+            let daily_realized_pnl = self
+                .daily_realized_pnl_by_bucket
+                .entry(bucket)
+                .and_modify(|daily_realized_pnl| *daily_realized_pnl += observation.realized_pnl)
+                .or_insert(observation.realized_pnl);
+            *daily_realized_pnl
+        };
+        if self.daily_bucket == Some(bucket) {
+            self.daily_realized_pnl = daily_realized_pnl;
+        }
+
+        if daily_realized_pnl >= Decimal::ZERO
+            || -daily_realized_pnl < self.config.daily_realized_loss_limit
         {
             self.persist_runtime_snapshot_or_fail_closed()?;
             return Ok(None);
@@ -301,11 +311,11 @@ impl KillSwitchLossProtection {
             self.pending_halt_actions = Some(PendingHaltActions {
                 state: halting,
                 next_retry_at_unix_nanos: add_millis(
-                    observation.observed_at_unix_nanos,
+                    action_clock_unix_nanos,
                     self.config.action_retry_interval_ms,
                 ),
                 retry_deadline_unix_nanos: add_millis(
-                    observation.observed_at_unix_nanos,
+                    action_clock_unix_nanos,
                     self.config.action_retry_timeout_ms,
                 ),
             });
@@ -317,32 +327,176 @@ impl KillSwitchLossProtection {
         Ok(Some(halting))
     }
 
-    fn accept_observation_bucket(&mut self, observed_at_unix_nanos: u64) -> bool {
+    fn observe_bucket(&mut self, observed_at_unix_nanos: u64) -> u64 {
         let bucket = observed_at_unix_nanos / NANOS_PER_UTC_DAY;
         match self.daily_bucket {
             None => {
                 self.daily_bucket = Some(bucket);
-                self.daily_realized_pnl = Decimal::ZERO;
-                true
             }
             Some(current) if bucket > current => {
                 self.daily_bucket = Some(bucket);
-                self.daily_realized_pnl = Decimal::ZERO;
-                true
             }
-            Some(current) if bucket == current => true,
-            Some(_) => false,
+            Some(_) => {}
         }
+        self.daily_realized_pnl_by_bucket
+            .entry(bucket)
+            .or_insert(Decimal::ZERO);
+        self.daily_realized_pnl = self
+            .daily_bucket
+            .and_then(|daily_bucket| {
+                self.daily_realized_pnl_by_bucket
+                    .get(&daily_bucket)
+                    .copied()
+            })
+            .unwrap_or(Decimal::ZERO);
+        bucket
     }
 
-    pub fn poll_pending_halt_actions(&mut self, observed_at_unix_nanos: u64) -> anyhow::Result<()> {
+    fn record_cumulative_position_observation(
+        &mut self,
+        observation: &PositionRealizedPnlObservation,
+    ) -> anyhow::Result<Option<RealizedPnlObservation>> {
+        if observation.closes_position {
+            return self.record_closed_position_observation(observation);
+        }
+
+        if let Some(closed) = self.closed_position_pnl.get(&observation.position_id) {
+            if observation.observed.observed_at_unix_nanos
+                <= closed.last_observed_at_unix_nanos
+            {
+                return Ok(None);
+            }
+            self.closed_position_pnl.remove(&observation.position_id);
+        }
+
+        let previous_record = self
+            .cumulative_position_pnl
+            .get(&observation.position_id)
+            .cloned();
+        if let Some(previous) = &previous_record {
+            if observation.observed.observed_at_unix_nanos < previous.last_observed_at_unix_nanos {
+                return Ok(None);
+            }
+            if observation.observed.observed_at_unix_nanos == previous.last_observed_at_unix_nanos
+                && observation.observed.realized_pnl == previous.realized_pnl
+            {
+                return Ok(None);
+            }
+        }
+        let previous = previous_record
+            .map(|previous| previous.realized_pnl)
+            .unwrap_or(Decimal::ZERO);
+        self.cumulative_position_pnl.insert(
+            observation.position_id.clone(),
+            CumulativePositionPnl {
+                realized_pnl: observation.observed.realized_pnl,
+                last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+            },
+        );
+        Ok(Some(RealizedPnlObservation {
+            realized_pnl: observation.observed.realized_pnl - previous,
+            ..observation.observed
+        }))
+    }
+
+    fn record_closed_position_observation(
+        &mut self,
+        observation: &PositionRealizedPnlObservation,
+    ) -> anyhow::Result<Option<RealizedPnlObservation>> {
+        if let Some(previous) = self
+            .cumulative_position_pnl
+            .get(&observation.position_id)
+            .cloned()
+        {
+            if observation.observed.observed_at_unix_nanos < previous.last_observed_at_unix_nanos {
+                return Ok(None);
+            }
+            self.cumulative_position_pnl
+                .remove(&observation.position_id);
+            self.closed_position_pnl.insert(
+                observation.position_id.clone(),
+                CumulativePositionPnl {
+                    realized_pnl: observation.observed.realized_pnl,
+                    last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+                },
+            );
+            if observation.observed.observed_at_unix_nanos == previous.last_observed_at_unix_nanos
+                && observation.observed.realized_pnl == previous.realized_pnl
+            {
+                self.persist_runtime_snapshot_or_fail_closed()?;
+                return Ok(None);
+            }
+            return Ok(Some(RealizedPnlObservation {
+                realized_pnl: observation.observed.realized_pnl - previous.realized_pnl,
+                ..observation.observed
+            }));
+        }
+
+        if let Some(previous) = self.closed_position_pnl.get(&observation.position_id).cloned() {
+            if observation.observed.observed_at_unix_nanos < previous.last_observed_at_unix_nanos {
+                return Ok(None);
+            }
+            if observation.observed.realized_pnl == previous.realized_pnl {
+                return Ok(None);
+            }
+            self.closed_position_pnl.insert(
+                observation.position_id.clone(),
+                CumulativePositionPnl {
+                    realized_pnl: observation.observed.realized_pnl,
+                    last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+                },
+            );
+            return Ok(Some(RealizedPnlObservation {
+                realized_pnl: observation.observed.realized_pnl - previous.realized_pnl,
+                ..observation.observed
+            }));
+        }
+
+        self.closed_position_pnl.insert(
+            observation.position_id.clone(),
+            CumulativePositionPnl {
+                realized_pnl: observation.observed.realized_pnl,
+                last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+            },
+        );
+        Ok(Some(observation.observed))
+    }
+
+    fn is_duplicate_adjusted_position_observation(
+        &mut self,
+        observation: &PositionRealizedPnlObservation,
+    ) -> bool {
+        if let Some(previous) = self.adjusted_position_pnl.get(&observation.position_id) {
+            if observation.observed.observed_at_unix_nanos
+                < previous.last_observed_at_unix_nanos
+            {
+                return true;
+            }
+            if observation.observed.observed_at_unix_nanos
+                == previous.last_observed_at_unix_nanos
+                && observation.observed.realized_pnl == previous.realized_pnl
+            {
+                return true;
+            }
+        }
+        self.adjusted_position_pnl.insert(
+            observation.position_id.clone(),
+            CumulativePositionPnl {
+                realized_pnl: observation.observed.realized_pnl,
+                last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+            },
+        );
+        false
+    }
+
+    pub fn poll_pending_halt_actions(&mut self, now_unix_nanos: u64) -> anyhow::Result<()> {
         let Some(pending) = self.pending_halt_actions.clone() else {
             return Ok(());
         };
-        if observed_at_unix_nanos < pending.next_retry_at_unix_nanos {
+        if now_unix_nanos < pending.next_retry_at_unix_nanos {
             return Ok(());
         }
-        if observed_at_unix_nanos > pending.retry_deadline_unix_nanos {
+        if now_unix_nanos >= pending.retry_deadline_unix_nanos {
             self.fail_halt_actions(pending.state, HALT_ACTION_RETRY_TIMEOUT_REASON.to_string())?;
             self.pending_halt_actions = None;
             return Err(anyhow!("daily realized loss halt action retry timeout"));
@@ -352,7 +506,7 @@ impl KillSwitchLossProtection {
             self.pending_halt_actions = Some(PendingHaltActions {
                 state: pending.state,
                 next_retry_at_unix_nanos: add_millis(
-                    observed_at_unix_nanos,
+                    now_unix_nanos,
                     self.config.action_retry_interval_ms,
                 ),
                 retry_deadline_unix_nanos: pending.retry_deadline_unix_nanos,
@@ -399,8 +553,35 @@ impl KillSwitchLossProtection {
         KillSwitchLossProtectionSnapshot {
             daily_bucket: self.daily_bucket,
             daily_realized_pnl: self.daily_realized_pnl,
+            daily_realized_pnl_by_bucket: self.daily_realized_pnl_by_bucket.clone(),
             cumulative_position_pnl: self
                 .cumulative_position_pnl
+                .iter()
+                .map(|(position_id, value)| {
+                    (
+                        position_id.clone(),
+                        KillSwitchCumulativePositionPnlSnapshot {
+                            realized_pnl: value.realized_pnl,
+                            last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                        },
+                    )
+                })
+                .collect(),
+            closed_position_pnl: self
+                .closed_position_pnl
+                .iter()
+                .map(|(position_id, value)| {
+                    (
+                        position_id.clone(),
+                        KillSwitchCumulativePositionPnlSnapshot {
+                            realized_pnl: value.realized_pnl,
+                            last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                        },
+                    )
+                })
+                .collect(),
+            adjusted_position_pnl: self
+                .adjusted_position_pnl
                 .iter()
                 .map(|(position_id, value)| {
                     (
@@ -424,8 +605,35 @@ impl KillSwitchLossProtection {
     fn apply_loss_snapshot(&mut self, snapshot: KillSwitchLossProtectionSnapshot) {
         self.daily_bucket = snapshot.daily_bucket;
         self.daily_realized_pnl = snapshot.daily_realized_pnl;
+        self.daily_realized_pnl_by_bucket = snapshot.daily_realized_pnl_by_bucket;
         self.cumulative_position_pnl = snapshot
             .cumulative_position_pnl
+            .into_iter()
+            .map(|(position_id, value)| {
+                (
+                    position_id,
+                    CumulativePositionPnl {
+                        realized_pnl: value.realized_pnl,
+                        last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                    },
+                )
+            })
+            .collect();
+        self.closed_position_pnl = snapshot
+            .closed_position_pnl
+            .into_iter()
+            .map(|(position_id, value)| {
+                (
+                    position_id,
+                    CumulativePositionPnl {
+                        realized_pnl: value.realized_pnl,
+                        last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                    },
+                )
+            })
+            .collect();
+        self.adjusted_position_pnl = snapshot
+            .adjusted_position_pnl
             .into_iter()
             .map(|(position_id, value)| {
                 (
@@ -483,6 +691,12 @@ impl KillSwitchLossProtection {
 
 fn add_millis(unix_nanos: u64, millis: u64) -> u64 {
     unix_nanos.saturating_add(millis.saturating_mul(NANOS_PER_MILLISECOND))
+}
+
+fn current_unix_nanos_u64() -> anyhow::Result<u64> {
+    Ok(u64::try_from(
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
+    )?)
 }
 
 pub fn seed_admission_from_kill_switch_store(

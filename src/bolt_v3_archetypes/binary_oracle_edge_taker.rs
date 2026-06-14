@@ -1505,8 +1505,6 @@ fn executable_entry_order_shape_supported(entry: &OrderParams) -> bool {
         && entry.order_type == OrderType::Limit
         && entry.time_in_force == TimeInForce::Fok
         && !entry.is_post_only
-        && !entry.is_reduce_only
-        && !entry.is_quote_quantity
         && entry.trigger_price.is_none()
         && entry.activation_price.is_none()
         && entry.trigger_type.is_none()

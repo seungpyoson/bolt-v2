@@ -8,7 +8,7 @@ fn valid_kill_switch_block() -> &'static str {
     r#"
 [risk.kill_switch]
 enabled = true
-store_path = "state/kill-switch.json"
+state_path = "state/kill-switch.json"
 max_state_file_bytes = 65536
 daily_realized_loss_limit = "250.00"
 action_retry_interval_ms = 250
@@ -39,7 +39,7 @@ fn kill_switch_config_is_optional_and_parses_when_present() {
         .expect("kill-switch block should parse");
 
     assert!(kill_switch.enabled);
-    assert_eq!(kill_switch.store_path, "state/kill-switch.json");
+    assert_eq!(kill_switch.state_path, "state/kill-switch.json");
     assert_eq!(kill_switch.daily_realized_loss_limit, "250.00");
     assert_eq!(
         kill_switch.forced_reduction_policy_sha256,
@@ -54,12 +54,45 @@ fn kill_switch_config_is_optional_and_parses_when_present() {
 }
 
 #[test]
+fn kill_switch_config_uses_existing_state_path_field_name() {
+    let root_with: BoltV3RootConfig = toml::from_str(&root_with_kill_switch(
+        r#"
+[risk.kill_switch]
+enabled = true
+state_path = "state/kill-switch.json"
+max_state_file_bytes = 65536
+daily_realized_loss_limit = "250.00"
+action_retry_interval_ms = 250
+action_retry_timeout_ms = 5000
+mandatory_proof_max_age_ms = 1000
+manual_reset_evidence_max_age_ms = 60000
+forced_reduction_policy_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+forced_reduction_max_live_order_count = 4
+forced_reduction_max_notional_per_order = "100.00"
+authorized_operator_ids = ["operator-primary"]
+account_ids = ["POLYMARKET-001"]
+instrument_ids = ["BTC-USD.BINANCE"]
+"#,
+    ))
+    .expect("existing state_path kill-switch config should parse");
+
+    let kill_switch = root_with
+        .risk
+        .kill_switch
+        .as_ref()
+        .expect("kill-switch block should parse");
+
+    assert_eq!(kill_switch.state_path, "state/kill-switch.json");
+    assert!(validate_root_only(&root_with).is_empty());
+}
+
+#[test]
 fn enabled_kill_switch_rejects_invalid_runtime_settings() {
     let root: BoltV3RootConfig = toml::from_str(&root_with_kill_switch(
         r#"
 [risk.kill_switch]
 enabled = true
-store_path = ""
+state_path = ""
 max_state_file_bytes = 0
 daily_realized_loss_limit = "0"
 action_retry_interval_ms = 0
@@ -79,7 +112,7 @@ instrument_ids = ["not-an-instrument"]
     let errors = validate_root_only(&root);
 
     for expected in [
-        "risk.kill_switch.store_path must be a non-empty relative path",
+        "risk.kill_switch.state_path must be a non-empty relative path",
         "risk.kill_switch.max_state_file_bytes must be positive",
         "risk.kill_switch.daily_realized_loss_limit must be positive",
         "risk.kill_switch.action_retry_interval_ms must be positive",
@@ -106,7 +139,7 @@ fn enabled_kill_switch_rejects_empty_instrument_scope() {
         r#"
 [risk.kill_switch]
 enabled = true
-store_path = "state/kill-switch.json"
+state_path = "state/kill-switch.json"
 max_state_file_bytes = 65536
 daily_realized_loss_limit = "250.00"
 action_retry_interval_ms = 250

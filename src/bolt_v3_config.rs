@@ -196,7 +196,7 @@ pub struct NautilusRiskBlock {
 #[serde(deny_unknown_fields)]
 pub struct KillSwitchConfigBlock {
     pub enabled: bool,
-    pub store_path: String,
+    pub state_path: String,
     pub max_state_file_bytes: u64,
     pub daily_realized_loss_limit: String,
     pub action_retry_interval_ms: u64,

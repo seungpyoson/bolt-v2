@@ -120,7 +120,15 @@ pub fn canonical_source_rerun_paths(manifest_dir: &Path) -> io::Result<Vec<PathB
 }
 
 fn collect_canonical_source_rerun_paths(path: &Path, paths: &mut Vec<PathBuf>) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
+    let metadata = fs::symlink_metadata(path).map_err(|source| {
+        io::Error::new(
+            source.kind(),
+            format!(
+                "canonical source rerun path metadata failed for {}: {source}",
+                path.display()
+            ),
+        )
+    })?;
     let file_type = metadata.file_type();
     if file_type.is_dir() {
         paths.push(path.to_path_buf());

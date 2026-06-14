@@ -297,29 +297,25 @@ impl BoltV3SubmitAdmissionState {
             }
         };
 
-        if outcome == BoltV3AdmissionOutcome::Admitted {
-            if inner
+        if outcome == BoltV3AdmissionOutcome::Admitted
+            && inner
                 .admitted_order_count
                 .checked_add(claim_count)
                 .is_none()
-            {
-                outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-            }
+        {
+            outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
         }
 
-        if outcome == BoltV3AdmissionOutcome::Admitted {
-            if let Some(limits) = inner.live_submit_approval_limits.get(execution_client_id) {
-                let current_count = inner
-                    .admitted_order_count_by_execution_client
-                    .get(execution_client_id)
-                    .copied()
-                    .unwrap_or(0);
-                outcome = live_submit_count_cap_outcome(
-                    current_count,
-                    claim_count,
-                    limits.max_order_count,
-                );
-            }
+        if outcome == BoltV3AdmissionOutcome::Admitted
+            && let Some(limits) = inner.live_submit_approval_limits.get(execution_client_id)
+        {
+            let current_count = inner
+                .admitted_order_count_by_execution_client
+                .get(execution_client_id)
+                .copied()
+                .unwrap_or(0);
+            outcome =
+                live_submit_count_cap_outcome(current_count, claim_count, limits.max_order_count);
         }
 
         let mut evidence = evidence.clone();

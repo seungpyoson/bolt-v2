@@ -148,7 +148,7 @@ pub fn normalize_hyperliquid_hip4_outcome_group(
 
     let mut group = OutcomeGroup {
         group_id: format!("hyperliquid:{question}"),
-        source_client_id: input.source.client_id.clone(),
+        source_client_id: input.source.client_id,
         venue: Venue::from(hyperliquid::KEY),
         source_kind: crate::bolt_v3_outcome_groups::OutcomeGroupSourceKind::Hyperliquid,
         settlement_asset_id,
@@ -411,7 +411,7 @@ fn build_tradable_legs(
         };
         out.push(OutcomeLeg {
             leg_id: leg.native_leg_id.clone(),
-            instrument_id: leg.instrument_id.clone(),
+            instrument_id: leg.instrument_id,
             native_leg_id: leg.native_leg_id.clone(),
             settlement_asset_id: settlement_asset_id.to_string(),
             outcome_label: leg.outcome_label.clone(),

@@ -231,6 +231,7 @@ pub fn scan_outcome_group_candidate(input: OutcomeGroupScanInput<'_>) -> Outcome
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn scan_outcome_group_candidate_inner(
     input: &OutcomeGroupScanInput<'_>,
 ) -> Result<OutcomeGroupScanEvidence, (OutcomeGroupScanBlockReason, OutcomeGroupScanEvidence)> {

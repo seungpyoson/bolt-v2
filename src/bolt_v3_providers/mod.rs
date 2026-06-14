@@ -259,6 +259,8 @@ type ProductSubmitProofArtifactWriter =
         ProviderProductSubmitProofArtifactRequest<'a>,
     ) -> Result<WrittenOperatorArtifact, anyhow::Error>;
 
+type MetadataRefreshIntervalLoader = fn(&ClientBlock) -> Result<Option<u64>, String>;
+
 // PROVIDER-SPECIFIC (Polymarket CLOB v2) — DEFER (P3-F3). Every `ClobV2*` type and
 // `*_clob_v2_*` fn below materializes Polymarket CLOB v2 signing / fee / collateral
 // evidence from NT `nautilus_polymarket` sources — they are NOT venue-agnostic despite
@@ -508,7 +510,7 @@ pub struct ProviderBinding {
     pub key: &'static str,
     pub validate_client: fn(&str, &ClientBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
-    pub metadata_refresh_interval_mins: Option<fn(&ClientBlock) -> Result<Option<u64>, String>>,
+    pub metadata_refresh_interval_mins: Option<MetadataRefreshIntervalLoader>,
     pub required_secret_blocks: &'static [ProviderSecretRequirement],
     pub secret_field_names: &'static [&'static str],
     pub credential_log_modules: &'static [&'static str],

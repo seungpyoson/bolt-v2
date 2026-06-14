@@ -468,10 +468,10 @@ pub fn validate_grouping_identity_set<'a>(
         };
         let identity = grouping_proof.native_identity();
         let settlement_fingerprint = settlement_identity_fingerprint(group);
-        if let Some(previous) = seen.insert(identity, settlement_fingerprint.clone()) {
-            if previous != settlement_fingerprint {
-                return Err(OutcomeGroupValidationError::DuplicateGroupingIdentityConflict);
-            }
+        if let Some(previous) = seen.insert(identity, settlement_fingerprint.clone())
+            && previous != settlement_fingerprint
+        {
+            return Err(OutcomeGroupValidationError::DuplicateGroupingIdentityConflict);
         }
     }
     Ok(())

@@ -108,6 +108,7 @@ struct BoltV3BasketExecutionLegState {
 }
 
 impl BoltV3BasketExecutionState {
+    #[allow(clippy::too_many_arguments)]
     pub fn candidate(
         basket_id: &str,
         strategy_id: &str,
@@ -343,14 +344,13 @@ impl BoltV3BasketExecutionState {
     }
 
     fn leg_index_for_report(&self, report: &BoltV3BasketRestartReport) -> Option<usize> {
-        if let Some(client_order_id) = report.client_order_id.as_deref() {
-            if let Some(index) = self
+        if let Some(client_order_id) = report.client_order_id.as_deref()
+            && let Some(index) = self
                 .legs
                 .iter()
                 .position(|leg| leg.client_order_id.as_deref() == Some(client_order_id))
-            {
-                return Some(index);
-            }
+        {
+            return Some(index);
         }
         if let Some(venue_order_id) = report.venue_order_id.as_deref() {
             return self

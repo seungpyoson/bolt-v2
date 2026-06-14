@@ -1139,7 +1139,14 @@ where
         CreateOnlyProbeTranscript,
     ) -> Result<NtCatalogCapabilityEvidence>,
 {
-    let mut artifacts = run_from_run_spec(spec, gz_bytes, output_dir)?;
+    let base_spec = spec.clone();
+    let base_gz_bytes = gz_bytes.to_vec();
+    let base_output_dir = output_dir.to_path_buf();
+    let mut artifacts = tokio::task::spawn_blocking(move || {
+        run_from_run_spec(&base_spec, &base_gz_bytes, &base_output_dir)
+    })
+    .await
+    .context("join base run for artifact-store path")??;
     let artifact_root = spec.artifact_store.resolve()?;
     let nt_catalog_capability_plan = spec
         .nt_catalog_capability_proof

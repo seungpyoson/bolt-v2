@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00138:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ATOMTRY:2026-03-01:424072c45dd3ac8d9b68b39c151343c41dce3a484d53f5365118781f26214f01:accepted-tranche",
+  "accepted_tranche_manifest_hash": "f4218dc4f15edeb2da7041fe7fffe8a9c046ae60a7363bb29546b871a3bf6443",
+  "run_spec_hash": "c21985503f6418e356e0fd4c953774553ffcb9910160510e2d1c38e5c51dcd9c",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00138",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ATOMTRY/dt=2026-03-01/object=424072c45dd3ac8d9b68b39c151343c41dce3a484d53f5365118781f26214f01",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 13647,
+  "max_object_bytes": 13647,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=ATOMTRY/object=424072c45dd3ac8d9b68b39c151343c41dce3a484d53f5365118781f26214f01.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/ATOMTRY/ATOMTRY-trades-2026-03-01.zip",
+      "sha256": "424072c45dd3ac8d9b68b39c151343c41dce3a484d53f5365118781f26214f01",
+      "bytes": 13647,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

@@ -1,0 +1,342 @@
+{
+  "schema_version": "source-proof-bte-bounded-first-proof-go-no-go.v1",
+  "recorded_at": "2026-06-08",
+  "evidence_base_commit": "7ef5e920",
+  "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
+  "prompt_source": {
+    "original_user_path": "/Users/spson/Downloads/prompts/backtesting.md",
+    "original_user_path_status": "missing_at_latest_check",
+    "current_found_path": "/Users/spson/Downloads/New Folder With Items/prompts/backtesting.md",
+    "current_found_path_bytes": 6229
+  },
+  "current_reconciliation": {
+    "reconciled_at": "2026-06-09",
+    "pr": "https://github.com/seungpyoson/bolt-v2/pull/610",
+    "ci_status": "green_on_pr_610_head_a9ce2baa",
+    "ci_evidence": [
+      "GitHub Actions for PR #610 head 6aaf1bd0 completed successfully on 2026-06-08 UTC.",
+      "GitHub Actions for PR #610 head a9ce2baa completed successfully on 2026-06-08 UTC.",
+      "Passed checks included CI, Backtester CI, actionlint, and CodeQL."
+    ],
+    "scratch_artifact_status": {
+      "path": "/private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08",
+      "status": "stale_not_current_acceptance_evidence",
+      "reason": "The scratch manifest still uses removed [catalog_input] TOML schema, while current code requires [[catalog_inputs]].",
+      "reproduction": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08/spec.toml fails with unknown field catalog_input.",
+      "decision": "Do not cite this scratch artifact as current generated mixed PMXT evidence until it is regenerated with current [[catalog_inputs]] schema."
+    },
+    "current_artifact_status": {
+      "path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/backtests/pmxt-run",
+      "status": "current_one_off_acceptance_evidence",
+      "result_contract_hash": "1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe",
+      "conversion_manifest_hash": "5fd0361cefa1a5c3750ab36e9fd2f837ebce0af707ea707d41451eb5c6d0b8f1",
+      "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
+      "selected_source_parquet_hash": "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e",
+      "event_count_ledger_hash": "985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a",
+      "selected_asset_ids_hash": "1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110",
+      "catalog_nt_data_types": [
+        "OrderBookDelta",
+        "TradeTick"
+      ],
+      "catalog_rows_by_nt_data_type": {
+        "OrderBookDelta": 103,
+        "TradeTick": 1
+      },
+      "nt_iterations": 104,
+      "idempotency": "Rerun preserved result_contract_hash 1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe, conversion_manifest_hash 5fd0361cefa1a5c3750ab36e9fd2f837ebce0af707ea707d41451eb5c6d0b8f1, catalog_hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236, selected_source_parquet_hash 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, event_count_ledger_hash 985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, and nt_iterations 104."
+    }
+  },
+  "decision": {
+    "bounded_pmxt_polymarket_first_proof": "go_for_tdd_only",
+    "broad_pmxt_polymarket_l2_backfill": "no_go",
+    "production_backfill": "no_go",
+    "dynamic_tick_size_replay": "no_go_until_nt_backtestnode_epoch_replay_is_proven"
+  },
+  "bounded_first_proof_scope": {
+    "source_binding": "polymarket-parquet-archive-index",
+    "fixture_type": "binary-option",
+    "table_family": "order_book_snapshot_deltas",
+    "fidelity_class": "L2_REPLAY",
+    "source_object_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+    "source_object_sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "current_source_proof_status": "pending",
+    "current_source_proof_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
+    "selector_policy_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json",
+    "selector_policy": "Select from source-proof event counts where tick_size_change_rows == 0, book_rows > 0, price_change_rows > 0, last_trade_price_rows > 0, and replay_rows <= configured row budget; order by replay_rows ASC then asset_id ASC.",
+    "claim_limits": [
+      "Does not prove dynamic tick-size replay.",
+      "Does not prove assets with tick_size_change rows.",
+      "Does not prove full PMXT Polymarket L2 source acceptance.",
+      "Does not authorize broad backfill.",
+      "Does not authorize production backfill."
+    ]
+  },
+  "bounded_first_proof_selector_artifacts": {
+    "status": "current_pmxt_gamma_backed_selector_and_one_off_artifact_root_generated",
+    "local_artifact_root": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08",
+    "source_object_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+    "source_object_sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "event_count_ledger_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/event-count-ledger.json",
+    "event_count_ledger_content_hash": "35c5c97214a8079aa4b933979a38e68635efc0068929d9aaa6ebbf95f80bcda6",
+    "event_count_ledger_file_sha256": "538f992b836f356ed8b50815530ec270013797da27d76a65473e2a2ac95cb5c3",
+    "source_rows": 64877467,
+    "event_count_rows": 91786,
+    "selector_report_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selector-gamma-candidates/first-proof-selector-report.json",
+    "selector_report_content_hash": "a36ed819efb41e89933bf73265496afae87dc8c29ffb359dc2d7f399acc01757",
+    "selector_report_file_sha256": "8bbf34e5f743ec9fdf3cbf05c23c71c75ca310eb4278ffa1c9d29403386dba27",
+    "selector_status": "selected",
+    "total_assets": 71593,
+    "eligible_assets": 6,
+    "selected_asset_count": 1,
+    "selected_asset_ids_hash": "1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110",
+    "event_count_ledger_hash": "985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a",
+    "selected_assets": [
+      {
+        "asset_id": "73895424095742155573626958367283533358717984717096075221396743226794070701077",
+        "replay_rows": 5,
+        "source_row_groups": [
+          35
+        ]
+      }
+    ],
+    "scan_efficiency_evidence": {
+      "debug_projected_borrowed_count_scan_seconds": "55.23",
+      "previous_debug_projected_allocating_scan_seconds": "88.30",
+      "event_count_ledger_wall_seconds_observed": "90.27",
+      "selector_report_generation_seconds": "6.16",
+      "selected_source_slice_row_group_pruned_seconds": "18.93",
+      "projected_row_groups": "1 of 62"
+    },
+    "claim_limits": [
+      "This proves PMXT source event-count scanning, selector report generation, and selected-source staging for one-off backfill evidence only.",
+      "TDD proves the selected-source report chain can validate selector report sha/status, project PMXT L2 rows to an NT catalog, run BacktestNode, and write a BacktestResultContract artifact.",
+      "Concrete config-owned PMXT one-off artifact-root run wrote /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/backtests/pmxt-run/backtest-result-contract.json with result_contract_hash 1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe, selected_source_parquet_hash 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, catalog_hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236, catalog_nt_data_types [OrderBookDelta, TradeTick], catalog_rows_by_nt_data_type {OrderBookDelta: 103, TradeTick: 1}, projected_l2_rows 5, and nt_iterations 104.",
+      "Historical config-owned PMXT one-off mixed artifact-root run wrote /private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08/backtests/pmxt-run/backtest-result-contract.json with result_contract_hash 9184746c040672fe948defcd7294aa13a07d445dcdb305279008d9dd53e84871, conversion_manifest_hash 3f5c48836fe459715b45da1b6a0e8a5a14cc0e86f9293f4852f14da16da8f738, catalog_hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236, catalog_nt_data_types [OrderBookDelta, TradeTick], catalog_rows_by_nt_data_type {OrderBookDelta: 103, TradeTick: 1}, projected_l2_rows 5, and nt_iterations 103. This scratch artifact now has a stale [catalog_input] manifest and is not current acceptance evidence.",
+      "This does not authorize broad PMXT backfill or production backfill."
+    ]
+  },
+  "hard_stop_audit": [
+    {
+      "prompt_requirement": "authoritative raw object/source proof",
+      "bounded_first_proof_status": "partially_proven",
+      "evidence": "Raw object and hash are fixed in the pending PMXT fixture and first-proof policy; source proof remains pending until TDD produces NT mapping, catalog read-back, BacktestNode, storage, coverage, and cost evidence.",
+      "required_before_acceptance": "Promote or supersede the pending fixture only after the bounded selected universe is written to NT catalog, queried back, and consumed by BacktestNode."
+    },
+    {
+      "prompt_requirement": "clean output prefix",
+      "bounded_first_proof_status": "concrete_one_off_artifact_root_written",
+      "evidence": "Contract requires one configured artifact_root with typed nt-catalog/source-proofs/backtests subpaths. The config-owned PMXT one-off CLI wrote the current artifact under /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/backtests/pmxt-run and preserved stable hashes on rerun.",
+      "required_before_acceptance": "Promote only the one-off artifact if required; do not infer broad PMXT backfill acceptance from this bounded sample."
+    },
+    {
+      "prompt_requirement": "idempotency proof",
+      "bounded_first_proof_status": "pmxt_one_off_l2_idempotency_proven",
+      "evidence": "PMXT one-off L2 conversion reuses matching completed manifest/checkpoint/catalog metadata; mismatched or dirty output remains gated by the generic conversion boundary. Result-contract reruns preserve an existing one-off contract only after stable-field comparison; NT run-volatiles machine_id, instance_id, and elapsed_time_secs are not treated as semantic source/catalog changes.",
+      "required_before_acceptance": "Keep this idempotency scoped to the bounded one-off artifact; broad backfill still needs coverage, partitioning, throughput, and mixed data-family artifact binding."
+    },
+    {
+      "prompt_requirement": "whether NT already provides needed mechanism",
+      "bounded_first_proof_status": "proven_for_core_catalog_backtest_parser_surfaces",
+      "evidence": "Pinned NT exposes ParquetDataCatalog, BacktestNode, NautilusDataType::OrderBookDelta, L2_MBP book type, Polymarket instrument/provider/parser surfaces, and typed catalog query support.",
+      "required_before_acceptance": "BTE must depend on pinned nautilus-polymarket and prove direct parser/provider reuse; build_polymarket_trade_id is crate-private and needs a tested mirror or upstream public API."
+    },
+    {
+      "prompt_requirement": "BacktestNode consumes exactly the verified catalog",
+      "bounded_first_proof_status": "concrete_pmxt_one_off_l2_trade_tick_artifact_root_written",
+      "evidence": "NT BacktestNode queries OrderBookDelta and TradeTick from ParquetDataCatalog, validates L2_MBP venues have order-book data, sorts the merged streams by ts_init, and completed 104 iterations from the verified current PMXT catalog. The PMXT one-off artifact-root writer validates selected-source and selector report hashes, projects selected PMXT rows to ParquetDataCatalog, and binds catalog hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236 with catalog_nt_data_types [OrderBookDelta, TradeTick] and catalog_rows_by_nt_data_type {OrderBookDelta: 103, TradeTick: 1}. The selected-source projection schema rejects configs that try to silently ignore configured non-ignorable event types such as tick_size_change.",
+      "required_before_acceptance": "Treat this as one-off PMXT L2+TradeTick evidence only; expanded coverage and dynamic tick-size replay remain separate gates."
+    },
+    {
+      "prompt_requirement": "result contract provenance binds the run",
+      "bounded_first_proof_status": "concrete_pmxt_one_off_l2_trade_tick_result_contract_written",
+      "evidence": "The refreshed PMXT one-off L2+TradeTick artifact-root run validates the selected-source report chain, writes conversion checkpoint/manifest/catalog metadata, runs BacktestNode over the verified NT catalog, and writes a BacktestResultContract binding source proof id/version, accepted object hash 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, event_count_ledger_hash 985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a, conversion_manifest_hash 5fd0361cefa1a5c3750ab36e9fd2f837ebce0af707ea707d41451eb5c6d0b8f1, catalog_hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236, catalog_nt_data_types [OrderBookDelta, TradeTick], catalog_rows_by_nt_data_type {OrderBookDelta: 103, TradeTick: 1}, and first-proof claim limits. Result contract file hash is 1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe.",
+      "required_before_acceptance": "Promote or archive this one-off artifact only if needed; do not use it as broad PMXT backfill acceptance."
+    }
+  ],
+  "nt_use_matrix_delta": [
+    {
+      "requirement": "PMXT archive rows to NT data",
+      "nt_provides": "parser_and_instrument_surfaces_yes_raw_archive_adapter_no",
+      "evidence": "nautilus-polymarket public APIs expose instrument provider, Gamma parser, BinaryOption build/rebuild, websocket message structs, parse_book_snapshot, parse_book_deltas, parse_trade_tick, and parse_quote_from_price_change.",
+      "decision": "Use NT parser/provider. Bolt owns raw PMXT parquet row decoding, event-count selector, timestamp_received provenance, dedupe, and manifest/checkpoint governance."
+    },
+    {
+      "requirement": "catalog write/read",
+      "nt_provides": "yes",
+      "evidence": "ParquetDataCatalog writes instruments and typed data; query_typed_data/query support OrderBookDelta and TradeTick.",
+      "decision": "Use NT ParquetDataCatalog only; no custom catalog format."
+    },
+    {
+      "requirement": "backtest execution",
+      "nt_provides": "yes_for_bounded_static_instrument_universe",
+      "evidence": "BacktestNode dispatches OrderBookDelta catalog queries and validates L2_MBP venues have configured order-book data.",
+      "decision": "Use NT BacktestNode. No custom simulation engine."
+    },
+    {
+      "requirement": "dynamic tick-size instrument epoch replay",
+      "nt_provides": "unproven_for_backtestnode_catalog_replay",
+      "evidence": "NT live Polymarket path rebuilds BinaryOption and emits DataEvent::Instrument, but BacktestDataConfig catalog replay feeds Data enum records and Data has no InstrumentAny variant.",
+      "decision": "Exclude tick-changing assets for bounded first proof; keep full PMXT L2 and broad backfill blocked until this is proven."
+    },
+    {
+      "requirement": "artifact/proof governance",
+      "nt_provides": "no",
+      "evidence": "Source-proof acceptance, artifact_root path governance, clean-prefix checks, logical catalog hash, selected universe hash, and claim limits are Bolt contract surfaces.",
+      "decision": "Bolt owns minimal gates and provenance only."
+    }
+  ],
+  "generic_implementation_slice": [
+    {
+      "area": "source selector",
+      "required_shape": "TOML/source-proof-owned event-count selector over source event families and row budget; no venue, asset, or symbol constants in production code.",
+      "current_status": "TDD-proven for generic configured event-family roles, excluded-event assets, row-budget ordering, event-count ledger hash, selected_asset_ids_hash, idempotent report writing, config-owned event-count parquet scanning, and thin CLIs. The refreshed PMXT selector/report chain at /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08 projects bounded PMXT L2 rows and configured PMXT last_trade_price rows into the one-off NT projection path without rescanning the full raw object after selector row groups are known. PMXT remains one-off backfill evidence, not a reusable converter abstraction. Mixed data-family artifact-root/result-contract metadata binding is proven by tests, CI, and the refreshed concrete artifact."
+    },
+    {
+      "area": "manifest data config",
+      "required_shape": "Data-family driven support for multiple NT data configs, at minimum OrderBookDelta and TradeTick for L2Replay plus NT-supported InstrumentStatus/InstrumentClose auxiliary streams, without replacing existing TradeTick path.",
+      "current_status": "TDD-proven for OrderBookDelta data config, configured instrument_ids, multiple configured [[catalog_inputs]] mapping into multiple NT BacktestDataConfig entries, and InstrumentStatus/InstrumentClose auxiliary streams. Auxiliary streams cannot satisfy the primary TradeReplay/L2Replay market-data requirement. Full broad source-selection/catalog acceptance remains pending outside the bounded PMXT one-off path."
+    },
+    {
+      "area": "catalog projection",
+      "required_shape": "Write InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick to ParquetDataCatalog; read all three logical classes back and hash them deterministically.",
+      "current_status": "TDD-proven for an NT-native fixture, including BacktestNode consumption of a BinaryOption L2 OrderBookDelta catalog. PMXT one-off projection reuses nautilus-polymarket metadata/snapshot/delta parsers, writes BinaryOption plus OrderBookDelta data to ParquetDataCatalog, reads it back, and proves BacktestNode consumption for L2 rows. PMXT TradeTick projection mirrors pinned NT's crate-private historical transaction_hash+asset+sequence TradeId shape with provenance, emits NT TradeTick values, and writes/reads them through ParquetDataCatalog for one-off selected-source rows. Mixed OrderBookDelta+TradeTick metadata binding is proven by current tests/CI and the refreshed current [[catalog_inputs]] artifact."
+    },
+    {
+      "area": "conversion governance",
+      "required_shape": "PMXT one-off L2 conversion writes the standard conversion manifest, checkpoint, catalog metadata, and logical catalog hash; matching reruns are idempotent and mismatched/dirty output remains gated by the generic conversion boundary.",
+      "current_status": "TDD-proven for PMXT one-off clean output metadata, matching-complete rerun reuse, selected-source report-chain artifact-root writing, and generic catalog_nt_data_types/catalog_rows_by_nt_data_type binding for mixed OrderBookDelta+TradeTick one-off artifacts. Generic conversion-boundary tests prove dirty-output, identity mismatch, idempotent-complete, and validated-checkpoint state handling. Older /private/tmp mixed artifacts are stale because their manifests use [catalog_input]; the refreshed /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08 artifact uses current [[catalog_inputs]] and is current one-off evidence."
+    },
+    {
+      "area": "NT parser/provider reuse",
+      "required_shape": "Keep the pinned nautilus-polymarket dependency in the isolated BTE crate and call public NT Polymarket parser/provider APIs for instruments, snapshots, deltas, and trades."
+    },
+    {
+      "area": "trade id",
+      "required_shape": "Because build_polymarket_trade_id is pub(crate), mirror the pinned format only behind focused tests/provenance or wait for an upstream public API."
+    },
+    {
+      "area": "result contract",
+      "required_shape": "Bind source proof, object hash, event-count ledger hash, selected_asset_ids_hash, converter identity/version, conversion manifest/checkpoint hash, logical catalog hash, NT revision, and claim limits.",
+      "current_status": "TDD-proven schema validation requires event_count_ledger_hash and selected_asset_ids_hash for L2Replay result contracts; runner inputs expose generic selector provenance and refuse L2Replay result construction without it. The refreshed PMXT one-off L2+TradeTick artifact at /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08 runs BacktestNode through a current [[catalog_inputs]] manifest over the verified catalog and writes a result contract binding selector, conversion, catalog, catalog-metadata, and claim-limit provenance. Older /private/tmp mixed result_contract hashes are historical only."
+    }
+  ],
+  "required_red_green_tests_before_acceptance": [
+    "Reject dirty existing PMXT L2 output without matching manifest/checkpoint.",
+    "Reject existing output with mismatched source proof, object hash, selected universe hash, or converter identity.",
+    "Rerun the same manifest/checkpoint idempotently.",
+    "Resume only from a validated PMXT L2 checkpoint.",
+    "Refuse partial failed PMXT L2 output without a valid checkpoint.",
+    "Compute selected first-proof universe from configured event-count predicates with no venue or asset constants.",
+    "Reject selected assets that have tick_size_change rows.",
+    "Reuse nautilus-polymarket public parser/provider APIs for BinaryOption instruments and token-id joins.",
+    "Prove selected PMXT trade-id dedupe and sequence policy, including the crate-private NT helper mirror constraint.",
+    "Write and read back BinaryOption instruments, OrderBookDelta rows, and TradeTick rows from ParquetDataCatalog.",
+    "Run BacktestNode with L2_MBP venue config over only the verified catalog.",
+    "Bind BacktestResultContract provenance and claim limits for the bounded PMXT first proof."
+  ],
+  "post_decision_tdd_progress": [
+    "RED just bte-test run_manifest::tests::l2_replay_accepts_order_book_delta_data_config failed with UnsupportedDataType for OrderBookDelta.",
+    "GREEN just bte-test run_manifest::tests::l2_replay_accepts_order_book_delta_data_config passed after mapping OrderBookDelta into NT BacktestDataConfig.",
+    "RED just bte-test run_manifest::tests::data_config_maps_configured_multi_instrument_ids failed with UnsupportedNtSurface for catalog_input.instrument_ids.",
+    "GREEN just bte-test run_manifest::tests::data_config_maps_configured_multi_instrument_ids passed after mapping configured instrument_ids into NT BacktestDataConfig.",
+    "RED python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked nt_status_and_close_catalog_inputs_as_auxiliary_streams failed with UnsupportedDataType for InstrumentStatus.",
+    "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked nt_status_and_close_catalog_inputs_as_auxiliary_streams passed after mapping InstrumentStatus and InstrumentClose into NT BacktestDataConfig as auxiliary streams for TradeReplay and L2Replay.",
+    "The branch adds regression coverage that auxiliary InstrumentStatus/InstrumentClose inputs cannot satisfy TradeReplay without a primary TradeTick; PR CI is the broad gate for this commit.",
+    "just bte-test run_manifest::tests:: passed 65 focused manifest tests.",
+    "just bte-fmt-check passed.",
+    "RED just bte-test catalog_projection::tests::binary_option_l2_catalog_records_round_trip_through_nt_catalog failed because logical_catalog_hash rejected InstrumentAny::BinaryOption after NT catalog write/read succeeded.",
+    "GREEN just bte-test catalog_projection::tests::binary_option_l2_catalog_records_round_trip_through_nt_catalog passed after logical_catalog_hash covered BinaryOption instruments and OrderBookDelta rows.",
+    "just bte-test catalog_projection::tests:: passed 16 focused catalog projection tests.",
+    "just bte-fmt-check passed after catalog projection changes.",
+    "RED just bte-test first_proof_selector_uses_configured_event_roles_without_asset_constants failed because the new first-proof selector stub returned Blocked instead of Selected.",
+    "GREEN just bte-test first_proof_selector_uses_configured_event_roles_without_asset_constants passed after the selector applied configured required/excluded event families, row budget, and deterministic replay_rows/asset_id ordering.",
+    "RED just bte-test first_proof_selector_writer_is_config_and_ledger_driven_and_idempotent failed with the explicit unimplemented writer error.",
+    "GREEN just bte-test first_proof_selector_writer_is_config_and_ledger_driven_and_idempotent passed after TOML spec parsing, JSON event-count ledger parsing, idempotent report writing, event_count_ledger_hash, and selected_asset_ids_hash support.",
+    "just bte-test first_proof_selector passed 2 focused selector tests.",
+    "just bte-fmt-check passed after first-proof selector changes.",
+    "RED just bte-test result_contract::tests::l2_result_contract_requires_event_count_ledger_hash failed because an L2Replay contract without selector provenance still validated.",
+    "GREEN just bte-test result_contract::tests::l2_result_contract_requires_event_count_ledger_hash passed after L2Replay contracts required event_count_ledger_hash.",
+    "RED just bte-test result_contract::tests::l2_result_contract_requires_and_binds_selected_asset_ids_hash failed because an L2Replay contract with only event_count_ledger_hash still validated.",
+    "GREEN just bte-test result_contract::tests::l2_result_contract_requires_and_binds_selected_asset_ids_hash passed after L2Replay contracts required selected_asset_ids_hash and serialized both selector hashes.",
+    "RED just bte-test runner::tests::l2_run_contract_provenance_requires_selector_hashes failed with unresolved BacktestSelectorProvenance and selector_provenance_hashes.",
+    "GREEN just bte-test runner::tests::l2_run_contract_provenance_requires_selector_hashes passed after runner inputs gained generic selector provenance and L2Replay run-contract construction refused missing selector hashes.",
+    "just bte-test runner::tests:: backtesting_vertical_slice_end_to_end result_contract::tests:: passed 35 focused runner/end-to-end/result-contract tests.",
+    "just bte-fmt-check passed after runner selector-provenance wiring.",
+    "just bte-clippy passed after runner selector-provenance wiring.",
+    "RED rust_verification cargo test first_proof_event_count_ledger_scans_configured_parquet_columns failed with unresolved event-count ledger API imports.",
+    "GREEN rust_verification cargo test first_proof_event_count_ledger_scans_configured_parquet_columns passed after TOML-driven parquet scanning of configured asset/event columns and idempotent event-count ledger writing.",
+    "RED rust_verification cargo test first_proof_event_count_ledger_cli_writes_artifact_from_config_owned_spec failed because CARGO_BIN_EXE_first_proof_event_count_ledger was absent.",
+    "GREEN rust_verification cargo test first_proof_event_count_ledger_cli_writes_artifact_from_config_owned_spec passed after adding the first_proof_event_count_ledger CLI.",
+    "RED rust_verification cargo test first_proof_selector_cli_writes_artifact_from_config_owned_spec failed because CARGO_BIN_EXE_first_proof_selector was absent.",
+    "GREEN rust_verification cargo test first_proof_selector_cli_writes_artifact_from_config_owned_spec passed after adding the first_proof_selector CLI.",
+    "Timed bounded PMXT event-count scan generated /private/tmp/bte-pmxt-first-proof-selector-2026-06-08/event-count-ledger.json from the 64,877,467-row one-hour sample in 55.23s debug runtime after parquet projection and borrowed-row counting.",
+    "Timed selector report generation produced /private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector/first-proof-selector-report.json in 2.27s debug runtime with 451 event-family eligible assets before metadata gating.",
+    "Metadata-backed selector report /private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector-gamma-candidates/first-proof-selector-report.json selected 1 asset from 6 Gamma-backed candidates, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, file_sha256 3e64cc09d803ff34de9cbc51345978406125fcc5147879a7c5ff8475a73c3aaf.",
+    "Row-group-pruned selected-source staging produced 5 rows in 30.31s and projected 1 of 62 source row groups.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_first_proof_selector first_proof_event_count_ledger_scans_configured_parquet_columns failed because the event-count ledger JSON lacked source_row_groups.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_first_proof_selector first_proof_event_count_ledger_scans_configured_parquet_columns passed after event-count ledger rows carried source_row_groups from Parquet row-group metadata.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan failed before selected-source accepted selector-carried source_row_groups.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan passed after selected-source used selector source_row_groups and avoided a full asset-column rescan.",
+    "GREEN PR #610 CI on 6aaf1bd0 passed backtester-gate, bvs-test, bvs-clippy, fmt-check, main clippy, source-fence, and all nextest shards.",
+    "GREEN PR #610 CI on a9ce2baa passed backtester-gate, bvs-test, bvs-clippy, bvs-fmt, fmt-check, main clippy, source-fence, CodeQL, actionlint, deny, check-aarch64, gate, test, and all nextest shards.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_backfill_coverage coverage_ledger_rejects_completed_manifest_without_coverage_axis failed because a completed backfill manifest could be accepted without proving its coverage time axis.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_backfill_coverage coverage_ledger passed after backfill coverage manifests required a non-empty coverage_axis for acceptance and records preserved the configured axis.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_backfill_preflight backfill_preflight_selects_bounded_canonical_ready_record_without_source_constants failed because selected preflight records did not expose coverage_axis.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_backfill_preflight backfill_preflight_selects_bounded_canonical_ready_record_without_source_constants passed after preflight selected records carried coverage_axis and rejected eligible records without it.",
+    "RED python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_coverage coverage_ledger_writer_binds_coverage_axis_from_manifest_file_spec failed because coverage_axis was an unknown [[manifest]] spec field.",
+    "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_coverage coverage_ledger_writer_binds_coverage_axis_from_manifest_file_spec passed after manifest-file metadata binding accepted coverage_axis without mutating raw manifests.",
+    "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin backfill_coverage_ledger -- --spec /private/tmp/bte-pmxt-coverage-ledger-20260609/pmxt-coverage-ledger.toml wrote /private/tmp/bte-pmxt-coverage-ledger-20260609/ledger-output/backfill-coverage-ledger.json in a manifest-only path with content_hash f13eb6549cf24372c0916ea33264635d71c868decf30934e26f098238898d746, file_sha256 9ea0b58dfc41af88843c9cfb579882663b07b3e171c2889b39c1d608e373e9fb, two PMXT records using coverage_axis timestamp_received, and both records rejected because source_proof_status remains pending.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan failed because the selected-source projection API was absent.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan passed after report-hash/Parquet-hash-checked selected-source decoding projected only configured PMXT L2 event roles through the NT-backed one-off projection path.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection --test backtesting_vertical_slice_selected_source_slice passed 6 focused tests after selected-source decoding.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_metadata failed because the PMXT one-off conversion projection API was absent.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_metadata passed after PMXT one-off L2 projection wrote conversion checkpoint, manifest, catalog metadata, and logical catalog hash through the generic conversion boundary.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output failed because the PMXT wrapper required a clean output directory.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output passed after matching completed output was reused with manifest/data-type/instrument/row-count/catalog-uri checks.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_provenance failed because the PMXT one-off BacktestNode/result-contract API was absent.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_provenance passed after the helper ran BacktestNode over the verified OrderBookDelta catalog and built a BacktestResultContract binding conversion, selector, catalog, catalog metadata, NT revision, and claim-limit provenance.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 7 focused PMXT one-off projection tests.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source_report_chain failed because the PMXT one-off artifact-root writer API was absent.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source_report_chain passed after the writer validated selected-source/selector report hashes, projected PMXT L2 rows, wrote conversion metadata, ran BacktestNode, and wrote backtest-result-contract.json.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 8 focused PMXT one-off projection tests.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice --test backtesting_vertical_slice_conversion_boundary --test backtesting_vertical_slice_source_proof_reference_fixtures --test backtesting_vertical_slice_catalog_and_node passed 13 adjacent selected-source/conversion/source-proof/catalog-node tests.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_binary_view_market_column failed because selected-source market decoding rejected Arrow BinaryView.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_binary_view_market_column passed after one-off selected-source decoding accepted BinaryView market bytes.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_fixed_size_binary_market_column failed because selected-source market decoding rejected FixedSizeBinary.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_fixed_size_binary_market_column passed after one-off selected-source decoding normalized FixedSizeBinary market bytes to a hex string for NT Polymarket matching.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_cli_writes_result_contract_from_config_owned_spec failed because the config-owned PMXT one-off artifact-root CLI did not exist.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_cli_writes_result_contract_from_config_owned_spec passed after adding the thin config-owned PMXT one-off artifact-root CLI.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source_report_chain failed on rerun because NT run-volatiles changed the generated result contract bytes.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source_report_chain passed after result-contract reruns preserved the existing artifact only when all stable fields matched.",
+    "GREEN rust_verification cargo run --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-one-off-artifact-root-run-2026-06-08/spec.toml produced result_contract_hash 443a9748ad878984a4959ed840a1132f27c52575d70354af1b5e290cd50d4f19, conversion_manifest_hash f460cbb4d9be89d12984deb2fa3ce30959fc42b69fd08873714d8c2d632270ea, catalog_hash 2a49db95fe31a87896bcb3989ec99abd6b1b805173732c4f27bf2ab523d1868c, selected_source_parquet_hash 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, event_count_ledger_hash 9491b9fe73ba1bf75024fc113f6bf918866b952db9e81d262cc1fcaf0367dd2e, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, projected_l2_rows 4, and nt_iterations 103.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_projects_trade_ticks_with_transaction_hash_dedupe_and_sequences failed because PMXT TradeTick row projection, LastTrade, and dedupe provenance were absent.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_projects_trade_ticks_with_transaction_hash_dedupe_and_sequences passed after the PMXT one-off projection mirrored pinned NT's crate-private historical TradeId shape and emitted NT TradeTick values with dedupe provenance.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_columns passed for configured selected-source transaction_hash and fee_rate_bps columns.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_writes_nt_catalog_and_reads_back_trade_ticks passed after PMXT one-off TradeTicks were written to and queried back from NT ParquetDataCatalog.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 14 focused PMXT one-off projection tests.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog failed because ConversionManifest and ConversionCatalogMetadata could not bind catalog_nt_data_types or catalog_rows_by_nt_data_type.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog passed after generic conversion metadata recorded OrderBookDelta and TradeTick row counts while BacktestNode consumed only the verified L2 stream.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 15 focused PMXT one-off projection tests.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice --test backtesting_vertical_slice_conversion_boundary --test backtesting_vertical_slice_source_proof_reference_fixtures --test backtesting_vertical_slice_catalog_and_node passed 14 adjacent selected-source/conversion/source-proof/catalog-node tests after the generic conversion metadata change and legacy single-family manifest compatibility regression.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_columns failed because concrete-style numeric fee_rate_bps columns were rejected by the one-off selected-source decimal decoder.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_columns passed after configured selected-source decimal columns accepted Arrow numeric primitives and rejected non-finite floats.",
+    "HISTORICAL rust_verification cargo run --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08/spec.toml previously produced result_contract_hash 9184746c040672fe948defcd7294aa13a07d445dcdb305279008d9dd53e84871, conversion_manifest_hash 3f5c48836fe459715b45da1b6a0e8a5a14cc0e86f9293f4852f14da16da8f738, catalog_hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236, catalog_nt_data_types [OrderBookDelta, TradeTick], catalog_rows_by_nt_data_type {OrderBookDelta: 103, TradeTick: 1}, projected_l2_rows 5, and nt_iterations 103.",
+    "CURRENT RECHECK python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08/spec.toml fails because /private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08/manifest.toml still uses removed [catalog_input] schema; current code expects [[catalog_inputs]].",
+    "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin first_proof_event_count_ledger -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/event-count-ledger.toml regenerated source_row_groups-aware event-count ledger file_sha256 538f992b836f356ed8b50815530ec270013797da27d76a65473e2a2ac95cb5c3 with selected asset event families book=1, last_trade_price=1, price_change=3 all in source_row_groups [35].",
+    "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin selected_source_slice -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source.toml projected 1 of 62 row groups, selected_rows 5, selected_asset_count 1, output_parquet_sha256 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, report_hash 9d3e2f100f8f6047b89e8ce1355defef82476b9ecacc79ebc5a1ace85f21d5f3.",
+    "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/artifact-root-run.toml produced current result_contract_hash 1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe, conversion_manifest_hash 5fd0361cefa1a5c3750ab36e9fd2f837ebce0af707ea707d41451eb5c6d0b8f1, catalog_hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236, selected_source_parquet_hash 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, event_count_ledger_hash 985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, catalog_nt_data_types [OrderBookDelta, TradeTick], catalog_rows_by_nt_data_type {OrderBookDelta: 103, TradeTick: 1}, and nt_iterations 104.",
+    "GREEN rerun of /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/artifact-root-run.toml preserved result_contract_hash 1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe and nt_iterations 104.",
+    "RED python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_coverage coverage_ledger_binds_source_proof_metadata_from_report_path failed because source_proof_path was not accepted by the coverage-ledger manifest spec.",
+    "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_coverage coverage_ledger_binds_source_proof_metadata_from_report_path passed after coverage-ledger manifests could derive source_binding, table_family, source_proof_id, source_proof_version, and source_proof_status from SourceProofReport metadata.",
+    "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_coverage source_proof passed 3 focused source-proof coverage tests, including rejection of explicit table_family metadata that conflicts with source_proof_path.",
+    "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin backfill_coverage_ledger -- --spec /private/tmp/bte-pmxt-coverage-ledger-source-proof-20260609/pmxt-coverage-ledger.toml wrote /private/tmp/bte-pmxt-coverage-ledger-source-proof-20260609/ledger-output/backfill-coverage-ledger.json with content_hash c1348e348e9b9ff4d5ac8aa3e52d004110bcf8b86fe1d7c7cba568dbedbb2a63, file_sha256 7dc20194f826eb9c05ec99c27cdb86057f775e1486d688a73cc2924659a4c2cf, table_family order_book_snapshot_deltas derived from the committed PMXT source proof, and both records rejected because source_proof_status remains pending."
+  ],
+  "still_blocking_broad_backfill": [
+    "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven; InstrumentStatus/InstrumentClose replay support is not timed InstrumentAny instrument-definition replay.",
+    "One-hour bounded sample does not prove one-year PMXT coverage, gaps, retention, throughput, or cost.",
+    "Pending PMXT source proof has not passed storage, coverage, completeness, cost, and broad accepted NT mapping checks.",
+    "A concrete manifest-only PMXT coverage ledger now exists at /private/tmp/bte-pmxt-coverage-ledger-source-proof-20260609/ledger-output/backfill-coverage-ledger.json and derives source_binding/table_family/proof status from the SourceProofReport, but both records are rejected because source_proof_status remains pending; this proves the efficient source-proof-bound coverage path, not broad source acceptance.",
+    "Only one bounded PMXT one-off L2+TradeTick result-contract artifact exists; it does not prove expanded tranche coverage or reusable PMXT backfill.",
+    "Concrete PMXT mixed OrderBookDelta+TradeTick artifact-root/result-contract evidence has been regenerated as one bounded selected-source sample only; it still does not prove expanded tranche coverage, source completeness, throughput, dynamic tick-size replay, or reusable PMXT backfill."
+  ]
+}

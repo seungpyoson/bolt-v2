@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01192:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TRUMPEUR:2026-03-01:27651a9b7ea05bf3483d4bc3b0a84c041138b40eb7f5fce3ab7a5b665d82fb67:accepted-tranche",
+  "accepted_tranche_manifest_hash": "ab943624f0ac20c47b802b1eb041042c356a619b1ff4bb440084b111af3d7a2d",
+  "run_spec_hash": "b3996b1164c974c0d95e41ade9ee19933b63e3c44e648e4b69c79a0bcdd2950f",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01192",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TRUMPEUR/dt=2026-03-01/object=27651a9b7ea05bf3483d4bc3b0a84c041138b40eb7f5fce3ab7a5b665d82fb67",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 4287,
+  "max_object_bytes": 4287,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=TRUMPEUR/object=27651a9b7ea05bf3483d4bc3b0a84c041138b40eb7f5fce3ab7a5b665d82fb67.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/TRUMPEUR/TRUMPEUR-trades-2026-03-01.zip",
+      "sha256": "27651a9b7ea05bf3483d4bc3b0a84c041138b40eb7f5fce3ab7a5b665d82fb67",
+      "bytes": 4287,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

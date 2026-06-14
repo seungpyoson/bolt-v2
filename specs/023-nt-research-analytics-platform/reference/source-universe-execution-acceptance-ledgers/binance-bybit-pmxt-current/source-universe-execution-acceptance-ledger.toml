@@ -1,0 +1,33 @@
+ledger_id = "source-universe-execution-acceptance-ledger-binance-bybit-pmxt-current"
+output_dir = "specs/023-nt-research-analytics-platform/reference/source-universe-execution-acceptance-ledgers/binance-bybit-pmxt-current/ledger"
+
+[[universe]]
+universe_id = "backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments"
+venue = "binance"
+source = "data_vision"
+family = "native_trades"
+source_universe_object_gates_path = "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json"
+source_universe_conversion_run_plan_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/binance-data-vision-trades-2026-03-01-all-instruments/run-plan/source-universe-conversion-run-plan.json"
+source_universe_operator_inputs_path = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments/operator-inputs/source-universe-operator-inputs.json"
+source_universe_execution_pack_path = "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/execution-pack/source-universe-execution-pack.json"
+
+[[universe]]
+universe_id = "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
+venue = "bybit"
+source = "public_archive"
+family = "tick_trades"
+source_universe_object_gates_path = "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json"
+source_universe_conversion_run_plan_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json"
+source_universe_operator_inputs_path = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/operator-inputs/source-universe-operator-inputs.json"
+source_universe_execution_pack_path = "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/source-universe-execution-pack.json"
+
+[[universe]]
+universe_id = "backfill-source-universe-pmxt-polymarket-v2-current"
+venue = "pmxt"
+source = "polymarket-v2-archive"
+family = "orderbook"
+source_universe_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json"
+source_universe_conversion_queue_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json"
+blocking_reasons = [
+  "missing_pmxt_l2_tick_size_epoch_policy",
+]

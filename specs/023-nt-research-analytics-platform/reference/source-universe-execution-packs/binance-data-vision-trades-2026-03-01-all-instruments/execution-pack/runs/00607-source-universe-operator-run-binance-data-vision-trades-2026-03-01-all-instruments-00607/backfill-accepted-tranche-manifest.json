@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ILVUSDT:2026-03-01:38f50d1fca6a281cd4e1320d4611e89b773312dcc182e72b143891e60f4bc6ad:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ILVUSDT:2026-03-01:38f50d1fca6a281cd4e1320d4611e89b773312dcc182e72b143891e60f4bc6ad:source-proof-scope",
+  "source_proof_scope_report_hash": "f3743f31c7c66e72f9d4956dcb4d92f9de07f1cc962f3b282d99a3b1b4e7bc77",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-spot",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 46567,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=ILVUSDT/object=38f50d1fca6a281cd4e1320d4611e89b773312dcc182e72b143891e60f4bc6ad.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/ILVUSDT/ILVUSDT-trades-2026-03-01.zip",
+      "sha256": "38f50d1fca6a281cd4e1320d4611e89b773312dcc182e72b143891e60f4bc6ad",
+      "bytes": 46567,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

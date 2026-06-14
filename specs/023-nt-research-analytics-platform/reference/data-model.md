@@ -104,6 +104,9 @@ data models are defined inside the numbered project specs/plans:
 - `time_semantics`: Event time, availability time, capture time, and freshness.
 - `schema_sample`: Schema version, field list, sample URI, and sample hash.
 - `license_ref`: License/commercial-use proof and timestamp.
+- `license_scope`: Personal, commercial, enterprise, public, unknown, or waived;
+  accepted BTE catalog/backtest input requires public, commercial, enterprise,
+  or waived scope.
 - `nt_mapping_status`: accepted, rejected, signal-only, or pending.
 - `fidelity_class`: L2_REPLAY, TRADE_BAR_REPLAY, SIGNAL_ONLY, or
   FORWARD_CAPTURE_PENDING.

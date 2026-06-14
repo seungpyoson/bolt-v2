@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00594:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:HYPERUSDT:2026-03-01:38cb9a0085a2cb8578dd2977d8361bc0c5c1ff1780cb48a2a21da742437f44fa:accepted-tranche",
+  "accepted_tranche_manifest_hash": "6fbb96d94de1856aa1f2a6ea491416cc3d4431a2221176596a328bfe8faa8e85",
+  "run_spec_hash": "d59af2a13850ceff9e83b414017afb2a3b19fc7b80ff5c119e0ad6e488442ddd",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00594",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=HYPERUSDT/dt=2026-03-01/object=38cb9a0085a2cb8578dd2977d8361bc0c5c1ff1780cb48a2a21da742437f44fa",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 94238,
+  "max_object_bytes": 94238,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=HYPERUSDT/object=38cb9a0085a2cb8578dd2977d8361bc0c5c1ff1780cb48a2a21da742437f44fa.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/HYPERUSDT/HYPERUSDT-trades-2026-03-01.zip",
+      "sha256": "38cb9a0085a2cb8578dd2977d8361bc0c5c1ff1780cb48a2a21da742437f44fa",
+      "bytes": 94238,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

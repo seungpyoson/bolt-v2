@@ -46,6 +46,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback.
 
 
 POLICY_RELATIVE_PATH = pathlib.Path("ci/rust-verification.toml")
+CI_RUNNERS_RELATIVE_PATH = pathlib.Path("ci/github-actions-runners.toml")
 MAX_POLICY_BYTES = 1024 * 1024
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SCRUB_ENV_KEYS = (
@@ -2499,6 +2500,26 @@ def current_branch(repo: pathlib.Path) -> tuple[str | None, str | None]:
     return git_output(repo, "branch", "--show-current")
 
 
+def live_upstream_head(repo: pathlib.Path, branch: str) -> tuple[str | None, str | None]:
+    remote, error = git_output(repo, "config", f"branch.{branch}.remote")
+    if error is not None or not remote:
+        return None, None
+    merge_ref, error = git_output(repo, "config", f"branch.{branch}.merge")
+    if error is not None or not merge_ref:
+        return None, None
+    if not merge_ref.startswith("refs/heads/"):
+        return None, f"verify-remote requires upstream to be a branch, got {merge_ref}"
+    upstream_branch = merge_ref.removeprefix("refs/heads/")
+    refs, error = git_output(repo, "ls-remote", "--heads", remote, upstream_branch)
+    if error is not None:
+        return None, error
+    for line in refs.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[1] == f"refs/heads/{upstream_branch}":
+            return fields[0], None
+    return None, None
+
+
 def ensure_verify_remote_preconditions(repo: pathlib.Path) -> tuple[str | None, str | None, str | None]:
     status, error = git_output(repo, "status", "--porcelain", "--untracked-files=normal")
     if error is not None:
@@ -2508,18 +2529,19 @@ def ensure_verify_remote_preconditions(repo: pathlib.Path) -> tuple[str | None, 
     head, error = git_output(repo, "rev-parse", "HEAD")
     if error is not None:
         return None, None, error
-    upstream, error = git_output(repo, "rev-parse", "@{u}")
-    if error is not None:
-        branch, _branch_error = current_branch(repo)
-        hint = "git push -u origin HEAD" if branch else "push this branch and set an upstream"
-        return None, None, f"verify-remote requires pushed HEAD with an upstream; run: {hint}"
-    if upstream != head:
-        return None, None, "verify-remote requires HEAD to be pushed to the upstream branch"
     branch, error = current_branch(repo)
     if error is not None:
         return None, None, error
     if not branch:
         return None, None, "verify-remote requires a named branch"
+    upstream, error = live_upstream_head(repo, branch)
+    if error is not None:
+        return None, None, error
+    if upstream is None:
+        hint = "git push -u origin HEAD" if branch else "push this branch and set an upstream"
+        return None, None, f"verify-remote requires pushed HEAD with an upstream; run: {hint}"
+    if upstream != head:
+        return None, None, "verify-remote requires HEAD to be pushed to the upstream branch"
     return head, branch, None
 
 
@@ -2529,7 +2551,13 @@ def pr_create_hint(branch: str) -> str:
 
 def pr_for_current_branch(repo: pathlib.Path, branch: str) -> tuple[dict[str, Any] | None, str | None]:
     payload, error = load_json_command(
-        ["gh", "pr", "view", "--json", "number,url,headRefOid,headRefName,state,isDraft"],
+        [
+            "gh",
+            "pr",
+            "view",
+            "--json",
+            "number,url,headRefOid,headRefName,state,isDraft,headRepositoryOwner,headRepository",
+        ],
         repo=repo,
     )
     if error is not None:
@@ -2596,6 +2624,310 @@ def verify_remote_head_current_or_fail(repo: pathlib.Path, branch: str, head: st
     return None
 
 
+def ci_provenance_dispatch_config(repo: pathlib.Path) -> tuple[dict[str, Any] | None, str | None]:
+    path = repo / CI_RUNNERS_RELATIVE_PATH
+    if not path.exists():
+        return None, f"{CI_RUNNERS_RELATIVE_PATH} is required for verify-remote dispatch"
+    try:
+        data = load_toml(path)
+    except (OSError, PolicyError) as exc:
+        return None, str(exc)
+    provenance = data.get("ci_provenance")
+    if not isinstance(provenance, dict):
+        return None, "ci_provenance table is required for verify-remote dispatch"
+    dispatch = provenance.get("dispatch")
+    if not isinstance(dispatch, dict):
+        return None, "ci_provenance.dispatch table is required for verify-remote dispatch"
+    workflow_name = provenance.get("workflow_name")
+    workflow_path = provenance.get("workflow_path")
+    workflow_input = dispatch.get("workflow_input")
+    if not isinstance(workflow_name, str) or not workflow_name:
+        return None, "ci_provenance.workflow_name must be a non-empty string"
+    if not isinstance(workflow_path, str) or not workflow_path:
+        return None, "ci_provenance.workflow_path must be a non-empty string"
+    if not isinstance(workflow_input, str) or not SAFE_IDENTIFIER_RE.match(workflow_input):
+        return None, "ci_provenance.dispatch.workflow_input must be a safe identifier"
+    api_limits = provenance.get("api_limits")
+    run_limit = None
+    if isinstance(api_limits, dict):
+        raw_limit = api_limits.get("workflow_runs_per_page")
+        if raw_limit is not None:
+            if not isinstance(raw_limit, int) or isinstance(raw_limit, bool) or raw_limit <= 0:
+                return None, "ci_provenance.api_limits.workflow_runs_per_page must be a positive integer"
+            run_limit = raw_limit
+    return {
+        "workflow_name": workflow_name,
+        "workflow_path": workflow_path,
+        "workflow_input": workflow_input,
+        "workflow_runs_per_page": run_limit,
+    }, None
+
+
+def repository_identity(repo: pathlib.Path) -> tuple[tuple[str, str] | None, str | None]:
+    payload, error = load_json_command(["gh", "repo", "view", "--json", "name,owner"], repo=repo)
+    if error is not None:
+        return None, f"verify-remote could not inspect repository identity: {error}"
+    if not isinstance(payload, dict):
+        return None, "gh repo view returned an unexpected payload"
+    name = payload.get("name")
+    owner = payload.get("owner")
+    owner_login = owner.get("login") if isinstance(owner, dict) else owner
+    if not isinstance(name, str) or not isinstance(owner_login, str):
+        return None, "gh repo view returned incomplete repository identity"
+    return (owner_login, name), None
+
+
+def repository_name(value: Any) -> str | None:
+    if isinstance(value, dict):
+        name = value.get("name")
+        if isinstance(name, str):
+            return name
+        name_with_owner = value.get("nameWithOwner")
+        if isinstance(name_with_owner, str) and "/" in name_with_owner:
+            return name_with_owner.rsplit("/", 1)[1]
+    if isinstance(value, str):
+        return value.rsplit("/", 1)[-1]
+    return None
+
+
+def repository_owner(value: Any) -> str | None:
+    if isinstance(value, dict):
+        login = value.get("login")
+        if isinstance(login, str):
+            return login
+        name_with_owner = value.get("nameWithOwner")
+        if isinstance(name_with_owner, str) and "/" in name_with_owner:
+            return name_with_owner.split("/", 1)[0]
+    if isinstance(value, str):
+        return value.split("/", 1)[0] if "/" in value else None
+    return None
+
+
+def draft_pr_is_fork(repo: pathlib.Path, pr: dict[str, Any]) -> tuple[bool | None, str | None]:
+    current, error = repository_identity(repo)
+    if error is not None or current is None:
+        return None, error or "unable to inspect repository identity"
+    current_owner, current_name = current
+    head_owner = repository_owner(pr.get("headRepositoryOwner")) or repository_owner(pr.get("headRepository"))
+    head_repo = repository_name(pr.get("headRepository"))
+    if head_owner is None or head_repo is None:
+        return None, "verify-remote could not determine whether the draft PR branch is in the upstream repository"
+    return (head_owner, head_repo) != (current_owner, current_name), None
+
+
+WORKFLOW_RUN_FIELDS = "databaseId,event,headSha,status,conclusion,createdAt,url"
+FULL_CI_READY_EVENTS = {"pull_request"}
+FULL_CI_DRAFT_EVENTS = {"workflow_dispatch"}
+
+
+def workflow_run_list(
+    repo: pathlib.Path,
+    dispatch_config: dict[str, Any],
+    branch: str,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    argv = [
+        "gh",
+        "run",
+        "list",
+        "--workflow",
+        str(dispatch_config["workflow_name"]),
+        "--branch",
+        branch,
+        "--json",
+        WORKFLOW_RUN_FIELDS,
+    ]
+    run_limit = dispatch_config.get("workflow_runs_per_page")
+    if isinstance(run_limit, int):
+        argv.extend(["--limit", str(run_limit)])
+    payload, error = load_json_command(argv, repo=repo)
+    if error is not None:
+        return None, f"verify-remote could not inspect workflow runs: {error}"
+    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+        return None, "gh run list returned an unexpected payload"
+    return payload, None
+
+
+def workflow_run_view(repo: pathlib.Path, run_id: int) -> tuple[dict[str, Any] | None, str | None]:
+    payload, error = load_json_command(
+        ["gh", "run", "view", str(run_id), "--json", WORKFLOW_RUN_FIELDS],
+        repo=repo,
+    )
+    if error is not None:
+        return None, f"verify-remote could not inspect workflow run {run_id}: {error}"
+    if not isinstance(payload, dict):
+        return None, "gh run view returned an unexpected payload"
+    return payload, None
+
+
+def run_created_at(run: dict[str, Any]) -> str:
+    created_at = run.get("createdAt")
+    return created_at if isinstance(created_at, str) else ""
+
+
+def run_database_id(run: dict[str, Any]) -> int | None:
+    database_id = run.get("databaseId")
+    if isinstance(database_id, int) and not isinstance(database_id, bool):
+        return database_id
+    if isinstance(database_id, str) and database_id.isdigit():
+        return int(database_id)
+    return None
+
+
+def matching_full_ci_runs(
+    runs: list[dict[str, Any]],
+    *,
+    head: str,
+    events: set[str],
+    created_at_floor: str | None = None,
+    ignored_run_ids: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    matching = []
+    for run in runs:
+        event = run.get("event")
+        if run.get("headSha") != head or event not in events:
+            continue
+        run_id = run_database_id(run)
+        if ignored_run_ids is not None and run_id in ignored_run_ids:
+            continue
+        if created_at_floor is not None and run_created_at(run) < created_at_floor:
+            continue
+        matching.append(run)
+    return sorted(matching, key=run_created_at, reverse=True)
+
+
+def workflow_run_state(run: dict[str, Any]) -> str:
+    status = str(run.get("status") or "")
+    if status != "completed":
+        return "pending"
+    conclusion = str(run.get("conclusion") or "")
+    if conclusion == "success":
+        return "pass"
+    return "fail"
+
+
+def workflow_run_summary(run: dict[str, Any]) -> str:
+    run_id = run.get("databaseId") or "<unknown>"
+    status = str(run.get("status") or "unknown")
+    conclusion = str(run.get("conclusion") or "none")
+    url = str(run.get("url") or "")
+    return f"workflow run {run_id} [{status}/{conclusion}]" + (f" {url}" if url else "")
+
+
+def run_ids(runs: list[dict[str, Any]]) -> set[int]:
+    return {run_id for run in runs if (run_id := run_database_id(run)) is not None}
+
+
+def dispatch_full_ci(
+    repo: pathlib.Path,
+    dispatch_config: dict[str, Any],
+    branch: str,
+) -> tuple[None, str | None]:
+    field = f"{dispatch_config['workflow_input']}=true"
+    argv = [
+        "gh",
+        "workflow",
+        "run",
+        str(dispatch_config["workflow_path"]),
+        "--ref",
+        branch,
+        "-f",
+        field,
+    ]
+    try:
+        result = run_capture(argv, repo=repo)
+    except FileNotFoundError:
+        return None, "gh is required for remote verification"
+    if result.returncode != 0:
+        return None, f"verify-remote could not dispatch full CI: {command_error(argv, result)}"
+    return None, None
+
+
+def evaluate_full_ci_run(
+    run: dict[str, Any],
+    *,
+    head: str,
+    pr_url: str,
+) -> int | None:
+    state = workflow_run_state(run)
+    if state == "pending":
+        return None
+    if state == "pass":
+        print(f"OK: remote full CI passed for {head} on {pr_url}: {workflow_run_summary(run)}")
+        return 0
+    print(f"Remote full CI failed for {head} on {pr_url}:", file=sys.stderr)
+    print(f"- {workflow_run_summary(run)}", file=sys.stderr)
+    return 1
+
+
+def wait_for_full_ci_run(
+    *,
+    repo: pathlib.Path,
+    dispatch_config: dict[str, Any],
+    branch: str,
+    head: str,
+    pr_url: str,
+    remote_policy: dict[str, int],
+    events: set[str],
+    created_at_floor: str | None = None,
+    ignored_run_ids: set[int] | None = None,
+    initial_tracked_run_id: int | None = None,
+    sleep_before_initial_tracked_poll: bool = False,
+    track_run_once_found: bool = False,
+) -> int:
+    appear_deadline = time.monotonic() + remote_policy["checks_appear_timeout_seconds"]
+    overall_deadline = time.monotonic() + remote_policy["overall_timeout_seconds"]
+    interval = remote_policy["poll_interval_seconds"]
+    tracked_run_id: int | None = initial_tracked_run_id
+    if tracked_run_id is not None and sleep_before_initial_tracked_poll:
+        time.sleep(interval)
+    while True:
+        now = time.monotonic()
+        if now >= overall_deadline:
+            head_result = verify_remote_head_current_or_fail(repo, branch, head)
+            if head_result is not None:
+                return head_result
+            return verify_remote_fail(f"timed out waiting for full-CI workflow run on {pr_url}")
+        head_result = verify_remote_head_current_or_fail(repo, branch, head)
+        if head_result is not None:
+            return head_result
+        run: dict[str, Any] | None = None
+        if tracked_run_id is not None:
+            run, error = workflow_run_view(repo, tracked_run_id)
+            if error is not None or run is None:
+                return verify_remote_fail(error or "unable to inspect tracked workflow run")
+        else:
+            runs, error = workflow_run_list(repo, dispatch_config, branch)
+            if error is not None or runs is None:
+                return verify_remote_fail(error or "unable to inspect workflow runs")
+            matching = matching_full_ci_runs(
+                runs,
+                head=head,
+                events=events,
+                created_at_floor=created_at_floor,
+                ignored_run_ids=ignored_run_ids,
+            )
+            if matching:
+                run = matching[0]
+                if track_run_once_found:
+                    tracked_run_id = run_database_id(run)
+        if run is None:
+            if now >= appear_deadline:
+                return verify_remote_fail(f"no matching full-CI workflow run appeared for {head} on {pr_url}")
+            time.sleep(interval)
+            continue
+        if workflow_run_state(run) != "pending":
+            head_result = verify_remote_head_current_or_fail(repo, branch, head)
+            if head_result is not None:
+                return head_result
+        result = evaluate_full_ci_run(run, head=head, pr_url=pr_url)
+        if result is not None:
+            head_result = verify_remote_head_current_or_fail(repo, branch, head)
+            if head_result is not None:
+                return head_result
+            return result
+        time.sleep(interval)
+
+
 def cmd_verify_remote(args: argparse.Namespace) -> int:
     repo = repo_path(args.repo)
     try:
@@ -2610,50 +2942,101 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
     if error is not None or pr is None:
         return verify_remote_fail(error or "unable to inspect pull request")
     pr_url = pr.get("url") or f"PR #{pr.get('number')}"
-    checks_deadline = time.monotonic() + remote_policy["checks_appear_timeout_seconds"]
-    overall_deadline = time.monotonic() + remote_policy["overall_timeout_seconds"]
-    interval = remote_policy["poll_interval_seconds"]
-    while True:
-        now = time.monotonic()
-        if now >= overall_deadline:
+    dispatch_config, error = ci_provenance_dispatch_config(repo)
+    if error is not None or dispatch_config is None:
+        return verify_remote_fail(error or "unable to inspect CI dispatch config")
+
+    if bool(pr.get("isDraft")):
+        is_fork, error = draft_pr_is_fork(repo, pr)
+        if error is not None:
+            return verify_remote_fail(error)
+        if is_fork:
+            return verify_remote_fail(
+                "draft fork PRs cannot dispatch upstream full CI; mark the PR ready for review "
+                "or have a maintainer move the branch into the upstream repository"
+            )
+        runs, error = workflow_run_list(repo, dispatch_config, branch)
+        if error is not None or runs is None:
+            return verify_remote_fail(error or "unable to inspect workflow runs")
+        existing = matching_full_ci_runs(runs, head=head, events=FULL_CI_DRAFT_EVENTS)
+        if existing:
+            run = existing[0]
+            result = evaluate_full_ci_run(run, head=head, pr_url=str(pr_url))
+            if result is not None:
+                head_result = verify_remote_head_current_or_fail(repo, branch, head)
+                if head_result is not None:
+                    return head_result
+                return result
+            run_id = run_database_id(run)
+            if run_id is not None:
+                return wait_for_full_ci_run(
+                    repo=repo,
+                    dispatch_config=dispatch_config,
+                    branch=branch,
+                    head=head,
+                    pr_url=str(pr_url),
+                    remote_policy=remote_policy,
+                    events=FULL_CI_DRAFT_EVENTS,
+                    initial_tracked_run_id=run_id,
+                    sleep_before_initial_tracked_poll=True,
+                    track_run_once_found=True,
+                )
+        _unused, error = dispatch_full_ci(repo, dispatch_config, branch)
+        if error is not None:
+            return verify_remote_fail(error)
+        print(f"Dispatched full CI for {head} on {pr_url}")
+        return wait_for_full_ci_run(
+            repo=repo,
+            dispatch_config=dispatch_config,
+            branch=branch,
+            head=head,
+            pr_url=str(pr_url),
+            remote_policy=remote_policy,
+            events=FULL_CI_DRAFT_EVENTS,
+            ignored_run_ids=run_ids(existing),
+            track_run_once_found=True,
+        )
+
+    runs, error = workflow_run_list(repo, dispatch_config, branch)
+    if error is not None or runs is None:
+        return verify_remote_fail(error or "unable to inspect workflow runs")
+    existing = matching_full_ci_runs(runs, head=head, events=FULL_CI_READY_EVENTS)
+    if existing:
+        run = existing[0]
+        state = workflow_run_state(run)
+        if state == "pass":
+            result = evaluate_full_ci_run(run, head=head, pr_url=str(pr_url))
             head_result = verify_remote_head_current_or_fail(repo, branch, head)
             if head_result is not None:
                 return head_result
-            return verify_remote_fail(f"timed out waiting for remote checks on {pr_url}")
-        checks, error = pr_checks(repo)
-        if error is not None:
-            return verify_remote_fail(error)
-        head_result = verify_remote_head_current_or_fail(repo, branch, head)
-        if head_result is not None:
-            return head_result
-        if not checks:
-            if now >= checks_deadline:
-                return verify_remote_fail(
-                    f"no PR checks appeared for {head} on {pr_url}; CI may be path-ignored or not started"
+            return result
+        if state == "pending":
+            run_id = run_database_id(run)
+            if run_id is not None:
+                return wait_for_full_ci_run(
+                    repo=repo,
+                    dispatch_config=dispatch_config,
+                    branch=branch,
+                    head=head,
+                    pr_url=str(pr_url),
+                    remote_policy=remote_policy,
+                    events=FULL_CI_READY_EVENTS,
+                    initial_tracked_run_id=run_id,
+                    sleep_before_initial_tracked_poll=True,
+                    track_run_once_found=True,
                 )
-            time.sleep(interval)
-            continue
-        failing = [check for check in checks if check.get("bucket") in {"fail", "cancel"}]
-        if failing:
-            print(f"Remote checks failed for {head} on {pr_url}:", file=sys.stderr)
-            for check in failing:
-                print(f"- {check_summary(check)}", file=sys.stderr)
-            return 1
-        pending = [check for check in checks if check.get("bucket") == "pending"]
-        unknown = [
-            check
-            for check in checks
-            if check.get("bucket") not in {"pass", "skipping", "pending", "fail", "cancel"}
-        ]
-        if unknown:
-            print(f"ERROR: unknown PR check bucket for {head} on {pr_url}:", file=sys.stderr)
-            for check in unknown:
-                print(f"- {check_summary(check)}", file=sys.stderr)
-            return 2
-        if not pending:
-            print(f"OK: remote checks passed for {head} on {pr_url}")
-            return 0
-        time.sleep(interval)
+
+    return wait_for_full_ci_run(
+        repo=repo,
+        dispatch_config=dispatch_config,
+        branch=branch,
+        head=head,
+        pr_url=str(pr_url),
+        remote_policy=remote_policy,
+        events=FULL_CI_READY_EVENTS,
+        ignored_run_ids=run_ids(existing),
+        track_run_once_found=True,
+    )
 
 
 def cmd_repo_status(args: argparse.Namespace) -> int:

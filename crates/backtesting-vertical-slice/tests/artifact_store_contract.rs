@@ -89,16 +89,8 @@ fn successful_capability_evidence(
     let catalog_uri = root
         .nt_catalog_synthetic_proof_root(&proof.proof_run_id)
         .expect("synthetic proof root");
-    let binary_option_instrument_id = proof
-        .synthetic_fixtures
-        .binary_option
-        .instrument_id
-        .clone();
-    let perps_spot_instrument_id = proof
-        .synthetic_fixtures
-        .perps_spot
-        .instrument_id
-        .clone();
+    let binary_option_instrument_id = proof.synthetic_fixtures.binary_option.instrument_id.clone();
+    let perps_spot_instrument_id = proof.synthetic_fixtures.perps_spot.instrument_id.clone();
     NtCatalogCapabilityEvidence {
         no_cloud_feature_gate_failed: true,
         ambient_credentials_scrubbed: true,

@@ -9,6 +9,7 @@ import re
 import shlex
 import sys
 import tomllib
+from typing import NamedTuple
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -83,7 +84,16 @@ YAML_FOLDED_RUN_LINE_RE = re.compile(
 class PolicyError(RuntimeError):
     pass
 
+
+class CiPolicyResult(NamedTuple):
+    ci_policy_path: str
+    full_ci_required: bool
+    full_ci_deferred: bool
+    reason: str
+
+
 REQUIRED_JOBS = (
+    "ci-policy",
     "detector",
     "fmt-check",
     "deny",
@@ -94,11 +104,21 @@ REQUIRED_JOBS = (
     "test-shards",
     "test",
     "build",
+    "ci-provenance-emit",
     "same-sha-main-evidence",
     "gate",
     "deploy",
 )
-GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build")
+GATE_REQUIRED = (
+    "detector",
+    "fmt-check",
+    "deny",
+    "clippy",
+    "check-aarch64",
+    "source-fence",
+    "test",
+    "build",
+)
 DEPLOY_REQUIRED_NEEDS = (
     "gate",
     "same-sha-main-evidence",
@@ -111,7 +131,46 @@ DEPLOY_REQUIRED_NEEDS = (
     "source-fence",
     "test",
 )
-TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build")
+CI_PROVENANCE_REQUIRED_JOBS = (
+    "detector",
+    "fmt-check",
+    "deny",
+    "clippy",
+    "check-aarch64",
+    "source-fence",
+    "test-archive",
+    "test-shards",
+    "test",
+)
+CI_PROVENANCE_POLICY_VALUES = {"full", "defer", "tag_reuse"}
+CI_PROVENANCE_POLICY_ROWS = (
+    "draft_pr_synchronize",
+    "draft_pr_opened",
+    "draft_pr_reopened",
+    "converted_to_draft",
+    "ready_pr",
+    "ready_for_review",
+    "workflow_dispatch",
+    "main_push",
+    "tag",
+    "unknown_event",
+)
+CI_PROVENANCE_POLICY_EXPECTED = {
+    "draft_pr_synchronize": "defer",
+    "draft_pr_opened": "defer",
+    "draft_pr_reopened": "defer",
+    "converted_to_draft": "defer",
+    "ready_pr": "full",
+    "ready_for_review": "full",
+    "workflow_dispatch": "full",
+    "main_push": "full",
+    "tag": "tag_reuse",
+    "unknown_event": "full",
+}
+assert set(CI_PROVENANCE_POLICY_ROWS) == set(
+    CI_PROVENANCE_POLICY_EXPECTED
+), "CI_PROVENANCE_POLICY_ROWS and CI_PROVENANCE_POLICY_EXPECTED keys must match"
+TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build", "ci-provenance-emit")
 TAG_SKIP_REQUIRED_JOBS = (
     "fmt-check",
     "deny",
@@ -120,6 +179,7 @@ TAG_SKIP_REQUIRED_JOBS = (
     "test-archive",
     "test-shards",
     "test",
+    "ci-provenance-emit",
 )
 TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-shards", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
@@ -178,8 +238,12 @@ TAG_SKIP_ALWAYS_IF_RE = re.compile(
     r")\s*\}\}\s*$"
 )
 SAME_SHA_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
+FULL_CI_REQUIRED_EXPR = "needs.ci-policy.outputs.full_ci_required == 'true'"
+TAG_REUSE_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'tag_reuse'"
+BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
 BUILD_IF_RE = re.compile(
-    r"^    if:\s*\$\{\{\s*!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*&&\s*"
+    r"^    if:\s*\$\{\{\s*"
+    r"needs\.ci-policy\.outputs\.full_ci_required\s*==\s*['\"]true['\"]\s*&&\s*"
     r"needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*\}\}\s*$"
 )
 PR_CONCURRENCY_EVENT_RE = re.compile(r"github\.event_name\s*==\s*['\"]pull_request['\"]")
@@ -528,12 +592,159 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
     errors: list[str] = []
     if not PR_CONCURRENCY_EVENT_RE.search(group_text):
         errors.append("concurrency group must branch on pull_request event")
-    if not PR_CONCURRENCY_PULL_REQUEST_BRANCH_RE.search(group_text):
-        errors.append("concurrency group must key pull_request runs by PR number")
+    if "needs." in group_text or "needs." in cancel_text:
+        errors.append("workflow-level concurrency must not reference job outputs")
+    if "pr-{0}-deferred" not in group_text or "pr-{0}-full" not in group_text:
+        errors.append("concurrency group must split deferred PR runs from full CI runs")
+    if "workflow_dispatch" not in group_text or "full" not in group_text:
+        errors.append("workflow_dispatch full CI runs must use a full-CI concurrency group")
     if not PR_CONCURRENCY_NON_PR_FALLBACK_RE.search(group_text):
         errors.append("concurrency group must keep non-PR runs isolated by ref and SHA")
-    if not any(line in cancel_text for line in PR_CONCURRENCY_CANCEL_LINES):
-        errors.append("cancel-in-progress must be limited to pull_request events")
+    if (
+        "github.event_name == 'pull_request'" not in cancel_text
+        or "github.event.pull_request.draft == true" not in cancel_text
+        or "contains(fromJSON" not in cancel_text
+        or "converted_to_draft" not in cancel_text
+    ):
+        errors.append("cancel-in-progress must be true only for deferred draft PR runs")
+    return errors
+
+
+def evaluate_ci_policy(
+    policy: dict[str, object],
+    *,
+    event_name: str,
+    action: str,
+    pull_request_draft: bool,
+    ref: str,
+) -> CiPolicyResult:
+    override = policy.get("override")
+    force_full_ci = isinstance(override, dict) and override.get("force_full_ci") is True
+
+    if event_name == "push" and ref.startswith("refs/tags/v"):
+        path = str(policy["tag"])
+        reason = "tag"
+    elif event_name == "workflow_dispatch":
+        path = str(policy["workflow_dispatch"])
+        reason = "workflow_dispatch"
+    elif event_name == "push" and ref == "refs/heads/main":
+        path = str(policy["main_push"])
+        reason = "main_push"
+    elif event_name == "pull_request":
+        if force_full_ci:
+            path = "full"
+            reason = "force_full_ci"
+        elif action == "ready_for_review":
+            path = str(policy["ready_for_review"])
+            reason = "ready_for_review"
+        elif not pull_request_draft:
+            path = str(policy["ready_pr"])
+            reason = "ready_pr"
+        elif action == "opened":
+            path = str(policy["draft_pr_opened"])
+            reason = "draft_pr_opened"
+        elif action == "synchronize":
+            path = str(policy["draft_pr_synchronize"])
+            reason = "draft_pr_synchronize"
+        elif action == "reopened":
+            path = str(policy["draft_pr_reopened"])
+            reason = "draft_pr_reopened"
+        elif action == "converted_to_draft":
+            path = str(policy["converted_to_draft"])
+            reason = "converted_to_draft"
+        else:
+            path = str(policy["unknown_event"])
+            reason = "unknown_event"
+    else:
+        path = str(policy["unknown_event"])
+        reason = "unknown_event"
+
+    if path not in CI_PROVENANCE_POLICY_VALUES:
+        raise ValueError(f"resolved invalid ci_policy_path {path!r}")
+    return CiPolicyResult(
+        ci_policy_path=path,
+        full_ci_required=path == "full",
+        full_ci_deferred=path == "defer",
+        reason=reason,
+    )
+
+
+def workflow_trigger_block(workflow_text: str, trigger: str) -> list[str]:
+    on_block = top_level_block(workflow_text, "on")
+    trigger_line = f"  {trigger}:"
+    for index, line in enumerate(on_block):
+        if line.strip() != trigger_line.strip():
+            continue
+        block: list[str] = []
+        for child in on_block[index + 1 :]:
+            if re.match(r"^  [^ \t:#][^:#]*:", child):
+                break
+            block.append(child)
+        return block
+    return []
+
+
+def parse_inline_yaml_list(value: str) -> set[str]:
+    stripped = value.strip()
+    if not (stripped.startswith("[") and stripped.endswith("]")):
+        return set()
+    return {item.strip().strip("'\"") for item in stripped[1:-1].split(",") if item.strip()}
+
+
+def workflow_pull_request_type_errors(workflow_text: str) -> list[str]:
+    block = workflow_trigger_block(workflow_text, "pull_request")
+    types: set[str] = set()
+    for index, line in enumerate(block):
+        stripped = line.strip()
+        if stripped.startswith("types:"):
+            after = stripped.split(":", 1)[1].strip()
+            types.update(parse_inline_yaml_list(after))
+            for child in block[index + 1 :]:
+                child_stripped = child.strip()
+                if not child_stripped.startswith("- "):
+                    break
+                types.add(child_stripped.removeprefix("- ").strip().strip("'\""))
+    errors: list[str] = []
+    for required_type in ("ready_for_review", "converted_to_draft"):
+        if required_type not in types:
+            errors.append(f"pull_request types must include {required_type}")
+    return errors
+
+
+def workflow_dispatch_input_errors(workflow_text: str, input_name: str) -> list[str]:
+    block = workflow_trigger_block(workflow_text, "workflow_dispatch")
+    if not block and "workflow_dispatch:" not in "\n".join(top_level_block(workflow_text, "on")):
+        return ["workflow must define workflow_dispatch"]
+    block_text = "\n".join(block)
+    if "inputs:" not in block_text or not re.search(rf"^\s+{re.escape(input_name)}:\s*$", block_text, re.MULTILINE):
+        return ["workflow_dispatch must define configured full CI input"]
+    return []
+
+
+def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
+    text = uncommented_text(job_lines)
+    errors: list[str] = []
+    for output in (
+        "ci_policy_path",
+        "full_ci_required",
+        "full_ci_deferred",
+        "reason",
+        "ignore_emit_failure",
+    ):
+        if f"{output}: ${{{{ steps.policy.outputs.{output} }}}}" not in text:
+            errors.append(f"ci-policy must expose {output}")
+    if 'tee -a "$GITHUB_OUTPUT"' not in text:
+        errors.append("ci-policy must write script output to GITHUB_OUTPUT")
+    if "python3 scripts/ci_provenance.py ci-policy" not in text:
+        errors.append("ci-policy must run ci_provenance.py ci-policy")
+    if '--event-name "${{ github.event_name }}"' not in text:
+        errors.append("ci-policy must pass github.event_name")
+    if '--event-action "${{ github.event.action || \'\' }}"' not in text:
+        errors.append("ci-policy must pass github.event.action")
+    if '--pull-request-draft "${{ github.event.pull_request.draft || false }}"' not in text:
+        errors.append("ci-policy must pass pull_request draft state")
+    if '--ref "${{ github.ref }}"' not in text:
+        errors.append("ci-policy must pass github.ref")
     return errors
 
 
@@ -750,6 +961,11 @@ def block_has_input(block: list[str], name: str, value: str | None = None) -> bo
         if expected is None or unquote_yaml_scalar(item_value) == expected:
             return True
     return False
+
+
+def block_has_scalar(block: list[str], name: str, value: str) -> bool:
+    expected = f"{name}: {value}"
+    return any(strip_comment(line).strip() == expected for line in block)
 
 
 def block_input_value(block: list[str], name: str) -> str | None:
@@ -5407,11 +5623,25 @@ def test_has_inline_shard_reproduction_command(job_lines: list[str]) -> bool:
 
 
 def job_skips_tag_reuse(job_lines: list[str]) -> bool:
-    return has_line_matching(job_lines, TAG_SKIP_IF_RE) or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
+    text = uncommented_text(job_lines)
+    return (
+        has_line_matching(job_lines, TAG_SKIP_IF_RE)
+        or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
+        or FULL_CI_REQUIRED_EXPR in text
+    )
 
 
 def job_if_uses_always(job_lines: list[str]) -> bool:
-    return has_line_matching(job_lines, GATE_IF_RE) or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
+    return has_line_matching(job_lines, GATE_IF_RE) or "always()" in uncommented_text(job_lines)
+
+
+def job_gates_on_full_ci_required(job_lines: list[str]) -> bool:
+    return FULL_CI_REQUIRED_EXPR in uncommented_text(job_lines)
+
+
+def check_aarch64_runs_on_full_or_tag_reuse(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return FULL_CI_REQUIRED_EXPR in text and TAG_REUSE_POLICY_EXPR in text
 
 
 def same_sha_job_has_outputs(job_lines: list[str]) -> bool:
@@ -5428,6 +5658,76 @@ def same_sha_job_has_outputs(job_lines: list[str]) -> bool:
 def same_sha_job_runs_resolver(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "id: evidence" in text and "python3 scripts/find_same_sha_main_evidence.py" in text
+
+
+def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return "python3 scripts/ci_provenance.py emit-full-ci" in text and "--output ci-provenance.json" in text
+
+
+def ci_provenance_emit_fingerprint_download_blocks(job_lines: list[str]) -> list[list[str]]:
+    return [
+        block
+        for block in action_blocks(job_lines, "actions/download-artifact@")
+        if block_has_input(block, "pattern", "nextest-archive-fingerprint-*")
+    ]
+
+
+def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]) -> list[str]:
+    text = uncommented_text(job_lines)
+    errors = []
+    fingerprint_path = ".ci-provenance/fingerprint/cache-key.txt"
+    fingerprint_download_path = str(pathlib.PurePosixPath(fingerprint_path).parent)
+    for need in needs:
+        if need == "build":
+            expected = "--conditional-job build.result=${{ needs.build.result }}"
+            if expected not in text:
+                errors.append("ci-provenance-emit must pass build.result from needs.build.result")
+            continue
+        expected = f"--required-job {need}=${{{{ needs.{need}.result }}}}"
+        if expected not in text:
+            errors.append(f"ci-provenance-emit must pass {need} result from needs.{need}.result")
+    if "--conditional-job build.required=${{ needs.detector.outputs.build_required }}" not in text:
+        errors.append("ci-provenance-emit must pass build.required from needs.detector.outputs.build_required")
+    if (
+        f"--nextest-fingerprint-path {fingerprint_path}" not in text
+        or not any(
+            block_has_input(block, "path", fingerprint_download_path)
+            for block in ci_provenance_emit_fingerprint_download_blocks(job_lines)
+        )
+    ):
+        errors.append("ci-provenance-emit fingerprint download path must match emitter argument")
+    return errors
+
+
+def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) -> list[str]:
+    errors: list[str] = []
+    upload_blocks = [
+        block
+        for block in action_blocks(job_lines, "actions/upload-artifact@")
+        if block_has_input(block, "name", "ci-provenance-attempt-${{ github.run_attempt }}")
+    ]
+    if not upload_blocks:
+        errors.append("ci-provenance-emit must upload configured provenance artifact")
+        return errors
+    if not any(block_has_input(block, "path", "ci-provenance.json") for block in upload_blocks):
+        errors.append("ci-provenance-emit must upload ci-provenance.json")
+    if retention_days > 0 and not any(
+        block_has_input(block, "retention-days", str(retention_days)) for block in upload_blocks
+    ):
+        errors.append("ci-provenance-emit retention-days must match TOML")
+    return errors
+
+
+def ci_provenance_emit_downloads_fingerprint(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    fingerprint_path = ".ci-provenance/fingerprint/cache-key.txt"
+    fingerprint_download_path = str(pathlib.PurePosixPath(fingerprint_path).parent)
+    return f"--nextest-fingerprint-path {fingerprint_path}" in text and any(
+        block_has_input(block, "path", fingerprint_download_path)
+        and block_has_scalar(block, "continue-on-error", "true")
+        for block in ci_provenance_emit_fingerprint_download_blocks(job_lines)
+    )
 
 
 def clippy_installs_aarch64_toolchain(job_lines: list[str]) -> bool:
@@ -5487,7 +5787,17 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
     return errors
 
 
-GATE_TAG_REUSE_CONDITION = '"$tag_ref" == "true"'
+GATE_TAG_REUSE_CONDITION = '"$policy_path" == "tag_reuse"'
+GATE_FULL_CONDITION = '"$policy_path" == "full"'
+GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
+GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}\""""
+GATE_DEFER_CONTEXT_FAILURE_CONDITION = '"$defer_run_context" != "true"'
+GATE_DEFERRED_NAME_EXPRESSION = """name: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == true
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && 'gate-deferred'
+          || 'gate' }}"""
 
 
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
@@ -5593,10 +5903,6 @@ def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
     errors: list[str] = []
     tag_body = gate_tag_reuse_body(gate_text)
     standard_body = gate_standard_body(gate_text)
-    if 'tag_ref="${{ startsWith(github.ref, \'refs/tags/v\') }}"' not in gate_text and (
-        'tag_ref="${{ startsWith(github.ref, "refs/tags/v") }}"' not in gate_text
-    ):
-        errors.append("gate must compute tag_ref")
     if not branch_exits_reachable(tag_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "success"'):
         errors.append("gate must check same-sha-main-evidence success")
     if not branch_exits_reachable(standard_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "skipped"'):
@@ -5606,6 +5912,40 @@ def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
             errors.append(f"gate must require {job} skipped on tag reuse")
     if not branch_exits_reachable(tag_body, "if", '"${{ needs.check-aarch64.result }}" != "success"'):
         errors.append("gate must require check-aarch64 success on tag reuse")
+    return errors
+
+
+def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
+    errors: list[str] = []
+    if GATE_DEFERRED_NAME_EXPRESSION not in gate_text:
+        errors.append("gate must publish gate-deferred for deferred draft PR runs")
+    if 'policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"' not in gate_text:
+        errors.append("gate must read ci_policy_path")
+    if 'full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"' not in gate_text:
+        errors.append("gate must read full_ci_deferred")
+    if GATE_DEFER_RUN_CONTEXT_ASSIGNMENT not in gate_text:
+        errors.append("gate must compute deferred draft PR run context")
+    if 'ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"' not in gate_text:
+        errors.append("gate must read ignore_emit_failure only for ci-provenance-emit")
+    if not branch_exits_reachable(gate_text, "if", '"${{ needs.ci-policy.result }}" != "success"'):
+        errors.append("gate must check needs.ci-policy.result")
+    if not branch_exists(gate_text, "if", GATE_TAG_REUSE_CONDITION):
+        errors.append("gate must branch on ci_policy_path tag_reuse")
+    defer_sections = top_level_if_body_and_remainder(gate_text, GATE_DEFER_CONDITION)
+    defer_body = defer_sections[0] if defer_sections is not None else None
+    if defer_body is None or "full CI deferred for draft PR" not in defer_body or not body_exits_zero(defer_body):
+        errors.append("gate must pass deferred full CI without failing stale draft checks")
+    if defer_body is None or not branch_exits_reachable(defer_body, "if", GATE_DEFER_CONTEXT_FAILURE_CONDITION):
+        errors.append("gate must fail deferred policy outside deferred draft PR context")
+    if not branch_exists(gate_text, "if", GATE_FULL_CONDITION):
+        errors.append("gate must branch on ci_policy_path full")
+    emit_failure_body = branch_body(
+        gate_text,
+        "if",
+        '"${{ needs.ci-provenance-emit.result }}" != "success"',
+    )
+    if emit_failure_body is None or '"$ignore_emit_failure" == "true"' not in emit_failure_body:
+        errors.append("gate must read ignore_emit_failure only for ci-provenance-emit")
     return errors
 
 
@@ -5632,6 +5972,19 @@ def deploy_logs_reused_evidence(job_lines: list[str]) -> bool:
     return all(item in text for item in required)
 
 
+def detector_forces_build_on_workflow_dispatch(job_lines: list[str]) -> bool:
+    # The push and workflow_dispatch cases are unified in a single `if` arm:
+    #   if [[ "..." == "push" || "..." == "workflow_dispatch" ]]; then
+    # Verify that this combined arm exists and unconditionally emits value=true.
+    text = uncommented_text(job_lines)
+    branch = branch_body(
+        text,
+        "if",
+        '"${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch"',
+    )
+    return branch is not None and 'echo "value=true" >> "$GITHUB_OUTPUT"' in branch
+
+
 def deploy_verifies_downloaded_artifact_checksum(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "cd artifact" in text and "sha256sum -c bolt-v2.sha256" in text
@@ -5643,6 +5996,36 @@ def job_permission_has(job_lines: list[str], permission: str, value: str) -> boo
 
 def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+actions:\s+read\s*$", workflow_text) is not None
+
+
+def configured_ci_provenance_retention_days() -> int:
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
+        return -1
+    ci_provenance = config.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        return -1
+    artifacts = ci_provenance.get("artifacts")
+    if not isinstance(artifacts, dict):
+        return -1
+    retention_days = artifacts.get("retention_days")
+    return retention_days if isinstance(retention_days, int) else -1
+
+
+def configured_ci_provenance_dispatch_input() -> str:
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
+        return ""
+    ci_provenance = config.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        return ""
+    dispatch = ci_provenance.get("dispatch")
+    if not isinstance(dispatch, dict):
+        return ""
+    workflow_input = dispatch.get("workflow_input")
+    return workflow_input if isinstance(workflow_input, str) else ""
 
 
 def branch_body(gate_text: str, keyword: str, condition: str) -> str | None:
@@ -5745,6 +6128,14 @@ def branch_exits_reachable(gate_text: str, keyword: str, condition: str) -> bool
 
 
 def body_exits(body: str) -> bool:
+    return body_exits_with_code(body, "1")
+
+
+def body_exits_zero(body: str) -> bool:
+    return body_exits_with_code(body, "0")
+
+
+def body_exits_with_code(body: str, code: str) -> bool:
     exit_codes: list[str | None] = []
     depth = 0
     for line in shell_logical_lines(body):
@@ -5772,7 +6163,7 @@ def body_exits(body: str) -> bool:
         if clean.startswith("echo "):
             continue
         return False
-    return exit_codes == ["1"]
+    return exit_codes == [code]
 
 
 def extract_action_input_block(action_text: str, input_name: str) -> list[str]:
@@ -5831,6 +6222,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
     errors.extend(workflow_steps_alias_errors(workflow_text))
     jobs = parse_jobs(workflow_text)
+    triggers = workflow_trigger_keys(workflow_text)
+    is_ci_topology = "pull_request" in triggers and "push" in triggers
     errors.extend(raw_rust_storage_errors(workflow_text))
     errors.extend(exact_head_governance_cache_errors(workflow_text))
     for job_lines in jobs.values():
@@ -5848,6 +6241,16 @@ def verify_workflow(workflow_text: str) -> list[str]:
             "on.push must have no paths-ignore (push to main/tags must always run full CI); "
             f"got {actual_push_paths_ignore!r}"
         )
+    if is_ci_topology:
+        errors.extend(workflow_pull_request_type_errors(workflow_text))
+        dispatch_input = configured_ci_provenance_dispatch_input()
+        if dispatch_input:
+            errors.extend(
+                workflow_dispatch_input_errors(
+                    workflow_text,
+                    dispatch_input,
+                )
+            )
 
     errors.extend(verify_pr_concurrency(workflow_text))
 
@@ -5860,6 +6263,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if "fmt-check" in jobs and "detector" in extract_needs(jobs["fmt-check"]):
         errors.append("fmt-check must not need detector")
+    if "detector" in jobs and not detector_forces_build_on_workflow_dispatch(jobs["detector"]):
+        errors.append("detector must force build_required=true for workflow_dispatch full CI")
+
+    if "ci-policy" in jobs:
+        errors.extend(ci_policy_job_errors(jobs["ci-policy"]))
 
     for job in TAG_SKIP_REQUIRED_JOBS:
         if job in jobs and not job_skips_tag_reuse(jobs[job]):
@@ -5868,6 +6276,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "source-fence" in jobs and "detector" not in extract_needs(jobs["source-fence"]):
         # FR-005: #342 owns the early-fail source-fence lane, so it remains detector-gated.
         errors.append("source-fence needs detector")
+    if "source-fence" in jobs:
+        source_fence_needs = extract_needs(jobs["source-fence"])
+        if "ci-policy" not in source_fence_needs:
+            errors.append("source-fence needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["source-fence"]):
+            errors.append("source-fence must gate on full_ci_required")
 
     for job_name, recipe in JOB_REQUIRED_JUST_RECIPE.items():
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):
@@ -5893,10 +6307,13 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("clippy must not install aarch64 cross compiler")
 
     if "check-aarch64" in jobs:
-        if "detector" not in extract_needs(jobs["check-aarch64"]):
+        check_aarch64_needs = extract_needs(jobs["check-aarch64"])
+        if "detector" not in check_aarch64_needs:
             errors.append("check-aarch64 needs detector")
-        if has_line_matching(jobs["check-aarch64"], CHECK_AARCH64_JOB_LEVEL_IF_RE):
-            errors.append("check-aarch64 must have no job-level if condition")
+        if "ci-policy" not in check_aarch64_needs:
+            errors.append("check-aarch64 needs ci-policy")
+        if not check_aarch64_runs_on_full_or_tag_reuse(jobs["check-aarch64"]):
+            errors.append("check-aarch64 must run on full CI or tag reuse")
         if not check_aarch64_has_coverage_owner_step(jobs["check-aarch64"]):
             errors.append("check-aarch64 must document build-lane aarch64 coverage delegation")
         if not check_aarch64_installs_cross_compiler_packages(jobs["check-aarch64"]):
@@ -5904,6 +6321,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.extend(check_aarch64_standalone_guard_errors(jobs["check-aarch64"]))
 
     if "test-archive" in jobs:
+        test_archive_needs = extract_needs(jobs["test-archive"])
+        if "ci-policy" not in test_archive_needs:
+            errors.append("test-archive needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["test-archive"]):
+            errors.append("test-archive must gate on full_ci_required")
         archive_lines = jobs["test-archive"]
         archive_text = uncommented_text(archive_lines)
         archive_cache_blocks = [
@@ -5951,6 +6373,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.extend(test_archive_fingerprint_errors(archive_lines))
 
     if "test-shards" in jobs:
+        test_shards_needs = extract_needs(jobs["test-shards"])
+        if "ci-policy" not in test_shards_needs:
+            errors.append("test-shards needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["test-shards"]):
+            errors.append("test-shards must gate on full_ci_required")
         test_lines = jobs["test-shards"]
         test_text = uncommented_text(test_lines)
         if not has_line_matching(test_lines, TEST_FAIL_FAST_FALSE_RE):
@@ -5980,6 +6407,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "test" in jobs:
         test_needs = extract_needs(jobs["test"])
         test_text = uncommented_text(jobs["test"])
+        if "ci-policy" not in test_needs:
+            errors.append("test needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["test"]):
+            errors.append("test must gate on full_ci_required")
         if "test-shards" not in test_needs:
             errors.append("test needs test-shards")
         if not gate_checks_lane_success(test_text, "test-shards"):
@@ -5988,10 +6419,43 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test must use always()")
 
     if "build" in jobs:
-        if "detector" not in extract_needs(jobs["build"]):
+        build_needs = extract_needs(jobs["build"])
+        if "detector" not in build_needs:
             errors.append("build needs detector")
+        if "ci-policy" not in build_needs:
+            errors.append("build needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["build"]):
+            errors.append("build must gate on full_ci_required")
         if not has_line_matching(jobs["build"], BUILD_IF_RE):
             errors.append("build must gate on needs.detector.outputs.build_required and skip tag reuse")
+
+    if "ci-provenance-emit" in jobs:
+        emit_lines = jobs["ci-provenance-emit"]
+        emit_needs = extract_needs(emit_lines)
+        if "ci-policy" not in emit_needs:
+            errors.append("ci-provenance-emit needs ci-policy")
+        for job in (*CI_PROVENANCE_REQUIRED_JOBS, "build"):
+            if job not in emit_needs:
+                errors.append(f"ci-provenance-emit needs {job}")
+        if "gate" in emit_needs:
+            errors.append("ci-provenance-emit must not need gate")
+        if not job_if_uses_always(emit_lines):
+            errors.append("ci-provenance-emit must use always()")
+        if not job_skips_tag_reuse(emit_lines):
+            errors.append("ci-provenance-emit must skip tag reuse")
+        if not job_gates_on_full_ci_required(emit_lines):
+            errors.append("ci-provenance-emit must gate on full_ci_required")
+        if not ci_provenance_emit_runs_emitter(emit_lines):
+            errors.append("ci-provenance-emit must run provenance emitter")
+        errors.extend(ci_provenance_emit_checks_needs(emit_lines, (*CI_PROVENANCE_REQUIRED_JOBS, "build")))
+        errors.extend(
+            ci_provenance_emit_upload_errors(
+                emit_lines,
+                configured_ci_provenance_retention_days(),
+            )
+        )
+        if not ci_provenance_emit_downloads_fingerprint(emit_lines):
+            errors.append("ci-provenance-emit must record nextest fingerprint when present")
 
     if "same-sha-main-evidence" in jobs:
         if "detector" not in extract_needs(jobs["same-sha-main-evidence"]):
@@ -6006,6 +6470,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "gate" in jobs:
         gate_needs = extract_needs(jobs["gate"])
         gate_text = uncommented_text(jobs["gate"])
+        if "ci-policy" not in gate_needs:
+            errors.append("gate needs ci-policy")
         for job in GATE_REQUIRED:
             if job not in gate_needs:
                 errors.append(f"gate needs {job}")
@@ -6019,9 +6485,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"gate must check needs.{job}.result")
         if "same-sha-main-evidence" not in gate_needs:
             errors.append("gate needs same-sha-main-evidence")
+        errors.extend(gate_policy_truth_table_errors(gate_text))
         errors.extend(gate_checks_same_sha_reuse(gate_text))
         if not has_line_matching(jobs["gate"], GATE_IF_RE):
             errors.append("gate must use always()")
+        if "nextest_fingerprint" in gate_text:
+            errors.append("gate must not read nextest_fingerprint")
 
     if "deploy" in jobs:
         deploy_needs = extract_needs(jobs["deploy"])
@@ -6419,6 +6888,183 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
     return errors
 
 
+def require_config_table(parent: dict[str, object], key: str, prefix: str) -> dict[str, object]:
+    value = parent.get(key)
+    if not isinstance(value, dict):
+        raise ValueError(f"{prefix}.{key} must be a table")
+    return value
+
+
+def require_config_string(parent: dict[str, object], key: str, prefix: str) -> str:
+    value = parent.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{prefix}.{key} must be a non-empty string")
+    return value
+
+
+def require_config_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
+    value = parent.get(key)
+    if not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{prefix}.{key} must be a positive integer")
+    return value
+
+
+def require_config_string_list(parent: dict[str, object], key: str, prefix: str) -> list[str]:
+    value = parent.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"{prefix}.{key} must be a non-empty string list")
+    return value
+
+
+def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
+    ci_provenance = data.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [ci_provenance]")
+
+    duplicated_fingerprint_keys = {
+        "fingerprint_artifact_prefix",
+        "fingerprint_workflow",
+    } & set(ci_provenance)
+    if duplicated_fingerprint_keys:
+        raise ValueError(
+            "[ci_provenance] must reference [meter] fingerprint keys instead of duplicating "
+            + ", ".join(sorted(duplicated_fingerprint_keys))
+        )
+
+    if ci_provenance.get("schema_version") != 1:
+        raise ValueError("ci_provenance.schema_version must be 1")
+    artifact_name_template = require_config_string(
+        ci_provenance, "artifact_name_template", "ci_provenance"
+    )
+    if "{run_attempt}" not in artifact_name_template:
+        raise ValueError("ci_provenance.artifact_name_template must include {run_attempt}")
+    if require_config_string(ci_provenance, "workflow_key", "ci_provenance") != "ci":
+        raise ValueError("ci_provenance.workflow_key must be ci")
+    require_config_string(ci_provenance, "workflow_name", "ci_provenance")
+    require_config_string(ci_provenance, "workflow_path", "ci_provenance")
+    if require_config_string(ci_provenance, "fingerprint_source", "ci_provenance") != "meter":
+        raise ValueError("ci_provenance.fingerprint_source must be meter")
+
+    meter = data.get("meter")
+    if not isinstance(meter, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [meter]")
+    require_config_string(meter, "fingerprint_artifact_prefix", "meter")
+    require_config_string(meter, "fingerprint_workflow", "meter")
+
+    full_ci = require_config_table(ci_provenance, "full_ci", "ci_provenance")
+    required_jobs = require_config_string_list(full_ci, "required_jobs", "ci_provenance.full_ci")
+    if tuple(required_jobs) != CI_PROVENANCE_REQUIRED_JOBS:
+        raise ValueError(
+            "ci_provenance.full_ci.required_jobs must match the current full-CI logical jobs"
+        )
+    conditional_jobs = require_config_string_list(
+        full_ci, "conditional_jobs", "ci_provenance.full_ci"
+    )
+    if conditional_jobs != ["build"]:
+        raise ValueError("ci_provenance.full_ci.conditional_jobs must be ['build']")
+    conditional_outputs = full_ci.get("conditional_job_outputs")
+    if (
+        not isinstance(conditional_outputs, dict)
+        or conditional_outputs.get("build") != "detector.build_required"
+    ):
+        raise ValueError(
+            "ci_provenance.full_ci.conditional_job_outputs.build must be detector.build_required"
+        )
+    jobs = require_config_table(full_ci, "jobs", "ci_provenance.full_ci")
+    for job in (*CI_PROVENANCE_REQUIRED_JOBS, "build"):
+        if job not in jobs:
+            raise ValueError(f"ci_provenance.full_ci.jobs.{job} missing")
+        job_table = jobs[job]
+        if not isinstance(job_table, dict):
+            raise ValueError(f"ci_provenance.full_ci.jobs.{job} must be a table")
+        if job == "test-shards":
+            template = require_config_string(
+                job_table, "check_name_template", "ci_provenance.full_ci.jobs.test-shards"
+            )
+            shard_count = require_config_positive_int(
+                job_table, "shard_count", "ci_provenance.full_ci.jobs.test-shards"
+            )
+            if shard_count != 4:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards shard_count must match the ci.yml shard matrix"
+                )
+            if "{shard}" not in template:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards check_name_template must include {shard}"
+                )
+            literal_count = re.search(r"\bof\s+(\d+)\b", template)
+            if "{shard_count}" not in template and literal_count is None:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards check_name_template must include shard count"
+                )
+            if literal_count is not None and int(literal_count.group(1)) != shard_count:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards template count must match shard_count"
+                )
+        else:
+            require_config_string(job_table, "check_name", f"ci_provenance.full_ci.jobs.{job}")
+        if job == "build" and job_table.get("conditional") != "detector.build_required":
+            raise ValueError(
+                "ci_provenance.full_ci.jobs.build.conditional must be detector.build_required"
+            )
+
+    deploy = require_config_table(ci_provenance, "deploy", "ci_provenance")
+    require_config_string(deploy, "artifact_name", "ci_provenance.deploy")
+    if deploy.get("require_source_event") != "push":
+        raise ValueError("ci_provenance.deploy.require_source_event must be push")
+    if deploy.get("require_source_branch") != "main":
+        raise ValueError("ci_provenance.deploy.require_source_branch must be main")
+    if deploy.get("require_gate_check") is not True:
+        raise ValueError("ci_provenance.deploy.require_gate_check must be true")
+
+    dispatch = require_config_table(ci_provenance, "dispatch", "ci_provenance")
+    require_config_string(dispatch, "workflow_input", "ci_provenance.dispatch")
+
+    api_limits = require_config_table(ci_provenance, "api_limits", "ci_provenance")
+    for key in (
+        "workflow_runs_per_page",
+        "run_jobs_per_page",
+        "run_artifacts_per_page",
+        "max_lookback_pages",
+        "max_lookback_age_seconds",
+    ):
+        require_config_positive_int(api_limits, key, "ci_provenance.api_limits")
+
+    artifacts = require_config_table(ci_provenance, "artifacts", "ci_provenance")
+    retention_days = require_config_positive_int(
+        artifacts, "retention_days", "ci_provenance.artifacts"
+    )
+    if api_limits["max_lookback_age_seconds"] > retention_days * 24 * 60 * 60:
+        raise ValueError(
+            "ci_provenance.api_limits.max_lookback_age_seconds must not exceed artifact retention"
+        )
+
+    policy = require_config_table(ci_provenance, "policy", "ci_provenance")
+    unexpected_policy_keys = set(policy) - set(CI_PROVENANCE_POLICY_ROWS) - {"override"}
+    if unexpected_policy_keys:
+        raise ValueError(
+            f"ci_provenance.policy has unexpected keys: {sorted(unexpected_policy_keys)!r}"
+        )
+    for row in CI_PROVENANCE_POLICY_ROWS:
+        value = policy.get(row)
+        if value not in CI_PROVENANCE_POLICY_VALUES:
+            raise ValueError(
+                f"ci_provenance.policy.{row} must be one of {sorted(CI_PROVENANCE_POLICY_VALUES)!r}"
+            )
+        expected = CI_PROVENANCE_POLICY_EXPECTED[row]
+        if value != expected:
+            raise ValueError(f"ci_provenance.policy.{row} must be {expected}")
+    override = require_config_table(policy, "override", "ci_provenance.policy")
+    if override.get("force_full_ci") is not False:
+        raise ValueError("ci_provenance.policy.override.force_full_ci must default to false")
+    if override.get("ignore_emit_failure") is not False:
+        raise ValueError(
+            "ci_provenance.policy.override.ignore_emit_failure must default to false"
+        )
+
+    return ci_provenance
+
+
 def load_github_actions_runners_config(
     path: pathlib.Path | None = None,
 ) -> dict[str, object]:
@@ -6434,6 +7080,7 @@ def load_github_actions_runners_config(
         raise ValueError("ci/github-actions-runners.toml must define [runners] and [workflows]")
     if not isinstance(meter, dict):
         raise ValueError("ci/github-actions-runners.toml must define [meter]")
+    ci_provenance = validate_ci_provenance_config(data)
     meter_workflows = meter.get("included_workflows")
     if not isinstance(meter_workflows, list) or not all(
         isinstance(workflow, str) and workflow for workflow in meter_workflows
@@ -6478,6 +7125,7 @@ def load_github_actions_runners_config(
         "meter_included_workflows": sorted(set(meter_workflows)),
         "variables": sorted(tier_to_var.values()),
         "workflows": workflows,
+        "ci_provenance": ci_provenance,
     }
 
 

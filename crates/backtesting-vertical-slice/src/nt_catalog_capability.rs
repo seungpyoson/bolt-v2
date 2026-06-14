@@ -4,6 +4,7 @@ use ahash::AHashMap;
 use anyhow::{Context, Result, anyhow, ensure};
 use aws_config::BehaviorVersion;
 use aws_sdk_ssm::{Client as SsmClient, config::Region};
+use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::TradeTick,
     enums::{AggressorSide, AssetClass},
@@ -11,7 +12,6 @@ use nautilus_model::{
     instruments::{BinaryOption, CryptoPerpetual, Instrument, InstrumentAny},
     types::{Currency, Price, Quantity},
 };
-use nautilus_core::UnixNanos;
 use nautilus_persistence::backend::catalog::{CatalogPathPrefix, ParquetDataCatalog};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -735,15 +735,23 @@ impl NtCatalogSyntheticFixtures {
 
 impl NtCatalogSyntheticBinaryOptionSpec {
     fn instrument(&self) -> Result<BinaryOption> {
-        let price_increment = parse_price("synthetic_fixtures.binary_option.price_increment", &self.price_increment)?;
-        let size_increment =
-            parse_quantity("synthetic_fixtures.binary_option.size_increment", &self.size_increment)?;
+        let price_increment = parse_price(
+            "synthetic_fixtures.binary_option.price_increment",
+            &self.price_increment,
+        )?;
+        let size_increment = parse_quantity(
+            "synthetic_fixtures.binary_option.size_increment",
+            &self.size_increment,
+        )?;
         BinaryOption::new_checked(
             parse_instrument_id(
                 "synthetic_fixtures.binary_option.instrument_id",
                 &self.instrument_id,
             )?,
-            parse_symbol("synthetic_fixtures.binary_option.raw_symbol", &self.raw_symbol)?,
+            parse_symbol(
+                "synthetic_fixtures.binary_option.raw_symbol",
+                &self.raw_symbol,
+            )?,
             AssetClass::from_str(&self.asset_class).with_context(|| {
                 format!(
                     "invalid synthetic_fixtures.binary_option.asset_class {:?}",
@@ -779,17 +787,24 @@ impl NtCatalogSyntheticBinaryOptionSpec {
 
 impl NtCatalogSyntheticPerpsSpotSpec {
     fn instrument(&self) -> Result<CryptoPerpetual> {
-        let price_increment =
-            parse_price("synthetic_fixtures.perps_spot.price_increment", &self.price_increment)?;
-        let size_increment =
-            parse_quantity("synthetic_fixtures.perps_spot.size_increment", &self.size_increment)?;
+        let price_increment = parse_price(
+            "synthetic_fixtures.perps_spot.price_increment",
+            &self.price_increment,
+        )?;
+        let size_increment = parse_quantity(
+            "synthetic_fixtures.perps_spot.size_increment",
+            &self.size_increment,
+        )?;
         CryptoPerpetual::new_checked(
             parse_instrument_id(
                 "synthetic_fixtures.perps_spot.instrument_id",
                 &self.instrument_id,
             )?,
             parse_symbol("synthetic_fixtures.perps_spot.raw_symbol", &self.raw_symbol)?,
-            parse_currency("synthetic_fixtures.perps_spot.base_currency", &self.base_currency)?,
+            parse_currency(
+                "synthetic_fixtures.perps_spot.base_currency",
+                &self.base_currency,
+            )?,
             parse_currency(
                 "synthetic_fixtures.perps_spot.quote_currency",
                 &self.quote_currency,
@@ -826,7 +841,10 @@ impl NtCatalogSyntheticPerpsSpotSpec {
 impl NtCatalogSyntheticTradeTickSpec {
     fn trade_tick(&self) -> Result<TradeTick> {
         TradeTick::new_checked(
-            parse_instrument_id("synthetic_fixtures.trade_ticks.instrument_id", &self.instrument_id)?,
+            parse_instrument_id(
+                "synthetic_fixtures.trade_ticks.instrument_id",
+                &self.instrument_id,
+            )?,
             parse_price("synthetic_fixtures.trade_ticks.price", &self.price)?,
             parse_quantity("synthetic_fixtures.trade_ticks.size", &self.size)?,
             AggressorSide::from_str(&self.aggressor_side).with_context(|| {
@@ -915,8 +933,12 @@ impl NtCatalogCapabilityRunSpec {
         credentials: &S3ArtifactStoreCredentials,
     ) -> Result<NtCatalogS3ConformanceProbe> {
         let plan = self.proof_plan(artifact_store)?;
-        let storage_options = artifact_store.nt_catalog_storage_options_with_credentials(credentials)?;
-        self.s3_conformance_probe_with_storage_options(plan.synthetic_catalog_root_uri, storage_options)
+        let storage_options =
+            artifact_store.nt_catalog_storage_options_with_credentials(credentials)?;
+        self.s3_conformance_probe_with_storage_options(
+            plan.synthetic_catalog_root_uri,
+            storage_options,
+        )
     }
 
     /// # Errors
@@ -937,10 +959,8 @@ impl NtCatalogCapabilityRunSpec {
             )
             .is_err();
         let ambient_credentials_scrubbed = self.ambient_credential_scrub.runtime_is_scrubbed();
-        let invalid_credentials_write_failed = self.invalid_credentials_write_fails(
-            artifact_store,
-            credentials,
-        )?;
+        let invalid_credentials_write_failed =
+            self.invalid_credentials_write_fails(artifact_store, credentials)?;
         let read_back = run_nt_catalog_s3_conformance_probe(
             self.s3_conformance_probe(artifact_store, credentials)?,
         )?;

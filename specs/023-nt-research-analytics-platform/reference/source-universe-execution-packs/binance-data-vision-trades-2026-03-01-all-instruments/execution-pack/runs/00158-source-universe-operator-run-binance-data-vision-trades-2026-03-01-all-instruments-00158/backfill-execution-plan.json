@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00158:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:AVAXFDUSD:2026-03-01:1d22113ee9c6f9dfe8a175831bdc3623f3fda571c08de4a9a609b9957220afe2:accepted-tranche",
+  "accepted_tranche_manifest_hash": "4f26bd37537e2c42ad3fb1a0d10a6d807fec5e1b2f090d78662013dcf80d10e3",
+  "run_spec_hash": "1edfc4d89d5592d70a5bb02eda67aaee287fec948bed8723b8b12d1fe12a171d",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00158",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=AVAXFDUSD/dt=2026-03-01/object=1d22113ee9c6f9dfe8a175831bdc3623f3fda571c08de4a9a609b9957220afe2",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 20621,
+  "max_object_bytes": 20621,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=AVAXFDUSD/object=1d22113ee9c6f9dfe8a175831bdc3623f3fda571c08de4a9a609b9957220afe2.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/AVAXFDUSD/AVAXFDUSD-trades-2026-03-01.zip",
+      "sha256": "1d22113ee9c6f9dfe8a175831bdc3623f3fda571c08de4a9a609b9957220afe2",
+      "bytes": 20621,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

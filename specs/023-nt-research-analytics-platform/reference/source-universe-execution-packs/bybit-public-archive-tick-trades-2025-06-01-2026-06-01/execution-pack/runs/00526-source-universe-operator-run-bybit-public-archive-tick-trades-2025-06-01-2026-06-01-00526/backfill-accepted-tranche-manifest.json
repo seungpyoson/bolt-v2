@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-inverse-tick-trades:ETHUSD:2026-05-05:dcc9aaa42539e527741e98277536b7afa0b0cf6ed2ea347e87d4a6ac840a7499:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-inverse-tick-trades:ETHUSD:2026-05-05:dcc9aaa42539e527741e98277536b7afa0b0cf6ed2ea347e87d4a6ac840a7499:source-proof-scope",
+  "source_proof_scope_report_hash": "de6147edff5f55122cb09b48ba002c536a539258adf2a39acf843e338b6b5a1e",
+  "source_proof_id": "source-proof-bybit-inverse-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-inverse-tick-trades",
+  "table_family": "trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-category-inverse",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 1393557,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-05-05/symbol=ETHUSD/object=dcc9aaa42539e527741e98277536b7afa0b0cf6ed2ea347e87d4a6ac840a7499.csv.gz",
+      "source_url": "https://public.bybit.com/trading/ETHUSD/ETHUSD2026-05-05.csv.gz",
+      "sha256": "dcc9aaa42539e527741e98277536b7afa0b0cf6ed2ea347e87d4a6ac840a7499",
+      "bytes": 1393557,
+      "archive_date": "2026-05-05"
+    }
+  ],
+  "blocking_issues": []
+}

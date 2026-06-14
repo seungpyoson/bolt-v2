@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02468:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:DOGEUSDT-05JUN26:2026-05-22:07aa2f75ed9e72582ad4ee2f59269fdfbfe4a8c384ad49c5a978149e8ed1d81a:accepted-tranche",
+  "accepted_tranche_manifest_hash": "5d631f9470b18dda719c4894f080c582e58e6c7843fc4cc5e6d91ff09c37192e",
+  "run_spec_hash": "ad5f5c6ef3ebf8129f7e7602981479df47d3e5877df4f022113d3cd6965db5f3",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02468",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=linear/symbol=DOGEUSDT-05JUN26/dt=2026-05-22/object=07aa2f75ed9e72582ad4ee2f59269fdfbfe4a8c384ad49c5a978149e8ed1d81a",
+  "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-linear-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 6651,
+  "max_object_bytes": 6651,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-22/symbol=DOGEUSDT-05JUN26/object=07aa2f75ed9e72582ad4ee2f59269fdfbfe4a8c384ad49c5a978149e8ed1d81a.csv.gz",
+      "source_url": "https://public.bybit.com/trading/DOGEUSDT-05JUN26/DOGEUSDT-05JUN262026-05-22.csv.gz",
+      "sha256": "07aa2f75ed9e72582ad4ee2f59269fdfbfe4a8c384ad49c5a978149e8ed1d81a",
+      "bytes": 6651,
+      "archive_date": "2026-05-22"
+    }
+  ],
+  "blocking_issues": []
+}

@@ -1,0 +1,313 @@
+{
+  "schema_version": 1,
+  "evidence_id": "source-proof-cost-estimate-backtesting-engine-2026-06-08",
+  "observed_at_utc": "2026-06-07T21:08:43Z",
+  "task": "BACKTESTING_ENGINE-026",
+  "currency": "USD",
+  "aws_region": "us-east-1",
+  "scope": {
+    "purpose": "Estimate subscription, AWS storage, compute, transfer, query, logging, and reserve costs before source selection or broad backfill.",
+    "applies_to_source_bindings": [
+      "binance-spot-native-trades",
+      "hyperliquid-hip4-outcome-meta",
+      "kalshi-official-historical-api",
+      "polymarket-parquet-archive-index"
+    ],
+    "not_source_selection": true,
+    "not_final_invoice_quote": true,
+    "not_coverage_acceptance": true,
+    "refresh_required_before_accepting_source": true
+  },
+  "pricing_sources": [
+    {
+      "source_id": "aws-s3-us-east-1-price-list",
+      "url": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/current/us-east-1/index.json",
+      "last_modified": "Thu, 28 May 2026 22:27:42 GMT",
+      "etag": "30086b409bf7a6a0abe31606295a798a",
+      "sha256": "19c1063aadbdf76df3274d856631d75820addab8269f25b4e41ff375af3b1f99"
+    },
+    {
+      "source_id": "aws-athena-us-east-1-price-list",
+      "url": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonAthena/current/us-east-1/index.json",
+      "last_modified": "Fri, 27 Mar 2026 17:22:28 GMT",
+      "etag": "48e9cfc9f06963daab505bc67c7c2581",
+      "sha256": "8c7503e7dd90de014d33ee4b9408c22e9053525232d5e1878e78b7192e5c9151"
+    },
+    {
+      "source_id": "aws-cloudwatch-us-east-1-price-list",
+      "url": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/current/us-east-1/index.json",
+      "last_modified": "Fri, 13 Mar 2026 17:42:33 GMT",
+      "etag": "03e7aa789e3fb553203cebe4617c6909",
+      "sha256": "7ef6361a1592127d713f8b6a82134efd5a07bd371c2da1a062f47c3b13f2a86b"
+    },
+    {
+      "source_id": "aws-data-transfer-us-east-1-price-list",
+      "url": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/current/us-east-1/index.json",
+      "last_modified": "Tue, 26 May 2026 12:39:35 GMT",
+      "etag": "d0f1fb6d51c020a18bc12ef27693eb99",
+      "sha256": "d011ba87c63ae1fe813d3c30590007fc2c9d054f1996f2cd447d183af6d55965"
+    },
+    {
+      "source_id": "aws-fargate-pricing-page",
+      "url": "https://aws.amazon.com/fargate/pricing/",
+      "observed_facts": [
+        "Linux/X86 US East (N. Virginia) CPU cost is 0.000011244 USD per vCPU second.",
+        "Linux/X86 US East (N. Virginia) memory cost is 0.000001235 USD per GB second.",
+        "Additional ephemeral storage cost is 0.0000000308 USD per GB second after the default 20 GB.",
+        "Fargate charges from image download start until task or pod termination with one-minute minimum for Linux containers."
+      ]
+    },
+    {
+      "source_id": "aws-batch-pricing-page",
+      "url": "https://aws.amazon.com/batch/pricing/",
+      "observed_facts": [
+        "AWS Batch has no additional service charge; jobs pay for underlying AWS resources such as EC2, Lambda, or Fargate."
+      ]
+    },
+    {
+      "source_id": "tardis-pricing-page",
+      "url": "https://tardis.dev/",
+      "observed_facts": [
+        "Perpetuals Professional is listed at 900 USD per month.",
+        "Professional access includes raw data replay API and Tardis Machine replay APIs per Tardis billing documentation."
+      ]
+    },
+    {
+      "source_id": "telonex-pricing-page",
+      "url": "https://telonex.io/pricing",
+      "observed_facts": [
+        "Free Trial is listed at 0 USD with 5 file downloads total.",
+        "Plus is listed at 79 USD per month with unlimited downloads, Polymarket plus Binance data, daily updates, and personal-use license.",
+        "Enterprise is custom priced with commercial-use license."
+      ]
+    },
+    {
+      "source_id": "pmxt-polymarket-v2-index",
+      "url": "https://archive.pmxt.dev/Polymarket/v2",
+      "sha256": "c1048c4492d23771d466e9108aa46660437fdc61e9a966d4a93318a69deec9d3",
+      "observed_facts": [
+        "Archive page states free hourly snapshots of Polymarket, Kalshi, Limitless, and Opinion orderbook data in Parquet format.",
+        "Archive page states CC BY 4.0 license with commercial use allowed with attribution.",
+        "Current Polymarket v2 index page listed hourly parquet objects from 380.4 MB to 591.4 MB in the parsed sample."
+      ]
+    },
+    {
+      "source_id": "binance-public-data-readme",
+      "url": "https://github.com/binance/binance-public-data",
+      "observed_facts": [
+        "Binance Data Collection offers public market data in daily and monthly files.",
+        "The README documents checksum sidecars for archive file integrity.",
+        "Durable storage and derived-use terms remain a source-proof gate before selection."
+      ]
+    },
+    {
+      "source_id": "kalshi-historical-data-docs",
+      "url": "https://docs.kalshi.com/getting_started/historical_data",
+      "observed_facts": [
+        "Kalshi documents historical endpoints for markets, candlesticks, trades, fills, and orders.",
+        "No paid historical data subscription price was found on the checked documentation page.",
+        "Durable API terms, account limits, and storage rights remain source-proof gates before selection."
+      ]
+    },
+    {
+      "source_id": "hyperliquid-historical-data-docs",
+      "url": "https://hyperliquid.gitbook.io/hyperliquid-docs/historical-data",
+      "observed_facts": [
+        "Hyperliquid official archive uses requester-pays S3 access.",
+        "Docs state uploads happen approximately once a month, no timely-update guarantee, and data may be missing.",
+        "Transfer and completeness remain source-proof gates before selection."
+      ]
+    }
+  ],
+  "aws_unit_rates_us_east_1": {
+    "s3_storage_gb_month": {
+      "standard_first_50tb": 0.023,
+      "standard_ia": 0.0125,
+      "one_zone_ia": 0.01,
+      "glacier_instant_retrieval": 0.004,
+      "glacier_flexible_retrieval": 0.0036,
+      "intelligent_tiering_deep_archive_access": 0.00099
+    },
+    "s3_requests": {
+      "put_copy_post_list_per_request": 0.000005,
+      "get_other_per_request": 0.0000004,
+      "glacier_instant_retrieval_per_gb": 0.03
+    },
+    "athena": {
+      "query_per_tb_scanned": 5.0,
+      "reserved_capacity_per_dpu_hour": 0.3,
+      "spark_per_dpu_hour": 0.35
+    },
+    "cloudwatch_logs": {
+      "standard_ingest_per_gb": 0.5,
+      "infrequent_access_ingest_per_gb": 0.25,
+      "storage_per_gb_month": 0.03,
+      "logs_insights_scan_per_gb": 0.005
+    },
+    "data_transfer": {
+      "data_transfer_in_per_gb": 0.0,
+      "internet_out_first_100gb_per_month": 0.0,
+      "internet_out_next_10tb_per_gb": 0.09,
+      "internet_out_next_40tb_per_gb": 0.085,
+      "internet_out_next_100tb_per_gb": 0.07,
+      "internet_out_over_150tb_per_gb": 0.05
+    },
+    "fargate_linux_x86": {
+      "vcpu_second": 0.000011244,
+      "memory_gb_second": 0.000001235,
+      "additional_ephemeral_storage_gb_second": 0.0000000308,
+      "included_ephemeral_storage_gb": 20
+    }
+  },
+  "provider_subscription_costs": [
+    {
+      "source_binding": "polymarket-parquet-archive-index",
+      "provider": "PMXT archive",
+      "known_monthly_provider_fee_usd": 0,
+      "cost_status": "free_public_archive",
+      "blocking_cost_unknowns": [
+        "Exact accepted date window and object count",
+        "Archive freshness and gap policy",
+        "Download throughput and retry behavior"
+      ]
+    },
+    {
+      "source_binding": "binance-spot-native-trades",
+      "provider": "Binance public data archive",
+      "known_monthly_provider_fee_usd": 0,
+      "cost_status": "public_archive_fee_zero_observed",
+      "blocking_cost_unknowns": [
+        "Durable terms evidence for storage and derived tables",
+        "Exact accepted symbol set and object count",
+        "Archive update and checksum coverage for selected window"
+      ]
+    },
+    {
+      "source_binding": "kalshi-official-historical-api",
+      "provider": "Kalshi official historical API",
+      "known_monthly_provider_fee_usd": null,
+      "cost_status": "no_paid_subscription_price_found_on_checked_docs",
+      "blocking_cost_unknowns": [
+        "Account/API terms and rate limits",
+        "Durable storage and derived-use rights",
+        "Exact selected markets and historical/live cutoff merge volume"
+      ]
+    },
+    {
+      "source_binding": "hyperliquid-hip4-outcome-meta",
+      "provider": "Hyperliquid official archive/API",
+      "known_monthly_provider_fee_usd": 0,
+      "cost_status": "requester_pays_transfer_storage_compute_remain",
+      "blocking_cost_unknowns": [
+        "Whether historical data reaches the requested table family",
+        "Requester-pays byte count for selected objects",
+        "Completeness and timeliness of official archive"
+      ]
+    },
+    {
+      "source_binding": "paid-crypto-l2-fallback",
+      "provider": "Tardis Perpetuals Professional",
+      "known_monthly_provider_fee_usd": 900,
+      "cost_status": "paid_fallback_candidate_not_selected",
+      "blocking_cost_unknowns": [
+        "Venue/data-family fit per accepted source proof",
+        "Whether Professional scope is sufficient for selected symbols and history",
+        "AWS storage/query/compute costs after replay-to-catalog proof"
+      ]
+    },
+    {
+      "source_binding": "paid-polymarket-fallback",
+      "provider": "Telonex Plus",
+      "known_monthly_provider_fee_usd": 79,
+      "cost_status": "personal_use_paid_candidate_not_selected",
+      "blocking_cost_unknowns": [
+        "Commercial-use requirement may require custom Enterprise terms",
+        "Sample-to-NT mapping and source provenance",
+        "AWS storage/query/compute costs for selected output"
+      ]
+    }
+  ],
+  "scenario_estimates": [
+    {
+      "scenario_id": "unit_1_tib_catalog_or_raw_data",
+      "input_size_gib": 1024,
+      "s3_standard_storage_monthly_usd": 23.552,
+      "s3_glacier_flexible_storage_monthly_usd": 3.6864,
+      "s3_deep_archive_storage_monthly_usd": 1.01376,
+      "athena_full_scan_once_usd": 5.0,
+      "internet_transfer_out_once_after_100gb_free_usd": 83.16,
+      "cloudwatch_10gb_log_ingest_usd": 5.0,
+      "cloudwatch_10gb_log_storage_monthly_usd": 0.3
+    },
+    {
+      "scenario_id": "pmxt_polymarket_v2_recent_index_extrapolation",
+      "basis": "Parsed current PMXT Polymarket v2 index HTML only; not accepted coverage proof.",
+      "parsed_objects": 100,
+      "average_mb_per_hour": 514.0,
+      "min_mb_per_hour": 380.4,
+      "max_mb_per_hour": 591.4,
+      "estimated_gib_per_day": 12.046875,
+      "estimated_tib_per_year": 4.2940521240234375,
+      "one_year_s3_standard_storage_monthly_usd": 101.133515625,
+      "one_year_s3_glacier_flexible_storage_monthly_usd": 15.82959375,
+      "one_year_s3_deep_archive_storage_monthly_usd": 4.35313828125,
+      "one_year_athena_full_scan_once_usd": 21.470260620117188,
+      "one_year_internet_transfer_out_once_after_100gb_free_usd": 386.73984375,
+      "slow_backfill_risk": "A broad one-year PMXT Polymarket v2 download is multi-terabyte before conversion, catalog writes, and validation scans."
+    },
+    {
+      "scenario_id": "fargate_backfill_worker_16vcpu_64gb_10h",
+      "basis": "Portable compute baseline, not final worker selection.",
+      "vcpu": 16,
+      "memory_gb": 64,
+      "duration_hours": 10,
+      "additional_ephemeral_storage_gb": 80,
+      "cpu_usd": 6.476544,
+      "memory_usd": 2.84544,
+      "additional_ephemeral_storage_usd": 0.088704,
+      "total_compute_usd": 9.410688
+    },
+    {
+      "scenario_id": "fargate_backfill_worker_16vcpu_64gb_100h",
+      "basis": "Portable compute baseline for heavier replay/conversion pass, not final worker selection.",
+      "vcpu": 16,
+      "memory_gb": 64,
+      "duration_hours": 100,
+      "additional_ephemeral_storage_gb": 80,
+      "cpu_usd": 64.76544,
+      "memory_usd": 28.4544,
+      "additional_ephemeral_storage_usd": 0.88704,
+      "total_compute_usd": 94.10688
+    },
+    {
+      "scenario_id": "pmxt_one_year_standard_plus_one_scan_plus_100h_compute",
+      "basis": "Combines PMXT index extrapolation, S3 Standard storage, one Athena full scan, and one 100h Fargate backfill worker. Excludes provider fee and dashboard product cost.",
+      "estimated_monthly_or_one_time_components_usd": {
+        "s3_standard_storage_monthly": 101.133515625,
+        "athena_full_scan_once": 21.470260620117188,
+        "fargate_100h_compute_once": 94.10688,
+        "cloudwatch_10gb_ingest_once": 5.0,
+        "cloudwatch_10gb_storage_monthly": 0.3
+      },
+      "subtotal_with_one_time_components_usd": 222.01065624511718,
+      "twenty_percent_reserve_usd": 44.40213124902344,
+      "planning_total_with_reserve_usd": 266.4127874941406
+    }
+  ],
+  "backfill_efficiency_controls": [
+    "Build source coverage ledgers from indexes/manifests before downloading large raw objects.",
+    "Choose bounded tranches by source binding, table family, date window, instrument universe, object count, and byte budget.",
+    "Require checksum/hash sidecars or staged object hashes before conversion.",
+    "Convert only accepted source-proof tranches into NT catalog data.",
+    "Run catalog read-back and source-proof/result-contract checks on the bounded tranche before expanding.",
+    "Do not use venue names as production-code branches; venue/provider-specific behavior belongs in config-owned source bindings and adapter registry entries."
+  ],
+  "remaining_unknowns_before_source_selection": [
+    "Exact selected source binding, date window, and instrument universe.",
+    "Per-source coverage ledger with object counts, byte totals, gaps, checksums, and freshness.",
+    "Throughput benchmark for raw download, conversion, catalog write, and catalog read-back.",
+    "Durable license/terms evidence for each accepted source.",
+    "Dashboard/read-model product cost, if selected later.",
+    "Whether final compute should be Fargate, EC2/Batch, local, or another AWS service after benchmarking."
+  ]
+}

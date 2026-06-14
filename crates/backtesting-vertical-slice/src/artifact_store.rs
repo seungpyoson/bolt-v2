@@ -13,6 +13,8 @@ use sha2::{Digest, Sha256};
 
 use crate::run_manifest::MarketStructureFixture;
 
+const CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION: &str = "catalog-projection-manifest-v1";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactStoreConfig {
@@ -818,7 +820,7 @@ pub async fn persist_catalog_projection_for_source_binding(
         artifact_root.catalog_projection_manifest_object_uri(&binding.catalog_projection_id);
     let manifest_path = artifact_root.object_path_for_uri(&manifest_uri)?;
     let manifest_payload = serde_json::to_vec_pretty(&CatalogProjectionManifestDocument {
-        schema_version: "catalog-projection-manifest-v1",
+        schema_version: CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION,
         catalog_root_uri: catalog_root_uri.as_str(),
         manifest_sha256: manifest_sha256.as_str(),
         binding: &binding,

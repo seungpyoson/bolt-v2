@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00510:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:FORMUSDC:2026-03-01:ab47eebb453f1d54ab11507fbb53f6f9e58fae822319f1f1f7bc0d8996ba1712:accepted-tranche",
+  "accepted_tranche_manifest_hash": "fcff771be67a0838463f2d33531ef29d08c0dd3327db5863cc4226e50ded574d",
+  "run_spec_hash": "dc8a751b18504efd78e168fca3240537745338f8aa21bae3b653f55498d6e59e",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00510",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=FORMUSDC/dt=2026-03-01/object=ab47eebb453f1d54ab11507fbb53f6f9e58fae822319f1f1f7bc0d8996ba1712",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 99148,
+  "max_object_bytes": 99148,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=FORMUSDC/object=ab47eebb453f1d54ab11507fbb53f6f9e58fae822319f1f1f7bc0d8996ba1712.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/FORMUSDC/FORMUSDC-trades-2026-03-01.zip",
+      "sha256": "ab47eebb453f1d54ab11507fbb53f6f9e58fae822319f1f1f7bc0d8996ba1712",
+      "bytes": 99148,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

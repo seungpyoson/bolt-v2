@@ -580,6 +580,7 @@ pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
             "src/bolt_v3_outcome_groups.rs",
             "src/bolt_v3_outcome_group_sources.rs",
             "src/bolt_v3_outcome_group_polymarket.rs",
+            "src/bolt_v3_outcome_group_hyperliquid.rs",
             "src/bolt_v3_outcome_group_scanner.rs",
             "src/bolt_v3_basket_admission.rs",
             "src/bolt_v3_basket_execution.rs",

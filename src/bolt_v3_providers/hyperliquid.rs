@@ -39,7 +39,8 @@ use crate::{
     bolt_v3_config::ClientBlock,
     bolt_v3_config::resolve_root_relative_path,
     bolt_v3_market_families::{
-        MarketIdentityPlan, hyperliquid_instrument, market_identity_plan_from_config, updown,
+        MarketIdentityPlan, hyperliquid_instrument, market_identity_plan_from_config,
+        outcome_group, updown,
     },
     bolt_v3_operator_artifacts::{WrittenOperatorArtifact, is_lowercase_sha256, read_file_bounded},
     bolt_v3_providers::hyperliquid_artifacts::{
@@ -69,7 +70,8 @@ use crate::{
 use super::hyperliquid_artifacts::HyperliquidLiveSubmitApprovalConsumption;
 
 pub const KEY: &str = "HYPERLIQUID";
-pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY, hyperliquid_instrument::KEY];
+pub const SUPPORTED_MARKET_FAMILIES: &[&str] =
+    &[updown::KEY, hyperliquid_instrument::KEY, outcome_group::KEY];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,
     consumer: "Hyperliquid execution client",
@@ -1479,6 +1481,24 @@ fn validate_target_surfaces(
                     updown::KEY,
                     target.execution_client_id,
                     updown::KEY,
+                    product_surface_name(HyperliquidProductSurface::Hip4Outcomes),
+                    product_surface_name(*configured_surface),
+                ),
+            });
+        }
+    }
+    for target in
+        outcome_group::target_plans(plan).filter(|target| target.execution_client_id == client_key)
+    {
+        if *configured_surface != HyperliquidProductSurface::Hip4Outcomes {
+            return Err(BoltV3AdapterMappingError::ValidationInvariant {
+                client_key: client_key.to_string(),
+                field: "strategy.target.rotating_market_family",
+                message: format!(
+                    "configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}` and this client selects `{}`",
+                    target.configured_target_id,
+                    outcome_group::KEY,
+                    target.execution_client_id,
                     product_surface_name(HyperliquidProductSurface::Hip4Outcomes),
                     product_surface_name(*configured_surface),
                 ),

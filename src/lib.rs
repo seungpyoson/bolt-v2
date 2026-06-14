@@ -23,6 +23,7 @@ pub mod bolt_v3_market_families;
 pub mod bolt_v3_numeric;
 pub mod bolt_v3_operator_artifacts;
 pub mod bolt_v3_order_intent;
+pub mod bolt_v3_outcome_group_hyperliquid;
 pub mod bolt_v3_outcome_group_polymarket;
 pub mod bolt_v3_outcome_group_scanner;
 pub mod bolt_v3_outcome_group_sources;

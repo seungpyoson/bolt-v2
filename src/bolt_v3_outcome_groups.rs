@@ -163,6 +163,12 @@ pub enum RoleBindingProof {
         attestation_sha256: String,
         proof_fingerprint: String,
     },
+    VenueStructuredFields {
+        source_id: String,
+        question: u32,
+        outcome_indices: Vec<u32>,
+        proof_fingerprint: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -913,6 +919,11 @@ fn validate_role_bindings(group: &OutcomeGroup) -> Result<(), OutcomeGroupValida
                 });
             }
             validate_positive_side_bindings(group, positive_side_bindings)?;
+        }
+        RoleBindingProof::VenueStructuredFields {
+            proof_fingerprint, ..
+        } => {
+            validate_sha256_field("role_binding_proof.proof_fingerprint", proof_fingerprint)?;
         }
     }
     Ok(())

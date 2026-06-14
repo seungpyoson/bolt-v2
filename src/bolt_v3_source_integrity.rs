@@ -284,11 +284,11 @@ mod tests {
         "466c7d50f06fa4a21c67a2252386118e876ab593527376480283b216caf6e741";
     // GOLDEN_OUTCOME_GROUP_DIGEST is introduced by the shared outcome-group
     // substrate source-integrity task after every first-slice source root exists
-    // on disk. HIP-4 remains intentionally excluded until Task 11 creates its
-    // source root. Re-derived after Task 10 activated the complete-set runtime
-    // binding and production strategy shell.
+    // on disk. Re-derived after Task 10 activated the complete-set runtime
+    // binding and production strategy shell, then after Task 11 added the HIP-4
+    // outcome-group normalizer root.
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "b9389e385d79d7a2a930e7f5ee4bcf42800d9570b3b07335f9ae229d9423e42f";
+        "c8a94e657ad05e0b7889332430464b484103dca8807bbb3a4e827eafa5fd09f9";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -428,13 +428,14 @@ mod tests {
     }
 
     #[test]
-    fn outcome_group_source_set_includes_only_existing_first_slice_roots() {
+    fn outcome_group_source_set_includes_registered_outcome_group_roots() {
         assert_eq!(
             registry_relative_roots(OUTCOME_GROUP_KEY),
             &[
                 "src/bolt_v3_outcome_groups.rs",
                 "src/bolt_v3_outcome_group_sources.rs",
                 "src/bolt_v3_outcome_group_polymarket.rs",
+                "src/bolt_v3_outcome_group_hyperliquid.rs",
                 "src/bolt_v3_outcome_group_scanner.rs",
                 "src/bolt_v3_basket_admission.rs",
                 "src/bolt_v3_basket_execution.rs",
@@ -459,6 +460,7 @@ mod tests {
                 "src/bolt_v3_basket_admission.rs".to_string(),
                 "src/bolt_v3_basket_execution.rs".to_string(),
                 "src/bolt_v3_basket_store.rs".to_string(),
+                "src/bolt_v3_outcome_group_hyperliquid.rs".to_string(),
                 "src/bolt_v3_outcome_group_polymarket.rs".to_string(),
                 "src/bolt_v3_outcome_group_scanner.rs".to_string(),
                 "src/bolt_v3_outcome_group_sources.rs".to_string(),
@@ -466,7 +468,7 @@ mod tests {
                 "src/strategies/complete_set_arbitrage/mod.rs".to_string(),
                 "src/strategy_runtime_bindings.rs".to_string(),
             ],
-            "Task 10 covers complete-set runtime activation roots; HIP-4 joins in Task 11"
+            "Task 11 covers the HIP-4 normalizer root alongside shared outcome-group roots"
         );
     }
 

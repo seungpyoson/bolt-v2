@@ -11766,3 +11766,299 @@ literal = '''"ioc"'''
 context = '''const SUBMIT_MODE_IOC: &str = "ioc";'''
 classification = "source_schema_enum_value"
 reason = "Supported complete-set submit_mode value used by the concrete shell to derive the NT IOC time-in-force contract."
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"src/bolt_v3_outcome_group_hyperliquid.rs"'''
+context = '''"src/bolt_v3_outcome_group_hyperliquid.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the Task 11 Hyperliquid HIP-4 outcome-group normalizer source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}` and this client selects `{}`"'''
+context = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}` and this client selects `{}`",'''
+classification = "hyperliquid_outcome_group_surface_diagnostic"
+reason = "Provider fail-closed diagnostic when an outcome_group target is routed to a Hyperliquid execution client whose TOML product surface is not HIP-4 outcomes; target and surface values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "number"
+literal = '''0'''
+context = '''0 => OutcomeLegRole::PaysOnTerminalState(terminal_label.clone()),'''
+classification = "hip4_structured_outcome_side_semantic"
+reason = "NT Hyperliquid HIP-4 BinaryOption.info outcome_side value identifying the side that pays on the named terminal state; instrument metadata remains NT-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "number"
+literal = '''1'''
+context = '''1 => OutcomeLegRole::PaysUnlessTerminalState(terminal_label.clone()),'''
+classification = "hip4_structured_outcome_side_semantic"
+reason = "NT Hyperliquid HIP-4 BinaryOption.info outcome_side value identifying the side that pays unless the named terminal state resolves; instrument metadata remains NT-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''","'''
+context = '''.join(","),'''
+classification = "outcome_group_normalizer_evidence_separator"
+reason = "Stable separator for canonical HIP-4 outcome-group evidence hashing; joined values come from NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"is_fallback"'''
+context = '''if info.get_bool("is_fallback").unwrap_or(false) {'''
+classification = "hip4_nt_binary_option_info_field"
+reason = "Structured NT Hyperliquid BinaryOption.info key emitted by parse_outcome_instruments for fallback HIP-4 outcomes; runtime values remain NT-discovery-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"named_index"'''
+context = '''let named_index = info_u32(info, "named_index", &instrument_id)?;'''
+classification = "hip4_nt_binary_option_info_field"
+reason = "Structured NT Hyperliquid BinaryOption.info key emitted by parse_outcome_instruments for parent question outcome ordering; runtime values remain NT-discovery-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"outcome_index"'''
+context = '''let outcome_index = info_u32(info, "outcome_index", &instrument_id)?;'''
+classification = "hip4_nt_binary_option_info_field"
+reason = "Structured NT Hyperliquid BinaryOption.info key emitted by parse_outcome_instruments for HIP-4 outcome identity; runtime values remain NT-discovery-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"outcome_side"'''
+context = '''let outcome_side = info_u8(info, "outcome_side", &instrument_id)?;'''
+classification = "hip4_nt_binary_option_info_field"
+reason = "Structured NT Hyperliquid BinaryOption.info key emitted by parse_outcome_instruments for HIP-4 side identity; runtime values remain NT-discovery-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"question"'''
+context = '''let Some(candidate_question) = info.get_u64("question") else {'''
+classification = "hip4_nt_binary_option_info_field"
+reason = "Structured NT Hyperliquid BinaryOption.info key emitted by parse_outcome_instruments for parent OutcomeQuestion binding; runtime values remain NT-discovery-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"side_name"'''
+context = '''.get_str("side_name")'''
+classification = "hip4_nt_binary_option_info_field"
+reason = "Structured NT Hyperliquid BinaryOption.info key emitted by parse_outcome_instruments for the display side name; runtime values remain NT-discovery-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"non_standard_terminal_payouts.payout_per_unit"'''
+context = '''"non_standard_terminal_payouts.payout_per_unit",'''
+classification = "outcome_group_source_schema_field"
+reason = "TOML schema-field label used only to report parse failures for operator-configured HIP-4 outcome-group payout vectors; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"operator_attested_static_payout_per_unit"'''
+context = '''"operator_attested_static_payout_per_unit"'''
+classification = "outcome_group_refund_convention_schema_token"
+reason = "Closed TOML enum token recorded in HIP-4 attested payout evidence; payout values remain supplied by TOML/operator attestation."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"order_constraints.default_min_notional"'''
+context = '''"order_constraints.default_min_notional",'''
+classification = "outcome_group_source_schema_field"
+reason = "TOML schema-field label used only to report parse failures for operator-configured HIP-4 outcome-group order constraints; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"order_constraints.default_min_quantity"'''
+context = '''"order_constraints.default_min_quantity",'''
+classification = "outcome_group_source_schema_field"
+reason = "TOML schema-field label used only to report parse failures for operator-configured HIP-4 outcome-group order constraints; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"order_constraints.per_leg.min_notional"'''
+context = '''"order_constraints.per_leg.min_notional",'''
+classification = "outcome_group_source_schema_field"
+reason = "TOML schema-field label used only to report parse failures for operator-configured HIP-4 outcome-group order constraints; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"order_constraints.per_leg.min_quantity"'''
+context = '''Some(value) => parse_decimal("order_constraints.per_leg.min_quantity", value)?,'''
+classification = "outcome_group_source_schema_field"
+reason = "TOML schema-field label used only to report parse failures for operator-configured HIP-4 outcome-group order constraints; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''CanonicalField::new(["grouping", "question"], question.to_string()),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''CanonicalField::new(["grouping", "source_id"], &source.source_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''["grouping", "outcome_indices"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"native_leg_id"'''
+context = '''CanonicalField::new(["price_scale", "native_leg_id"], &leg.native_leg_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"outcome_index"'''
+context = '''["price_scale", "outcome_index"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"outcome_indices"'''
+context = '''["grouping", "outcome_indices"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"outcome_indices"'''
+context = '''["role_binding", "outcome_indices"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"outcome_side"'''
+context = '''["price_scale", "outcome_side"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"price_scale"'''
+context = '''CanonicalField::new(["price_scale", "native_leg_id"], &leg.native_leg_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"price_scale"'''
+context = '''["price_scale", "outcome_index"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"price_scale"'''
+context = '''["price_scale", "outcome_side"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"price_scale"'''
+context = '''["price_scale", "settlement_asset_id"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"question"'''
+context = '''CanonicalField::new(["grouping", "question"], question.to_string()),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"question"'''
+context = '''CanonicalField::new(["role_binding", "question"], question.to_string()),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"role_binding"'''
+context = '''CanonicalField::new(["role_binding", "question"], question.to_string()),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"role_binding"'''
+context = '''CanonicalField::new(["role_binding", "source_id"], &source.source_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"role_binding"'''
+context = '''["role_binding", "outcome_indices"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"settlement_asset_id"'''
+context = '''["price_scale", "settlement_asset_id"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''CanonicalField::new(["grouping", "source_id"], &source.source_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_hyperliquid.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''CanonicalField::new(["role_binding", "source_id"], &source.source_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."

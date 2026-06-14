@@ -69,6 +69,7 @@ DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / "justfile",)
 DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / "scripts", "*.sh"),
     (REPO_ROOT / "tests", "*.sh"),
+    (REPO_ROOT / ".github" / "scripts", "*.sh"),
     (REPO_ROOT / ".github" / "actions", "*/action.yml"),
     (REPO_ROOT / ".github" / "actions", "*/action.yaml"),
 )
@@ -3336,6 +3337,8 @@ def tokens_have_repo_automation_raw_cargo(
     for payload in shell_command_substitution_payloads(tokens):
         if tokens_have_raw_cargo_launch(payload, variables=variables):
             return True
+    if tokens_are_shell_array_assignment(tokens):
+        return False
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
         segment_variables = dict(variables)
@@ -3355,6 +3358,29 @@ def tokens_have_repo_automation_raw_cargo(
     if tokens_are_rust_version_probe(tokens):
         return False
     return tokens_have_raw_cargo_launch(tokens, variables=variables)
+
+
+def tokens_are_shell_array_assignment(tokens: list[str]) -> bool:
+    if len(tokens) < 4 or tokens[0] in SHELL_COMMAND_BOUNDARIES:
+        return False
+    index = 0
+    while index < len(tokens):
+        if not shell_assignment_word(tokens[index]) or not tokens[index].endswith("="):
+            return False
+        index += 1
+        if index >= len(tokens) or tokens[index] != "(":
+            return False
+        depth = 1
+        index += 1
+        while index < len(tokens) and depth:
+            if tokens[index] == "(":
+                depth += 1
+            elif tokens[index] == ")":
+                depth -= 1
+            index += 1
+        if depth:
+            return False
+    return True
 
 
 def is_managed_just_recipe_guard(recipe: str, stripped_line: str) -> bool:

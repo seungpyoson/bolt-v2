@@ -239,13 +239,15 @@ ci-lint-workflow:
     shopt -s nullglob
     workflow_files=()
     action_files=()
+    github_script_files=()
 
     [ -f .github/workflows/ci.yml ] && workflow_files+=(.github/workflows/ci.yml)
     [ -f .github/workflows/ci-docs-pass-stub.yml ] && workflow_files+=(.github/workflows/ci-docs-pass-stub.yml)
     [ -f .github/workflows/advisory.yml ] && workflow_files+=(.github/workflows/advisory.yml)
     [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
+    github_script_files=(.github/scripts/*.sh)
 
-    github_automation_files=("${workflow_files[@]}" "${action_files[@]}")
+    github_automation_files=("${workflow_files[@]}" "${action_files[@]}" "${github_script_files[@]}")
     repo_governance_files=()
     [ -f .no-mistakes.yaml ] && repo_governance_files+=(.no-mistakes.yaml)
     rust_invocation_files=(justfile "${repo_governance_files[@]}" scripts/*.sh tests/*.sh "${github_automation_files[@]}")

@@ -17,9 +17,8 @@ use backtesting_vertical_slice::{
         StoredArtifactIndexPointer, persist_catalog_projection_for_source_binding,
     },
     nt_catalog_capability::{
-        NtCatalogCapabilityControls, NtCatalogCapabilityEvidence, NtCatalogCapabilityProof,
-        NtCatalogCapabilityProofDocument, NtCatalogCapabilityRunSpec, NtCatalogCredentialSource,
-        NtCatalogReadBackEvidence,
+        NtCatalogCapabilityEvidence, NtCatalogCapabilityProof, NtCatalogCapabilityProofDocument,
+        NtCatalogCapabilityRunSpec, NtCatalogCredentialSource, NtCatalogReadBackEvidence,
     },
     operator::{RunSpec, run_from_run_spec, run_from_run_spec_with_artifact_store},
     result_contract::BacktestResultContract,
@@ -277,6 +276,7 @@ impl fmt::Display for NoListObjectStore {
     }
 }
 
+#[async_trait::async_trait]
 impl ObjectStore for NoListObjectStore {
     async fn put_opts(
         &self,
@@ -1049,8 +1049,10 @@ fn rejects_manifest_fixture_mismatch() {
     spec.manifest.market_structure_fixture = MarketStructureFixture::BinaryOption;
     let output_dir = tempfile::TempDir::new().expect("temp dir");
 
-    let err = run_from_run_spec(&spec, &gz, output_dir.path())
-        .expect_err("manifest fixture must match accepted source proof fixture_type");
+    let err = match run_from_run_spec(&spec, &gz, output_dir.path()) {
+        Ok(_) => panic!("manifest fixture must match accepted source proof fixture_type"),
+        Err(err) => err,
+    };
 
     assert!(
         err.to_string().contains("accepted.fixture_type"),

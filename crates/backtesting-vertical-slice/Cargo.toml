@@ -52,4 +52,5 @@ object_store = { version = "=0.13.2", default-features = false, features = ["aws
 bolt-v2 = { path = "../.." }
 
 [dev-dependencies]
+async-trait = "0.1"
 tempfile = "3"

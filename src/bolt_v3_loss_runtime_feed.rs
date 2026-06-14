@@ -1,4 +1,10 @@
-use std::{cell::RefCell, collections::VecDeque, fmt, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, VecDeque},
+    fmt,
+    rc::Rc,
+    sync::Arc,
+};
 
 use nautilus_common::msgbus::{
     TypedHandler, subscribe_account_state, subscribe_portfolio_snapshot, subscribe_position_events,
@@ -6,7 +12,7 @@ use nautilus_common::msgbus::{
 };
 use nautilus_model::{
     events::{AccountState, PortfolioSnapshot, PositionEvent},
-    identifiers::AccountId,
+    identifiers::{AccountId, PositionId},
     types::{Currency, Money},
 };
 use rust_decimal::Decimal;
@@ -51,6 +57,8 @@ struct LossGovernorRuntimeFeedState {
     rolling_pnl: Option<TimedDecimal>,
     per_trade_pnl: Option<TimedDecimal>,
     per_trade_pnl_source: Option<PerTradePnlSource>,
+    active_position_pnls: BTreeMap<PositionId, TimedDecimal>,
+    last_position_pnl: Option<TimedDecimal>,
     current_equity: Option<TimedDecimal>,
     peak_equity: Option<TimedDecimal>,
     account_state_equity_baseline: Option<TimedDecimal>,
@@ -71,12 +79,6 @@ impl TimedDecimal {
             observed_at_ns,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PeakEquityAction {
-    Preserve,
-    RebaselineToCurrent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,7 +230,7 @@ impl LossGovernorRuntimeFeed {
         let daily_pnl = daily_pnl(snapshot, currency)?;
         let current_equity = total_equity(snapshot, currency)?;
         self.state.portfolio_pnl_observed = true;
-        let peak_equity_action = self.state.update_rolling_pnl(
+        self.state.update_rolling_pnl(
             daily_pnl,
             current_equity,
             observed_at_ns,
@@ -238,7 +240,7 @@ impl LossGovernorRuntimeFeed {
         self.state.refresh_per_trade_pnl_clock(observed_at_ns);
         self.state.current_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
         self.state
-            .apply_peak_equity_action(peak_equity_action, current_equity, observed_at_ns);
+            .preserve_or_raise_peak_equity(current_equity, observed_at_ns);
 
         self.publish_if_complete()
     }
@@ -297,7 +299,7 @@ impl LossGovernorRuntimeFeed {
                 .get_or_insert(TimedDecimal::new(current_equity, observed_at_ns));
             current_equity - baseline.value
         };
-        let peak_equity_action = self.state.update_rolling_pnl(
+        self.state.update_rolling_pnl(
             daily_pnl,
             current_equity,
             observed_at_ns,
@@ -307,7 +309,7 @@ impl LossGovernorRuntimeFeed {
         self.state.refresh_per_trade_pnl_clock(observed_at_ns);
         self.state.current_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
         self.state
-            .apply_peak_equity_action(peak_equity_action, current_equity, observed_at_ns);
+            .preserve_or_raise_peak_equity(current_equity, observed_at_ns);
 
         self.publish_if_complete()
     }
@@ -337,11 +339,12 @@ impl LossGovernorRuntimeFeed {
         }
 
         if let Some(per_trade_pnl) = position_fact.per_trade_pnl {
-            self.state.per_trade_pnl = Some(TimedDecimal::new(
-                per_trade_pnl,
-                position_fact.observed_at_ns,
-            ));
-            self.state.per_trade_pnl_source = Some(PerTradePnlSource::PositionEvent);
+            self.state.record_position_pnl(
+                position_fact.position_id,
+                TimedDecimal::new(per_trade_pnl, position_fact.observed_at_ns),
+                position_fact.closed,
+                position_fact.reset_completed_position_pnl,
+            );
         }
 
         self.publish_if_complete()
@@ -410,7 +413,7 @@ impl fmt::Debug for LossGovernorRuntimeFeed {
 }
 
 impl LossGovernorRuntimeFeedState {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             currency: None,
             previous_daily_pnl: None,
@@ -420,6 +423,8 @@ impl LossGovernorRuntimeFeedState {
             rolling_pnl: None,
             per_trade_pnl: None,
             per_trade_pnl_source: None,
+            active_position_pnls: BTreeMap::new(),
+            last_position_pnl: None,
             current_equity: None,
             peak_equity: None,
             account_state_equity_baseline: None,
@@ -440,9 +445,14 @@ impl LossGovernorRuntimeFeedState {
 
     fn refresh_per_trade_pnl_clock(&mut self, observed_at_ns: u64) {
         if self.per_trade_pnl_source == Some(PerTradePnlSource::PositionEvent) {
-            if let Some(per_trade_pnl) = self.per_trade_pnl {
-                self.per_trade_pnl = Some(TimedDecimal::new(per_trade_pnl.value, observed_at_ns));
+            for per_trade_pnl in self.active_position_pnls.values_mut() {
+                *per_trade_pnl = TimedDecimal::new(per_trade_pnl.value, observed_at_ns);
             }
+            if let Some(last_position_pnl) = self.last_position_pnl {
+                self.last_position_pnl =
+                    Some(TimedDecimal::new(last_position_pnl.value, observed_at_ns));
+            }
+            self.refresh_effective_per_trade_pnl();
         } else {
             self.per_trade_pnl = Some(TimedDecimal::new(Decimal::ZERO, observed_at_ns));
             self.per_trade_pnl_source = Some(PerTradePnlSource::PortfolioBaseline);
@@ -458,19 +468,37 @@ impl LossGovernorRuntimeFeedState {
         }
     }
 
-    fn apply_peak_equity_action(
+    fn record_position_pnl(
         &mut self,
-        action: PeakEquityAction,
-        current_equity: Decimal,
-        observed_at_ns: u64,
+        position_id: PositionId,
+        position_pnl: TimedDecimal,
+        closed: bool,
+        reset_completed_position_pnl: bool,
     ) {
-        match action {
-            PeakEquityAction::RebaselineToCurrent => {
-                self.peak_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
-            }
-            PeakEquityAction::Preserve => {
-                self.preserve_or_raise_peak_equity(current_equity, observed_at_ns);
-            }
+        if reset_completed_position_pnl {
+            self.last_position_pnl = None;
+        }
+        if closed {
+            self.active_position_pnls.remove(&position_id);
+        } else {
+            self.active_position_pnls.insert(position_id, position_pnl);
+        }
+        if !reset_completed_position_pnl {
+            self.last_position_pnl = Some(position_pnl);
+        }
+        self.refresh_effective_per_trade_pnl();
+    }
+
+    fn refresh_effective_per_trade_pnl(&mut self) {
+        let worst_position_pnl = self
+            .active_position_pnls
+            .values()
+            .copied()
+            .chain(self.last_position_pnl)
+            .min_by_key(|per_trade_pnl| per_trade_pnl.value);
+        if let Some(worst_position_pnl) = worst_position_pnl {
+            self.per_trade_pnl = Some(worst_position_pnl);
+            self.per_trade_pnl_source = Some(PerTradePnlSource::PositionEvent);
         }
     }
 
@@ -480,20 +508,15 @@ impl LossGovernorRuntimeFeedState {
         current_equity: Decimal,
         observed_at_ns: u64,
         rolling_window_ns: u64,
-    ) -> PeakEquityAction {
-        let mut peak_equity_action = PeakEquityAction::Preserve;
+    ) {
         if let Some(previous_daily_pnl) = self.previous_daily_pnl {
             let cumulative_delta = daily_pnl - previous_daily_pnl.value;
             let rolling_delta = match self.previous_total_equity {
                 Some(previous_total_equity) => {
                     let equity_delta = current_equity - previous_total_equity.value;
                     if cumulative_delta != daily_pnl && equity_delta == daily_pnl {
-                        peak_equity_action = PeakEquityAction::RebaselineToCurrent;
                         daily_pnl
                     } else {
-                        if cumulative_delta.is_zero() && !equity_delta.is_zero() {
-                            peak_equity_action = PeakEquityAction::RebaselineToCurrent;
-                        }
                         cumulative_delta
                     }
                 }
@@ -516,46 +539,65 @@ impl LossGovernorRuntimeFeedState {
 
         let rolling_pnl = self.rolling_samples.iter().map(|sample| sample.value).sum();
         self.rolling_pnl = Some(TimedDecimal::new(rolling_pnl, observed_at_ns));
-        peak_equity_action
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PositionPnlFact {
     account_id: AccountId,
+    position_id: PositionId,
     currency: Currency,
     per_trade_pnl: Option<Decimal>,
     observed_at_ns: u64,
+    closed: bool,
+    reset_completed_position_pnl: bool,
 }
 
 fn position_pnl_fact(event: &PositionEvent) -> Option<PositionPnlFact> {
     match event {
-        PositionEvent::PositionOpened(_) => None,
+        PositionEvent::PositionOpened(opened) => Some(PositionPnlFact {
+            account_id: opened.account_id,
+            position_id: opened.position_id,
+            currency: opened.currency,
+            per_trade_pnl: Some(Decimal::ZERO),
+            observed_at_ns: opened.ts_event.as_u64(),
+            closed: false,
+            reset_completed_position_pnl: true,
+        }),
         PositionEvent::PositionChanged(changed) => Some(PositionPnlFact {
             account_id: changed.account_id,
+            position_id: changed.position_id,
             currency: changed.unrealized_pnl.currency,
             per_trade_pnl: Some(combined_position_pnl(
                 changed.realized_pnl,
                 changed.unrealized_pnl,
             )?),
             observed_at_ns: changed.ts_event.as_u64(),
+            closed: false,
+            reset_completed_position_pnl: false,
         }),
         PositionEvent::PositionClosed(closed) => Some(PositionPnlFact {
             account_id: closed.account_id,
+            position_id: closed.position_id,
             currency: closed.unrealized_pnl.currency,
             per_trade_pnl: Some(combined_position_pnl(
                 closed.realized_pnl,
                 closed.unrealized_pnl,
             )?),
             observed_at_ns: closed.ts_event.as_u64(),
+            closed: true,
+            reset_completed_position_pnl: false,
         }),
         PositionEvent::PositionAdjusted(adjusted) => {
             let pnl_change = adjusted.pnl_change?;
             Some(PositionPnlFact {
                 account_id: adjusted.account_id,
+                position_id: adjusted.position_id,
                 currency: pnl_change.currency,
                 per_trade_pnl: None,
                 observed_at_ns: adjusted.ts_event.as_u64(),
+                closed: false,
+                reset_completed_position_pnl: false,
             })
         }
     }
@@ -580,7 +622,13 @@ fn position_event_ts_init(event: &PositionEvent) -> u64 {
 }
 
 fn position_event_can_carry_loss_fact(event: &PositionEvent) -> bool {
-    !matches!(event, PositionEvent::PositionOpened(_))
+    matches!(
+        event,
+        PositionEvent::PositionOpened(_)
+            | PositionEvent::PositionChanged(_)
+            | PositionEvent::PositionClosed(_)
+            | PositionEvent::PositionAdjusted(_)
+    )
 }
 
 fn combined_position_pnl(realized_pnl: Option<Money>, unrealized_pnl: Money) -> Option<Decimal> {

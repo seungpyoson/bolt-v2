@@ -10,10 +10,11 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
 };
 use nautilus_common::msgbus::{publish_account_state, publish_portfolio_snapshot};
-use nautilus_core::{UUID4, UnixNanos};
+use nautilus_core::{UUID4, UnixNanos, nanos::DurationNanos};
 use nautilus_model::enums::{AccountType, OrderSide, PositionAdjustmentType, PositionSide};
 use nautilus_model::events::{
-    AccountState, PortfolioSnapshot, PositionAdjusted, PositionChanged, PositionEvent,
+    AccountState, PortfolioSnapshot, PositionAdjusted, PositionChanged, PositionClosed,
+    PositionEvent, PositionOpened,
 };
 use nautilus_model::identifiers::{
     AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId,
@@ -367,6 +368,105 @@ fn position_adjustment_does_not_mask_larger_per_trade_loss() {
 }
 
 #[test]
+fn later_safe_position_event_does_not_mask_open_position_per_trade_loss() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-PER-TRADE-WORST");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission.clone(),
+    );
+
+    feed.on_account_state(&account_state(account_id, 1_000, 1_000.0))
+        .expect("account baseline should publish");
+    feed.on_position_event(&changed_position_event_for_position(
+        account_id,
+        "POSITION-LOSS-A",
+        "INSTRUMENT-LOSS-A.SIM",
+        1_100,
+        -12.0,
+    ))
+    .expect("first open position should publish breaching per-trade pnl");
+    let safe_second_position = feed
+        .on_position_event(&changed_position_event_for_position(
+            account_id,
+            "POSITION-LOSS-B",
+            "INSTRUMENT-LOSS-B.SIM",
+            1_200,
+            -1.0,
+        ))
+        .expect("later safe position should publish without masking the open breach");
+
+    assert_eq!(
+        safe_second_position.per_trade_pnl,
+        Some(Decimal::new(-12, 0))
+    );
+    let error = admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 1_250)
+        .expect_err("worst open position loss should halt entry submit");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }
+            if reasons == vec![LossHaltReason::PerTradeLossLimit]
+    ));
+}
+
+#[test]
+fn position_opened_resets_completed_position_per_trade_pnl() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-PER-TRADE-OPENED");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission.clone(),
+    );
+
+    feed.on_account_state(&account_state(account_id, 1_000, 1_000.0))
+        .expect("account baseline should publish");
+    feed.on_position_event(&changed_position_event_for_position(
+        account_id,
+        "POSITION-LOSS-CLOSED",
+        "INSTRUMENT-LOSS-CLOSED.SIM",
+        1_100,
+        -8.0,
+    ))
+    .expect("changed position should publish per-trade pnl");
+    feed.on_position_event(&closed_position_event(
+        account_id,
+        "POSITION-LOSS-CLOSED",
+        "INSTRUMENT-LOSS-CLOSED.SIM",
+        1_200,
+        -8.0,
+    ))
+    .expect("closed position should publish final per-trade pnl");
+    let opened = feed
+        .on_position_event(&opened_position_event(
+            account_id,
+            "POSITION-LOSS-NEW",
+            "INSTRUMENT-LOSS-NEW.SIM",
+            1_300,
+        ))
+        .expect("opened position should reset completed per-trade pnl");
+
+    assert_eq!(opened.per_trade_pnl, Some(Decimal::ZERO));
+    admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 1_350)
+        .expect("fresh new position baseline should admit entry submit");
+}
+
+#[test]
 fn account_state_heartbeat_refreshes_position_event_per_trade_timestamp() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
@@ -433,6 +533,45 @@ fn stale_peak_timestamp_does_not_make_fresh_portfolio_snapshot_stale() {
     admission
         .admit_at(&submit_request(Decimal::new(1, 0)), 3_050)
         .expect("fresh below-limit drawdown snapshot should admit entry submit");
+}
+
+#[test]
+fn flat_daily_pnl_portfolio_snapshot_does_not_lower_peak_equity() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-DRAWDOWN-PRESERVE");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 500,
+        },
+        admission.clone(),
+    );
+
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, 0.0, 0.0, 1_000.0))
+        .expect("portfolio baseline should publish");
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_100, -20.0, -20.0, 960.0))
+        .expect("portfolio drawdown should publish");
+    let preserved_drawdown = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_200, -20.0, -20.0, 950.0))
+        .expect("flat daily pnl with lower equity should publish");
+
+    assert_eq!(
+        preserved_drawdown.current_equity,
+        Some(Decimal::new(950, 0))
+    );
+    assert_eq!(preserved_drawdown.peak_equity, Some(Decimal::new(1_000, 0)));
+    let error = admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 1_250)
+        .expect_err("lower equity must not erase the drawdown halt");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }
+            if reasons.contains(&LossHaltReason::MaxDrawdownLimit)
+    ));
 }
 
 fn loss_policy() -> LossGovernorPolicy {
@@ -563,16 +702,96 @@ fn adjusted_position_event(account_id: AccountId, ts_event: u64, pnl_change: f64
     ))
 }
 
+fn opened_position_event(
+    account_id: AccountId,
+    position_id: &str,
+    instrument_id: &str,
+    ts_event: u64,
+) -> PositionEvent {
+    PositionEvent::PositionOpened(PositionOpened {
+        trader_id: TraderId::from("TRADER-LOSS-001"),
+        strategy_id: StrategyId::from("STRATEGY-LOSS-001"),
+        instrument_id: InstrumentId::from(instrument_id),
+        position_id: PositionId::from(position_id),
+        account_id,
+        opening_order_id: ClientOrderId::from("ORDER-LOSS-OPENED"),
+        entry: OrderSide::Buy,
+        side: PositionSide::Long,
+        signed_qty: 1.0,
+        quantity: Quantity::from("1"),
+        last_qty: Quantity::from("1"),
+        last_px: Price::from("1.00"),
+        currency: Currency::USD(),
+        avg_px_open: 1.0,
+        event_id: UUID4::default(),
+        ts_event: UnixNanos::from(ts_event),
+        ts_init: UnixNanos::from(ts_event),
+    })
+}
+
+fn closed_position_event(
+    account_id: AccountId,
+    position_id: &str,
+    instrument_id: &str,
+    ts_event: u64,
+    realized_pnl: f64,
+) -> PositionEvent {
+    PositionEvent::PositionClosed(PositionClosed {
+        trader_id: TraderId::from("TRADER-LOSS-001"),
+        strategy_id: StrategyId::from("STRATEGY-LOSS-001"),
+        instrument_id: InstrumentId::from(instrument_id),
+        position_id: PositionId::from(position_id),
+        account_id,
+        opening_order_id: ClientOrderId::from("ORDER-LOSS-OPENED"),
+        closing_order_id: Some(ClientOrderId::from("ORDER-LOSS-CLOSED")),
+        entry: OrderSide::Buy,
+        side: PositionSide::Long,
+        signed_qty: 0.0,
+        quantity: Quantity::from("0"),
+        peak_quantity: Quantity::from("1"),
+        last_qty: Quantity::from("1"),
+        last_px: Price::from("1.00"),
+        currency: Currency::USD(),
+        avg_px_open: 1.0,
+        avg_px_close: Some(1.0),
+        realized_return: 0.0,
+        realized_pnl: Some(Money::new(realized_pnl, Currency::USD())),
+        unrealized_pnl: Money::new(0.0, Currency::USD()),
+        duration: DurationNanos::from(1_u64),
+        event_id: UUID4::default(),
+        ts_opened: UnixNanos::from(1),
+        ts_closed: Some(UnixNanos::from(ts_event)),
+        ts_event: UnixNanos::from(ts_event),
+        ts_init: UnixNanos::from(ts_event),
+    })
+}
+
 fn changed_position_event(
     account_id: AccountId,
+    ts_event: u64,
+    unrealized_pnl: f64,
+) -> PositionEvent {
+    changed_position_event_for_position(
+        account_id,
+        "POSITION-LOSS-001",
+        "INSTRUMENT-LOSS-001.SIM",
+        ts_event,
+        unrealized_pnl,
+    )
+}
+
+fn changed_position_event_for_position(
+    account_id: AccountId,
+    position_id: &str,
+    instrument_id: &str,
     ts_event: u64,
     unrealized_pnl: f64,
 ) -> PositionEvent {
     PositionEvent::PositionChanged(PositionChanged {
         trader_id: TraderId::from("TRADER-LOSS-001"),
         strategy_id: StrategyId::from("STRATEGY-LOSS-001"),
-        instrument_id: InstrumentId::from("INSTRUMENT-LOSS-001.SIM"),
-        position_id: PositionId::from("POSITION-LOSS-001"),
+        instrument_id: InstrumentId::from(instrument_id),
+        position_id: PositionId::from(position_id),
         account_id,
         opening_order_id: ClientOrderId::from("ORDER-LOSS-001"),
         entry: OrderSide::Buy,

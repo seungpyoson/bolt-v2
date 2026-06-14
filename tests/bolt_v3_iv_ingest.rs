@@ -112,9 +112,11 @@ fn chain_quote_payload(instrument_id: &str) -> IvOptionChainQuotePayload {
 }
 
 #[test]
-fn option_greeks_ingest_rejects_values_outside_configured_input_bounds() {
+fn option_greeks_ingest_rejects_when_all_basis_values_are_outside_configured_input_bounds() {
     let mut payload = greeks_payload();
-    payload.basis_values[0].iv = 0.61;
+    for basis_value in &mut payload.basis_values {
+        basis_value.iv = 0.61;
+    }
     let mut store = IvStore::with_input_bounds(input_bounds(0.60));
 
     let result = store.ingest_event(base_event(

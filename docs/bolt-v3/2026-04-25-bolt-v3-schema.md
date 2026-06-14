@@ -564,12 +564,13 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - local decision-evidence JSONL path under `catalog_directory`
 - must remain relative so a root catalog move changes only one config location
 
-Decision-evidence JSONL records use `schema_version = 6` for `order_intent`, `admission_decision`, and `strategy_input_snapshot` envelopes.
-Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent`, `decision`, or `snapshot`.
-The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.
+Decision-evidence JSONL records use `schema_version = 10` for `order_intent`, `admission_decision`, `strategy_input_snapshot`, `position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` envelopes.
+Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, or `fill`.
+The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `position_sizer_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, and `submit_reservation_fill` for fill metadata.
 `order_intent` payloads carry the configured strategy/order identity plus compiled NT order semantics under `order_fields`.
 `admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id` and the `execution_client_id` whose submit-admission limits were evaluated.
 `strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
+`position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-10 reservation records.
 
 `order_intent.order_fields` fields:
 

@@ -74,8 +74,9 @@ ORDER_TEMPLATE_FIELDS = (
     "trailing_offset_type",
 )
 DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE = (
-    "Decision-evidence JSONL records use `schema_version = 6` for `order_intent`, "
-    "`admission_decision`, and `strategy_input_snapshot` envelopes."
+    "Decision-evidence JSONL records use `schema_version = 10` for `order_intent`, "
+    "`admission_decision`, `strategy_input_snapshot`, `position_sizer_rebuild`, "
+    "`submit_reservation_metadata`, and `submit_reservation_fill` envelopes."
 )
 STATUS_MAP_FORCED_EXIT_BUILDER_PHRASE = (
     "Order construction uses the shared `src/bolt_v3_order_intent.rs` builder for "
@@ -107,8 +108,9 @@ REQUIRED_SCHEMA_PHRASES = (
     "When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders",
     "`trigger_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TriggerType::Default`",
     "`trailing_offset_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TrailingOffsetType::Price`",
-    "Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent`, `decision`, or `snapshot`.",
-    "The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.",
+    "Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, or `fill`.",
+    "The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `position_sizer_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, and `submit_reservation_fill` for fill metadata.",
+    "`position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-10 reservation records.",
 )
 STALE_STATUS_MAP_PHRASES = (
     "Single-value enums (`RuntimeMode::Live`, `OmsType::Netting`, `CatalogFsProtocol::File`, `RotationKind::None`)",
@@ -373,7 +375,7 @@ def validate_docs(
             findings.append(f"schema missing current phrase: {phrase}")
 
     if DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE not in schema:
-        findings.append("schema missing decision-evidence JSONL schema v6 contract")
+        findings.append("schema missing decision-evidence JSONL schema v10 contract")
 
     if runtime_contracts:
         for field in ORDER_TEMPLATE_FIELDS:

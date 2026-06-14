@@ -85,7 +85,7 @@
 - [X] T029 [US3] Add runtime-feed unit test for daily, rolling, per-trade, and drawdown facts derived from NT event types
 - [X] T030 [US3] Update `specs/505-nt-loss-governor/research.md` with implementation evidence and live-protection boundary
 - [X] T031 [US3] Require every enabled loss-governor threshold in config validation
-- [X] T032 [US3] Bump decision-evidence schema to v6 for loss-governor halt evidence
+- [X] T032 [US3] Record loss-governor halt evidence in the current decision-evidence schema
 - [X] T033 [US3] Keep NT feed snapshots fresh to conservative NT-derived observation timestamps while portfolio heartbeats evict expired rolling-window samples
 - [X] T047 [US3] Require explicit loss-governor NT halt-action config and manual recovery mode
 - [X] T048 [US3] Apply configured loss-halt actions through NT `RiskEngine::set_trading_state` with monotonic severity and no auto-clear

@@ -252,6 +252,7 @@ SAME_SHA_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\
 FULL_CI_REQUIRED_EXPR = "needs.ci-policy.outputs.full_ci_required == 'true'"
 TAG_REUSE_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'tag_reuse'"
 NEXTEST_REUSE_MISS_EXPR = "needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true'"
+MAIN_BRANCH_SKIP_EXPR = "github.ref != 'refs/heads/main'"
 BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
 BUILD_IF_RE = re.compile(
     r"^    if:\s*\$\{\{\s*"
@@ -5714,6 +5715,10 @@ def fingerprint_reuse_resolver_uses_bash(job_lines: list[str]) -> bool:
     return "id: reuse" in text and "shell: bash" in text
 
 
+def fingerprint_reuse_skips_main_branch(job_lines: list[str]) -> bool:
+    return MAIN_BRANCH_SKIP_EXPR in uncommented_text(job_lines)
+
+
 def test_shards_skip_on_fingerprint_reuse(job_lines: list[str]) -> bool:
     return NEXTEST_REUSE_MISS_EXPR in uncommented_text(job_lines)
 
@@ -6475,6 +6480,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest-fingerprint-reuse must use always()")
         if not job_gates_on_full_ci_required(reuse_lines):
             errors.append("nextest-fingerprint-reuse must gate on full_ci_required")
+        if not fingerprint_reuse_skips_main_branch(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must skip main branch")
         if not fingerprint_reuse_job_has_outputs(reuse_lines):
             errors.append("nextest-fingerprint-reuse must expose reuse provenance outputs")
         if not fingerprint_reuse_job_downloads_current_fingerprint(reuse_lines):

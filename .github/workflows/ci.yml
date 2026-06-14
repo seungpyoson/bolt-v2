@@ -418,7 +418,7 @@ jobs:
   nextest-fingerprint-reuse:
     name: nextest fingerprint reuse
     needs: [ci-policy, test-archive]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.ref != 'refs/heads/main' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     outputs:
       reuse_found: ${{ steps.reuse.outputs.reuse_found }}

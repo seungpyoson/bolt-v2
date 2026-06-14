@@ -458,7 +458,7 @@ jobs:
   nextest-fingerprint-reuse:
     name: nextest fingerprint reuse
     needs: [ci-policy, test-archive]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-latest
     outputs:
       reuse_found: ${{ steps.reuse.outputs.reuse_found }}
@@ -5147,6 +5147,10 @@ def main() -> int:
     )
     for job in ("fmt-check", "deny", "clippy", "source-fence", "test-archive", "nextest-fingerprint-reuse", "test-shards", "test"):
         assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))
+    assert_error(
+        "nextest-fingerprint-reuse must skip main branch",
+        replace_once(BASE_WORKFLOW, " && github.ref != 'refs/heads/main'", ""),
+    )
     assert_error(
         "fmt-check must run just fmt-check",
         replace_once(BASE_WORKFLOW, "- run: just fmt-check", "- run: echo skip fmt-check"),

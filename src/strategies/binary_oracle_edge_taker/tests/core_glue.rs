@@ -514,7 +514,7 @@ fn task5_missing_reference_timestamp_is_stale_reference() {
     // A14: a never-observed reference (None timestamp) is the maximally
     // stale condition and must classify as StaleReference, not as fresh.
     let reasons = evaluate_forced_flat_predicates(&ForcedFlatInputs {
-        phase: SelectionPhase::Active,
+        frozen: false,
         metadata_matches_selection: true,
         last_reference_ts_ms: None,
         now_ms: 1_250,

@@ -2699,7 +2699,7 @@ fn expected_exit_submission_blocks_do_not_warn() {
 #[test]
 fn task5_forced_flat_predicates_cover_current_strategy_visible_triggers() {
     let reasons = evaluate_forced_flat_predicates(&ForcedFlatInputs {
-        phase: SelectionPhase::Freeze,
+        frozen: true,
         metadata_matches_selection: false,
         last_reference_ts_ms: Some(1_000),
         now_ms: 3_000,

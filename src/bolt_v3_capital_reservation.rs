@@ -1481,7 +1481,7 @@ mod tests {
     }
 
     #[test]
-    fn revalue_rejects_when_existing_reservation_belongs_to_another_pool() {
+    fn revalue_rejects_unknown_when_request_exists_only_in_another_pool() {
         let first_pool = CapitalPoolSnapshot {
             source: "nt_account_snapshot".to_string(),
             observed_at_ns: 1_000,
@@ -1518,7 +1518,7 @@ mod tests {
         assert!(!decision.accepted);
         assert_eq!(
             decision.reason,
-            Some(super::ReservationRejectionReason::PoolMismatch)
+            Some(super::ReservationRejectionReason::UnknownReservation)
         );
         assert_eq!(
             ledger.live_reserved_liability("polymarket-live"),

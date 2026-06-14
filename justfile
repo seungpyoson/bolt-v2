@@ -85,6 +85,10 @@ verify-bolt-v3-no-exit-market-command: check-workspace
     python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
     python3 scripts/verify_bolt_v3_no_exit_market_command.py
 
+verify-bolt-v3-no-venue-name-branch: check-workspace
+    python3 scripts/test_verify_bolt_v3_no_venue_name_branch.py
+    python3 scripts/verify_bolt_v3_no_venue_name_branch.py
+
 verify-bolt-v3-dependency-direction: check-workspace
     python3 scripts/test_verify_bolt_v3_dependency_direction.py
     python3 scripts/verify_bolt_v3_dependency_direction.py
@@ -193,6 +197,8 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
     python3 scripts/verify_bolt_v3_no_exit_market_command.py
+    python3 scripts/test_verify_bolt_v3_no_venue_name_branch.py
+    python3 scripts/verify_bolt_v3_no_venue_name_branch.py
     python3 scripts/test_verify_runtime_capture_yaml.py
     python3 scripts/test_lane_governor.py
     python3 scripts/test_verify_lane_governance.py

@@ -994,6 +994,45 @@ fn unknown_external_fill_updates_product_position_once_without_reservation_lifec
 }
 
 #[test]
+fn external_fill_dedupe_keys_by_instrument_and_trade_id() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "external-order-1",
+            "shared-trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(3),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "external-order-2",
+            "shared-trade-1",
+            1_200,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(2),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-no.VENUE-A"),
+        )))
+        .is_none()
+    );
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("same venue trade id on a different instrument should still publish");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.observed_at_ns, 1_200);
+    assert_eq!(product.yes_position, Decimal::new(3, 0));
+    assert_eq!(product.no_position, Decimal::new(2, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(5, 0));
+}
+
+#[test]
 fn unknown_reconciliation_fill_does_not_replay_seeded_product_position() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
@@ -1389,6 +1428,38 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
+
+    let terminal = feed
+        .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+            "client-order-1",
+            1_300,
+        )))
+        .expect("terminal event should release recovered startup reservation");
+    assert!(terminal.accepted);
+    assert_eq!(terminal.action, PositionSizingLifecycleAction::Released);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_400,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("post-terminal duplicate reconciliation fill should not mutate product state");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_ne!(product.source, "nt_order_fill");
+    assert_eq!(product.yes_position, Decimal::ZERO);
 }
 
 #[test]

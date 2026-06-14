@@ -252,9 +252,6 @@ pub fn next_loss_governor_manual_recovery_trading_state(
     if evidence.observed_at_ns > now_ns {
         return None;
     }
-    if now_ns - evidence.observed_at_ns > max_snapshot_age_ns {
-        return None;
-    }
     if evidence.observed_at_ns < snapshot.observed_at_ns {
         return None;
     }

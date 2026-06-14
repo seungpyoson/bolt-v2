@@ -35,6 +35,12 @@ const NT_ACCOUNT_STATE_PORTFOLIO_SOURCE: &str = stringify!(nt_account_state);
 const NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE: &str = "nt_account_cache";
 const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PositionFillTradeKey {
+    instrument_id: String,
+    trade_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PositionSizerRuntimeFeedConfig {
     pub venue_id: String,
@@ -50,7 +56,7 @@ pub struct PositionSizerRuntimeFeed {
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     component_builder: PositionSizerRuntimeComponentBuilder,
     latest_terminal_observed_at_ns: Option<u64>,
-    seen_position_fill_trade_ids: BTreeSet<String>,
+    seen_external_fill_trade_ids: BTreeSet<PositionFillTradeKey>,
 }
 
 pub struct PositionSizerRuntimeFeedSubscription {
@@ -155,7 +161,7 @@ impl PositionSizerRuntimeFeed {
             submit_admission,
             component_builder,
             latest_terminal_observed_at_ns: None,
-            seen_position_fill_trade_ids: BTreeSet::new(),
+            seen_external_fill_trade_ids: BTreeSet::new(),
         }
     }
 
@@ -371,6 +377,13 @@ impl PositionSizerRuntimeFeed {
         let submit_owned = self
             .submit_admission
             .position_sizer_has_live_reservation(&client_order_id);
+        if !submit_owned
+            && self
+                .component_builder
+                .terminal_order_id_seen(&client_order_id)
+        {
+            return None;
+        }
         let fill_quantity = fill.last_qty.as_decimal();
         let decision = self.submit_admission.apply_position_sizing_fill_update(
             BoltV3SubmitPositionSizingFillUpdate {
@@ -391,19 +404,17 @@ impl PositionSizerRuntimeFeed {
                 crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Revalued
                     | crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Released
             );
-        if decision.accepted
-            && !decision.unknown_reservation
-            && !trade_id.trim().is_empty()
-            && fill_quantity > Decimal::ZERO
-        {
-            self.seen_position_fill_trade_ids.insert(trade_id.clone());
-        }
         let unknown_external_fill_changes_position = decision.unknown_reservation
             && !submit_owned
             && !fill.reconciliation
             && !trade_id.trim().is_empty()
             && fill_quantity > Decimal::ZERO
-            && self.seen_position_fill_trade_ids.insert(trade_id);
+            && self
+                .seen_external_fill_trade_ids
+                .insert(PositionFillTradeKey {
+                    instrument_id: instrument_id.clone(),
+                    trade_id,
+                });
         if fill_changes_position || unknown_external_fill_changes_position {
             self.component_builder.record_fill_position_delta(
                 &instrument_id,
@@ -620,6 +631,10 @@ impl PositionSizerRuntimeComponentBuilder {
                 .or_insert(attributed);
         }
         self.refresh_order_lifecycle_from_event(observed_at_ns);
+    }
+
+    fn terminal_order_id_seen(&self, client_order_id: &str) -> bool {
+        self.terminal_order_ids_seen.contains(client_order_id)
     }
 
     fn refresh_live_order_attribution<F>(&mut self, mut has_live_reservation: F)

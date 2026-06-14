@@ -88,7 +88,12 @@ fn write_catalog() -> (TempDir, InstrumentId) {
 }
 
 fn first_parquet_file(root: &Path, path_prefix: &str) -> PathBuf {
-    let root = root.join(path_prefix);
+    let catalog = ParquetDataCatalog::new(root, None, None, None, None);
+    let root = PathBuf::from(
+        catalog
+            .make_path(path_prefix, None)
+            .expect("catalog data type path"),
+    );
     for entry in std::fs::read_dir(&root).expect("read catalog data type dir") {
         let path = entry.expect("catalog entry").path();
         if path.is_dir() {

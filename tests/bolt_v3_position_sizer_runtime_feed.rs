@@ -19,8 +19,8 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind, BoltV3PositionSizerRejectReason,
     BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
     BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, BoltV3SubmitPositionSizerConfig,
-    BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderReservation,
-    PredictionMarketOutcomeSide,
+    BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderEvidence,
+    BoltV3SubmitPositionSizingOpenOrderReservation, PredictionMarketOutcomeSide,
 };
 use nautilus_common::msgbus::{
     TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
@@ -890,6 +890,61 @@ fn partial_fill_event_revalues_residual_reservation() {
 }
 
 #[test]
+fn unknown_external_fill_updates_product_position_once_without_reservation_lifecycle() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "external-order-1",
+            "external-trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(3),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("unknown external fill should still publish observed product state");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_order_fill");
+    assert_eq!(product.observed_at_ns, 1_100);
+    assert_eq!(product.yes_position, Decimal::new(3, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(3, 0));
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "external-order-1",
+            "external-trade-1",
+            1_200,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(3),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("duplicate external trade id should not mutate product state");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.observed_at_ns, 1_100);
+    assert_eq!(product.yes_position, Decimal::new(3, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(3, 0));
+}
+
+#[test]
 fn full_fill_event_releases_reservation_and_closes_live_order_count() {
     let (admission, mut feed) = committed_submit_runtime_feed();
     feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
@@ -966,6 +1021,10 @@ fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
         .admit_at(&sized_sell_submit_request("client-order-1"), 1_010)
         .expect("sell within seeded YES inventory should admit")
         .commit_submitted();
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(30, 2))
+    );
     feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
         "client-order-1",
         1_050,
@@ -1002,6 +1061,31 @@ fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
             reason: BoltV3PositionSizerRejectReason::SizingRejected,
         }
     );
+}
+
+#[test]
+fn covered_sell_open_order_recovery_uses_additive_liability_only() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+
+    let reservation = admission
+        .position_sizing_open_order_reservation_from_evidence(
+            BoltV3SubmitPositionSizingOpenOrderEvidence {
+                client_order_id: "client-order-1".to_string(),
+                instrument_id: "instrument-yes.VENUE-A".to_string(),
+                side: BoltV3CompiledOrderSide::Sell,
+                open_quantity: Decimal::new(10, 0),
+                limit_price: Decimal::new(40, 2),
+                observed_at_ns: 1_000,
+                evidence_label: "nt_open_order_cache".to_string(),
+            },
+        )
+        .expect("covered sell recovery should reserve fee/slippage add-ons only");
+
+    assert_eq!(reservation.liability_factor, Decimal::ZERO);
+    assert_eq!(reservation.liability, Decimal::new(30, 2));
+    assert_eq!(reservation.additive_liability, Decimal::new(30, 2));
 }
 
 #[test]

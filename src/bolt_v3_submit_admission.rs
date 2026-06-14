@@ -532,7 +532,7 @@ impl BoltV3SubmitAdmissionState {
         }
         let liability_factor = match evidence.side.to_position_sizer() {
             IntentSide::Buy => evidence.limit_price,
-            IntentSide::Sell => Decimal::ONE - evidence.limit_price,
+            IntentSide::Sell => Decimal::ZERO,
         };
         if liability_factor < Decimal::ZERO || liability_factor > Decimal::ONE {
             return None;
@@ -614,7 +614,7 @@ impl BoltV3SubmitAdmissionState {
         }
         let expected_liability_factor = match evidence.side.to_position_sizer() {
             IntentSide::Buy => evidence.limit_price,
-            IntentSide::Sell => Decimal::ONE - evidence.limit_price,
+            IntentSide::Sell => Decimal::ZERO,
         };
         if liability_factor != expected_liability_factor
             || reserved_liability != submitted_quantity * liability_factor + additive_liability
@@ -2564,7 +2564,7 @@ fn evaluate_position_sizer_submit(
         .unwrap_or(Decimal::ZERO);
     let liability_factor = match evidence.side.to_position_sizer() {
         IntentSide::Buy => evidence.effective_price,
-        IntentSide::Sell => Decimal::ONE - evidence.effective_price,
+        IntentSide::Sell => Decimal::ZERO,
     };
     let reservation_metadata = BoltV3SubmitReservationMetadataEvidence {
         client_order_id: request.client_order_id.clone(),

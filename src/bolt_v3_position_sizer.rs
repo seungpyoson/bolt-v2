@@ -657,16 +657,13 @@ impl PredictionMarketBinaryLiabilityCalculator {
             .ok_or(LiabilityError::MissingFeePolicy)?;
         validate_fee_slippage_policy(fee_policy)?;
 
-        let liability_factor = match request.side {
-            IntentSide::Buy => request.limit_price,
-            IntentSide::Sell => Decimal::ONE
-                .checked_sub(request.limit_price)
+        let base_liability = match request.side {
+            IntentSide::Buy => request
+                .quantity
+                .checked_mul(request.limit_price)
                 .ok_or(LiabilityError::ArithmeticOverflow)?,
+            IntentSide::Sell => Decimal::ZERO,
         };
-        let base_liability = request
-            .quantity
-            .checked_mul(liability_factor)
-            .ok_or(LiabilityError::ArithmeticOverflow)?;
         let liability = base_liability
             .checked_add(fee_policy.max_fee_liability)
             .and_then(|liability| liability.checked_add(fee_policy.max_slippage_liability))
@@ -973,8 +970,8 @@ mod tests {
                 &policy(),
             )
             .expect("fresh sell state should price liability");
-        assert_eq!(sell.liability_before_sizing, Decimal::new(630, 2));
-        assert_eq!(sell.liability_after_sizing, Decimal::new(630, 2));
+        assert_eq!(sell.liability_before_sizing, Decimal::new(30, 2));
+        assert_eq!(sell.liability_after_sizing, Decimal::new(30, 2));
 
         let missing_fee_policy = SizingPolicy {
             fee_slippage_policy: None,

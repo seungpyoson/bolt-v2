@@ -315,8 +315,10 @@ mod tests {
     // accessors for live manual recovery.
     // Re-derived after removing duplicate NT-owned risk scaffolding from
     // submit admission.
+    // Re-derived after covered sell reservations were reduced to additive
+    // fee/slippage liability only.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "42d06768ce43b38335fa02cc63491469f609e54a92cacd75439c285f63efba3a";
+        "7053f2546ef9f998cc85afa58ebdf86e7c0bb500aadcc37e250bf8ba46012639";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

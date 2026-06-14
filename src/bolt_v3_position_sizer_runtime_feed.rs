@@ -50,6 +50,7 @@ pub struct PositionSizerRuntimeFeed {
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     component_builder: PositionSizerRuntimeComponentBuilder,
     latest_terminal_observed_at_ns: Option<u64>,
+    seen_external_fill_trade_ids: BTreeSet<String>,
 }
 
 pub struct PositionSizerRuntimeFeedSubscription {
@@ -154,6 +155,7 @@ impl PositionSizerRuntimeFeed {
             submit_admission,
             component_builder,
             latest_terminal_observed_at_ns: None,
+            seen_external_fill_trade_ids: BTreeSet::new(),
         }
     }
 
@@ -364,44 +366,55 @@ impl PositionSizerRuntimeFeed {
             _ => return None,
         };
         let observed_at_ns = fill.ts_event.as_u64();
+        let client_order_id = fill.client_order_id.to_string();
+        let trade_id = fill.trade_id.to_string();
+        let submit_owned = self
+            .submit_admission
+            .position_sizer_has_live_reservation(&client_order_id);
+        let fill_quantity = fill.last_qty.as_decimal();
         let decision = self.submit_admission.apply_position_sizing_fill_update(
             BoltV3SubmitPositionSizingFillUpdate {
-                client_order_id: fill.client_order_id.to_string(),
-                trade_id: fill.trade_id.to_string(),
+                client_order_id: client_order_id.clone(),
+                trade_id: trade_id.clone(),
                 instrument_id: instrument_id.clone(),
                 side,
-                fill_quantity: fill.last_qty.as_decimal(),
+                fill_quantity,
                 observed_at_ns,
                 reconciliation: fill.reconciliation,
                 evidence_label: "nt_order_fill".to_string(),
             },
             observed_at_ns,
         );
-        if decision.unknown_reservation {
-            return None;
-        }
         let fill_changes_position = decision.accepted
             && matches!(
                 decision.action,
                 crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Revalued
                     | crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Released
             );
-        if fill_changes_position {
+        let unknown_external_fill_changes_position = decision.unknown_reservation
+            && !submit_owned
+            && !trade_id.trim().is_empty()
+            && fill_quantity > Decimal::ZERO
+            && self.seen_external_fill_trade_ids.insert(trade_id);
+        if fill_changes_position || unknown_external_fill_changes_position {
             self.component_builder.record_fill_position_delta(
                 &instrument_id,
                 side,
-                fill.last_qty.as_decimal(),
+                fill_quantity,
                 observed_at_ns,
             );
         }
         if decision.action == crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Released
         {
             self.component_builder
-                .record_terminal_order_event(fill.client_order_id.to_string(), observed_at_ns);
+                .record_terminal_order_event(client_order_id, observed_at_ns);
             self.latest_terminal_observed_at_ns = Some(observed_at_ns);
         }
-        if fill_changes_position {
+        if fill_changes_position || unknown_external_fill_changes_position {
             self.publish_components_if_ready();
+        }
+        if decision.unknown_reservation {
+            return None;
         }
         Some(decision)
     }

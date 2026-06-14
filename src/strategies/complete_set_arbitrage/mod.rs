@@ -112,6 +112,14 @@ pub struct CompleteSetArbitrage {
     shell: CompleteSetArbitrageShell,
 }
 
+impl std::fmt::Debug for CompleteSetArbitrage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompleteSetArbitrage")
+            .field("strategy_id", &self.config.strategy_id)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug)]
 pub struct CompleteSetArbitrageBuilder;
 

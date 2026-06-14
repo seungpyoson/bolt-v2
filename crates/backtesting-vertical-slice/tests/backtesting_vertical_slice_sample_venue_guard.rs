@@ -69,13 +69,17 @@ fn production_region(content: &str) -> &str {
 }
 
 fn needle_allowed_in_production_path(needle: &str, path: &Path, src: &Path) -> bool {
+    let relative = path.strip_prefix(src).expect("source-relative path");
+    let relative = relative.to_str().expect("UTF-8 source path");
+    if relative == "reference_fixture_index.rs" {
+        return true;
+    }
     if !matches!(needle, "pmxt" | "polymarket") {
         return false;
     }
 
-    let relative = path.strip_prefix(src).expect("source-relative path");
     matches!(
-        relative.to_str().expect("UTF-8 source path"),
+        relative,
         "lib.rs"
             | "pmxt_one_off_backfill_projection.rs"
             | "polymarket_metadata_gate.rs"

@@ -490,6 +490,7 @@ fn aggregate_greeks_out_of_bounds_optional_iv_is_omitted_without_dropping_greeks
                     rho: None,
                 },
                 aggregate_iv: Some(IvAggregateIvValue {
+                    basis: IvBasis::Mark,
                     value: 0.75,
                     convention: configured_convention(),
                 }),

@@ -278,14 +278,24 @@ mod tests {
     // Re-derived after merging #623's dollar-sizing strategy source roots into
     // the shadow-mode submit switch.
     // Re-derived after adding the shadow-mode fail-closed config guard
-    // (submit_orders=false forbids NautilusTrader-managed venue actions) and its
-    // tests in config.rs.
+    // (runtime.order_execution_mode=shadow forbids NautilusTrader-managed venue
+    // actions) and its tests in config.rs.
     // Re-derived after bringing the archetype config translator
     // (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs) into the strategy
-    // source set, so the sole TOML->runtime-table mapping for the shadow-mode
-    // kill switch is now tamper-evidenced alongside its validating consumer.
+    // source set, so the TOML->runtime-table mapping for venue-action knobs is
+    // now tamper-evidenced alongside its validating consumer.
+    // Re-derived after moving shadow submit/cancel gating from
+    // binary-oracle-local `submit_orders` into the shared root-owned order
+    // execution policy, removing the stale strategy-local field, and bringing
+    // the shared execution-policy boundary into the gated strategy source set.
+    // Re-derived after split strategy tests imported the NT Strategy trait for
+    // direct callback method resolution.
+    // Re-derived again after CI contract tests were aligned with the current
+    // split-test inventory and shared execution-policy source-set boundary.
+    // Re-derived after the shared execution policy made its raw NT mutation
+    // sink private and moved the live/shadow sink tests into the gated module.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "c5ad6466a12fe43623769431d571e86a24366768508a1cdd991de952cd1ad036";
+        "0f8a86315a8f5998dc3cc9b40773278c0720c9e112d60a6978606f4533459dbe";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -412,6 +422,7 @@ mod tests {
             &[
                 "src/strategies/binary_oracle_edge_taker",
                 "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+                "src/bolt_v3_order_execution.rs",
                 "src/bolt_v3_book_sizing.rs",
                 "src/bolt_v3_binary_outcome_edge.rs",
                 "src/bolt_v3_executable_cost.rs",

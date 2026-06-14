@@ -18,6 +18,7 @@ pub mod bolt_v3_maker_reservation;
 pub mod bolt_v3_market_families;
 pub mod bolt_v3_numeric;
 pub mod bolt_v3_operator_artifacts;
+pub mod bolt_v3_order_execution;
 pub mod bolt_v3_order_intent;
 pub mod bolt_v3_position_contract;
 pub mod bolt_v3_providers;

@@ -1,15 +1,16 @@
 use bolt_v2::{
     bolt_v3_archetypes::{complete_set_arbitrage, validation_bindings},
     bolt_v3_basket_execution::{
-        BoltV3BasketExecutionConfig, BoltV3BasketExecutionEvent, BoltV3BasketExecutionState,
-        BoltV3BasketExecutionStatus, BoltV3BasketFillSource, BoltV3BasketRepairPolicy,
+        BoltV3BasketExecutionConfig, BoltV3BasketExecutionEvent, BoltV3BasketExecutionLegIntent,
+        BoltV3BasketExecutionState, BoltV3BasketExecutionStatus,
+        BoltV3BasketExecutionSubmitDisposition, BoltV3BasketFillSource, BoltV3BasketRepairPolicy,
         BoltV3BasketUnwindPolicy,
     },
     bolt_v3_config::BoltV3StrategyConfig,
     strategies::{complete_set_arbitrage as complete_set_strategy, production_strategy_registry},
     strategy_runtime_bindings::runtime_bindings,
 };
-use nautilus_model::enums::{OrderType, TimeInForce};
+use nautilus_model::enums::{OrderSide, OrderType, TimeInForce};
 use rust_decimal::Decimal;
 
 #[test]
@@ -122,6 +123,13 @@ fn strategy_shell_forwards_events_into_shared_executor_and_owns_no_submit_mechan
 
     let mut basket = reserved_basket();
     basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-SHELL",
+            leg_intents(),
+        )
+        .expect("submit command should persist client order ids before fills");
+    basket
         .apply_event(BoltV3BasketExecutionEvent::VenueOrderId {
             client_order_id: "COID-YES".to_string(),
             venue_order_id: "VOID-YES".to_string(),
@@ -195,6 +203,29 @@ fn reserved_basket() -> BoltV3BasketExecutionState {
         .apply_event(BoltV3BasketExecutionEvent::ReservationPersisted)
         .expect("reservation should persist");
     basket
+}
+
+fn leg_intents() -> Vec<BoltV3BasketExecutionLegIntent> {
+    vec![
+        BoltV3BasketExecutionLegIntent {
+            leg_id: "YES".to_string(),
+            instrument_id: "YES.POLYMARKET".to_string(),
+            venue: "POLYMARKET".to_string(),
+            client_order_id: "COID-YES".to_string(),
+            side: OrderSide::Buy,
+            quantity: dec("1.0"),
+            notional: dec("0.44"),
+        },
+        BoltV3BasketExecutionLegIntent {
+            leg_id: "NO".to_string(),
+            instrument_id: "NO.POLYMARKET".to_string(),
+            venue: "POLYMARKET".to_string(),
+            client_order_id: "COID-NO".to_string(),
+            side: OrderSide::Buy,
+            quantity: dec("1.0"),
+            notional: dec("0.46"),
+        },
+    ]
 }
 
 fn complete_set_parameters() -> toml::Value {

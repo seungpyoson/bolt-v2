@@ -1,0 +1,316 @@
+use std::{fs, path::Path};
+
+#[test]
+fn iv_source_fence_entrypoint_is_wired_to_the_iv_module_boundary() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    assert!(manifest_dir.join("src/bolt_v3_iv").is_dir());
+    assert!(manifest_dir.join("src/bolt_v3_iv/mod.rs").is_file());
+}
+
+#[test]
+fn source_fence_accepts_public_strategy_query_imports() {
+    let source = r#"
+use crate::bolt_v3_iv::query::{IvQuery, IvStrategyQueryHandle};
+use crate::bolt_v3_iv::selector::IvSelector;
+use crate::bolt_v3_iv::time::UnixNanos;
+use crate::bolt_v3_iv::types::IvProductKind;
+
+fn strategy_consumes_iv(handle: &IvStrategyQueryHandle, query: &IvQuery) {
+    let _ = handle.authorization();
+    let _ = handle.query(query);
+    let diagnostic_query = IvQuery::product(crate::bolt_v3_iv::query::IvProductQuery {
+        strategy_id: "configured-strategy".to_string(),
+        profile_id: "configured-profile".to_string(),
+        product_kind: IvProductKind::DerivedInputDiagnostics,
+        selector: IvSelector::DerivedInputDiagnosticsQuery {
+            instrument_id: None,
+            as_of_ns: Some(UnixNanos::new(1000)),
+            source_filter: None,
+        },
+    });
+    let _ = handle.query(&diagnostic_query);
+}
+"#;
+
+    assert!(iv_strategy_source_fence_violations(source).is_empty());
+}
+
+#[test]
+fn source_fence_rejects_strategy_local_nt_iv_subscriptions() {
+    let source = r#"
+use nautilus_live::node::LiveNode;
+
+fn strategy_owned_subscription(node: &mut LiveNode) {
+    node.subscribe_option_greeks();
+}
+"#;
+
+    assert_strategy_source_fence_rejects(source, "strategy-owned NT IV subscription");
+}
+
+#[test]
+fn source_fence_rejects_strategy_local_nt_helper_derivation() {
+    let source = r#"
+use nautilus_model::data::{imply_vol, imply_vol_and_greeks, refine_vol, refine_vol_and_greeks};
+
+fn strategy_owned_derived_iv() {
+    let _ = imply_vol;
+    let _ = imply_vol_and_greeks;
+    let _ = refine_vol;
+    let _ = refine_vol_and_greeks;
+}
+"#;
+
+    assert_strategy_source_fence_rejects(source, "strategy-local NT helper derivation");
+}
+
+#[test]
+fn source_fence_rejects_strategy_local_iv_engine_derivation() {
+    let source = r#"
+use crate::bolt_v3_iv::derive::{derive_iv, resolve_derived_input_policy, select_helper_policy};
+
+fn strategy_owned_derived_iv() {
+    let _ = derive_iv;
+    let _ = resolve_derived_input_policy;
+    let _ = select_helper_policy;
+}
+"#;
+
+    assert_strategy_source_fence_rejects(source, "IV engine derivation bypass");
+}
+
+#[test]
+fn source_fence_rejects_raw_audit_reader_and_raw_dto_strategy_imports() {
+    let source = r#"
+use crate::bolt_v3_iv::raw_access::read_raw_event;
+use crate::bolt_v3_iv::raw_access::IvRawAuditAccess;
+use crate::bolt_v3_iv::ingest::{IvRawEvent, IvRawPayload};
+use crate::bolt_v3_iv::query::{IvQueryHandle, IvRawPayloadQuery};
+
+fn strategy_tries_raw_payload_query(handle: &IvQueryHandle, query: IvRawPayloadQuery) {
+    let _ = query.raw_event_id;
+    let _ = handle.raw_event("configured-raw-event");
+}
+"#;
+
+    assert_strategy_source_fence_rejects(source, "raw IV payload bypass");
+}
+
+#[test]
+fn source_fence_rejects_strategy_state_handle_escape_hatch() {
+    let source = r#"
+use crate::bolt_v3_iv::query::IvQueryHandle;
+
+fn strategy_escapes_query_authz(handle: &IvQueryHandle) {
+    let _ = handle.derived_outputs();
+    let _ = handle.derived_inputs();
+    let _ = handle.query_rejections();
+    let _ = handle.source_health_for("configured-profile", "configured-source");
+}
+"#;
+
+    assert_strategy_source_fence_rejects(source, "IV query state escape hatch");
+}
+
+#[test]
+fn source_fence_rejects_iv_query_handle_mutators() {
+    let source = r#"
+use crate::bolt_v3_iv::query::IvQueryHandle;
+
+fn strategy_mutates_iv_handle(handle: IvQueryHandle) {
+    let _ = handle.with_projection_policies(Vec::new());
+    let _ = handle.with_helper_policies(Vec::new());
+    let _ = handle.with_source_health(Vec::new());
+    let _ = handle.with_current_subscription_generations(Default::default());
+}
+"#;
+
+    assert_strategy_source_fence_rejects(source, "IV query state mutator");
+}
+
+#[test]
+fn source_fence_rejects_iv_engine_internal_modules() {
+    let source = r#"
+use crate::bolt_v3_iv::ingest::IvIngestEvent;
+use crate::bolt_v3_iv::policy::project_scalar;
+use crate::bolt_v3_iv::runtime::IvRuntimeEngine;
+use crate::bolt_v3_iv::store::IvStore;
+use crate::bolt_v3_iv::subscription::apply_subscription_plans;
+
+fn strategy_owns_iv_mechanics() {
+    let _ = IvRuntimeEngine::new;
+    let _ = IvStore::empty;
+    let _ = apply_subscription_plans;
+    let _ = project_scalar;
+}
+"#;
+
+    assert_strategy_source_fence_rejects(source, "IV engine internal bypass");
+}
+
+#[test]
+fn source_fence_rejects_forbidden_iv_bypass_in_strategy_tree() {
+    let temp = tempfile::tempdir().unwrap();
+    let strategy_dir = temp.path().join("src/strategies/configured_strategy");
+    fs::create_dir_all(&strategy_dir).unwrap();
+    fs::write(
+        strategy_dir.join("mod.rs"),
+        "use crate::bolt_v3_iv::raw_access::read_raw_event;\n",
+    )
+    .unwrap();
+
+    let violations = iv_strategy_tree_source_fence_violations(&temp.path().join("src/strategies"));
+
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("raw IV payload bypass")),
+        "expected fake strategy tree to reject raw IV bypass, got {violations:?}"
+    );
+}
+
+#[test]
+fn source_fence_accepts_current_strategy_tree_without_iv_bypasses() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let violations = iv_strategy_tree_source_fence_violations(&manifest_dir.join("src/strategies"));
+
+    assert!(
+        violations.is_empty(),
+        "current strategy tree had IV source-fence violations: {violations:?}"
+    );
+}
+
+fn assert_strategy_source_fence_rejects(source: &str, expected_reason: &str) {
+    let violations = iv_strategy_source_fence_violations(source);
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains(expected_reason)),
+        "expected source-fence violation containing {expected_reason:?}, got {violations:?}"
+    );
+}
+
+fn iv_strategy_source_fence_violations(_source: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    let checks = [
+        (
+            "subscribe_option_greeks",
+            "strategy-owned NT IV subscription",
+        ),
+        (
+            "subscribe_option_chain",
+            "strategy-owned NT IV subscription",
+        ),
+        (
+            "subscribe_aggregate_greeks",
+            "strategy-owned NT IV subscription",
+        ),
+        ("subscribe_custom_data", "strategy-owned NT IV subscription"),
+        ("imply_vol", "strategy-local NT helper derivation"),
+        ("refine_vol", "strategy-local NT helper derivation"),
+        (
+            "imply_vol_and_greeks",
+            "strategy-local NT helper derivation",
+        ),
+        (
+            "refine_vol_and_greeks",
+            "strategy-local NT helper derivation",
+        ),
+        (
+            "black_scholes_greeks",
+            "strategy-local NT helper derivation",
+        ),
+        ("derive_iv", "IV engine derivation bypass"),
+        (
+            "resolve_derived_input_policy",
+            "IV engine derivation bypass",
+        ),
+        ("select_helper_policy", "IV engine derivation bypass"),
+        ("bolt_v3_iv::runtime", "IV engine internal bypass"),
+        ("bolt_v3_iv::store", "IV engine internal bypass"),
+        ("bolt_v3_iv::subscription", "IV engine internal bypass"),
+        ("bolt_v3_iv::ingest", "IV engine internal bypass"),
+        ("bolt_v3_iv::policy", "IV engine internal bypass"),
+        ("IvRuntimeEngine", "IV engine internal bypass"),
+        ("IvStore", "IV engine internal bypass"),
+        ("IvSubscriptionPlan", "IV engine internal bypass"),
+        ("IvIngestEvent", "IV engine internal bypass"),
+        ("apply_subscription_plans", "IV engine internal bypass"),
+        ("apply_plan_outcomes", "IV engine internal bypass"),
+        ("project_scalar", "IV engine internal bypass"),
+        ("read_raw_event", "raw IV payload bypass"),
+        ("raw_event", "raw IV payload bypass"),
+        ("IvRawPayloadQuery", "raw IV payload bypass"),
+        ("IvRawAuditRequest", "raw IV payload bypass"),
+        ("IvRawAuditAccess", "raw IV payload bypass"),
+        ("IvRawEvent", "raw IV payload bypass"),
+        ("IvRawPayload", "raw IV payload bypass"),
+        ("IvQueryHandle", "IV query state mutator"),
+        ("IvQueryStateHandle", "IV query state mutator"),
+        ("IvQueryState", "IV query state mutator"),
+        ("with_projection_policies", "IV query state mutator"),
+        ("with_helper_policies", "IV query state mutator"),
+        ("with_derived_input_policies", "IV query state mutator"),
+        ("with_interpolation_policies", "IV query state mutator"),
+        ("with_fallback_policies", "IV query state mutator"),
+        ("with_quorum_policies", "IV query state mutator"),
+        ("with_derived_inputs", "IV query state mutator"),
+        ("with_source_health", "IV query state mutator"),
+        (
+            "with_current_subscription_generations",
+            "IV query state mutator",
+        ),
+        ("with_retention_policy", "IV query state mutator"),
+        ("set_projection_policies", "IV query state mutator"),
+        ("set_input_bounds", "IV query state mutator"),
+        ("set_helper_policies", "IV query state mutator"),
+        ("set_derived_input_policies", "IV query state mutator"),
+        ("set_interpolation_policies", "IV query state mutator"),
+        ("set_fallback_policies", "IV query state mutator"),
+        ("set_quorum_policies", "IV query state mutator"),
+        ("set_derived_inputs", "IV query state mutator"),
+        (
+            "set_current_subscription_generations",
+            "IV query state mutator",
+        ),
+        ("derived_outputs", "IV query state escape hatch"),
+        ("derived_inputs", "IV query state escape hatch"),
+        ("query_rejections", "IV query state escape hatch"),
+        ("source_health_for", "IV query state escape hatch"),
+    ];
+
+    for (needle, reason) in checks {
+        if _source.contains(needle) {
+            violations.push(format!("{reason}: {needle}"));
+        }
+    }
+
+    violations
+}
+
+fn iv_strategy_tree_source_fence_violations(strategy_root: &Path) -> Vec<String> {
+    let mut violations = Vec::new();
+    collect_strategy_source_fence_violations(strategy_root, &mut violations);
+    violations
+}
+
+fn collect_strategy_source_fence_violations(path: &Path, violations: &mut Vec<String>) {
+    for entry in fs::read_dir(path).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_strategy_source_fence_violations(&path, violations);
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+
+        let source = fs::read_to_string(&path).unwrap();
+        violations.extend(
+            iv_strategy_source_fence_violations(&source)
+                .into_iter()
+                .map(|violation| format!("{}: {violation}", path.display())),
+        );
+    }
+}

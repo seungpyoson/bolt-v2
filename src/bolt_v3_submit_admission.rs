@@ -2928,8 +2928,7 @@ fn rollback_admission_counters(
     }
     match rollback.intent_kind {
         BoltV3SubmitIntentKind::Entry => {
-            inner.admitted_entry_order_count =
-                inner.admitted_entry_order_count.saturating_sub(1);
+            inner.admitted_entry_order_count = inner.admitted_entry_order_count.saturating_sub(1);
         }
         BoltV3SubmitIntentKind::RiskReducingExit => {
             inner.admitted_risk_reducing_exit_order_count = inner

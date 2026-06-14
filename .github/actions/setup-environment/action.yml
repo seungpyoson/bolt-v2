@@ -53,9 +53,6 @@ outputs:
   zigbuild_version:
     description: Pinned cargo-zigbuild version from the justfile.
     value: ${{ steps.shared.outputs.zigbuild_version }}
-  zigbuild_x86_64_unknown_linux_gnu_sha256:
-    description: Pinned cargo-zigbuild Linux x86_64 release archive SHA256 from the justfile.
-    value: ${{ steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}
   rust_verification_owner:
     description: Repo-local managed Rust owner path.
     value: ${{ steps.shared.outputs.rust_verification_owner }}
@@ -70,55 +67,10 @@ runs:
   using: composite
   steps:
     - name: Install just
-      shell: bash
-      run: |
-        download_with_retry() {
-          local url="$1"
-          local output="$2"
-          local label="$3"
-
-          echo "Downloading $label from $url"
-          curl \
-            --retry 10 \
-            --retry-delay 3 \
-            --retry-all-errors \
-            --fail \
-            --show-error \
-            --silent \
-            --location \
-            --output "$output" \
-            "$url"
-        }
-
-        install_just_from_release() {
-          local just_target_arch archive base_url
-
-          case "$RUNNER_ARCH" in
-            X64)
-              just_target_arch="x86_64"
-              ;;
-            ARM64)
-              just_target_arch="aarch64"
-              ;;
-            *)
-              echo "Unsupported runner architecture for just install: $RUNNER_ARCH" >&2
-              return 1
-              ;;
-          esac
-
-          archive="just-${{ inputs.just-version }}-${just_target_arch}-unknown-linux-musl.tar.gz"
-          base_url="https://github.com/casey/just/releases/download/${{ inputs.just-version }}"
-          download_with_retry "$base_url/$archive" "$RUNNER_TEMP/$archive" "$archive"
-          download_with_retry "$base_url/SHA256SUMS" "$RUNNER_TEMP/SHA256SUMS" "SHA256SUMS"
-          (
-            cd "$RUNNER_TEMP"
-            grep "  $archive\$" SHA256SUMS | sha256sum -c -
-          )
-          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" just
-          sudo install -m 0755 "$RUNNER_TEMP/just" /usr/local/bin/just
-        }
-
-        install_just_from_release
+      uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+      with:
+        tool: just@${{ inputs.just-version }}
+        fallback: none
 
     - name: Lint workflow contract
       if: ${{ inputs.lint-workflow-contract == 'true' }}
@@ -142,7 +94,6 @@ runs:
           echo "target=$(just --evaluate target)" >> "$GITHUB_OUTPUT"
           echo "zig_version=$(just --evaluate zig_version)" >> "$GITHUB_OUTPUT"
           echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
-          echo "zigbuild_x86_64_unknown_linux_gnu_sha256=$(just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256)" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Resolve managed target dir

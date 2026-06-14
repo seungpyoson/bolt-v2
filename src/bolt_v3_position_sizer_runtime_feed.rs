@@ -775,7 +775,9 @@ impl PositionSizerRuntimeComponentBuilder {
 
     fn product_observed_at_ns(&self) -> Option<u64> {
         match &self.product_state {
-            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => Some(snapshot.observed_at_ns),
+            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+                Some(snapshot.observed_at_ns)
+            }
         }
     }
 

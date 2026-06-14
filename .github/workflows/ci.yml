@@ -619,28 +619,10 @@ jobs:
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
 
       - name: Install cargo-zigbuild
-        run: |
-          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \
-            --retry 10 \
-            --retry-delay 3 \
-            --retry-all-errors \
-            --fail \
-            --location \
-            --show-error \
-            --silent \
-            --output "$archive" \
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild"
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none
 
       - name: build
         run: just build

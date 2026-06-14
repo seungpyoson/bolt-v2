@@ -6018,8 +6018,8 @@ fn capital_pool_rejects_non_positive_thresholds() {
         ),
     ] {
         let mutated = replace_in_fixture_section(section, &[(original, replacement)]);
-        let root: BoltV3RootConfig =
-            toml::from_str(&mutated).expect("non-positive capital pool threshold fixture should parse");
+        let root: BoltV3RootConfig = toml::from_str(&mutated)
+            .expect("non-positive capital pool threshold fixture should parse");
         let messages = validate_root_only(&root);
 
         assert!(

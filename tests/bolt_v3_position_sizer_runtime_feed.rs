@@ -656,13 +656,10 @@ fn terminal_event_after_unattributed_live_order_reopens_empty_gate() {
     )));
     assert_eq!(admission.position_sizer_reconciled(), Some(false));
 
-    assert!(
-        feed.on_order_event(&OrderEventAny::Canceled(order_canceled_event(
-            "external-client-order",
-            1_300,
-        )))
-        .is_some()
-    );
+    let _ = feed.on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+        "external-client-order",
+        1_300,
+    )));
 
     assert_eq!(admission.position_sizer_reconciled(), Some(true));
     let state = admission

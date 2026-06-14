@@ -267,6 +267,7 @@ FINGERPRINT_REUSE_GOVERNANCE_PATHS = (
     "scripts/verify_ci_workflow_hygiene.py",
     "scripts/test_verify_ci_workflow_hygiene.py",
 )
+FINGERPRINT_REUSE_PATH_TOKEN_BOUNDARY_RE = re.compile(r"(?=\s|[)\"']|$)")
 BUILD_IF_RE = re.compile(
     r"^    if:\s*\$\{\{\s*"
     r"needs\.ci-policy\.outputs\.full_ci_required\s*==\s*['\"]true['\"]\s*&&\s*"
@@ -6116,22 +6117,34 @@ def detector_forces_build_on_workflow_dispatch(job_lines: list[str]) -> bool:
 def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
     errors: list[str] = []
     text = uncommented_text(job_lines)
+    fingerprint_inputs_text = ""
+    allowance_text = ""
+    for block in step_blocks(job_lines):
+        block_text = uncommented_text(block)
+        if "id: fingerprint_reuse_inputs_changed" in block_text:
+            fingerprint_inputs_text = block_text
+        if "id: fingerprint_reuse_allowed" in block_text:
+            allowance_text = block_text
     if FINGERPRINT_REUSE_ALLOWED_OUTPUT not in text:
         errors.append("detector must expose fingerprint_reuse_allowed")
-    if "id: fingerprint_reuse_inputs_changed" not in text or not all(
-        path in text for path in FINGERPRINT_REUSE_GOVERNANCE_PATHS
+    if not fingerprint_inputs_text or not all(
+        re.search(
+            rf"(?<!\S){re.escape(path)}{FINGERPRINT_REUSE_PATH_TOKEN_BOUNDARY_RE.pattern}",
+            fingerprint_inputs_text,
+        )
+        for path in FINGERPRINT_REUSE_GOVERNANCE_PATHS
     ):
         errors.append("detector must detect fingerprint-reuse governance changes")
     allowance_branch = branch_body(
-        text,
+        allowance_text,
         "if",
         '"${{ github.event_name }}" == "pull_request" && "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true"',
     )
     if (
-        "id: fingerprint_reuse_allowed" not in text
+        not allowance_text
         or allowance_branch is None
         or 'echo "value=false" >> "$GITHUB_OUTPUT"' not in allowance_branch
-        or 'echo "value=true" >> "$GITHUB_OUTPUT"' not in text
+        or 'echo "value=true" >> "$GITHUB_OUTPUT"' not in allowance_text
     ):
         errors.append("detector must determine fingerprint_reuse_allowed")
     return errors

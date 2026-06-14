@@ -5143,6 +5143,28 @@ def main() -> int:
             "scripts/not_ci_provenance.py",
         ),
     )
+    for governed_path, replacement in (
+        (".github/actions/setup-environment/action.yml", ".github/actions/not-setup-environment/action.yml"),
+        ("ci/github-actions-runners.toml", "ci/not-github-actions-runners.toml"),
+    ):
+        assert_error(
+            "detector must detect fingerprint-reuse governance changes",
+            replace_once_after(
+                BASE_WORKFLOW,
+                "      - name: Detect fingerprint-reuse governance changes",
+                governed_path,
+                replacement,
+            ),
+        )
+    assert_error(
+        "detector must determine fingerprint_reuse_allowed",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Determine fingerprint reuse allowance",
+            '            echo "value=true" >> "$GITHUB_OUTPUT"\n',
+            "",
+        ),
+    )
     assert_error(
         "nextest-fingerprint-reuse needs detector",
         replace_once(

@@ -265,6 +265,27 @@ FINGERPRINT_REUSE_JOB_IF_VALUE = (
 FINGERPRINT_REUSE_ALLOWED_OUTPUT = (
     "fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}"
 )
+FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ENVELOPE = (
+    "name: Detect fingerprint-reuse governance changes",
+    "id: fingerprint_reuse_inputs_changed",
+    "if: github.event_name == 'pull_request'",
+    "shell: bash",
+    "run: |",
+)
+FINGERPRINT_REUSE_ALLOWED_STEP_ENVELOPE = (
+    "name: Determine fingerprint reuse allowance",
+    "id: fingerprint_reuse_allowed",
+    "shell: bash",
+    "run: |",
+)
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_ENVELOPE = (
+    "name: Resolve nextest fingerprint reuse",
+    "id: reuse",
+    "shell: bash",
+    "env:",
+    "GITHUB_TOKEN: ${{ github.token }}",
+    "run: >",
+)
 FINGERPRINT_REUSE_INPUTS_CHANGED_RUN = """base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
 head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
 git fetch --no-tags origin \\
@@ -1119,6 +1140,15 @@ def block_run_body(block: list[str]) -> str:
 
 def block_run_body_matches(block: list[str], expected: str) -> bool:
     return normalize_script_text(block_run_body(block)) == normalize_script_text(expected)
+
+
+def block_has_canonical_lines(block: list[str], expected_lines: tuple[str, ...]) -> bool:
+    actual = {
+        strip_comment(line).strip().removeprefix("- ").strip()
+        for line in block
+        if strip_comment(line).strip()
+    }
+    return all(expected in actual for expected in expected_lines)
 
 
 def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
@@ -5882,6 +5912,14 @@ def fingerprint_reuse_resolver_is_canonical(job_lines: list[str]) -> bool:
     )
 
 
+def fingerprint_reuse_resolver_envelope_is_canonical(job_lines: list[str]) -> bool:
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    return reuse_step is not None and block_has_canonical_lines(
+        reuse_step,
+        NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_ENVELOPE,
+    )
+
+
 def fingerprint_reuse_resolver_uses_bash(job_lines: list[str]) -> bool:
     reuse_step = unique_step_with_id(job_lines, "reuse")
     if reuse_step is None:
@@ -6305,6 +6343,11 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
             allowance_text = block_text
     if FINGERPRINT_REUSE_ALLOWED_OUTPUT not in text:
         errors.append("detector must expose fingerprint_reuse_allowed")
+    if fingerprint_inputs_block is None or not block_has_canonical_lines(
+        fingerprint_inputs_block,
+        FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ENVELOPE,
+    ):
+        errors.append("detector fingerprint-reuse governance step must match canonical envelope")
     if fingerprint_inputs_block is None or not block_run_body_matches(
         fingerprint_inputs_block,
         FINGERPRINT_REUSE_INPUTS_CHANGED_RUN,
@@ -6315,6 +6358,11 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
         errors.append("detector must detect fingerprint-reuse governance changes")
     if fingerprint_inputs_text and not detector_maps_changed_to_any_changed(fingerprint_inputs_text):
         errors.append("detector must map fingerprint-reuse governance changes to any_changed=true")
+    if allowance_block is None or not block_has_canonical_lines(
+        allowance_block,
+        FINGERPRINT_REUSE_ALLOWED_STEP_ENVELOPE,
+    ):
+        errors.append("detector fingerprint-reuse allowance step must match canonical envelope")
     if allowance_block is None or not block_run_body_matches(
         allowance_block,
         FINGERPRINT_REUSE_ALLOWED_RUN,
@@ -6771,6 +6819,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed")
         if not fingerprint_reuse_job_has_outputs(reuse_lines):
             errors.append("nextest-fingerprint-reuse must expose reuse provenance outputs")
+        if not fingerprint_reuse_resolver_envelope_is_canonical(reuse_lines):
+            errors.append("nextest-fingerprint-reuse resolver step must match canonical envelope")
         if not fingerprint_reuse_resolver_is_canonical(reuse_lines):
             errors.append("nextest-fingerprint-reuse resolver step must match canonical script")
         if not fingerprint_reuse_job_uses_secure_current_fingerprint(reuse_lines):

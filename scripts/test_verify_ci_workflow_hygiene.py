@@ -509,6 +509,8 @@ jobs:
       - name: Resolve nextest fingerprint reuse
         id: reuse
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: >
           python3 scripts/ci_provenance.py resolve-fingerprint
           --current-run-id "${{ github.run_id }}"
@@ -4363,6 +4365,23 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
           printf 'any_changed=false\\n' >> "$GITHUB_OUTPUT\"""",
         ),
     )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        if: github.event_name == 'pull_request'",
+            "        if: false",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        without_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        if: github.event_name == 'pull_request'\n",
+        ),
+    )
 
     narrowed_pathspec = replace_once_after(
         BASE_WORKFLOW,
@@ -4450,6 +4469,13 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     )
     assert_error("nextest-fingerprint-reuse must use secure current nextest fingerprint output", stale_fingerprint_with_decoy)
     assert_error("nextest-fingerprint-reuse must run ci_provenance.py resolve-fingerprint", stale_fingerprint_with_decoy)
+    resolver_pipe_scalar = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        "        run: >",
+        "        run: |",
+    )
+    assert_error("nextest-fingerprint-reuse resolver step must match canonical envelope", resolver_pipe_scalar)
     fabricated_reuse_outputs = replace_once_after(
         BASE_WORKFLOW,
         "  nextest-fingerprint-reuse:",

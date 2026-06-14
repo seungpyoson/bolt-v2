@@ -91,6 +91,15 @@ class FenceTests(unittest.TestCase):
     def test_match_arm_alternation_last_is_caught(self):
         self.assertEqual(len(self._one('match venue_id { "x" | "polymarket" => a, _ => b }')), 1)
 
+    def test_arm_after_commaless_block_body_is_caught(self):
+        # A block-bodied arm needs no trailing comma in Rust (`_ => { f() }`).
+        # When the block closes, the scanner must resume in pattern context so
+        # the FOLLOWING arm's pattern is still scanned — otherwise a venue
+        # literal after a comma-less block body slips through (false negative).
+        self.assertEqual(
+            len(self._one('match venue_id { _ => { f() } "polymarket" => a, _ => b }')), 1
+        )
+
     def test_nested_generic_turbofish_is_caught(self):
         self.assertEqual(len(self._one('if venue.cast::<Cow<str>>() == "polymarket" {}')), 1)
 

@@ -58,6 +58,7 @@ use crate::bolt_v3_config::{
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
 use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
+use crate::bolt_v3_order_execution::BoltV3OrderExecutionMode;
 
 #[derive(Debug)]
 pub struct BoltV3ValidationError {
@@ -2087,6 +2088,12 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             ));
         }
 
+        errors.extend(
+            validate_shadow_order_execution_mode_forbids_managed_venue_actions(
+                &context, root, strategy,
+            ),
+        );
+
         match &strategy.realized_volatility_surface_id {
             None => errors.push(format!(
                 "{context}: {} is required",
@@ -2161,6 +2168,38 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
     errors.extend(validate_target_gate_provider_references(root, strategies));
     errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));
 
+    errors
+}
+
+fn validate_shadow_order_execution_mode_forbids_managed_venue_actions(
+    context: &str,
+    root: &BoltV3RootConfig,
+    strategy: &BoltV3StrategyConfig,
+) -> Vec<String> {
+    if root.runtime.order_execution_mode != BoltV3OrderExecutionMode::Shadow {
+        return Vec::new();
+    }
+
+    let mut errors = Vec::new();
+    for (field, enabled) in [
+        (stringify!(manage_stop), strategy.manage_stop),
+        (stringify!(manage_gtd_expiry), strategy.manage_gtd_expiry),
+        (
+            stringify!(manage_contingent_orders),
+            strategy.manage_contingent_orders,
+        ),
+    ] {
+        if enabled {
+            errors.push(format!(
+                "{context}: runtime.order_execution_mode=shadow requires {field}=false because it drives NautilusTrader-managed venue actions outside the shared order-execution policy"
+            ));
+        }
+    }
+    if !strategy.external_order_claims.is_empty() {
+        errors.push(format!(
+            "{context}: runtime.order_execution_mode=shadow requires external_order_claims=[] because claimed foreign orders are managed by NautilusTrader outside the shared order-execution policy"
+        ));
+    }
     errors
 }
 

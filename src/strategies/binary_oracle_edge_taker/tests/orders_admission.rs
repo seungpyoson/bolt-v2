@@ -62,7 +62,7 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
         .submit_order_with_decision_evidence(
             intent,
             order,
-            SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
         .expect("ungated admission should reach NT submit");
     assert_eq!(
@@ -73,7 +73,7 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
 }
 
 #[test]
-fn submit_orders_false_records_evidence_and_admission_without_nt_submit() {
+fn shadow_policy_records_evidence_and_admission_without_nt_submit() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
@@ -84,7 +84,7 @@ fn submit_orders_false_records_evidence_and_admission_without_nt_submit() {
         evidence.clone(),
         submit_admission.clone(),
     );
-    strategy.config.submit_orders = false;
+    set_shadow_order_execution_policy(&mut strategy);
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let (risk_handler, risk_messages) =
         get_typed_into_message_saving_handler::<TradingCommand>(None);
@@ -136,17 +136,17 @@ fn submit_orders_false_records_evidence_and_admission_without_nt_submit() {
         .submit_order_with_decision_evidence(
             intent,
             order,
-            SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
         .expect("shadow submission should still pass evidence and admission");
     assert_eq!(
         submit_admission.admitted_order_count(),
         0,
-        "submit_orders=false records observed admission without consuming live capacity"
+        "shadow policy records observed admission without consuming live capacity"
     );
     assert!(
         risk_messages.get_messages().is_empty(),
-        "submit_orders=false must not emit an NT SubmitOrder command"
+        "shadow policy must not emit an NT SubmitOrder command"
     );
     let events = evidence.events();
     assert!(
@@ -222,7 +222,7 @@ fn provider_limited_submit_admission_allows_nt_submit_after_evidence() {
         .submit_order_with_decision_evidence(
             intent,
             order,
-            SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
         .expect("provider-limited admission should reach NT submit");
     assert_eq!(submit_admission.admitted_order_count(), 1);
@@ -275,7 +275,7 @@ fn submit_context_routes_non_empty_nt_params_to_submit_order() {
         .submit_order_with_decision_evidence(
             intent,
             order,
-            SubmitContext::from_parts(
+            BoltV3SubmitContext::from_parts(
                 Some(ClientId::from("POLYMARKET")),
                 None,
                 Some(params.clone()),
@@ -354,7 +354,7 @@ fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
         .submit_order_with_decision_evidence(
             understated_intent,
             order,
-            SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
         .expect_err("compiled order notional above cap must reject before NT submit");
 
@@ -967,7 +967,7 @@ fn over_notional_submit_admission_rejects_before_nt_submit() {
         .submit_order_with_decision_evidence(
             intent,
             order,
-            SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
         .expect_err("fee-inclusive over-cap notional must reject before NT submit");
 
@@ -1049,7 +1049,7 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
         .submit_order_with_decision_evidence(
             intent,
             order,
-            SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
         .expect("fee-inclusive notional exactly at the cap must reach NT submit");
     assert_eq!(
@@ -1130,7 +1130,7 @@ fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
         .submit_order_with_decision_evidence(
             intent,
             order,
-            SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
         .expect_err(
             "fee-inclusive notional pushed strictly over the cap by fee scaling must reject before NT submit",
@@ -1209,7 +1209,7 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
         .submit_order_with_decision_evidence(
             intent,
             order,
-            SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
         .expect("zero-fee notional below the cap must reach NT submit");
     assert_eq!(
@@ -1298,7 +1298,7 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
         .submit_order_with_decision_evidence(
             intent,
             order,
-            SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
         .expect_err("exhausted count cap must reject before NT submit");
 
@@ -1904,6 +1904,7 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
                 RecordingDecisionEvidenceWriter,
             )),
         ),
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     );
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
@@ -1951,6 +1952,7 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
                 RecordingDecisionEvidenceWriter,
             )),
         ),
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     );
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);

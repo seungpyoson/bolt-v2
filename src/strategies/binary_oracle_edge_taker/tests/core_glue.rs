@@ -86,7 +86,7 @@ fn decision_evidence_failure_rejects_before_nt_submit() {
         .submit_order_with_decision_evidence(
             intent,
             order,
-            SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
         .expect_err("evidence failure must reject before NT submit");
 
@@ -200,22 +200,21 @@ fn production_strategy_has_no_offline_readiness_seed_arming() {
 }
 
 #[test]
-fn production_submit_chokepoint_commits_admission_permit_after_nt_submit() {
+fn shared_execution_policy_commits_admission_permit_after_nt_submit() {
     let production = crate::bolt_v3_source_integrity::production_module_source_text(
         crate::bolt_v3_source_integrity::STRATEGY_KEY,
     );
     let admit_index = production
-        .find("let permit = self.context.submit_admission().admit(&request)?;")
-        .expect("production submit chokepoint must hold the admission permit");
-    let submit_call = ["self", ".submit_order("].concat();
+        .find("let permit = routing.submit_admission.admit(&routing.request)?;")
+        .expect("shared execution policy must hold the admission permit");
     let submit_index = production[admit_index..]
-        .find(&submit_call)
+        .find("sink.submit_order_via_nt(order, context)?;")
         .map(|index| admit_index + index)
-        .expect("production submit chokepoint must call NT submit after admission");
+        .expect("shared execution policy must call NT submit after admission");
     let commit_index = production[submit_index..]
         .find("permit.commit_submitted();")
         .map(|index| submit_index + index)
-        .expect("production submit chokepoint must commit the permit after successful NT submit");
+        .expect("shared execution policy must commit the permit after successful NT submit");
 
     assert!(
         admit_index < submit_index && submit_index < commit_index,
@@ -442,6 +441,7 @@ fn book_delta_refreshes_fee_readiness_after_warm_populates_provider() {
                 RecordingDecisionEvidenceWriter,
             )),
         ),
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     );
     strategy.active.outcome_fees.up_ready = false;

@@ -814,6 +814,134 @@ fn bolt_v3_runtime_mode_rejects_backtest_and_sandbox_variants() {
 }
 
 #[test]
+fn bolt_v3_order_execution_mode_is_required_under_runtime() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+
+    let missing = fixture_root_without_order_execution_mode();
+    let error = toml::from_str::<BoltV3RootConfig>(&missing)
+        .expect_err("runtime.order_execution_mode must be required and fail closed");
+
+    assert!(
+        error.to_string().contains("order_execution_mode"),
+        "missing order_execution_mode should be named in the parse error: {error}"
+    );
+}
+
+#[test]
+fn bolt_v3_order_execution_mode_accepts_only_lowercase_live_and_shadow() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+    use bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionMode;
+
+    for (value, expected) in [
+        ("live", BoltV3OrderExecutionMode::Live),
+        ("shadow", BoltV3OrderExecutionMode::Shadow),
+    ] {
+        let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_order_execution_mode(value))
+            .unwrap_or_else(|error| {
+                panic!("lowercase runtime.order_execution_mode={value:?} should parse: {error}")
+            });
+        assert_eq!(root.runtime.order_execution_mode, expected);
+    }
+
+    for value in ["Live", "Shadow", "LIVE", "SHADOW"] {
+        let error =
+            toml::from_str::<BoltV3RootConfig>(&fixture_root_with_order_execution_mode(value))
+                .expect_err("mixed-case order_execution_mode must not parse");
+        assert!(
+            error.to_string().contains("order_execution_mode"),
+            "mixed-case value {value:?} should identify order_execution_mode: {error}"
+        );
+    }
+}
+
+#[test]
+fn binary_oracle_parameters_reject_stale_strategy_local_submit_orders() {
+    use bolt_v2::{
+        bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock,
+        bolt_v3_config::BoltV3StrategyConfig,
+    };
+
+    let stale = fixture_strategy_with_submit_orders("true");
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&stale).expect("strategy envelope should still parse");
+    let error = strategy
+        .parameters
+        .try_into::<ParametersBlock>()
+        .expect_err("parameters.submit_orders must be rejected as stale strategy-local policy");
+
+    assert!(
+        error.to_string().contains("submit_orders"),
+        "stale submit_orders rejection should name the field: {error}"
+    );
+}
+
+#[test]
+fn shadow_order_execution_mode_rejects_managed_venue_action_knobs() {
+    for (field, stale_line, replacement) in [
+        ("manage_stop", "manage_stop = false", "manage_stop = true"),
+        (
+            "manage_gtd_expiry",
+            "manage_gtd_expiry = false",
+            "manage_gtd_expiry = true",
+        ),
+        (
+            "manage_contingent_orders",
+            "manage_contingent_orders = false",
+            "manage_contingent_orders = true",
+        ),
+        (
+            "external_order_claims",
+            "external_order_claims = []",
+            "external_order_claims = [\"AUXILIARY.SOURCE\"]",
+        ),
+    ] {
+        let root_toml = fixture_root_with_order_execution_mode("shadow");
+        let strategy_toml =
+            strategy_fixture_without_submit_orders().replace(stale_line, replacement);
+        let messages =
+            strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+        let rendered = messages.join("\n");
+        assert!(
+            rendered.contains(field)
+                && rendered.contains("order_execution_mode")
+                && rendered.contains("shadow"),
+            "shadow runtime.order_execution_mode should reject {field}; got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn shadow_order_execution_mode_reports_every_managed_venue_action_knob() {
+    let root_toml = fixture_root_with_order_execution_mode("shadow");
+    let strategy_toml = strategy_fixture_without_submit_orders()
+        .replace("manage_stop = false", "manage_stop = true")
+        .replace("manage_gtd_expiry = false", "manage_gtd_expiry = true")
+        .replace(
+            "manage_contingent_orders = false",
+            "manage_contingent_orders = true",
+        )
+        .replace(
+            "external_order_claims = []",
+            "external_order_claims = [\"AUXILIARY.SOURCE\"]",
+        );
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    let rendered = messages.join("\n");
+
+    for field in [
+        "manage_stop",
+        "manage_gtd_expiry",
+        "manage_contingent_orders",
+        "external_order_claims",
+    ] {
+        assert!(
+            rendered.contains(field),
+            "shadow validation should collect {field}; got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn bolt_v3_logging_levels_use_nt_canonical_enum() {
     // FINDING-1: `logging.stdout_level` and `logging.fileout_level` are typed
     // as `nautilus_common::enums::LogLevel` (not a bolt shadow). NT's
@@ -4744,6 +4872,7 @@ strategy_files = ["strategies/binary_oracle.toml"]
 
 [runtime]
 mode = "Live"
+order_execution_mode = "live"
 
 [nautilus]
 load_state = true
@@ -5173,6 +5302,7 @@ strategy_files = ["strategies/binary_oracle.toml"]
 
 [runtime]
 mode = "Live"
+order_execution_mode = "live"
 
 [nautilus]
 load_state = true
@@ -5488,6 +5618,60 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
         "fixture must contain `{needle}` for this validation test to mutate"
     );
     fixture.replace(needle, replacement)
+}
+
+fn fixture_root_with_order_execution_mode(mode: &str) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    if fixture
+        .lines()
+        .any(|line| line.trim_start().starts_with("order_execution_mode = "))
+    {
+        return fixture
+            .lines()
+            .map(|line| {
+                if line.trim_start().starts_with("order_execution_mode = ") {
+                    let indent = &line[..line.len() - line.trim_start().len()];
+                    format!("{indent}order_execution_mode = \"{mode}\"")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    fixture.replace(
+        "mode = \"Live\"",
+        &format!("mode = \"Live\"\norder_execution_mode = \"{mode}\""),
+    )
+}
+
+fn fixture_root_without_order_execution_mode() -> String {
+    std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("order_execution_mode = "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn strategy_fixture_without_submit_orders() -> String {
+    std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .lines()
+    .filter(|line| !line.trim_start().starts_with("submit_orders = "))
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+fn fixture_strategy_with_submit_orders(value: &str) -> String {
+    let fixture = strategy_fixture_without_submit_orders();
+    fixture.replace(
+        "[parameters]\n",
+        &format!("[parameters]\nsubmit_orders = {value}\n"),
+    )
 }
 
 /// Replace one-line key assignments inside a single TOML table.

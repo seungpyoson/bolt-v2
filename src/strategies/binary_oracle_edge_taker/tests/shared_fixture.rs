@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use nautilus_trading::Strategy;
 
 pub(super) const TEST_TRADE_PRICE_PRECISION: u8 = 2;
 pub(super) const TEST_TRADE_SIZE_PRECISION: u8 = 0;
@@ -42,7 +43,6 @@ pub(super) fn valid_raw_config() -> Value {
         manage_contingent_orders = true
         manage_gtd_expiry = true
         manage_stop = true
-        submit_orders = true
         market_exit_interval_ms = 250
         market_exit_max_attempts = 7
         log_events = false
@@ -518,7 +518,6 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             manage_contingent_orders: true,
             manage_gtd_expiry: true,
             manage_stop: true,
-            submit_orders: true,
             market_exit_interval_ms: 250,
             market_exit_max_attempts: 7,
             log_events: false,
@@ -599,6 +598,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             fee_provider,
             decision_evidence,
             submit_admission,
+            crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         ),
     )
@@ -826,11 +826,18 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
         fee_provider,
         decision_evidence,
         submit_admission,
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     );
     strategy.config.edge_threshold_basis_points = 1;
     strategy.active.price_to_beat = Some(3_100.0);
     strategy
+}
+
+pub(super) fn set_shadow_order_execution_policy(strategy: &mut BinaryOracleEdgeTaker) {
+    strategy.context = strategy.context.clone().with_order_execution_policy(
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::shadow(),
+    );
 }
 
 pub(super) fn selected_entry_instrument(strategy: &BinaryOracleEdgeTaker) -> InstrumentId {

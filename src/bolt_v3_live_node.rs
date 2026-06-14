@@ -2342,6 +2342,10 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             }
             None => (None, None),
         };
+    let order_execution_policy =
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::from_mode(
+            loaded.root.runtime.order_execution_mode,
+        );
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
@@ -2353,6 +2357,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         resolved,
         crate::bolt_v3_archetypes::runtime_bindings(),
         submit_admission.clone(),
+        order_execution_policy,
         decision_evidence.clone(),
     )
     .map_err(BoltV3LiveNodeError::StrategyRegistration)?;

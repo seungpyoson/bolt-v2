@@ -744,6 +744,7 @@ fn strategy_build_context_carries_shared_submit_admission_handle() {
         Arc::new(NoopFeeProvider),
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         admission.clone(),
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
 

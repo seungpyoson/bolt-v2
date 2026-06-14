@@ -310,6 +310,19 @@ pub fn run_from_run_spec_with_artifact_store() {{
 """
 
 
+def compliant_main() -> str:
+    return """
+use backtesting_vertical_slice::operator::run_from_run_spec_with_artifact_store;
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let store = spec.artifact_store.build_s3_object_store()?;
+    let _artifacts =
+        run_from_run_spec_with_artifact_store(&spec, &gz_bytes, &output_dir, &store).await?;
+}
+"""
+
+
 def compliant_test() -> str:
     return """
 fn create_only_probe_requires_duplicate_create_rejection() {
@@ -451,6 +464,11 @@ def write_compliant_tree(root: Path) -> None:
         root,
         "crates/backtesting-vertical-slice/src/operator.rs",
         compliant_operator(),
+    )
+    write_file(
+        root,
+        "crates/backtesting-vertical-slice/src/main.rs",
+        compliant_main(),
     )
     write_file(
         root,

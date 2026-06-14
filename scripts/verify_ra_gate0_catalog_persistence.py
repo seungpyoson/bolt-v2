@@ -14,6 +14,7 @@ ARTIFACT_STORE = Path("crates/backtesting-vertical-slice/src/artifact_store.rs")
 CAPABILITY_PROOF = Path("crates/backtesting-vertical-slice/src/nt_catalog_capability.rs")
 LIB_PATH = Path("crates/backtesting-vertical-slice/src/lib.rs")
 OPERATOR = Path("crates/backtesting-vertical-slice/src/operator.rs")
+MAIN_RS = Path("crates/backtesting-vertical-slice/src/main.rs")
 CONTRACT_TEST = Path("crates/backtesting-vertical-slice/tests/artifact_store_contract.rs")
 BTE_CARGO_TOML = Path("crates/backtesting-vertical-slice/Cargo.toml")
 JUSTFILE = Path("justfile")
@@ -154,6 +155,11 @@ OPERATOR_REQUIRED = (
     ".proof_plan(&spec.artifact_store)?",
     ".probe_create_only(",
     "persist_catalog_projection_for_source_binding",
+)
+MAIN_REQUIRED = (
+    "run_from_run_spec_with_artifact_store",
+    ".build_s3_object_store()",
+    "#[tokio::main",
 )
 TEST_REQUIRED = (
     "create_only_probe_requires_duplicate_create_rejection",
@@ -363,6 +369,14 @@ def scan_root(root: Path) -> list[str]:
     else:
         text = operator.read_text(encoding="utf-8")
         findings.extend(missing_snippets(OPERATOR, text, OPERATOR_REQUIRED))
+
+    main_rs = root / MAIN_RS
+    if not main_rs.exists():
+        findings.append(f"{MAIN_RS}: main.rs is missing")
+    else:
+        findings.extend(
+            missing_snippets(MAIN_RS, main_rs.read_text(encoding="utf-8"), MAIN_REQUIRED)
+        )
 
     test_file = root / CONTRACT_TEST
     if not test_file.exists():

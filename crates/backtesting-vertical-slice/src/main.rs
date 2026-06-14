@@ -13,7 +13,7 @@ use std::{fs, path::PathBuf};
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use backtesting_vertical_slice::operator::{RunSpec, run_from_run_spec};
+use backtesting_vertical_slice::operator::{RunSpec, run_from_run_spec_with_artifact_store};
 
 #[derive(Parser)]
 #[command(about = "Run the NautilusTrader backtesting vertical slice over an accepted dataset.")]
@@ -29,7 +29,8 @@ struct Cli {
     output_dir: PathBuf,
 }
 
-fn main() -> Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     let spec_text = fs::read_to_string(&cli.run_spec)
         .with_context(|| format!("read run-spec {}", cli.run_spec.display()))?;
@@ -37,7 +38,9 @@ fn main() -> Result<()> {
     let gz_bytes = fs::read(&cli.object_gz)
         .with_context(|| format!("read object {}", cli.object_gz.display()))?;
 
-    let artifacts = run_from_run_spec(&spec, &gz_bytes, &cli.output_dir)?;
+    let store = spec.artifact_store.build_s3_object_store()?;
+    let artifacts =
+        run_from_run_spec_with_artifact_store(&spec, &gz_bytes, &cli.output_dir, &store).await?;
     let output = &artifacts.output;
 
     println!("accepted_object_sha256 = {}", artifacts.verified_sha256);
@@ -53,7 +56,13 @@ fn main() -> Result<()> {
         "canonical_artifact = {}",
         artifacts.canonical_artifact_path.display()
     );
-    println!("nt_catalog_root = {}", artifacts.catalog_root.display());
+    if let Some(canonical_catalog_uri) = &artifacts.canonical_catalog_uri {
+        println!("nt_catalog_uri = {canonical_catalog_uri}");
+    }
+    println!(
+        "local_nt_catalog_root = {}",
+        artifacts.catalog_root.display()
+    );
     println!("catalog_hash = {}", output.projection.catalog_hash);
     println!("catalog_read_back_trade_ticks = {}", output.read_back_count);
     println!("nt_version = {}", output.contract.nt_version);

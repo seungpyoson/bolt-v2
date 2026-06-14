@@ -575,8 +575,10 @@ fn live_node_module_runs_nt_through_bolt_v3_wrapper() {
     // may use its dedicated quote-only reference probe; broader
     // market-data subscription APIs stay forbidden. The forbidden token list lives in
     // this integration test (not in the module's own source) so the
-    // assertion does not self-trip; production comments in
-    // `bolt_v3_live_node.rs` must avoid these substrings on purpose.
+    // assertion does not self-trip; production comments and identifiers in
+    // `bolt_v3_live_node.rs` must avoid these substrings on purpose, with the
+    // single documented exception of the `submit_orders` live/shadow config flag
+    // scrubbed below.
     //
     // This is a best-effort source fence, not a compile-time proof. Adding another
     // gated NT runner call requires updating the invariant checked here.
@@ -620,6 +622,14 @@ fn live_node_module_runs_nt_through_bolt_v3_wrapper() {
         "bolt-v3 live node must not use NT start for strategy-free because it does not drain execution account events"
     );
 
+    // `submit_orders` (plural) is the per-strategy live/shadow CONFIG FLAG that the
+    // loss-halt market-exit logic reads to decide which registered strategies are
+    // eligible for an NT market exit; it is metadata, not a trade-submission call.
+    // Scrub the flag identifier before the no-trade-boundary scan so the
+    // `submit_order` NT trade API stays banned without false-positiving on the flag
+    // name. A real submission (`submit_order(` / `submit_order_list`) does not match
+    // `submit_orders`, so it survives the scrub and still trips the fence below.
+    let scannable = source.replace("submit_orders", "");
     for forbidden in [
         "start_async",
         "kernel.start",
@@ -643,7 +653,7 @@ fn live_node_module_runs_nt_through_bolt_v3_wrapper() {
         "ws_client.subscribe",
     ] {
         assert!(
-            !source.contains(forbidden),
+            !scannable.contains(forbidden),
             "src/bolt_v3_live_node.rs must remain a no-trade boundary; \
              source unexpectedly references `{forbidden}`"
         );

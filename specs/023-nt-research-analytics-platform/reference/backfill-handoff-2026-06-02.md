@@ -63,7 +63,12 @@ Before using this data as production-grade backtesting input, complete these
 steps:
 
 1. Build a machine-readable coverage ledger from manifests with expected units,
-   completed units, failed units, gap reasons, and source-proof ids.
+   completed units, failed units, gap reasons, and source-proof ids. Current
+   PMXT manifest-only coverage-axis evidence:
+   `/private/tmp/bte-pmxt-coverage-ledger-20260609/ledger-output/backfill-coverage-ledger.json`;
+   it binds `coverage_axis=timestamp_received` without payload download or raw
+   manifest mutation, but rejects both records because the PMXT source proof is
+   still pending.
 2. Recover or rerun physically uploaded objects that are not covered by
    completed manifests, starting with Polymarket (PMXT source).
 3. Normalize staged raw data into the table families in
@@ -99,7 +104,10 @@ bytes.
   344,758,628,885 bytes under
   `s3://bolt-parquet/backfill-staging/2026-06-01/polymarket-pmxt-v2-streaming/`,
   but only 748 objects / 286,821,012,302 bytes are covered by completed
-  manifests. Recover missing manifests or rerun missing offsets cleanly.
+  manifests. Recover missing manifests or rerun missing offsets cleanly. A
+  manifest-only current ledger binds `coverage_axis=timestamp_received` for two
+  local PMXT manifest summaries and rejects them under pending source proof; do
+  not treat this as accepted or canonical-ready coverage.
 - OKX: April 5 onward is not accepted. Ignore old zero-payload family-split
   manifests and the rejected `ALL_SWAP` target manifest.
 - Bybit: accepted data is archive tick trades only. REST, delivery, and

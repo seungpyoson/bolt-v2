@@ -94,6 +94,22 @@ fn build_script_watches_current_source_set_files() {
     );
 }
 
+#[test]
+fn build_script_reports_missing_canonical_source_path() {
+    let manifest_dir = temp_git_fixture("missing-canonical-source");
+
+    let error = build_script::canonical_source_rerun_paths(&manifest_dir)
+        .expect_err("missing canonical source path should fail closed");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("src/strategies/binary_oracle_edge_taker"),
+        "missing canonical source error must identify the missing path: {message}"
+    );
+
+    let _ = fs::remove_dir_all(manifest_dir);
+}
+
 #[cfg(unix)]
 #[test]
 fn build_script_rejects_symlinked_canonical_source_paths() {

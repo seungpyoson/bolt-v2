@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-spot-tick-trades:XRPUSDT:2026-04-16:845e2d6a6269815fabc2053ba785c70ad77baf3d3933a621530ac5f388781317:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-spot-tick-trades:XRPUSDT:2026-04-16:845e2d6a6269815fabc2053ba785c70ad77baf3d3933a621530ac5f388781317:source-proof-scope",
+  "source_proof_scope_report_hash": "08c26eb57b926b8a47977cf1fb4ed98bc136e0d498a83e7d111b1660b2460f15",
+  "source_proof_id": "source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-spot-tick-trades",
+  "table_family": "trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-category-spot",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 1061616,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-04-16/symbol=XRPUSDT/object=845e2d6a6269815fabc2053ba785c70ad77baf3d3933a621530ac5f388781317.csv.gz",
+      "source_url": "https://public.bybit.com/spot/XRPUSDT/XRPUSDT_2026-04-16.csv.gz",
+      "sha256": "845e2d6a6269815fabc2053ba785c70ad77baf3d3933a621530ac5f388781317",
+      "bytes": 1061616,
+      "archive_date": "2026-04-16"
+    }
+  ],
+  "blocking_issues": []
+}

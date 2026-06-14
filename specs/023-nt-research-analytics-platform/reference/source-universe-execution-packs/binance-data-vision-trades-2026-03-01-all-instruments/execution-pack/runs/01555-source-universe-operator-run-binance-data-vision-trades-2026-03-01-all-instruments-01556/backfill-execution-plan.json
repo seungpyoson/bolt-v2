@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01556:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:CHILLGUYUSDT:2026-03-01:5c381a3468f0ad1f15a186a94304ba399e9360f09c9d28b957a10316f2ec9f3e:accepted-tranche",
+  "accepted_tranche_manifest_hash": "fef4722611ba26f3385ea2b5803e8356d6204c01bb9ce9822e12d12ea8113c13",
+  "run_spec_hash": "01dc7ea2ee7bcc6017f40eede73e1b8b269bcb0d08c1c9f5bf1b3622d2f1a987",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01556",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=CHILLGUYUSDT/dt=2026-03-01/object=5c381a3468f0ad1f15a186a94304ba399e9360f09c9d28b957a10316f2ec9f3e",
+  "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-usd-m-perpetual-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 220539,
+  "max_object_bytes": 220539,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=CHILLGUYUSDT/object=5c381a3468f0ad1f15a186a94304ba399e9360f09c9d28b957a10316f2ec9f3e.zip",
+      "source_url": "https://data.binance.vision/data/futures/um/daily/trades/CHILLGUYUSDT/CHILLGUYUSDT-trades-2026-03-01.zip",
+      "sha256": "5c381a3468f0ad1f15a186a94304ba399e9360f09c9d28b957a10316f2ec9f3e",
+      "bytes": 220539,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00436:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ERAFDUSD:2026-03-01:146941119a648d4d26b37fc306f9d9f03bfd3bbe369661bbc5904fcb2a9e27c5:accepted-tranche",
+  "accepted_tranche_manifest_hash": "3e7fded956b01b02da57c461944bc15ab8d1f85dfbc8b91fdaca2020888b9a12",
+  "run_spec_hash": "3523670e109814dbb780ba1cc7bc4a571929d51ea9cfcec4eb17229db4cefc71",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00436",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ERAFDUSD/dt=2026-03-01/object=146941119a648d4d26b37fc306f9d9f03bfd3bbe369661bbc5904fcb2a9e27c5",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 101357,
+  "max_object_bytes": 101357,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=ERAFDUSD/object=146941119a648d4d26b37fc306f9d9f03bfd3bbe369661bbc5904fcb2a9e27c5.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/ERAFDUSD/ERAFDUSD-trades-2026-03-01.zip",
+      "sha256": "146941119a648d4d26b37fc306f9d9f03bfd3bbe369661bbc5904fcb2a9e27c5",
+      "bytes": 101357,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

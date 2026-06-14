@@ -1,0 +1,119 @@
+{
+  "source_proof_id": "source-proof-pmxt-polymarket-v2-current-orderbook",
+  "source_proof_version": 1,
+  "contract_version": "backfill-table-contract.v1",
+  "schema_version": "backfill-source-proof.v1",
+  "status": "pending",
+  "source_binding": "polymarket-parquet-archive-index",
+  "venue": "polymarket",
+  "product_family": "prediction_market_outcome",
+  "product_category": "binary-option",
+  "table_family": "order_book_snapshot_deltas",
+  "evidence_state": "pending_source_proof",
+  "source_candidate_class": "official_free",
+  "source_selection_status": "PENDING_MORE_PROOF",
+  "usage_scope": "one_off_backfill_data",
+  "fixture_type": "binary-option",
+  "requested_time_range": {
+    "start_utc": "2026-04-13T19:00:00Z",
+    "end_utc": "2026-06-10T16:00:00Z"
+  },
+  "coverage_time_range": {
+    "start_utc": "2026-04-13T19:00:00Z",
+    "end_utc": "2026-06-10T16:00:00Z"
+  },
+  "instrument_universe_id": "pmxt-polymarket-v2-current-orderbook",
+  "raw_sample_uri": "s3://bolt-parquet/backfill-staging/pmxt/raw/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-06-10T15:00:00Z/object=etag-9b8839adc79af4b1c8fd607cf5cc8f97-70.parquet",
+  "raw_sample_hash": "\"9b8839adc79af4b1c8fd607cf5cc8f97-70\"",
+  "schema_sample_uri": "s3://bolt-parquet/backfill-staging/pmxt/raw/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-06-10T15:00:00Z/object=etag-9b8839adc79af4b1c8fd607cf5cc8f97-70.parquet",
+  "schema_sample_hash": "\"9b8839adc79af4b1c8fd607cf5cc8f97-70\"",
+  "license_ref": "https://archive.pmxt.dev/docs/v2-data-overview#license",
+  "license_scope": "public",
+  "retention_ref": "pending://source-proofs/pmxt-polymarket-v2-current/retention-freshness",
+  "cost_ref": "pending://source-proofs/pmxt-polymarket-v2-current/cost",
+  "nt_mapping_status": "accepted",
+  "fidelity_class": "L2_REPLAY",
+  "l2_replay_evidence": {
+    "order_book_delta_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json",
+    "sufficient_snapshot_cadence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json"
+  },
+  "forbidden_claims": [
+    "No canonical, production, or broad NT catalog/backtest input from this pending PMXT L2 source proof.",
+    "No dynamic tick-size replay claim until NT-native timed instrument-epoch replay or a source-proof-bound no-tick-size-change universe is accepted."
+  ],
+  "claim_limits": [
+    {
+      "id": "pmxt-source-proof-claim-limit-001",
+      "severity": "blocking",
+      "claim": "No canonical, production, or broad NT catalog/backtest input from this pending PMXT L2 source proof.",
+      "reason": "The generated proof is manifest-scoped but remains pending until coverage, cost, storage, completeness, and tick-size policy evidence are accepted.",
+      "evidence_ref": "source-proof://source-proof-pmxt-polymarket-v2-current-orderbook/status"
+    },
+    {
+      "id": "pmxt-source-proof-claim-limit-002",
+      "severity": "blocking",
+      "claim": "No dynamic tick-size replay claim until NT-native timed instrument-epoch replay or a source-proof-bound no-tick-size-change universe is accepted.",
+      "reason": "The PMXT source includes tick_size_change fields and the current broad replay policy remains unaccepted.",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json"
+    }
+  ],
+  "acceptance_scope": {
+    "planned_objects": 1351,
+    "completed_objects": 1351,
+    "failed_objects": 0,
+    "skipped_objects": 0,
+    "accepted_bytes": 557815904970,
+    "selector_scope_violations": 0
+  },
+  "gap_policy_id": "",
+  "required_checks": {
+    "source_access": {
+      "outcome": "passed",
+      "evidence_ref": "PMXT archive objects are enumerated in category manifest backfill-source-universe-object-manifest-pmxt-polymarket-v2-current-category-orderbook"
+    },
+    "license": {
+      "outcome": "passed",
+      "evidence_ref": "PMXT archive license review permits public research use"
+    },
+    "schema": {
+      "outcome": "passed",
+      "evidence_ref": "Schema columns are committed in category manifest backfill-source-universe-object-manifest-pmxt-polymarket-v2-current-category-orderbook"
+    },
+    "time_semantics": {
+      "outcome": "passed",
+      "evidence_ref": "timestamp_received is the archive-hour axis; timestamp is upstream event time"
+    },
+    "instrument_universe": {
+      "outcome": "pending",
+      "evidence_ref": "pending broad BinaryOption instrument-universe proof for pmxt-polymarket-v2-current-orderbook"
+    },
+    "coverage": {
+      "outcome": "pending",
+      "evidence_ref": "pending coverage proof for object_count=1351 archive_date_range=[2026-04-13T19:00:00Z,2026-06-10T15:00:00Z]"
+    },
+    "retention_freshness": {
+      "outcome": "pending",
+      "evidence_ref": "pending durable archive retention and update-lag proof"
+    },
+    "granularity": {
+      "outcome": "passed",
+      "evidence_ref": "PMXT v2 orderbook files include book, price_change, last_trade_price, and tick_size_change events"
+    },
+    "completeness": {
+      "outcome": "pending",
+      "evidence_ref": "pending completeness proof for compressed_bytes=557815904970"
+    },
+    "nt_mapping": {
+      "outcome": "passed",
+      "evidence_ref": "bounded PMXT selected-source NT mapping evidence exists for OrderBookDelta and TradeTick"
+    },
+    "cost": {
+      "outcome": "pending",
+      "evidence_ref": "pending accepted cost proof for 557815904970 bytes of PMXT source archive data"
+    },
+    "storage": {
+      "outcome": "pending",
+      "evidence_ref": "pending artifact-root staging proof for PMXT source-proof evidence"
+    }
+  }
+}

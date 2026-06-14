@@ -1,0 +1,55 @@
+{
+  "schema_version": "artifact-index-commit-proof.v1",
+  "proof_id": "backtesting-engine-006-artifact-index-20260608-3d6b1529",
+  "artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529",
+  "artifact_protocol": "s3",
+  "artifact_kind": "backtests",
+  "producer_project": "backtesting-engine",
+  "writer_id": "backtesting-engine",
+  "storage_option_keys": [
+    "access_key_id",
+    "conditional_put",
+    "region",
+    "secret_access_key"
+  ],
+  "event_uris": [
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529/artifact-index/v1/events/kind=backtests/artifact_id=backtesting-engine-006-artifact-index-20260608-3d6b1529-artifact-a/hash=014e5bd8c00582834619b405beb694440e820f333eb7d7e5375ac49ba74ccd40.json",
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529/artifact-index/v1/events/kind=backtests/artifact_id=backtesting-engine-006-artifact-index-20260608-3d6b1529-artifact-b/hash=c3225e5988683d9670298df73d9adf9642a28a6c9c55868781260ed5b1d94f21.json"
+  ],
+  "snapshot_uris": [
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529/artifact-index/v1/snapshots/kind=backtests/snapshot_id=backtesting-engine-006-artifact-index-20260608-3d6b1529-snapshot-a/manifest.json",
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529/artifact-index/v1/snapshots/kind=backtests/snapshot_id=backtesting-engine-006-artifact-index-20260608-3d6b1529-snapshot-b/manifest.json"
+  ],
+  "latest_pointer_uri": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529/artifact-index/v1/pointers/kind=backtests/latest.json",
+  "audit_epoch_uris": [
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529/artifact-index/v1/audit/epochs/backtesting-engine-006-artifact-index-20260608-3d6b1529-epoch-a.json",
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529/artifact-index/v1/audit/epochs/backtesting-engine-006-artifact-index-20260608-3d6b1529-epoch-b.json"
+  ],
+  "first_pointer_precondition": "if_none_match_any",
+  "second_pointer_precondition": {
+    "if_match": {
+      "etag": "\"407ca00f35e82464edc3b776f22c49a2\""
+    }
+  },
+  "prior_pointer_etag_observed": true,
+  "final_pointer_etag_observed": true,
+  "event_create_only_proven": true,
+  "snapshot_create_only_proven": true,
+  "audit_epoch_create_only_proven": true,
+  "latest_pointer_create_only_proven": true,
+  "latest_pointer_update_if_match_proven": true,
+  "stale_etag_update_rejected": true,
+  "latest_pointer_readback_proven": true,
+  "snapshot_readback_proven": true,
+  "resolved_snapshot_id": "backtesting-engine-006-artifact-index-20260608-3d6b1529-snapshot-b",
+  "final_snapshot_id": "backtesting-engine-006-artifact-index-20260608-3d6b1529-snapshot-b",
+  "final_snapshot_content_hash": "86734a516a6c1601f64582304acaacdb78495de4d4462e2cf72de309a6503591",
+  "persisted_final_snapshot_json_sha256": "fff01e6619766d206a49bf4116d3be3dace741f11f4b1779a2a4847351aa0c9c",
+  "direct_s3_commit_proven": true,
+  "producer_iam_scope_proven": false,
+  "producer_iam_scope_denied_kinds": [],
+  "producer_iam_scope_denied_write_attempts": 0,
+  "producer_iam_scope_denied_write_rejections": 0,
+  "producer_iam_scope_violation_count": 0,
+  "producer_iam_scope_violation_uris": []
+}

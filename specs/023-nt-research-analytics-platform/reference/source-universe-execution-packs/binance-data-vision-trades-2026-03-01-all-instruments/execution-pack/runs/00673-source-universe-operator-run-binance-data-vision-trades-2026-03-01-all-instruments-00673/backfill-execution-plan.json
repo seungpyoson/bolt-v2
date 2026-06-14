@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00673:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:LAZIOTRY:2026-03-01:6a65e6aaa7516a551d979dfad335bcd3fc07d5a071f28495ebf9219d02156572:accepted-tranche",
+  "accepted_tranche_manifest_hash": "e3f3d2ebb42aa10d5e161b5173d69b15f2dcc3b5de872a7d5ae20028169c9529",
+  "run_spec_hash": "b6e61fd3d63ab233c5f023a54c0ffd6b76e4f6c0d77e0f74b332132f0005f8b5",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00673",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=LAZIOTRY/dt=2026-03-01/object=6a65e6aaa7516a551d979dfad335bcd3fc07d5a071f28495ebf9219d02156572",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 19573,
+  "max_object_bytes": 19573,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=LAZIOTRY/object=6a65e6aaa7516a551d979dfad335bcd3fc07d5a071f28495ebf9219d02156572.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/LAZIOTRY/LAZIOTRY-trades-2026-03-01.zip",
+      "sha256": "6a65e6aaa7516a551d979dfad335bcd3fc07d5a071f28495ebf9219d02156572",
+      "bytes": 19573,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

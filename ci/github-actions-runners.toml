@@ -35,7 +35,11 @@ deploy = "github_hosted"
 [workflows.backtester_ci]
 detect = "github_hosted"
 fmt = "managed_light"
-clippy = "managed_light"
+# clippy compiles the full NT-heavy crate (same footprint as test) and rides above the disk-pressure
+# floor only on the heavy tier; on managed_light (ubicloud-standard-2) the preflight refused at
+# free_bytes=10,622,885,888 < min_free_bytes=10,737,418,240. Kept consistent with the test lane,
+# which already compiles this crate on managed_heavy.
+clippy = "managed_heavy"
 test = "managed_heavy"
 gate = "github_hosted"
 

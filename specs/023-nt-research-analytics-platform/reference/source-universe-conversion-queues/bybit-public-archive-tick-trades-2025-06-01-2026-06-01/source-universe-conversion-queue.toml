@@ -1,0 +1,4 @@
+queue_id = "source-universe-conversion-queue-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
+source_universe_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json"
+output_dir = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/queue"
+output_prefix_template = "s3://bolt-parquet/nt-research-analytics/backtests/source-universe={universe_id}/category={category}/symbol={symbol}/dt={archive_date}/object={sha256}"

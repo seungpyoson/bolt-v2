@@ -1,0 +1,205 @@
+{
+  "schema_version": "source-proof-pmxt-selected-source-slice.v3",
+  "created_date": "2026-06-08",
+  "purpose": "One-off bounded PMXT selected-source staging before NT catalog projection proof.",
+  "usage_scope": "one_off_backfill_data",
+  "source": {
+    "local_path": "/private/tmp/polymarket-may20-one.parquet",
+    "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "source_rows": 64877467,
+    "source_row_groups": 62
+  },
+  "metadata_candidate_probe": {
+    "method": "Rank existing event-count ledger candidates by replay rows, then probe only the smallest row-count candidates for source-backed Polymarket CLOB/Gamma metadata.",
+    "candidate_probe_count": 40,
+    "gamma_backed_candidate_count": 6,
+    "selected_reason": "Smallest replay-row candidate among source-backed Gamma metadata candidates.",
+    "selected_condition_id": "0x92889d49761307073d461289d01208c3b19292d17da937c0f57501c7b7efa50d",
+    "selected_asset_id": "73895424095742155573626958367283533358717984717096075221396743226794070701077",
+    "gamma_backed_candidate_asset_ids": [
+      "73895424095742155573626958367283533358717984717096075221396743226794070701077",
+      "43628795712486515833828470752867039200350376777314237956256694829779429130222",
+      "49444756644707500998425362003350300889304966604464917505823446083561306410717",
+      "93645472426873845959841350724010926189006909810584484349935259903268657129023",
+      "31623217819038603813783350826187730431369952540273671534916386825104775476271",
+      "3591592734621538900250105906480402152414999010955894949082670586294455191149"
+    ]
+  },
+  "event_count_ledger": {
+    "spec_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/event-count-ledger.toml",
+    "output_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/event-count-ledger.json",
+    "file_sha256": "538f992b836f356ed8b50815530ec270013797da27d76a65473e2a2ac95cb5c3",
+    "content_hash": "35c5c97214a8079aa4b933979a38e68635efc0068929d9aaa6ebbf95f80bcda6",
+    "bytes": 19667684,
+    "source_rows": 64877467,
+    "event_count_rows": 91786,
+    "selected_asset_event_counts": {
+      "book": {
+        "rows": 1,
+        "source_row_groups": [
+          35
+        ]
+      },
+      "last_trade_price": {
+        "rows": 1,
+        "source_row_groups": [
+          35
+        ]
+      },
+      "price_change": {
+        "rows": 3,
+        "source_row_groups": [
+          35
+        ]
+      }
+    }
+  },
+  "selector": {
+    "spec_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selector-gamma-candidates.toml",
+    "report_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selector-gamma-candidates/first-proof-selector-report.json",
+    "report_sha256": "8bbf34e5f743ec9fdf3cbf05c23c71c75ca310eb4278ffa1c9d29403386dba27",
+    "content_hash": "a36ed819efb41e89933bf73265496afae87dc8c29ffb359dc2d7f399acc01757",
+    "event_count_ledger_hash": "985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a",
+    "status": "selected",
+    "eligible_assets": 6,
+    "selected_asset_count": 1,
+    "selected_asset_ids_hash": "1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110",
+    "selected_assets": [
+      {
+        "asset_id": "73895424095742155573626958367283533358717984717096075221396743226794070701077",
+        "replay_rows": 5,
+        "source_row_groups": [
+          35
+        ]
+      }
+    ],
+    "selection": {
+      "required_event_families": [
+        "book",
+        "price_change",
+        "last_trade_price"
+      ],
+      "excluded_event_families": [
+        "tick_size_change"
+      ],
+      "candidate_asset_ids_source": "metadata_candidate_probe.gamma_backed_candidate_asset_ids",
+      "row_budget": 1000,
+      "max_selected_assets": 1
+    }
+  },
+  "selected_source_slice": {
+    "spec_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source.toml",
+    "usage_scope": "one_off_backfill_data",
+    "output_parquet_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source/selected-source.parquet",
+    "report_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source/selected-source-report.json",
+    "output_parquet_sha256": "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e",
+    "report_file_sha256": "a33eeba4204c498eda44a442fda92c9530580304ce54ea72657f9bf86886c857",
+    "report_hash": "9d3e2f100f8f6047b89e8ce1355defef82476b9ecacc79ebc5a1ace85f21d5f3",
+    "report_bytes": 1286,
+    "source_rows": 64877467,
+    "source_row_groups": 62,
+    "projected_row_groups": 1,
+    "selected_rows": 5,
+    "selected_asset_count": 1,
+    "event_types": [
+      "book",
+      "last_trade_price",
+      "price_change"
+    ],
+    "event_type_rows": {
+      "book": 1,
+      "last_trade_price": 1,
+      "price_change": 3
+    },
+    "projected_columns": [
+      "timestamp_received",
+      "timestamp",
+      "market",
+      "event_type",
+      "asset_id",
+      "bids",
+      "asks",
+      "price",
+      "size",
+      "side",
+      "best_bid",
+      "best_ask",
+      "fee_rate_bps",
+      "transaction_hash",
+      "old_tick_size",
+      "new_tick_size"
+    ]
+  },
+  "performance_evidence": {
+    "event_count_ledger_command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin first_proof_event_count_ledger -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/event-count-ledger.toml",
+    "event_count_ledger_command_current_contract_note": "The command remains historical evidence for the regenerated artifact. Current first_proof_event_count_ledger specs must include TOML-owned max_source_parquet_bytes and reject oversized sources before Parquet reader construction.",
+    "event_count_ledger_wall_seconds_observed": 90.27,
+    "selected_source_command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin selected_source_slice -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source.toml",
+    "selected_source_wall_seconds_observed": 18.93,
+    "previous_full_projection_wall_seconds": 218.96,
+    "finding": "The only current full-object pass is the explicitly byte-budgeted two-column event-count ledger. The selected-source stage consumes selector-carried source_row_groups and projected 1 of 62 row groups without the historical asset-column rescan."
+  },
+  "current_code_reconciliation": {
+    "status": "current_head_artifact_root_rerun_from_selector_source_row_groups",
+    "artifact_generation_head": "6aaf1bd0",
+    "current_head": "4ea54d806183fb82371de2088034de03c737b633",
+    "pull_request": "https://github.com/seungpyoson/bolt-v2/pull/610",
+    "finding": "The selected-source artifact was regenerated from an event-count ledger and selector report that carry source_row_groups. Current selected_source_slice validates selector.selected_assets[].source_row_groups against Parquet metadata and projects those row groups directly; current head 4ea54d806183fb82371de2088034de03c737b633 reran the bounded one-off artifact-root conversion/backtest on a clean output prefix without regenerating broad PMXT data.",
+    "evidence": [
+      "The refreshed ledger contains source_row_groups for event-count rows and selected asset families book=1, last_trade_price=1, price_change=3 all in row group 35.",
+      "The refreshed selector report has selected_assets[0].source_row_groups = [35] and selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110.",
+      "The refreshed selected-source report binds selector_report_sha256 8bbf34e5f743ec9fdf3cbf05c23c71c75ca310eb4278ffa1c9d29403386dba27, output_parquet_sha256 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, source_row_groups 62, projected_row_groups 1, selected_rows 5, and selected_asset_count 1.",
+      "Current-head clean-prefix artifact-root run produced result_contract_hash 6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de, conversion_manifest_hash a2b5407aa56068bb31e094e2d28dec71c8c2a87d592c6e1b3f30803a2ddc3c7f, catalog_hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236, and nt_iterations 104.",
+      "Rerunning the same current-head clean-prefix artifact-root spec preserved result_contract_hash 6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de and nt_iterations 104."
+    ],
+    "supersedes": {
+      "selector_report_path": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector-gamma-candidates/first-proof-selector-report.json",
+      "selected_source_report_path": "/private/tmp/bte-pmxt-selected-source-slice-gamma-backed-2026-06-08/selected-source-report.json",
+      "reason": "Those artifacts predate selector-carried source_row_groups and are historical only."
+    }
+  },
+  "selected_source_guardrails": {
+    "status": "selector_exclusion_required_for_schema_forbidden_event_types",
+    "root_cause": "The selected-source projection already rejected schema-configured forbidden ignored event types, but it did not require the selector report itself to prove those event families were excluded before slicing.",
+    "policy": "Before PMXT one-off projection, schema.forbidden_ignored_event_types must be covered by selector.selection.excluded_event_families. Both sides are config-owned values; the production guard does not hardcode venue names or event names.",
+    "repo_evidence": "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs ensure_selector_excludes_forbidden_event_types",
+    "test_evidence": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs pmxt_selected_source_projection_requires_selector_to_exclude_forbidden_event_types"
+  },
+  "metadata_gate_ref": {
+    "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json",
+    "status": "accepted",
+    "nt_parser_surface": "nautilus_polymarket::http::parse::parse_gamma_market"
+  },
+  "artifact_root_proof_ref": {
+    "path": "/private/tmp/bte-pmxt-current-head-rerun-2026-06-09/backtests/pmxt-run/backtest-result-contract.json",
+    "result_contract_hash": "6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de",
+    "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
+    "catalog_nt_data_types": [
+      "OrderBookDelta",
+      "TradeTick"
+    ],
+    "catalog_rows_by_nt_data_type": {
+      "OrderBookDelta": 103,
+      "TradeTick": 1
+    },
+    "nt_iterations": 104
+  },
+  "verification": [
+    "Selected-source report read-back returned selected_rows=5, selected_asset_count=1, source_row_groups=62, projected_row_groups=1.",
+    "Selected asset event-count ledger rows prove book=1, last_trade_price=1, price_change=3, all from source_row_groups [35].",
+    "The selected-source report binds source_parquet_sha256, selector_report_sha256, output_parquet_sha256, selected_rows, selected_asset_count, selected_asset_ids_hash, source_row_groups, and projected_row_groups.",
+    "The current-head clean-prefix artifact-root run wrote the selected rows to NT ParquetDataCatalog, ran BacktestNode over OrderBookDelta and TradeTick catalog inputs, emitted nt_iterations=104, and reran idempotently with result_contract_hash 6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de."
+  ],
+  "claim_limits": [
+    "This artifact is one-off PMXT selected-source evidence only.",
+    "This artifact does not authorize broad PMXT backfill.",
+    "This artifact does not prove dynamic tick-size replay.",
+    "This artifact does not prove expanded tranche coverage or production backfill throughput.",
+    "PMXT remains a one-off backfill data sample, not a reusable canonical source binding."
+  ],
+  "next_required_steps": [
+    "Record expanded-tranche coverage and cost evidence before any broad PMXT backfill discussion.",
+    "Prove dynamic tick-size replay separately before full PMXT Polymarket L2 acceptance.",
+    "Keep durable source selection data-family driven and config-owned; do not promote PMXT-specific constants into production code."
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00963:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:RENDERBTC:2026-03-01:48a863e28192d66bc473c3017b33190f8ede36357d6b534bf6d6f70c0ee0fc19:accepted-tranche",
+  "accepted_tranche_manifest_hash": "0855cb3d823059e1c7993efdf4b159834e60d666d51e5a854c15eaa2b32e9ab4",
+  "run_spec_hash": "a1eaca3ee135358a823ff86d39f5915489a256ea4adc67ad446294e1b27d7432",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00963",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=RENDERBTC/dt=2026-03-01/object=48a863e28192d66bc473c3017b33190f8ede36357d6b534bf6d6f70c0ee0fc19",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 17624,
+  "max_object_bytes": 17624,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=RENDERBTC/object=48a863e28192d66bc473c3017b33190f8ede36357d6b534bf6d6f70c0ee0fc19.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/RENDERBTC/RENDERBTC-trades-2026-03-01.zip",
+      "sha256": "48a863e28192d66bc473c3017b33190f8ede36357d6b534bf6d6f70c0ee0fc19",
+      "bytes": 17624,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

@@ -1,0 +1,11 @@
+readiness_id = "polymarket-parquet-archive-index-canonical-source-catalog-mapping-readiness"
+catalog_mapping_evaluation_path = "specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.2026-06-08.json"
+output_dir = "specs/023-nt-research-analytics-platform/reference/source-catalog-mapping-readiness/polymarket-parquet-archive-index-canonical"
+source_proof_id = "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08"
+source_proof_version = 1
+source_binding = "polymarket-parquet-archive-index"
+required_table_family = "order_book_snapshot_deltas"
+required_nt_data_types = ["OrderBookDelta", "TradeTick"]
+allowed_current_bte_statuses = ["accepted"]
+allowed_parquet_catalog_statuses = ["proven"]
+allowed_usage_scopes = ["canonical_backfill_input"]

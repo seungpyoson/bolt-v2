@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:BTCUSDC:2026-03-01:4d133b7526e6a41c87c6bbee60d07e41763d8ea5553d5d2d80f99de6ea8e845c:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:BTCUSDC:2026-03-01:4d133b7526e6a41c87c6bbee60d07e41763d8ea5553d5d2d80f99de6ea8e845c:source-proof-scope",
+  "source_proof_scope_report_hash": "a3d2187fca4473f4c9816385ca13a0943bbae40008d1f60952447f29125b45cb",
+  "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-usd-m-perpetual-native-trades",
+  "table_family": "trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-usd_m_perpetual",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 10312731,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=BTCUSDC/object=4d133b7526e6a41c87c6bbee60d07e41763d8ea5553d5d2d80f99de6ea8e845c.zip",
+      "source_url": "https://data.binance.vision/data/futures/um/daily/trades/BTCUSDC/BTCUSDC-trades-2026-03-01.zip",
+      "sha256": "4d133b7526e6a41c87c6bbee60d07e41763d8ea5553d5d2d80f99de6ea8e845c",
+      "bytes": 10312731,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

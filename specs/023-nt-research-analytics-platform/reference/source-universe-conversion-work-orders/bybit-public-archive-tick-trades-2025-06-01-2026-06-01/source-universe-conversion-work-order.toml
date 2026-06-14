@@ -1,0 +1,4 @@
+work_order_id = "source-universe-conversion-work-order-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
+source_universe_operator_inputs_path = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/operator-inputs/source-universe-operator-inputs.json"
+output_dir = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/work-order"
+overwrite_existing_artifacts = true

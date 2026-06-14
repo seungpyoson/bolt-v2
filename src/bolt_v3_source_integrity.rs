@@ -284,8 +284,11 @@ mod tests {
     // (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs) into the strategy
     // source set, so the sole TOML->runtime-table mapping for the shadow-mode
     // kill switch is now tamper-evidenced alongside its validating consumer.
+    // Re-derived after the binary oracle edge taker builder started exposing a
+    // shared build_strategy constructor so registry builds and direct tests use
+    // one TOML-to-strategy construction path.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "c5ad6466a12fe43623769431d571e86a24366768508a1cdd991de952cd1ad036";
+        "4241e2b6dd9ef8e6bfd8978a301325fc40633dbdb53dcf1845787fd5e63b580d";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

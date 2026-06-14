@@ -27,7 +27,7 @@ use nautilus_model::{
     instruments::{BinaryOption, InstrumentAny},
     types::{Currency, Price, Quantity},
 };
-use rust_decimal_macros::dec;
+use rust_decimal::Decimal;
 use serde_json::json;
 use ustr::Ustr;
 
@@ -262,6 +262,7 @@ fn binary_option(
     outcome: &str,
     side_label: &str,
 ) -> InstrumentAny {
+    let description = format!("{outcome} {side_label}");
     InstrumentAny::BinaryOption(BinaryOption::new(
         instrument_id,
         Symbol::from(format!("{outcome}-{side_label}")),
@@ -274,7 +275,7 @@ fn binary_option(
         Price::from("0.001"),
         Quantity::from("0.01"),
         Some(Ustr::from(outcome)),
-        Some(Ustr::from(format!("{outcome} {side_label}"))),
+        Some(Ustr::from(description.as_str())),
         None,
         Some(Quantity::from("0.01")),
         None,
@@ -294,7 +295,7 @@ fn binary_option(
 fn hip4_source() -> OutcomeGroupSourceConfig {
     let terminal_state_labels = vec!["home".to_string(), "away".to_string()];
     let payout_cols = payout_cols();
-    let payout_values = vec![dec!(1); payout_cols.len()];
+    let payout_values = vec![Decimal::ONE; payout_cols.len()];
     let payout_attestation = payout_vector_attestation_sha256(
         "fallback_refund",
         "fallback_refund",

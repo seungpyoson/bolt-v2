@@ -10,7 +10,7 @@ use crate::bolt_v3_config::{
 use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter;
 use crate::bolt_v3_iv::{
     config::IvProfile,
-    query::IvQueryHandle,
+    query::{IvQueryHandle, IvStrategyQueryHandle},
     runtime::{IvRuntimeEngine, runtime_derived_inputs_from_profile},
     store::{IvRetentionPolicy, IvStore},
 };
@@ -59,7 +59,7 @@ pub struct BoltV3StrategyRegistrationSummary {
 
 #[derive(Clone, Debug)]
 pub struct BoltV3IvQueryHandleRegistry {
-    handles: BTreeMap<(String, String), IvQueryHandle>,
+    handles: BTreeMap<(String, String), IvStrategyQueryHandle>,
 }
 
 impl BoltV3IvQueryHandleRegistry {
@@ -73,7 +73,7 @@ impl BoltV3IvQueryHandleRegistry {
         self.handles.len()
     }
 
-    pub fn handle(&self, strategy_id: &str, profile_id: &str) -> Option<&IvQueryHandle> {
+    pub fn handle(&self, strategy_id: &str, profile_id: &str) -> Option<&IvStrategyQueryHandle> {
         self.handles
             .get(&(strategy_id.to_string(), profile_id.to_string()))
     }
@@ -168,7 +168,12 @@ pub fn build_iv_query_handle_registry_for_root(
             if handles
                 .insert(
                     key.clone(),
-                    IvQueryHandle::new(&profile.profile_id, authorization, profile_store.clone())
+                    IvStrategyQueryHandle::new(
+                        IvQueryHandle::new(
+                            &profile.profile_id,
+                            authorization,
+                            profile_store.clone(),
+                        )
                         .with_projection_policies(profile.projection_policies.clone())
                         .with_interpolation_policies(profile.interpolation_policies.clone())
                         .with_fallback_policies(profile.fallback_policies.clone())
@@ -178,6 +183,7 @@ pub fn build_iv_query_handle_registry_for_root(
                         .with_derived_inputs(runtime_derived_inputs_from_profile(profile))
                         .with_retention_policy(retention_policy_from_profile(profile))
                         .with_current_subscription_generations(current_generations),
+                    ),
                 )
                 .is_some()
             {
@@ -222,8 +228,14 @@ pub fn build_iv_query_handle_registry_for_runtime(
             if handles
                 .insert(
                     key.clone(),
-                    IvQueryHandle::from_state(&profile.profile_id, authorization, state.clone())
+                    IvStrategyQueryHandle::new(
+                        IvQueryHandle::from_state(
+                            &profile.profile_id,
+                            authorization,
+                            state.clone(),
+                        )
                         .with_retention_policy(retention_policy_from_profile(profile)),
+                    ),
                 )
                 .is_some()
             {

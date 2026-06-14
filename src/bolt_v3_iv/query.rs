@@ -139,6 +139,21 @@ pub struct IvQueryHandle {
     retention_policy: Option<IvRetentionPolicy>,
 }
 
+#[derive(Debug, Clone)]
+pub struct IvStrategyQueryHandle {
+    inner: IvQueryHandle,
+}
+
+impl IvStrategyQueryHandle {
+    pub(crate) fn new(inner: IvQueryHandle) -> Self {
+        Self { inner }
+    }
+
+    pub fn query(&self, query: &IvQuery) -> Result<IvQueryProduct, IvQueryError> {
+        self.inner.query(query)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 struct IvRetainedProductKey {
     ts_event_ns: UnixNanos,
@@ -817,6 +832,9 @@ impl IvQueryHandle {
         if query.profile_id != self.profile_id {
             return Err(IvQueryError::ProfileMismatch);
         }
+        if query.strategy_id != self.authorization.strategy_id {
+            return Err(IvQueryError::StrategyNotAuthorized);
+        }
         if !selector_supports_product_kind(&query.selector, query.product_kind) {
             return Err(IvQueryError::ProductKindMismatch);
         }
@@ -886,8 +904,16 @@ impl IvQueryHandle {
             } else if product_is_current {
                 return Err(IvQueryError::StrategyNotAuthorized);
             } else {
-                if let Some(provenance) = product.provenance() {
-                    side_effects.record_query_rejection(provenance, IvRejectReason::StaleData);
+                let stale_product_is_authorized = self.authorization.authorizes(
+                    &query.strategy_id,
+                    query.product_kind,
+                    product.source_id(),
+                    product.selector_fingerprint(),
+                );
+                if stale_product_is_authorized {
+                    if let Some(provenance) = product.provenance() {
+                        side_effects.record_query_rejection(provenance, IvRejectReason::StaleData);
+                    }
                 }
                 return Err(IvQueryError::ProductNotFound);
             }

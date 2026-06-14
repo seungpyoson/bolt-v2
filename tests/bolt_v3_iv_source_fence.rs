@@ -11,9 +11,9 @@ fn iv_source_fence_entrypoint_is_wired_to_the_iv_module_boundary() {
 #[test]
 fn source_fence_accepts_public_strategy_query_imports() {
     let source = r#"
-use crate::bolt_v3_iv::query::{IvQuery, IvQueryHandle};
+use crate::bolt_v3_iv::query::{IvQuery, IvStrategyQueryHandle};
 
-fn strategy_consumes_iv(handle: &IvQueryHandle, query: &IvQuery) {
+fn strategy_consumes_iv(handle: &IvStrategyQueryHandle, query: &IvQuery) {
     let _ = handle.query(query);
 }
 "#;
@@ -37,10 +37,12 @@ fn strategy_owned_subscription(node: &mut LiveNode) {
 #[test]
 fn source_fence_rejects_strategy_local_nt_helper_derivation() {
     let source = r#"
-use nautilus_model::data::{imply_vol_and_greeks, refine_vol_and_greeks};
+use nautilus_model::data::{imply_vol, imply_vol_and_greeks, refine_vol, refine_vol_and_greeks};
 
 fn strategy_owned_derived_iv() {
+    let _ = imply_vol;
     let _ = imply_vol_and_greeks;
+    let _ = refine_vol;
     let _ = refine_vol_and_greeks;
 }
 "#;
@@ -94,6 +96,22 @@ fn strategy_escapes_query_authz(handle: &IvQueryHandle) {
 "#;
 
     assert_strategy_source_fence_rejects(source, "IV query state escape hatch");
+}
+
+#[test]
+fn source_fence_rejects_iv_query_handle_mutators() {
+    let source = r#"
+use crate::bolt_v3_iv::query::IvQueryHandle;
+
+fn strategy_mutates_iv_handle(handle: IvQueryHandle) {
+    let _ = handle.with_projection_policies(Vec::new());
+    let _ = handle.with_helper_policies(Vec::new());
+    let _ = handle.with_source_health(Vec::new());
+    let _ = handle.with_current_subscription_generations(Default::default());
+}
+"#;
+
+    assert_strategy_source_fence_rejects(source, "IV query state mutator");
 }
 
 #[test]
@@ -154,6 +172,8 @@ fn iv_strategy_source_fence_violations(_source: &str) -> Vec<String> {
             "strategy-owned NT IV subscription",
         ),
         ("subscribe_custom_data", "strategy-owned NT IV subscription"),
+        ("imply_vol", "strategy-local NT helper derivation"),
+        ("refine_vol", "strategy-local NT helper derivation"),
         (
             "imply_vol_and_greeks",
             "strategy-local NT helper derivation",
@@ -179,6 +199,34 @@ fn iv_strategy_source_fence_violations(_source: &str) -> Vec<String> {
         ("IvRawAuditAccess", "raw IV payload bypass"),
         ("IvRawEvent", "raw IV payload bypass"),
         ("IvRawPayload", "raw IV payload bypass"),
+        ("IvQueryHandle", "IV query state mutator"),
+        ("IvQueryStateHandle", "IV query state mutator"),
+        ("IvQueryState", "IV query state mutator"),
+        ("with_projection_policies", "IV query state mutator"),
+        ("with_helper_policies", "IV query state mutator"),
+        ("with_derived_input_policies", "IV query state mutator"),
+        ("with_interpolation_policies", "IV query state mutator"),
+        ("with_fallback_policies", "IV query state mutator"),
+        ("with_quorum_policies", "IV query state mutator"),
+        ("with_derived_inputs", "IV query state mutator"),
+        ("with_source_health", "IV query state mutator"),
+        (
+            "with_current_subscription_generations",
+            "IV query state mutator",
+        ),
+        ("with_retention_policy", "IV query state mutator"),
+        ("set_projection_policies", "IV query state mutator"),
+        ("set_input_bounds", "IV query state mutator"),
+        ("set_helper_policies", "IV query state mutator"),
+        ("set_derived_input_policies", "IV query state mutator"),
+        ("set_interpolation_policies", "IV query state mutator"),
+        ("set_fallback_policies", "IV query state mutator"),
+        ("set_quorum_policies", "IV query state mutator"),
+        ("set_derived_inputs", "IV query state mutator"),
+        (
+            "set_current_subscription_generations",
+            "IV query state mutator",
+        ),
         ("derived_outputs", "IV query state escape hatch"),
         ("derived_inputs", "IV query state escape hatch"),
         ("query_rejections", "IV query state escape hatch"),

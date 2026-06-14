@@ -709,6 +709,95 @@ fn selector_scoped_point_query_does_not_record_rejection_for_unauthorized_source
 }
 
 #[test]
+fn mismatched_strategy_id_is_rejected_before_product_lookup_or_side_effects() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-allowed-source",
+            "configured-allowed-selector",
+            2_000,
+            test_implied_volatility(41),
+        ))
+        .unwrap();
+    let state = IvQueryStateHandle::new(IvQueryState::new(store));
+    let handle = IvQueryHandle::from_state(
+        "configured-profile",
+        selector_scoped_authorization(),
+        state.clone(),
+    );
+    let observer =
+        IvQueryHandle::from_state("configured-profile", profile_wide_authorization(), state);
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-other-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::IvPoint,
+            selector: IvSelector::PointQuery {
+                instrument_ids: vec!["configured-option-instrument".to_string()],
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(2_000),
+                source_filter: Some("configured-allowed-source".to_string()),
+            },
+        })),
+        Err(IvQueryError::StrategyNotAuthorized)
+    );
+
+    assert!(
+        observer.query_rejections().is_empty(),
+        "mismatched strategy ids must be rejected before shared-state side effects"
+    );
+}
+
+#[test]
+fn stale_unauthorized_product_query_does_not_record_rejection_side_effect() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event_with_source_state(
+            "configured-denied-source",
+            "configured-denied-selector",
+            2_000,
+            test_implied_volatility(43),
+            IvSourceHealthState::Stale,
+            1,
+        ))
+        .unwrap();
+    let state = IvQueryStateHandle::new(IvQueryState::new(store));
+    let handle = IvQueryHandle::from_state(
+        "configured-profile",
+        selector_scoped_authorization(),
+        state.clone(),
+    );
+    let observer =
+        IvQueryHandle::from_state("configured-profile", profile_wide_authorization(), state);
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::IvPoint,
+            selector: IvSelector::PointQuery {
+                instrument_ids: vec!["configured-option-instrument".to_string()],
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(2_000),
+                source_filter: Some("configured-denied-source".to_string()),
+            },
+        })),
+        Err(IvQueryError::ProductNotFound)
+    );
+
+    assert!(
+        observer.query_rejections().is_empty(),
+        "unauthorized stale-product misses must not mutate the shared rejection log"
+    );
+    assert_eq!(
+        observer.source_health_for("configured-profile", "configured-denied-source"),
+        None,
+        "unauthorized stale-product misses must not pollute source health"
+    );
+}
+
+#[test]
 fn selector_scoped_source_health_query_does_not_record_rejection_for_unauthorized_source() {
     let state = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
     let handle = IvQueryHandle::from_state(

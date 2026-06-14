@@ -42,6 +42,14 @@ NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
     "send_exec_command",
     "send_emulator_command",
     "send_algo_command",
+    # Raw msgbus command transport is the primitive underneath OrderManager.
+    "send_trading_command",
+    "send_any",
+    "send_any_value",
+    "risk_engine_queue_execute",
+    "exec_engine_queue_execute",
+    "emulator_queue_execute",
+    "algo_engine_queue_execute",
     # Current pinned NautilusTrader Strategy venue-mutation methods.
     "submit_order",
     "submit_order_list",
@@ -74,9 +82,41 @@ NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
     "deny_order_list",
 )
 
+NT_VENUE_MUTATION_BARE_NAMES: tuple[str, ...] = (
+    "send_trading_command",
+    "send_any",
+    "send_any_value",
+    "risk_engine_queue_execute",
+    "exec_engine_queue_execute",
+    "emulator_queue_execute",
+    "algo_engine_queue_execute",
+)
+
+NT_TRADING_COMMAND_SURFACE_NAMES: tuple[str, ...] = (
+    "TradingCommand",
+    "SubmitOrder",
+    "SubmitOrderList",
+    "ModifyOrder",
+    "CancelOrder",
+    "CancelOrders",
+    "CancelAllOrders",
+    "ClosePosition",
+    "CloseAllPositions",
+    "DenyOrder",
+    "DenyOrderList",
+)
+
 NT_VENUE_MUTATION_METHOD_PATTERN = "|".join(
     re.escape(name)
     for name in sorted(NT_VENUE_MUTATION_METHOD_NAMES, key=len, reverse=True)
+)
+NT_VENUE_MUTATION_BARE_PATTERN = "|".join(
+    re.escape(name)
+    for name in sorted(NT_VENUE_MUTATION_BARE_NAMES, key=len, reverse=True)
+)
+NT_TRADING_COMMAND_SURFACE_PATTERN = "|".join(
+    re.escape(name)
+    for name in sorted(NT_TRADING_COMMAND_SURFACE_NAMES, key=len, reverse=True)
 )
 
 DIRECT_NT_VENUE_MUTATION_RULE = Rule(
@@ -87,6 +127,18 @@ DIRECT_NT_VENUE_MUTATION_RULE = Rule(
         r"(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*::\s*|<[^>\n]+>\s*::\s*)"
         rf"(?:{NT_VENUE_MUTATION_METHOD_PATTERN})"
         r"(?=\s*(?:::<|\(|;|,|\)|$))"
+    ),
+)
+
+RAW_MSGBUS_NT_VENUE_MUTATION_RULE = Rule(
+    "direct NT venue mutation call",
+    re.compile(
+        r"(?<![A-Za-z0-9_:])"
+        rf"(?:{NT_VENUE_MUTATION_BARE_PATTERN})"
+        r"(?=\s*(?:::<|\(|;|,|\)|$))"
+        r"|(?<![A-Za-z0-9_:])"
+        rf"(?:{NT_TRADING_COMMAND_SURFACE_PATTERN})"
+        r"(?=\s*(?:::|<|\(|;|,|:|\)|$))"
     ),
 )
 
@@ -144,6 +196,18 @@ STRATEGY_POLICY_RULES: tuple[Rule, ...] = (
         ),
     ),
     Rule(
+        "registered strategy outside strategy module tree",
+        re.compile(
+            r"\bregistry\.register\s*::\s*<\s*crate::(?!strategies::)"
+            r"|\bregistry\.register\s*<\s*crate::(?!strategies::)"
+            r"|\bregistry\.register\s*::\s*<\s*(?:super::)+"
+            r"|\bregistry\.register\s*<\s*(?:super::)+"
+        ),
+    ),
+)
+
+EXECUTION_POLICY_RULES: tuple[Rule, ...] = (
+    Rule(
         "strategy-local execution policy construction",
         re.compile(
             r"\bBoltV3OrderExecutionPolicy\s*::\s*(?:live|shadow|from_mode)\s*\("
@@ -161,7 +225,9 @@ STRATEGY_POLICY_RULES: tuple[Rule, ...] = (
 
 FORBIDDEN_RULES: tuple[Rule, ...] = (
     *STRATEGY_POLICY_RULES,
+    *EXECUTION_POLICY_RULES,
     DIRECT_NT_VENUE_MUTATION_RULE,
+    RAW_MSGBUS_NT_VENUE_MUTATION_RULE,
 )
 
 ALLOWED_DIRECT_NT_MUTATION_PATHS = frozenset(
@@ -170,9 +236,26 @@ ALLOWED_DIRECT_NT_MUTATION_PATHS = frozenset(
     }
 )
 
-ALLOWED_STRATEGY_POLICY_TYPE_REFERENCE_PATHS = frozenset(
+ALLOWED_EXECUTION_POLICY_TYPE_REFERENCE_PATHS = frozenset(
     {
+        "src/bolt_v3_config.rs",
+        "src/bolt_v3_live_node.rs",
         "src/bolt_v3_order_execution.rs",
+        "src/bolt_v3_strategy_registration.rs",
+        "src/bolt_v3_validate.rs",
+        "src/strategies/registry.rs",
+    }
+)
+
+ALLOWED_EXECUTION_POLICY_CONSTRUCTION_PATHS = frozenset(
+    {
+        "src/bolt_v3_live_node.rs",
+        "src/bolt_v3_order_execution.rs",
+    }
+)
+
+ALLOWED_EXECUTION_POLICY_OVERRIDE_PATHS = frozenset(
+    {
         "src/strategies/registry.rs",
     }
 )
@@ -275,8 +358,18 @@ def find_violations_in_text(
         ):
             continue
         if (
+            rule.label == "strategy-local execution policy construction"
+            and path in ALLOWED_EXECUTION_POLICY_CONSTRUCTION_PATHS
+        ):
+            continue
+        if (
             rule.label == "strategy-local execution policy type reference"
-            and path in ALLOWED_STRATEGY_POLICY_TYPE_REFERENCE_PATHS
+            and path in ALLOWED_EXECUTION_POLICY_TYPE_REFERENCE_PATHS
+        ):
+            continue
+        if (
+            rule.label == "strategy-local execution policy override"
+            and path in ALLOWED_EXECUTION_POLICY_OVERRIDE_PATHS
         ):
             continue
         for match in rule.pattern.finditer(text):
@@ -305,7 +398,16 @@ def collect_violations() -> list[Violation]:
     for path in source_files_for_mutation_fence():
         rel = str(path.relative_to(REPO_ROOT))
         violations.extend(
-            find_violations_in_text(rel, production_text(path), (DIRECT_NT_VENUE_MUTATION_RULE,))
+            find_violations_in_text(rel, production_text(path), EXECUTION_POLICY_RULES)
+        )
+    for path in source_files_for_mutation_fence():
+        rel = str(path.relative_to(REPO_ROOT))
+        violations.extend(
+            find_violations_in_text(
+                rel,
+                production_text(path),
+                (DIRECT_NT_VENUE_MUTATION_RULE, RAW_MSGBUS_NT_VENUE_MUTATION_RULE),
+            )
         )
     return violations
 

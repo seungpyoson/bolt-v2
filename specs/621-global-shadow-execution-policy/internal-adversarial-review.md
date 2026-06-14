@@ -184,3 +184,30 @@ The strategy policy fence now fails any production strategy source root under `s
 
 - Red verification: command transport, policy alias/method pointer, and ungated strategy-root tests failed before the verifier change.
 - Green verification: `python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py` now runs 18 tests and passes; `python3 scripts/verify_bolt_v3_strategy_policy_fence.py` passes at the branch head.
+
+---
+
+## Second Final External Review Follow-up Disposition
+
+**Reviewer**: External adversarial re-review synthesis
+**Date**: 2026-06-14
+**Trigger**: Re-review against exact PR head `62550350f4d998e6905e6312353d6737536b2252` found the raw msgbus primitive below the fenced OrderManager wrappers and a policy-scope path heuristic gap.
+
+### Findings Disposition
+
+#### H7 - Raw msgbus trading-command injection primitive was not fenced
+
+**Status**: Fixed in implementation follow-up
+
+The prior H4 fix fenced `StrategyCore` / `OrderManager` wrapper names but did not fence the raw `nautilus_common::msgbus` trading-command primitive those wrappers call. The direct NT mutation fence now also covers `send_trading_command`, `send_any`, `send_any_value`, risk/exec/emulator/algo execute queue endpoint accessors, and the `TradingCommand` mutation surface names outside `src/bolt_v3_order_execution.rs`.
+
+#### H8 - Execution-policy fabrication checks were strategy-path scoped
+
+**Status**: Fixed in implementation follow-up
+
+Execution-policy construction, type-reference, and override rules now run across production `src/**/*.rs`, not only registered strategy roots and `src/strategies/**`. Only the known policy/config/load/registration boundary files are allowlisted. The fence also rejects registry entries that try to register a builder through `crate::...` or `super::...` outside the `crate::strategies::...` module tree, so a registered strategy cannot bypass the strategy-tree/source-integrity assumptions by living under an arbitrary `src/foo.rs` path.
+
+### Checks
+
+- Red verification: raw msgbus command injection and outside-tree registry tests failed before the verifier change.
+- CI plan: push this follow-up and use exact-head remote CI as the authoritative green check.

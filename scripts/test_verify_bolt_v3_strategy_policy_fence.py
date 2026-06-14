@@ -202,6 +202,36 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             "raw command transport and NT-managed lifecycle helpers must be fenced",
         )
 
+    def test_detects_raw_msgbus_trading_command_injection_paths(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            use nautilus_common::msgbus::{self, MessagingSwitchboard};
+            use nautilus_common::messages::execution::TradingCommand;
+
+            fn bypass(command: TradingCommand) {
+                msgbus::send_trading_command(
+                    MessagingSwitchboard::risk_engine_queue_execute(),
+                    command,
+                );
+                send_trading_command(
+                    MessagingSwitchboard::exec_engine_queue_execute(),
+                    TradingCommand::SubmitOrder(submit),
+                );
+                let send = msgbus::send_trading_command;
+                let send_any = msgbus::send_any;
+                let send_any_value = msgbus::send_any_value;
+                send_any_value(endpoint, boxed_command);
+                send_any(endpoint, boxed_command);
+            }
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            11,
+            "raw msgbus trading-command injection must be fenced at the primitive layer",
+        )
+
     def test_detects_strategy_local_execution_policy_construction(self) -> None:
         labels = self.labels_for(
             """
@@ -229,6 +259,42 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         )
 
         self.assertIn("strategy-local execution policy type reference", labels)
+
+    def test_policy_reference_is_repo_wide_not_strategy_path_scoped(self) -> None:
+        probe = VERIFIER.REPO_ROOT / "src/rogue_registered_strategy.rs"
+        probe.write_text(
+            "fn bypass(mode: BoltV3OrderExecutionMode) {\n"
+            "    let _policy = BoltV3OrderExecutionPolicy::from_mode(mode);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        try:
+            labels = {
+                violation.label
+                for violation in VERIFIER.collect_violations()
+                if violation.path == "src/rogue_registered_strategy.rs"
+            }
+        finally:
+            probe.unlink(missing_ok=True)
+
+        self.assertIn("strategy-local execution policy construction", labels)
+        self.assertIn("strategy-local execution policy type reference", labels)
+
+    def test_production_strategy_registry_rejects_outside_strategy_module_builders(
+        self,
+    ) -> None:
+        labels = {
+            violation.label
+            for violation in self.violations_for(
+                "fn production_strategy_registry() -> Result<StrategyRegistry> {\n"
+                "    registry.register::<crate::rogue_registered_strategy::RogueBuilder>()?;\n"
+                "    Ok(registry)\n"
+                "}\n",
+                path="src/strategies/mod.rs",
+            )
+        }
+
+        self.assertIn("registered strategy outside strategy module tree", labels)
 
     def test_direct_nt_mutation_allowlist_is_exactly_the_policy_module(self) -> None:
         source = """

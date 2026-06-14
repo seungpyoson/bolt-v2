@@ -22,7 +22,17 @@ use bolt_v2::{
     },
 };
 use nautilus_model::identifiers::{ClientId, InstrumentId};
-use rust_decimal_macros::dec;
+use rust_decimal::Decimal;
+
+fn decimal_literal(value: &str) -> Decimal {
+    Decimal::from_str_exact(&value.replace('_', "")).expect("decimal literal should parse")
+}
+
+macro_rules! dec {
+    ($($value:tt)+) => {
+        decimal_literal(stringify!($($value)+))
+    };
+}
 
 #[test]
 fn polymarket_normalizer_builds_three_way_neg_risk_group_from_attested_roles() {

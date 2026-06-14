@@ -38,7 +38,16 @@ use nautilus_model::{
     identifiers::{InstrumentId, Venue},
 };
 use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
+
+fn decimal_literal(value: &str) -> Decimal {
+    Decimal::from_str_exact(&value.replace('_', "")).expect("decimal literal should parse")
+}
+
+macro_rules! dec {
+    ($($value:tt)+) => {
+        decimal_literal(stringify!($($value)+))
+    };
+}
 
 #[test]
 fn basket_admission_reserves_whole_basket_records_keyed_evidence_and_releases_exposure() {

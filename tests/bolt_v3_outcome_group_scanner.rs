@@ -24,7 +24,16 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
+
+fn decimal_literal(value: &str) -> Decimal {
+    Decimal::from_str_exact(&value.replace('_', "")).expect("decimal literal should parse")
+}
+
+macro_rules! dec {
+    ($($value:tt)+) => {
+        decimal_literal(stringify!($($value)+))
+    };
+}
 
 #[test]
 fn scanner_accepts_all_true_complete_set_when_edge_exceeds_threshold() {

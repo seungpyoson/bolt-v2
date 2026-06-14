@@ -997,11 +997,7 @@ fn unknown_external_fill_updates_product_position_once_without_reservation_lifec
 fn unknown_reconciliation_fill_does_not_replay_seeded_product_position() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    let mut config = runtime_feed_config();
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
-    product.yes_position = Decimal::new(3, 0);
-    product.conditional_token_allowance = Decimal::new(3, 0);
-    let mut feed = PositionSizerRuntimeFeed::new(config, admission.clone());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
@@ -1019,8 +1015,13 @@ fn unknown_reconciliation_fill_does_not_replay_seeded_product_position() {
         .is_some()
     );
     assert!(
-        feed.seed_open_order_cache(Vec::<String>::new(), 1_000)
-            .is_some()
+        feed.seed_cache_snapshot(
+            Vec::<String>::new(),
+            Decimal::new(3, 0),
+            Decimal::ZERO,
+            1_000
+        )
+        .is_some()
     );
     rebuild_empty_position_sizer(&admission);
 

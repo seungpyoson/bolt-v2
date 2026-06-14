@@ -789,10 +789,12 @@ Evidence: implemented in `3a784abd8bbfdf7862d7dc693e15bbcd3384a2ec` with local `
 - Modify `src/bolt_v3_source_integrity.rs`
 - Test source-integrity value-stability tests in `src/bolt_v3_source_integrity.rs`
 
-- [ ] Confirm every first-slice outcome-group root exists on disk before touching `GATED_SOURCE_ROOTS`: `src/bolt_v3_outcome_groups.rs`, `src/bolt_v3_outcome_group_sources.rs`, `src/bolt_v3_outcome_group_polymarket.rs`, `src/bolt_v3_outcome_group_scanner.rs`, `src/bolt_v3_basket_admission.rs`, `src/bolt_v3_basket_execution.rs`, `src/bolt_v3_basket_store.rs`, `src/bolt_v3_archetypes/complete_set_arbitrage.rs`, and `src/strategies/complete_set_arbitrage/`. Exclude `src/bolt_v3_outcome_group_hyperliquid.rs` from this task because HIP-4 is deferred and the file is created in Task 11.
-- [ ] Add a new `OUTCOME_GROUP_KEY` entry in `GATED_SOURCE_ROOTS` for all existing first-slice outcome-group model, Polymarket normalizer, scanner, admission, execution, first consumer archetype, and concrete strategy-shell files. Do not register any root in a commit where that root does not exist.
-- [ ] Add `GOLDEN_OUTCOME_GROUP_DIGEST`, value-stability tests, exact-membership tests, and a one-byte-change test. Keep binary-oracle `STRATEGY_KEY` scope unchanged.
-- [ ] Keep `SUBMIT_ADMISSION_KEY` separate; Task 6 owns `GOLDEN_SUBMIT_ADMISSION_DIGEST` regeneration because it edits `src/bolt_v3_submit_admission.rs`.
+- [x] Confirm every first-slice outcome-group root exists on disk before touching `GATED_SOURCE_ROOTS`: `src/bolt_v3_outcome_groups.rs`, `src/bolt_v3_outcome_group_sources.rs`, `src/bolt_v3_outcome_group_polymarket.rs`, `src/bolt_v3_outcome_group_scanner.rs`, `src/bolt_v3_basket_admission.rs`, `src/bolt_v3_basket_execution.rs`, `src/bolt_v3_basket_store.rs`, `src/bolt_v3_archetypes/complete_set_arbitrage.rs`, and `src/strategies/complete_set_arbitrage/`. Exclude `src/bolt_v3_outcome_group_hyperliquid.rs` from this task because HIP-4 is deferred and the file is created in Task 11.
+- [x] Add a new `OUTCOME_GROUP_KEY` entry in `GATED_SOURCE_ROOTS` for all existing first-slice outcome-group model, Polymarket normalizer, scanner, admission, execution, first consumer archetype, and concrete strategy-shell files. Do not register any root in a commit where that root does not exist.
+- [x] Add `GOLDEN_OUTCOME_GROUP_DIGEST`, value-stability tests, exact-membership tests, and a one-byte-change test. Keep binary-oracle `STRATEGY_KEY` scope unchanged.
+- [x] Keep `SUBMIT_ADMISSION_KEY` separate; Task 6 owns `GOLDEN_SUBMIT_ADMISSION_DIGEST` regeneration because it edits `src/bolt_v3_submit_admission.rs`.
+
+Evidence: implemented in `0a0a7925fcff0417a268f31b22366b8bd964cd01` with root-existence inspection, local `cargo fmt --check`, `git diff --check`, `just fmt-check`, targeted `python3 scripts/test_verify_bolt_v3_legacy_default_fence.py`, and `just source-fence-static` passing. Exact-head remote verification passed for PR #703 at `0a0a7925fcff0417a268f31b22366b8bd964cd01`. Caveat: current `just verify-remote` did not prove that newly added integration-test targets are compiled; this limitation remains tracked for review evidence.
 
 ### Task 10: First Consumer Runtime Activation
 

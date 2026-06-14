@@ -27,9 +27,7 @@ use std::collections::BTreeSet;
 
 use rust_decimal::Decimal;
 
-use crate::{
-    bolt_v3_config::BoltV3StrategyConfig, bolt_v3_strategy_registration::StrategyRuntimeBinding,
-};
+use crate::bolt_v3_config::BoltV3StrategyConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GateRole {
@@ -58,19 +56,19 @@ pub struct ArchetypeValidationBinding {
     pub validate_strategy: fn(&str, &BoltV3StrategyConfig, Option<&Decimal>) -> Vec<String>,
 }
 
-const VALIDATION_BINDINGS: &[ArchetypeValidationBinding] = &[ArchetypeValidationBinding {
-    key: binary_oracle_edge_taker::KEY,
-    validate_strategy: binary_oracle_edge_taker::validate_strategy,
-}];
-
-const RUNTIME_BINDINGS: &[StrategyRuntimeBinding] = &[binary_oracle_edge_taker::RUNTIME_BINDING];
+const VALIDATION_BINDINGS: &[ArchetypeValidationBinding] = &[
+    ArchetypeValidationBinding {
+        key: binary_oracle_edge_taker::KEY,
+        validate_strategy: binary_oracle_edge_taker::validate_strategy,
+    },
+    ArchetypeValidationBinding {
+        key: complete_set_arbitrage::KEY,
+        validate_strategy: complete_set_arbitrage::validate_strategy,
+    },
+];
 
 pub fn validation_bindings() -> &'static [ArchetypeValidationBinding] {
     VALIDATION_BINDINGS
-}
-
-pub fn runtime_bindings() -> &'static [StrategyRuntimeBinding] {
-    RUNTIME_BINDINGS
 }
 
 pub fn validate_strategy_archetype(

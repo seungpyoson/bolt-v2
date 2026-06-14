@@ -8306,7 +8306,15 @@ kind = "string"
 literal = '''"src/bolt_v3_archetypes/complete_set_arbitrage.rs"'''
 context = '''"src/bolt_v3_archetypes/complete_set_arbitrage.rs",'''
 classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the first-consumer complete-set archetype source included in the outcome-group source set before runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+reason = '''Repo-relative root path of the first-consumer complete-set archetype source included in the outcome-group source set for runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"src/strategy_runtime_bindings.rs"'''
+context = '''"src/strategy_runtime_bindings.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the production strategy runtime binding aggregation source included in the outcome-group source set for runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
 [[allowed]]
 path = "src/source_canonicalization.rs"
@@ -8314,7 +8322,7 @@ kind = "string"
 literal = '''"src/strategies/complete_set_arbitrage"'''
 context = '''"src/strategies/complete_set_arbitrage",'''
 classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the first-consumer complete-set strategy shell directory included in the outcome-group source set before runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+reason = '''Repo-relative root path of the first-consumer complete-set strategy shell directory included in the outcome-group source set for runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
@@ -11598,3 +11606,163 @@ literal = '''"vwap_depth_limit_bps"'''
 context = '''"vwap_depth_limit_bps",'''
 classification = "source_schema_field"
 reason = "Complete-set parameters.runtime field name used for validation diagnostics; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"client_id"'''
+context = '''"client_id",'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from TOML-owned execution_client_id."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"external_order_claims"'''
+context = '''"external_order_claims",'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from TOML-owned external_order_claims."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"log_commands"'''
+context = '''insert_bool(&mut table, "log_commands", strategy.config.log_commands);'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"log_events"'''
+context = '''insert_bool(&mut table, "log_events", strategy.config.log_events);'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"log_rejected_due_post_only_as_warning"'''
+context = '''"log_rejected_due_post_only_as_warning",'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"manage_contingent_orders"'''
+context = '''"manage_contingent_orders",'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"manage_gtd_expiry"'''
+context = '''"manage_gtd_expiry",'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"manage_stop"'''
+context = '''insert_bool(&mut table, "manage_stop", strategy.config.manage_stop);'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"market_exit_interval_ms"'''
+context = '''"market_exit_interval_ms",'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"market_exit_max_attempts"'''
+context = '''"market_exit_max_attempts",'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"max_open_baskets"'''
+context = '''insert_u32(&mut table, "max_open_baskets", runtime.max_open_baskets);'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from TOML-owned complete-set runtime parameters."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"min_edge_bps"'''
+context = '''insert_i64(&mut table, "min_edge_bps", runtime.min_edge_bps);'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from TOML-owned complete-set runtime parameters."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"oms_type"'''
+context = '''"oms_type",'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"order_id_tag"'''
+context = '''"order_id_tag",'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"strategies.{strategy_instance_id} {field} cannot be represented for complete-set config: `{value}`"'''
+context = '''"strategies.{strategy_instance_id} {field} cannot be represented for complete-set config: `{value}`"'''
+classification = "validation_diagnostic_template"
+reason = "Fail-closed diagnostic for TOML-owned complete-set numeric fields that cannot be projected into the concrete runtime config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"strategy_id"'''
+context = '''insert_string(&mut table, "strategy_id", nt_strategy_id(strategy)?);'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field derived from TOML-owned archetype key and order_id_tag."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"submit_mode"'''
+context = '''insert_string(&mut table, "submit_mode", runtime.submit_mode);'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from TOML-owned complete-set runtime parameters."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"use_hyphens_in_client_order_ids"'''
+context = '''"use_hyphens_in_client_order_ids",'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
+literal = '''"use_uuid_client_order_ids"'''
+context = '''"use_uuid_client_order_ids",'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/mod.rs"
+kind = "string"
+literal = '''"ioc"'''
+context = '''const SUBMIT_MODE_IOC: &str = "ioc";'''
+classification = "source_schema_enum_value"
+reason = "Supported complete-set submit_mode value used by the concrete shell to derive the NT IOC time-in-force contract."

@@ -585,6 +585,7 @@ pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
             "src/bolt_v3_basket_execution.rs",
             "src/bolt_v3_basket_store.rs",
             "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
+            "src/strategy_runtime_bindings.rs",
             "src/strategies/complete_set_arbitrage",
         ],
     },

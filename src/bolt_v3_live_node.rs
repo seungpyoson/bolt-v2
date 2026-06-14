@@ -1881,7 +1881,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         &mut node,
         loaded,
         resolved,
-        crate::bolt_v3_archetypes::runtime_bindings(),
+        crate::strategy_runtime_bindings::runtime_bindings(),
         submit_admission.clone(),
         decision_evidence.clone(),
     )

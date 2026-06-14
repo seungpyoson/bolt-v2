@@ -285,9 +285,10 @@ mod tests {
     // GOLDEN_OUTCOME_GROUP_DIGEST is introduced by the shared outcome-group
     // substrate source-integrity task after every first-slice source root exists
     // on disk. HIP-4 remains intentionally excluded until Task 11 creates its
-    // source root.
+    // source root. Re-derived after Task 10 activated the complete-set runtime
+    // binding and production strategy shell.
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "583270bdba707d0b3ca489fa9801d446e761d90563d31157f45271c2e24e47b6";
+        "b9389e385d79d7a2a930e7f5ee4bcf42800d9570b3b07335f9ae229d9423e42f";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -439,6 +440,7 @@ mod tests {
                 "src/bolt_v3_basket_execution.rs",
                 "src/bolt_v3_basket_store.rs",
                 "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
+                "src/strategy_runtime_bindings.rs",
                 "src/strategies/complete_set_arbitrage",
             ]
         );
@@ -462,8 +464,9 @@ mod tests {
                 "src/bolt_v3_outcome_group_sources.rs".to_string(),
                 "src/bolt_v3_outcome_groups.rs".to_string(),
                 "src/strategies/complete_set_arbitrage/mod.rs".to_string(),
+                "src/strategy_runtime_bindings.rs".to_string(),
             ],
-            "Task 9 covers only existing first-slice outcome-group roots; HIP-4 joins in Task 11"
+            "Task 10 covers complete-set runtime activation roots; HIP-4 joins in Task 11"
         );
     }
 

@@ -45,6 +45,7 @@ OUTCOME_GROUP_SOURCE_ROOTS = (
     "src/bolt_v3_basket_execution.rs",
     "src/bolt_v3_basket_store.rs",
     "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
+    "src/strategy_runtime_bindings.rs",
     "src/strategies/complete_set_arbitrage",
 )
 MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024

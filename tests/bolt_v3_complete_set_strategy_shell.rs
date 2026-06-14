@@ -1,5 +1,5 @@
 use bolt_v2::{
-    bolt_v3_archetypes::{complete_set_arbitrage, runtime_bindings, validation_bindings},
+    bolt_v3_archetypes::{complete_set_arbitrage, validation_bindings},
     bolt_v3_basket_execution::{
         BoltV3BasketExecutionConfig, BoltV3BasketExecutionEvent, BoltV3BasketExecutionState,
         BoltV3BasketExecutionStatus, BoltV3BasketFillSource, BoltV3BasketRepairPolicy,
@@ -7,33 +7,34 @@ use bolt_v2::{
     },
     bolt_v3_config::BoltV3StrategyConfig,
     strategies::{complete_set_arbitrage as complete_set_strategy, production_strategy_registry},
+    strategy_runtime_bindings::runtime_bindings,
 };
 use nautilus_model::enums::{OrderType, TimeInForce};
 use rust_decimal::Decimal;
 
 #[test]
-fn complete_set_source_files_exist_but_are_not_registered_for_runtime_activation() {
+fn complete_set_source_files_are_registered_for_runtime_activation() {
     assert_eq!(complete_set_arbitrage::KEY, "complete_set_arbitrage");
     assert_eq!(complete_set_strategy::KEY, "complete_set_arbitrage");
 
     assert!(
-        !validation_bindings()
+        validation_bindings()
             .iter()
             .any(|binding| binding.key == complete_set_arbitrage::KEY),
-        "Task 8 must not activate complete_set_arbitrage validation binding"
+        "Task 10 must activate complete_set_arbitrage validation binding"
     );
     assert!(
-        !runtime_bindings()
+        runtime_bindings()
             .iter()
             .any(|binding| binding.key == complete_set_arbitrage::KEY),
-        "Task 8 must not activate complete_set_arbitrage runtime binding"
+        "Task 10 must activate complete_set_arbitrage runtime binding"
     );
     assert!(
         production_strategy_registry()
             .expect("production registry should build")
             .get(complete_set_arbitrage::KEY)
-            .is_none(),
-        "Task 8 must not register complete_set_arbitrage in production strategy registry"
+            .is_some(),
+        "Task 10 must register complete_set_arbitrage in production strategy registry"
     );
 }
 

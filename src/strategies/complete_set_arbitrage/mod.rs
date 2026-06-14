@@ -4,20 +4,53 @@
 //! Admission, venue mutation, fillability, sizing, rounding, and repair/unwind
 //! remain in shared outcome-group execution modules.
 
-use std::any::type_name;
+use std::{any::type_name, cell::RefCell, rc::Rc};
 
-use nautilus_common::messages::execution::SubmitOrderList;
-use nautilus_model::orders::OrderList;
+use anyhow::{Context, Result};
+use nautilus_common::{
+    actor::DataActor, component::Component, messages::execution::SubmitOrderList,
+};
+use nautilus_live::node::LiveNode;
+use nautilus_model::{
+    enums::{OmsType as NtOmsType, TimeInForce},
+    identifiers::{InstrumentId, StrategyId},
+    orders::OrderList,
+};
+use nautilus_system::trader::Trader;
+use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
+use rust_decimal::Decimal;
+use serde::Deserialize;
+use toml::Value;
 
 use crate::{
+    bolt_v3_archetypes::complete_set_arbitrage::raw_complete_set_config,
     bolt_v3_basket_execution::{
         BoltV3BasketExecutionError, BoltV3BasketExecutionEvent, BoltV3BasketExecutionState,
         BoltV3BasketSettlementSignal,
     },
     bolt_v3_outcome_group_sources::COMPLETE_SET_ARBITRAGE_KEY,
+    bolt_v3_providers::resolve_fee_provider,
+    bolt_v3_strategy_registration::{
+        BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
+    },
+    strategies::{
+        production_strategy_registry,
+        registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError},
+    },
 };
 
 pub const KEY: &str = COMPLETE_SET_ARBITRAGE_KEY;
+
+const CONFIG_FIELD_OMS_TYPE: &str = stringify!(oms_type);
+const WRONG_TYPE_CODE: &str = stringify!(wrong_type);
+const INVALID_CONFIG_CODE: &str = stringify!(invalid_config);
+const SUBMIT_MODE_IOC: &str = "ioc";
+
+pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
+    key: KEY,
+    strategy_kind: CompleteSetArbitrageBuilder::kind,
+    register: register_runtime_strategy,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompleteSetArbitrageShell {
@@ -43,6 +76,96 @@ pub struct CompleteSetNtSubmitContract {
     pub order_list_type: &'static str,
     pub submit_order_list_type: &'static str,
 }
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CompleteSetArbitrageConfig {
+    pub strategy_id: String,
+    pub order_id_tag: String,
+    pub oms_type: String,
+    pub use_uuid_client_order_ids: bool,
+    pub use_hyphens_in_client_order_ids: bool,
+    pub external_order_claims: Vec<String>,
+    pub manage_contingent_orders: bool,
+    pub manage_gtd_expiry: bool,
+    pub manage_stop: bool,
+    pub market_exit_interval_ms: u64,
+    pub market_exit_max_attempts: u64,
+    pub log_events: bool,
+    pub log_commands: bool,
+    pub log_rejected_due_post_only_as_warning: bool,
+    pub client_id: String,
+    pub min_edge_bps: i64,
+    pub max_basket_notional: String,
+    pub max_open_baskets: u32,
+    pub submit_mode: String,
+    pub vwap_depth_limit_bps: u64,
+    pub slippage_buffer_bps: u64,
+    pub max_repair_attempts: u32,
+    pub max_unwind_attempts: u32,
+}
+
+#[derive(Debug)]
+pub struct CompleteSetArbitrage {
+    core: StrategyCore,
+    config: CompleteSetArbitrageConfig,
+    context: StrategyBuildContext,
+    shell: CompleteSetArbitrageShell,
+}
+
+#[derive(Debug)]
+pub struct CompleteSetArbitrageBuilder;
+
+impl CompleteSetArbitrage {
+    fn new(config: CompleteSetArbitrageConfig, context: StrategyBuildContext) -> Result<Self> {
+        let oms_type = parse_configured_oms_type(CONFIG_FIELD_OMS_TYPE, &config.oms_type)?;
+        let market_exit_time_in_force = submit_mode_time_in_force(&config.submit_mode)?;
+        let external_order_claims = config
+            .external_order_claims
+            .iter()
+            .map(|instrument_id| InstrumentId::from(instrument_id.as_str()))
+            .collect::<Vec<_>>();
+        Ok(Self {
+            core: StrategyCore::new(StrategyConfig {
+                strategy_id: Some(StrategyId::from(config.strategy_id.as_str())),
+                order_id_tag: Some(config.order_id_tag.clone()),
+                use_uuid_client_order_ids: config.use_uuid_client_order_ids,
+                use_hyphens_in_client_order_ids: config.use_hyphens_in_client_order_ids,
+                oms_type: Some(oms_type),
+                external_order_claims: Some(external_order_claims),
+                manage_contingent_orders: config.manage_contingent_orders,
+                manage_gtd_expiry: config.manage_gtd_expiry,
+                manage_stop: config.manage_stop,
+                market_exit_interval_ms: config.market_exit_interval_ms,
+                market_exit_max_attempts: config.market_exit_max_attempts,
+                market_exit_time_in_force,
+                market_exit_reduce_only: false,
+                log_events: config.log_events,
+                log_commands: config.log_commands,
+                log_rejected_due_post_only_as_warning: config.log_rejected_due_post_only_as_warning,
+            }),
+            shell: CompleteSetArbitrageShell::new(config.strategy_id.clone()),
+            config,
+            context,
+        })
+    }
+
+    pub fn config(&self) -> &CompleteSetArbitrageConfig {
+        &self.config
+    }
+
+    pub fn context(&self) -> &StrategyBuildContext {
+        &self.context
+    }
+
+    pub fn shell(&self) -> &CompleteSetArbitrageShell {
+        &self.shell
+    }
+}
+
+impl DataActor for CompleteSetArbitrage {}
+
+nautilus_strategy!(CompleteSetArbitrage);
 
 impl CompleteSetArbitrageShell {
     pub fn new(strategy_id: impl Into<String>) -> Self {
@@ -84,6 +207,136 @@ impl CompleteSetArbitrageShell {
     }
 }
 
+impl CompleteSetArbitrageBuilder {
+    pub fn parse_config(raw: &Value) -> Result<CompleteSetArbitrageConfig> {
+        let config: CompleteSetArbitrageConfig = raw
+            .clone()
+            .try_into()
+            .context("complete_set_arbitrage builder requires a valid config table")?;
+        anyhow::ensure!(
+            config.min_edge_bps.is_positive(),
+            "min_edge_bps must be positive"
+        );
+        let max_basket_notional = config
+            .max_basket_notional
+            .parse::<Decimal>()
+            .context("max_basket_notional must parse as a decimal")?;
+        anyhow::ensure!(
+            max_basket_notional > Decimal::ZERO,
+            "max_basket_notional must be positive"
+        );
+        for (field, value) in [
+            (stringify!(max_open_baskets), config.max_open_baskets),
+            (stringify!(max_repair_attempts), config.max_repair_attempts),
+            (stringify!(max_unwind_attempts), config.max_unwind_attempts),
+        ] {
+            anyhow::ensure!(value > u32::MIN, "{field} must be positive");
+        }
+        for (field, value) in [
+            (
+                stringify!(vwap_depth_limit_bps),
+                config.vwap_depth_limit_bps,
+            ),
+            (stringify!(slippage_buffer_bps), config.slippage_buffer_bps),
+        ] {
+            anyhow::ensure!(value > u64::MIN, "{field} must be positive");
+        }
+        anyhow::ensure!(
+            config.submit_mode == SUBMIT_MODE_IOC,
+            "submit_mode must be `ioc`"
+        );
+        Ok(config)
+    }
+}
+
+impl StrategyBuilder for CompleteSetArbitrageBuilder {
+    fn kind() -> &'static str {
+        KEY
+    }
+
+    fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<ValidationError>) {
+        if !raw.is_table() {
+            errors.push(ValidationError {
+                field: field_prefix.to_string(),
+                code: WRONG_TYPE_CODE,
+                message: "must be a TOML table".to_string(),
+            });
+            return;
+        }
+        if let Err(error) = Self::parse_config(raw) {
+            errors.push(ValidationError {
+                field: field_prefix.to_string(),
+                code: INVALID_CONFIG_CODE,
+                message: error.to_string(),
+            });
+        }
+    }
+
+    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
+        Ok(Box::new(CompleteSetArbitrage::new(
+            Self::parse_config(raw)?,
+            context.clone(),
+        )?))
+    }
+
+    fn register(
+        raw: &Value,
+        context: &StrategyBuildContext,
+        trader: &Rc<RefCell<Trader>>,
+    ) -> Result<StrategyId> {
+        let strategy = CompleteSetArbitrage::new(Self::parse_config(raw)?, context.clone())?;
+        let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
+        trader.borrow_mut().add_strategy(strategy)?;
+        Ok(strategy_id)
+    }
+}
+
+pub fn register_runtime_strategy(
+    node: &mut LiveNode,
+    context: StrategyRegistrationContext<'_>,
+) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
+    let raw = raw_complete_set_config(context.strategy, context.loaded)
+        .map_err(|error| binding_message(&context, error.to_string()))?;
+    let fee_provider = resolve_fee_provider(
+        context.loaded,
+        context.strategy.config.execution_client_id.as_str(),
+        context.resolved,
+    )
+    .map_err(|error| binding_message(&context, error.to_string()))?;
+    let execution_client_id = context.strategy.config.execution_client_id.as_str();
+    let execution_venue = context
+        .loaded
+        .root
+        .clients
+        .get(execution_client_id)
+        .map(|client| client.venue)
+        .ok_or_else(|| {
+            binding_message(
+                &context,
+                format!(
+                    "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
+                ),
+            )
+        })?;
+    let build_context = StrategyBuildContext::new(
+        fee_provider,
+        context.decision_evidence.clone(),
+        context.submit_admission.clone(),
+        execution_venue,
+    )
+    .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());
+    let registry = production_strategy_registry()
+        .map_err(|error| binding_message(&context, error.to_string()))?;
+    registry
+        .register_strategy(
+            context.strategy_kind,
+            &raw,
+            &build_context,
+            node.kernel().trader(),
+        )
+        .map_err(|error| binding_message(&context, error.to_string()))
+}
+
 pub fn nt_submit_contract() -> CompleteSetNtSubmitContract {
     CompleteSetNtSubmitContract {
         order_list_type: type_name::<OrderList>(),
@@ -101,4 +354,33 @@ pub fn forward_settlement_signal(
     basket.apply_event(BoltV3BasketExecutionEvent::SettlementSignal(
         BoltV3BasketSettlementSignal::LiveSettlementRejectedUntilReachableNtSignal,
     ))
+}
+
+fn parse_configured_oms_type(field: &str, value: &str) -> Result<NtOmsType> {
+    value
+        .parse::<NtOmsType>()
+        .with_context(|| format!("{field} must be a NautilusTrader OmsType, got `{value}`"))
+}
+
+fn submit_mode_time_in_force(value: &str) -> Result<TimeInForce> {
+    match value {
+        SUBMIT_MODE_IOC => Ok(TimeInForce::Ioc),
+        _ => anyhow::bail!("submit_mode must be `ioc`"),
+    }
+}
+
+fn binding_message(
+    context: &StrategyRegistrationContext<'_>,
+    message: String,
+) -> BoltV3StrategyRegistrationError {
+    BoltV3StrategyRegistrationError::Binding {
+        strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
+        strategy_archetype: context
+            .strategy
+            .config
+            .strategy_archetype
+            .as_str()
+            .to_string(),
+        message,
+    }
 }

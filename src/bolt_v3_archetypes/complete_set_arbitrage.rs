@@ -1,18 +1,20 @@
 //! Strategy-archetype contract for the first outcome-group consumer.
 //!
-//! This module is intentionally source-only in this task. It declares the
-//! complete-set validation and NT order-template contract, but it is not added
-//! to the production validation/runtime binding arrays until the later runtime
-//! activation task.
+//! This module owns the complete-set validation and raw NT strategy config
+//! mapping. Builder registration stays in the strategy layer.
 
 use std::collections::BTreeSet;
 
-use nautilus_model::enums::{OrderType, TimeInForce};
+use nautilus_model::{
+    enums::{OrderType, TimeInForce},
+    identifiers::StrategyId,
+};
 use rust_decimal::Decimal;
+use toml::{Value, map::Map};
 
 use crate::{
-    bolt_v3_archetypes::ArchetypeGateRequirement,
-    bolt_v3_config::BoltV3StrategyConfig,
+    bolt_v3_archetypes::{ArchetypeGateRequirement, ArchetypeValidationBinding},
+    bolt_v3_config::{BoltV3StrategyConfig, LoadedBoltV3Config, LoadedStrategy},
     bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config},
     bolt_v3_outcome_group_sources::{
         COMPLETE_SET_ARBITRAGE_KEY, CompleteSetArbitrageParametersBlock,
@@ -20,6 +22,13 @@ use crate::{
 };
 
 pub const KEY: &str = COMPLETE_SET_ARBITRAGE_KEY;
+
+pub fn validation_binding() -> ArchetypeValidationBinding {
+    ArchetypeValidationBinding {
+        key: KEY,
+        validate_strategy,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompleteSetSubmitMode {
@@ -195,6 +204,205 @@ pub fn validate_strategy(
     errors
 }
 
+#[derive(Debug)]
+pub enum CompleteSetArbitrageRuntimeConfigError {
+    WrongArchetype {
+        expected: &'static str,
+        actual: String,
+    },
+    Parameters {
+        strategy_instance_id: String,
+        message: String,
+    },
+    Client {
+        strategy_instance_id: String,
+        message: String,
+    },
+    Numeric {
+        strategy_instance_id: String,
+        field: &'static str,
+        value: String,
+    },
+    StrategyId {
+        strategy_instance_id: String,
+        value: String,
+        message: String,
+    },
+}
+
+impl std::fmt::Display for CompleteSetArbitrageRuntimeConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WrongArchetype { expected, actual } => {
+                write!(
+                    f,
+                    "expected strategy archetype `{expected}`, got `{actual}`"
+                )
+            }
+            Self::Parameters {
+                strategy_instance_id,
+                message,
+            } => write!(
+                f,
+                "strategies.{strategy_instance_id} parameters are invalid: {message}"
+            ),
+            Self::Client {
+                strategy_instance_id,
+                message,
+            } => write!(
+                f,
+                "strategies.{strategy_instance_id} client binding is invalid: {message}"
+            ),
+            Self::Numeric {
+                strategy_instance_id,
+                field,
+                value,
+            } => write!(
+                f,
+                "strategies.{strategy_instance_id} {field} cannot be represented for complete-set config: `{value}`"
+            ),
+            Self::StrategyId {
+                strategy_instance_id,
+                value,
+                message,
+            } => write!(
+                f,
+                "strategies.{strategy_instance_id} maps to invalid NT StrategyId `{value}`: {message}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CompleteSetArbitrageRuntimeConfigError {}
+
+pub fn raw_complete_set_config(
+    strategy: &LoadedStrategy,
+    loaded: &LoadedBoltV3Config,
+) -> Result<Value, CompleteSetArbitrageRuntimeConfigError> {
+    if strategy.config.strategy_archetype.as_str() != KEY {
+        return Err(CompleteSetArbitrageRuntimeConfigError::WrongArchetype {
+            expected: KEY,
+            actual: strategy.config.strategy_archetype.as_str().to_string(),
+        });
+    }
+
+    loaded
+        .root
+        .clients
+        .get(strategy.config.execution_client_id.as_str())
+        .ok_or_else(|| CompleteSetArbitrageRuntimeConfigError::Client {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: format!(
+                "execution_client_id `{}` is not present in loaded clients",
+                strategy.config.execution_client_id
+            ),
+        })?;
+
+    let parameters = parse_parameters(&strategy.config.parameters).map_err(|message| {
+        CompleteSetArbitrageRuntimeConfigError::Parameters {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message,
+        }
+    })?;
+    let runtime = parameters.runtime;
+    let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
+
+    let mut table = Map::new();
+    insert_string(&mut table, "strategy_id", nt_strategy_id(strategy)?);
+    insert_string(
+        &mut table,
+        "order_id_tag",
+        strategy.config.order_id_tag.clone(),
+    );
+    insert_string(
+        &mut table,
+        "oms_type",
+        enum_variant_lowercase(strategy.config.oms_type),
+    );
+    insert_bool(
+        &mut table,
+        "use_uuid_client_order_ids",
+        strategy.config.use_uuid_client_order_ids,
+    );
+    insert_bool(
+        &mut table,
+        "use_hyphens_in_client_order_ids",
+        strategy.config.use_hyphens_in_client_order_ids,
+    );
+    insert_string_array(
+        &mut table,
+        "external_order_claims",
+        &strategy.config.external_order_claims,
+    );
+    insert_bool(
+        &mut table,
+        "manage_contingent_orders",
+        strategy.config.manage_contingent_orders,
+    );
+    insert_bool(
+        &mut table,
+        "manage_gtd_expiry",
+        strategy.config.manage_gtd_expiry,
+    );
+    insert_bool(&mut table, "manage_stop", strategy.config.manage_stop);
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "market_exit_interval_ms",
+        strategy.config.market_exit_interval_ms,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "market_exit_max_attempts",
+        strategy.config.market_exit_max_attempts,
+    )?;
+    insert_bool(&mut table, "log_events", strategy.config.log_events);
+    insert_bool(&mut table, "log_commands", strategy.config.log_commands);
+    insert_bool(
+        &mut table,
+        "log_rejected_due_post_only_as_warning",
+        strategy.config.log_rejected_due_post_only_as_warning,
+    );
+    insert_string(
+        &mut table,
+        "client_id",
+        strategy.config.execution_client_id.to_string(),
+    );
+    insert_i64(&mut table, "min_edge_bps", runtime.min_edge_bps);
+    insert_string(
+        &mut table,
+        "max_basket_notional",
+        runtime.max_basket_notional,
+    );
+    insert_u32(&mut table, "max_open_baskets", runtime.max_open_baskets);
+    insert_string(&mut table, "submit_mode", runtime.submit_mode);
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "vwap_depth_limit_bps",
+        runtime.vwap_depth_limit_bps,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "slippage_buffer_bps",
+        runtime.slippage_buffer_bps,
+    )?;
+    insert_u32(
+        &mut table,
+        "max_repair_attempts",
+        runtime.max_repair_attempts,
+    );
+    insert_u32(
+        &mut table,
+        "max_unwind_attempts",
+        runtime.max_unwind_attempts,
+    );
+
+    Ok(Value::Table(table))
+}
+
 impl CompleteSetSubmitMode {
     fn from_config(value: &str) -> Option<Self> {
         match value {
@@ -211,4 +419,63 @@ fn parse_parameters(
         .clone()
         .try_into::<CompleteSetArbitrageParametersBlock>()
         .map_err(|error| error.to_string())
+}
+
+fn nt_strategy_id(
+    strategy: &LoadedStrategy,
+) -> Result<String, CompleteSetArbitrageRuntimeConfigError> {
+    let mut value = strategy.config.strategy_archetype.as_str().to_string();
+    value.push('-');
+    value.push_str(&strategy.config.order_id_tag);
+    StrategyId::new_checked(&value).map_err(|error| {
+        CompleteSetArbitrageRuntimeConfigError::StrategyId {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            value: value.clone(),
+            message: error.to_string(),
+        }
+    })?;
+    Ok(value)
+}
+
+fn enum_variant_lowercase<T: std::fmt::Display>(value: T) -> String {
+    value.to_string().to_ascii_lowercase()
+}
+
+fn insert_string(table: &mut Map<String, Value>, key: &'static str, value: String) {
+    table.insert(key.to_string(), Value::String(value));
+}
+
+fn insert_bool(table: &mut Map<String, Value>, key: &'static str, value: bool) {
+    table.insert(key.to_string(), Value::Boolean(value));
+}
+
+fn insert_string_array(table: &mut Map<String, Value>, key: &'static str, values: &[String]) {
+    table.insert(
+        key.to_string(),
+        Value::Array(values.iter().cloned().map(Value::String).collect()),
+    );
+}
+
+fn insert_i64(table: &mut Map<String, Value>, key: &'static str, value: i64) {
+    table.insert(key.to_string(), Value::Integer(value));
+}
+
+fn insert_u32(table: &mut Map<String, Value>, key: &'static str, value: u32) {
+    table.insert(key.to_string(), Value::Integer(i64::from(value)));
+}
+
+fn insert_u64(
+    table: &mut Map<String, Value>,
+    strategy_instance_id: &str,
+    key: &'static str,
+    value: u64,
+) -> Result<(), CompleteSetArbitrageRuntimeConfigError> {
+    let converted =
+        i64::try_from(value).map_err(|_| CompleteSetArbitrageRuntimeConfigError::Numeric {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            field: key,
+            value: value.to_string(),
+        })?;
+    table.insert(key.to_string(), Value::Integer(converted));
+    Ok(())
 }

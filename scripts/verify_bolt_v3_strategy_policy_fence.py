@@ -34,6 +34,14 @@ class Violation:
 
 
 NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
+    # Raw StrategyCore / OrderManager command transport is the deepest NT
+    # mutation path underneath the Strategy helper methods.
+    "core_mut",
+    "order_manager",
+    "send_risk_command",
+    "send_exec_command",
+    "send_emulator_command",
+    "send_algo_command",
     # Current pinned NautilusTrader Strategy venue-mutation methods.
     "submit_order",
     "submit_order_list",
@@ -54,6 +62,16 @@ NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
     "cancel_orders_with_params",
     "cancel_all_orders_with_params",
     "modify_order_in_place",
+    # NT-managed lifecycle helpers that can transitively submit/cancel through
+    # StrategyCore or OrderManager.
+    "expire_gtd_order",
+    "reactivate_gtd_timers",
+    "set_gtd_expiry",
+    "cancel_gtd_expiry",
+    "finalize_market_exit",
+    "cancel_market_exit",
+    "deny_order",
+    "deny_order_list",
 )
 
 NT_VENUE_MUTATION_METHOD_PATTERN = "|".join(
@@ -132,6 +150,10 @@ STRATEGY_POLICY_RULES: tuple[Rule, ...] = (
         ),
     ),
     Rule(
+        "strategy-local execution policy type reference",
+        re.compile(r"\bBoltV3OrderExecution(?:Policy|Mode)\b"),
+    ),
+    Rule(
         "strategy-local execution policy override",
         re.compile(r"\.with_order_execution_policy\s*\("),
     ),
@@ -145,6 +167,20 @@ FORBIDDEN_RULES: tuple[Rule, ...] = (
 ALLOWED_DIRECT_NT_MUTATION_PATHS = frozenset(
     {
         "src/bolt_v3_order_execution.rs",
+    }
+)
+
+ALLOWED_STRATEGY_POLICY_TYPE_REFERENCE_PATHS = frozenset(
+    {
+        "src/bolt_v3_order_execution.rs",
+        "src/strategies/registry.rs",
+    }
+)
+
+STRATEGY_ROOT_POLICY_EXEMPT_PATHS = frozenset(
+    {
+        "src/strategies/mod.rs",
+        "src/strategies/registry.rs",
     }
 )
 
@@ -186,6 +222,48 @@ def source_files_for_mutation_fence() -> list:
     return production_rust_files_under("src")
 
 
+def gated_strategy_source_root_names() -> set[str]:
+    return {
+        relative_root
+        for relative_root in STRATEGY_SOURCE_ROOTS
+        if relative_root.startswith("src/strategies/")
+    }
+
+
+def production_strategy_source_root_for(path) -> str | None:
+    relative = path.relative_to(REPO_ROOT).as_posix()
+    if relative in STRATEGY_ROOT_POLICY_EXEMPT_PATHS:
+        return None
+    parts = relative.split("/")
+    if len(parts) < 3 or parts[0] != "src" or parts[1] != "strategies":
+        return None
+    if len(parts) == 3:
+        return relative
+    return "/".join(parts[:3])
+
+
+def ungated_production_strategy_source_roots() -> list[str]:
+    gated_roots = gated_strategy_source_root_names()
+    roots = {
+        root
+        for path in production_rust_files_under("src/strategies")
+        if (root := production_strategy_source_root_for(path)) is not None
+    }
+    return sorted(root for root in roots if root not in gated_roots)
+
+
+def collect_strategy_source_root_violations() -> list[Violation]:
+    return [
+        Violation(
+            path=root,
+            line=1,
+            label="ungated production strategy source root",
+            excerpt=f"{root} is not listed in STRATEGY_SOURCE_ROOTS",
+        )
+        for root in ungated_production_strategy_source_roots()
+    ]
+
+
 def find_violations_in_text(
     path: str, text: str, rules: tuple[Rule, ...] = FORBIDDEN_RULES
 ) -> list[Violation]:
@@ -194,6 +272,11 @@ def find_violations_in_text(
         if (
             rule.label == "direct NT venue mutation call"
             and path in ALLOWED_DIRECT_NT_MUTATION_PATHS
+        ):
+            continue
+        if (
+            rule.label == "strategy-local execution policy type reference"
+            and path in ALLOWED_STRATEGY_POLICY_TYPE_REFERENCE_PATHS
         ):
             continue
         for match in rule.pattern.finditer(text):
@@ -213,7 +296,7 @@ def find_violations_in_text(
 
 
 def collect_violations() -> list[Violation]:
-    violations: list[Violation] = []
+    violations: list[Violation] = collect_strategy_source_root_violations()
     for path in source_files_for_strategy_policy_fence():
         rel = str(path.relative_to(REPO_ROOT))
         violations.extend(

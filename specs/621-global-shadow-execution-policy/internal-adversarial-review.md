@@ -151,3 +151,36 @@ The direct NT mutation qualifier regex now accepts ordinary Rust identifier/path
 
 - Red verification: the two new tests failed before the verifier change.
 - Green verification: `python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py` and `python3 scripts/verify_bolt_v3_strategy_policy_fence.py` passed after the fix.
+
+---
+
+## Final External Review Follow-up Disposition
+
+**Reviewer**: External final-review synthesis
+**Date**: 2026-06-14
+**Trigger**: Final review against exact PR head `f26e09b6ea4c4fa5fb90903b7b9de0410b83fd4b` found command-transport and policy-alias fence gaps.
+
+### Findings Disposition
+
+#### H4 - NT OrderManager command transport bypass was not fenced
+
+**Status**: Fixed in implementation follow-up
+
+The direct NT mutation fence now covers raw `StrategyCore` / `OrderManager` command transport names: `core_mut`, `order_manager`, `send_risk_command`, `send_exec_command`, `send_emulator_command`, and `send_algo_command`. It also fences adjacent NT-managed lifecycle helpers that can transitively submit/cancel through NT core: GTD expiry helpers, market-exit finalization/cancel helpers, and deny-order helpers.
+
+#### H5 - Strategy-local execution policy aliases and method pointers were not fenced
+
+**Status**: Fixed in implementation follow-up
+
+Strategy source now rejects any direct `BoltV3OrderExecutionPolicy` or `BoltV3OrderExecutionMode` type reference outside the shared policy module and `StrategyBuildContext` registry owner. This catches aliases, type aliases, constructor method pointers, and direct enum access instead of only literal constructor calls.
+
+#### H6 - Future strategy source roots were not required to be source-integrity gated
+
+**Status**: Fixed in implementation follow-up
+
+The strategy policy fence now fails any production strategy source root under `src/strategies/*` that is not listed in `STRATEGY_SOURCE_ROOTS`. This forces future strategy roots under the same source-integrity/tamper-evidence registry before they can enter the tree.
+
+### Checks
+
+- Red verification: command transport, policy alias/method pointer, and ungated strategy-root tests failed before the verifier change.
+- Green verification: `python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py` now runs 18 tests and passes; `python3 scripts/verify_bolt_v3_strategy_policy_fence.py` passes at the branch head.

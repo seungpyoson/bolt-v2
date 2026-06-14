@@ -176,6 +176,32 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             "nearby mutation method variants must be fenced before a future NT bump can use them",
         )
 
+    def test_detects_nt_command_transport_and_managed_lifecycle_mutation_paths(self) -> None:
+        direct_violations = self.direct_nt_violations_for(
+            """
+            self.core_mut();
+            self.core_mut().order_manager().send_risk_command(command);
+            self.core_mut().order_manager().send_exec_command(command);
+            self.core_mut().order_manager().send_emulator_command(command);
+            self.core_mut().order_manager().send_algo_command(command);
+            StrategyCore::order_manager(core);
+            self.expire_gtd_order(event);
+            self.reactivate_gtd_timers();
+            self.set_gtd_expiry(client_order_id, expiry);
+            self.cancel_gtd_expiry(client_order_id);
+            self.finalize_market_exit(position_id);
+            self.cancel_market_exit(position_id);
+            self.deny_order(order);
+            self.deny_order_list(order_list);
+            """
+        )
+
+        self.assertEqual(
+            len(direct_violations),
+            22,
+            "raw command transport and NT-managed lifecycle helpers must be fenced",
+        )
+
     def test_detects_strategy_local_execution_policy_construction(self) -> None:
         labels = self.labels_for(
             """
@@ -188,6 +214,21 @@ class StrategyPolicyFenceTests(unittest.TestCase):
 
         self.assertIn("strategy-local execution policy construction", labels)
         self.assertIn("strategy-local execution policy override", labels)
+
+    def test_detects_strategy_local_execution_policy_aliases_and_method_pointers(
+        self,
+    ) -> None:
+        labels = self.labels_for(
+            """
+            use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy as P;
+            type PolicyAlias = BoltV3OrderExecutionPolicy;
+            let make_live = P::live;
+            let _policy = make_live();
+            let _mode = BoltV3OrderExecutionMode::Live;
+            """
+        )
+
+        self.assertIn("strategy-local execution policy type reference", labels)
 
     def test_direct_nt_mutation_allowlist_is_exactly_the_policy_module(self) -> None:
         source = """
@@ -237,11 +278,33 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         finally:
             probe.unlink(missing_ok=True)
 
-        self.assertEqual(
+        self.assertIn(
+            "strategy-local execution policy construction",
             [violation.label for violation in violations],
-            ["strategy-local execution policy construction"],
             "future strategy modules must not escape strategy-policy rules",
         )
+
+    def test_strategy_source_roots_must_be_digest_gated(self) -> None:
+        probe_dir = VERIFIER.REPO_ROOT / "src/strategies/__digest_probe"
+        probe = probe_dir / "mod.rs"
+        probe_dir.mkdir()
+        probe.write_text("pub struct ProbeStrategy;\n", encoding="utf-8")
+        try:
+            violations = [
+                violation
+                for violation in VERIFIER.collect_violations()
+                if violation.path == "src/strategies/__digest_probe"
+            ]
+        finally:
+            probe.unlink(missing_ok=True)
+            probe_dir.rmdir()
+
+        self.assertEqual(
+            [violation.label for violation in violations],
+            ["ungated production strategy source root"],
+            "every production strategy source root must be covered by gated source integrity",
+        )
+
 
     def test_shared_policy_does_not_blanket_impl_raw_sink_for_every_strategy(self) -> None:
         source = (VERIFIER.REPO_ROOT / "src/bolt_v3_order_execution.rs").read_text(

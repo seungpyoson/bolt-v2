@@ -1,0 +1,2956 @@
+[[surfaces]]
+surface_id = "nt.model.option_greeks"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "OptionGreeks"
+matched_terms = ["option", "greeks"]
+seed_family = "model_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.model.option_chain_slice"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "OptionChainSlice"
+matched_terms = ["option", "chain"]
+seed_family = "model_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.data.actor.subscribe_option_greeks"
+evidence_path = "crates/data/src/client.rs"
+symbol = "subscribe_option_greeks"
+matched_terms = ["option", "greeks"]
+seed_family = "data_actor_subscription"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.data.engine.publish_option_chain_slice"
+evidence_path = "crates/data/src/engine/option_publications.rs"
+symbol = "publish_option_chain_slice"
+matched_terms = ["option", "chain"]
+seed_family = "data_engine_publication"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.common.msgbus.option_greeks_topic"
+evidence_path = "crates/common/src/msgbus/option_topics.rs"
+symbol = "option_greeks_topic"
+matched_terms = ["option", "greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.data.option_chains.option_chain_aggregator"
+evidence_path = "crates/data/src/option_chains/mod.rs"
+symbol = "OptionChainAggregator"
+matched_terms = ["option", "chain"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.model.greeks.black_scholes_greeks_result"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "BlackScholesGreeksResult"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.adapters.option_greeks_subscription"
+evidence_path = "crates/adapters/generic/src/data.rs"
+symbol = "subscribe_option_greeks_for_adapter"
+matched_terms = ["option", "greeks"]
+seed_family = "adapter"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.model.custom_data_registration"
+evidence_path = "crates/model/src/data/custom.rs"
+symbol = "register_custom_data"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.actor.data_actor.subscribe_option_chain"
+evidence_path = "crates/common/src/actor/data_actor.rs"
+symbol = "subscribe_option_chain"
+matched_terms = ["chain", "option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.actor.data_actor.subscribe_option_greeks"
+evidence_path = "crates/common/src/actor/data_actor.rs"
+symbol = "subscribe_option_greeks"
+matched_terms = ["greeks", "option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.actor.data_actor.unsubscribe_option_chain"
+evidence_path = "crates/common/src/actor/data_actor.rs"
+symbol = "unsubscribe_option_chain"
+matched_terms = ["chain", "option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.actor.data_actor.unsubscribe_option_greeks"
+evidence_path = "crates/common/src/actor/data_actor.rs"
+symbol = "unsubscribe_option_greeks"
+matched_terms = ["greeks", "option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.cache.mod.add_greeks"
+evidence_path = "crates/common/src/cache/mod.rs"
+symbol = "add_greeks"
+matched_terms = ["greeks"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.cache.mod.add_option_greeks"
+evidence_path = "crates/common/src/cache/mod.rs"
+symbol = "add_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.cache.mod.greeks"
+evidence_path = "crates/common/src/cache/mod.rs"
+symbol = "greeks"
+matched_terms = ["greeks"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.cache.mod.instruments_by_parent"
+evidence_path = "crates/common/src/cache/mod.rs"
+symbol = "instruments_by_parent"
+matched_terms = ["option", "options"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.cache.mod.option_greeks"
+evidence_path = "crates/common/src/cache/mod.rs"
+symbol = "option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.cache_futures_spread"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "cache_futures_spread"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.calculate"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "calculate"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.call"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "call"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.from_closure"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "from_closure"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.from_fn"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "from_fn"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.get_cached_futures_spread_price"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "get_cached_futures_spread_price"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.greeks_calculator"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "GreeksCalculator"
+matched_terms = ["expiry", "greeks", "implied", "option", "options", "volatility"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.greeks_filter"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "GreeksFilter"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.greeks_filter_callback"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "GreeksFilterCallback"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.instrument_greeks"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "instrument_greeks"
+matched_terms = ["expiry", "greeks", "implied", "option", "volatility"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.instrument_greeks_params"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "InstrumentGreeksParams"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.modify_greeks"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "modify_greeks"
+matched_terms = ["greeks", "implied", "option", "vol", "volatility"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.new"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "new"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.portfolio_greeks"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "portfolio_greeks"
+matched_terms = ["expiry", "greeks", "implied", "volatility"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.portfolio_greeks_params"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "PortfolioGreeksParams"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.subscribe_greeks"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "subscribe_greeks"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.greeks.to_greeks_filter"
+evidence_path = "crates/common/src/greeks.rs"
+symbol = "to_greeks_filter"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.lib.greeks"
+evidence_path = "crates/common/src/lib.rs"
+symbol = "greeks"
+matched_terms = ["greeks"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.messages.data.subscribe.new"
+evidence_path = "crates/common/src/messages/data/subscribe.rs"
+symbol = "new"
+matched_terms = ["greeks"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.messages.data.subscribe.subscribe_option_greeks"
+evidence_path = "crates/common/src/messages/data/subscribe.rs"
+symbol = "SubscribeOptionGreeks"
+matched_terms = ["greeks"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.messages.data.subscribe.subscribe_option_chain"
+evidence_path = "crates/common/src/messages/data/subscribe.rs"
+symbol = "SubscribeOptionChain"
+matched_terms = ["chain", "option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.messages.data.unsubscribe.new"
+evidence_path = "crates/common/src/messages/data/unsubscribe.rs"
+symbol = "new"
+matched_terms = ["greeks"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.messages.data.unsubscribe.unsubscribe_option_greeks"
+evidence_path = "crates/common/src/messages/data/unsubscribe.rs"
+symbol = "UnsubscribeOptionGreeks"
+matched_terms = ["greeks"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.messages.data.unsubscribe.unsubscribe_option_chain"
+evidence_path = "crates/common/src/messages/data/unsubscribe.rs"
+symbol = "UnsubscribeOptionChain"
+matched_terms = ["chain", "option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.switchboard.reconciliation_raw_order_status_report_topic"
+evidence_path = "crates/common/src/msgbus/switchboard.rs"
+symbol = "reconciliation_raw_order_status_report_topic"
+matched_terms = ["surface"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.switchboard.reconciliation_raw_fill_report_topic"
+evidence_path = "crates/common/src/msgbus/switchboard.rs"
+symbol = "reconciliation_raw_fill_report_topic"
+matched_terms = ["surface"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.switchboard.reconciliation_raw_position_status_report_topic"
+evidence_path = "crates/common/src/msgbus/switchboard.rs"
+symbol = "reconciliation_raw_position_status_report_topic"
+matched_terms = ["surface"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.api.exact_subscriber_count_option_greeks"
+evidence_path = "crates/common/src/msgbus/api.rs"
+symbol = "exact_subscriber_count_option_greeks"
+matched_terms = ["greeks", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.api.publish_greeks"
+evidence_path = "crates/common/src/msgbus/api.rs"
+symbol = "publish_greeks"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.api.publish_option_chain"
+evidence_path = "crates/common/src/msgbus/api.rs"
+symbol = "publish_option_chain"
+matched_terms = ["chain", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.api.publish_option_greeks"
+evidence_path = "crates/common/src/msgbus/api.rs"
+symbol = "publish_option_greeks"
+matched_terms = ["greeks", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.api.subscribe_greeks"
+evidence_path = "crates/common/src/msgbus/api.rs"
+symbol = "subscribe_greeks"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.api.subscribe_option_chain"
+evidence_path = "crates/common/src/msgbus/api.rs"
+symbol = "subscribe_option_chain"
+matched_terms = ["chain", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.api.subscribe_option_greeks"
+evidence_path = "crates/common/src/msgbus/api.rs"
+symbol = "subscribe_option_greeks"
+matched_terms = ["greeks", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.api.unsubscribe_greeks"
+evidence_path = "crates/common/src/msgbus/api.rs"
+symbol = "unsubscribe_greeks"
+matched_terms = ["greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.api.unsubscribe_option_chain"
+evidence_path = "crates/common/src/msgbus/api.rs"
+symbol = "unsubscribe_option_chain"
+matched_terms = ["chain", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.api.unsubscribe_option_greeks"
+evidence_path = "crates/common/src/msgbus/api.rs"
+symbol = "unsubscribe_option_greeks"
+matched_terms = ["greeks", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.aggregation.map_vega_provider"
+evidence_path = "crates/data/src/aggregation.rs"
+symbol = "MapVegaProvider"
+matched_terms = ["greeks"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.aggregation.set_historical_mode"
+evidence_path = "crates/data/src/aggregation.rs"
+symbol = "set_historical_mode"
+matched_terms = ["greeks"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.aggregation.vega_provider"
+evidence_path = "crates/data/src/aggregation.rs"
+symbol = "VegaProvider"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.client.subscribe"
+evidence_path = "crates/data/src/client.rs"
+symbol = "subscribe"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.client.unsubscribe"
+evidence_path = "crates/data/src/client.rs"
+symbol = "unsubscribe"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.engine.mod.has_option_chain_manager"
+evidence_path = "crates/data/src/engine/mod.rs"
+symbol = "has_option_chain_manager"
+matched_terms = ["chain", "option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.engine.mod.pending_option_chain_request_count"
+evidence_path = "crates/data/src/engine/mod.rs"
+symbol = "pending_option_chain_request_count"
+matched_terms = ["chain", "option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.engine.mod.process"
+evidence_path = "crates/data/src/engine/mod.rs"
+symbol = "process"
+matched_terms = ["custom data", "greeks", "option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.engine.mod.process_pipeline"
+evidence_path = "crates/data/src/engine/mod.rs"
+symbol = "process_pipeline"
+matched_terms = ["chain", "expiry", "option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.engine.mod.subscribed_custom_data"
+evidence_path = "crates/data/src/engine/mod.rs"
+symbol = "subscribed_custom_data"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.lib.option_chains"
+evidence_path = "crates/data/src/lib.rs"
+symbol = "option_chains"
+matched_terms = ["chain", "option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.active_ids"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "active_ids"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.add_instrument"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "add_instrument"
+matched_terms = ["chain", "option", "strike"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.all_instrument_ids"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "all_instrument_ids"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.apply_rebalance"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "apply_rebalance"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.atm_tracker"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "atm_tracker"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.atm_tracker_mut"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "atm_tracker_mut"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.check_rebalance"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "check_rebalance"
+matched_terms = ["chain", "option", "strike"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.instrument_ids"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "instrument_ids"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.instruments"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "instruments"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.is_buffer_empty"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "is_buffer_empty"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.is_catalog_empty"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "is_catalog_empty"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.is_expired"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "is_expired"
+matched_terms = ["chain", "expiration", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.new"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "new"
+matched_terms = ["chain", "option", "strike"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.option_chain_aggregator"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "OptionChainAggregator"
+matched_terms = ["chain", "greeks", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.rebalance_action"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "RebalanceAction"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.recompute_active_set"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "recompute_active_set"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.remove_instrument"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "remove_instrument"
+matched_terms = ["chain", "greeks", "option", "strike"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.series_id"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "series_id"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.snapshot"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "snapshot"
+matched_terms = ["chain", "option", "strike"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.update_greeks"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "update_greeks"
+matched_terms = ["chain", "greeks", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.aggregator.update_quote"
+evidence_path = "crates/data/src/option_chains/aggregator.rs"
+symbol = "update_quote"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.atm_tracker.atm_price"
+evidence_path = "crates/data/src/option_chains/atm_tracker.rs"
+symbol = "atm_price"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.atm_tracker.atm_tracker"
+evidence_path = "crates/data/src/option_chains/atm_tracker.rs"
+symbol = "AtmTracker"
+matched_terms = ["chain", "greeks", "option", "strike"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.atm_tracker.new"
+evidence_path = "crates/data/src/option_chains/atm_tracker.rs"
+symbol = "new"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.atm_tracker.set_forward_precision"
+evidence_path = "crates/data/src/option_chains/atm_tracker.rs"
+symbol = "set_forward_precision"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.atm_tracker.set_initial_price"
+evidence_path = "crates/data/src/option_chains/atm_tracker.rs"
+symbol = "set_initial_price"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.atm_tracker.update_from_option_greeks"
+evidence_path = "crates/data/src/option_chains/atm_tracker.rs"
+symbol = "update_from_option_greeks"
+matched_terms = ["chain", "expiry", "greeks", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.constants.d_e_f_a_u_l_t__r_e_b_a_l_a_n_c_e__c_o_o_l_d_o_w_n__n_s"
+evidence_path = "crates/data/src/option_chains/constants.rs"
+symbol = "DEFAULT_REBALANCE_COOLDOWN_NS"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.constants.d_e_f_a_u_l_t__r_e_b_a_l_a_n_c_e__h_y_s_t_e_r_e_s_i_s"
+evidence_path = "crates/data/src/option_chains/constants.rs"
+symbol = "DEFAULT_REBALANCE_HYSTERESIS"
+matched_terms = ["chain", "option", "strike"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.handlers.new"
+evidence_path = "crates/data/src/option_chains/handlers.rs"
+symbol = "new"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.handlers.option_chain_greeks_handler"
+evidence_path = "crates/data/src/option_chains/handlers.rs"
+symbol = "OptionChainGreeksHandler"
+matched_terms = ["chain", "greeks", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.handlers.option_chain_quote_handler"
+evidence_path = "crates/data/src/option_chains/handlers.rs"
+symbol = "OptionChainQuoteHandler"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.handlers.option_chain_slice_publisher"
+evidence_path = "crates/data/src/option_chains/handlers.rs"
+symbol = "OptionChainSlicePublisher"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.handlers.publish"
+evidence_path = "crates/data/src/option_chains/handlers.rs"
+symbol = "publish"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.manager.add_instrument"
+evidence_path = "crates/data/src/option_chains/manager.rs"
+symbol = "add_instrument"
+matched_terms = ["chain", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.manager.all_instrument_ids"
+evidence_path = "crates/data/src/option_chains/manager.rs"
+symbol = "all_instrument_ids"
+matched_terms = ["chain", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.manager.handle_greeks"
+evidence_path = "crates/data/src/option_chains/manager.rs"
+symbol = "handle_greeks"
+matched_terms = ["chain", "greeks", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.manager.handle_instrument_expired"
+evidence_path = "crates/data/src/option_chains/manager.rs"
+symbol = "handle_instrument_expired"
+matched_terms = ["chain", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.manager.handle_quote"
+evidence_path = "crates/data/src/option_chains/manager.rs"
+symbol = "handle_quote"
+matched_terms = ["chain", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.manager.option_chain_manager"
+evidence_path = "crates/data/src/option_chains/manager.rs"
+symbol = "OptionChainManager"
+matched_terms = ["chain", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.manager.publish_slice"
+evidence_path = "crates/data/src/option_chains/manager.rs"
+symbol = "publish_slice"
+matched_terms = ["chain", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.manager.teardown"
+evidence_path = "crates/data/src/option_chains/manager.rs"
+symbol = "teardown"
+matched_terms = ["chain", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.manager.venue"
+evidence_path = "crates/data/src/option_chains/manager.rs"
+symbol = "venue"
+matched_terms = ["chain", "option"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.mod.aggregator"
+evidence_path = "crates/data/src/option_chains/mod.rs"
+symbol = "aggregator"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.mod.atm_tracker"
+evidence_path = "crates/data/src/option_chains/mod.rs"
+symbol = "atm_tracker"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.mod.constants"
+evidence_path = "crates/data/src/option_chains/mod.rs"
+symbol = "constants"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.mod.handlers"
+evidence_path = "crates/data/src/option_chains/mod.rs"
+symbol = "handlers"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.option_chains.mod.manager"
+evidence_path = "crates/data/src/option_chains/mod.rs"
+symbol = "manager"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.black_scholes.compute_greeks"
+evidence_path = "crates/model/src/data/black_scholes.rs"
+symbol = "compute_greeks"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.black_scholes.compute_iv_and_greeks"
+evidence_path = "crates/model/src/data/black_scholes.rs"
+symbol = "compute_iv_and_greeks"
+matched_terms = ["greeks", "implied", "iv", "option", "options", "vol", "volatility"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.black_scholes.greeks"
+evidence_path = "crates/model/src/data/black_scholes.rs"
+symbol = "Greeks"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.custom.clone_pyclass_to_pyobject"
+evidence_path = "crates/model/src/data/custom.rs"
+symbol = "clone_pyclass_to_pyobject"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.custom.custom_data_trait"
+evidence_path = "crates/model/src/data/custom.rs"
+symbol = "CustomDataTrait"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.custom.ensure_custom_data_json_registered"
+evidence_path = "crates/model/src/data/custom.rs"
+symbol = "ensure_custom_data_json_registered"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.custom.new"
+evidence_path = "crates/model/src/data/custom.rs"
+symbol = "new"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.custom.python_custom_data_wrapper"
+evidence_path = "crates/model/src/data/custom.rs"
+symbol = "PythonCustomDataWrapper"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.custom.reconstruct_python_custom_data"
+evidence_path = "crates/model/src/data/custom.rs"
+symbol = "reconstruct_python_custom_data"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.custom.register_custom_data_json"
+evidence_path = "crates/model/src/data/custom.rs"
+symbol = "register_custom_data_json"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.black_scholes_greeks"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "black_scholes_greeks"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.black_scholes_greeks_exact"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "black_scholes_greeks_exact"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.black_scholes_greeks_result"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "BlackScholesGreeksResult"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.from_delta"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "from_delta"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.get_rate"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "get_rate"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.greeks_data"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "GreeksData"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.has_greeks"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "HasGreeks"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.imply_vol"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "imply_vol"
+matched_terms = ["greeks", "vol"]
+seed_family = "greeks_helper"
+classification = "unreachable"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.imply_vol_and_greeks"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "imply_vol_and_greeks"
+matched_terms = ["greeks", "implied", "vol", "volatility"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.new"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "new"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.option_greek_values"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "OptionGreekValues"
+matched_terms = ["greeks", "option"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.portfolio_greeks"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "PortfolioGreeks"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.refine_vol_and_greeks"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "refine_vol_and_greeks"
+matched_terms = ["greeks", "implied", "iv", "vol", "volatility"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.greeks.yield_curve_data"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "YieldCurveData"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.mod.end"
+evidence_path = "crates/model/src/data/mod.rs"
+symbol = "end"
+matched_terms = ["option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.mod.greeks"
+evidence_path = "crates/model/src/data/mod.rs"
+symbol = "greeks"
+matched_terms = ["greeks"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.mod.instrument_id"
+evidence_path = "crates/model/src/data/mod.rs"
+symbol = "instrument_id"
+matched_terms = ["option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.mod.limit"
+evidence_path = "crates/model/src/data/mod.rs"
+symbol = "limit"
+matched_terms = ["option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.mod.option_chain"
+evidence_path = "crates/model/src/data/mod.rs"
+symbol = "option_chain"
+matched_terms = ["chain", "option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.mod.start"
+evidence_path = "crates/model/src/data/mod.rs"
+symbol = "start"
+matched_terms = ["option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.mod.venue"
+evidence_path = "crates/model/src/data/mod.rs"
+symbol = "venue"
+matched_terms = ["option"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.call_count"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "call_count"
+matched_terms = ["chain", "option"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.get_call"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "get_call"
+matched_terms = ["chain", "option", "strike"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.get_call_greeks"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "get_call_greeks"
+matched_terms = ["chain", "greeks", "option", "strike"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.get_call_quote"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "get_call_quote"
+matched_terms = ["chain", "option", "strike"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.get_put"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "get_put"
+matched_terms = ["chain", "option", "strike"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.get_put_greeks"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "get_put_greeks"
+matched_terms = ["chain", "greeks", "option", "strike"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.get_put_quote"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "get_put_quote"
+matched_terms = ["chain", "option", "strike"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.is_empty"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "is_empty"
+matched_terms = ["chain", "option"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.new"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "new"
+matched_terms = ["chain", "option"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.option_chain_slice"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "OptionChainSlice"
+matched_terms = ["chain", "option"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.option_greeks"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "OptionGreeks"
+matched_terms = ["chain", "greeks", "option"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.option_strike_data"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "OptionStrikeData"
+matched_terms = ["chain", "option", "options", "strike"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.put_count"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "put_count"
+matched_terms = ["chain", "option"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.resolve"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "resolve"
+matched_terms = ["chain", "option", "strike"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.strike_count"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "strike_count"
+matched_terms = ["chain", "option", "strike"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.strike_range"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "StrikeRange"
+matched_terms = ["chain", "option", "strike"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.option_chain.strikes"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "strikes"
+matched_terms = ["chain", "option", "strike"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.registry.encode_custom_to_arrow"
+evidence_path = "crates/model/src/data/registry.rs"
+symbol = "encode_custom_to_arrow"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.registry.ensure_arrow_registered"
+evidence_path = "crates/model/src/data/registry.rs"
+symbol = "ensure_arrow_registered"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.registry.ensure_json_deserializer_registered"
+evidence_path = "crates/model/src/data/registry.rs"
+symbol = "ensure_json_deserializer_registered"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.registry.ensure_py_extractor_registered"
+evidence_path = "crates/model/src/data/registry.rs"
+symbol = "ensure_py_extractor_registered"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.registry.ensure_rust_extractor_registered"
+evidence_path = "crates/model/src/data/registry.rs"
+symbol = "ensure_rust_extractor_registered"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.registry.register_arrow"
+evidence_path = "crates/model/src/data/registry.rs"
+symbol = "register_arrow"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.registry.register_json_deserializer"
+evidence_path = "crates/model/src/data/registry.rs"
+symbol = "register_json_deserializer"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.registry.register_py_extractor"
+evidence_path = "crates/model/src/data/registry.rs"
+symbol = "register_py_extractor"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.registry.register_rust_extractor"
+evidence_path = "crates/model/src/data/registry.rs"
+symbol = "register_rust_extractor"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.registry.register_rust_extractor_factory"
+evidence_path = "crates/model/src/data/registry.rs"
+symbol = "register_rust_extractor_factory"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.stubs.ensure_stub_custom_data_registered"
+evidence_path = "crates/model/src/data/stubs.rs"
+symbol = "ensure_stub_custom_data_registered"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.data.stubs.stub_custom_data"
+evidence_path = "crates/model/src/data/stubs.rs"
+symbol = "StubCustomData"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.enums.greeks_convention"
+evidence_path = "crates/model/src/enums.rs"
+symbol = "GreeksConvention"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.enums.option_kind"
+evidence_path = "crates/model/src/enums.rs"
+symbol = "OptionKind"
+matched_terms = ["option"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.enums.try_from_parent_suffix"
+evidence_path = "crates/model/src/enums.rs"
+symbol = "try_from_parent_suffix"
+matched_terms = ["option"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.enums.has_expiration"
+evidence_path = "crates/model/src/enums.rs"
+symbol = "has_expiration"
+matched_terms = ["expiration", "option"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.instrument_id.blockchain"
+evidence_path = "crates/model/src/identifiers/instrument_id.rs"
+symbol = "blockchain"
+matched_terms = ["chain"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.venue.parse_dex"
+evidence_path = "crates/model/src/identifiers/venue.rs"
+symbol = "parse_dex"
+matched_terms = ["chain"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.venue.validate_blockchain_venue"
+evidence_path = "crates/model/src/identifiers/venue.rs"
+symbol = "validate_blockchain_venue"
+matched_terms = ["chain"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.mod.option_series_id"
+evidence_path = "crates/model/src/identifiers/mod.rs"
+symbol = "option_series_id"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.option_series_id.from_crypto_option"
+evidence_path = "crates/model/src/identifiers/option_series_id.rs"
+symbol = "from_crypto_option"
+matched_terms = ["option", "options"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.option_series_id.from_expiry"
+evidence_path = "crates/model/src/identifiers/option_series_id.rs"
+symbol = "from_expiry"
+matched_terms = ["expiry", "option", "options"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.option_series_id.new"
+evidence_path = "crates/model/src/identifiers/option_series_id.rs"
+symbol = "new"
+matched_terms = ["option", "options"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.option_series_id.option_series_id"
+evidence_path = "crates/model/src/identifiers/option_series_id.rs"
+symbol = "OptionSeriesId"
+matched_terms = ["option", "options"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.option_series_id.to_wire_string"
+evidence_path = "crates/model/src/identifiers/option_series_id.rs"
+symbol = "to_wire_string"
+matched_terms = ["expiry", "option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.symbol.root"
+evidence_path = "crates/model/src/identifiers/symbol.rs"
+symbol = "root"
+matched_terms = ["option", "options"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.binary_option.binary_option"
+evidence_path = "crates/model/src/instruments/binary_option.rs"
+symbol = "BinaryOption"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.binary_option.new"
+evidence_path = "crates/model/src/instruments/binary_option.rs"
+symbol = "new"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.binary_option.new_checked"
+evidence_path = "crates/model/src/instruments/binary_option.rs"
+symbol = "new_checked"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.crypto_option.crypto_option"
+evidence_path = "crates/model/src/instruments/crypto_option.rs"
+symbol = "CryptoOption"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.crypto_option.new"
+evidence_path = "crates/model/src/instruments/crypto_option.rs"
+symbol = "new"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.crypto_option.new_checked"
+evidence_path = "crates/model/src/instruments/crypto_option.rs"
+symbol = "new_checked"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.crypto_option_spread.crypto_option_spread"
+evidence_path = "crates/model/src/instruments/crypto_option_spread.rs"
+symbol = "CryptoOptionSpread"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.crypto_option_spread.new"
+evidence_path = "crates/model/src/instruments/crypto_option_spread.rs"
+symbol = "new"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.crypto_option_spread.new_checked"
+evidence_path = "crates/model/src/instruments/crypto_option_spread.rs"
+symbol = "new_checked"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.mod.binary_option"
+evidence_path = "crates/model/src/instruments/mod.rs"
+symbol = "binary_option"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.mod.crypto_option"
+evidence_path = "crates/model/src/instruments/mod.rs"
+symbol = "crypto_option"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.mod.crypto_option_spread"
+evidence_path = "crates/model/src/instruments/mod.rs"
+symbol = "crypto_option_spread"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.mod.option_contract"
+evidence_path = "crates/model/src/instruments/mod.rs"
+symbol = "option_contract"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.mod.option_spread"
+evidence_path = "crates/model/src/instruments/mod.rs"
+symbol = "option_spread"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.option_contract.new"
+evidence_path = "crates/model/src/instruments/option_contract.rs"
+symbol = "new"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.option_contract.new_checked"
+evidence_path = "crates/model/src/instruments/option_contract.rs"
+symbol = "new_checked"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.option_contract.option_contract"
+evidence_path = "crates/model/src/instruments/option_contract.rs"
+symbol = "OptionContract"
+matched_terms = ["option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.option_spread.new"
+evidence_path = "crates/model/src/instruments/option_spread.rs"
+symbol = "new"
+matched_terms = ["option", "options"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.option_spread.new_checked"
+evidence_path = "crates/model/src/instruments/option_spread.rs"
+symbol = "new_checked"
+matched_terms = ["option", "options"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.instruments.option_spread.option_spread"
+evidence_path = "crates/model/src/instruments/option_spread.rs"
+symbol = "OptionSpread"
+matched_terms = ["option", "options"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.client.subscribe_option_summary"
+evidence_path = "crates/adapters/okx/src/websocket/client.rs"
+symbol = "subscribe_option_summary"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.client.unsubscribe_option_summary"
+evidence_path = "crates/adapters/okx/src/websocket/client.rs"
+symbol = "unsubscribe_option_summary"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.client.option_greeks_subs"
+evidence_path = "crates/adapters/okx/src/websocket/client.rs"
+symbol = "option_greeks_subs"
+matched_terms = ["option", "greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.client.add_option_greeks_sub"
+evidence_path = "crates/adapters/okx/src/websocket/client.rs"
+symbol = "add_option_greeks_sub"
+matched_terms = ["option", "greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.client.add_option_greeks_sub_with_conventions"
+evidence_path = "crates/adapters/okx/src/websocket/client.rs"
+symbol = "add_option_greeks_sub_with_conventions"
+matched_terms = ["option", "greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.client.remove_option_greeks_sub"
+evidence_path = "crates/adapters/okx/src/websocket/client.rs"
+symbol = "remove_option_greeks_sub"
+matched_terms = ["option", "greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.parse.parse_option_summary_greeks"
+evidence_path = "crates/adapters/okx/src/websocket/parse.rs"
+symbol = "parse_option_summary_greeks"
+matched_terms = ["option", "greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.messages.o_k_x_option_summary_msg"
+evidence_path = "crates/adapters/okx/src/websocket/messages.rs"
+symbol = "OKXOptionSummaryMsg"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.common.consts.resolve_instrument_families"
+evidence_path = "crates/adapters/okx/src/common/consts.rs"
+symbol = "resolve_instrument_families"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_instrument" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.common.enums.o_k_x_greeks_type"
+evidence_path = "crates/adapters/okx/src/common/enums.rs"
+symbol = "OKXGreeksType"
+matched_terms = ["greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.common.parse.okx_instrument_type_from_symbol"
+evidence_path = "crates/adapters/okx/src/common/parse.rs"
+symbol = "okx_instrument_type_from_symbol"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_instrument" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.common.parse.parse_option_instrument"
+evidence_path = "crates/adapters/okx/src/common/parse.rs"
+symbol = "parse_option_instrument"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_instrument" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.http.query.get_instruments_params"
+evidence_path = "crates/adapters/okx/src/http/query.rs"
+symbol = "GetInstrumentsParams"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_instrument" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.http.client.get_option_summary"
+evidence_path = "crates/adapters/okx/src/http/client.rs"
+symbol = "get_option_summary"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.http.models.o_k_x_option_summary"
+evidence_path = "crates/adapters/okx/src/http/models.rs"
+symbol = "OKXOptionSummary"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.http.query.get_option_summary_params"
+evidence_path = "crates/adapters/okx/src/http/query.rs"
+symbol = "GetOptionSummaryParams"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.providers.instruments.fetch_option_chain_by_range"
+evidence_path = "crates/adapters/interactive_brokers/src/providers/instruments.rs"
+symbol = "fetch_option_chain_by_range"
+matched_terms = ["chain", "expiry", "option", "options"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_chain_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.common.enums.misc.ib_volatility_type"
+evidence_path = "crates/adapters/interactive_brokers/src/common/enums/misc.rs"
+symbol = "IbVolatilityType"
+matched_terms = ["volatility"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.common.enums.misc.ibapi_volatility_type"
+evidence_path = "crates/adapters/interactive_brokers/src/common/enums/misc.rs"
+symbol = "ibapi_volatility_type"
+matched_terms = ["volatility"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.data.core.fetch_option_chain_by_range"
+evidence_path = "crates/adapters/interactive_brokers/src/data/core.rs"
+symbol = "fetch_option_chain_by_range"
+matched_terms = ["chain", "expiry", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_chain_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.data.cache.option_greeks_cache"
+evidence_path = "crates/adapters/interactive_brokers/src/data/cache.rs"
+symbol = "OptionGreeksCache"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.data.cache.new"
+evidence_path = "crates/adapters/interactive_brokers/src/data/cache.rs"
+symbol = "new"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.data.cache.clear"
+evidence_path = "crates/adapters/interactive_brokers/src/data/cache.rs"
+symbol = "clear"
+matched_terms = ["greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.data.parse.parse_option_computation_to_option_greeks"
+evidence_path = "crates/adapters/interactive_brokers/src/data/parse.rs"
+symbol = "parse_option_computation_to_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.data_types.deribit_volatility_index"
+evidence_path = "crates/adapters/deribit/src/data_types.rs"
+symbol = "DeribitVolatilityIndex"
+matched_terms = ["custom data", "volatility"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.client.set_option_greeks_subs"
+evidence_path = "crates/adapters/deribit/src/websocket/client.rs"
+symbol = "set_option_greeks_subs"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.client.add_option_greeks_sub"
+evidence_path = "crates/adapters/deribit/src/websocket/client.rs"
+symbol = "add_option_greeks_sub"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.client.remove_option_greeks_sub"
+evidence_path = "crates/adapters/deribit/src/websocket/client.rs"
+symbol = "remove_option_greeks_sub"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.client.subscribe_volatility_index"
+evidence_path = "crates/adapters/deribit/src/websocket/client.rs"
+symbol = "subscribe_volatility_index"
+matched_terms = ["volatility"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.client.unsubscribe_volatility_index"
+evidence_path = "crates/adapters/deribit/src/websocket/client.rs"
+symbol = "unsubscribe_volatility_index"
+matched_terms = ["volatility"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.parse.parse_ticker_to_option_greeks"
+evidence_path = "crates/adapters/deribit/src/websocket/parse.rs"
+symbol = "parse_ticker_to_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.messages.deribit_greeks"
+evidence_path = "crates/adapters/deribit/src/websocket/messages.rs"
+symbol = "DeribitGreeks"
+matched_terms = ["greeks", "option", "options"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.messages.to_greek_values"
+evidence_path = "crates/adapters/deribit/src/websocket/messages.rs"
+symbol = "to_greek_values"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.messages.deribit_volatility_index_msg"
+evidence_path = "crates/adapters/deribit/src/websocket/messages.rs"
+symbol = "DeribitVolatilityIndexMsg"
+matched_terms = ["volatility"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.http.models.deribit_account_summary_extended"
+evidence_path = "crates/adapters/deribit/src/http/models.rs"
+symbol = "DeribitAccountSummaryExtended"
+matched_terms = ["greeks"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.bybit.src.websocket.client.add_option_greeks_sub"
+evidence_path = "crates/adapters/bybit/src/websocket/client.rs"
+symbol = "add_option_greeks_sub"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.bybit.src.websocket.client.remove_option_greeks_sub"
+evidence_path = "crates/adapters/bybit/src/websocket/client.rs"
+symbol = "remove_option_greeks_sub"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.bybit.src.websocket.client.option_greeks_subs"
+evidence_path = "crates/adapters/bybit/src/websocket/client.rs"
+symbol = "option_greeks_subs"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.bybit.src.websocket.parse.parse_ticker_option_greeks"
+evidence_path = "crates/adapters/bybit/src/websocket/parse.rs"
+symbol = "parse_ticker_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.bybit.src.http.models.order_iv"
+evidence_path = "crates/adapters/bybit/src/http/models.rs"
+symbol = "order_iv"
+matched_terms = ["iv"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.analysis.src.python.statistics.mod.returns_volatility"
+evidence_path = "crates/analysis/src/python/statistics/mod.rs"
+symbol = "returns_volatility"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.analysis.src.statistics.mod.returns_volatility"
+evidence_path = "crates/analysis/src/statistics/mod.rs"
+symbol = "returns_volatility"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.analysis.src.statistics.returns_volatility.new"
+evidence_path = "crates/analysis/src/statistics/returns_volatility.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.analysis.src.statistics.returns_volatility.returns_volatility"
+evidence_path = "crates/analysis/src/statistics/returns_volatility.rs"
+symbol = "ReturnsVolatility"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.python.greeks.py_greeks_calculator"
+evidence_path = "crates/common/src/python/greeks.rs"
+symbol = "PyGreeksCalculator"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.python.mod.greeks"
+evidence_path = "crates/common/src/python/mod.rs"
+symbol = "greeks"
+matched_terms = ["greeks"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.python.mod.option_chain_manager"
+evidence_path = "crates/data/src/python/mod.rs"
+symbol = "option_chain_manager"
+matched_terms = ["chain", "option"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.data.src.python.option_chain_manager.py_option_chain_manager"
+evidence_path = "crates/data/src/python/option_chain_manager.rs"
+symbol = "PyOptionChainManager"
+matched_terms = ["chain", "option"]
+seed_family = "option_chain_manager"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.lib.volatility"
+evidence_path = "crates/indicators/src/lib.rs"
+symbol = "volatility"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.average.ama.py_new"
+evidence_path = "crates/indicators/src/python/average/ama.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.mod.volatility"
+evidence_path = "crates/indicators/src/python/mod.rs"
+symbol = "volatility"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.atr.py_new"
+evidence_path = "crates/indicators/src/python/volatility/atr.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.dc.py_new"
+evidence_path = "crates/indicators/src/python/volatility/dc.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.fuzzy.fn"
+evidence_path = "crates/indicators/src/python/volatility/fuzzy.rs"
+symbol = "fn"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.fuzzy.py_new"
+evidence_path = "crates/indicators/src/python/volatility/fuzzy.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.kc.py_new"
+evidence_path = "crates/indicators/src/python/volatility/kc.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.kp.py_new"
+evidence_path = "crates/indicators/src/python/volatility/kp.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.atr"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "atr"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.dc"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "dc"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.fuzzy"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "fuzzy"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.kc"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "kc"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.kp"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "kp"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.rvi"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "rvi"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.mod.vr"
+evidence_path = "crates/indicators/src/python/volatility/mod.rs"
+symbol = "vr"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.rvi.py_new"
+evidence_path = "crates/indicators/src/python/volatility/rvi.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.python.volatility.vr.py_new"
+evidence_path = "crates/indicators/src/python/volatility/vr.rs"
+symbol = "py_new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.atr.average_true_range"
+evidence_path = "crates/indicators/src/volatility/atr.rs"
+symbol = "AverageTrueRange"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.atr.new"
+evidence_path = "crates/indicators/src/volatility/atr.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.atr.update_raw"
+evidence_path = "crates/indicators/src/volatility/atr.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.dc.donchian_channel"
+evidence_path = "crates/indicators/src/volatility/dc.rs"
+symbol = "DonchianChannel"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.dc.new"
+evidence_path = "crates/indicators/src/volatility/dc.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.dc.update_raw"
+evidence_path = "crates/indicators/src/volatility/dc.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.candle_body_size"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "CandleBodySize"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.candle_direction"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "CandleDirection"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.candle_size"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "CandleSize"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.candle_wick_size"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "CandleWickSize"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.fn"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "fn"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.fuzzy_candle"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "FuzzyCandle"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.fuzzy_candlesticks"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "FuzzyCandlesticks"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.new"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.reset"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "reset"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.fuzzy.update_raw"
+evidence_path = "crates/indicators/src/volatility/fuzzy.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.kc.keltner_channel"
+evidence_path = "crates/indicators/src/volatility/kc.rs"
+symbol = "KeltnerChannel"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.kc.new"
+evidence_path = "crates/indicators/src/volatility/kc.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.kc.update_raw"
+evidence_path = "crates/indicators/src/volatility/kc.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.kp.keltner_position"
+evidence_path = "crates/indicators/src/volatility/kp.rs"
+symbol = "KeltnerPosition"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.kp.new"
+evidence_path = "crates/indicators/src/volatility/kp.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.kp.update_raw"
+evidence_path = "crates/indicators/src/volatility/kp.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.atr"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "atr"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.dc"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "dc"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.fuzzy"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "fuzzy"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.kc"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "kc"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.kp"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "kp"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.rvi"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "rvi"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.mod.vr"
+evidence_path = "crates/indicators/src/volatility/mod.rs"
+symbol = "vr"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.rvi.new"
+evidence_path = "crates/indicators/src/volatility/rvi.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.rvi.relative_volatility_index"
+evidence_path = "crates/indicators/src/volatility/rvi.rs"
+symbol = "RelativeVolatilityIndex"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.rvi.update_raw"
+evidence_path = "crates/indicators/src/volatility/rvi.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.vr.new"
+evidence_path = "crates/indicators/src/volatility/vr.rs"
+symbol = "new"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.vr.update_raw"
+evidence_path = "crates/indicators/src/volatility/vr.rs"
+symbol = "update_raw"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.indicators.src.volatility.vr.volatility_ratio"
+evidence_path = "crates/indicators/src/volatility/vr.rs"
+symbol = "VolatilityRatio"
+matched_terms = ["volatility"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.greeks.py_black_scholes_greeks"
+evidence_path = "crates/model/src/python/data/greeks.rs"
+symbol = "py_black_scholes_greeks"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.greeks.py_imply_vol"
+evidence_path = "crates/model/src/python/data/greeks.rs"
+symbol = "py_imply_vol"
+matched_terms = ["greeks", "implied", "option", "vol", "volatility"]
+seed_family = "greeks_helper"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.greeks.py_imply_vol_and_greeks"
+evidence_path = "crates/model/src/python/data/greeks.rs"
+symbol = "py_imply_vol_and_greeks"
+matched_terms = ["greeks", "implied", "vol", "volatility"]
+seed_family = "greeks_helper"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.greeks.py_refine_vol_and_greeks"
+evidence_path = "crates/model/src/python/data/greeks.rs"
+symbol = "py_refine_vol_and_greeks"
+matched_terms = ["greeks", "implied", "iv", "vol", "volatility"]
+seed_family = "greeks_helper"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.mod.greeks"
+evidence_path = "crates/model/src/python/data/mod.rs"
+symbol = "greeks"
+matched_terms = ["greeks"]
+seed_family = "custom_data"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.mod.option_chain"
+evidence_path = "crates/model/src/python/data/mod.rs"
+symbol = "option_chain"
+matched_terms = ["chain", "option"]
+seed_family = "custom_data"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.option_chain.from_pyobject"
+evidence_path = "crates/model/src/python/data/option_chain.rs"
+symbol = "from_pyobject"
+matched_terms = ["chain", "greeks", "option"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.option_chain.py_strike_range"
+evidence_path = "crates/model/src/python/data/option_chain.rs"
+symbol = "PyStrikeRange"
+matched_terms = ["chain", "option", "strike"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.plugin.src.surfaces.mod.option_chain"
+evidence_path = "crates/plugin/src/surfaces/mod.rs"
+symbol = "option_chain"
+matched_terms = ["chain", "option", "surface"]
+seed_family = "custom_data"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.plugin.src.surfaces.option_chain.chain"
+evidence_path = "crates/plugin/src/surfaces/option_chain.rs"
+symbol = "chain"
+matched_terms = ["chain", "option", "surface"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.plugin.src.surfaces.option_chain.into_inner"
+evidence_path = "crates/plugin/src/surfaces/option_chain.rs"
+symbol = "into_inner"
+matched_terms = ["chain", "option", "surface"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.plugin.src.surfaces.option_chain.new"
+evidence_path = "crates/plugin/src/surfaces/option_chain.rs"
+symbol = "new"
+matched_terms = ["chain", "option", "surface"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.plugin.src.surfaces.option_chain.option_chain_slice_handle"
+evidence_path = "crates/plugin/src/surfaces/option_chain.rs"
+symbol = "OptionChainSliceHandle"
+matched_terms = ["chain", "option", "surface"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.trading.src.examples.strategies.delta_neutral_vol.config.with_entry_iv_offset"
+evidence_path = "crates/trading/src/examples/strategies/delta_neutral_vol/config.rs"
+symbol = "with_entry_iv_offset"
+matched_terms = ["iv", "vol"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.trading.src.examples.strategies.delta_neutral_vol.config.with_iv_param_key"
+evidence_path = "crates/trading/src/examples/strategies/delta_neutral_vol/config.rs"
+symbol = "with_iv_param_key"
+matched_terms = ["iv", "vol"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.trading.src.examples.strategies.delta_neutral_vol.mod.config"
+evidence_path = "crates/trading/src/examples/strategies/delta_neutral_vol/mod.rs"
+symbol = "config"
+matched_terms = ["greeks", "option", "strike", "vol", "volatility"]
+seed_family = "data_actor_subscription"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.trading.src.examples.strategies.delta_neutral_vol.strategy.delta_neutral_vol"
+evidence_path = "crates/trading/src/examples/strategies/delta_neutral_vol/strategy.rs"
+symbol = "DeltaNeutralVol"
+matched_terms = ["option", "vol", "volatility"]
+seed_family = "data_actor_subscription"
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.trading.src.examples.strategies.delta_neutral_vol.strategy.greeks_initialized"
+evidence_path = "crates/trading/src/examples/strategies/delta_neutral_vol/strategy.rs"
+symbol = "greeks_initialized"
+matched_terms = ["greeks", "vol"]
+seed_family = "data_actor_subscription"
+classification = "excluded"
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.model.option_greeks"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_greeks" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.model.option_chain_slice"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_chain_slice" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.data.actor.subscribe_option_greeks"
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_subscription_lifecycle" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.data.engine.publish_option_chain_slice"
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_chain_publication" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.common.msgbus.option_greeks_topic"
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_msgbus_topic" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.data.option_chains."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_option_chain_manager" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.model.greeks."
+engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.adapters.option_greeks_subscription"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.model.custom_data_registration"
+engine_mapping = { mapping_kind = "api", target = "iv_custom_data_registration" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.actor.data_actor."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_subscription_lifecycle" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.cache."
+engine_mapping = { mapping_kind = "api", target = "iv_nt_cache_api" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.greeks."
+engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.lib.greeks"
+engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.messages.data.subscribe."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_subscription_lifecycle" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.messages.data.unsubscribe."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_subscription_lifecycle" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.msgbus.api."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_msgbus_topic" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.data.src.aggregation."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_vega_aggregation" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.data.src.client."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_data_client_subscription" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.data.src.engine."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_data_engine" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.data.src.lib.option_chains"
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_option_chain_manager" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.data.src.option_chains."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_option_chain_manager" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.black_scholes."
+engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.custom."
+engine_mapping = { mapping_kind = "api", target = "iv_custom_data_api" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.greeks.imply_vol"
+engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.greeks.refine_vol_and_greeks"
+engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.greeks."
+engine_mapping = { mapping_kind = "product_kind", target = "iv_greeks_data" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.mod."
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.option_chain."
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_chain_slice" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.registry."
+engine_mapping = { mapping_kind = "api", target = "iv_custom_data_registration" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.stubs."
+engine_mapping = { mapping_kind = "api", target = "iv_custom_data_api" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.enums."
+engine_mapping = { mapping_kind = "api", target = "iv_option_metadata_api" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.identifiers.mod.option_series_id"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_series_id" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.identifiers.option_series_id."
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_series_id" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.identifiers.symbol."
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_instrument" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.instruments."
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_instrument" }
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.client.subscribe_quotes"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.messages.ws_attach_algo_ord_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.messages.ws_post_order_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.messages.ws_cancel_order_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.messages.ws_mass_cancel_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.messages.ws_amend_order_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.messages.ws_"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.common.parse.determine_order_type"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.common.parse.deserialize_target_currency"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.common.parse.parse_event_contract_instrument"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.client.request_forward_prices"
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.set_position_mode_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_position"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_spreads_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_event_contract"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_trades_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_mark_price_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_index_ticker_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_order_book_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_order"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_algo_orders"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_transaction_details"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_trade_fee_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_funding_rate"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.analysis."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.analysis.src.statistics.returns_volatility."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.analysis.src.statistics.mod."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.analysis.src.python.statistics.mod."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.backtest."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.backtest.src.exchange."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.backtest.src.config."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.cli."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.cli.src.opt."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.cli.src.lib."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.cache.refs."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.live."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.messages.defi."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.python."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.core."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.core.src.serialization."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.data.src.defi."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.data.src.python."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.event_store."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.execution."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.indicators."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.indicators.src.volatility."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.indicators.src.lib."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.indicators.src.python.volatility."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.indicators.src.python.mod."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.indicators.src.python.average."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.infrastructure."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.live."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.model.src.defi."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.model.src.instruments.stubs."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.model.src.python."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.model.src.types.fixed."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.network."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.network.src.websocket.proxy."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.network.src.transport."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.persistence."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.portfolio."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.examples."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.src.panic."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.src.bridge."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.src.lib."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.src.manifest."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.src.surfaces."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.src.loader."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.generated.capnp."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.instrument.crypto_option"
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.instrument.mod."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.instrument.option_spread."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.instrument.option_contract."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.instrument.binary_option."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.custom."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.display.instrument."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.capnp.conversions."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.trading.src.examples."
+classification = "excluded"

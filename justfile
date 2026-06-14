@@ -6,7 +6,6 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 nextest_version := "0.9.132"
 deny_version := "0.19.0"
 zigbuild_version := "0.22.1"
-zigbuild_x86_64_unknown_linux_gnu_sha256 := "21e18a5f8ae64b9ed34c5c1cf7bba5af3bd96d77fd43d713eae85b922506d941"
 zig_version := "0.15.2"
 
 target := "aarch64-unknown-linux-gnu"
@@ -206,7 +205,7 @@ source-fence: source-fence-static
     python3 scripts/verify_runtime_capture_yaml.py
     # #342 owns these canonical source-fence checks. Until #332 changes full
     # nextest ownership, `test` intentionally still duplicates them under `gate`.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_controlled_connect --test bolt_v3_production_entrypoint -- --nocapture
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_controlled_connect --test bolt_v3_production_entrypoint --test bolt_v3_iv_source_fence -- --nocapture
 
 # Cargo shim guard tests (pytest-based, unlike the self-running script tests)
 cargo-shim-tests:

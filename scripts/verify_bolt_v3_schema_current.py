@@ -33,6 +33,11 @@ ARCHETYPE_BINARY_ORACLE_SOURCE = (
 POSITION_CONTRACT_SOURCE = REPO_ROOT / "src/bolt_v3_position_contract.rs"
 ORDER_INTENT_FEATURE_DIR = "specs/023-nt-order-intent-layer"
 ORDER_INTENT_PLAN = f"{ORDER_INTENT_FEATURE_DIR}/plan.md"
+ACTIVE_SPECKIT_FEATURE_DIRS = (
+    ORDER_INTENT_FEATURE_DIR,
+    "specs/026-nt-backed-iv-engine",
+)
+ACTIVE_SPECKIT_PLANS = tuple(f"{feature_dir}/plan.md" for feature_dir in ACTIVE_SPECKIT_FEATURE_DIRS)
 SPECKIT_BLOCK_PATTERN = re.compile(
     r"<!-- SPECKIT START -->(?P<body>.*?)<!-- SPECKIT END -->",
     re.DOTALL,
@@ -312,10 +317,10 @@ def validate_speckit_context(agents_doc: str | None, feature_json: str | None) -
                 plan_paths = [
                     plan_match.group("path") for plan_match in BACKTICKED_PLAN_PATTERN.finditer(speckit_block)
                 ]
-                if plan_paths != [ORDER_INTENT_PLAN]:
+                if len(plan_paths) != 1 or plan_paths[0] not in ACTIVE_SPECKIT_PLANS:
                     findings.append(
                         "AGENTS.md active Speckit block must contain exactly "
-                        f"`{ORDER_INTENT_PLAN}` as its plan pointer, got {plan_paths!r}"
+                        f"one current plan pointer from {ACTIVE_SPECKIT_PLANS!r}, got {plan_paths!r}"
                     )
                 if "specs/023-nt-research-analytics-platform/plan.md" in speckit_block:
                     findings.append(
@@ -335,10 +340,10 @@ def validate_speckit_context(agents_doc: str | None, feature_json: str | None) -
                 findings.append(".specify/feature.json must be a JSON object")
                 return findings
             feature_directory = parsed.get("feature_directory")
-            if feature_directory != ORDER_INTENT_FEATURE_DIR:
+            if feature_directory not in ACTIVE_SPECKIT_FEATURE_DIRS:
                 findings.append(
                     ".specify/feature.json points to "
-                    f"{feature_directory!r}, expected {ORDER_INTENT_FEATURE_DIR!r}"
+                    f"{feature_directory!r}, expected one of {ACTIVE_SPECKIT_FEATURE_DIRS!r}"
                 )
 
     return findings

@@ -8447,6 +8447,54 @@ reason = "This is a compile-time Cargo environment variable emitted by build.rs 
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
+literal = '''"source params"'''
+context = '''insert_toml_params(&mut params, source_params, "source params")?;'''
+classification = "iv_nt_binding_diagnostic_label"
+reason = "The live IV NT binding adapter labels TOML param conversion errors; the source params themselves remain profile-owned TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"selector nt_params"'''
+context = '''insert_toml_params(&mut params, selector_nt_params, "selector nt_params")?;'''
+classification = "iv_nt_binding_diagnostic_label"
+reason = "The live IV NT binding adapter labels selector NT-param conversion errors; the NT params themselves remain selector-owned TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"snapshot_interval_ms"'''
+context = '''.and_then(|params| params.get_u64("snapshot_interval_ms"));'''
+classification = "iv_nt_command_param_key"
+reason = "This is the NT option-chain command parameter key read from profile-owned TOML params before constructing the NT subscribe command."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"atm_percent:"'''
+context = '''if let Some(pct) = strike_range_policy.strip_prefix("atm_percent:") {'''
+classification = "iv_nt_strike_range_policy_token"
+reason = "This is a typed parser token for converting profile-owned strike_range_policy TOML into NT StrikeRange::AtmPercent; the percentage remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"atm_relative:"'''
+context = '''if let Some(relative) = strike_range_policy.strip_prefix("atm_relative:") {'''
+classification = "iv_nt_strike_range_policy_token"
+reason = "This is a typed parser token for converting profile-owned strike_range_policy TOML into NT StrikeRange::AtmRelative; the strike counts remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"fixed:"'''
+context = '''if let Some(fixed) = strike_range_policy.strip_prefix("fixed:") {'''
+classification = "iv_nt_strike_range_policy_token"
+reason = "This is a typed parser token for converting profile-owned strike_range_policy TOML into NT StrikeRange::Fixed; the strike values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
 literal = '''"bolt-v3 strategy-free controlled-start timeout sum overflowed \
                  config-owned nautilus timeout fields"'''
 context = '''"bolt-v3 strategy-free controlled-start timeout sum overflowed \'''
@@ -8509,6 +8557,1472 @@ literal = '''"{}"'''
 context = '''println!("{}", serde_json::to_string_pretty(&artifact_json(written))?);'''
 classification = "operator_artifact_cli_output_template"
 reason = "This prints the redacted operator artifact JSON object assembled from fixed output-field names and non-secret derived metadata."
+
+# IV engine implementation literals audited during specs/026-nt-backed-iv-engine.
+
+[[allowed]]
+path = "src/bolt_v3_iv/bounds.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''if self.positive_required && value <= 0.0 {'''
+classification = "iv_numeric_bound_literal"
+reason = "IV numeric bounds compare against mathematical zero when positive values are required; bounds policy is typed and config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "number"
+literal = '''18'''
+context = '''pub const REQUIRED_CANDIDATE_SWEEP_TERMS: [&str; 18] = ['''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option"'''
+context = '''"option",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"options"'''
+context = '''"options",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"greeks"'''
+context = '''"greeks",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"implied"'''
+context = '''"implied",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"iv"'''
+context = '''"iv",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"volatility"'''
+context = '''"volatility",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"smile"'''
+context = '''"smile",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"surface"'''
+context = '''"surface",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"chain"'''
+context = '''"chain",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"custom data"'''
+context = '''"custom data",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"strike"'''
+context = '''"strike",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"expiry"'''
+context = '''"expiry",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"expiration"'''
+context = '''"expiration",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"tenor"'''
+context = '''"tenor",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"moneyness"'''
+context = '''"moneyness",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"skew"'''
+context = '''"skew",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"premium"'''
+context = '''"premium",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"vol"'''
+context = '''"vol",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "number"
+literal = '''8'''
+context = '''const REQUIRED_SEED_FAMILIES: [SeedFamily; 8] = ['''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"nautilus_trader"'''
+context = '''if !source.contains("nautilus_trader") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"crates/model/src/data/option_chain"'''
+context = '''} else if relative_path.contains("crates/model/src/data/option_chain") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory classifies the Cargo-pinned NT checkout by stable NT source path families; this path fragment is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"rev="'''
+context = '''source.find("rev=").and_then(|start| {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"rev="'''
+context = '''let revision_start = start + "rev=".len();'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"crates"'''
+context = '''if path.file_name().and_then(|name| name.to_str()) == Some("crates") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"package"'''
+context = '''.get("package")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"name"'''
+context = '''let Some(name) = package.get("name").and_then(toml::Value::as_str) else {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"source"'''
+context = '''let Some(source) = package.get("source").and_then(toml::Value::as_str) else {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"rs"'''
+context = '''} else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"/"'''
+context = '''.join("/")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"custom data"'''
+context = '''if term == "custom data" {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"custom data"'''
+context = '''return haystack.contains("custom data")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"custom_data"'''
+context = '''|| haystack.contains("custom_data")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"custom-data"'''
+context = '''|| haystack.contains("custom-data");'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"custom data"'''
+context = '''if combined.contains("custom data") || combined.contains("custom_data") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"custom_data"'''
+context = '''if combined.contains("custom data") || combined.contains("custom_data") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"crates/adapters"'''
+context = '''} else if relative_path.contains("crates/adapters") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"msgbus"'''
+context = '''} else if relative_path.contains("msgbus")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"topic"'''
+context = '''|| relative_path.contains("topic")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"topic"'''
+context = '''|| text.contains("topic")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option_chains"'''
+context = '''} else if relative_path.contains("option_chains")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option_chain_manager"'''
+context = '''|| relative_path.contains("option_chain_manager")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"optionchainaggregator"'''
+context = '''|| text.contains("optionchainaggregator")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"greeks"'''
+context = '''} else if relative_path.contains("greeks") || text.contains("blackscholes") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"blackscholes"'''
+context = '''} else if relative_path.contains("greeks") || text.contains("blackscholes") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"crates/data/src/client"'''
+context = '''} else if relative_path.contains("crates/data/src/client") || text.contains("subscribe_option")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"subscribe_option"'''
+context = '''} else if relative_path.contains("crates/data/src/client") || text.contains("subscribe_option")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"crates/data/src/engine"'''
+context = '''} else if relative_path.contains("crates/data/src/engine") || text.contains("publish_option") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"publish_option"'''
+context = '''} else if relative_path.contains("crates/data/src/engine") || text.contains("publish_option") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"crates/model/src/data"'''
+context = '''} else if relative_path.contains("crates/model/src/data") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"pub struct "'''
+context = '''"pub struct ",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"pub enum "'''
+context = '''"pub enum ",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"pub trait "'''
+context = '''"pub trait ",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"pub fn "'''
+context = '''"pub fn ",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"pub async fn "'''
+context = '''"pub async fn ",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"pub const fn "'''
+context = '''"pub const fn ",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"pub type "'''
+context = '''"pub type ",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"pub const "'''
+context = '''"pub const ",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"pub mod "'''
+context = '''"pub mod ",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''".rs"'''
+context = '''.strip_suffix(".rs")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"."'''
+context = '''.replace('/', ".")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"_"'''
+context = '''.replace('-', "_");'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option"'''
+context = '''if matches!(term, "option" | "options") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory uses structural vocabulary to detect NT option surfaces; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"options"'''
+context = '''if matches!(term, "option" | "options") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory uses structural vocabulary to detect NT option surfaces; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"optional"'''
+context = '''!token.starts_with("optional")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory excludes Rust optional-field wording from option-surface discovery; this literal is scanner syntax, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"iv"'''
+context = '''if matches!(term, "iv" | "vol") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory uses structural vocabulary to detect NT IV surfaces; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"vol"'''
+context = '''if matches!(term, "iv" | "vol") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory uses structural vocabulary to detect NT volatility surfaces; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"///"'''
+context = '''if line.starts_with("///")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory reads local Rust doc-comment context around public NT symbols; this literal is scanner syntax, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"//!"'''
+context = '''|| line.starts_with("//!")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory reads local Rust module-doc context around public NT symbols; this literal is scanner syntax, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"#["'''
+context = '''|| line.starts_with("#[")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory reads local Rust attribute context around public NT symbols; this literal is scanner syntax, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"#!"'''
+context = '''|| line.starts_with("#!")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory reads local Rust inner-attribute context around public NT symbols; this literal is scanner syntax, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"\n"'''
+context = '''let mut evidence = context.join("\n");'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory joins local public-symbol evidence for term scanning; this literal is scanner syntax, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"greeks"'''
+context = '''"greeks" | "implied" | "iv" | "volatility" | "smile"'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for material IV/greeks terms hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"implied"'''
+context = '''"greeks" | "implied" | "iv" | "volatility" | "smile"'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for material implied-volatility terms hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"iv"'''
+context = '''"greeks" | "implied" | "iv" | "volatility" | "smile"'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for material IV terms hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"volatility"'''
+context = '''"greeks" | "implied" | "iv" | "volatility" | "smile"'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for material volatility terms hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"smile"'''
+context = '''"greeks" | "implied" | "iv" | "volatility" | "smile"'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for material smile terms hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"surface"'''
+context = '''}) || (candidate.matched_terms.contains("surface")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review when option surface terms are hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option"'''
+context = '''&& (candidate.matched_terms.contains("option")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory combines option and surface terms to distinguish material IV capability surfaces from generic public-surface wording; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"options"'''
+context = '''|| candidate.matched_terms.contains("options")))'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory combines options and surface terms to distinguish material IV capability surfaces from generic public-surface wording; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option_chain"'''
+context = '''"option_chain",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for option-chain surfaces hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option_greeks"'''
+context = '''"option_greeks",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for option-greeks surfaces hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option_summary"'''
+context = '''"option_summary",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for option-summary surfaces hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option_surface"'''
+context = '''"option_surface",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for option-surface candidates hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"imply_vol"'''
+context = '''"imply_vol",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for implied-volatility helper surfaces hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "number"
+literal = '''1'''
+context = '''pub const SUPPORTED_IV_SCHEMA_VERSION: u32 = 1;'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses schema field names, version tags, and internal generation sentinels to validate TOML; operator runtime values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"max_raw_events"'''
+context = '''"max_raw_events",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses schema field names, version tags, and internal generation sentinels to validate TOML; operator runtime values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"max_indexed_points"'''
+context = '''"max_indexed_points",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses schema field names, version tags, and internal generation sentinels to validate TOML; operator runtime values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"max_smiles"'''
+context = '''"max_smiles",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses schema field names, version tags, and internal generation sentinels to validate TOML; operator runtime values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"max_surfaces"'''
+context = '''"max_surfaces",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses schema field names, version tags, and internal generation sentinels to validate TOML; operator runtime values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"max_derived_points"'''
+context = '''"max_derived_points",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses schema field names, version tags, and internal generation sentinels to validate TOML; operator runtime values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"max_source_health_events"'''
+context = '''"max_source_health_events",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses schema field names, version tags, and internal generation sentinels to validate TOML; operator runtime values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"max_source_event_age_ns"'''
+context = '''"max_source_event_age_ns",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses schema field names to validate TOML freshness policy; operator runtime values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"iv.profiles.{} profile_id is duplicated"'''
+context = '''"iv.profiles.{} profile_id is duplicated",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing emits fail-closed diagnostics for duplicate profile identifiers; operator profile identifiers remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{profile_context}.strategy_authorizations.{} is duplicated"'''
+context = '''"{profile_context}.strategy_authorizations.{} is duplicated",'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic for duplicate per-strategy authorization entries; strategy IDs remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"interpolation_policies"'''
+context = '''"interpolation_policies",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses typed profile-owned policy family names for validation diagnostics; operator policy values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"fallback_policies"'''
+context = '''"fallback_policies",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses typed profile-owned policy family names for validation diagnostics; operator policy values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"quorum_policies"'''
+context = '''"quorum_policies",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses typed profile-owned policy family names for validation diagnostics; operator policy values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"eligible_sources"'''
+context = '''"eligible_sources",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses this profile-owned policy field name for validation diagnostics; source IDs are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"helper_policies"'''
+context = '''"helper_policies",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses typed profile-owned policy family names for validation diagnostics; operator policy values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''if !policy.agreement_band.is_finite() || policy.agreement_band <= 0.0 {'''
+classification = "iv_policy_validation_bound"
+reason = "Zero is the fail-closed positivity boundary for profile-owned quorum agreement-band validation; the actual agreement band is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{source_context}.selector_fingerprint is duplicated"'''
+context = '''"{source_context}.selector_fingerprint is duplicated"'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses schema field names, version tags, and internal generation sentinels to validate TOML; operator runtime values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{audit_context}.audit_retention.max_events cannot exceed max_raw_events"'''
+context = '''"{audit_context}.audit_retention.max_events cannot exceed max_raw_events"'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing emits fail-closed diagnostics for profile-owned audit retention bounds; operator values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{policy_context}.{} is duplicated"'''
+context = '''"{policy_context}.{} is duplicated",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing emits fail-closed diagnostics for duplicate profile-owned projection policy ids; operator values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/types.rs"
+kind = "string"
+literal = '''"an IV convention string or a named convention record"'''
+context = '''formatter.write_str("an IV convention string or a named convention record")'''
+classification = "iv_config_schema_literal"
+reason = "IV convention deserialization describes the accepted TOML schema shapes; operator convention values are supplied by TOML, not this diagnostic literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/types.rs"
+kind = "string"
+literal = '''"named"'''
+context = '''"named" => {'''
+classification = "iv_config_schema_literal"
+reason = "IV convention deserialization accepts the structured named-convention schema key; operator convention values are supplied by TOML, not this key literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/types.rs"
+kind = "string"
+literal = '''"named"'''
+context = '''_ => return Err(de::Error::unknown_field(&key, &["named"])),'''
+classification = "iv_config_schema_literal"
+reason = "IV convention deserialization reports the structured named-convention schema key for unknown-field diagnostics; operator convention values are supplied by TOML, not this key literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/types.rs"
+kind = "string"
+literal = '''"named"'''
+context = '''return Err(de::Error::duplicate_field("named"));'''
+classification = "iv_config_schema_literal"
+reason = "IV convention deserialization reports duplicate use of the structured named-convention schema key; operator convention values are supplied by TOML, not this key literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"configured"'''
+context = '''Self::Configured => "configured",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"subscribing"'''
+context = '''Self::Subscribing => "subscribing",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"active"'''
+context = '''Self::Active => "active",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"stale"'''
+context = '''Self::Stale => "stale",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"unsubscribing"'''
+context = '''Self::Unsubscribing => "unsubscribing",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"removed"'''
+context = '''Self::Removed => "removed",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"subscription_failed"'''
+context = '''Self::SubscriptionFailed => "subscription_failed",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"nautilus_model::data::imply_vol_and_greeks"'''
+context = '''Self::ImplyVolAndGreeks => "nautilus_model::data::imply_vol_and_greeks",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "number"
+literal = '''1.0e-8'''
+context = '''const NT_IMPLY_VOL_FAILURE_FLOOR: f64 = 1.0e-8;'''
+classification = "iv_helper_contract_literal"
+reason = "Pinned NautilusTrader imply_vol_and_greeks clamps failed solves to this helper sentinel; the engine rejects the sentinel and still requires TOML-owned helper output policy for accepted IV values."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "number"
+literal = '''1.0e-6'''
+context = '''const NT_REFINE_VOL_FAILURE_FLOOR: f64 = 1.0e-6;'''
+classification = "iv_helper_contract_literal"
+reason = "Pinned NautilusTrader refine_vol_and_greeks clamps diverged solves to this helper sentinel floor; the engine rejects the sentinel and still requires TOML-owned helper output policy for accepted IV values."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "number"
+literal = '''10.0'''
+context = '''const NT_REFINE_VOL_FAILURE_CEILING: f64 = 10.0;'''
+classification = "iv_helper_contract_literal"
+reason = "Pinned NautilusTrader refine_vol_and_greeks clamps diverged solves to this helper sentinel ceiling; the engine rejects the sentinel and still requires TOML-owned helper output policy for accepted IV values."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"nautilus_model::data::refine_vol_and_greeks"'''
+context = '''Self::RefineVolAndGreeks => "nautilus_model::data::refine_vol_and_greeks",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "number"
+literal = '''7'''
+context = '''const IMPLY_VOL_AND_GREEKS_REQUIRED_FIELDS: [IvDerivedInputField; 7] = ['''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "number"
+literal = '''7'''
+context = '''pub fn required_fields() -> [Self; 7] {'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "number"
+literal = '''8'''
+context = '''const REFINE_VOL_AND_GREEKS_REQUIRED_FIELDS: [IvDerivedInputField; 8] = ['''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"s,r,b,is_call,k,t,target_price,initial_vol"'''
+context = '''Self::RefineVolAndGreeks => "s,r,b,is_call,k,t,target_price,initial_vol",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"option_price"'''
+context = '''Self::OptionPrice => "option_price",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"underlying_price"'''
+context = '''Self::UnderlyingPrice => "underlying_price",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"strike"'''
+context = '''Self::Strike => "strike",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"option_side"'''
+context = '''Self::OptionSide => "option_side",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"time_to_expiry_years"'''
+context = '''Self::TimeToExpiryYears => "time_to_expiry_years",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"rate"'''
+context = '''Self::Rate => "rate",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"carry"'''
+context = '''Self::Carry => "carry",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"initial_vol"'''
+context = '''Self::InitialVol => "initial_vol",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''if !value.is_finite() || (positive_required && value <= 0.0) {'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
+
+[[allowed]]
+path = "src/bolt_v3_iv/ingest.rs"
+kind = "string"
+literal = '''"option_greeks"'''
+context = '''Self::OptionGreeks => "option_greeks",'''
+classification = "iv_payload_schema_literal"
+reason = "IV ingest uses stable payload-kind/provenance labels and raw-event ID formatting for internal evidence; payload values come from NT/custom events."
+
+[[allowed]]
+path = "src/bolt_v3_iv/ingest.rs"
+kind = "string"
+literal = '''"option_chain_slice"'''
+context = '''Self::OptionChainSlice => "option_chain_slice",'''
+classification = "iv_payload_schema_literal"
+reason = "IV ingest uses stable payload-kind/provenance labels and raw-event ID formatting for internal evidence; payload values come from NT/custom events."
+
+[[allowed]]
+path = "src/bolt_v3_iv/ingest.rs"
+kind = "string"
+literal = '''"aggregate_greeks"'''
+context = '''Self::AggregateGreeks => "aggregate_greeks",'''
+classification = "iv_payload_schema_literal"
+reason = "IV ingest uses stable payload-kind/provenance labels and raw-event ID formatting for internal evidence; payload values come from NT/custom events."
+
+[[allowed]]
+path = "src/bolt_v3_iv/ingest.rs"
+kind = "string"
+literal = '''"custom_implied_volatility"'''
+context = '''Self::CustomImpliedVolatility => "custom_implied_volatility",'''
+classification = "iv_payload_schema_literal"
+reason = "IV ingest uses stable payload-kind/provenance labels and raw-event ID formatting for internal evidence; payload values come from NT/custom events."
+
+[[allowed]]
+path = "src/bolt_v3_iv/ingest.rs"
+kind = "string"
+literal = '''"{}:{}:{}"'''
+context = '''"{}:{}:{}",'''
+classification = "iv_payload_schema_literal"
+reason = "IV ingest uses stable payload-kind/provenance labels and raw-event ID formatting for internal evidence; payload values come from NT/custom events."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "number"
+literal = '''2'''
+context = '''for window in points.windows(2) {'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV policy code uses algorithmic indices, counters, and zero sentinels for interpolation/fallback/quorum math; policy inputs remain typed/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "number"
+literal = '''0'''
+context = '''let left = window[0];'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV policy code uses algorithmic indices, counters, and zero sentinels for interpolation/fallback/quorum math; policy inputs remain typed/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "number"
+literal = '''1'''
+context = '''let right = window[1];'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV policy code uses algorithmic indices, counters, and zero sentinels for interpolation/fallback/quorum math; policy inputs remain typed/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''let weight = if width == 0.0 {'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV policy code uses algorithmic indices, counters, and zero sentinels for interpolation/fallback/quorum math; policy inputs remain typed/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''0.0'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV policy code uses algorithmic indices, counters, and zero sentinels for interpolation/fallback/quorum math; policy inputs remain typed/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''let mut sum = 0.0;'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV policy code uses algorithmic indices, counters, and zero sentinels for interpolation/fallback/quorum math; policy inputs remain typed/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "number"
+literal = '''0_u64'''
+context = '''let mut count = 0_u64;'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV policy code uses algorithmic indices, counters, and zero sentinels for interpolation/fallback/quorum math; policy inputs remain typed/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "number"
+literal = '''1'''
+context = '''count += 1;'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV policy code uses algorithmic indices, counters, and zero sentinels for interpolation/fallback/quorum math; policy inputs remain typed/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "number"
+literal = '''0'''
+context = '''(count > 0).then(|| sum / count as f64)'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV policy code uses a mathematical zero guard to avoid averaging empty inputs; policy inputs remain typed/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "number"
+literal = '''0'''
+context = '''const INITIAL_SUBSCRIPTION_GENERATION: u64 = 0;'''
+classification = "iv_source_health_counter_literal"
+reason = "IV runtime uses a zero generation sentinel when an event references an unconfigured source with no subscribed source config; the value is source-health lifecycle metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "number"
+literal = '''1'''
+context = '''reject_counts.insert(reason, 1);'''
+classification = "iv_source_health_counter_literal"
+reason = "IV runtime initializes source-health reject counters from observed binding errors; this count is computed state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "string"
+literal = '''"../../Cargo.lock"'''
+context = '''const CARGO_LOCK_TEXT: &str = include_str!("../../Cargo.lock");'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "Runtime NT provenance is stamped from the repository Cargo.lock embedded at compile time; this path is dependency evidence wiring, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "string"
+literal = '''"package"'''
+context = '''lock.get("package")?'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "Runtime NT provenance parses the Cargo.lock package array to find the pinned NautilusTrader source; this is dependency evidence parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "string"
+literal = '''"source"'''
+context = '''.filter_map(|package| package.get("source")?.as_str())'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "Runtime NT provenance reads Cargo.lock package source fields to find the pinned NautilusTrader revision; this is dependency evidence parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "string"
+literal = '''"nautilus_trader"'''
+context = '''if !source.contains("nautilus_trader") {'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "Runtime NT provenance identifies the NautilusTrader dependency entry inside Cargo.lock; this is dependency evidence parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "string"
+literal = '''"rev="'''
+context = '''source.find("rev=").and_then(|start| {'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "Runtime NT provenance extracts a git revision query parameter from Cargo.lock source URLs when no fragment revision is present; this is dependency evidence parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "string"
+literal = '''"rev="'''
+context = '''let revision_start = start + "rev=".len();'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "Runtime NT provenance advances past the Cargo.lock git revision query key while parsing dependency evidence; this is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "number"
+literal = '''0'''
+context = '''const INITIAL_REJECT_COUNT: u64 = 0;'''
+classification = "iv_source_health_counter_literal"
+reason = "IV query state initializes source-health reject counters from observed rejected events; this count is computed state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "number"
+literal = '''0'''
+context = '''_ => 0,'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV projection skew calculation returns zero for an empty input set before higher-level policy rejection; this is algorithmic math, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "number"
+literal = '''1'''
+context = '''const REJECT_COUNT_INCREMENT: u64 = 1;'''
+classification = "iv_source_health_counter_literal"
+reason = "IV query state increments source-health reject counters from observed rejected events; this count is computed state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"raw_event_id"'''
+context = '''"raw_event_id" => provenance'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"payload_kind"'''
+context = '''"payload_kind" => provenance'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"nt_revision"'''
+context = '''"nt_revision" => !provenance.nt_revision.trim().is_empty(),'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"nt_symbol"'''
+context = '''"nt_symbol" => !provenance.nt_symbol.trim().is_empty(),'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"nt_evidence_path"'''
+context = '''"nt_evidence_path" => !provenance.nt_evidence_path.trim().is_empty(),'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"input_event_ids"'''
+context = '''"input_event_ids" => !provenance.input_event_ids.is_empty(),'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"helper_identity"'''
+context = '''"helper_identity" => provenance.helper_identity.is_some(),'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"policy_decisions"'''
+context = '''"policy_decisions" => !provenance.policy_decisions.is_empty(),'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/store.rs"
+kind = "number"
+literal = '''1'''
+context = '''self.next_ingest_sequence += 1;'''
+classification = "iv_store_counter_literal"
+reason = "IV store uses internal sequence and drain-index sentinels for bounded in-memory retention; retention limits come from config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/store.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''value.is_finite() && value > 0.0'''
+classification = "iv_validation_zero_boundary"
+reason = "IV validation uses the mathematical zero boundary to reject non-positive implied-volatility values; configured IV values remain supplied by NT/source payloads and TOML policy."
+
+[[allowed]]
+path = "src/bolt_v3_iv/store.rs"
+kind = "string"
+literal = '''"call"'''
+context = '''const OPTION_CHAIN_CALL_SIDE_LABEL: &str = "call";'''
+classification = "iv_option_chain_side_label"
+reason = "This stable side label is derived from NT OptionChainSlice calls when building strategy-safe smile views from preserved raw option-chain data; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/store.rs"
+kind = "string"
+literal = '''"put"'''
+context = '''const OPTION_CHAIN_PUT_SIDE_LABEL: &str = "put";'''
+classification = "iv_option_chain_side_label"
+reason = "This stable side label is derived from NT OptionChainSlice puts when building strategy-safe smile views from preserved raw option-chain data; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"duplicate IV query handle for strategy {} profile {}"'''
+context = '''"duplicate IV query handle for strategy {} profile {}",'''
+classification = "iv_registration_diagnostic_literal"
+reason = "IV strategy registration uses tuple-field indices and diagnostic templates while wiring config-owned query handles; this is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "number"
+literal = '''0'''
+context = '''key.0, key.1'''
+classification = "iv_registration_diagnostic_literal"
+reason = "IV strategy registration uses tuple-field indices and diagnostic templates while wiring config-owned query handles; this is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "number"
+literal = '''1'''
+context = '''key.0, key.1'''
+classification = "iv_registration_diagnostic_literal"
+reason = "IV strategy registration uses tuple-field indices and diagnostic templates while wiring config-owned query handles; this is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"underlying_selectors"'''
+context = '''"underlying_selectors".to_string(),'''
+classification = "iv_nt_custom_data_metadata_key"
+reason = "IV aggregate-greeks live binding uses this NT custom-data metadata field name to pass TOML-owned underlying selector values; selector values and source lifecycle remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"derived_input_policies"'''
+context = '''"derived_input_policies",'''
+classification = "iv_config_schema_literal"
+reason = "This is the typed IV profile schema family name used for duplicate-policy validation diagnostics; policy values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{context}.quorum_policies.{}.minimum_sources cannot exceed eligible_sources"'''
+context = '''"{context}.quorum_policies.{}.minimum_sources cannot exceed eligible_sources",'''
+classification = "iv_config_schema_literal"
+reason = "This is a typed IV profile validation diagnostic for quorum source-eligibility consistency; source IDs and policy thresholds remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"{}:{}:{}:{}"'''
+context = '''"{}:{}:{}:{}",'''
+classification = "iv_helper_contract_literal"
+reason = "This is a stable helper input-set provenance ID format assembled from runtime profile/source/instrument/timestamp values; the values remain query/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "string"
+literal = '''"candidate_not_eligible"'''
+context = '''reason: "candidate_not_eligible".to_string(),'''
+classification = "iv_policy_algorithm_literal"
+reason = "This is a stable fallback provenance reason for skipped candidates before the accepted configured candidate; candidate ordering and eligibility remain typed/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "string"
+literal = '''"linear"'''
+context = '''Self::Linear => "linear",'''
+classification = "iv_policy_algorithm_literal"
+reason = "This is the stable serde/provenance label for the typed linear interpolation method; policy selection and inputs remain config/query-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "string"
+literal = '''"mean"'''
+context = '''Self::Mean => "mean",'''
+classification = "iv_policy_algorithm_literal"
+reason = "This is the stable serde/provenance label for the typed mean projection kind; policy selection and inputs remain config/query-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "string"
+literal = '''"nearest"'''
+context = '''Self::Nearest => "nearest",'''
+classification = "iv_policy_algorithm_literal"
+reason = "This is the stable serde/provenance label for the typed nearest extrapolation policy; policy selection and inputs remain config/query-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "string"
+literal = '''"reject"'''
+context = '''Self::Reject => "reject",'''
+classification = "iv_policy_algorithm_literal"
+reason = "This is the stable serde/provenance label for the typed extrapolation-rejection policy; policy selection and inputs remain config/query-owned."
 
 # Realized-volatility surface implementation literals.
 
@@ -9537,6 +11051,142 @@ classification = "strategy_runtime_diagnostic"
 reason = "Diagnostic code emitted when taker runtime config omits the required surfaced realized-volatility selector; it is not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{context}.helper_policies.{}.input_policy_ref references {}, but its helper_policy_ref is {}"'''
+context = '''"{context}.helper_policies.{}.input_policy_ref references {}, but its helper_policy_ref is {}",'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic template for reciprocal helper and derived-input policy references; referenced IDs come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{context}.derived_input_policies.{}.helper_policy_ref references {}, but its input_policy_ref is {}"'''
+context = '''"{context}.derived_input_policies.{}.helper_policy_ref references {}, but its input_policy_ref is {}",'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic template for reciprocal derived-input and helper policy references; referenced IDs come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{context}.derived_input_policies.{}.field_sources.{}"'''
+context = '''"{context}.derived_input_policies.{}.field_sources.{}",'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic context for a derived-input field source; policy IDs and field names come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{context}.helper_policies.{}.output_bounds"'''
+context = '''"{context}.helper_policies.{}.output_bounds",'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic context for helper output bounds; helper policy IDs and numeric bounds come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{context}.derived_input_policies.{}.bounds.{}"'''
+context = '''"{context}.derived_input_policies.{}.bounds.{}",'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic context for derived-input numeric bounds; input policy IDs, field names, and numeric bounds come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"inclusive_min"'''
+context = '''("inclusive_min", bounds.inclusive_min),'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"inclusive_min"'''
+context = '''"inclusive_min",'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"inclusive_max"'''
+context = '''("inclusive_max", bounds.inclusive_max),'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"inclusive_max"'''
+context = '''"inclusive_max",'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"exclusive_min"'''
+context = '''("exclusive_min", bounds.exclusive_min),'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"exclusive_min"'''
+context = '''"exclusive_min",'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"exclusive_max"'''
+context = '''("exclusive_max", bounds.exclusive_max),'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"exclusive_max"'''
+context = '''"exclusive_max",'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation names the typed numeric-bound schema field in diagnostics; the bound value comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"<="'''
+context = '''let relation = if allow_equal { "<=" } else { "<" };'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation emits the comparison operator in bound-order diagnostics; the compared bound values come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"<"'''
+context = '''let relation = if allow_equal { "<=" } else { "<" };'''
+classification = "iv_config_schema_literal"
+reason = "IV config validation emits the comparison operator in bound-order diagnostics; the compared bound values come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{field_context}.operator_number is only valid for numeric derived input fields"'''
+context = '''"{field_context}.operator_number is only valid for numeric derived input fields"'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic template for impossible derived-input operator-number field configuration; the field context comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{field_context}.operator_side is only valid for option_side"'''
+context = '''"{field_context}.operator_side is only valid for option_side"'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic template for impossible derived-input operator-side field configuration; the field context comes from TOML config."
+
+[[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"vwap_depth_limit_bps"'''
@@ -9655,6 +11305,30 @@ literal = '''"unsupported_order_shape"'''
 context = '''Self::UnsupportedOrderShape => "unsupported_order_shape",'''
 classification = "executable_cost_block_reason_label"
 reason = "Stable structured block-reason label for executable-cost output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"s,r,b,is_call,k,t,price"'''
+context = '''Self::ImplyVolAndGreeks => "s,r,b,is_call,k,t,price",'''
+classification = "iv_helper_contract_literal"
+reason = "IV derivation validates the configured helper parameter signature against the pinned NT helper ABI; operator helper selection remains policy/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"; "'''
+context = '''iv_client_errors.join("; ")'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "The live-node IV client validator joins fail-closed config diagnostics; the referenced profile/source/client identifiers are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"iv.profiles.{}.sources.{}"'''
+context = '''"iv.profiles.{}.sources.{}",'''
+classification = "iv_config_schema_literal"
+reason = "IV root validation emits fail-closed diagnostics for profile/source client binding errors; operator profile, source, and client identifiers remain TOML-owned."
 
 [[allowed]]
 path = "src/shadow_pnl.rs"

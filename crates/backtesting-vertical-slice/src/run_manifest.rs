@@ -68,12 +68,12 @@ pub const STRATEGY_PARAM_EXIT_AFTER_TRADES: &str = "exit_after_trades";
 pub const STRATEGY_PARAM_SIDE: &str = "side";
 /// Explicit manifest value for no catalog filesystem protocol.
 pub const CATALOG_FS_PROTOCOL_NONE: &str = "NONE";
-/// TOML selector for Polymarket fees resolved from instrument maker/taker rates.
-pub const FEE_MODEL_POLYMARKET_MAKER_TAKER: &str = "polymarket_maker_taker";
-/// TOML selector for Polymarket fill realism backed by NT's probabilistic fill model.
-pub const FILL_MODEL_POLYMARKET_PROBABILISTIC: &str = "polymarket_probabilistic";
-/// TOML selector for Polymarket venue latency backed by NT's static latency model.
-pub const LATENCY_MODEL_POLYMARKET_STATIC: &str = "polymarket_static";
+/// TOML selector for prediction-market fees resolved from instrument maker/taker rates.
+pub const FEE_MODEL_PREDICTION_MARKET_MAKER_TAKER: &str = "prediction_market_maker_taker";
+/// TOML selector for prediction-market fill realism backed by NT's probabilistic fill model.
+pub const FILL_MODEL_PREDICTION_MARKET_PROBABILISTIC: &str = "prediction_market_probabilistic";
+/// TOML selector for prediction-market venue latency backed by NT's static latency model.
+pub const LATENCY_MODEL_PREDICTION_MARKET_STATIC: &str = "prediction_market_static";
 /// NT venue-model surfaces declared in TOML but rejected until typed mappings exist.
 pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] =
     &["leverages", "margin_model", "modules", "settlement_prices"];
@@ -391,13 +391,13 @@ pub struct ManifestVenueConfig {
     /// NT simulation module selectors. Declared but unsupported until mapped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modules: Option<Vec<String>>,
-    /// Polymarket fill-cost model registered with the NT simulated venue.
+    /// Prediction-market fill-cost model registered with the NT simulated venue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill_model: Option<ManifestFillModelConfig>,
-    /// Polymarket latency model registered with the NT simulated venue.
+    /// Prediction-market latency model registered with the NT simulated venue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latency_model: Option<ManifestLatencyModelConfig>,
-    /// Polymarket fee model registered with the NT simulated venue.
+    /// Prediction-market fee model registered with the NT simulated venue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_model: Option<ManifestFeeModelConfig>,
     /// NT settlement prices keyed by instrument id. Unsupported until mapped.
@@ -405,7 +405,7 @@ pub struct ManifestVenueConfig {
     pub settlement_prices: Option<BTreeMap<String, String>>,
 }
 
-/// TOML-selected fill realism settings for a Polymarket backtest venue.
+/// TOML-selected fill realism settings for a prediction-market backtest venue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestFillModelConfig {
@@ -416,7 +416,7 @@ pub struct ManifestFillModelConfig {
     pub random_seed: Option<u64>,
 }
 
-/// TOML-selected latency realism settings for a Polymarket backtest venue.
+/// TOML-selected latency realism settings for a prediction-market backtest venue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestLatencyModelConfig {
@@ -427,7 +427,7 @@ pub struct ManifestLatencyModelConfig {
     pub delete_latency_nanos: u64,
 }
 
-/// TOML-selected fee realism settings for a Polymarket backtest venue.
+/// TOML-selected fee realism settings for a prediction-market backtest venue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestFeeModelConfig {
@@ -2921,7 +2921,7 @@ fn resolve_fill_model(
         return Ok(None);
     };
     match config.kind.as_str() {
-        FILL_MODEL_POLYMARKET_PROBABILISTIC => {
+        FILL_MODEL_PREDICTION_MARKET_PROBABILISTIC => {
             let prob_fill_on_limit = parse_probability(
                 &config.prob_fill_on_limit,
                 "venue.fill_model.prob_fill_on_limit",
@@ -2950,7 +2950,7 @@ fn resolve_latency_model(
         return Ok(None);
     };
     match config.kind.as_str() {
-        LATENCY_MODEL_POLYMARKET_STATIC => {
+        LATENCY_MODEL_PREDICTION_MARKET_STATIC => {
             ensure_latency_component_sum(
                 config.base_latency_nanos,
                 config.insert_latency_nanos,
@@ -2987,7 +2987,9 @@ fn resolve_fee_model(
         return Ok(None);
     };
     match config.kind.as_str() {
-        FEE_MODEL_POLYMARKET_MAKER_TAKER => Ok(Some(FeeModelAny::MakerTaker(MakerTakerFeeModel))),
+        FEE_MODEL_PREDICTION_MARKET_MAKER_TAKER => {
+            Ok(Some(FeeModelAny::MakerTaker(MakerTakerFeeModel)))
+        }
         other => Err(ManifestError::UnsupportedEnum {
             field: "venue.fee_model.kind",
             value: other.to_string(),
@@ -3307,20 +3309,20 @@ mod tests {
     fn venue_config_registers_polymarket_cost_realism_models_with_nt() {
         let mut manifest = valid_manifest();
         manifest.venue.fill_model = Some(ManifestFillModelConfig {
-            kind: FILL_MODEL_POLYMARKET_PROBABILISTIC.to_string(),
+            kind: FILL_MODEL_PREDICTION_MARKET_PROBABILISTIC.to_string(),
             prob_fill_on_limit: "0.75".to_string(),
             prob_slippage: "0.04".to_string(),
             random_seed: Some(42),
         });
         manifest.venue.latency_model = Some(ManifestLatencyModelConfig {
-            kind: LATENCY_MODEL_POLYMARKET_STATIC.to_string(),
+            kind: LATENCY_MODEL_PREDICTION_MARKET_STATIC.to_string(),
             base_latency_nanos: 100,
             insert_latency_nanos: 500,
             update_latency_nanos: 700,
             delete_latency_nanos: 900,
         });
         manifest.venue.fee_model = Some(ManifestFeeModelConfig {
-            kind: FEE_MODEL_POLYMARKET_MAKER_TAKER.to_string(),
+            kind: FEE_MODEL_PREDICTION_MARKET_MAKER_TAKER.to_string(),
         });
 
         manifest
@@ -3717,7 +3719,7 @@ mod tests {
         });
         assert_hash_changes("venue.fill_model", |manifest| {
             manifest.venue.fill_model = Some(ManifestFillModelConfig {
-                kind: FILL_MODEL_POLYMARKET_PROBABILISTIC.to_string(),
+                kind: FILL_MODEL_PREDICTION_MARKET_PROBABILISTIC.to_string(),
                 prob_fill_on_limit: "0.75".to_string(),
                 prob_slippage: "0.04".to_string(),
                 random_seed: Some(42),
@@ -3725,7 +3727,7 @@ mod tests {
         });
         assert_hash_changes("venue.latency_model", |manifest| {
             manifest.venue.latency_model = Some(ManifestLatencyModelConfig {
-                kind: LATENCY_MODEL_POLYMARKET_STATIC.to_string(),
+                kind: LATENCY_MODEL_PREDICTION_MARKET_STATIC.to_string(),
                 base_latency_nanos: 100,
                 insert_latency_nanos: 500,
                 update_latency_nanos: 700,
@@ -3734,7 +3736,7 @@ mod tests {
         });
         assert_hash_changes("venue.fee_model", |manifest| {
             manifest.venue.fee_model = Some(ManifestFeeModelConfig {
-                kind: FEE_MODEL_POLYMARKET_MAKER_TAKER.to_string(),
+                kind: FEE_MODEL_PREDICTION_MARKET_MAKER_TAKER.to_string(),
             });
         });
         assert_hash_changes("catalog_inputs.catalog_fs_protocol", |manifest| {
@@ -5373,7 +5375,7 @@ mod tests {
     fn rejects_invalid_polymarket_cost_realism_parameters() {
         let mut manifest = valid_manifest();
         manifest.venue.fill_model = Some(ManifestFillModelConfig {
-            kind: FILL_MODEL_POLYMARKET_PROBABILISTIC.to_string(),
+            kind: FILL_MODEL_PREDICTION_MARKET_PROBABILISTIC.to_string(),
             prob_fill_on_limit: "1.01".to_string(),
             prob_slippage: "0".to_string(),
             random_seed: None,
@@ -5388,7 +5390,7 @@ mod tests {
 
         let mut manifest = valid_manifest();
         manifest.venue.latency_model = Some(ManifestLatencyModelConfig {
-            kind: LATENCY_MODEL_POLYMARKET_STATIC.to_string(),
+            kind: LATENCY_MODEL_PREDICTION_MARKET_STATIC.to_string(),
             base_latency_nanos: u64::MAX,
             insert_latency_nanos: 1,
             update_latency_nanos: 0,

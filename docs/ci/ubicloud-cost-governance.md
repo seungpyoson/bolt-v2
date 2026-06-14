@@ -38,6 +38,8 @@ Fingerprint evidence is provenance-based. Runs before this instrumentation have 
 
 The nextest cache/fingerprint expression remains inline in `.github/workflows/ci.yml` because GitHub Actions evaluates `hashFiles(...)` inside workflow YAML. The hygiene verifier enforces structural identity across the cache restore key, cache save key, fingerprint file, and fingerprint artifact name so version, shard, or input drift fails CI.
 
+Fingerprint reuse is disabled on pull requests that change the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests. Those PRs must run the normal nextest shards so PR-controlled reuse logic cannot decide to skip test execution.
+
 ## Baseline Evidence
 
 Representative successful PR CI run: `27400354248`

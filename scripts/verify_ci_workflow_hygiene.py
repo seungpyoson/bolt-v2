@@ -254,6 +254,19 @@ TAG_REUSE_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'tag_reuse'"
 NEXTEST_REUSE_MISS_EXPR = "needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true'"
 MAIN_BRANCH_SKIP_EXPR = "github.ref != 'refs/heads/main'"
 BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
+FINGERPRINT_REUSE_ALLOWED_EXPR = "needs.detector.outputs.fingerprint_reuse_allowed == 'true'"
+FINGERPRINT_REUSE_ALLOWED_OUTPUT = (
+    "fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}"
+)
+FINGERPRINT_REUSE_GOVERNANCE_PATHS = (
+    ".github/workflows/ci.yml",
+    ".github/actions/setup-environment/action.yml",
+    "ci/github-actions-runners.toml",
+    "scripts/ci_provenance.py",
+    "scripts/test_ci_provenance.py",
+    "scripts/verify_ci_workflow_hygiene.py",
+    "scripts/test_verify_ci_workflow_hygiene.py",
+)
 BUILD_IF_RE = re.compile(
     r"^    if:\s*\$\{\{\s*"
     r"needs\.ci-policy\.outputs\.full_ci_required\s*==\s*['\"]true['\"]\s*&&\s*"
@@ -5751,6 +5764,10 @@ def fingerprint_reuse_skips_main_branch(job_lines: list[str]) -> bool:
     return MAIN_BRANCH_SKIP_EXPR in uncommented_text(job_lines)
 
 
+def fingerprint_reuse_gates_on_detector_allowed(job_lines: list[str]) -> bool:
+    return FINGERPRINT_REUSE_ALLOWED_EXPR in uncommented_text(job_lines)
+
+
 def test_shards_skip_on_fingerprint_reuse(job_lines: list[str]) -> bool:
     return NEXTEST_REUSE_MISS_EXPR in uncommented_text(job_lines)
 
@@ -6096,6 +6113,30 @@ def detector_forces_build_on_workflow_dispatch(job_lines: list[str]) -> bool:
     return branch is not None and 'echo "value=true" >> "$GITHUB_OUTPUT"' in branch
 
 
+def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
+    errors: list[str] = []
+    text = uncommented_text(job_lines)
+    if FINGERPRINT_REUSE_ALLOWED_OUTPUT not in text:
+        errors.append("detector must expose fingerprint_reuse_allowed")
+    if "id: fingerprint_reuse_inputs_changed" not in text or not all(
+        path in text for path in FINGERPRINT_REUSE_GOVERNANCE_PATHS
+    ):
+        errors.append("detector must detect fingerprint-reuse governance changes")
+    allowance_branch = branch_body(
+        text,
+        "if",
+        '"${{ github.event_name }}" == "pull_request" && "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true"',
+    )
+    if (
+        "id: fingerprint_reuse_allowed" not in text
+        or allowance_branch is None
+        or 'echo "value=false" >> "$GITHUB_OUTPUT"' not in allowance_branch
+        or 'echo "value=true" >> "$GITHUB_OUTPUT"' not in text
+    ):
+        errors.append("detector must determine fingerprint_reuse_allowed")
+    return errors
+
+
 def deploy_verifies_downloaded_artifact_checksum(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "cd artifact" in text and "sha256sum -c bolt-v2.sha256" in text
@@ -6376,6 +6417,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.append("fmt-check must not need detector")
     if "detector" in jobs and not detector_forces_build_on_workflow_dispatch(jobs["detector"]):
         errors.append("detector must force build_required=true for workflow_dispatch full CI")
+    if "detector" in jobs:
+        errors.extend(detector_fingerprint_reuse_errors(jobs["detector"]))
 
     if "ci-policy" in jobs:
         errors.extend(ci_policy_job_errors(jobs["ci-policy"]))
@@ -6490,6 +6533,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         reuse_needs = extract_needs(reuse_lines)
         if "ci-policy" not in reuse_needs:
             errors.append("nextest-fingerprint-reuse needs ci-policy")
+        if "detector" not in reuse_needs:
+            errors.append("nextest-fingerprint-reuse needs detector")
         if "test-archive" not in reuse_needs:
             errors.append("nextest-fingerprint-reuse needs test-archive")
         if not job_if_uses_always(reuse_lines):
@@ -6498,6 +6543,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest-fingerprint-reuse must gate on full_ci_required")
         if not fingerprint_reuse_skips_main_branch(reuse_lines):
             errors.append("nextest-fingerprint-reuse must skip main branch")
+        if not fingerprint_reuse_gates_on_detector_allowed(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed")
         if not fingerprint_reuse_job_has_outputs(reuse_lines):
             errors.append("nextest-fingerprint-reuse must expose reuse provenance outputs")
         if not fingerprint_reuse_job_uses_secure_current_fingerprint(reuse_lines):

@@ -241,6 +241,7 @@ jobs:
     name: detector
     outputs:
       build_required: ${{ steps.build_required.outputs.value }}
+      fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}
     runs-on: ubuntu-latest
     steps:
       # detector probe insertion point
@@ -249,6 +250,25 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         run: echo "any_changed=false" >> "$GITHUB_OUTPUT"
+
+      - name: Detect fingerprint-reuse governance changes
+        id: fingerprint_reuse_inputs_changed
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          changed="$(git diff --name-only origin/main...HEAD -- \
+            .github/workflows/ci.yml \
+            .github/actions/setup-environment/action.yml \
+            ci/github-actions-runners.toml \
+            scripts/ci_provenance.py \
+            scripts/test_ci_provenance.py \
+            scripts/verify_ci_workflow_hygiene.py \
+            scripts/test_verify_ci_workflow_hygiene.py)"
+          if [[ -n "$changed" ]]; then
+            echo "any_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Determine build requirement
         id: build_required
@@ -262,6 +282,16 @@ jobs:
             echo "value=true" >> "$GITHUB_OUTPUT"
           else
             echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine fingerprint reuse allowance
+        id: fingerprint_reuse_allowed
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" && "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=true" >> "$GITHUB_OUTPUT"
           fi
 
   fmt-check:
@@ -461,8 +491,8 @@ jobs:
           retention-days: 1
   nextest-fingerprint-reuse:
     name: nextest fingerprint reuse
-    needs: [ci-policy, test-archive]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.ref != 'refs/heads/main' }}
+    needs: [ci-policy, detector, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-latest
     outputs:
       reuse_found: ${{ steps.reuse.outputs.reuse_found }}
@@ -5095,6 +5125,35 @@ def main() -> int:
             "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector]",
             "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector, source-fence]",
         ),
+    )
+    assert_error(
+        "detector must expose fingerprint_reuse_allowed",
+        replace_once(
+            BASE_WORKFLOW,
+            "      fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}\n",
+            "",
+        ),
+    )
+    assert_error(
+        "detector must detect fingerprint-reuse governance changes",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "scripts/ci_provenance.py",
+            "scripts/not_ci_provenance.py",
+        ),
+    )
+    assert_error(
+        "nextest-fingerprint-reuse needs detector",
+        replace_once(
+            BASE_WORKFLOW,
+            "  nextest-fingerprint-reuse:\n    name: nextest fingerprint reuse\n    needs: [ci-policy, detector, test-archive]",
+            "  nextest-fingerprint-reuse:\n    name: nextest fingerprint reuse\n    needs: [ci-policy, test-archive]",
+        ),
+    )
+    assert_error(
+        "nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed",
+        replace_once(BASE_WORKFLOW, " && needs.detector.outputs.fingerprint_reuse_allowed == 'true'", ""),
     )
     assert_error(
         "test-shards needs test-archive",

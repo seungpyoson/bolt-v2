@@ -96,6 +96,7 @@ jobs:
     name: detector
     outputs:
       build_required: ${{ steps.build_required.outputs.value }}
+      fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -126,6 +127,30 @@ jobs:
             echo "any_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Detect fingerprint-reuse governance changes
+        id: fingerprint_reuse_inputs_changed
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
+          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin \
+            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
+            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
+            .github/workflows/ci.yml \
+            .github/actions/setup-environment/action.yml \
+            ci/github-actions-runners.toml \
+            scripts/ci_provenance.py \
+            scripts/test_ci_provenance.py \
+            scripts/verify_ci_workflow_hygiene.py \
+            scripts/test_verify_ci_workflow_hygiene.py)"
+          if [[ -n "$changed" ]]; then
+            echo "any_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Determine build requirement
         id: build_required
         shell: bash
@@ -138,6 +163,16 @@ jobs:
             echo "value=true" >> "$GITHUB_OUTPUT"
           else
             echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine fingerprint reuse allowance
+        id: fingerprint_reuse_allowed
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" && "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=true" >> "$GITHUB_OUTPUT"
           fi
 
   fmt-check:
@@ -422,8 +457,8 @@ jobs:
 
   nextest-fingerprint-reuse:
     name: nextest fingerprint reuse
-    needs: [ci-policy, test-archive]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.ref != 'refs/heads/main' }}
+    needs: [ci-policy, detector, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     outputs:
       reuse_found: ${{ steps.reuse.outputs.reuse_found }}

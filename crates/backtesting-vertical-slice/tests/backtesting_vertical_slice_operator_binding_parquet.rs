@@ -65,6 +65,10 @@ evidence_state = "owner_archive_backfillable"
 table_families = ["order_book_snapshot_deltas"]
 "#;
 
+const COMMITTED_RUN_SPEC: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
+);
+
 fn registry() -> SourceBindingRegistry {
     SourceBindingRegistry::from_toml_str(REGISTRY_TOML)
         .expect("synthetic source binding registry parses")
@@ -497,6 +501,7 @@ fn dual_emission_run_spec(
         run_id,
         vec![catalog_input("OrderBookDelta"), catalog_input("TradeTick")],
     );
+    let committed: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
     let spec = RunSpec {
         capture_time_utc: ACCEPTED_AT.to_string(),
         created_at_utc: ACCEPTED_AT.to_string(),
@@ -512,6 +517,10 @@ fn dual_emission_run_spec(
         identity: RunSpecInstrumentIdentities::Single(identity()),
         converter: parquet_converter(object_bytes.len() as u64),
         manifest,
+        artifact_store: committed.artifact_store,
+        catalog_dispatch: committed.catalog_dispatch,
+        create_only_probe_id: committed.create_only_probe_id,
+        nt_catalog_capability_proof: committed.nt_catalog_capability_proof,
         selector_provenance,
     };
     (spec, object_bytes)

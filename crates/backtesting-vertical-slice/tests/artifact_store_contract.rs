@@ -434,6 +434,10 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
         "/nt-catalog-synthetic-proof/v1/proof=synthetic-capability-proof/nt-catalog-capability-proof.json"
     ));
     assert_eq!(persisted.proof_artifact_sha256.len(), 64);
+    assert_eq!(
+        persisted.proof_artifact_create_only_write,
+        CreateOnlyWriteDisposition::Created
+    );
     persisted
         .proof
         .direct_s3_catalog_access_proven(&committed_root)
@@ -461,6 +465,34 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
     persisted_document
         .validate(&committed_root)
         .expect("persisted proof document validates");
+    let idempotent_persisted = fixture
+        .nt_catalog_capability_proof
+        .persist_completed_proof_from_evidence(&fixture.artifact_store, &writer, &evidence)
+        .await
+        .expect("same proof artifact bytes are idempotent");
+    assert_eq!(
+        idempotent_persisted.proof_artifact_create_only_write,
+        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+    );
+    assert_eq!(
+        idempotent_persisted.proof_artifact_sha256,
+        persisted.proof_artifact_sha256
+    );
+    let mut changed_valid_evidence = evidence.clone();
+    changed_valid_evidence.read_back.query_files_result_count += 1;
+    let err = fixture
+        .nt_catalog_capability_proof
+        .persist_completed_proof_from_evidence(
+            &fixture.artifact_store,
+            &writer,
+            &changed_valid_evidence,
+        )
+        .await
+        .expect_err("changed proof artifact bytes must be rejected at the same URI");
+    assert!(
+        err.to_string().contains("different payload"),
+        "expected different-payload create-only error, got {err:#}"
+    );
 
     let root = artifact_config().resolve().expect("valid artifact root");
     let mut proof = NtCatalogCapabilityProof::synthetic_success(

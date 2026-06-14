@@ -164,6 +164,7 @@ pub struct NtCatalogCapabilityPlan;
 pub struct NtCatalogCapabilityProofArtifact {
     pub proof_artifact_uri: String,
     pub proof_artifact_sha256: String,
+    pub proof_artifact_create_only_write: CreateOnlyWriteDisposition,
     pub evidence: NtCatalogCapabilityEvidence,
 }
 pub struct NtCatalogCapabilityControls {
@@ -239,10 +240,12 @@ impl NtCatalogCapabilityProof {
         self.completed_proof()
     }
     pub async fn persist_completed_proof(&self, writer: &CreateOnlyArtifactWriter<'_>) -> NtCatalogCapabilityProofArtifact {
-        writer.put_create_idempotent(path, bytes).await.unwrap();
+        writer.put_create_idempotent_with_disposition(path, bytes).await.unwrap();
+        let _same_payload = CreateOnlyWriteDisposition::AlreadyExistedSamePayload;
         NtCatalogCapabilityProofArtifact {
             proof_artifact_uri: "s3://bucket/nt-catalog-synthetic-proof/v1/proof=proof-run/nt-catalog-capability-proof.json".to_string(),
             proof_artifact_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            proof_artifact_create_only_write: CreateOnlyWriteDisposition::Created,
             evidence: NtCatalogCapabilityEvidence {},
         }
     }
@@ -368,6 +371,12 @@ fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
     let persisted = proof.persist_completed_proof_from_evidence(&writer, &evidence);
     let _proof_uri = persisted.proof_artifact_uri;
     let _proof_sha256 = persisted.proof_artifact_sha256;
+    let _proof_create_only_write = persisted.proof_artifact_create_only_write;
+    let _same_payload = CreateOnlyWriteDisposition::AlreadyExistedSamePayload;
+    let _idempotent_persisted = proof.persist_completed_proof_from_evidence(&writer, &evidence);
+    let _same_bytes_message = "same proof artifact bytes are idempotent";
+    let mut changed_valid_evidence = successful_capability_evidence();
+    changed_valid_evidence.read_back.query_files_result_count += 1;
     let persisted_document = serde_json::from_slice::<NtCatalogCapabilityProofDocument>(&persisted_bytes).unwrap();
     let _document_evidence = persisted_document.evidence;
     let _document_proof = persisted_document.proof;

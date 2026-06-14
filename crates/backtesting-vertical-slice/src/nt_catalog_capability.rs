@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     artifact_store::{
         ArtifactStoreConfig, CreateOnlyArtifactWriter, CreateOnlyProbeTranscript,
-        ResolvedArtifactRoot,
+        CreateOnlyWriteDisposition, ResolvedArtifactRoot,
     },
     run_manifest::MarketStructureFixture,
 };
@@ -90,6 +90,7 @@ pub struct NtCatalogCapabilityPlan {
 pub struct NtCatalogCapabilityProofArtifact {
     pub proof_artifact_uri: String,
     pub proof_artifact_sha256: String,
+    pub proof_artifact_create_only_write: CreateOnlyWriteDisposition,
     pub proof: NtCatalogCapabilityProof,
     pub evidence: NtCatalogCapabilityEvidence,
 }
@@ -461,12 +462,13 @@ impl NtCatalogCapabilityRunSpec {
         let proof_bytes = serde_json::to_vec_pretty(&proof_document)?;
         let proof_artifact_sha256 = sha256_bytes(&proof_bytes);
         let proof_artifact_path = artifact_root.object_path_for_uri(&proof_artifact_uri)?;
-        writer
-            .put_create_idempotent(&proof_artifact_path, proof_bytes)
+        let (_version, proof_artifact_create_only_write) = writer
+            .put_create_idempotent_with_disposition(&proof_artifact_path, proof_bytes)
             .await?;
         Ok(NtCatalogCapabilityProofArtifact {
             proof_artifact_uri,
             proof_artifact_sha256,
+            proof_artifact_create_only_write,
             proof,
             evidence: evidence.clone(),
         })

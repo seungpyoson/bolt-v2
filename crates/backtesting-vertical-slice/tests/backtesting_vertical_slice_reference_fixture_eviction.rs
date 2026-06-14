@@ -11,7 +11,7 @@
 //!   * the summaries' advertised non-golden paths and the eviction index do not
 //!     match exactly (an unindexed advertised path, or an orphaned index entry).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -25,6 +25,8 @@ use backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseEx
 
 const EXECUTION_PACKS_REL: &str =
     "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs";
+const TIER1_EVICTED_FIXTURE_PATHS_REL: &str =
+    "specs/023-nt-research-analytics-platform/reference/tier1-evicted-fixture-paths.txt";
 
 fn execution_packs_root() -> PathBuf {
     repo_root_from_manifest_dir().join(EXECUTION_PACKS_REL)
@@ -70,6 +72,54 @@ fn repo_relative_path(repo_root: &Path, path: &Path) -> String {
         .to_str()
         .expect("repo-relative fixture path is UTF-8")
         .to_string()
+}
+
+fn read_tier1_evicted_path_manifest(repo_root: &Path) -> BTreeSet<String> {
+    let manifest_path = repo_root.join(TIER1_EVICTED_FIXTURE_PATHS_REL);
+    let manifest = fs::read_to_string(&manifest_path).unwrap_or_else(|e| {
+        panic!(
+            "read Tier 1 eviction path manifest {}: {e}",
+            manifest_path.display()
+        )
+    });
+    let mut paths = Vec::new();
+    for (idx, raw) in manifest.lines().enumerate() {
+        assert!(
+            !raw.is_empty(),
+            "Tier 1 eviction path manifest {} has an empty line at {}",
+            manifest_path.display(),
+            idx + 1
+        );
+        assert_eq!(
+            raw.trim(),
+            raw,
+            "Tier 1 eviction path manifest {} line {} has surrounding whitespace",
+            manifest_path.display(),
+            idx + 1
+        );
+        paths.push(raw.to_string());
+    }
+
+    let sorted_unique: BTreeSet<String> = paths.iter().cloned().collect();
+    assert!(
+        !sorted_unique.is_empty(),
+        "Tier 1 eviction path manifest {} must list at least one path",
+        manifest_path.display()
+    );
+    assert_eq!(
+        paths.len(),
+        sorted_unique.len(),
+        "Tier 1 eviction path manifest {} contains duplicate paths",
+        manifest_path.display()
+    );
+    let sorted: Vec<String> = sorted_unique.iter().cloned().collect();
+    assert_eq!(
+        paths,
+        sorted,
+        "Tier 1 eviction path manifest {} must stay sorted",
+        manifest_path.display()
+    );
+    sorted_unique
 }
 
 /// Every `runs/<run>` directory across all committed execution-pack scopes.
@@ -251,10 +301,11 @@ fn committed_packs_keep_golden_record_and_evict_the_rest() {
 fn tier1_index_entries_match_declared_eviction_scope() {
     let repo_root = repo_root_from_manifest_dir();
     let index = EvictedFixtureIndex::load(&repo_root).expect("load evicted-fixtures index");
-    let tier1_entries: HashSet<&str> = index
+    let manifest = read_tier1_evicted_path_manifest(&repo_root);
+    let tier1_entries: BTreeSet<String> = index
         .entries
         .iter()
-        .map(|entry| entry.path.as_str())
+        .map(|entry| entry.path.clone())
         .filter(|path| is_tier1_evicted_reference_fixture_path(path))
         .collect();
     assert!(
@@ -263,32 +314,32 @@ fn tier1_index_entries_match_declared_eviction_scope() {
     );
 
     for &subtree in TIER1_EVICTED_SUBTREE_PREFIXES {
-        let subtree_entries: HashSet<&str> = tier1_entries
+        let subtree_entries: Vec<&str> = manifest
             .iter()
-            .copied()
+            .map(String::as_str)
             .filter(|path| path.starts_with(subtree))
             .collect();
         assert!(
             !subtree_entries.is_empty(),
-            "Tier 1 subtree {subtree:?} must have at least one indexed evicted path"
+            "Tier 1 subtree {subtree:?} must have at least one manifest-listed evicted path"
         );
-
-        for path in &subtree_entries {
-            assert!(
-                is_tier1_evicted_reference_fixture_path(path),
-                "Tier 1 indexed path {path:?} is outside the declared subtree scope"
-            );
-            assert!(
-                !repo_root.join(path).exists(),
-                "Tier 1 indexed path {path:?} must be absent from the working tree"
-            );
-        }
     }
 
-    let scoped: HashSet<&str> = index
+    for path in &manifest {
+        assert!(
+            is_tier1_evicted_reference_fixture_path(path),
+            "Tier 1 manifest path {path:?} is outside the declared subtree scope"
+        );
+        assert!(
+            !repo_root.join(path).exists(),
+            "Tier 1 manifest path {path:?} must be absent from the working tree"
+        );
+    }
+
+    let scoped: BTreeSet<String> = index
         .entries
         .iter()
-        .map(|entry| entry.path.as_str())
+        .map(|entry| entry.path.clone())
         .filter(|path| {
             TIER1_EVICTED_SUBTREE_PREFIXES
                 .iter()
@@ -302,6 +353,14 @@ fn tier1_index_entries_match_declared_eviction_scope() {
          outside declared scope: {:?}; declared scope but not accepted: {:?}",
         scoped.difference(&tier1_entries).collect::<Vec<_>>(),
         tier1_entries.difference(&scoped).collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        tier1_entries,
+        manifest,
+        "Tier 1 index entries must equal the independent evicted-path manifest; \
+         indexed but not manifest-listed: {:?}; manifest-listed but not indexed: {:?}",
+        tier1_entries.difference(&manifest).collect::<Vec<_>>(),
+        manifest.difference(&tier1_entries).collect::<Vec<_>>(),
     );
 }
 

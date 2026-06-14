@@ -259,9 +259,14 @@ pub fn is_tier1_evicted_reference_fixture_path(path: &str) -> bool {
         || is_json_below(path, TIER1_BATCH_EXECUTION_REPORTS_PREFIX)
         || is_direct_json_below(path, TIER1_PMXT_CONVERSION_QUEUE_PREFIX)
         || is_direct_json_below(path, TIER1_BYBIT_CONVERSION_RUN_PLAN_PREFIX)
-        || is_direct_json_below(path, TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX)
+        || is_binance_source_universe_json(path)
         || is_venue_scale_acceptance_ledger_json(path)
         || is_direct_json_below(path, TIER1_PMXT_SOURCE_PROOFS_PREFIX)
+}
+
+fn is_binance_source_universe_json(path: &str) -> bool {
+    path.strip_prefix(TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX)
+        .is_some_and(|file| is_direct_json_file(file) && file.ends_with("-source-universe.json"))
 }
 
 fn is_conversion_work_order_json(path: &str) -> bool {
@@ -421,5 +426,22 @@ mod tests {
         assert_eq!(entry.path, rel);
         assert_eq!(entry.bytes, payload.len() as u64);
         assert_eq!(entry.sha256, sha256_hex(payload));
+    }
+
+    #[test]
+    fn tier1_binance_source_universe_scope_matches_gitignore_glob() {
+        let accepted = format!(
+            "{TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX}binance-data-vision-trades-source-universe.json"
+        );
+        let rejected_direct_json = format!("{TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX}metadata.json");
+        let rejected_nested = format!(
+            "{TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX}nested/binance-data-vision-trades-source-universe.json"
+        );
+
+        assert!(is_tier1_evicted_reference_fixture_path(&accepted));
+        assert!(!is_tier1_evicted_reference_fixture_path(
+            &rejected_direct_json
+        ));
+        assert!(!is_tier1_evicted_reference_fixture_path(&rejected_nested));
     }
 }

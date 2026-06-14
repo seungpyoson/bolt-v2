@@ -72,7 +72,7 @@ fn needle_allowed_in_production_path(needle: &str, path: &Path, src: &Path) -> b
     let relative = path.strip_prefix(src).expect("source-relative path");
     let relative = relative.to_str().expect("UTF-8 source path");
     if relative == "reference_fixture_index.rs" {
-        return true;
+        return matches!(needle, "binance" | "bybit" | "pmxt" | "polymarket");
     }
     if !matches!(needle, "pmxt" | "polymarket") {
         return false;
@@ -87,6 +87,31 @@ fn needle_allowed_in_production_path(needle: &str, path: &Path, src: &Path) -> b
             | "bin/pmxt_one_off_l2_artifact_root_run.rs"
             | "bin/polymarket_metadata_gate.rs"
     )
+}
+
+#[test]
+fn reference_fixture_index_sample_allowlist_is_limited_to_provenance_terms() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let path = src.join("reference_fixture_index.rs");
+
+    for needle in ["binance", "bybit", "pmxt", "polymarket"] {
+        assert!(needle_allowed_in_production_path(needle, &path, &src));
+    }
+    for needle in [
+        "bnbusdc",
+        "public_archive",
+        "upbit",
+        "bithumb",
+        "korbit",
+        "coinone",
+        "kimchi",
+        "korean_spot",
+        "reference_price",
+        "fx_quote",
+        "token_mapping",
+    ] {
+        assert!(!needle_allowed_in_production_path(needle, &path, &src));
+    }
 }
 
 fn rust_files(root: &Path) -> Vec<std::path::PathBuf> {

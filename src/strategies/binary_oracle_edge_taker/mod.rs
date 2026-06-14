@@ -3481,13 +3481,14 @@ impl BinaryOracleEdgeTaker {
             );
             return Ok(SubmitOrderOutcome::SkippedByConfig);
         }
-        let _permit = self.context.submit_admission().admit(&request)?;
+        let permit = self.context.submit_admission().admit(&request)?;
         self.submit_order(
             order,
             submit_context.position_id,
             submit_context.client_id,
             submit_context.params,
         )?;
+        permit.commit_submitted();
         Ok(SubmitOrderOutcome::Submitted)
     }
 

@@ -220,6 +220,19 @@ impl ArtifactStoreConfig {
     pub fn nt_catalog_storage_options(&self) -> Result<AHashMap<String, String>> {
         Ok(self.resolve()?.nt_catalog_storage_options())
     }
+
+    /// # Errors
+    ///
+    /// Returns an error when the artifact-store config is invalid or the
+    /// resolved S3 credentials are empty.
+    pub fn nt_catalog_storage_options_with_credentials(
+        &self,
+        credentials: &S3ArtifactStoreCredentials,
+    ) -> Result<AHashMap<String, String>> {
+        Ok(self
+            .resolve()?
+            .nt_catalog_storage_options_with_credentials(credentials))
+    }
 }
 
 impl S3ArtifactStoreConfig {
@@ -323,6 +336,26 @@ impl ResolvedArtifactRoot {
     #[must_use]
     pub fn nt_catalog_storage_options(&self) -> AHashMap<String, String> {
         self.s3.nt_catalog_storage_options()
+    }
+
+    #[must_use]
+    pub fn nt_catalog_storage_options_with_credentials(
+        &self,
+        credentials: &S3ArtifactStoreCredentials,
+    ) -> AHashMap<String, String> {
+        let mut options = self.nt_catalog_storage_options();
+        options.insert(
+            "access_key_id".to_string(),
+            credentials.access_key_id().to_string(),
+        );
+        options.insert(
+            "secret_access_key".to_string(),
+            credentials.secret_access_key().to_string(),
+        );
+        if let Some(token) = credentials.session_token() {
+            options.insert("session_token".to_string(), token.to_string());
+        }
+        options
     }
 
     #[must_use]

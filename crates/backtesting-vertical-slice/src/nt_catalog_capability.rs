@@ -1,8 +1,14 @@
 use std::collections::BTreeSet;
 
+use ahash::AHashMap;
 use anyhow::{Result, anyhow, ensure};
 use aws_config::BehaviorVersion;
 use aws_sdk_ssm::{Client as SsmClient, config::Region};
+use nautilus_model::{
+    data::TradeTick,
+    instruments::{Instrument, InstrumentAny},
+};
+use nautilus_persistence::backend::catalog::{CatalogPathPrefix, ParquetDataCatalog};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -197,6 +203,142 @@ pub struct NtCatalogCapabilityProofDocument {
     pub evidence: NtCatalogCapabilityEvidence,
 }
 
+pub struct NtCatalogS3ConformanceProbe {
+    catalog_uri: String,
+    storage_options: AHashMap<String, String>,
+    instruments: Vec<InstrumentAny>,
+    trade_ticks: Vec<TradeTick>,
+    binary_option_instrument_id: String,
+    perps_spot_instrument_id: String,
+}
+
+impl NtCatalogS3ConformanceProbe {
+    /// # Errors
+    ///
+    /// Returns an error if the probe URI is not an S3 URI, required explicit
+    /// S3 storage options are missing, or the synthetic fixture data is empty.
+    pub fn new(
+        catalog_uri: String,
+        storage_options: AHashMap<String, String>,
+        instruments: Vec<InstrumentAny>,
+        trade_ticks: Vec<TradeTick>,
+        binary_option_instrument_id: String,
+        perps_spot_instrument_id: String,
+    ) -> Result<Self> {
+        let probe = Self {
+            catalog_uri,
+            storage_options,
+            instruments,
+            trade_ticks,
+            binary_option_instrument_id,
+            perps_spot_instrument_id,
+        };
+        probe.validate()?;
+        Ok(probe)
+    }
+
+    fn validate(&self) -> Result<()> {
+        ensure_read_back_catalog_uri(&self.catalog_uri)?;
+        ensure!(
+            !self.instruments.is_empty(),
+            "NT catalog S3 conformance probe must include synthetic instruments"
+        );
+        ensure!(
+            !self.trade_ticks.is_empty(),
+            "NT catalog S3 conformance probe must include synthetic trade ticks"
+        );
+        validate_read_back_instrument_id(
+            "binary-option",
+            self.binary_option_instrument_id.as_str(),
+        )?;
+        validate_read_back_instrument_id("perps-spot", self.perps_spot_instrument_id.as_str())?;
+        ensure_nt_s3_storage_options(&self.storage_options)?;
+        let instrument_ids = self
+            .instruments
+            .iter()
+            .map(|instrument| instrument.id().to_string())
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            instrument_ids.contains(&self.binary_option_instrument_id),
+            "NT catalog S3 conformance probe must include the binary-option synthetic instrument"
+        );
+        ensure!(
+            instrument_ids.contains(&self.perps_spot_instrument_id),
+            "NT catalog S3 conformance probe must include the perps-spot synthetic instrument"
+        );
+        Ok(())
+    }
+}
+
+/// # Errors
+///
+/// Returns an error if NautilusTrader cannot create the S3 catalog, write
+/// synthetic instruments/trade ticks, or query them back from the same catalog
+/// URI using explicit S3 storage options.
+pub fn run_nt_catalog_s3_conformance_probe(
+    probe: NtCatalogS3ConformanceProbe,
+) -> Result<NtCatalogReadBackEvidence> {
+    probe.validate()?;
+    let NtCatalogS3ConformanceProbe {
+        catalog_uri,
+        storage_options,
+        instruments,
+        trade_ticks,
+        binary_option_instrument_id,
+        perps_spot_instrument_id,
+    } = probe;
+    let instrument_ids = instruments
+        .iter()
+        .map(|instrument| instrument.id().to_string())
+        .collect::<Vec<_>>();
+    let expected_trade_tick_count = trade_ticks.len();
+    let mut catalog =
+        ParquetDataCatalog::from_uri(&catalog_uri, Some(storage_options), None, None, None)?;
+    catalog.write_instruments(instruments)?;
+    catalog.write_to_parquet(trade_ticks, None, None, None)?;
+    let files = catalog.query_files(
+        TradeTick::path_prefix(),
+        Some(instrument_ids.clone()),
+        None,
+        None,
+    )?;
+    let queried_instruments = catalog.query_instruments(Some(&instrument_ids))?;
+    let queried_instrument_ids = queried_instruments
+        .iter()
+        .map(|instrument| instrument.id().to_string())
+        .collect::<BTreeSet<_>>();
+    let queried_trade_ticks = catalog.query_typed_data::<TradeTick>(
+        Some(instrument_ids),
+        None,
+        None,
+        None,
+        None,
+        true,
+    )?;
+    let evidence = NtCatalogReadBackEvidence {
+        catalog_uri,
+        query_files_succeeded: true,
+        query_files_result_count: files.len(),
+        write_instruments_succeeded: true,
+        write_trade_ticks_succeeded: true,
+        query_trade_ticks_succeeded: true,
+        query_trade_ticks_result_count: queried_trade_ticks.len(),
+        query_instruments_succeeded: true,
+        query_instruments_result_count: queried_instruments.len(),
+        binary_option_instrument_read_back: queried_instrument_ids
+            .contains(&binary_option_instrument_id),
+        binary_option_instrument_id,
+        perps_spot_instrument_read_back: queried_instrument_ids.contains(&perps_spot_instrument_id),
+        perps_spot_instrument_id,
+    };
+    ensure!(
+        evidence.query_trade_ticks_result_count == expected_trade_tick_count,
+        "NT catalog S3 conformance probe trade tick query count does not match write count"
+    );
+    evidence.validate()?;
+    Ok(evidence)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NtCatalogCapabilityControls {
@@ -278,6 +420,10 @@ pub struct NtCatalogReadBackEvidence {
     pub catalog_uri: String,
     pub query_files_succeeded: bool,
     pub query_files_result_count: usize,
+    pub write_instruments_succeeded: bool,
+    pub write_trade_ticks_succeeded: bool,
+    pub query_trade_ticks_succeeded: bool,
+    pub query_trade_ticks_result_count: usize,
     pub query_instruments_succeeded: bool,
     pub query_instruments_result_count: usize,
     pub binary_option_instrument_read_back: bool,
@@ -296,6 +442,22 @@ impl NtCatalogReadBackEvidence {
         ensure!(
             self.query_files_result_count > 0,
             "capability evidence must include NT query_files result count"
+        );
+        ensure!(
+            self.write_instruments_succeeded,
+            "capability evidence must prove NT write_instruments over S3"
+        );
+        ensure!(
+            self.write_trade_ticks_succeeded,
+            "capability evidence must prove NT write_to_parquet over S3"
+        );
+        ensure!(
+            self.query_trade_ticks_succeeded,
+            "capability evidence must prove NT query_typed_data read-back over S3"
+        );
+        ensure!(
+            self.query_trade_ticks_result_count > 0,
+            "capability evidence must include NT query_typed_data result count"
         );
         ensure!(
             self.query_instruments_succeeded,
@@ -833,6 +995,34 @@ fn ensure_storage_option_keys(keys: &[String]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn ensure_nt_s3_storage_options(options: &AHashMap<String, String>) -> Result<()> {
+    ensure!(
+        option_is_nonblank(options, "region"),
+        "NT S3 storage options must include region"
+    );
+    ensure!(
+        option_is_nonblank(options, "access_key_id"),
+        "NT S3 storage options must include access_key_id"
+    );
+    ensure!(
+        option_is_nonblank(options, "secret_access_key"),
+        "NT S3 storage options must include secret_access_key"
+    );
+    if let Some(session_token) = options.get("session_token") {
+        ensure!(
+            !session_token.trim().is_empty() && session_token.trim() == session_token,
+            "NT S3 storage options session_token must not be blank or padded"
+        );
+    }
+    Ok(())
+}
+
+fn option_is_nonblank(options: &AHashMap<String, String>, key: &str) -> bool {
+    options
+        .get(key)
+        .is_some_and(|value| !value.trim().is_empty() && value.trim() == value)
 }
 
 fn ensure_sorted_storage_option_keys(keys: &[String]) -> Result<Vec<String>> {

@@ -96,6 +96,10 @@ fn successful_capability_evidence(root: &ResolvedArtifactRoot) -> NtCatalogCapab
             catalog_uri,
             query_files_succeeded: true,
             query_files_result_count: 1,
+            write_instruments_succeeded: true,
+            write_trade_ticks_succeeded: true,
+            query_trade_ticks_succeeded: true,
+            query_trade_ticks_result_count: 2,
             query_instruments_succeeded: true,
             query_instruments_result_count: 2,
             binary_option_instrument_read_back: true,
@@ -171,6 +175,33 @@ fn artifact_store_builds_s3_backend_with_required_capabilities() {
     let _store = config
         .build_s3_object_store_with_credentials(&credentials)
         .expect("S3 object store builder accepts required capability config");
+}
+
+#[test]
+fn artifact_store_exposes_nt_catalog_storage_options_with_ssm_credentials() {
+    let credentials = S3ArtifactStoreCredentials::new(
+        "configured-access-key".to_string(),
+        "configured-secret-key".to_string(),
+        Some("configured-session-token".to_string()),
+    )
+    .expect("test credentials are non-empty");
+    let options = artifact_config()
+        .nt_catalog_storage_options_with_credentials(&credentials)
+        .expect("NT catalog storage options include explicit SSM credentials");
+
+    assert_eq!(options.get("region").map(String::as_str), Some("us-east-1"));
+    assert_eq!(
+        options.get("access_key_id").map(String::as_str),
+        Some("configured-access-key")
+    );
+    assert_eq!(
+        options.get("secret_access_key").map(String::as_str),
+        Some("configured-secret-key")
+    );
+    assert_eq!(
+        options.get("session_token").map(String::as_str),
+        Some("configured-session-token")
+    );
 }
 
 #[test]
@@ -433,6 +464,20 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
             .completed_proof_from_evidence(&fixture.artifact_store, &missing_query_count_evidence)
             .is_err(),
         "capability proof must reject missing NT query_files result count evidence"
+    );
+    let mut missing_trade_query_count_evidence = evidence.clone();
+    missing_trade_query_count_evidence
+        .read_back
+        .query_trade_ticks_result_count = 0;
+    assert!(
+        fixture
+            .nt_catalog_capability_proof
+            .completed_proof_from_evidence(
+                &fixture.artifact_store,
+                &missing_trade_query_count_evidence
+            )
+            .is_err(),
+        "capability proof must reject missing NT query_typed_data result count evidence"
     );
     let mut missing_instrument_id_evidence = evidence.clone();
     missing_instrument_id_evidence

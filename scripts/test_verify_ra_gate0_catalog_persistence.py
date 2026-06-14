@@ -75,6 +75,19 @@ impl ArtifactStoreConfig {
     pub fn nt_catalog_storage_options(&self) -> Result<AHashMap<String, String>> {
         Ok(self.s3.nt_catalog_storage_options())
     }
+
+    pub fn nt_catalog_storage_options_with_credentials(
+        &self,
+        credentials: &S3ArtifactStoreCredentials,
+    ) -> Result<AHashMap<String, String>> {
+        let mut options = self.s3.nt_catalog_storage_options();
+        options.insert("access_key_id".to_string(), credentials.access_key_id().to_string());
+        options.insert("secret_access_key".to_string(), credentials.secret_access_key().to_string());
+        if let Some(token) = credentials.session_token() {
+            options.insert("session_token".to_string(), token.to_string());
+        }
+        Ok(options)
+    }
 }
 
 impl S3ArtifactStoreConfig {
@@ -237,6 +250,7 @@ pub struct NtCatalogCapabilityProofArtifact {
     pub proof_artifact_create_only_write: CreateOnlyWriteDisposition,
     pub evidence: NtCatalogCapabilityEvidence,
 }
+pub struct NtCatalogS3ConformanceProbe;
 pub struct NtCatalogCapabilityControls {
     pub no_cloud_feature_gate_failed: bool,
     pub ambient_credentials_scrubbed: bool,
@@ -249,6 +263,10 @@ pub struct NtCatalogReadBackEvidence {
     pub catalog_uri: String,
     pub query_files_succeeded: bool,
     pub query_files_result_count: usize,
+    pub write_instruments_succeeded: bool,
+    pub write_trade_ticks_succeeded: bool,
+    pub query_trade_ticks_succeeded: bool,
+    pub query_trade_ticks_result_count: usize,
     pub query_instruments_succeeded: bool,
     pub query_instruments_result_count: usize,
     pub binary_option_instrument_read_back: bool,
@@ -273,6 +291,17 @@ pub struct NtCatalogCapabilityProof {
 pub struct NtCatalogCapabilityProofDocument {
     pub proof: NtCatalogCapabilityProof,
     pub evidence: NtCatalogCapabilityEvidence,
+}
+
+pub fn run_nt_catalog_s3_conformance_probe(probe: NtCatalogS3ConformanceProbe) -> NtCatalogReadBackEvidence {
+    let _catalog = ParquetDataCatalog::from_uri("s3://bucket/proof/", Some(storage_options), None, None, None).unwrap();
+    _catalog.write_instruments(instruments).unwrap();
+    _catalog.write_to_parquet(trade_ticks, None, None, None).unwrap();
+    let _files = _catalog.query_files("trade_tick", Some(instrument_ids), None, None).unwrap();
+    let _instruments = _catalog.query_instruments(Some(&instrument_ids)).unwrap();
+    let _ticks = _catalog.query_typed_data::<TradeTick>(Some(instrument_ids), None, None, None, None, true).unwrap();
+    let _probe = probe;
+    NtCatalogReadBackEvidence {}
 }
 
 impl NtCatalogCapabilityProofDocument {
@@ -454,6 +483,10 @@ fn successful_capability_evidence() -> NtCatalogCapabilityEvidence {
             catalog_uri: String::from("s3://bucket/nt-catalog-synthetic-proof/v1/proof=synthetic-capability-proof/"),
             query_files_succeeded: true,
             query_files_result_count: 1,
+            write_instruments_succeeded: true,
+            write_trade_ticks_succeeded: true,
+            query_trade_ticks_succeeded: true,
+            query_trade_ticks_result_count: 2,
             query_instruments_succeeded: true,
             query_instruments_result_count: 2,
             binary_option_instrument_read_back: true,
@@ -483,6 +516,7 @@ fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls() {
     mismatched_read_back_catalog_uri_evidence.read_back.catalog_uri = artifact_root.nt_catalog_projection_root("canonical-projection");
     evidence.read_back.query_instruments_succeeded = false;
     evidence.read_back.query_files_result_count = 0;
+    evidence.read_back.query_trade_ticks_result_count = 0;
     evidence.read_back.binary_option_instrument_id
         .clear();
     evidence.create_only_probe.duplicate_copy_rejected = false;

@@ -367,17 +367,17 @@ fn hip4_source() -> OutcomeGroupSourceConfig {
 }
 
 fn payout_cols() -> Vec<AttestedLegRef> {
-    ["away", "home"]
+    ["home", "away"]
         .into_iter()
         .flat_map(|state| {
             [
                 AttestedLegRef::OutcomeAndSide {
                     outcome_label: state.to_string(),
-                    side_label: format!("opposes-{state}"),
+                    side_label: format!("supports-{state}"),
                 },
                 AttestedLegRef::OutcomeAndSide {
                     outcome_label: state.to_string(),
-                    side_label: format!("supports-{state}"),
+                    side_label: format!("opposes-{state}"),
                 },
             ]
         })

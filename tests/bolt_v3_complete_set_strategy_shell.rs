@@ -113,7 +113,7 @@ fn complete_set_submit_modes_map_to_nt_order_templates() {
 }
 
 #[test]
-fn strategy_shell_forwards_events_into_shared_executor_and_owns_no_submit_mechanics() {
+fn strategy_shell_forwards_events_into_shared_executor_without_submit_mechanics() {
     let mut shell = complete_set_strategy::CompleteSetArbitrageShell::new("complete-set-main");
     let policy = shell.mechanics_policy();
     assert!(policy.shared_basket_execution_owns_admission);

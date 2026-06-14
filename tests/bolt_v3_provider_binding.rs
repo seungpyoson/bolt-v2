@@ -42,7 +42,9 @@ use bolt_v2::{
         BoltV3AdapterMappingError, BoltV3MarketClockFn, map_bolt_v3_adapters_with_market_identity,
     },
     bolt_v3_config::{ClientBlock, LoadedStrategy, load_bolt_v3_config},
-    bolt_v3_market_families::{MarketIdentityPlan, updown::plan_market_identity},
+    bolt_v3_market_families::{
+        MarketIdentityPlan, market_identity_plan_from_config as plan_market_identity,
+    },
     bolt_v3_outcome_group_sources::{
         GammaQueryBlock, OutcomeGroupSourceConfig, OutcomeGroupSourceKind as SourceConfigKind,
     },

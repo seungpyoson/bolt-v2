@@ -302,10 +302,9 @@ mod tests {
     // submit skips that must not consume live capacity.
     // Re-derived after merging main's shared submit-admission changes into the
     // shadow-mode submit switch.
-    // Re-derived after merging main into the shared outcome-group substrate
-    // branch.
+    // Re-derived again after fixing complete-set shell merge fallout.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "cc1d03a8245cf3df7ef35a452cf527fcdc889a3603512f88353ba3abd7b9bd68";
+        "7907bb8dd14ced00b3a7bd0adb3ea3c49063d57facecfdb6f5f455ebba893471";
     // GOLDEN_OUTCOME_GROUP_DIGEST is introduced by the shared outcome-group
     // substrate source-integrity task after every first-slice source root exists
     // on disk. Re-derived after Task 10 activated the complete-set runtime

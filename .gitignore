@@ -48,7 +48,7 @@ specs/023-nt-research-analytics-platform/reference/source-universe-execution-pac
 # are evicted to the same content-addressed index. Keep hand-authored TOML specs
 # plus the bybit source-universe JSON read by backfill-gate reference tests.
 specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/*/work-order/*.json
-specs/023-nt-research-analytics-platform/reference/source-universe-batch-execution-reports/
+specs/023-nt-research-analytics-platform/reference/source-universe-batch-execution-reports/**/*.json
 specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/*.json
 specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/*.json
 specs/023-nt-research-analytics-platform/reference/backfill-source-universes/binance-data-vision-trades-2026-03-01-all-instruments/*-source-universe.json

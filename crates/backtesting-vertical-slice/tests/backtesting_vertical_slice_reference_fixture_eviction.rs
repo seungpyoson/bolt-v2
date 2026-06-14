@@ -14,6 +14,7 @@
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use backtesting_vertical_slice::reference_fixture_index::{
     EvictedFixtureIndex, GOLDEN_RECORD_DIR_PREFIX, TIER1_EVICTED_SUBTREE_PREFIXES,
@@ -120,6 +121,26 @@ fn read_tier1_evicted_path_manifest(repo_root: &Path) -> BTreeSet<String> {
         manifest_path.display()
     );
     sorted_unique
+}
+
+fn git_check_ignore(repo_root: &Path, path: &str) -> bool {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("check-ignore")
+        .arg("--quiet")
+        .arg(path)
+        .output()
+        .expect("run git check-ignore");
+    match output.status.code() {
+        Some(0) => true,
+        Some(1) => false,
+        _ => panic!(
+            "git check-ignore failed for {path}: status={:?}, stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    }
 }
 
 /// Every `runs/<run>` directory across all committed execution-pack scopes.
@@ -362,6 +383,72 @@ fn tier1_index_entries_match_declared_eviction_scope() {
         tier1_entries.difference(&manifest).collect::<Vec<_>>(),
         manifest.difference(&tier1_entries).collect::<Vec<_>>(),
     );
+}
+
+#[test]
+fn tier1_gitignore_patterns_match_eviction_predicates() {
+    let repo_root = repo_root_from_manifest_dir();
+    let cases = [
+        (
+            "conversion work order",
+            "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/example/work-order/source-universe-conversion-work-order.json",
+            "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/example/work-order/source-universe-conversion-work-order.toml",
+        ),
+        (
+            "batch execution report direct json",
+            "specs/023-nt-research-analytics-platform/reference/source-universe-batch-execution-reports/example/declared-exclusions.json",
+            "specs/023-nt-research-analytics-platform/reference/source-universe-batch-execution-reports/example/declared-exclusions.toml",
+        ),
+        (
+            "batch execution report nested json",
+            "specs/023-nt-research-analytics-platform/reference/source-universe-batch-execution-reports/example/chunk-00000-00099/retries/seq-00001/source-universe-batch-execution-report.json",
+            "specs/023-nt-research-analytics-platform/reference/source-universe-batch-execution-reports/example/chunk-00000-00099/retries/seq-00001/source-universe-batch-execution-report.txt",
+        ),
+        (
+            "pmxt conversion queue",
+            "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json",
+            "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.toml",
+        ),
+        (
+            "bybit conversion run plan",
+            "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json",
+            "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.toml",
+        ),
+        (
+            "binance source universe",
+            "specs/023-nt-research-analytics-platform/reference/backfill-source-universes/binance-data-vision-trades-2026-03-01-all-instruments/binance-data-vision-trades-source-universe.json",
+            "specs/023-nt-research-analytics-platform/reference/backfill-source-universes/binance-data-vision-trades-2026-03-01-all-instruments/metadata.json",
+        ),
+        (
+            "venue scale acceptance ledger",
+            "specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/example/ledger/venue-scale-conversion-acceptance-ledger.json",
+            "specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/example/ledger/venue-scale-conversion-acceptance-ledger.toml",
+        ),
+        (
+            "pmxt source proof",
+            "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proof-set.json",
+            "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml",
+        ),
+    ];
+
+    for (label, evicted_json, non_evicted_sibling) in cases {
+        assert!(
+            is_tier1_evicted_reference_fixture_path(evicted_json),
+            "{label}: representative generated JSON must be in the Tier 1 eviction predicate"
+        );
+        assert!(
+            git_check_ignore(&repo_root, evicted_json),
+            "{label}: representative generated JSON must be ignored by .gitignore"
+        );
+        assert!(
+            !is_tier1_evicted_reference_fixture_path(non_evicted_sibling),
+            "{label}: non-evicted sibling must stay outside the Tier 1 eviction predicate"
+        );
+        assert!(
+            !git_check_ignore(&repo_root, non_evicted_sibling),
+            "{label}: non-evicted sibling must not be ignored by .gitignore"
+        );
+    }
 }
 
 #[test]

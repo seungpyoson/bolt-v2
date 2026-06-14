@@ -1,12 +1,11 @@
 use std::{fs, path::Path};
 
+use backtesting_vertical_slice::reference_fixture_index::TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH;
 use backtesting_vertical_slice::source_universe_conversion_run_plan::write_source_universe_conversion_run_plan_from_spec_file;
 use backtesting_vertical_slice::source_universe_operator_inputs::{
     SourceUniverseOperatorInputRecordStatus, SourceUniverseOperatorInputs,
     SourceUniverseOperatorInputsStatus, write_source_universe_operator_inputs_from_spec_file,
 };
-
-const BYBIT_RUN_PLAN_REPO_PATH: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json";
 
 fn copy_spec_with_output_dir(source_spec: &Path, target_spec: &Path, output_dir: &Path) {
     let spec = fs::read_to_string(source_spec).expect("read committed source-universe spec");
@@ -447,7 +446,7 @@ fn committed_bybit_source_universe_operator_inputs_track_current_gates() {
         &temp_spec_path,
         replace_spec_path(
             &spec_text,
-            BYBIT_RUN_PLAN_REPO_PATH,
+            TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH,
             &run_plan_artifact.path,
         ),
     )

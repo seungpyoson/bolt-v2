@@ -13,7 +13,7 @@ use std::{
         Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, ensure};
@@ -271,24 +271,13 @@ impl<F: SourceUniverseObjectFetcher> CachingSourceUniverseObjectFetcher<F> {
         }
     }
 
-    /// Atomically write verified bytes to the content-addressed cache entry.
-    /// Uses a unique temp file in the same directory then `fs::rename`, so
-    /// concurrent writers of the same object converge on identical bytes.
+    /// Atomically write verified bytes to the content-addressed cache entry via
+    /// the shared `atomic_write` primitive, so concurrent writers of the same
+    /// object converge on identical bytes without ever committing a torn file.
     fn store_verified(&self, cache_path: &Path, object_bytes: &[u8]) -> Result<()> {
         fs::create_dir_all(&self.cache_dir)
             .with_context(|| format!("create object cache dir {}", self.cache_dir.display()))?;
-        let temp_path = self.cache_dir.join(format!(
-            "{}.{}.{}.tmp",
-            cache_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("object"),
-            std::process::id(),
-            unique_temp_token()
-        ));
-        fs::write(&temp_path, object_bytes)
-            .with_context(|| format!("write object cache temp file {}", temp_path.display()))?;
-        fs::rename(&temp_path, cache_path).with_context(|| {
+        atomic_write(cache_path, object_bytes).with_context(|| {
             format!(
                 "atomically install object cache entry {}",
                 cache_path.display()
@@ -924,20 +913,6 @@ pub fn write_source_universe_batch_execution_report(
         bytes: bytes.len() as u64,
         completed_record_count: report.completed_record_count,
     })
-}
-
-/// Process-unique token for naming object-cache temp files. The monotonic
-/// counter guarantees uniqueness within the process; the wall-clock nanos
-/// component reduces collision risk across re-runs that reuse the same cache
-/// dir. The atomic rename — not the temp name — is the correctness guarantee.
-fn unique_temp_token() -> u128 {
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0);
-    nanos.wrapping_mul(1_000_003).wrapping_add(counter)
 }
 
 /// Validate that `value` is exactly 64 lowercase ASCII hex characters.

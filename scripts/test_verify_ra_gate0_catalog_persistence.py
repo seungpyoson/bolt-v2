@@ -320,6 +320,11 @@ fn rejects_catalog_dispatch_fixture_mismatch() {
     let _mismatch_message = "market_structure_fixture mismatch";
 }
 
+fn rejects_manifest_fixture_mismatch() {
+    let _err = FixtureMismatch;
+    let _accepted_fixture = accepted.fixture_type;
+}
+
 fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
     let _store = InMemory::new();
     let artifacts = run_from_run_spec_with_artifact_store();

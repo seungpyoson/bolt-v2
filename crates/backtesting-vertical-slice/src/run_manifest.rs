@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ustr::Ustr;
 
-use super::source_proof::{AcceptedDataset, SourceProofFidelityClass};
+use super::source_proof::{AcceptedDataset, FixtureType, SourceProofFidelityClass};
 
 /// Registry key for the compiled Rust trade-driven example strategy.
 pub const STRATEGY_HURST_VPIN_DIRECTIONAL: &str = "hurst_vpin_directional";
@@ -179,6 +179,10 @@ pub enum ManifestError {
         manifest_binding: String,
         accepted_binding: String,
     },
+    FixtureMismatch {
+        manifest_fixture: MarketStructureFixture,
+        accepted_fixture: FixtureType,
+    },
     DataTypeFidelityMismatch {
         data_type: String,
         fidelity_class: SourceProofFidelityClass,
@@ -262,6 +266,13 @@ impl std::fmt::Display for ManifestError {
             } => write!(
                 f,
                 "manifest venue_binding_key {manifest_binding:?} does not match accepted source binding {accepted_binding:?}"
+            ),
+            Self::FixtureMismatch {
+                manifest_fixture,
+                accepted_fixture,
+            } => write!(
+                f,
+                "manifest market_structure_fixture {manifest_fixture:?} does not match accepted.fixture_type {accepted_fixture:?}"
             ),
             Self::DataTypeFidelityMismatch {
                 data_type,
@@ -503,6 +514,15 @@ impl BacktestingRunManifest {
                 accepted_binding: accepted.source_binding.clone(),
             });
         }
+        if !market_structure_fixture_matches_source_fixture(
+            self.market_structure_fixture,
+            accepted.fixture_type,
+        ) {
+            return Err(ManifestError::FixtureMismatch {
+                manifest_fixture: self.market_structure_fixture,
+                accepted_fixture: accepted.fixture_type,
+            });
+        }
         if self.run_purpose == RunPurpose::Normal && self.pins_non_latest_proof {
             return Err(ManifestError::NonLatestProofPinForNormalRun);
         }
@@ -676,6 +696,19 @@ fn ensure_data_type_matches_fidelity(
             fidelity_class,
         }),
     }
+}
+
+fn market_structure_fixture_matches_source_fixture(
+    manifest_fixture: MarketStructureFixture,
+    accepted_fixture: FixtureType,
+) -> bool {
+    matches!(
+        (manifest_fixture, accepted_fixture),
+        (
+            MarketStructureFixture::BinaryOption,
+            FixtureType::PredictionMarket
+        ) | (MarketStructureFixture::PerpsSpot, FixtureType::PerpsSpot)
+    )
 }
 
 fn parse_oms_type(value: &str) -> Result<OmsType, ManifestError> {
@@ -995,6 +1028,19 @@ mod tests {
         manifest.venue_binding_key = "some-other-binding".to_string();
         let err = manifest.validate(&accepted_dataset()).unwrap_err();
         assert!(err.to_string().contains("binding"), "{err}");
+    }
+
+    #[test]
+    fn rejects_fixture_mismatch() {
+        let mut manifest = valid_manifest();
+        manifest.market_structure_fixture = MarketStructureFixture::BinaryOption;
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::FixtureMismatch {
+                manifest_fixture: MarketStructureFixture::BinaryOption,
+                accepted_fixture: FixtureType::PerpsSpot,
+            }
+        );
     }
 
     #[test]

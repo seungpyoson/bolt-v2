@@ -21,7 +21,7 @@ use backtesting_vertical_slice::{
         NtCatalogCapabilityProofDocument, NtCatalogCapabilityRunSpec, NtCatalogCredentialSource,
         NtCatalogReadBackEvidence,
     },
-    operator::{RunSpec, run_from_run_spec_with_artifact_store},
+    operator::{RunSpec, run_from_run_spec, run_from_run_spec_with_artifact_store},
     run_manifest::MarketStructureFixture,
 };
 use flate2::{Compression, write::GzEncoder};
@@ -905,6 +905,22 @@ async fn rejects_catalog_dispatch_fixture_mismatch() {
         err.to_string()
             .contains("market_structure_fixture mismatch"),
         "{err}"
+    );
+}
+
+#[test]
+fn rejects_manifest_fixture_mismatch() {
+    let gz = gzip(SAMPLE_CSV);
+    let mut spec = committed_run_spec_for(&gz);
+    spec.manifest.market_structure_fixture = MarketStructureFixture::BinaryOption;
+    let output_dir = tempfile::TempDir::new().expect("temp dir");
+
+    let err = run_from_run_spec(&spec, &gz, output_dir.path())
+        .expect_err("manifest fixture must match accepted source proof fixture_type");
+
+    assert!(
+        err.to_string().contains("accepted.fixture_type"),
+        "FixtureMismatch not reported: {err}"
     );
 }
 

@@ -1600,7 +1600,7 @@ fn strategy_free_transport_adapter_configs(
 fn trade_transport_loaded_config(
     loaded: &LoadedBoltV3Config,
 ) -> Result<LoadedBoltV3Config, BoltV3LiveNodeError> {
-    let required_clients = trade_transport_client_keys(loaded);
+    let required_clients = trade_transport_client_keys(loaded)?;
     if required_clients.is_empty() {
         let mut transport_loaded = loaded.clone();
         transport_loaded.root.clients.clear();
@@ -1628,7 +1628,9 @@ fn trade_transport_loaded_config(
     Ok(transport_loaded)
 }
 
-fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> {
+fn trade_transport_client_keys(
+    loaded: &LoadedBoltV3Config,
+) -> Result<BTreeSet<String>, BoltV3LiveNodeError> {
     let mut client_keys = BTreeSet::new();
     for strategy in &loaded.strategies {
         client_keys.insert(strategy.config.execution_client_id.to_string());
@@ -1642,7 +1644,129 @@ fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> 
             client_keys.insert(resolution.data_client_id.to_string());
         }
     }
-    client_keys
+    insert_outcome_group_source_client_keys(&mut client_keys, loaded)?;
+    insert_gate_provider_client_keys(&mut client_keys, loaded);
+    insert_realized_volatility_surface_client_keys(&mut client_keys, loaded);
+    Ok(client_keys)
+}
+
+fn insert_outcome_group_source_client_keys(
+    client_keys: &mut BTreeSet<String>,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3LiveNodeError> {
+    let plan = crate::bolt_v3_market_families::market_identity_plan_from_config(loaded).map_err(
+        |source| BoltV3LiveNodeError::LiveTransportScope {
+            reason: source.to_string(),
+        },
+    )?;
+    let Some(sources) = loaded.root.outcome_group_sources.as_ref() else {
+        return Ok(());
+    };
+    for target in crate::bolt_v3_market_families::outcome_group::target_plans(&plan) {
+        for source_id in &target.group_sources {
+            if let Some(source) = sources.iter().find(|source| source.source_id == *source_id)
+                && source.enabled
+            {
+                client_keys.insert(source.client_id.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn insert_gate_provider_client_keys(
+    client_keys: &mut BTreeSet<String>,
+    loaded: &LoadedBoltV3Config,
+) {
+    let Some(providers) = loaded.root.gate_providers.as_ref() else {
+        return;
+    };
+    for strategy in &loaded.strategies {
+        if let Ok(target) = crate::bolt_v3_market_families::updown::deserialize_target_block(
+            &strategy.config.target,
+        ) {
+            insert_gate_subscription_client_keys(
+                client_keys,
+                providers,
+                target.gate_subscriptions.as_ref(),
+            );
+        }
+        if let Ok(target) =
+            crate::bolt_v3_market_families::hyperliquid_instrument::deserialize_target_block(
+                &strategy.config.target,
+            )
+        {
+            insert_gate_subscription_client_keys(
+                client_keys,
+                providers,
+                target.gate_subscriptions.as_ref(),
+            );
+        }
+    }
+}
+
+fn insert_gate_subscription_client_keys(
+    client_keys: &mut BTreeSet<String>,
+    providers: &BTreeMap<String, crate::bolt_v3_config::GateProviderBlock>,
+    subscriptions: Option<
+        &BTreeMap<String, crate::bolt_v3_market_families::updown::TargetGateSubscription>,
+    >,
+) {
+    let Some(subscriptions) = subscriptions else {
+        return;
+    };
+    for subscription in subscriptions.values() {
+        if let Some(provider_ids) = &subscription.allowed_provider_ids {
+            for provider_id in provider_ids {
+                insert_gate_provider_client_key(client_keys, providers, provider_id);
+            }
+        }
+        if let Some(provider_ids) = &subscription.provider_preference {
+            for provider_id in provider_ids {
+                insert_gate_provider_client_key(client_keys, providers, provider_id);
+            }
+        }
+        if let Some(mappings) = &subscription.market_mappings {
+            for mapping in mappings {
+                if let Some(provider_id) = &mapping.provider_id {
+                    insert_gate_provider_client_key(client_keys, providers, provider_id);
+                }
+            }
+        }
+    }
+}
+
+fn insert_gate_provider_client_key(
+    client_keys: &mut BTreeSet<String>,
+    providers: &BTreeMap<String, crate::bolt_v3_config::GateProviderBlock>,
+    provider_id: &str,
+) {
+    if let Some(provider) = providers.get(provider_id)
+        && let Some(client_id) = &provider.client_id
+    {
+        client_keys.insert(client_id.to_string());
+    }
+}
+
+fn insert_realized_volatility_surface_client_keys(
+    client_keys: &mut BTreeSet<String>,
+    loaded: &LoadedBoltV3Config,
+) {
+    let Some(surfaces) = loaded.root.realized_volatility_surfaces.as_ref() else {
+        return;
+    };
+    for strategy in &loaded.strategies {
+        let Some(surface_id) = strategy.config.realized_volatility_surface_id.as_ref() else {
+            continue;
+        };
+        if let Some(surface) = surfaces.get(surface_id) {
+            for source in &surface.sources {
+                if source.enabled {
+                    client_keys.insert(source.data_client_id.to_string());
+                }
+            }
+        }
+    }
 }
 
 fn data_client_probe_loaded_config(
@@ -3666,7 +3790,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
     }
 
     #[test]
-    fn trade_transport_config_keeps_only_strategy_bound_clients() {
+    fn trade_transport_config_keeps_strategy_and_root_substrate_clients() {
         let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
             "tests/fixtures/bolt_v3/root.toml",
         ))
@@ -3700,32 +3824,136 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             .root
             .clients
             .insert("unrelated_data".to_string(), unrelated_client);
-        let strategy = loaded
-            .strategies
+        {
+            let strategy = loaded
+                .strategies
+                .first_mut()
+                .expect("fixture should include one strategy");
+            strategy.config.reference_data.insert(
+                "primary".to_string(),
+                ReferenceDataBlock {
+                    data_client_id: ClientId::from("reference_data"),
+                    instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
+                },
+            );
+            strategy.config.signal_data.insert(
+                "primary".to_string(),
+                ReferenceDataBlock {
+                    data_client_id: ClientId::from("signal_data"),
+                    instrument_id: InstrumentId::from("SIGNAL.SOURCE"),
+                },
+            );
+        }
+        let mut rv_client = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        rv_client.execution = None;
+        rv_client.secrets = None;
+        loaded.root.clients.insert("rv_data".to_string(), rv_client);
+        loaded
+            .root
+            .realized_volatility_surfaces
+            .as_mut()
+            .expect("fixture should include realized-volatility surfaces")
+            .get_mut("configured_rv_surface")
+            .expect("fixture should include configured RV surface")
+            .sources
             .first_mut()
-            .expect("fixture should include one strategy");
-        strategy.config.reference_data.insert(
-            "primary".to_string(),
-            ReferenceDataBlock {
-                data_client_id: ClientId::from("reference_data"),
-                instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
+            .expect("fixture RV surface should include one source")
+            .data_client_id = ClientId::from("rv_data");
+        let mut gate_client = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        gate_client.execution = None;
+        gate_client.secrets = None;
+        loaded
+            .root
+            .clients
+            .insert("gate_data".to_string(), gate_client);
+        loaded
+            .root
+            .gate_providers
+            .as_mut()
+            .expect("fixture should include gate providers")
+            .get_mut("resolution_oracle_primary")
+            .expect("fixture should include target-referenced gate provider")
+            .client_id = Some(ClientId::from("gate_data"));
+        let mut outcome_group_client = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        outcome_group_client.execution = None;
+        outcome_group_client.secrets = None;
+        loaded
+            .root
+            .clients
+            .insert("outcome_group_data".to_string(), outcome_group_client);
+        loaded.root.outcome_group_sources = Some(vec![
+            crate::bolt_v3_outcome_group_sources::OutcomeGroupSourceConfig {
+                source_id: "configured_group_source".to_string(),
+                client_id: ClientId::from("outcome_group_data"),
+                kind: crate::bolt_v3_outcome_group_sources::OutcomeGroupSourceKind::GammaQuery,
+                event_slugs: None,
+                market_slugs: None,
+                sports_market_types: None,
+                gamma_query: Some(crate::bolt_v3_outcome_group_sources::GammaQueryBlock {
+                    search: None,
+                    event_query: None,
+                    market_query: Some("configured outcome group".to_string()),
+                    tag_id: None,
+                    sports_market_types: None,
+                    max_events: None,
+                    max_markets: 1,
+                }),
+                question: None,
+                expected_neg_risk_market_id: None,
+                terminal_state_labels: None,
+                max_markets: None,
+                max_groups: None,
+                enabled: true,
+                freshness: None,
+                order_constraints: None,
+                role_bindings: None,
+                settlement_rules: None,
             },
-        );
-        strategy.config.signal_data.insert(
-            "primary".to_string(),
-            ReferenceDataBlock {
-                data_client_id: ClientId::from("signal_data"),
-                instrument_id: InstrumentId::from("SIGNAL.SOURCE"),
-            },
-        );
+        ]);
+        let mut outcome_group_strategy = loaded
+            .strategies
+            .first()
+            .expect("fixture should include one strategy")
+            .clone();
+        outcome_group_strategy.config.strategy_instance_id = "configured_outcome_group".to_string();
+        outcome_group_strategy.config.realized_volatility_surface_id = None;
+        outcome_group_strategy.config.reference_data.clear();
+        outcome_group_strategy.config.signal_data.clear();
+        outcome_group_strategy.config.resolution_data = None;
+        outcome_group_strategy.config.target = toml::toml! {
+            configured_target_id = "configured_outcome_group_target"
+            kind = "static_outcome_group"
+            rotating_market_family = "outcome_group"
+            group_sources = ["configured_group_source"]
+        }
+        .into();
+        loaded.strategies.push(outcome_group_strategy);
 
         let scoped = trade_transport_loaded_config(&loaded)
             .expect("strategy-bound transport scope should be derived from config");
 
-        assert_eq!(scoped.root.clients.len(), 3);
+        assert_eq!(scoped.root.clients.len(), 6);
         assert!(scoped.root.clients.contains_key("polymarket_main"));
         assert!(scoped.root.clients.contains_key("reference_data"));
         assert!(scoped.root.clients.contains_key("signal_data"));
+        assert!(scoped.root.clients.contains_key("rv_data"));
+        assert!(scoped.root.clients.contains_key("gate_data"));
+        assert!(scoped.root.clients.contains_key("outcome_group_data"));
         assert!(
             !scoped.root.clients.contains_key("unrelated_data"),
             "unrelated configured data clients must not block the selected trade path"

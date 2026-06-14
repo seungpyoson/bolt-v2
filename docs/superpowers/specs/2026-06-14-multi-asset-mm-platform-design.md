@@ -10,6 +10,16 @@
 > in §14 (Contradictions) / §15 (Open Gaps). PARTIAL adversarial verdicts are
 > not papered over.
 >
+> A second, external multi-model review (4 engines, 2026-06-14) was then
+> personally re-verified finding-by-finding against the same SHAs; its CONFIRMED
+> results are folded in as truth-in-labeling corrections (stubs / zero-caller
+> code relabeled to their real status) plus four engineering constraints
+> (settlement double-booking §8, TradeTick-corpus fills §10, μ=0 guard §15,
+> atomic requote budget §15). The architecture stands; the nine **§16
+> Must-Resolve** items — chiefly the single canonical pricing path and the
+> inventory source of truth (Rules #2/#6) — gate the transition to an
+> implementation plan.
+>
 > This is the **agnostic-platform architecture**. The detailed binary-maker
 > requirements live in `specs/488-binary-oracle-maker/spec.md` (FR-001..FR-081);
 > this doc references those FRs rather than restating them.
@@ -41,8 +51,8 @@ grounding corrections noted) here.
 
 | # | Decision | Grounding note |
 |---|----------|----------------|
-| **D1** | **Slot boundary = medium.** One shared engine on NT + two per-asset slots (pricing model, settlement). Five shared parts on NT: market-data, fair-value, quote-lifecycle/placing, inventory, risk. | The slot seam **already exists in code** — the family binding carries `fair_probability_up` + `maker_quote_targets` + `maker_settlement_payout` fn pointers per family (§3, surprise). |
-| **D2** | **Engine↔model = advisor.** The model is a pure function returning TARGET quotes (price/size/ttl); the shared engine reconciles target→live and does all placing/cancel. No side effects → backtestable; one backtest grades every asset. | Confirmed compatible: GM/CG model is pure tested math, UNWIRED (no NT type, no order placement). |
+| **D1** | **Slot boundary = medium.** One shared engine on NT + two per-asset slots (pricing model, settlement). Five shared parts on NT: market-data, fair-value, quote-lifecycle/placing, inventory, risk. | The slot seam **already exists in code** — the family binding carries `fair_probability_up` + `maker_quote_targets` + `maker_settlement_payout` + `maker_binary_fee_curve` fn pointers per family (§3, surprise). |
+| **D2** | **Engine↔model = advisor.** The model is a pure function returning TARGET quotes (price only — `QuoteTargetLeg` carries {side, price}; size resolved engine-side via `choose_robust_size`; ttl not yet in the advisor contract); the shared engine reconciles target→live and does all placing/cancel. No side effects → backtestable; one backtest grades every asset (once per-asset slots implement their accounting — FR-001..FR-005 cover the binary slot only; perp funding/margin and options-surface accounting FRs are absent, deferred to future slots per §11). | Confirmed compatible: GM/CG model is pure tested math, UNWIRED (no NT type, no order placement). |
 | **D3** | **Defense = shared danger detectors → per-asset model reacts.** Detect shared (book-imbalance + lag + signed-flow), react in-model (widen/skew/pull). | **CORRECTED:** NT's signed-VPIN is example-only (not reusable); the signed-flow/μ detector is **NET-NEW build**, not an NT consume. Book-imbalance + lag *can* use NT primitives. |
 | **D4** | **Risk = 3 evidence-backed problems → 3 responses**, collapsing to Normal/Defensive/Stop. Optional 4th = single hard total-loss backstop. The "5-rung ladder" is rejected as convention. | All 3 risks confirmed real; pick-off is **empirically measured**. 4th backstop has a trigger type but **no firing code** (gap). |
 | **D5** | **Sourcing = NT-first.** Binary GM/CG is built; port ONLY genuine residue NT lacks, only for in-scope assets, each re-verified at file:line, hardcodes→TOML, panics→Result. Never blanket-port. | Confirmed NT gaps (A-S/GLFT/intensity-k, signed-VPIN, position cap, vol-surface). A-S/GLFT are MUST-NOT for binary. |
@@ -57,8 +67,11 @@ grounding corrections noted) here.
 **One shared engine on NT + two per-asset slots (D1):**
 
 - **Slot 1 — Pricing model** (per asset): a *pure advisor function* returning
-  TARGET quotes (price/size/ttl). Binary = GM/CG. No side effects →
-  backtestable in isolation; one backtest harness grades every asset (D2).
+  TARGET quotes (price only — `QuoteTargetLeg` carries {side, price}; size
+  resolved engine-side via `choose_robust_size`; ttl not yet in the advisor
+  contract). Binary = GM/CG. No side effects → backtestable in isolation; one
+  backtest harness grades every asset (D2) — once each per-asset slot implements
+  its own accounting (binary only today; §11).
 - **Slot 2 — Settlement** (per asset): books the terminal payout and resets
   inventory, triggered off the venue resolution signal (D7).
 
@@ -76,7 +89,8 @@ NT market data (QuoteTick/TradeTick/OrderBookDelta, each ts_event+ts_init)
    │
    ▼
 [per-asset MODEL = pure advisor]  gm_binary_quote(p, μ) + inventory_skew(net, …)
-   │  returns TARGET quotes (price/size/ttl), reacts to danger (widen/skew/pull)
+   │  returns TARGET quotes (price only — size resolved engine-side, ttl not yet
+   │  in contract), reacts to danger (widen/skew/pull)
    ▼
 [shared] quote-lifecycle controller  reconciles target → live
    │  cancel+resubmit (venue lacks modify), throttle to rate budget, track resting set
@@ -90,7 +104,9 @@ resolution (InstrumentStatus::Close) ──► [per-asset] SETTLEMENT slot books
 
 The model is a **pure function** (no NT type, no order placement). The **engine
 reconciles target → live** and does all submit/cancel. This is what makes the
-model backtestable in isolation and lets one backtest harness grade every asset.
+model backtestable in isolation and lets one backtest harness grade every asset
+— once each per-asset slot implements its own settlement/accounting (binary only
+today; perp/options accounting deferred per §11).
 
 ## 4. Component-by-Component (build-vs-reuse map)
 
@@ -107,6 +123,17 @@ model backtestable in isolation and lets one backtest harness grade every asset.
   **REAL**.
 - **WIRED status: UNWIRED.** No `src/strategies/` or `bolt_v3_live_node.rs`
   import. Pure tested math awaiting a maker archetype to wire it.
+- **DUAL-PATH HAZARD (Rule #2):** `updown::maker_quote_targets`
+  (`updown.rs:89-114`) already calls `compose_binary_legs` (the reservation-band
+  path) via `FamilyQuoteInputs`, which carries **no μ field** — while
+  `gm_binary_quote` (`:61`, μ-driven) has **zero production callers**. These are
+  two pricing paths. Wiring GM/CG requires picking ONE canonical path: either
+  (a) replace `compose_binary_legs` inside `maker_quote_targets` with
+  `gm_binary_quote`, add `informed_fraction` to `FamilyQuoteInputs`, and delete
+  the reservation-band path; or (b) compose GM/CG spread output into the
+  reservation-band inputs and delete the standalone `gm_binary_quote` entry
+  point. The doc MUST name the canonical path and state how the other is
+  eliminated before any wiring is planned (§16).
 
 ### Fair value (p) — **[ALREADY-BUILT; NT-backed path planned]**
 - `src/bolt_v3_market_families/updown.rs:1102` `fair_probability_up` =
@@ -115,8 +142,12 @@ model backtestable in isolation and lets one backtest harness grade every asset.
 - **FR-070**: the hand-rolled digital MUST be removed once NT greeks/IV is
   authoritative. NT *provides* the replacement: `black_scholes_greeks_exact` +
   `imply_vol` (`crates/model/src/data/greeks.rs:142,192,238`), `itm_prob`
-  directly usable as the binary win probability. Planned consolidation, not a
-  current gap.
+  directly usable as the binary win probability. **Clamp caveat:**
+  `imply_vol_and_greeks` applies a `safe_vol = max(vol, 1e-8)` floor on
+  convergence failure (`greeks.rs:251`); at that floor `d2 → ±∞` so
+  `itm_prob = N(d2)` degenerates to 0 or 1 by moneyness. Callers MUST clamp
+  `itm_prob` to (ε, 1−ε) before using it as a probability — this guard is **not**
+  in NT. Planned consolidation, not a current gap.
 
 ### Realized-vol / FV stack — **[ALREADY-BUILT, LIVE-CONSUMED]**
 - `bolt_v3_realized_volatility{,_runtime}.rs`, wired through
@@ -127,15 +158,27 @@ model backtestable in isolation and lets one backtest harness grade every asset.
 
 ### Market-family seam — **[ALREADY-BUILT, MAKER HOOKS PRESENT]** — *load-bearing surprise*
 - `src/bolt_v3_market_families/mod.rs`: the binding struct already carries
-  **three maker fn pointers**: `fair_probability_up` (`:85`),
-  `maker_quote_targets` (`:86`), `maker_settlement_payout` (`:87`).
-- **Two families already registered**, both implementing all three hooks:
-  `updown` (`:278-288`) and `hyperliquid_instrument` (`:291-…`). Dispatcher
+  **four maker fn pointers**: `fair_probability_up` (`:85`),
+  `maker_quote_targets` (`:86`), `maker_settlement_payout` (`:87`),
+  `maker_binary_fee_curve` (`:88`) — the fee the maker pays, `fee_rate·p·(1-p)`
+  (variance-based). **No production caller consumes `maker_binary_fee_curve` yet**
+  (only tested in-module via `maker_binary_fee_curve_for_family`); it must be
+  wired into the quoting/sizing/admission path before live use (§15).
+- **Two families registered in the dispatch table:** `updown` (`:278-288`)
+  implements all four maker hooks; `hyperliquid_instrument` (`:291-…`) registers
+  **compile-time `unsupported_*` stubs that return `None`** for all maker hooks —
+  it demonstrates the dispatch seam, not a working maker. Dispatcher
   `fair_probability_up_for_family` (`:432`).
 - **Implication for D1/D2/D7:** the per-asset *pricing-model* and *settlement*
   slots already have a typed home at the family layer. New families add to
   `VALIDATION_BINDINGS` without touching the dispatcher. The slot seam exists in
-  code — stronger than the assumed architecture.
+  code — stronger than the assumed architecture. **Caveat:** the shared
+  `FamilyQuoteInputs` struct (`bolt_v3_quoting.rs:30-42`) is binary-scoped — ten
+  `f64` scalars (`tau`/`reference_tau`/`time_widen_cap`/`reservation_bid/ask`/…),
+  **no `funding_rate`, `vol_surface`, `informed_fraction`/μ, or `size` field**. A
+  perp or options slot cannot reuse this type as-is; the first such slot must
+  extend `FamilyQuoteInputs` or introduce a per-advisor input type before wiring
+  `maker_quote_targets` (future-extension gap; binary-first build unaffected).
 
 ### Quote-lifecycle / placing — **[ALREADY-BUILT (core) + IN-PROGRESS (pipeline), all UNWIRED]**
 - On `origin/main`: `bolt_v3_quote_lifecycle.rs` (NT-free single-leg state
@@ -148,6 +191,13 @@ model backtestable in isolation and lets one backtest harness grade every asset.
 - **WIRED status: NONE.** FR-010..FR-013: cancel+resubmit reprice (no venue
   modify), throttle to a *capability variable* (not a constant), track the full
   resting set + reconcile against accepted-order truth, requote-on-post-only-reject.
+- **Port references (NT examples):** NT ships working implementations of all four
+  FR-010..FR-013 patterns in `crates/trading/src/examples/strategies/grid_mm/`
+  and `composite_market_maker/` (behind `feature="examples"`): cancel-inflight
+  dedup via `pending_self_cancels: AHashSet`, worst-case exposure from the
+  open+inflight union with dedup, and cancel-all+resubmit lifecycle. They cannot
+  be imported directly but should be **ported as the implementation reference**
+  rather than built from scratch.
 
 ### Inventory — **[NT-PROVIDES tracking] + [ALREADY-BUILT accumulator, UNWIRED]**
 - NT Portfolio is **Rust-native**: `crates/portfolio/src/portfolio.rs:1170
@@ -162,7 +212,12 @@ model backtestable in isolation and lets one backtest harness grade every asset.
   (`crates/risk/src/engine/config.rs:44`, enforced `engine/mod.rs:1186-1192`),
   submit/modify rate limits, **TradingState{Active,Halted,Reducing}**
   (`crates/model/src/enums.rs:1928`) with halt→deny and Reducing→block-exposure-
-  increasing (`risk/src/engine/mod.rs:1707-1730`), `cancel_all_orders`.
+  increasing (`risk/src/engine/mod.rs:1707-1730`).
+- **`cancel_all_orders` is a Strategy trait method** (`trading/src/strategy/mod.rs:742`),
+  **NOT** a RiskEngine primitive (the risk engine has zero occurrences of it).
+  `TradingState::Halted` only **denies new submits** — resting orders stay live
+  on halt. FR-023 hard-flat and any halt sequence MUST explicitly call
+  `self.cancel_all_orders(…)` from within the strategy.
 - **NT does NOT provide:** a **position/inventory-level cap** — `RiskEngineConfig`
   has only `max_notional_per_order`, no `position_limit`/`max_position`. bolt's
   `inventory_skew` hard cap (`bolt_v3_maker_model.rs:119`) is exactly this
@@ -213,9 +268,11 @@ model backtestable in isolation and lets one backtest harness grade every asset.
   `production_strategy_registry()` (single taker today, `src/strategies/mod.rs:8-12`)
   gains a `register::<BinaryOracleMakerBuilder>()` line; that file is not scanned.
 - **Source-integrity (GOLDEN digest)** is a sanctioned maintenance flow: if the
-  maker source must be tamper-gated, add a `GatedSourceRoot` in
-  `source_canonicalization.rs` (`STRATEGY_KEY` roots `:561-570`) and re-derive
-  `GOLDEN_STRATEGY_DIGEST` (`bolt_v3_source_integrity.rs:287`). Not laundering.
+  maker source must be tamper-gated, add a **new `MAKER_KEY` `GatedSourceRoot`**
+  in `source_canonicalization.rs` (after `SUBMIT_ADMISSION_KEY` at `:579-581`) —
+  **do NOT expand `STRATEGY_KEY`** (`:561-570`), which would break the taker
+  digest test — and derive a parallel `GOLDEN_MAKER_DIGEST` constant + pinned
+  test in `bolt_v3_source_integrity.rs` (`:287`). Not laundering.
 
 ### Position sizer / kill switch — **[ALREADY-BUILT, LIVE on taker]**
 - `src/bolt_v3_sizing.rs choose_robust_size` (EV-fraction→notional), consumed by
@@ -234,14 +291,19 @@ quoting for thin binary books.
 
 | # | Problem | Response | Evidence / confidence |
 |---|---------|----------|------------------------|
-| 1 | Stale / bad feed | **STOP (fail-closed)** | Taker pattern proven: `evaluate_forced_flat_predicates` pushes `StaleReference` (`exposure.rs:385-400`), `is_none_or` defense-in-depth. The only live run (Jun 3-6) priced **0 / 137,157** evals, all `ForcedFlat(StaleReference)` because the reference feed was never connected (`docs/research/leadlag-subsecond-fillability-2026-06-10.md:186-189`). **CONFIRMED**; maker-side gate **absent** — must replicate the taker predicate in the maker admission gate (§15). |
-| 2 | Pick-off via lag | **WIDEN / PULL (in-model)** | **EMPIRICALLY MEASURED, not assumed:** BTC taker edge **+13.27c/share @1s, 95% CI [+9.68,+16.87]**, n=127 (`leadlag-trades-leader-2026-06-11.md:92`); HL clock fires ~+1s late, 80-100% leader-first. Maker mark-outs: 30s = -0.013c CI[-0.073,+0.047] (spans zero), 60s = +0.141c CI[+0.057,+0.226] (`leadlag-taker-edge-2026-06-10.md:380-381`). Sub-60s adverse selection is statistically inseparable from noise. **CONFIRMED.** GM/CG μ-driven spread is the response. |
-| 3 | Inventory into 0/1 resolution | **INVENTORY MGMT (cap + skew/flatten)** | `inventory_skew` hard cap returns None at `\|net\|≥cap` (`bolt_v3_maker_model.rs:119`); FR-040 per-market reserved-collateral worst-case-liability gate; "resting maker is structurally left holding inventory into expiry … settlement is the dominant P&L term" (`spec.md:65`). **Risk CONFIRMED**; actual fill/accumulation rate is **runtime-only** (§13). |
+| 1 | Stale / bad feed | **STOP (fail-closed)** | Taker pattern proven: `evaluate_forced_flat_predicates` pushes `StaleReference` (`exposure.rs:385-400`), `is_none_or` defense-in-depth — one expression handling both the never-connected (`None`) and live-but-aged (`Some(ts)`, `now−ts>threshold`) cases. The only live run (Jun 3-6) priced **0 / 137,157** evals, all `ForcedFlat(StaleReference)` because the reference feed was never connected (`docs/research/leadlag-subsecond-fillability-2026-06-10.md:186-189`). **CONFIRMED (None arm); the `Some`-aged arm is structurally present but not live-exercised.** Maker-side gate **absent** — the predicate is `pub(super)` and must be **hoisted to a shared module** and wired into the maker admission gate, not copied (§15). |
+| 2 | Pick-off via lag | **WIDEN / PULL (in-model)** | **EMPIRICALLY MEASURED, not assumed:** BTC taker edge **+13.27c/share @1s, 95% CI [+9.68,+16.87]**, n=127 (`leadlag-trades-leader-2026-06-11.md:92`); HL clock fires ~+1s late, 80-100% leader-first. Maker mark-outs: 30s = -0.013c CI[-0.073,+0.047] (spans zero), 60s = +0.141c CI[+0.057,+0.226] (`leadlag-taker-edge-2026-06-10.md:380-381`) — **gross, fee-excluded** (`leadlag_session4.py` maker mark-out loop applies no maker fee). At `makerBaseFee=1000` (10%), fee ≈ `rate·p·(1−p)` ≈ 2.5c/share at p=0.5, which dominates the entire CI; net-of-fee 60s mark-out is **negative**, 30s already spans zero gross. **The "sub-60s adverse selection is noise" conclusion does NOT hold net of fees** — fee-adjusted mark-outs MUST be computed before this claim is asserted. GM/CG μ-driven spread is the response. |
+| 3 | Inventory into 0/1 resolution | **INVENTORY MGMT (cap + skew — NO active flatten)** | `inventory_skew` hard cap returns None at `\|net\|≥cap` (`bolt_v3_maker_model.rs:119`); FR-040 per-market reserved-collateral worst-case-liability gate; "resting maker is structurally left holding inventory into expiry … settlement is the dominant P&L term" (`spec.md:65`). **Risk CONFIRMED**. **Active-flatten (crossing the book to reduce a stuck position) is ABSENT** — `None` stops new accumulation but no code places aggressive/reduce orders; on a thin CLOB a stuck one-sided position has no forced-liquidation path before expiry (§15). Actual fill/accumulation rate is **runtime-only** (§13). |
 | 4 (opt.) | Runaway total loss | **single hard backstop** | Real, non-redundant: the position cap stops *accumulation* but does not bound *settlement loss on already-held inventory*. `KillSwitchHaltTriggerKind::LossGovernorBreach` + constructor exist (`bolt_v3_kill_switch.rs:45,51,61`) but **no code computes running P&L and fires it** (§15 gap). The graduated governor FR-023 (cancel-only / reduce-only / hard-flat / soft-hold) is the spec's response. |
+| 5 (opt.) | Reward-continuity vs safety tension | **soft-hold (reward-preserving)** | FR-060 mandates safety wins when reward-eligibility (continuous resting) conflicts with a pull signal; soft-hold is the governor state that defers a full pull when the safety threshold is not yet breached, preserving LP-reward eligibility. Same D10 principle as rows 1-4 — gives soft-hold a named real problem rather than an unmapped 4th FR-023 state. |
 
 **Governor shape (FR-023):** graduated states, not a boolean; kill predicates
 (σ-floor, basis-cap, τ-floor, plus existing stale/thin/incoherent) as TOML
-thresholds that fail closed.
+thresholds that fail closed. Additional spec-level failure modes — basis blowout
+(basis-cap predicate, FR-023), maintenance stranding (FR-050 / `maintenance_window`),
+fee/rebate inversion (FR-060 / FR-001 net accounting), and self-crossing legs
+(FR-022 / SC-002) — have design homes in the spec; this table covers the three
+evidence-ranked primary risks, **not an exhaustive enumeration**.
 
 ## 6. Sourcing Policy (D5, D10) — NT-FIRST gate
 
@@ -291,6 +353,15 @@ there. **Task #1** tracks "C."
   excluded from `process_option_expiry`; the generic path fills at an
   **externally-supplied** `settlement_price`. Adversarial verdict on "NT does
   not auto-settle": **REAL.**
+- **Double-booking guard required:** if a backtest harness calls
+  `set_settlement_price` on the matching engine (`engine.rs:408`) before the slot
+  runs, NT's general expiry path (`engine.rs:2102-2111`) **already** closes all
+  open positions via `apply_fills` at that price. The slot's
+  `maker_settlement_payout` must therefore either (a) delegate entirely to NT's
+  expiry path (pre-set `settlement_price`, skip independent booking) or (b) check
+  `is_expiration_processed()` before booking and treat NT's auto-fill as the
+  authoritative close. Running both paths double-closes positions — resolve in
+  §16 before implementing FR-030.
 - **Critical correction (D7):** `InstrumentStatus::Close` is **NOT** NT's
   settlement mechanism. `process_status(MarketStatusAction::Close)` only sets
   `market_status = Closed` (`engine.rs:1890-1912`, body read — no payout logic).
@@ -298,8 +369,17 @@ there. **Task #1** tracks "C."
   expiration. The Polymarket contract marks NT's `InstrumentClose` `unsupported`,
   so the **resolution signal the strategy actually receives is
   `InstrumentStatus::Close`** — a notification the per-asset settlement slot must
-  observe and then **explicitly book the 0/1 payout** (FR-030). FR-004 requires
-  one shared settlement primitive reused by backtest and live.
+  observe and then **explicitly book the 0/1 payout** (FR-030).
+  **Winner detection:** NT emits `InstrumentStatus::Close` for **all** tokens in
+  the resolved market (both Yes and No), each carrying the same freeform `reason`
+  string `"Winner: {winning_asset_id} ({winning_outcome})"` — there is **no**
+  structured settlement-price or winning-side field on `InstrumentStatus`
+  (`data.rs:1060-1087`). The slot must extract `winning_asset_id` from the reason
+  string and compare it against the instrument's own Polymarket `token_id` to
+  resolve payout = 1.0 (winner) or 0.0 (loser); FR-030 must specify this
+  comparison, and `maker_settlement_payout` must accept the resolved payout value
+  rather than re-derive it. FR-004 requires one shared settlement primitive
+  reused by backtest and live.
 - The taker has **zero** resolution handling (no `on_instrument_status` /
   `on_instrument_close` handler — confirmed absent). The maker adds the handler +
   the family `maker_settlement_payout` path (`mod.rs:87`, already typed per
@@ -328,6 +408,14 @@ there. **Task #1** tracks "C."
   whichever is lower (FR-011).
 - FR-080: the controller MUST read modify/budget/maintenance/depth/fee/
   settlement-kind as variables and MUST NOT branch on a venue name.
+  **Enforcement gap (open):** FR-080 has **no CI fence** — the existing
+  `verify_bolt_v3_core_boundary.py` catches only `match venue.kind`/`VenueKind`
+  enum dispatch, not string-literal venue-name comparisons. A
+  `verify_bolt_v3_no_venue_name_branch.py` script must be added to
+  `source-fence-static`, denying e.g. `venue_id == "polymarket"` /
+  `venue_name.contains("binance")` outside `src/bolt_v3_providers/`. Until it
+  ships and is wired into the `justfile` recipe, FR-080 is a policy assertion
+  only, not an enforced invariant.
 
 ## 10. Backtest Go-Live Gate (D9)
 
@@ -348,6 +436,14 @@ there. **Task #1** tracks "C."
   queue-position model**; only if proven insufficient does a custom FillSim
   become a candidate port. **FillSim is a contingent fallback, not a required
   port** (refutes the earlier "needs FillSim" minimization).
+- **TradeTick-corpus precondition (hard):** `decrement_queue_on_trade` is called
+  **exclusively** from `process_trade_tick` (`engine.rs:1820`);
+  `process_order_book_delta` never drains queue volume. A delta-only corpus
+  (Polymarket L2 without trade ticks) never drains `queue_ahead`, so every limit
+  order stays permanently queued — **equivalent to zero fills**, silently. NT's
+  queue-position model is operative **only** when TradeTick events are present in
+  the corpus alongside OrderBookDeltas. FR-001/FR-003 corpus assembly MUST
+  include trade ticks, or the backtest reports a misleading zero-fill result.
 - FR-005: underlying spot for the window must be backfilled and point-in-time
   aligned to the oracle the maker saw (look-ahead controlled).
 
@@ -355,9 +451,14 @@ there. **Task #1** tracks "C."
 
 - **Binary first** to prove the framework (built). Then each new asset fills the
   two slots behind the **MarketFamily seam** (already carrying `fair_probability_up`
-  + `maker_quote_targets` + `maker_settlement_payout` per family; FR-081). A
-  second family (`hyperliquid_instrument`) is already registered, demonstrating
-  the path.
+  + `maker_quote_targets` + `maker_settlement_payout` + `maker_binary_fee_curve`
+  per family; FR-081). A second family (`hyperliquid_instrument`) is registered
+  but currently uses `unsupported_*` stubs returning `None` for all maker hooks —
+  it demonstrates the registration path only, not a working maker.
+  **Structural caveat:** the shared `FamilyQuoteInputs` struct
+  (`bolt_v3_quoting.rs:30-42`) is binary-scoped (no `funding_rate`/`vol_surface`/μ/
+  `size`); perp advisors (need funding) and options advisors (need a vol surface)
+  must extend or replace it before their `maker_quote_targets` can be wired.
 - **Perps / spot:** A-S/GLFT become *in-scope* here (deferred from binary per
   FR-020) — but only via reimplement-from-paper after re-anchoring the port
   sources (§6).
@@ -412,12 +513,25 @@ These tasks are promoted to tracked GitHub issues at spec+plan time.
 7. **Spec Assumptions are stale on two points:** bolt order budget is 40/min
    (`root.toml:412`), not "100/second"; the VenueContract W1 schema extension is
    already merged. Ground from main, not `spec.md:177-178`.
+8. **`plan.md` references a nonexistent file:** `specs/488-binary-oracle-maker/
+   plan.md:68,114,131` cite `src/bte_ingest.rs` as the landed raw→catalog loader;
+   `git ls-tree` at this anchor finds no such path. The BTE catalog loaders live
+   under `crates/backtesting-vertical-slice/src/` — `catalog_projection.rs`
+   (TradeTick projection + instrument write) and `pmxt_one_off_backfill_projection.rs`
+   (pmxt L2). **Which exact module the plan author meant is not confirmed** (the
+   "L2 / `write_instruments` gap" wording maps to neither cleanly); pin it against
+   the BTE epic (#437/#438) when the maker plan is (re)written, and correct those
+   three references then — do NOT substitute a guessed path now.
 
 ## 15. Open Gaps (must be addressed in the build, not research)
 
-- **Maker-side stale-feed gate ABSENT:** replicate the taker's
-  `evaluate_forced_flat_predicates(StaleReference)` (`exposure.rs:385-400`) in
-  the maker admission gate.
+- **Maker-side stale-feed gate ABSENT (hoist, do not copy):** `ForcedFlatInputs`,
+  `ForcedFlatReason`, and `evaluate_forced_flat_predicates` are `pub(super)` in
+  `binary_oracle_edge_taker` (`exposure.rs:364-400`) and depend on `pub(super)`
+  `SelectionPhase` (`selection.rs:32`). A literal copy into the maker is the
+  dual-state debt Rule #6 forbids. **Hoist** these three into a shared
+  `bolt_v3_*` module (e.g. `bolt_v3_feed_health`) and wire BOTH the taker and the
+  new maker admission gate against the shared function.
 - **4th-risk loss backstop has no firing code:** `LossGovernorBreach` + ctor
   exist; nothing computes running P&L against thresholds and fires it. The
   orphaned `loss_governor` TOML is deploy-local and `RiskBlock` has
@@ -431,6 +545,46 @@ These tasks are promoted to tracked GitHub issues at spec+plan time.
   Jacobo-EG clones gone) — re-clone before authorizing a GLFT port.
 - **SVI/BL absence confirmed only for NT + market-maker-rs** (14 repos
   unverified) — re-clone before relying on the universal claim for options.
+- **μ=0 (informed_fraction=0) go-live is PROHIBITED:** `gm_binary_quote` collapses
+  bid=ask=fair_p_up at μ=0 (`bolt_v3_maker_model.rs:61-88`, asserted in its own
+  tests), yielding **zero spread**; every fill then bleeds the full taker fee with
+  no adverse-selection compensation. The go-live gate MUST reject any config where
+  the μ source is absent or produces a constant 0.
+- **Active-flatten path ABSENT:** when `inventory_skew` returns `None` the governor
+  goes reduce-only, but no code emits an aggressive/crossing order to reduce a
+  stuck position (`bolt_v3_maker_model.rs:112-126`; grep finds no taker-mode/cross
+  path). On a thin CLOB a stuck one-sided position has no forced-liquidation path
+  before expiry. Decide: wire a taker-mode reduce path off the `None` signal, or
+  explicitly accept cap-only defense and document the residual settlement-loss risk.
+- **NT Portfolio ignores inflight orders (inventory lag):** `net_position` updates
+  only on `PositionEvent`/fill (`portfolio.rs:1486-1501`); `SUBMITTED`/`ACCEPTED`
+  orders live in `cache.orders_inflight` and are NOT reflected. On a thin CLOB the
+  SubmitOrder→OrderFilled window is the primary one-sided-accumulation interval —
+  the inventory gate MUST read `cache.orders_inflight` (or the `MakerInventory`
+  accumulator) to cover it; NT Portfolio alone under-counts pending exposure.
+- **Inventory sign mismatch (No-leg) needs an adapter:** NT Portfolio tracks raw
+  per-instrument `signed_qty` (Buy=+qty, Sell=−qty regardless of leg);
+  `MakerInventory` normalizes to YES-equivalent ((No,Buy)=−qty,
+  `bolt_v3_maker_inventory.rs:35-42`). For a No-leg Buy these disagree in sign. If
+  NT Portfolio is the chosen truth (§16#4), the caller of `inventory_skew` MUST
+  invert the No-leg position before summing: `net_yes = yes_position − no_position`.
+- **FR-040 worst-case-liability has no in-flight data source:** neither NT
+  Portfolio (filled positions only; `margins_init` is margin-account-only,
+  inapplicable to cash-settled Polymarket) nor `MakerInventory` (fills only,
+  `:11-45`) tracks the live resting-order set. FR-040 needs a third input — the
+  sum of open order quantities per market from NT Cache (`cache.orders_open`) at
+  gate-evaluation time. Wire it explicitly; no existing tracker provides it.
+- **RequoteBudget has no production caller and no atomic reservation:** every
+  `RequoteBudget::new` call site is `#[cfg(test)]` (`bolt_v3_requote_budget.rs`),
+  and the struct has a single window-cost accumulator with no separate
+  cancel-vs-submit reservation slot. Wiring MUST (a) resolve the
+  min(`clob_per_minute=100`, NT-governor=40/min) cap at construction, and
+  (b) reserve budget **atomically** for the cancel+resubmit pair before issuing the
+  cancel — mid-window exhaustion after cancel but before resubmit strands a side.
+- **`maker_binary_fee_curve` has no production consumer:** the 4th binding slot and
+  its `updown` impl (`fee_rate·p·(1-p)`) are unit-tested but never called from any
+  quoting/sizing/admission path (`mod.rs:88`, `:493-515` test-only). Wire it into
+  spread/edge or fee-adjusted EV before live use.
 
 ## 16. Must Resolve Before Implementation (decided now — no research mid-build)
 
@@ -438,9 +592,10 @@ These tasks are promoted to tracked GitHub issues at spec+plan time.
    injectable from a non-scanned caller (`main.rs` / `build_bolt_v3_live_node`);
    keep the maker `StrategyBuilder` + register fn under
    `src/strategies/binary_oracle_maker/`. Do NOT mirror the taker archetype.
-2. **GOLDEN-digest gating:** decide whether the maker source is tamper-gated; if
-   yes, add a `GatedSourceRoot` and re-derive the digest, scoped into the maker
-   PR up front.
+2. **GOLDEN-digest gating:** add a **new `MAKER_KEY` `GatedSourceRoot`** (separate
+   from `STRATEGY_KEY`) covering `src/strategies/binary_oracle_maker/`, and derive
+   a parallel `GOLDEN_MAKER_DIGEST` + pinned test. **Do NOT expand `STRATEGY_KEY`**
+   — that breaks the existing taker digest test. Scope into the maker PR up front.
 3. **Requote-budget number:** size to **40/min** (`root.toml:412`), reconciled
    against the contract's `clob_per_minute=100`, whichever is lower (FR-011).
 4. **Inventory source of truth:** pin NT Portfolio vs MakerInventory before
@@ -454,23 +609,40 @@ These tasks are promoted to tracked GitHub issues at spec+plan time.
 7. **Loss-backstop wiring:** add a parsed config field (replacing the orphaned
    deploy-local `loss_governor`) and firing code that computes running P&L and
    calls `loss_governor_breach`; thresholds in TOML.
+8. **Canonical pricing path (Rule #2):** choose `gm_binary_quote` (μ-driven) vs the
+   already-wired `compose_binary_legs` reservation-band path; if GM/CG wins, add
+   `informed_fraction` to `FamilyQuoteInputs`; **delete** the path not chosen. Name
+   the survivor and state how the other is removed (§4 DUAL-PATH HAZARD).
+9. **Correct spec.md Assumptions (FR authority):** update `spec.md:177` bolt-config
+   budget from "100/second" to "40/min (`root.toml:413`)" and remove `spec.md:178`
+   "cannot hold the maker capability variables" — `VenueContract` already carries
+   execution/rate_budget/maintenance_window/depth_availability/fee_schedule/
+   settlement at schema_version=3. Also fix `plan.md:68,114,131` (the nonexistent
+   `src/bte_ingest.rs` path — see §14#8; pin the real BTE module first).
 
 ## 17. Implementation-Readiness: Settled vs Runtime-Dependent
 
 **Settled (build now, no further research):**
-- GM/CG model built, tested, units-correct, UNWIRED — wire it.
-- Family seam + maker fn pointers exist for two families
-  (`market_families/mod.rs:85-87`).
+- GM/CG model built, tested, units-correct, UNWIRED — wire it **after** the
+  §16 dual-path decision (GM/CG vs the already-wired `compose_binary_legs`).
+- Family seam + four maker fn pointers exist (`market_families/mod.rs:85-88`);
+  `updown` implements them, `hyperliquid_instrument` is `unsupported_*` stubs.
 - VenueContract schema is DONE; read all venue facts from it; effective order
   budget = **40/min**.
-- NT reuse map fixed: Portfolio (Rust-native net_position/pnls), TradingState
-  halt/reduce + cancel_all, notional cap, BS greeks/IV. Build: signed-VPIN/μ
-  estimator, position cap, settlement-payout booking, graduated governor, loss-
-  backstop firing code.
+- **NT API map** (what the API provides — settled): Portfolio (Rust-native
+  net_position/pnls), TradingState halt/reduce + `cancel_all_orders` (a Strategy
+  method, not a risk primitive — §4), notional cap, BS greeks/IV. **Which
+  component is authoritative for inventory is NOT settled** — see §16#4. Build:
+  signed-VPIN/μ estimator, position cap, settlement-payout booking, graduated
+  governor, loss-backstop firing code, active-flatten path.
 - Settlement hooks on `InstrumentStatus::Close` (notification); strategy books
-  0/1 explicitly.
+  0/1 explicitly (winner parsed from the freeform reason string — §8).
 - Live-registration clean path = injectable binding slice + maker code under
-  `src/strategies/` (not the taker-mirror archetype).
+  `src/strategies/` (not the taker-mirror archetype). The `MarketAction`→NT
+  submit/cancel wiring layer exists only on `codex/reference-price-architecture`
+  (commit `d4159c0a9`) and targets the World-Cup single-venue strategy, **not**
+  the agnostic maker archetype; porting it to the generic archetype is the
+  primary executor build gap (§15).
 
 **Genuinely needs runtime/backtest data (cannot settle from source):**
 - Realistic fill rate & one-sided inventory accumulation on Polymarket CLOB

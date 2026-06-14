@@ -173,17 +173,17 @@
             {
               "role": "source_universe_conversion_queue",
               "path": "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/binance-data-vision-trades-2026-03-01-all-instruments/queue/source-universe-conversion-queue.json",
-              "sha256": "c680af5dc5df0a9da779222830703458091a3f4c2636ec533dba65e2a42f0774"
+              "sha256": "e5d099e7e3d89a1d2607252f45d91e3cc34c47438f57d17b4678261fa26a9c25"
             },
             {
               "role": "source_universe_object_gates",
               "path": "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json",
-              "sha256": "9704ebddaf79d8b3eb2eac4f61a2ebd9c8ebaac5a596a000b13578635566cc58"
+              "sha256": "5949a7375a3e6c87d9718b9ac49b814e7887a13bbcd916d2c770d8fc757e8a2a"
             },
             {
               "role": "source_universe_conversion_run_plan",
               "path": "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/binance-data-vision-trades-2026-03-01-all-instruments/run-plan/source-universe-conversion-run-plan.json",
-              "sha256": "1a2e7b5bdd027f471d4feb6d4da6030ce38bb25a89b062851f0d98767c0f1a10"
+              "sha256": "753650cc74c10cbbfbb349f816fb0c4202e1d17a98621ee84172f6742913a898"
             }
           ],
           "blocking_issues": []
@@ -549,17 +549,17 @@
             {
               "role": "source_archive_index_manifest",
               "path": "specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/pmxt-polymarket-v2-current/manifest/source-archive-index-manifest.json",
-              "sha256": "d7a368616332d73afebae03abf9f28bac94089498d82f7edc285ddea3371cd74"
+              "sha256": "dc76ed0a60f55e0a0f2c082b5aa6031ac89f8bd869c7c039a4f1d294a6552ed9"
             },
             {
               "role": "source_universe_manifest",
               "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
-              "sha256": "d020be8d337b404f1b7cea7b5962bccd5873ca1532e7cc9d6b0be09c33528299"
+              "sha256": "1fc294c059bf0c13dfab528b80a8bc19a2fb1534fbe6bac2301197211e2239a6"
             },
             {
               "role": "source_universe_conversion_queue",
               "path": "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json",
-              "sha256": "e96a49330cb03640d2046bec134a523f59596ecd97e90f02233505835a97b2d5"
+              "sha256": "5444284811d4b9cd8c9f2f5b97562082a1f1058e379d6e744732b3b551ac190a"
             },
             {
               "role": "source_universe_source_proof_set",

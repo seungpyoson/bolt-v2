@@ -89,32 +89,69 @@ fn write_catalog() -> (TempDir, InstrumentId) {
 
 fn first_parquet_file(root: &Path, path_prefix: &str) -> PathBuf {
     let catalog = ParquetDataCatalog::new(root, None, None, None, None);
-    let root = PathBuf::from(
+    let preferred_root = PathBuf::from(
         catalog
             .make_path(path_prefix, None)
             .expect("catalog data type path"),
     );
-    for entry in std::fs::read_dir(&root).expect("read catalog data type dir") {
-        let path = entry.expect("catalog entry").path();
-        if path.is_dir() {
-            if let Some(found) = first_parquet_file_if_any(&path) {
-                return found;
-            }
-        } else if path.extension().is_some_and(|ext| ext == "parquet") {
-            return path;
-        }
+    if let Some(found) = first_parquet_file_if_any(&preferred_root) {
+        return found;
     }
+
+    let data_kind_token = catalog_data_kind_token(path_prefix);
+    if let Some(found) = first_parquet_file_matching(root, &data_kind_token) {
+        return found;
+    }
+
     panic!("catalog did not contain a parquet file under {path_prefix}")
 }
 
+fn catalog_data_kind_token(path_prefix: &str) -> String {
+    path_prefix
+        .split(['_', '-'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(path_prefix)
+        .to_ascii_lowercase()
+}
+
+fn sorted_dir_entries(root: &Path) -> Option<Vec<PathBuf>> {
+    let mut entries = std::fs::read_dir(root)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect::<Vec<_>>();
+    entries.sort();
+    Some(entries)
+}
+
+fn is_parquet(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "parquet")
+}
+
+fn first_parquet_file_matching(root: &Path, data_kind_token: &str) -> Option<PathBuf> {
+    for path in sorted_dir_entries(root)? {
+        if path.is_dir() {
+            if let Some(found) = first_parquet_file_matching(&path, data_kind_token) {
+                return Some(found);
+            }
+        } else if is_parquet(&path)
+            && path
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains(data_kind_token)
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
 fn first_parquet_file_if_any(root: &Path) -> Option<PathBuf> {
-    for entry in std::fs::read_dir(root).ok()? {
-        let path = entry.ok()?.path();
+    for path in sorted_dir_entries(root)? {
         if path.is_dir() {
             if let Some(found) = first_parquet_file_if_any(&path) {
                 return Some(found);
             }
-        } else if path.extension().is_some_and(|ext| ext == "parquet") {
+        } else if is_parquet(&path) {
             return Some(path);
         }
     }

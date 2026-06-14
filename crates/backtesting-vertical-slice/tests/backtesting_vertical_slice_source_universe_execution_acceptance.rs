@@ -1,11 +1,62 @@
 use std::{fs, path::Path};
 
+use backtesting_vertical_slice::source_universe_conversion_queue::write_source_universe_conversion_queue_from_spec_file;
+use backtesting_vertical_slice::source_universe_conversion_run_plan::write_source_universe_conversion_run_plan_from_spec_file;
 use backtesting_vertical_slice::source_universe_execution_acceptance::{
     SourceUniverseExecutionAcceptanceLedger, SourceUniverseExecutionAcceptanceLedgerSpec,
     SourceUniverseExecutionAcceptanceLedgerStatus, SourceUniverseExecutionAcceptanceUniverseStatus,
     evaluate_source_universe_execution_acceptance_ledger,
     write_source_universe_execution_acceptance_ledger_from_spec_file,
 };
+
+const BYBIT_RUN_PLAN_REPO_PATH: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json";
+const PMXT_QUEUE_REPO_PATH: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json";
+
+fn copy_spec_with_output_dir(source_spec: &Path, target_spec: &Path, output_dir: &Path) {
+    let spec = fs::read_to_string(source_spec).expect("read committed source-universe spec");
+    let mut replaced = false;
+    let updated = spec
+        .lines()
+        .map(|line| {
+            if line.starts_with("output_dir = ") {
+                replaced = true;
+                format!("output_dir = \"{}\"", output_dir.display())
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(replaced, "committed source-universe spec has output_dir");
+    fs::write(target_spec, format!("{updated}\n")).expect("write temp source-universe spec");
+}
+
+fn replace_spec_path(spec_text: &str, committed_path: &str, temp_path: &Path) -> String {
+    assert!(
+        spec_text.contains(committed_path),
+        "committed spec contains {committed_path}"
+    );
+    spec_text.replace(committed_path, &temp_path.display().to_string())
+}
+
+fn normalize_artifact_ref_path(
+    ledger: &mut SourceUniverseExecutionAcceptanceLedger,
+    universe_id: &str,
+    role: &str,
+    path: &str,
+) {
+    let record = ledger
+        .records
+        .iter_mut()
+        .find(|record| record.universe_id == universe_id)
+        .expect("record exists");
+    let artifact_ref = record
+        .artifact_refs
+        .iter_mut()
+        .find(|artifact_ref| artifact_ref.role == role)
+        .expect("artifact ref exists");
+    artifact_ref.path = Path::new(path).to_path_buf();
+}
 
 #[test]
 fn source_universe_execution_acceptance_reports_ready_and_blocked_universes_without_overclaiming() {
@@ -492,8 +543,9 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
 #[test]
 fn committed_source_universe_execution_acceptance_ledger_round_trips_through_evaluator() {
     // Read the committed spec TOML and the committed output JSON.
-    let spec_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../specs/023-nt-research-analytics-platform/reference")
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let spec_path = reference_root
         .join("source-universe-execution-acceptance-ledgers/binance-bybit-pmxt-current")
         .join("source-universe-execution-acceptance-ledger.toml");
     let spec_path = spec_path
@@ -508,12 +560,59 @@ fn committed_source_universe_execution_acceptance_ledger_round_trips_through_eva
     let committed_ledger: SourceUniverseExecutionAcceptanceLedger =
         serde_json::from_slice(&committed_bytes).expect("parse committed ledger");
 
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let bybit_run_plan_spec = temp_dir
+        .path()
+        .join("bybit-source-universe-conversion-run-plan.toml");
+    copy_spec_with_output_dir(
+        &reference_root
+            .join("source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01")
+            .join("source-universe-conversion-run-plan.toml"),
+        &bybit_run_plan_spec,
+        &temp_dir.path().join("bybit-run-plan"),
+    );
+    let bybit_run_plan_artifact =
+        write_source_universe_conversion_run_plan_from_spec_file(&bybit_run_plan_spec)
+            .expect("Bybit run plan is reproducible");
+
+    let pmxt_queue_spec = temp_dir
+        .path()
+        .join("pmxt-source-universe-conversion-queue.toml");
+    copy_spec_with_output_dir(
+        &reference_root
+            .join("source-universe-conversion-queues/pmxt-polymarket-v2-current")
+            .join("source-universe-conversion-queue.toml"),
+        &pmxt_queue_spec,
+        &temp_dir.path().join("pmxt-conversion-queue"),
+    );
+    let pmxt_queue_artifact =
+        write_source_universe_conversion_queue_from_spec_file(&pmxt_queue_spec)
+            .expect("PMXT queue is reproducible");
+
     let spec_text = fs::read_to_string(&spec_path).expect("read committed spec");
+    let spec_text = replace_spec_path(
+        &spec_text,
+        BYBIT_RUN_PLAN_REPO_PATH,
+        &bybit_run_plan_artifact.path,
+    );
+    let spec_text = replace_spec_path(&spec_text, PMXT_QUEUE_REPO_PATH, &pmxt_queue_artifact.path);
     let spec: SourceUniverseExecutionAcceptanceLedgerSpec =
-        toml::from_str(&spec_text).expect("parse committed spec TOML");
+        toml::from_str(&spec_text).expect("parse temp committed spec TOML");
     let base_dir = spec_path.parent().expect("spec parent");
-    let evaluated = evaluate_source_universe_execution_acceptance_ledger(&spec, base_dir)
+    let mut evaluated = evaluate_source_universe_execution_acceptance_ledger(&spec, base_dir)
         .expect("evaluate committed spec");
+    normalize_artifact_ref_path(
+        &mut evaluated,
+        "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+        "source_universe_conversion_run_plan",
+        BYBIT_RUN_PLAN_REPO_PATH,
+    );
+    normalize_artifact_ref_path(
+        &mut evaluated,
+        "backfill-source-universe-pmxt-polymarket-v2-current",
+        "source_universe_conversion_queue",
+        PMXT_QUEUE_REPO_PATH,
+    );
 
     assert_eq!(
         evaluated, committed_ledger,

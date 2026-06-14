@@ -78,6 +78,16 @@ def assert_valid(
                 f"{description}: expected success, got {result.returncode}\n"
                 f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             )
+        expected_output = (
+            f"Rust Probe mode: {mode}\n"
+            f"Rust Probe test_target: {test_target or '<empty>'}\n"
+            f"Rust Probe test_name: {test_name or '<empty>'}\n"
+        )
+        if expected_output not in result.stdout:
+            raise AssertionError(
+                f"{description}: missing selected probe output {expected_output!r}\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
         args = captured_args(temp)
         expected = ["cargo", "--repo", temp, "--", *expected_args]
         if args != expected:

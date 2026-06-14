@@ -393,6 +393,10 @@ impl ResolvedArtifactRoot {
             proof_run_id,
             PathTokenMode::NoEquals,
         )?;
+        ensure!(
+            !proof_run_id.contains('/'),
+            "nt_catalog_synthetic_proof_run_id must be a single artifact path token"
+        );
         Ok(self.join([
             self.subpaths.nt_catalog_synthetic_proof.as_str(),
             "v1",

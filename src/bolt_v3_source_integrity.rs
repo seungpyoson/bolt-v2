@@ -284,8 +284,12 @@ mod tests {
     // (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs) into the strategy
     // source set, so the sole TOML->runtime-table mapping for the shadow-mode
     // kill switch is now tamper-evidenced alongside its validating consumer.
+    // Re-derived after the binary-maker feed-health hoist (#488) moved
+    // ForcedFlatReason/ForcedFlatInputs/evaluate_forced_flat_predicates out of
+    // binary_oracle_edge_taker/exposure.rs into the shared bolt_v3_feed_health
+    // module and rewired mod.rs to import them, changing the strategy source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "c5ad6466a12fe43623769431d571e86a24366768508a1cdd991de952cd1ad036";
+        "f2cc9e4b027a87e8deb12e34cc8c970fe663f333c9748f96c752e04593074d68";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

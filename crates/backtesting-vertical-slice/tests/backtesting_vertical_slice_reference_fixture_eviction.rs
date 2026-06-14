@@ -8,7 +8,8 @@
 //!   * the index drifts outside the declared phase-1 scope,
 //!   * a new per-record run dir is (re-)committed (regrowth),
 //!   * a committed pack's golden record-`00000` is missing or wrongly evicted, or
-//!   * a pack's non-golden records are not all covered by the eviction index.
+//!   * the summaries' advertised non-golden paths and the eviction index do not
+//!     match exactly (an unindexed advertised path, or an orphaned index entry).
 
 use std::collections::HashSet;
 use std::fs;
@@ -61,11 +62,12 @@ fn execution_pack_run_dirs(ep_root: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn evicted_fixtures_index_is_well_formed() {
+    // `load` structurally validates before returning (see `EvictedFixtureIndex::load`),
+    // so a successful load proves the committed index is well-formed — no separate
+    // `validate_structure()` re-call needed.
     let repo_root = repo_root_from_manifest_dir();
-    let index = EvictedFixtureIndex::load(&repo_root).expect("load evicted-fixtures index");
-    index
-        .validate_structure()
-        .expect("evicted-fixtures index must be well-formed");
+    EvictedFixtureIndex::load(&repo_root)
+        .expect("committed evicted-fixtures index loads + validates");
 }
 
 #[test]
@@ -133,10 +135,11 @@ fn kept_execution_pack_summaries_are_present() {
 /// The keep/evict boundary, verified against every committed pack summary: each
 /// pack's golden record-`00000` (the only record the execution-pack acceptance
 /// test dereferences) is kept on disk and absent from the eviction index, while
-/// every non-golden record the summary still advertises is fully covered by the
-/// index and absent on disk. Ties the summary's `records[]` list to the index so
-/// the corpus cannot drift into a state where the summary points at a record that
-/// is neither present nor recorded as evicted.
+/// every non-golden record the summary still advertises is absent on disk. The
+/// set of advertised non-golden paths must equal the eviction index *exactly* (a
+/// bijection, both directions), so the corpus cannot drift into either a summary
+/// that points at a record neither present nor evicted, or an orphaned index
+/// entry no summary advertises.
 #[test]
 fn committed_packs_keep_golden_record_and_evict_the_rest() {
     let repo_root = repo_root_from_manifest_dir();
@@ -150,7 +153,7 @@ fn committed_packs_keep_golden_record_and_evict_the_rest() {
     );
 
     let mut checked_packs = 0usize;
-    let mut checked_evicted_paths = 0usize;
+    let mut advertised_evicted: HashSet<String> = HashSet::new();
     for scope in scopes {
         let summary_path = scope.join("execution-pack/source-universe-execution-pack.json");
         let bytes = fs::read(&summary_path)
@@ -188,19 +191,34 @@ fn committed_packs_keep_golden_record_and_evict_the_rest() {
                     !repo_root.join(path).exists(),
                     "non-golden record artifact {key} must be evicted from the working tree"
                 );
-                checked_evicted_paths += 1;
+                assert!(
+                    advertised_evicted.insert(key.to_string()),
+                    "summary advertises non-golden artifact {key} more than once; a \
+                     duplicated path silently orphans the path it replaced in the index"
+                );
             }
         }
     }
 
-    // Non-vacuity: the boundary must have actually exercised both a kept golden
-    // record and at least one evicted non-golden record across the corpus.
+    // Full bijection, not just advertised ⊆ index: every advertised non-golden
+    // path must be indexed AND every index entry must be advertised by some
+    // committed summary. This catches the reverse drift the subset check misses —
+    // an orphaned index entry (a stale fingerprint nobody points at), or a summary
+    // path mutated to duplicate another. It also proves non-vacuity: the index is
+    // non-empty (validate_structure), so equality means real evicted paths were
+    // exercised, and `checked_packs` confirms a golden record was checked too.
+    let advertised: HashSet<&str> = advertised_evicted.iter().map(|s| s.as_str()).collect();
+    assert_eq!(
+        advertised,
+        evicted,
+        "advertised non-golden paths must equal the eviction index exactly; \
+         orphan index entries (indexed, not advertised): {:?}; \
+         advertised but unindexed: {:?}",
+        evicted.difference(&advertised).collect::<Vec<_>>(),
+        advertised.difference(&evicted).collect::<Vec<_>>(),
+    );
     assert!(
         checked_packs >= 1,
         "no execution-pack summaries were checked"
-    );
-    assert!(
-        checked_evicted_paths >= 1,
-        "expected at least one evicted non-golden record across committed packs"
     );
 }

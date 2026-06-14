@@ -777,6 +777,8 @@ def run_matches_fingerprint_reuse(
     return (
         as_text(run.get("name")) == config.workflow_name
         and as_text(run.get("path")) == config.workflow_path
+        and as_text(run.get("event")) == config.deploy_source_event
+        and as_text(run.get("head_branch")) == config.deploy_source_branch
         and as_text(run.get("status")) == "completed"
         and as_text(run.get("conclusion")) == "success"
     )

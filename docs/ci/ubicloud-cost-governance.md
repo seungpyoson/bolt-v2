@@ -151,7 +151,7 @@ Post-instrumentation evidence found real duplicate nextest spend:
 
 The workflow now resolves the current nextest fingerprint from the secure `test-archive` job output after publishing `nextest-archive-fingerprint-*` for metering evidence. If a bounded search finds a newer-prior successful CI run with exactly one matching fingerprint artifact, exactly one matching CI provenance artifact, matching workflow/config digests, successful required job evidence, and the same parsed nextest fingerprint, the four `nextest shard` jobs are skipped. The `test` aggregate and `gate` jobs accept that path only when resolver outputs identify the reused source run, source SHA, and provenance artifact. Fingerprint reuse is disabled on `refs/heads/main` so main pushes still emit exact-SHA CI provenance for tag deploy reuse. Missing, malformed, ambiguous, expired, failed, cancelled, in-progress, wrong-workflow, wrong-OS, wrong-arch, wrong-profile, wrong-shard-count, wrong-schema, or otherwise unverifiable evidence falls back to normal full nextest shards.
 
-Rollback switch: set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to force the full-CI policy path for PRs while preserving the validated fingerprint reuse path for investigation, or revert the Slice A workflow/provenance commits if reuse itself must be removed. Branch `workflow_dispatch` runs always execute the nextest shards. Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; it does not make cache hits proof and does not bypass the validated reuse requirement.
+Policy override: set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to force the full-CI policy path for PRs while preserving the validated fingerprint reuse path for investigation. Revert the Slice A workflow/provenance commits if reuse itself must be removed. Branch `workflow_dispatch` runs always execute the nextest shards. Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; it does not make cache hits proof and does not bypass the validated reuse requirement.
 
 ### Lever B: full CI on demand
 
@@ -186,7 +186,7 @@ Draft fork PRs fail closed because upstream `workflow_dispatch` cannot safely ta
 draft fork PRs cannot dispatch upstream full CI; mark the PR ready for review or have a maintainer move the branch into the upstream repository
 ```
 
-Rollback switches:
+Policy switches:
 
 - Set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to make draft PRs run full CI again without reverting the whole slice.
 - Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; set it only for an explicit provenance-emitter incident response where full CI evidence should not be blocked by artifact emission.

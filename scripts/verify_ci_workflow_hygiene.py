@@ -256,6 +256,12 @@ MAIN_BRANCH_SKIP_EXPR = "github.ref != 'refs/heads/main'"
 BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
 FINGERPRINT_REUSE_ALLOWED_EXPR = "needs.detector.outputs.fingerprint_reuse_allowed == 'true'"
 FINGERPRINT_REUSE_PR_EVENT_EXPR = "github.event_name == 'pull_request'"
+FINGERPRINT_REUSE_JOB_IF_VALUE = (
+    "${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' "
+    "&& github.event_name == 'pull_request' "
+    "&& needs.detector.outputs.fingerprint_reuse_allowed == 'true' "
+    "&& github.ref != 'refs/heads/main' }}"
+)
 FINGERPRINT_REUSE_ALLOWED_OUTPUT = (
     "fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}"
 )
@@ -378,7 +384,11 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'benches/**'",
     "'examples/**'",
     "'crates/**'",
+    "'.github/**'",
+    "'scripts/**'",
     "'specs/**/*.md'",
+    "'specs/023-nt-order-intent-layer/**'",
+    "'specs/023-nt-research-analytics-platform/reference/**'",
     "'config/**'",
     "'contracts/**'",
     "'docs/bolt-v3/**'",
@@ -1048,6 +1058,11 @@ def job_if_value(job_lines: list[str]) -> str:
 
 def step_has_id(block: list[str], step_id: str) -> bool:
     return any(re.match(rf"^\s+id:\s*{re.escape(step_id)}\s*$", strip_comment(line)) for line in block)
+
+
+def unique_step_with_id(job_lines: list[str], step_id: str) -> list[str] | None:
+    matches = [block for block in step_blocks(job_lines) if step_has_id(block, step_id)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def has_run_command(lines: list[str], command: str) -> bool:
@@ -5750,7 +5765,10 @@ def fingerprint_reuse_job_has_outputs(job_lines: list[str]) -> bool:
 
 
 def fingerprint_reuse_job_uses_secure_current_fingerprint(job_lines: list[str]) -> bool:
-    text = uncommented_text(job_lines)
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    if reuse_step is None:
+        return False
+    text = uncommented_text(reuse_step)
     downloads_current_fingerprint = any(
         block_has_input(block, "pattern", "nextest-archive-fingerprint-*")
         for block in action_blocks(job_lines, "actions/download-artifact@")
@@ -5763,7 +5781,10 @@ def fingerprint_reuse_job_uses_secure_current_fingerprint(job_lines: list[str]) 
 
 
 def fingerprint_reuse_job_runs_resolver(job_lines: list[str]) -> bool:
-    text = uncommented_text(job_lines)
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    if reuse_step is None:
+        return False
+    text = uncommented_text(reuse_step)
     required = (
         "id: reuse",
         "python3 scripts/ci_provenance.py resolve-fingerprint",
@@ -5775,8 +5796,15 @@ def fingerprint_reuse_job_runs_resolver(job_lines: list[str]) -> bool:
 
 
 def fingerprint_reuse_resolver_uses_bash(job_lines: list[str]) -> bool:
-    text = uncommented_text(job_lines)
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    if reuse_step is None:
+        return False
+    text = uncommented_text(reuse_step)
     return "id: reuse" in text and "shell: bash" in text
+
+
+def fingerprint_reuse_uses_canonical_job_if(job_lines: list[str]) -> bool:
+    return job_if_value(job_lines) == FINGERPRINT_REUSE_JOB_IF_VALUE
 
 
 def fingerprint_reuse_skips_main_branch(job_lines: list[str]) -> bool:
@@ -6149,19 +6177,30 @@ def detector_forces_build_on_workflow_dispatch(job_lines: list[str]) -> bool:
 
 def git_diff_pathspecs(block_text: str) -> tuple[str, ...] | None:
     normalized = re.sub(r"\\\s*\n\s*", " ", block_text)
-    match = re.search(r"git\s+diff\s+--name-only\b.*?\s--\s(?P<paths>.*?)\)", normalized, re.DOTALL)
-    if match is None:
+    matches = [
+        tuple(token for token in command_tokens(match.group("paths")) if token)
+        for match in re.finditer(
+            r"git\s+diff\s+--name-only\b.*?\s--\s(?P<paths>.*?)\)",
+            normalized,
+            re.DOTALL,
+        )
+    ]
+    if len(matches) != 1:
         return None
-    return tuple(token for token in command_tokens(match.group("paths")) if token)
+    return matches[0]
 
 
 def detector_maps_changed_to_any_changed(block_text: str) -> bool:
     chain = if_chain_bodies(block_text, '-n "$changed"')
     if chain is None:
         return False
+    true_write = 'echo "any_changed=true" >> "$GITHUB_OUTPUT"'
+    false_write = 'echo "any_changed=false" >> "$GITHUB_OUTPUT"'
     return (
-        'echo "any_changed=true" >> "$GITHUB_OUTPUT"' in chain.get(("if", '-n "$changed"'), "")
-        and 'echo "any_changed=false" >> "$GITHUB_OUTPUT"' in chain.get(("else", ""), "")
+        true_write in chain.get(("if", '-n "$changed"'), "")
+        and false_write in chain.get(("else", ""), "")
+        and block_text.count(true_write) == 1
+        and block_text.count(false_write) == 1
     )
 
 
@@ -6198,6 +6237,8 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
             "",
         )
         or 'echo "value=true" >> "$GITHUB_OUTPUT"' not in allowance_chain.get(("else", ""), "")
+        or allowance_text.count('echo "value=false" >> "$GITHUB_OUTPUT"') != 2
+        or allowance_text.count('echo "value=true" >> "$GITHUB_OUTPUT"') != 1
     ):
         errors.append("detector must determine fingerprint_reuse_allowed")
     return errors
@@ -6273,18 +6314,25 @@ def shell_line_exit_codes(line: str) -> list[str | None]:
     tokens = command_tokens(line)
     cursor = 0
     at_command_start = True
-    previous_boundary: str | None = None
     while cursor < len(tokens):
         token = tokens[cursor]
         if token in SHELL_COMMAND_BOUNDARIES:
             at_command_start = True
-            previous_boundary = token
             cursor += 1
             continue
-        if at_command_start and pathlib.Path(token).name == "exit":
-            if previous_boundary != "||":
-                code = tokens[cursor + 1] if cursor + 1 < len(tokens) and re.fullmatch(r"[0-9]+", tokens[cursor + 1]) else None
-                codes.append(code)
+        token_name = pathlib.Path(token).name
+        if at_command_start and token_name == "exit":
+            code = tokens[cursor + 1] if cursor + 1 < len(tokens) and re.fullmatch(r"[0-9]+", tokens[cursor + 1]) else None
+            codes.append(code)
+        elif (
+            at_command_start
+            and token_name in {"command", "eval"}
+            and cursor + 1 < len(tokens)
+            and pathlib.Path(tokens[cursor + 1]).name == "exit"
+        ):
+            code_index = cursor + 2
+            code = tokens[code_index] if code_index < len(tokens) and re.fullmatch(r"[0-9]+", tokens[code_index]) else None
+            codes.append(code)
         at_command_start = False
         cursor += 1
     return codes
@@ -6293,11 +6341,19 @@ def shell_line_exit_codes(line: str) -> list[str | None]:
 def shell_line_has_exit_command(line: str) -> bool:
     tokens = command_tokens(line)
     at_command_start = True
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if token in SHELL_COMMAND_BOUNDARIES:
             at_command_start = True
             continue
-        if at_command_start and pathlib.Path(token).name == "exit":
+        token_name = pathlib.Path(token).name
+        if at_command_start and token_name == "exit":
+            return True
+        if (
+            at_command_start
+            and token_name in {"command", "eval"}
+            and index + 1 < len(tokens)
+            and pathlib.Path(tokens[index + 1]).name == "exit"
+        ):
             return True
         at_command_start = False
     return False
@@ -6607,6 +6663,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest-fingerprint-reuse must use always()")
         if not job_gates_on_full_ci_required(reuse_lines):
             errors.append("nextest-fingerprint-reuse must gate on full_ci_required")
+        if not fingerprint_reuse_uses_canonical_job_if(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must use the canonical job if")
         if not fingerprint_reuse_gates_on_pull_request(reuse_lines):
             errors.append("nextest-fingerprint-reuse must be PR-only")
         if not fingerprint_reuse_skips_main_branch(reuse_lines):

@@ -819,6 +819,22 @@ def assert_fingerprint_reuse_rejects_failed_source_shard_through_resolver() -> N
             raise AssertionError(result)
 
 
+def assert_fingerprint_reuse_source_run_must_be_trusted_main_push() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp)))
+        pr_run = run_payload()
+        pr_run["event"] = "pull_request"
+        pr_run["head_branch"] = "attacker/fingerprint-reuse"
+        if module.run_matches_fingerprint_reuse(pr_run, config, current_run_id=None):
+            raise AssertionError("fingerprint reuse must not source evidence from pull_request runs")
+        branch_run = run_payload()
+        branch_run["event"] = config.deploy_source_event
+        branch_run["head_branch"] = "feature/not-main"
+        if module.run_matches_fingerprint_reuse(branch_run, config, current_run_id=None):
+            raise AssertionError("fingerprint reuse must not source evidence from non-main branch runs")
+
+
 def assert_missing_current_fingerprint_arg_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -1570,6 +1586,7 @@ def main() -> int:
     assert_fingerprint_reuse_rejects_source_workflow_digest_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
     assert_fingerprint_reuse_rejects_failed_source_shard_through_resolver()
+    assert_fingerprint_reuse_source_run_must_be_trusted_main_push()
     assert_missing_current_fingerprint_arg_fails_closed()
     assert_nextest_fingerprint_path_args_are_rejected()
     assert_fingerprint_reuse_api_errors_fail_closed()

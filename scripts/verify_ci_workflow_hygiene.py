@@ -265,6 +265,44 @@ FINGERPRINT_REUSE_JOB_IF_VALUE = (
 FINGERPRINT_REUSE_ALLOWED_OUTPUT = (
     "fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}"
 )
+FINGERPRINT_REUSE_INPUTS_CHANGED_RUN = """base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
+head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
+git fetch --no-tags origin \\
+  "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \\
+  "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
+  .github/workflows/ci.yml \\
+  .github/actions/setup-environment/action.yml \\
+  ci/github-actions-runners.toml \\
+  scripts/ci_provenance.py \\
+  scripts/test_ci_provenance.py \\
+  scripts/verify_ci_workflow_hygiene.py \\
+  scripts/test_verify_ci_workflow_hygiene.py)"
+if [[ -n "$changed" ]]; then
+  echo "any_changed=true" >> "$GITHUB_OUTPUT"
+else
+  echo "any_changed=false" >> "$GITHUB_OUTPUT"
+fi"""
+FINGERPRINT_REUSE_ALLOWED_RUN = """if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+  echo "value=false" >> "$GITHUB_OUTPUT"
+elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
+  echo "value=false" >> "$GITHUB_OUTPUT"
+else
+  echo "value=true" >> "$GITHUB_OUTPUT"
+fi"""
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN = """python3 scripts/ci_provenance.py resolve-fingerprint
+--current-run-id "${{ github.run_id }}"
+--current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+| tee -a "$GITHUB_OUTPUT\""""
+GATE_NEXTEST_FINGERPRINT_REUSE_BRANCH = """if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+  echo "nextest fingerprint reuse resolver did not succeed"
+  exit 1
+fi
+if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+  echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
+  exit 1
+fi
+echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}\""""
 FINGERPRINT_REUSE_GOVERNANCE_PATHS = (
     ".github/workflows/ci.yml",
     ".github/actions/setup-environment/action.yml",
@@ -374,6 +412,7 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'rust-toolchain.toml'",
     "'.cargo/config.toml'",
     "'.config/nextest.toml'",
+    "'.config/**'",
     "'ci/rust-verification.toml'",
     "'scripts/rust_verification.py'",
     "'scripts/command_understanding.py'",
@@ -1041,18 +1080,68 @@ def uncommented_text(lines: list[str]) -> str:
     return "\n".join(strip_comment(line) for line in lines)
 
 
+def normalize_script_text(text: str) -> str:
+    text = re.sub(r"\\\s*\n\s*", " ", text)
+    lines = [line.rstrip() for line in text.strip("\n").splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    indents = [len(line) - len(line.lstrip(" ")) for line in lines if line.strip()]
+    margin = min(indents) if indents else 0
+    normalized_lines = [line[margin:] if line.strip() else "" for line in lines]
+    return "\n".join(re.sub(r"(?<=\S) {2,}(?=\S)", " ", line) for line in normalized_lines)
+
+
+def block_run_body(block: list[str]) -> str:
+    for index, line in enumerate(block):
+        clean = strip_comment(line).rstrip()
+        match = YAML_RUN_LINE_RE.match(clean)
+        if match is None:
+            continue
+        scalar = match.group(2).strip()
+        if not scalar.startswith(("|", ">")):
+            return unquote_yaml_scalar(scalar)
+        run_indent = len(match.group(1))
+        body_lines: list[str] = []
+        for nested in block[index + 1 :]:
+            nested_clean = strip_comment(nested).rstrip()
+            if not nested_clean.strip():
+                body_lines.append("")
+                continue
+            indent = len(nested_clean) - len(nested_clean.lstrip(" "))
+            if indent <= run_indent:
+                break
+            body_lines.append(nested_clean)
+        return normalize_script_text("\n".join(body_lines))
+    return ""
+
+
+def block_run_body_matches(block: list[str], expected: str) -> bool:
+    return normalize_script_text(block_run_body(block)) == normalize_script_text(expected)
+
+
 def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
     return any(pattern.match(strip_comment(line)) for line in lines)
 
 
 def job_if_value(job_lines: list[str]) -> str:
-    for line in job_lines:
+    for index, line in enumerate(job_lines):
         clean = strip_comment(line).rstrip()
         if clean.strip() == "steps:":
             return ""
         match = re.match(r"^    if:\s*(?P<value>.*?)\s*$", clean)
         if match is not None:
-            return match.group("value")
+            value = match.group("value")
+            for child in job_lines[index + 1 :]:
+                child_clean = strip_comment(child).rstrip()
+                if not child_clean.strip():
+                    continue
+                indent = len(child_clean) - len(child_clean.lstrip(" "))
+                if indent <= 4:
+                    break
+                return f"{value}\n{child_clean.strip()}"
+            return value
     return ""
 
 
@@ -5768,14 +5857,12 @@ def fingerprint_reuse_job_uses_secure_current_fingerprint(job_lines: list[str]) 
     reuse_step = unique_step_with_id(job_lines, "reuse")
     if reuse_step is None:
         return False
-    text = uncommented_text(reuse_step)
     downloads_current_fingerprint = any(
         block_has_input(block, "pattern", "nextest-archive-fingerprint-*")
         for block in action_blocks(job_lines, "actions/download-artifact@")
     )
     return (
-        f'--current-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"' in text
-        and "--current-fingerprint-path" not in text
+        block_run_body_matches(reuse_step, NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN)
         and not downloads_current_fingerprint
     )
 
@@ -5784,15 +5871,15 @@ def fingerprint_reuse_job_runs_resolver(job_lines: list[str]) -> bool:
     reuse_step = unique_step_with_id(job_lines, "reuse")
     if reuse_step is None:
         return False
-    text = uncommented_text(reuse_step)
-    required = (
-        "id: reuse",
-        "python3 scripts/ci_provenance.py resolve-fingerprint",
-        '--current-run-id "${{ github.run_id }}"',
-        f'--current-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"',
-        '| tee -a "$GITHUB_OUTPUT"',
+    return block_run_body_matches(reuse_step, NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN)
+
+
+def fingerprint_reuse_resolver_is_canonical(job_lines: list[str]) -> bool:
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    return reuse_step is not None and block_run_body_matches(
+        reuse_step,
+        NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN,
     )
-    return all(item in text for item in required)
 
 
 def fingerprint_reuse_resolver_uses_bash(job_lines: list[str]) -> bool:
@@ -6080,14 +6167,13 @@ def gate_checks_nextest_fingerprint_reuse(gate_text: str) -> list[str]:
     errors: list[str] = []
     if 'reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"' not in gate_text:
         errors.append("gate must read nextest fingerprint reuse output")
-    sections = top_level_if_body_and_remainder(
-        gate_standard_body(gate_text),
-        '"$reuse_found" == "true"',
-    )
-    if sections is None:
+    reuse_chain = if_chain_bodies(gate_standard_body(gate_text), '"$reuse_found" == "true"')
+    if reuse_chain is None:
         errors.append("gate must branch on nextest fingerprint reuse")
         return errors
-    reuse_body = sections[0]
+    reuse_body = reuse_chain.get(("if", '"$reuse_found" == "true"'), "")
+    if normalize_script_text(reuse_body) != normalize_script_text(GATE_NEXTEST_FINGERPRINT_REUSE_BRANCH):
+        errors.append("gate must use canonical nextest fingerprint reuse branch")
     if not branch_exits_reachable(
         reuse_body,
         "if",
@@ -6209,6 +6295,8 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
     text = uncommented_text(job_lines)
     fingerprint_inputs_text = ""
     allowance_text = ""
+    fingerprint_inputs_block = unique_step_with_id(job_lines, "fingerprint_reuse_inputs_changed")
+    allowance_block = unique_step_with_id(job_lines, "fingerprint_reuse_allowed")
     for block in step_blocks(job_lines):
         block_text = uncommented_text(block)
         if step_has_id(block, "fingerprint_reuse_inputs_changed"):
@@ -6217,11 +6305,21 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
             allowance_text = block_text
     if FINGERPRINT_REUSE_ALLOWED_OUTPUT not in text:
         errors.append("detector must expose fingerprint_reuse_allowed")
+    if fingerprint_inputs_block is None or not block_run_body_matches(
+        fingerprint_inputs_block,
+        FINGERPRINT_REUSE_INPUTS_CHANGED_RUN,
+    ):
+        errors.append("detector fingerprint-reuse governance step must match canonical script")
     pathspecs = git_diff_pathspecs(fingerprint_inputs_text) if fingerprint_inputs_text else None
     if pathspecs != FINGERPRINT_REUSE_GOVERNANCE_PATHS:
         errors.append("detector must detect fingerprint-reuse governance changes")
     if fingerprint_inputs_text and not detector_maps_changed_to_any_changed(fingerprint_inputs_text):
         errors.append("detector must map fingerprint-reuse governance changes to any_changed=true")
+    if allowance_block is None or not block_run_body_matches(
+        allowance_block,
+        FINGERPRINT_REUSE_ALLOWED_RUN,
+    ):
+        errors.append("detector fingerprint-reuse allowance step must match canonical script")
     allowance_chain = if_chain_bodies(allowance_text, '"${{ github.event_name }}" != "pull_request"')
     if allowance_chain is None:
         errors.append("detector must deny fingerprint reuse outside pull_request")
@@ -6673,6 +6771,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed")
         if not fingerprint_reuse_job_has_outputs(reuse_lines):
             errors.append("nextest-fingerprint-reuse must expose reuse provenance outputs")
+        if not fingerprint_reuse_resolver_is_canonical(reuse_lines):
+            errors.append("nextest-fingerprint-reuse resolver step must match canonical script")
         if not fingerprint_reuse_job_uses_secure_current_fingerprint(reuse_lines):
             errors.append("nextest-fingerprint-reuse must use secure current nextest fingerprint output")
         if not fingerprint_reuse_job_runs_resolver(reuse_lines):

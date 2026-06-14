@@ -256,7 +256,12 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
-          changed="$(git diff --name-only origin/main...HEAD -- \
+          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
+          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin \
+            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
+            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
             .github/workflows/ci.yml \
             .github/actions/setup-environment/action.yml \
             ci/github-actions-runners.toml \
@@ -436,14 +441,14 @@ jobs:
       - name: Publish nextest archive fingerprint
         id: nextest-fingerprint
         run: |
-          fingerprint="nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}"
+          fingerprint="nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}"
           mkdir -p .nextest-archive-fingerprint
           printf '%s\\n' "$fingerprint" > .nextest-archive-fingerprint/cache-key.txt
           echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
       - name: Upload nextest archive fingerprint
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           path: .nextest-archive-fingerprint/cache-key.txt
           if-no-files-found: error
           retention-days: 30
@@ -464,7 +469,7 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
       - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
@@ -481,7 +486,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -772,12 +777,14 @@ jobs:
           fi
           if [[ "$reuse_found" == "true" ]]; then
             if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
               exit 1
             fi
             if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+              echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
               exit 1
             fi
-            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}"
+            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
           else
             if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
               if [[ "$ignore_emit_failure" == "true" ]]; then
@@ -4267,11 +4274,16 @@ def remove_fragment_if_present(text: str, fragment: str) -> str:
     return text.replace(fragment, "", 1) if fragment in text else text
 
 
+def remove_all_fragments_if_present(text: str, fragment: str) -> str:
+    return text.replace(fragment, "") if fragment in text else text
+
+
 def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     for cache_input in (
         "'config/**'",
         "'contracts/**'",
         "'docs/bolt-v3/**'",
+        "'.config/**'",
         "'.github/**'",
         "'scripts/**'",
         "'specs/023-nt-order-intent-layer/**'",
@@ -4279,7 +4291,7 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     ):
         assert_error(
             "test-archive fingerprint must include Rust and test graph inputs",
-            remove_fragment_if_present(BASE_WORKFLOW, f", {cache_input}"),
+            remove_all_fragments_if_present(BASE_WORKFLOW, f", {cache_input}"),
         )
 
     assert_error(
@@ -4331,6 +4343,26 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
           echo "any_changed=false" >> "$GITHUB_OUTPUT\"""",
         ),
     )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical script",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            """          if [[ -n "$changed" ]]; then""",
+            """          changed=""
+          if [[ -n "$changed" ]]; then""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical script",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            """          fi""",
+            """          fi
+          printf 'any_changed=false\\n' >> "$GITHUB_OUTPUT\"""",
+        ),
+    )
 
     narrowed_pathspec = replace_once_after(
         BASE_WORKFLOW,
@@ -4346,9 +4378,9 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     git_diff_decoy_pathspec = replace_once_after(
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",
-        """          changed="$(git diff --name-only origin/main...HEAD --             .github/workflows/ci.yml""",
-        """          echo "$(git diff --name-only origin/main...HEAD -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/github-actions-runners.toml scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
-          changed="$(git diff --name-only origin/main...HEAD --             .github/workflows/ci.yml""",
+        """          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
+        """          echo "$(git diff --name-only "${base_ref}...${head_ref}" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/github-actions-runners.toml scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
+          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
     )
     git_diff_decoy_pathspec = replace_once_after(
         git_diff_decoy_pathspec,
@@ -4380,6 +4412,12 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main'\n      || github.event_name == 'pull_request' }}",
     )
     assert_error("nextest-fingerprint-reuse must use the canonical job if", folded_job_if)
+    folded_job_if_with_canonical_first_line = replace_once(
+        BASE_WORKFLOW,
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}\n      || github.event_name == 'pull_request'",
+    )
+    assert_error("nextest-fingerprint-reuse must use the canonical job if", folded_job_if_with_canonical_first_line)
 
     decoy_step = replace_once_after(
         narrowed_pathspec,
@@ -4412,6 +4450,17 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     )
     assert_error("nextest-fingerprint-reuse must use secure current nextest fingerprint output", stale_fingerprint_with_decoy)
     assert_error("nextest-fingerprint-reuse must run ci_provenance.py resolve-fingerprint", stale_fingerprint_with_decoy)
+    fabricated_reuse_outputs = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        """          | tee -a "$GITHUB_OUTPUT\"""",
+        """          | tee -a "$GITHUB_OUTPUT"
+          ; echo "reuse_found=true" >> "$GITHUB_OUTPUT"
+          ; echo "source_run_id=1" >> "$GITHUB_OUTPUT"
+          ; echo "source_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >> "$GITHUB_OUTPUT"
+          ; echo "source_artifact_id=1" >> "$GITHUB_OUTPUT\"""",
+    )
+    assert_error("nextest-fingerprint-reuse resolver step must match canonical script", fabricated_reuse_outputs)
 
     assert_error(
         "detector must determine fingerprint_reuse_allowed",
@@ -4427,6 +4476,16 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
           echo "value=true" >> "$GITHUB_OUTPUT\"""",
         ),
     )
+    assert_error(
+        "detector fingerprint-reuse allowance step must match canonical script",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Determine fingerprint reuse allowance",
+            """          fi""",
+            """          fi
+          printf 'value=true\\n' >> "$GITHUB_OUTPUT\"""",
+        ),
+    )
 
     assert_error(
         "gate must require nextest fingerprint reuse resolver success",
@@ -4434,6 +4493,7 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
             BASE_WORKFLOW,
             "  gate:",
             """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
               exit 1
             fi""",
             """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
@@ -4446,12 +4506,26 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
             BASE_WORKFLOW,
             "  gate:",
             """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
               exit 1
             fi""",
             """            false || exit 0
             if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
               exit 1
             fi""",
+        ),
+    )
+    assert_error(
+        "gate must use canonical nextest fingerprint reuse branch",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "  gate:",
+            """          if [[ "$reuse_found" == "true" ]]; then
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then""",
+            """          if [[ "$reuse_found" == "true" ]]; then
+            eval 'exit 0'
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then""",
         ),
     )
 
@@ -5065,19 +5139,19 @@ def main() -> int:
         replace_once(
             replace_once(
                 BASE_WORKFLOW,
-                "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
-                "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+                "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+                "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
             ),
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
         ),
     )
     assert_error(
         "test-archive cache must not use restore-keys",
         replace_once(
             BASE_WORKFLOW,
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - name: Install cargo-nextest",
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
         ),
     )
     # #400: every managed-target cache must declare a restore-keys prefix fallback.
@@ -5241,14 +5315,14 @@ def main() -> int:
             """      - name: Publish nextest archive fingerprint
         id: nextest-fingerprint
         run: |
-          fingerprint="nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}"
+          fingerprint="nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}"
           mkdir -p .nextest-archive-fingerprint
           printf '%s\\n' "$fingerprint" > .nextest-archive-fingerprint/cache-key.txt
           echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
       - name: Upload nextest archive fingerprint
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           path: .nextest-archive-fingerprint/cache-key.txt
           if-no-files-found: error
           retention-days: 30

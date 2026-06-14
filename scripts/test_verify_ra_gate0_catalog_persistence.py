@@ -379,10 +379,28 @@ use crate::artifact_store::{{ArtifactStoreConfig, CatalogDispatchConfig}};
 use crate::nt_catalog_capability::{{NtCatalogCapabilityPlan, NtCatalogCapabilityProofArtifact, NtCatalogCapabilityRunSpec}};
 
 pub struct RunSpec {{
-    pub artifact_store: ArtifactStoreConfig,
-    pub catalog_dispatch: CatalogDispatchConfig,
-    pub create_only_probe_id: String,
-    pub nt_catalog_capability_proof: NtCatalogCapabilityRunSpec,
+    pub artifact_store: Option<ArtifactStoreConfig>,
+    pub catalog_dispatch: Option<CatalogDispatchConfig>,
+    pub create_only_probe_id: Option<String>,
+    pub nt_catalog_capability_proof: Option<NtCatalogCapabilityRunSpec>,
+}}
+
+impl RunSpec {{
+    pub fn required_artifact_store(&self) -> Result<&ArtifactStoreConfig> {{
+        self.artifact_store.as_ref().context("artifact store required")
+    }}
+
+    pub fn required_catalog_dispatch(&self) -> Result<&CatalogDispatchConfig> {{
+        self.catalog_dispatch.as_ref().context("catalog dispatch required")
+    }}
+
+    pub fn required_create_only_probe_id(&self) -> Result<&str> {{
+        self.create_only_probe_id.as_deref().context("probe id required")
+    }}
+
+    pub fn required_nt_catalog_capability_proof(&self) -> Result<&NtCatalogCapabilityRunSpec> {{
+        self.nt_catalog_capability_proof.as_ref().context("proof required")
+    }}
 }}
 
 pub struct RunArtifacts {{
@@ -392,11 +410,17 @@ pub struct RunArtifacts {{
 }}
 
 pub fn run_from_run_spec_with_artifact_store() {{
-    let _plan = spec.nt_catalog_capability_proof.proof_plan(&spec.artifact_store)?;
+    let artifact_store = spec.required_artifact_store()?;
+    let catalog_dispatch = spec.required_catalog_dispatch()?;
+    let create_only_probe_id = spec.required_create_only_probe_id()?;
+    let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
+    let _plan = nt_catalog_capability_proof.proof_plan(artifact_store)?;
     let create_only_probe_transcript = writer.probe_create_only();
     let evidence = build_capability_evidence();
-    let _proof = spec.nt_catalog_capability_proof
-        .persist_completed_proof_from_evidence(&spec.artifact_store, &writer, &evidence);
+    let _proof = nt_catalog_capability_proof
+        .persist_completed_proof_from_evidence(artifact_store, &writer, &evidence);
+    catalog_dispatch.catalog_root_for(source_binding, fixture, artifact_root)?;
+    writer.probe_create_only(artifact_root, create_only_probe_id).await?;
     persist_catalog_projection_for_source_binding();
     fs::remove_dir_all(&artifacts.catalog_root);
 }}
@@ -410,15 +434,17 @@ use backtesting_vertical_slice::operator::run_from_run_spec_with_artifact_store;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let artifact_root = spec.artifact_store.resolve()?;
+    let artifact_store = spec.required_artifact_store()?;
+    let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
+    let artifact_root = artifact_store.resolve()?;
     let resolver = NtCatalogSsmCredentialResolver::from_region(artifact_root.s3_region()).await?;
     let credentials = resolver
-        .resolve(&spec.nt_catalog_capability_proof.ssm_parameter_refs)
+        .resolve(&nt_catalog_capability_proof.ssm_parameter_refs)
         .await?;
     let store = artifact_root.build_s3_object_store_with_credentials(&credentials)?;
     let _artifacts =
         run_from_run_spec_with_artifact_store(&spec, &gz_bytes, &output_dir, &store, |_, _, create_only_probe| {
-            spec.nt_catalog_capability_proof.runtime_evidence(&spec.artifact_store, &credentials, create_only_probe)
+            nt_catalog_capability_proof.runtime_evidence(artifact_store, &credentials, create_only_probe)
         }).await?;
 }
 """

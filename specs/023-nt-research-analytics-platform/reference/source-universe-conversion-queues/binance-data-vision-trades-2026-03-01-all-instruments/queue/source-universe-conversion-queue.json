@@ -9,7 +9,7 @@
   "family": "native_trades",
   "table_family": "trades",
   "source_manifest_path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/binance-data-vision-trades-object-manifest.json",
-  "source_manifest_hash": "b6994022c557abfeb2b8d04526728dbd92975511bdf967249f84148a14e76ceb",
+  "source_manifest_hash": "0bf347df87377bd4e030708f89ac5f6b0503cbeff0deb8d3a28177720fd65414",
   "output_prefix_template": "source-universe={universe_id}/category={category}/symbol={symbol}/dt={archive_date}/object={sha256}",
   "work_item_count": 2051,
   "pending_conversion_items": 2051,
@@ -65,7 +65,7 @@
     {
       "role": "source_universe_manifest",
       "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/binance-data-vision-trades-object-manifest.json",
-      "sha256": "b6994022c557abfeb2b8d04526728dbd92975511bdf967249f84148a14e76ceb"
+      "sha256": "0bf347df87377bd4e030708f89ac5f6b0503cbeff0deb8d3a28177720fd65414"
     }
   ],
   "work_items": [

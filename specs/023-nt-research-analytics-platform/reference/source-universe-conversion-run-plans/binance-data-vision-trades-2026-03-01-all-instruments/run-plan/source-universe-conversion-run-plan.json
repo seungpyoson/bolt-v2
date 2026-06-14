@@ -11,7 +11,7 @@
   "family": "native_trades",
   "table_family": "trades",
   "object_gates_path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json",
-  "object_gates_hash": "29eee2e213ec5330926fa34f24c32352a921709e041152b07893a085ca51fc0e",
+  "object_gates_hash": "5949a7375a3e6c87d9718b9ac49b814e7887a13bbcd916d2c770d8fc757e8a2a",
   "max_objects_per_run": 500,
   "max_source_bytes_per_run": 2000000000,
   "source_binding_count": 5,
@@ -71,7 +71,7 @@
     {
       "role": "source_universe_object_gates",
       "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json",
-      "sha256": "29eee2e213ec5330926fa34f24c32352a921709e041152b07893a085ca51fc0e"
+      "sha256": "5949a7375a3e6c87d9718b9ac49b814e7887a13bbcd916d2c770d8fc757e8a2a"
     }
   ],
   "runs": [

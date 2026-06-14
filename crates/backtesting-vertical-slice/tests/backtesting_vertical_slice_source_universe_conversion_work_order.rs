@@ -5,6 +5,25 @@ use backtesting_vertical_slice::source_universe_conversion_work_order::{
     write_source_universe_conversion_work_order_from_spec_file,
 };
 
+fn copy_spec_with_output_dir(source_spec: &Path, target_spec: &Path, output_dir: &Path) {
+    let spec = fs::read_to_string(source_spec).expect("read committed source-universe spec");
+    let mut replaced = false;
+    let updated = spec
+        .lines()
+        .map(|line| {
+            if line.starts_with("output_dir = ") {
+                replaced = true;
+                format!("output_dir = \"{}\"", output_dir.display())
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(replaced, "committed source-universe spec has output_dir");
+    fs::write(target_spec, format!("{updated}\n")).expect("write temp source-universe spec");
+}
+
 #[test]
 fn source_universe_conversion_work_order_lists_only_executable_operator_inputs() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -253,10 +272,19 @@ overwrite_existing_artifacts = true
 fn committed_bybit_and_binance_source_universe_work_orders_track_executable_scope() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
 
-    let bybit_spec = reference_root
+    let committed_bybit_spec = reference_root
         .join("source-universe-conversion-work-orders/bybit-public-archive-tick-trades-2025-06-01-2026-06-01")
         .join("source-universe-conversion-work-order.toml");
+    let bybit_spec = temp_dir
+        .path()
+        .join("bybit-source-universe-conversion-work-order.toml");
+    copy_spec_with_output_dir(
+        &committed_bybit_spec,
+        &bybit_spec,
+        &temp_dir.path().join("bybit-work-order"),
+    );
     let bybit_artifact = write_source_universe_conversion_work_order_from_spec_file(&bybit_spec)
         .expect("Bybit work order is reproducible");
     let bybit: SourceUniverseConversionWorkOrder =
@@ -270,9 +298,17 @@ fn committed_bybit_and_binance_source_universe_work_orders_track_executable_scop
     assert_eq!(bybit.records.len(), 5_857);
     assert!(bybit.withheld_records.is_empty());
 
-    let binance_spec = reference_root
+    let committed_binance_spec = reference_root
         .join("source-universe-conversion-work-orders/binance-data-vision-trades-2026-03-01-all-instruments")
         .join("source-universe-conversion-work-order.toml");
+    let binance_spec = temp_dir
+        .path()
+        .join("binance-source-universe-conversion-work-order.toml");
+    copy_spec_with_output_dir(
+        &committed_binance_spec,
+        &binance_spec,
+        &temp_dir.path().join("binance-work-order"),
+    );
     let binance_artifact =
         write_source_universe_conversion_work_order_from_spec_file(&binance_spec)
             .expect("Binance work order is reproducible");

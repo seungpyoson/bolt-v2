@@ -182,7 +182,40 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(crate::bolt_v3_outcome_group_sources::validate_root_sources(
         root,
     ));
+    if let Some(iv) = &root.iv {
+        errors.extend(crate::bolt_v3_iv::config::validate_iv_root_config(iv));
+    }
+    errors.extend(validate_iv_source_clients(root));
     errors.extend(crate::bolt_v3_providers::validate_resolution_oracle_client_consistency(root));
+
+    errors
+}
+
+pub(crate) fn validate_iv_source_clients(root: &BoltV3RootConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Some(iv) = root.iv.as_ref() else {
+        return errors;
+    };
+
+    for profile in &iv.profiles {
+        for source in &profile.sources {
+            let context = format!(
+                "iv.profiles.{}.sources.{}",
+                profile.profile_id, source.source_id
+            );
+            match root.clients.get(source.client_id.as_str()) {
+                None => errors.push(format!(
+                    "{context}.client_id `{}` does not match any [clients.<id>] block",
+                    source.client_id
+                )),
+                Some(client) if client.data.is_none() => errors.push(format!(
+                    "{context}.client_id `{}` must reference a data-capable client (the referenced client has no [data] block)",
+                    source.client_id
+                )),
+                Some(_) => {}
+            }
+        }
+    }
 
     errors
 }

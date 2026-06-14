@@ -52,20 +52,37 @@ use std::{
 use ahash::AHashMap;
 use anyhow::Result;
 use log::LevelFilter;
-use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
+use nautilus_common::{
+    enums::Environment,
+    logging::logger::LoggerConfig,
+    messages::{
+        SubscribeCommand, UnsubscribeCommand,
+        data::{
+            DataCommand,
+            subscribe::{SubscribeCustomData, SubscribeOptionChain, SubscribeOptionGreeks},
+            unsubscribe::{UnsubscribeCustomData, UnsubscribeOptionChain, UnsubscribeOptionGreeks},
+        },
+    },
+    msgbus::{self, MStr, Pattern, ShareableMessageHandler, TypedHandler, switchboard},
+    runner::get_data_cmd_sender,
+};
+use nautilus_core::{Params, UUID4, time::get_atomic_clock_realtime};
 use nautilus_live::{
     builder::LiveNodeBuilder,
     config::LiveNodeConfig,
     node::{LiveNode, LiveNodeHandle, NodeState},
 };
+use nautilus_model::{
+    data::{CustomData, DataType, OptionChainSlice, OptionGreeks, option_chain::StrikeRange},
+    enums::BarIntervalType,
+    identifiers::{ClientId, InstrumentId, OptionSeriesId, StrategyId},
+    types::Price,
+};
 #[cfg(test)]
 use nautilus_model::{
-    data::{OrderBookDeltas, QuoteTick},
-    identifiers::InstrumentId,
-};
-use nautilus_model::{
-    enums::BarIntervalType,
-    identifiers::{ClientId, StrategyId},
+    data::{OrderBookDeltas, QuoteTick, TradeTick},
+    enums::AggressorSide,
+    identifiers::TradeId,
 };
 use serde::Deserialize;
 use ustr::Ustr;
@@ -84,10 +101,25 @@ use crate::{
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
-    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
+    },
+    bolt_v3_iv::{
+        config::IvRootConfig,
+        health::IvSourceHealth,
+        runtime::{
+            IvRuntimeBindingAdapter, IvRuntimeBindingError, IvRuntimeEngine,
+            apply_subscription_plans,
+        },
+        selector::IvSelector,
+        subscription::{
+            IvRuntimeOperation, IvSubscriptionError, IvSubscriptionPlan, plan_profile_reload,
+            plan_profile_start, plan_profile_stop,
+        },
+        time::UnixNanos,
+        types::IvSourceKind,
     },
     bolt_v3_providers::{
         self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
@@ -99,7 +131,9 @@ use crate::{
         resolve_bolt_v3_secrets, resolve_bolt_v3_secrets_with,
     },
     bolt_v3_strategy_registration::{
-        BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
+        BoltV3StrategyExecutionControls, BoltV3StrategyRegistrationError,
+        register_bolt_v3_strategies_on_node_with_bindings,
+        register_bolt_v3_strategies_on_node_with_iv_runtime_bindings,
     },
     bolt_v3_submit_admission::{BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState},
     nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
@@ -121,6 +155,8 @@ pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     registration_summary: BoltV3RegistrationSummary,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    iv_runtime: Option<IvRuntimeEngine>,
+    iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -133,6 +169,1112 @@ struct BoltV3LiveNodeAdapterBundle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3StrategyFreeReferenceCacheEvidence {
     cached_instrument_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IvEngineLifecyclePlan {
+    pub start_plans: Vec<IvSubscriptionPlan>,
+    pub reload_plans: Vec<IvSubscriptionPlan>,
+    pub stop_plans: Vec<IvSubscriptionPlan>,
+}
+
+pub fn plan_iv_engine_lifecycle(
+    root: &BoltV3RootConfig,
+) -> Result<IvEngineLifecyclePlan, IvSubscriptionError> {
+    let Some(iv) = &root.iv else {
+        return Ok(IvEngineLifecyclePlan {
+            start_plans: Vec::new(),
+            reload_plans: Vec::new(),
+            stop_plans: Vec::new(),
+        });
+    };
+
+    let mut start_plans = Vec::new();
+    let reload_plans = Vec::new();
+    let mut stop_plans = Vec::new();
+    for profile in &iv.profiles {
+        let subscription_config = profile.subscription_config();
+        start_plans.extend(plan_profile_start(&subscription_config)?);
+        stop_plans.extend(plan_profile_stop(&subscription_config)?);
+    }
+
+    Ok(IvEngineLifecyclePlan {
+        start_plans,
+        reload_plans,
+        stop_plans,
+    })
+}
+
+pub fn plan_iv_engine_reload_lifecycle(
+    current_root: &BoltV3RootConfig,
+    next_root: &BoltV3RootConfig,
+) -> Result<IvEngineLifecyclePlan, IvSubscriptionError> {
+    let current_profiles = current_root.iv.as_ref().map(|iv| &iv.profiles);
+    let next_profiles = next_root.iv.as_ref().map(|iv| &iv.profiles);
+    let mut start_plans = Vec::new();
+    let mut reload_plans = Vec::new();
+    let mut stop_plans = Vec::new();
+
+    match (current_profiles, next_profiles) {
+        (None, None) => {}
+        (None, Some(next_profiles)) => {
+            for profile in next_profiles {
+                start_plans.extend(plan_profile_start(&profile.subscription_config())?);
+            }
+        }
+        (Some(current_profiles), None) => {
+            for profile in current_profiles {
+                stop_plans.extend(plan_profile_stop(&profile.subscription_config())?);
+            }
+        }
+        (Some(current_profiles), Some(next_profiles)) => {
+            let current_by_id = current_profiles
+                .iter()
+                .map(|profile| (&profile.profile_id, profile))
+                .collect::<BTreeMap<_, _>>();
+            let next_by_id = next_profiles
+                .iter()
+                .map(|profile| (&profile.profile_id, profile))
+                .collect::<BTreeMap<_, _>>();
+
+            for current_profile in current_profiles {
+                if let Some(next_profile) = next_by_id.get(&current_profile.profile_id) {
+                    reload_plans.extend(plan_profile_reload(
+                        &current_profile.subscription_config(),
+                        &next_profile.subscription_config(),
+                    )?);
+                } else {
+                    stop_plans.extend(plan_profile_stop(&current_profile.subscription_config())?);
+                }
+            }
+
+            for next_profile in next_profiles {
+                if !current_by_id.contains_key(&next_profile.profile_id) {
+                    start_plans.extend(plan_profile_start(&next_profile.subscription_config())?);
+                }
+            }
+        }
+    }
+
+    Ok(IvEngineLifecyclePlan {
+        start_plans,
+        reload_plans,
+        stop_plans,
+    })
+}
+
+pub struct BoltV3IvRuntimeEventBindings {
+    option_greeks: Vec<BoltV3IvOptionGreeksRuntimeEventBinding>,
+    option_chains: Vec<BoltV3IvOptionChainRuntimeEventBinding>,
+    custom_data: Vec<BoltV3IvCustomDataRuntimeEventBinding>,
+}
+
+struct BoltV3IvOptionGreeksRuntimeEventBinding {
+    pattern: MStr<Pattern>,
+    handler: TypedHandler<OptionGreeks>,
+}
+
+struct BoltV3IvOptionChainRuntimeEventBinding {
+    pattern: MStr<Pattern>,
+    handler: TypedHandler<OptionChainSlice>,
+}
+
+struct BoltV3IvCustomDataRuntimeEventBinding {
+    pattern: MStr<Pattern>,
+    handler: ShareableMessageHandler,
+}
+
+impl Drop for BoltV3IvRuntimeEventBindings {
+    fn drop(&mut self) {
+        for binding in self.option_greeks.drain(..) {
+            msgbus::unsubscribe_option_greeks(binding.pattern, &binding.handler);
+        }
+        for binding in self.option_chains.drain(..) {
+            msgbus::unsubscribe_option_chain(binding.pattern, &binding.handler);
+        }
+        for binding in self.custom_data.drain(..) {
+            msgbus::unsubscribe_any(binding.pattern, &binding.handler);
+        }
+    }
+}
+
+pub fn wire_bolt_v3_iv_runtime_event_bindings(
+    iv: &IvRootConfig,
+    runtime: &IvRuntimeEngine,
+) -> Result<BoltV3IvRuntimeEventBindings, BoltV3StrategyRegistrationError> {
+    let mut bindings = BoltV3IvRuntimeEventBindings {
+        option_greeks: Vec::new(),
+        option_chains: Vec::new(),
+        custom_data: Vec::new(),
+    };
+
+    for profile in &iv.profiles {
+        for source in &profile.sources {
+            match (&source.source_kind, &source.selector) {
+                (
+                    IvSourceKind::OptionGreeks,
+                    IvSelector::SourceOptionGreeks { instrument_ids, .. },
+                ) => {
+                    let instrument_ids = parse_option_greeks_instrument_ids(instrument_ids)
+                        .map_err(|message| {
+                            iv_runtime_event_binding_error(
+                                &profile.profile_id,
+                                &source.source_id,
+                                message,
+                            )
+                        })?;
+                    for instrument_id in instrument_ids {
+                        bindings
+                            .option_greeks
+                            .push(wire_option_greeks_event_binding(
+                                &profile.profile_id,
+                                &source.source_id,
+                                instrument_id,
+                                runtime,
+                            ));
+                    }
+                }
+                (IvSourceKind::OptionChain, IvSelector::SourceOptionChain { series_ids, .. }) => {
+                    let series_ids =
+                        parse_option_chain_series_ids(series_ids).map_err(|message| {
+                            iv_runtime_event_binding_error(
+                                &profile.profile_id,
+                                &source.source_id,
+                                message,
+                            )
+                        })?;
+                    for series_id in series_ids {
+                        bindings.option_chains.push(wire_option_chain_event_binding(
+                            &profile.profile_id,
+                            &source.source_id,
+                            series_id,
+                            runtime,
+                        ));
+                    }
+                }
+                (
+                    IvSourceKind::AggregateGreeks,
+                    IvSelector::SourceAggregateGreeks {
+                        aggregate_key,
+                        underlying_selectors,
+                        nt_params,
+                        ..
+                    },
+                ) => {
+                    let (data_type, _) = aggregate_greeks_data_type_for_source(
+                        &source.source_id,
+                        aggregate_key,
+                        underlying_selectors,
+                        &source.params,
+                        nt_params,
+                    )
+                    .map_err(|message| {
+                        iv_runtime_event_binding_error(
+                            &profile.profile_id,
+                            &source.source_id,
+                            message,
+                        )
+                    })?;
+                    bindings
+                        .custom_data
+                        .push(wire_aggregate_greeks_custom_data_event_binding(
+                            &profile.profile_id,
+                            &source.source_id,
+                            data_type,
+                            runtime,
+                        ));
+                }
+                (
+                    IvSourceKind::CustomImpliedVolatility,
+                    IvSelector::SourceCustomImpliedVolatility {
+                        custom_iv_data_type,
+                        nt_params,
+                        ..
+                    },
+                ) => {
+                    let (data_type, _) = custom_iv_data_type_for_source(
+                        &source.source_id,
+                        custom_iv_data_type,
+                        &source.params,
+                        nt_params,
+                    )
+                    .map_err(|message| {
+                        iv_runtime_event_binding_error(
+                            &profile.profile_id,
+                            &source.source_id,
+                            message,
+                        )
+                    })?;
+                    bindings.custom_data.push(wire_custom_iv_event_binding(
+                        &profile.profile_id,
+                        &source.source_id,
+                        data_type,
+                        runtime,
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(bindings)
+}
+
+fn parse_option_greeks_instrument_ids(
+    instrument_ids: &[String],
+) -> Result<Vec<InstrumentId>, String> {
+    instrument_ids
+        .iter()
+        .map(|instrument_id| {
+            InstrumentId::from_str(instrument_id).map_err(|error| {
+                format!("invalid NT option-greeks instrument_id {instrument_id}: {error}")
+            })
+        })
+        .collect()
+}
+
+fn parse_option_chain_series_ids(series_ids: &[String]) -> Result<Vec<OptionSeriesId>, String> {
+    series_ids
+        .iter()
+        .map(|series_id| {
+            OptionSeriesId::from_str(series_id)
+                .map_err(|error| format!("invalid NT option-chain series_id {series_id}: {error}"))
+        })
+        .collect()
+}
+
+fn wire_aggregate_greeks_custom_data_event_binding(
+    profile_id: &str,
+    source_id: &str,
+    data_type: DataType,
+    runtime: &IvRuntimeEngine,
+) -> BoltV3IvCustomDataRuntimeEventBinding {
+    let pattern = switchboard::get_custom_topic(&data_type).into();
+    let runtime = runtime.clone();
+    let profile_id = profile_id.to_string();
+    let source_id = source_id.to_string();
+    let handler = ShareableMessageHandler::from_typed(move |custom_data: &CustomData| {
+        if let Err(error) = runtime.ingest_nt_aggregate_greeks_custom_data(
+            &profile_id,
+            &source_id,
+            custom_data,
+            iv_runtime_event_received_ts_ns(),
+        ) {
+            log::error!("bolt-v3 IV aggregate-greeks custom-data ingest failed: {error:?}");
+        }
+    });
+    msgbus::subscribe_any(pattern, handler.clone(), None);
+    BoltV3IvCustomDataRuntimeEventBinding { pattern, handler }
+}
+
+fn wire_custom_iv_event_binding(
+    profile_id: &str,
+    source_id: &str,
+    data_type: DataType,
+    runtime: &IvRuntimeEngine,
+) -> BoltV3IvCustomDataRuntimeEventBinding {
+    let pattern = switchboard::get_custom_topic(&data_type).into();
+    let runtime = runtime.clone();
+    let profile_id = profile_id.to_string();
+    let source_id = source_id.to_string();
+    let handler = ShareableMessageHandler::from_typed(move |custom_data: &CustomData| {
+        if let Err(error) = runtime.ingest_nt_custom_iv_data(
+            &profile_id,
+            &source_id,
+            custom_data,
+            iv_runtime_event_received_ts_ns(),
+        ) {
+            log::error!("bolt-v3 IV custom-IV custom-data ingest failed: {error:?}");
+        }
+    });
+    msgbus::subscribe_any(pattern, handler.clone(), None);
+    BoltV3IvCustomDataRuntimeEventBinding { pattern, handler }
+}
+
+fn wire_option_greeks_event_binding(
+    profile_id: &str,
+    source_id: &str,
+    instrument_id: InstrumentId,
+    runtime: &IvRuntimeEngine,
+) -> BoltV3IvOptionGreeksRuntimeEventBinding {
+    let pattern = switchboard::get_option_greeks_topic(instrument_id).into();
+    let runtime = runtime.clone();
+    let profile_id = profile_id.to_string();
+    let source_id = source_id.to_string();
+    let handler = TypedHandler::from(move |option_greeks: &OptionGreeks| {
+        if let Err(error) = runtime.ingest_nt_option_greeks(
+            &profile_id,
+            &source_id,
+            option_greeks,
+            iv_runtime_event_received_ts_ns(),
+        ) {
+            log::error!("bolt-v3 IV option-greeks event ingest failed: {error:?}");
+        }
+    });
+    msgbus::subscribe_option_greeks(pattern, handler.clone(), None);
+    BoltV3IvOptionGreeksRuntimeEventBinding { pattern, handler }
+}
+
+fn wire_option_chain_event_binding(
+    profile_id: &str,
+    source_id: &str,
+    series_id: OptionSeriesId,
+    runtime: &IvRuntimeEngine,
+) -> BoltV3IvOptionChainRuntimeEventBinding {
+    let pattern = switchboard::get_option_chain_topic(series_id).into();
+    let runtime = runtime.clone();
+    let profile_id = profile_id.to_string();
+    let source_id = source_id.to_string();
+    let handler = TypedHandler::from(move |option_chain: &OptionChainSlice| {
+        if let Err(error) = runtime.ingest_nt_option_chain_slice(
+            &profile_id,
+            &source_id,
+            option_chain,
+            iv_runtime_event_received_ts_ns(),
+        ) {
+            log::error!("bolt-v3 IV option-chain event ingest failed: {error:?}");
+        }
+    });
+    msgbus::subscribe_option_chain(pattern, handler.clone(), None);
+    BoltV3IvOptionChainRuntimeEventBinding { pattern, handler }
+}
+
+fn iv_runtime_event_received_ts_ns() -> UnixNanos {
+    UnixNanos::new(get_atomic_clock_realtime().get_time_ns().as_u64())
+}
+
+fn iv_runtime_event_binding_error(
+    profile_id: &str,
+    source_id: &str,
+    message: String,
+) -> BoltV3StrategyRegistrationError {
+    BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+        message: format!(
+            "bolt-v3 IV runtime event binding failed for profile {profile_id} source {source_id}: {message}"
+        ),
+    }
+}
+
+fn iv_runtime_data_commands_for_plan(
+    plan: &IvSubscriptionPlan,
+) -> Result<Vec<DataCommand>, IvRuntimeBindingError> {
+    let ts_init = get_atomic_clock_realtime().get_time_ns();
+    let client_id = Some(ClientId::from(plan.client_id.as_str()));
+
+    match (plan.operation, &plan.selector) {
+        (
+            IvRuntimeOperation::SubscribeOptionGreeks | IvRuntimeOperation::UnsubscribeOptionGreeks,
+            IvSelector::SourceOptionGreeks {
+                instrument_ids,
+                nt_params,
+            },
+        ) => {
+            let params = merged_nt_params(plan, nt_params)?;
+            let commands = parse_option_greeks_instrument_ids(instrument_ids)
+                .map_err(|message| binding_error(plan, message))?
+                .into_iter()
+                .map(|instrument_id| {
+                    if plan.operation == IvRuntimeOperation::SubscribeOptionGreeks {
+                        DataCommand::Subscribe(SubscribeCommand::OptionGreeks(
+                            SubscribeOptionGreeks::new(
+                                instrument_id,
+                                client_id,
+                                None,
+                                UUID4::new(),
+                                ts_init,
+                                None,
+                                params.clone(),
+                            ),
+                        ))
+                    } else {
+                        DataCommand::Unsubscribe(UnsubscribeCommand::OptionGreeks(
+                            UnsubscribeOptionGreeks::new(
+                                instrument_id,
+                                client_id,
+                                None,
+                                UUID4::new(),
+                                ts_init,
+                                None,
+                                params.clone(),
+                            ),
+                        ))
+                    }
+                })
+                .collect();
+            Ok(commands)
+        }
+        (
+            IvRuntimeOperation::SubscribeOptionChain | IvRuntimeOperation::UnsubscribeOptionChain,
+            IvSelector::SourceOptionChain {
+                series_ids,
+                strike_range_policy,
+                nt_params,
+            },
+        ) => {
+            let params = merged_nt_params(plan, nt_params)?;
+            let strike_range = parse_nt_strike_range(plan, strike_range_policy)?;
+            let snapshot_interval_ms = params
+                .as_ref()
+                .and_then(|params| params.get_u64("snapshot_interval_ms"));
+            let commands = parse_option_chain_series_ids(series_ids)
+                .map_err(|message| binding_error(plan, message))?
+                .into_iter()
+                .map(|series_id| {
+                    if plan.operation == IvRuntimeOperation::SubscribeOptionChain {
+                        DataCommand::Subscribe(SubscribeCommand::OptionChain(
+                            SubscribeOptionChain::new(
+                                series_id,
+                                strike_range.clone(),
+                                snapshot_interval_ms,
+                                UUID4::new(),
+                                ts_init,
+                                client_id,
+                                None,
+                                params.clone(),
+                            ),
+                        ))
+                    } else {
+                        DataCommand::Unsubscribe(UnsubscribeCommand::OptionChain(
+                            UnsubscribeOptionChain::new(
+                                series_id,
+                                UUID4::new(),
+                                ts_init,
+                                client_id,
+                                None,
+                            ),
+                        ))
+                    }
+                })
+                .collect();
+            Ok(commands)
+        }
+        (
+            IvRuntimeOperation::SubscribeCustomData | IvRuntimeOperation::UnsubscribeCustomData,
+            IvSelector::SourceCustomImpliedVolatility {
+                custom_iv_data_type,
+                nt_params,
+                ..
+            },
+        ) => {
+            let (data_type, params) = custom_iv_data_type_for_source(
+                &plan.source_id,
+                custom_iv_data_type,
+                &plan.params,
+                nt_params,
+            )
+            .map_err(|message| binding_error(plan, message))?;
+            Ok(vec![custom_data_command(
+                plan.operation,
+                client_id,
+                data_type,
+                params,
+                ts_init,
+            )])
+        }
+        (
+            IvRuntimeOperation::SubscribeAggregateGreeks
+            | IvRuntimeOperation::UnsubscribeAggregateGreeks,
+            IvSelector::SourceAggregateGreeks {
+                aggregate_key,
+                underlying_selectors,
+                nt_params,
+                ..
+            },
+        ) => {
+            let (data_type, params) = aggregate_greeks_data_type_for_source(
+                &plan.source_id,
+                aggregate_key,
+                underlying_selectors,
+                &plan.params,
+                nt_params,
+            )
+            .map_err(|message| binding_error(plan, message))?;
+            Ok(vec![custom_data_command(
+                plan.operation,
+                client_id,
+                data_type,
+                params,
+                ts_init,
+            )])
+        }
+        (IvRuntimeOperation::RemoveSource, _) => Ok(Vec::new()),
+        _ => Err(binding_error(
+            plan,
+            "IV subscription plan operation does not match selector kind".to_string(),
+        )),
+    }
+}
+
+fn custom_data_command(
+    operation: IvRuntimeOperation,
+    client_id: Option<ClientId>,
+    data_type: DataType,
+    params: Option<Params>,
+    ts_init: nautilus_core::UnixNanos,
+) -> DataCommand {
+    match operation {
+        IvRuntimeOperation::SubscribeCustomData | IvRuntimeOperation::SubscribeAggregateGreeks => {
+            DataCommand::Subscribe(SubscribeCommand::Data(SubscribeCustomData::new(
+                client_id,
+                None,
+                data_type,
+                UUID4::new(),
+                ts_init,
+                None,
+                params,
+            )))
+        }
+        IvRuntimeOperation::UnsubscribeCustomData
+        | IvRuntimeOperation::UnsubscribeAggregateGreeks => {
+            DataCommand::Unsubscribe(UnsubscribeCommand::Data(UnsubscribeCustomData::new(
+                client_id,
+                None,
+                data_type,
+                UUID4::new(),
+                ts_init,
+                None,
+                params,
+            )))
+        }
+        _ => unreachable!("custom data command requires a custom-data IV runtime operation"),
+    }
+}
+
+struct NtIvRuntimeCommandSenderAdapter {
+    allowed_data_client_ids: BTreeSet<ClientId>,
+    external_client_ids: BTreeSet<ClientId>,
+}
+
+impl NtIvRuntimeCommandSenderAdapter {
+    fn new(registered_data_clients: &[ClientId], configured_external_clients: &[ClientId]) -> Self {
+        let mut allowed_data_client_ids = registered_data_clients
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        allowed_data_client_ids.extend(configured_external_clients.iter().cloned());
+        Self {
+            allowed_data_client_ids,
+            external_client_ids: configured_external_clients.iter().cloned().collect(),
+        }
+    }
+
+    fn is_external_client(&self, plan: &IvSubscriptionPlan) -> bool {
+        self.external_client_ids
+            .contains(&ClientId::from(plan.client_id.as_str()))
+    }
+
+    fn validate_client_id(&self, plan: &IvSubscriptionPlan) -> Result<(), IvRuntimeBindingError> {
+        let client_id = ClientId::from(plan.client_id.as_str());
+        if self.allowed_data_client_ids.contains(&client_id) {
+            Ok(())
+        } else {
+            Err(binding_error(
+                plan,
+                format!(
+                    "IV source client_id {} is not registered as an NT data client or configured external data client",
+                    plan.client_id
+                ),
+            ))
+        }
+    }
+}
+
+impl IvRuntimeBindingAdapter for NtIvRuntimeCommandSenderAdapter {
+    fn apply_subscription_plan(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+    ) -> Result<(), IvRuntimeBindingError> {
+        if self.is_external_client(plan) {
+            return Ok(());
+        }
+        self.validate_client_id(plan)?;
+
+        let sender = get_data_cmd_sender();
+        for command in iv_runtime_data_commands_for_plan(plan)? {
+            sender.execute(command);
+        }
+        Ok(())
+    }
+}
+
+struct NtIvRuntimePlanValidationAdapter {
+    allowed_data_client_ids: BTreeSet<ClientId>,
+}
+
+impl NtIvRuntimePlanValidationAdapter {
+    fn new(node: &LiveNode, configured_external_clients: &[ClientId]) -> Self {
+        let mut allowed_data_client_ids = node
+            .kernel()
+            .data_engine
+            .borrow()
+            .registered_clients()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        allowed_data_client_ids.extend(configured_external_clients.iter().cloned());
+        Self {
+            allowed_data_client_ids,
+        }
+    }
+
+    fn validate_client_id(&self, plan: &IvSubscriptionPlan) -> Result<(), IvRuntimeBindingError> {
+        let client_id = ClientId::from(plan.client_id.as_str());
+        if self.allowed_data_client_ids.contains(&client_id) {
+            Ok(())
+        } else {
+            Err(binding_error(
+                plan,
+                format!(
+                    "IV source client_id {} is not registered as an NT data client or configured external data client",
+                    plan.client_id
+                ),
+            ))
+        }
+    }
+}
+
+impl IvRuntimeBindingAdapter for NtIvRuntimePlanValidationAdapter {
+    fn apply_subscription_plan(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+    ) -> Result<(), IvRuntimeBindingError> {
+        self.validate_client_id(plan)?;
+        iv_runtime_data_commands_for_plan(plan)?;
+        Ok(())
+    }
+}
+
+struct NtIvRuntimeBindingAdapter<'a> {
+    node: &'a mut LiveNode,
+    allowed_data_client_ids: BTreeSet<ClientId>,
+    external_client_ids: BTreeSet<ClientId>,
+}
+
+impl<'a> NtIvRuntimeBindingAdapter<'a> {
+    fn new(node: &'a mut LiveNode, configured_external_clients: &[ClientId]) -> Self {
+        let mut allowed_data_client_ids = node
+            .kernel()
+            .data_engine
+            .borrow()
+            .registered_clients()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        allowed_data_client_ids.extend(configured_external_clients.iter().cloned());
+        Self {
+            node,
+            allowed_data_client_ids,
+            external_client_ids: configured_external_clients.iter().cloned().collect(),
+        }
+    }
+
+    fn is_external_client(&self, plan: &IvSubscriptionPlan) -> bool {
+        self.external_client_ids
+            .contains(&ClientId::from(plan.client_id.as_str()))
+    }
+
+    fn client_id(&self, plan: &IvSubscriptionPlan) -> Result<ClientId, IvRuntimeBindingError> {
+        let client_id = ClientId::from(plan.client_id.as_str());
+        if self.allowed_data_client_ids.contains(&client_id) {
+            Ok(client_id)
+        } else {
+            Err(binding_error(
+                plan,
+                format!(
+                    "IV source client_id {} is not registered as an NT data client or configured external data client",
+                    plan.client_id
+                ),
+            ))
+        }
+    }
+
+    fn apply_option_greeks(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+        instrument_ids: &[String],
+        nt_params: &toml::Value,
+        subscribe: bool,
+    ) -> Result<(), IvRuntimeBindingError> {
+        let params = merged_nt_params(plan, nt_params)?;
+        let client_id = Some(self.client_id(plan)?);
+        let instrument_ids = parse_option_greeks_instrument_ids(instrument_ids)
+            .map_err(|message| binding_error(plan, message))?;
+        for instrument_id in instrument_ids {
+            let ts_init = self.node.kernel().clock.borrow().timestamp_ns();
+            if subscribe {
+                let command = SubscribeOptionGreeks::new(
+                    instrument_id,
+                    client_id,
+                    None,
+                    UUID4::new(),
+                    ts_init,
+                    None,
+                    params.clone(),
+                );
+                self.node
+                    .kernel()
+                    .data_engine
+                    .borrow_mut()
+                    .execute_subscribe(SubscribeCommand::OptionGreeks(command))
+                    .map_err(|error| binding_error(plan, error.to_string()))?;
+            } else {
+                let command = UnsubscribeOptionGreeks::new(
+                    instrument_id,
+                    client_id,
+                    None,
+                    UUID4::new(),
+                    ts_init,
+                    None,
+                    params.clone(),
+                );
+                self.node
+                    .kernel()
+                    .data_engine
+                    .borrow_mut()
+                    .execute_unsubscribe(&UnsubscribeCommand::OptionGreeks(command))
+                    .map_err(|error| binding_error(plan, error.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_option_chain(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+        series_ids: &[String],
+        strike_range_policy: &str,
+        nt_params: &toml::Value,
+        subscribe: bool,
+    ) -> Result<(), IvRuntimeBindingError> {
+        let params = merged_nt_params(plan, nt_params)?;
+        let strike_range = parse_nt_strike_range(plan, strike_range_policy)?;
+        let snapshot_interval_ms = params
+            .as_ref()
+            .and_then(|params| params.get_u64("snapshot_interval_ms"));
+        let client_id = Some(self.client_id(plan)?);
+        let series_ids = parse_option_chain_series_ids(series_ids)
+            .map_err(|message| binding_error(plan, message))?;
+        for series_id in series_ids {
+            let ts_init = self.node.kernel().clock.borrow().timestamp_ns();
+            if subscribe {
+                let command = SubscribeOptionChain::new(
+                    series_id,
+                    strike_range.clone(),
+                    snapshot_interval_ms,
+                    UUID4::new(),
+                    ts_init,
+                    client_id,
+                    None,
+                    params.clone(),
+                );
+                self.node
+                    .kernel()
+                    .data_engine
+                    .borrow_mut()
+                    .execute_subscribe(SubscribeCommand::OptionChain(command))
+                    .map_err(|error| binding_error(plan, error.to_string()))?;
+            } else {
+                let command =
+                    UnsubscribeOptionChain::new(series_id, UUID4::new(), ts_init, client_id, None);
+                self.node
+                    .kernel()
+                    .data_engine
+                    .borrow_mut()
+                    .execute_unsubscribe(&UnsubscribeCommand::OptionChain(command))
+                    .map_err(|error| binding_error(plan, error.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_custom_data(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+        custom_iv_data_type: &str,
+        nt_params: &toml::Value,
+        subscribe: bool,
+    ) -> Result<(), IvRuntimeBindingError> {
+        let (data_type, params) = custom_iv_data_type_for_source(
+            &plan.source_id,
+            custom_iv_data_type,
+            &plan.params,
+            nt_params,
+        )
+        .map_err(|message| binding_error(plan, message))?;
+        self.execute_custom_data(plan, data_type, params, subscribe)
+    }
+
+    fn apply_aggregate_greeks(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+        aggregate_key: &str,
+        underlying_selectors: &[String],
+        nt_params: &toml::Value,
+        subscribe: bool,
+    ) -> Result<(), IvRuntimeBindingError> {
+        let (data_type, params) = aggregate_greeks_data_type_for_source(
+            &plan.source_id,
+            aggregate_key,
+            underlying_selectors,
+            &plan.params,
+            nt_params,
+        )
+        .map_err(|message| binding_error(plan, message))?;
+        self.execute_custom_data(plan, data_type, params, subscribe)
+    }
+
+    fn execute_custom_data(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+        data_type: DataType,
+        params: Option<Params>,
+        subscribe: bool,
+    ) -> Result<(), IvRuntimeBindingError> {
+        let client_id = Some(self.client_id(plan)?);
+        let ts_init = self.node.kernel().clock.borrow().timestamp_ns();
+        if subscribe {
+            let command = SubscribeCustomData::new(
+                client_id,
+                None,
+                data_type,
+                UUID4::new(),
+                ts_init,
+                None,
+                params,
+            );
+            self.node
+                .kernel()
+                .data_engine
+                .borrow_mut()
+                .execute_subscribe(SubscribeCommand::Data(command))
+                .map_err(|error| binding_error(plan, error.to_string()))?;
+        } else {
+            let command = UnsubscribeCustomData::new(
+                client_id,
+                None,
+                data_type,
+                UUID4::new(),
+                ts_init,
+                None,
+                params,
+            );
+            self.node
+                .kernel()
+                .data_engine
+                .borrow_mut()
+                .execute_unsubscribe(&UnsubscribeCommand::Data(command))
+                .map_err(|error| binding_error(plan, error.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
+impl IvRuntimeBindingAdapter for NtIvRuntimeBindingAdapter<'_> {
+    fn apply_subscription_plan(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+    ) -> Result<(), IvRuntimeBindingError> {
+        if self.is_external_client(plan) {
+            return Ok(());
+        }
+
+        match (plan.operation, &plan.selector) {
+            (
+                IvRuntimeOperation::SubscribeOptionGreeks
+                | IvRuntimeOperation::UnsubscribeOptionGreeks,
+                IvSelector::SourceOptionGreeks {
+                    instrument_ids,
+                    nt_params,
+                },
+            ) => self.apply_option_greeks(
+                plan,
+                instrument_ids,
+                nt_params,
+                plan.operation == IvRuntimeOperation::SubscribeOptionGreeks,
+            ),
+            (
+                IvRuntimeOperation::SubscribeOptionChain
+                | IvRuntimeOperation::UnsubscribeOptionChain,
+                IvSelector::SourceOptionChain {
+                    series_ids,
+                    strike_range_policy,
+                    nt_params,
+                },
+            ) => self.apply_option_chain(
+                plan,
+                series_ids,
+                strike_range_policy,
+                nt_params,
+                plan.operation == IvRuntimeOperation::SubscribeOptionChain,
+            ),
+            (
+                IvRuntimeOperation::SubscribeCustomData | IvRuntimeOperation::UnsubscribeCustomData,
+                IvSelector::SourceCustomImpliedVolatility {
+                    custom_iv_data_type,
+                    nt_params,
+                    ..
+                },
+            ) => self.apply_custom_data(
+                plan,
+                custom_iv_data_type,
+                nt_params,
+                plan.operation == IvRuntimeOperation::SubscribeCustomData,
+            ),
+            (
+                IvRuntimeOperation::SubscribeAggregateGreeks
+                | IvRuntimeOperation::UnsubscribeAggregateGreeks,
+                IvSelector::SourceAggregateGreeks {
+                    aggregate_key,
+                    underlying_selectors,
+                    nt_params,
+                    ..
+                },
+            ) => self.apply_aggregate_greeks(
+                plan,
+                aggregate_key,
+                underlying_selectors,
+                nt_params,
+                plan.operation == IvRuntimeOperation::SubscribeAggregateGreeks,
+            ),
+            (IvRuntimeOperation::RemoveSource, _) => Ok(()),
+            _ => Err(binding_error(
+                plan,
+                "IV subscription operation does not match selector kind".to_string(),
+            )),
+        }
+    }
+}
+
+fn binding_error(plan: &IvSubscriptionPlan, message: String) -> IvRuntimeBindingError {
+    IvRuntimeBindingError::subscription_failed(plan, message)
+}
+
+fn custom_iv_data_type_for_source(
+    source_id: &str,
+    custom_iv_data_type: &str,
+    source_params: &toml::Value,
+    selector_nt_params: &toml::Value,
+) -> Result<(DataType, Option<Params>), String> {
+    let params = merged_nt_params_from_values(source_params, selector_nt_params)?;
+    let data_type = DataType::new(
+        custom_iv_data_type,
+        params.clone(),
+        Some(source_id.to_string()),
+    );
+    Ok((data_type, params))
+}
+
+fn aggregate_greeks_data_type_for_source(
+    source_id: &str,
+    aggregate_key: &str,
+    underlying_selectors: &[String],
+    source_params: &toml::Value,
+    selector_nt_params: &toml::Value,
+) -> Result<(DataType, Option<Params>), String> {
+    let mut params = merged_nt_params_from_values(source_params, selector_nt_params)?
+        .unwrap_or_else(Params::new);
+    params.insert(
+        "underlying_selectors".to_string(),
+        serde_json::Value::Array(
+            underlying_selectors
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    );
+    let params = Some(params);
+    let data_type = DataType::new(aggregate_key, params.clone(), Some(source_id.to_string()));
+    Ok((data_type, params))
+}
+
+fn merged_nt_params(
+    plan: &IvSubscriptionPlan,
+    selector_nt_params: &toml::Value,
+) -> Result<Option<Params>, IvRuntimeBindingError> {
+    merged_nt_params_from_values(&plan.params, selector_nt_params)
+        .map_err(|message| binding_error(plan, message))
+}
+
+fn merged_nt_params_from_values(
+    source_params: &toml::Value,
+    selector_nt_params: &toml::Value,
+) -> Result<Option<Params>, String> {
+    let mut params = Params::new();
+    insert_toml_params(&mut params, source_params, "source params")?;
+    insert_toml_params(&mut params, selector_nt_params, "selector nt_params")?;
+    if params.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(params))
+    }
+}
+
+fn insert_toml_params(params: &mut Params, value: &toml::Value, label: &str) -> Result<(), String> {
+    let toml::Value::Table(table) = value else {
+        return Err(format!(
+            "{label} must be a TOML table for NT params conversion"
+        ));
+    };
+    for (key, value) in table {
+        let value = serde_json::to_value(value).map_err(|error| {
+            format!("failed to convert {label} key {key} into NT params: {error}")
+        })?;
+        params.insert(key.clone(), value);
+    }
+    Ok(())
+}
+
+fn parse_nt_strike_range(
+    plan: &IvSubscriptionPlan,
+    strike_range_policy: &str,
+) -> Result<StrikeRange, IvRuntimeBindingError> {
+    if let Some(pct) = strike_range_policy.strip_prefix("atm_percent:") {
+        return pct
+            .parse::<f64>()
+            .map(|pct| StrikeRange::AtmPercent { pct })
+            .map_err(|error| {
+                binding_error(
+                    plan,
+                    format!("invalid atm_percent strike range policy: {error}"),
+                )
+            });
+    }
+    if let Some(relative) = strike_range_policy.strip_prefix("atm_relative:") {
+        let Some((above, below)) = relative.split_once(':') else {
+            return Err(binding_error(
+                plan,
+                "atm_relative strike range policy must be atm_relative:<above>:<below>".to_string(),
+            ));
+        };
+        let strikes_above = above.parse::<usize>().map_err(|error| {
+            binding_error(
+                plan,
+                format!("invalid atm_relative strikes_above value: {error}"),
+            )
+        })?;
+        let strikes_below = below.parse::<usize>().map_err(|error| {
+            binding_error(
+                plan,
+                format!("invalid atm_relative strikes_below value: {error}"),
+            )
+        })?;
+        return Ok(StrikeRange::AtmRelative {
+            strikes_above,
+            strikes_below,
+        });
+    }
+    if let Some(fixed) = strike_range_policy.strip_prefix("fixed:") {
+        let mut strikes = Vec::new();
+        for strike in fixed.split(',') {
+            strikes.push(Price::from_str(strike.trim()).map_err(|error| {
+                binding_error(plan, format!("invalid fixed strike range value: {error}"))
+            })?);
+        }
+        return Ok(StrikeRange::Fixed(strikes));
+    }
+    Err(binding_error(
+        plan,
+        "strike_range_policy must be parseable as atm_percent:<pct>, atm_relative:<above>:<below>, or fixed:<strike,...>".to_string(),
+    ))
 }
 
 #[cfg(test)]
@@ -200,6 +1342,10 @@ mod strategy_free_probe {
         /// Set once the walk has finished, whether by reaching `m` (pass) or by
         /// exhausting the universe (fail closed).
         complete: Cell<bool>,
+        /// Distinct markets that fired at least one trade across subscribed
+        /// chunks. Instrument IDs are enough here because the chunk-count probe is
+        /// scoped to one data client.
+        fired_instrument_ids: RefCell<BTreeSet<String>>,
     }
 
     #[derive(Debug, Clone)]
@@ -310,6 +1456,7 @@ mod strategy_free_probe {
                     cursor: Cell::new(0),
                     started: Cell::new(false),
                     complete: Cell::new(false),
+                    fired_instrument_ids: RefCell::new(BTreeSet::new()),
                 })),
             }
         }
@@ -333,6 +1480,8 @@ mod strategy_free_probe {
             instrument_ids.dedup();
             *walk.chunks.borrow_mut() = chunk_universe(&instrument_ids, walk.chunk_size);
             walk.cursor.set(0);
+            walk.complete.set(false);
+            walk.fired_instrument_ids.borrow_mut().clear();
             walk.started.set(true);
             self.quote_notify.notify_one();
         }
@@ -345,7 +1494,21 @@ mod strategy_free_probe {
         ) -> Option<Vec<StrategyFreeReferenceQuoteSubscription>> {
             let walk = self.chunk_walk.as_ref()?;
             let cursor = walk.cursor.get();
-            let chunk = walk.chunks.borrow().get(cursor).cloned()?;
+            let chunk = match walk.chunks.borrow().get(cursor).cloned() {
+                Some(chunk) => chunk,
+                None => {
+                    walk.complete.set(true);
+                    if !self.chunk_count_passed() {
+                        self.fail_metadata_response_probe(format!(
+                            "trade chunk-count readiness probe exhausted {} chunk(s) with {} distinct fired market(s), below required min_observed_targets={}",
+                            walk.chunks.borrow().len(),
+                            walk.fired_instrument_ids.borrow().len(),
+                            walk.required_live_markets,
+                        ));
+                    }
+                    return None;
+                }
+            };
             walk.cursor.set(cursor + 1);
             let subscriptions: Vec<StrategyFreeReferenceQuoteSubscription> = chunk
                 .into_iter()
@@ -368,7 +1531,10 @@ mod strategy_free_probe {
 
         pub(super) fn chunk_count_passed(&self) -> bool {
             match &self.chunk_walk {
-                Some(walk) => trade_chunk_count_probe_passed(0, walk.required_live_markets),
+                Some(walk) => trade_chunk_count_probe_passed(
+                    walk.fired_instrument_ids.borrow().len(),
+                    walk.required_live_markets,
+                ),
                 None => false,
             }
         }
@@ -604,6 +1770,32 @@ mod strategy_free_probe {
             drop(book_deltas);
             if matched_required && self.has_all_required_market_data() {
                 self.quote_notify.notify_one();
+            }
+        }
+
+        pub(super) fn record_trade(&self, trade: &TradeTick) {
+            if self.market_data_kind != DataClientReadinessProbeMarketDataKind::Trade {
+                return;
+            }
+            let Some(walk) = &self.chunk_walk else {
+                return;
+            };
+            if walk.complete.get() {
+                return;
+            }
+            if self
+                .required
+                .borrow()
+                .iter()
+                .any(|required| trade.instrument_id == required.instrument_id)
+            {
+                walk.fired_instrument_ids
+                    .borrow_mut()
+                    .insert(trade.instrument_id.to_string());
+                if self.chunk_count_passed() {
+                    walk.complete.set(true);
+                    self.quote_notify.notify_one();
+                }
             }
         }
 
@@ -1019,12 +2211,16 @@ impl BoltV3LiveNodeRuntime {
         node: LiveNode,
         registration_summary: BoltV3RegistrationSummary,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
+        iv_runtime: Option<IvRuntimeEngine>,
+        iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
         redaction_values: Vec<Zeroizing<String>>,
     ) -> Self {
         Self {
             node,
             registration_summary,
             submit_admission,
+            iv_runtime,
+            iv_event_bindings,
             redaction_values,
         }
     }
@@ -1039,6 +2235,106 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn state(&self) -> NodeState {
         self.node.state()
+    }
+
+    pub fn has_iv_runtime(&self) -> bool {
+        self.iv_runtime.is_some()
+    }
+
+    pub fn has_iv_event_bindings(&self) -> bool {
+        self.iv_event_bindings.is_some()
+    }
+
+    pub fn iv_source_health(&self, profile_id: &str, source_id: &str) -> Option<IvSourceHealth> {
+        self.iv_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.source_health(profile_id, source_id))
+    }
+
+    fn spawn_iv_engine_start_on_running(
+        &self,
+        root: &BoltV3RootConfig,
+    ) -> Result<Option<tokio::task::JoinHandle<()>>, BoltV3LiveNodeError> {
+        let Some(iv_runtime) = self.iv_runtime.clone() else {
+            return Ok(None);
+        };
+        if root.iv.is_none() {
+            return Ok(None);
+        }
+        let lifecycle = plan_iv_engine_lifecycle(root).map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(
+                BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                    message: format!("bolt-v3 IV lifecycle start planning failed: {error:?}"),
+                },
+            )
+        })?;
+        if lifecycle.start_plans.is_empty() {
+            return Ok(None);
+        }
+
+        let node_handle = self.node.handle();
+        let start_plans = lifecycle.start_plans;
+        let registered_clients = self.node.kernel().data_engine.borrow().registered_clients();
+        let external_clients = root.nautilus.data_engine.external_clients.clone();
+        let start_poll_interval =
+            Duration::from_millis(root.persistence.runtime_capture_start_poll_interval_ms);
+        Ok(Some(tokio::task::spawn_local(async move {
+            loop {
+                match node_handle.state() {
+                    NodeState::Running => break,
+                    NodeState::ShuttingDown | NodeState::Stopped => return,
+                    NodeState::Idle | NodeState::Starting => {
+                        tokio::time::sleep(start_poll_interval).await;
+                    }
+                }
+            }
+
+            let mut adapter =
+                NtIvRuntimeCommandSenderAdapter::new(&registered_clients, &external_clients);
+            let outcomes = apply_subscription_plans(&mut adapter, &start_plans);
+            if let Err(error) = iv_runtime.apply_plan_outcomes(&outcomes) {
+                log::error!("bolt-v3 IV lifecycle start outcome update failed: {error:?}");
+            }
+        })))
+    }
+
+    pub fn stop_iv_engine_lifecycle(
+        &mut self,
+        root: &BoltV3RootConfig,
+    ) -> Result<(), BoltV3LiveNodeError> {
+        let Some(iv_runtime) = self.iv_runtime.take() else {
+            return Ok(());
+        };
+        let lifecycle = match plan_iv_engine_lifecycle(root) {
+            Ok(lifecycle) => lifecycle,
+            Err(error) => {
+                self.iv_runtime = Some(iv_runtime);
+                return Err(BoltV3LiveNodeError::StrategyRegistration(
+                    BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                        message: format!("bolt-v3 IV lifecycle stop planning failed: {error:?}"),
+                    },
+                ));
+            }
+        };
+        let iv_event_bindings = self.iv_event_bindings.take();
+        let outcomes = {
+            let mut adapter = NtIvRuntimeBindingAdapter::new(
+                &mut self.node,
+                &root.nautilus.data_engine.external_clients,
+            );
+            apply_subscription_plans(&mut adapter, &lifecycle.stop_plans)
+        };
+        if let Err(error) = iv_runtime.apply_plan_outcomes(&outcomes) {
+            self.iv_runtime = Some(iv_runtime);
+            self.iv_event_bindings = iv_event_bindings;
+            return Err(BoltV3LiveNodeError::StrategyRegistration(
+                BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                    message: format!("bolt-v3 IV lifecycle stop state update failed: {error:?}"),
+                },
+            ));
+        }
+
+        Ok(())
     }
 
     pub fn registered_data_client_ids(&self) -> Vec<ClientId> {
@@ -1648,7 +2944,18 @@ fn trade_transport_client_keys(
     insert_outcome_group_source_client_keys(&mut client_keys, loaded)?;
     insert_gate_provider_client_keys(&mut client_keys, loaded);
     insert_realized_volatility_surface_client_keys(&mut client_keys, loaded);
+    insert_iv_source_client_keys(&mut client_keys, loaded);
     Ok(client_keys)
+}
+
+fn insert_iv_source_client_keys(client_keys: &mut BTreeSet<String>, loaded: &LoadedBoltV3Config) {
+    if let Some(iv_root) = loaded.root.iv.as_ref() {
+        for profile in &iv_root.profiles {
+            for source in &profile.sources {
+                client_keys.insert(source.client_id.clone());
+            }
+        }
+    }
 }
 
 fn insert_outcome_group_source_client_keys(
@@ -1826,13 +3133,17 @@ pub async fn run_bolt_v3_live_node(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let node = &mut runtime.node;
-    let node_handle = node.handle();
-    let mut capture_guards = wire_bolt_v3_runtime_capture(node, node_handle, loaded)
-        .map_err(BoltV3LiveNodeError::RuntimeCaptureWire)?;
+    let node_handle = runtime.node.handle();
+    let mut capture_guards = {
+        let node = &runtime.node;
+        wire_bolt_v3_runtime_capture(node, node_handle, loaded)
+    }
+    .map_err(BoltV3LiveNodeError::RuntimeCaptureWire)?;
     let mut capture_failure_receiver = capture_guards.take_failure_receiver();
+    let iv_start_task = runtime.spawn_iv_engine_start_on_running(&loaded.root)?;
 
     let run_result = {
+        let node = &mut runtime.node;
         let run_future = node.run();
         tokio::pin!(run_future);
 
@@ -1848,9 +3159,23 @@ pub async fn run_bolt_v3_live_node(
             run_future.await
         }
     };
+    if let Some(task) = iv_start_task {
+        task.abort();
+    }
+    let iv_stop_result = runtime.stop_iv_engine_lifecycle(&loaded.root);
     let shutdown_result = capture_guards.shutdown().await;
 
-    classify_live_node_run_and_capture_shutdown(run_result, shutdown_result)
+    let run_and_capture_result =
+        classify_live_node_run_and_capture_shutdown(run_result, shutdown_result);
+    match (run_and_capture_result, iv_stop_result) {
+        (Err(run_or_capture_error), Err(iv_stop_error)) => {
+            log::error!("IV lifecycle stop failed after live-node run failure: {iv_stop_error}");
+            Err(run_or_capture_error)
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -1987,6 +3312,17 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     adapters: BoltV3AdapterConfigs,
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+    let iv_client_errors = crate::bolt_v3_validate::validate_iv_source_clients(&loaded.root);
+    if !iv_client_errors.is_empty() {
+        return Err(BoltV3LiveNodeError::StrategyRegistration(
+            BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                message: format!(
+                    "bolt-v3 IV source client validation failed: {}",
+                    iv_client_errors.join("; ")
+                ),
+            },
+        ));
+    }
     let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = if loaded.strategies.is_empty() {
         Arc::new(NoStrategyDecisionEvidenceWriter)
     } else {
@@ -2008,20 +3344,80 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::from_mode(
             loaded.root.runtime.order_execution_mode,
         );
+    let strategy_execution_controls = BoltV3StrategyExecutionControls {
+        submit_admission: submit_admission.clone(),
+        order_execution_policy,
+    };
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
-    let strategy_summary = register_bolt_v3_strategies_on_node_with_bindings(
-        &mut node,
-        loaded,
-        resolved,
-        crate::strategy_runtime_bindings::runtime_bindings(),
-        submit_admission.clone(),
-        order_execution_policy,
-        decision_evidence.clone(),
-    )
+    let iv_runtime = loaded
+        .root
+        .iv
+        .as_ref()
+        .map(IvRuntimeEngine::from_iv_root)
+        .transpose()
+        .map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(
+                BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                    message: format!("bolt-v3 IV runtime engine construction failed: {error:?}"),
+                },
+            )
+        })?;
+    if let Some(iv_runtime) = &iv_runtime {
+        let lifecycle = plan_iv_engine_lifecycle(&loaded.root).map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(
+                BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                    message: format!("bolt-v3 IV lifecycle planning failed: {error:?}"),
+                },
+            )
+        })?;
+        let outcomes = {
+            let mut adapter = NtIvRuntimePlanValidationAdapter::new(
+                &node,
+                &loaded.root.nautilus.data_engine.external_clients,
+            );
+            apply_subscription_plans(&mut adapter, &lifecycle.start_plans)
+        };
+        iv_runtime.apply_plan_outcomes(&outcomes).map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(
+                BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                    message: format!("bolt-v3 IV lifecycle state update failed: {error:?}"),
+                },
+            )
+        })?;
+    }
+    let iv_event_bindings =
+        if let (Some(iv), Some(iv_runtime)) = (loaded.root.iv.as_ref(), iv_runtime.as_ref()) {
+            Some(
+                wire_bolt_v3_iv_runtime_event_bindings(iv, iv_runtime)
+                    .map_err(BoltV3LiveNodeError::StrategyRegistration)?,
+            )
+        } else {
+            None
+        };
+    let strategy_summary = if let Some(iv_runtime) = &iv_runtime {
+        register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
+            &mut node,
+            loaded,
+            resolved,
+            crate::strategy_runtime_bindings::runtime_bindings(),
+            strategy_execution_controls,
+            decision_evidence.clone(),
+            iv_runtime,
+        )
+    } else {
+        register_bolt_v3_strategies_on_node_with_bindings(
+            &mut node,
+            loaded,
+            resolved,
+            crate::strategy_runtime_bindings::runtime_bindings(),
+            strategy_execution_controls,
+            decision_evidence.clone(),
+        )
+    }
     .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
     for strategy in &strategy_summary.registered {
         log::info!(
@@ -2036,6 +3432,8 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             node,
             summary.clone(),
             submit_admission,
+            iv_runtime,
+            iv_event_bindings,
             resolved.redaction_values(),
         ),
         summary,
@@ -2383,6 +3781,7 @@ mod tests {
         DataClientReadinessProbeQuoteTargetBlock, DataClientReadinessProbeQuoteTargetSource,
         ReferenceDataBlock,
     };
+    use crate::bolt_v3_iv::error::IvRejectReason;
     use crate::bolt_v3_providers::hyperliquid::{
         ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
     };
@@ -3203,6 +4602,18 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         assert!(trade_chunk_count_probe_passed(11, 10), "above m must pass");
     }
 
+    fn readiness_trade_tick(instrument_id: InstrumentId, trade_id: &str) -> TradeTick {
+        TradeTick::new(
+            instrument_id,
+            Price::from("1.00"),
+            nautilus_model::types::Quantity::from("1.00"),
+            AggressorSide::Buyer,
+            TradeId::from(trade_id),
+            1.into(),
+            1.into(),
+        )
+    }
+
     #[test]
     fn chunk_count_handle_chunks_universe_and_walks_in_sorted_order() {
         let handle =
@@ -3257,6 +4668,73 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         );
     }
 
+    #[test]
+    fn chunk_count_handle_passes_after_distinct_trade_markets_reach_m() {
+        let handle =
+            BoltV3StrategyFreeReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
+                ClientId::from("okx_data"),
+                3,
+                45,
+                2,
+                DataClientReadinessProbeMarketDataKind::Trade,
+            );
+        handle.chunk_count_capture_universe(vec![
+            InstrumentId::from("A-1.OKX"),
+            InstrumentId::from("B-2.OKX"),
+            InstrumentId::from("C-3.OKX"),
+        ]);
+        let chunk = handle.chunk_count_next_chunk().expect("first chunk");
+
+        handle.record_trade(&readiness_trade_tick(chunk[0].instrument_id, "T-A1"));
+        assert!(
+            !handle.has_all_required_market_data(),
+            "one distinct firing market is below m=2"
+        );
+
+        handle.record_trade(&readiness_trade_tick(chunk[0].instrument_id, "T-A2"));
+        assert!(
+            !handle.has_all_required_market_data(),
+            "duplicate trades from the same market must not double-count"
+        );
+
+        handle.record_trade(&readiness_trade_tick(chunk[1].instrument_id, "T-B1"));
+        assert!(
+            handle.has_all_required_market_data(),
+            "the trade chunk-count probe should pass once m distinct markets fire"
+        );
+    }
+
+    #[test]
+    fn chunk_count_handle_fails_closed_when_universe_exhausts_below_m() {
+        let handle =
+            BoltV3StrategyFreeReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
+                ClientId::from("okx_data"),
+                1,
+                45,
+                2,
+                DataClientReadinessProbeMarketDataKind::Trade,
+            );
+        handle.chunk_count_capture_universe(vec![InstrumentId::from("A-1.OKX")]);
+        let chunk = handle.chunk_count_next_chunk().expect("first chunk");
+        handle.record_trade(&readiness_trade_tick(chunk[0].instrument_id, "T-A1"));
+
+        assert!(
+            handle.chunk_count_next_chunk().is_none(),
+            "the single-market universe is exhausted after one chunk"
+        );
+        let failure = handle
+            .failure_error()
+            .expect("exhausting below m must set a fail-closed reason");
+        assert!(
+            failure.contains("below required min_observed_targets=2"),
+            "failure should explain the unmet m threshold: {failure}"
+        );
+        assert!(
+            !handle.has_all_required_market_data(),
+            "exhaustion below m must never satisfy readiness"
+        );
+    }
+
     fn fixture_loaded_config() -> LoadedBoltV3Config {
         let root_text = include_str!("../tests/fixtures/bolt_v3/root.toml");
         let root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
@@ -3266,6 +4744,892 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             root,
             strategies: Vec::new(),
         }
+    }
+
+    fn insert_configured_data_client(loaded: &mut LoadedBoltV3Config) {
+        loaded.root.clients.insert(
+            "configured-client".to_string(),
+            toml::from_str(
+                r#"
+venue = "OKX"
+
+[data]
+configured_data_param = "configured-value"
+"#,
+            )
+            .expect("configured data client should parse"),
+        );
+    }
+
+    fn fixture_loaded_config_with_external_option_greeks_iv() -> LoadedBoltV3Config {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.clients.clear();
+        insert_configured_data_client(&mut loaded);
+        loaded.root.nautilus.data_engine.external_clients =
+            vec![ClientId::from("configured-client")];
+        loaded.root.iv = Some(
+            toml::from_str(
+                r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "configured-profile"
+enabled_products = ["source_health"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_derived_points = 2
+max_source_health_events = 2
+max_source_event_future_skew_ns = 0
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+derived_input_policies = []
+
+[profiles.audit_policy]
+profile_id = "configured-profile"
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-greeks-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "configured-greeks-source"
+selector_fingerprint = "configured-greeks-selector"
+source_kind = "option_greeks"
+client_id = "configured-client"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["BTC-20240101-50000-C.DERIBIT"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value"
+
+[profiles.sources.params]
+configured_source_param = "configured-value"
+"#,
+            )
+            .expect("configured IV profile should parse"),
+        );
+        loaded
+    }
+
+    #[test]
+    fn live_node_startup_applies_iv_subscription_plans_to_runtime_source_health() {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.clients.clear();
+        insert_configured_data_client(&mut loaded);
+        loaded.root.nautilus.data_engine.external_clients =
+            vec![ClientId::from("configured-client")];
+        loaded.root.iv = Some(
+            toml::from_str(
+                r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "configured-profile"
+enabled_products = ["source_health"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_derived_points = 2
+max_source_health_events = 2
+max_source_event_future_skew_ns = 0
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+derived_input_policies = []
+
+[profiles.audit_policy]
+profile_id = "configured-profile"
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-greeks-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "configured-greeks-source"
+selector_fingerprint = "configured-greeks-selector"
+source_kind = "option_greeks"
+client_id = "configured-client"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["BTC-20240101-50000-C.DERIBIT"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value"
+
+[profiles.sources.params]
+configured_source_param = "configured-value"
+"#,
+            )
+            .expect("configured IV profile should parse"),
+        );
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+        let adapters = BoltV3AdapterConfigs {
+            clients: BTreeMap::new(),
+        };
+
+        let (runtime, _) = build_live_node_with_clients_and_submit_approval_limits(
+            &loaded,
+            &resolved,
+            adapters,
+            BTreeMap::new(),
+        )
+        .expect("configured external IV source should build without live transport");
+
+        assert!(runtime.has_iv_runtime());
+        let health = runtime
+            .iv_source_health("configured-profile", "configured-greeks-source")
+            .expect("startup should apply IV source health");
+        assert_eq!(
+            health.subscription_state,
+            crate::bolt_v3_iv::health::IvSourceHealthState::Subscribing
+        );
+        assert_eq!(health.subscription_generation, 7);
+    }
+
+    #[test]
+    fn live_node_startup_rejects_unknown_iv_data_client() {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.clients.clear();
+        loaded.root.nautilus.data_engine.external_clients.clear();
+        loaded.root.iv = Some(
+            toml::from_str(
+                r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "configured-profile"
+enabled_products = ["source_health"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_derived_points = 2
+max_source_health_events = 2
+max_source_event_future_skew_ns = 0
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+derived_input_policies = []
+
+[profiles.audit_policy]
+profile_id = "configured-profile"
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-greeks-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "configured-greeks-source"
+selector_fingerprint = "configured-greeks-selector"
+source_kind = "option_greeks"
+client_id = "missing-client"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["BTC-20240101-50000-C.DERIBIT"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value"
+
+[profiles.sources.params]
+configured_source_param = "configured-value"
+"#,
+            )
+            .expect("configured IV profile should parse"),
+        );
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+        let adapters = BoltV3AdapterConfigs {
+            clients: BTreeMap::new(),
+        };
+
+        let error = build_live_node_with_clients_and_submit_approval_limits(
+            &loaded,
+            &resolved,
+            adapters,
+            BTreeMap::new(),
+        )
+        .expect_err("unknown IV source client must reject before live-node build");
+
+        assert!(format!("{error:?}").contains("missing-client"));
+    }
+
+    #[test]
+    fn iv_option_greeks_identifier_list_rejects_before_runtime_commands() {
+        let ids = vec![
+            "BTC-20240101-50000-C.DERIBIT".to_string(),
+            "configured-invalid-option-instrument".to_string(),
+        ];
+
+        let error = parse_option_greeks_instrument_ids(&ids).expect_err("invalid ID should reject");
+
+        assert!(error.contains("invalid NT option-greeks instrument_id"));
+        assert!(error.contains("configured-invalid-option-instrument"));
+    }
+
+    #[test]
+    fn iv_option_chain_identifier_list_rejects_before_runtime_commands() {
+        let ids = vec![
+            "DERIBIT:BTC:BTC:2024-01-01".to_string(),
+            "configured-invalid-option-series".to_string(),
+        ];
+
+        let error = parse_option_chain_series_ids(&ids).expect_err("invalid ID should reject");
+
+        assert!(error.contains("invalid NT option-chain series_id"));
+        assert!(error.contains("configured-invalid-option-series"));
+    }
+
+    #[test]
+    fn iv_option_greeks_start_plan_translates_to_runtime_data_command() {
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-greeks-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeOptionGreeks,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionGreeks,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceOptionGreeks {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                nt_params: toml::Value::Table(toml::map::Map::new()),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+
+        let commands = iv_runtime_data_commands_for_plan(&plan)
+            .expect("valid option-greeks plan should translate to an NT data command");
+
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            nautilus_common::messages::data::DataCommand::Subscribe(
+                SubscribeCommand::OptionGreeks(command),
+            ) => {
+                assert_eq!(
+                    command.instrument_id,
+                    InstrumentId::from("BTC-20240101-50000-C.DERIBIT")
+                );
+                assert_eq!(command.client_id, Some(ClientId::from("configured-client")));
+            }
+            other => panic!("expected option-greeks subscribe command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn iv_remove_source_plan_translates_to_no_runtime_data_commands() {
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-greeks-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::SourceRemoval,
+            operation: IvRuntimeOperation::RemoveSource,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionGreeks,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceOptionGreeks {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                nt_params: toml::Value::Table(toml::map::Map::new()),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+
+        let commands = iv_runtime_data_commands_for_plan(&plan)
+            .expect("source removal should not require NT data commands");
+
+        assert!(commands.is_empty());
+    }
+
+    #[test]
+    fn iv_option_chain_start_plan_translates_parseable_strike_range_to_runtime_data_command() {
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-chain-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeOptionChain,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionChain,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceOptionChain {
+                series_ids: vec!["DERIBIT:BTC:BTC:2024-01-01T00:00:00Z".to_string()],
+                strike_range_policy: "atm_relative:1:1".to_string(),
+                nt_params: toml::toml! {
+                    snapshot_interval_ms = 250
+                }
+                .into(),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+
+        let commands = iv_runtime_data_commands_for_plan(&plan)
+            .expect("valid option-chain plan should translate to an NT data command");
+
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            nautilus_common::messages::data::DataCommand::Subscribe(
+                SubscribeCommand::OptionChain(command),
+            ) => {
+                assert_eq!(
+                    command.series_id,
+                    OptionSeriesId::from_str("DERIBIT:BTC:BTC:2024-01-01T00:00:00Z").unwrap()
+                );
+                assert_eq!(
+                    command.strike_range,
+                    StrikeRange::AtmRelative {
+                        strikes_above: 1,
+                        strikes_below: 1,
+                    }
+                );
+                assert_eq!(command.snapshot_interval_ms, Some(250));
+                assert_eq!(command.client_id, Some(ClientId::from("configured-client")));
+            }
+            other => panic!("expected option-chain subscribe command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn iv_custom_iv_start_plan_translates_to_runtime_custom_data_command() {
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-custom-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeCustomData,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::CustomData,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceCustomImpliedVolatility {
+                custom_iv_data_type: "ConfiguredCustomIvEvent".to_string(),
+                custom_iv_data_fields: vec!["configured_iv".to_string()],
+                nt_params: toml::toml! {
+                    configured_selector_param = "selector-value"
+                }
+                .into(),
+            },
+            params: toml::toml! {
+                configured_source_param = "source-value"
+            }
+            .into(),
+            subscription_generation: 7,
+        };
+
+        let commands = iv_runtime_data_commands_for_plan(&plan)
+            .expect("valid custom-IV plan should translate to an NT custom-data command");
+
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            nautilus_common::messages::data::DataCommand::Subscribe(SubscribeCommand::Data(
+                command,
+            )) => {
+                assert_eq!(command.client_id, Some(ClientId::from("configured-client")));
+                assert_eq!(command.data_type.type_name(), "ConfiguredCustomIvEvent");
+                assert_eq!(
+                    command.data_type.identifier(),
+                    Some("configured-custom-source")
+                );
+                let metadata = command
+                    .data_type
+                    .metadata()
+                    .expect("custom-IV data type should carry merged params");
+                assert_eq!(
+                    metadata.get("configured_source_param"),
+                    Some(&serde_json::Value::String("source-value".to_string()))
+                );
+                assert_eq!(
+                    metadata.get("configured_selector_param"),
+                    Some(&serde_json::Value::String("selector-value".to_string()))
+                );
+                assert_eq!(command.params.as_ref(), Some(metadata));
+            }
+            other => panic!("expected custom-IV data subscribe command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn iv_aggregate_greeks_start_plan_translates_to_runtime_custom_data_command() {
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-aggregate-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeAggregateGreeks,
+            nt_source_kind:
+                crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::AggregateGreeksTopic,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceAggregateGreeks {
+                aggregate_key: "ConfiguredAggregateGreeksEvent".to_string(),
+                underlying_selectors: vec!["configured-underlying-selector".to_string()],
+                delta_field: "configured_delta".to_string(),
+                gamma_field: "configured_gamma".to_string(),
+                vega_field: "configured_vega".to_string(),
+                theta_field: "configured_theta".to_string(),
+                rho_field: "configured_rho".to_string(),
+                iv_field: Some("configured_iv".to_string()),
+                iv_basis: None,
+                iv_convention: None,
+                nt_params: toml::toml! {
+                    configured_selector_param = "selector-value"
+                }
+                .into(),
+            },
+            params: toml::toml! {
+                configured_source_param = "source-value"
+            }
+            .into(),
+            subscription_generation: 7,
+        };
+
+        let commands = iv_runtime_data_commands_for_plan(&plan)
+            .expect("valid aggregate-greeks plan should translate to an NT custom-data command");
+
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            nautilus_common::messages::data::DataCommand::Subscribe(SubscribeCommand::Data(
+                command,
+            )) => {
+                assert_eq!(command.client_id, Some(ClientId::from("configured-client")));
+                assert_eq!(
+                    command.data_type.type_name(),
+                    "ConfiguredAggregateGreeksEvent"
+                );
+                assert_eq!(
+                    command.data_type.identifier(),
+                    Some("configured-aggregate-source")
+                );
+                let metadata = command
+                    .data_type
+                    .metadata()
+                    .expect("aggregate-greeks data type should carry merged params");
+                assert_eq!(
+                    metadata.get("underlying_selectors"),
+                    Some(&serde_json::Value::Array(vec![serde_json::Value::String(
+                        "configured-underlying-selector".to_string()
+                    )]))
+                );
+                assert_eq!(
+                    metadata.get("configured_source_param"),
+                    Some(&serde_json::Value::String("source-value".to_string()))
+                );
+                assert_eq!(
+                    metadata.get("configured_selector_param"),
+                    Some(&serde_json::Value::String("selector-value".to_string()))
+                );
+                assert_eq!(command.params.as_ref(), Some(metadata));
+            }
+            other => panic!("expected aggregate-greeks data subscribe command, got {other:?}"),
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecordingDataCommandSender {
+        commands: std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>>,
+    }
+
+    impl nautilus_common::runner::DataCommandSender for RecordingDataCommandSender {
+        fn execute(&self, command: DataCommand) {
+            self.commands
+                .lock()
+                .expect("recording data command sender lock should not be poisoned")
+                .push(command);
+        }
+    }
+
+    struct DataCommandSenderRestore;
+
+    impl Drop for DataCommandSenderRestore {
+        fn drop(&mut self) {
+            nautilus_common::runner::replace_data_cmd_sender(std::sync::Arc::new(
+                nautilus_common::runner::SyncDataCommandSender,
+            ));
+        }
+    }
+
+    #[test]
+    fn iv_runtime_command_sender_adapter_queues_start_plan_after_runner_sender_is_bound() {
+        let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        nautilus_common::runner::replace_data_cmd_sender(std::sync::Arc::new(
+            RecordingDataCommandSender {
+                commands: commands.clone(),
+            },
+        ));
+        let _restore_sender = DataCommandSenderRestore;
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-greeks-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeOptionGreeks,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionGreeks,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceOptionGreeks {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                nt_params: toml::Value::Table(toml::map::Map::new()),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+        let mut adapter =
+            NtIvRuntimeCommandSenderAdapter::new(&[ClientId::from("configured-client")], &[]);
+
+        adapter
+            .apply_subscription_plan(&plan)
+            .expect("valid runtime start plan should be queued");
+
+        let commands = commands
+            .lock()
+            .expect("recording data command sender lock should not be poisoned");
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(
+            &commands[0],
+            DataCommand::Subscribe(SubscribeCommand::OptionGreeks(_))
+        ));
+    }
+
+    #[test]
+    fn iv_runtime_command_sender_adapter_rejects_unknown_start_client_without_queueing() {
+        let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        nautilus_common::runner::replace_data_cmd_sender(std::sync::Arc::new(
+            RecordingDataCommandSender {
+                commands: commands.clone(),
+            },
+        ));
+        let _restore_sender = DataCommandSenderRestore;
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-greeks-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeOptionGreeks,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionGreeks,
+            client_id: "missing-client".to_string(),
+            selector: IvSelector::SourceOptionGreeks {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                nt_params: toml::Value::Table(toml::map::Map::new()),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+        let mut adapter = NtIvRuntimeCommandSenderAdapter::new(&[], &[]);
+
+        let error = adapter
+            .apply_subscription_plan(&plan)
+            .expect_err("unknown runtime start client should reject before queueing");
+
+        assert_eq!(error.reason, IvRejectReason::SubscriptionFailed);
+        assert!(error.message.contains("not registered"));
+        assert!(
+            commands
+                .lock()
+                .expect("recording data command sender lock should not be poisoned")
+                .is_empty(),
+            "invalid start client must not enqueue a data command"
+        );
+    }
+
+    #[test]
+    fn iv_runtime_command_sender_adapter_skips_external_start_client_without_queueing() {
+        let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        nautilus_common::runner::replace_data_cmd_sender(std::sync::Arc::new(
+            RecordingDataCommandSender {
+                commands: commands.clone(),
+            },
+        ));
+        let _restore_sender = DataCommandSenderRestore;
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-greeks-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeOptionGreeks,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionGreeks,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceOptionGreeks {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                nt_params: toml::Value::Table(toml::map::Map::new()),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+        let mut adapter =
+            NtIvRuntimeCommandSenderAdapter::new(&[], &[ClientId::from("configured-client")]);
+
+        adapter
+            .apply_subscription_plan(&plan)
+            .expect("external start client should be accepted without NT queueing");
+
+        assert!(
+            commands
+                .lock()
+                .expect("recording data command sender lock should not be poisoned")
+                .is_empty(),
+            "external start client is managed outside the runtime sender"
+        );
+    }
+
+    #[test]
+    fn live_node_runtime_stop_applies_iv_unsubscribe_lifecycle() {
+        let loaded = fixture_loaded_config_with_external_option_greeks_iv();
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+        let adapters = BoltV3AdapterConfigs {
+            clients: BTreeMap::new(),
+        };
+
+        let (mut runtime, _) = build_live_node_with_clients_and_submit_approval_limits(
+            &loaded,
+            &resolved,
+            adapters,
+            BTreeMap::new(),
+        )
+        .expect("configured external IV source should build without live transport");
+        assert!(
+            runtime.has_iv_event_bindings(),
+            "startup should install IV receive-side bindings"
+        );
+
+        runtime
+            .stop_iv_engine_lifecycle(&loaded.root)
+            .expect("IV stop lifecycle should apply unsubscribe plans");
+        assert!(
+            !runtime.has_iv_event_bindings(),
+            "stop should drop IV receive-side bindings"
+        );
+        assert!(
+            !runtime.has_iv_runtime(),
+            "stop should clear the IV runtime after applying unsubscribe outcomes"
+        );
+        assert!(
+            runtime
+                .iv_source_health("configured-profile", "configured-greeks-source")
+                .is_none(),
+            "stopped live node should not expose IV source health through a retained runtime"
+        );
+    }
+
+    #[test]
+    fn live_node_runtime_stop_planning_failure_keeps_iv_runtime() {
+        let loaded = fixture_loaded_config_with_external_option_greeks_iv();
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+        let adapters = BoltV3AdapterConfigs {
+            clients: BTreeMap::new(),
+        };
+
+        let (mut runtime, _) = build_live_node_with_clients_and_submit_approval_limits(
+            &loaded,
+            &resolved,
+            adapters,
+            BTreeMap::new(),
+        )
+        .expect("configured external IV source should build without live transport");
+        assert!(runtime.has_iv_runtime());
+        assert!(runtime.has_iv_event_bindings());
+
+        let mut invalid_stop_root = loaded.root.clone();
+        let profile = invalid_stop_root
+            .iv
+            .as_mut()
+            .and_then(|iv| iv.profiles.first_mut())
+            .expect("fixture should include one IV profile");
+        let duplicate_source = profile
+            .sources
+            .first()
+            .expect("fixture should include one IV source")
+            .clone();
+        profile.sources.push(duplicate_source);
+
+        let error = runtime
+            .stop_iv_engine_lifecycle(&invalid_stop_root)
+            .expect_err("invalid stop lifecycle planning should fail");
+
+        assert!(
+            error.to_string().contains("DuplicateSourceId"),
+            "failure should identify duplicate-source stop planning: {error}"
+        );
+        assert!(
+            runtime.has_iv_runtime(),
+            "failed stop planning must not drop the IV runtime"
+        );
+        assert!(
+            runtime.has_iv_event_bindings(),
+            "failed stop planning must not drop IV event bindings"
+        );
+    }
+
+    #[test]
+    fn live_node_startup_binds_aggregate_greeks_sources_through_nt_custom_data() {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.clients.clear();
+        insert_configured_data_client(&mut loaded);
+        loaded.root.nautilus.data_engine.external_clients =
+            vec![ClientId::from("configured-client")];
+        loaded.root.iv = Some(
+            toml::from_str(
+                r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "configured-profile"
+enabled_products = ["source_health", "aggregate_greeks"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_derived_points = 2
+max_source_health_events = 2
+max_source_event_future_skew_ns = 0
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+derived_input_policies = []
+
+[profiles.audit_policy]
+profile_id = "configured-profile"
+enabled_raw_products = ["aggregate_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-aggregate-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health", "aggregate_greeks"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "configured-aggregate-source"
+selector_fingerprint = "configured-aggregate-selector"
+source_kind = "aggregate_greeks"
+client_id = "configured-client"
+subscription_generation = 11
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredAggregateGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_aggregate_greeks"
+aggregate_key = "configured-aggregate-greeks-topic"
+underlying_selectors = ["configured-underlying-selector"]
+delta_field = "configured-delta-field"
+gamma_field = "configured-gamma-field"
+vega_field = "configured-vega-field"
+theta_field = "configured-theta-field"
+rho_field = "configured-rho-field"
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value"
+
+[profiles.sources.params]
+configured_source_param = "configured-value"
+"#,
+            )
+            .expect("configured aggregate IV profile should parse"),
+        );
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+        let adapters = BoltV3AdapterConfigs {
+            clients: BTreeMap::new(),
+        };
+
+        let (runtime, _) = build_live_node_with_clients_and_submit_approval_limits(
+            &loaded,
+            &resolved,
+            adapters,
+            BTreeMap::new(),
+        )
+        .expect("configured aggregate IV source should build without live transport");
+
+        let health = runtime
+            .iv_source_health("configured-profile", "configured-aggregate-source")
+            .expect("startup should apply aggregate IV source health");
+        assert_eq!(
+            health.subscription_state,
+            crate::bolt_v3_iv::health::IvSourceHealthState::Subscribing
+        );
+        assert_eq!(health.subscription_generation, 11);
     }
 
     fn loaded_config_with_primary_reference_data() -> LoadedBoltV3Config {
@@ -3800,6 +6164,18 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             !loaded.strategies.is_empty(),
             "helper must not mutate the caller's loaded config"
         );
+    }
+
+    #[test]
+    fn trade_transport_config_keeps_iv_only_source_clients() {
+        let loaded = fixture_loaded_config_with_external_option_greeks_iv();
+
+        let scoped =
+            trade_transport_loaded_config(&loaded).expect("IV source client must stay in scope");
+
+        assert_eq!(scoped.root.clients.len(), 1);
+        assert!(scoped.root.clients.contains_key("configured-client"));
+        assert!(loaded.root.clients.contains_key("configured-client"));
     }
 
     #[test]

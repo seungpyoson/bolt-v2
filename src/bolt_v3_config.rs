@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    bolt_v3_iv::config::IvRootConfig,
     bolt_v3_outcome_group_sources::{BasketExecutionRiskBlock, OutcomeGroupSourceConfig},
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolCoarserGridPolicy, RealizedVolEngineConfig,
@@ -80,6 +81,7 @@ pub struct BoltV3RootConfig {
     pub realized_volatility_surfaces: Option<BTreeMap<String, RealizedVolatilitySurfaceBlock>>,
     pub gate_providers: Option<BTreeMap<String, GateProviderBlock>>,
     pub outcome_group_sources: Option<Vec<OutcomeGroupSourceConfig>>,
+    pub iv: Option<IvRootConfig>,
 }
 
 // `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit

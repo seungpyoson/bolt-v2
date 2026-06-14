@@ -1208,6 +1208,7 @@ impl IvQueryHandle {
                 .transformation_steps
                 .push(projection_policy_id.to_string());
             provenance.ts_event_ns = as_of_ns;
+            validate_projected_output_provenance(&provenance)?;
 
             return Ok(IvQueryProduct::ProjectedScalarIv(IvProjectedScalarIv {
                 profile_id: query.profile_id.clone(),
@@ -1249,6 +1250,7 @@ impl IvQueryHandle {
             .transformation_steps
             .push(projection_policy_id.to_string());
         provenance.ts_event_ns = as_of_ns;
+        validate_projected_output_provenance(&provenance)?;
 
         Ok(IvQueryProduct::ProjectedScalarIv(IvProjectedScalarIv {
             profile_id: query.profile_id.clone(),
@@ -1971,7 +1973,10 @@ fn timestamp_matches(
     tolerance_ns: Option<u64>,
 ) -> bool {
     match tolerance_ns {
-        Some(tolerance_ns) => candidate_ts.get().abs_diff(query_ts.get()) <= tolerance_ns,
+        Some(tolerance_ns) => {
+            candidate_ts.get() <= query_ts.get()
+                && query_ts.get().saturating_sub(candidate_ts.get()) <= tolerance_ns
+        }
         None => candidate_ts == query_ts,
     }
 }
@@ -2336,6 +2341,14 @@ fn projected_output_provenance(
         .provenance()
         .cloned()
         .ok_or(IvQueryError::UnsupportedProductKind)
+}
+
+fn validate_projected_output_provenance(provenance: &IvProvenance) -> Result<(), IvQueryError> {
+    validate_iv_provenance(provenance).map_err(|_| IvQueryError::ProjectionRejected)?;
+    if provenance.policy_decisions.is_empty() || provenance.transformation_steps.is_empty() {
+        return Err(IvQueryError::ProjectionRejected);
+    }
+    Ok(())
 }
 
 impl SelectedProjectionInput {
@@ -3374,6 +3387,35 @@ mod tests {
                 reject_reason: None,
             },
         }
+    }
+
+    #[test]
+    fn projected_output_provenance_requires_projection_transformation_step() {
+        let mut provenance = test_point("test-source", 1).provenance;
+        provenance
+            .policy_decisions
+            .push(IvPolicyDecision::ProjectionDecision {
+                policy_id: "test-projection-policy".to_string(),
+                input_product_ids: vec!["test-input".to_string()],
+                selector_fingerprints: vec!["test-selector".to_string()],
+                projection_kind: "mean".to_string(),
+                basis: "mark".to_string(),
+                convention: "test-convention".to_string(),
+                max_projection_input_skew_ns: 1,
+                accepted_input_ids: vec!["test-input".to_string()],
+                rejected_input_ids: Vec::new(),
+            });
+
+        assert_eq!(validate_iv_provenance(&provenance), Ok(()));
+        assert_eq!(
+            validate_projected_output_provenance(&provenance),
+            Err(IvQueryError::ProjectionRejected)
+        );
+
+        provenance
+            .transformation_steps
+            .push("test-projection-policy".to_string());
+        assert_eq!(validate_projected_output_provenance(&provenance), Ok(()));
     }
 
     #[test]

@@ -41,6 +41,7 @@ Fields:
 - `max_derived_points`
 - `max_source_health_events`
 - `max_source_event_age_ns` (optional)
+- `max_source_event_future_skew_ns`
 - `input_bounds`
 - `sources`
 - `audit_policy`
@@ -58,6 +59,7 @@ Validation:
 - Unknown or unsupported root schema versions reject at startup; this slice accepts only `schema_version = 1` and does not ship an automatic migrator.
 - Strategy authorization, sources, source lifecycle, enabled products, memory bounds, numeric bounds, and query policies live in this profile boundary.
 - Each strategy authorization carries its own strategy ID, product allowlist, source allowlist, and selector-fingerprint allowlist so two strategies in the same profile can use different configured selectors.
+- `max_source_event_future_skew_ns` rejects source event timestamps ahead of local receipt time unless the TOML-owned skew budget permits the difference.
 - `input_bounds` references `IvNumericBounds` and is enforced before NT-ingested IV values are indexed.
 - Bounds reference named `IvNumericBounds` and convention-bound policies used by ingestion, projection, helper inputs, helper outputs, quorum agreement bands, and configured operator values.
 - Swapping, renaming, adding, or removing a source requires editing only this profile.

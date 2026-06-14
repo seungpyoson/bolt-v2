@@ -187,6 +187,7 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+max_source_event_future_skew_ns = 0
 input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
 projection_policies = []
 interpolation_policies = []
@@ -672,6 +673,7 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+max_source_event_future_skew_ns = 0
 input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
 projection_policies = []
 interpolation_policies = []
@@ -792,6 +794,7 @@ max_smiles = 2
 max_surfaces = 2
 max_derived_points = 2
 max_source_health_events = 2
+max_source_event_future_skew_ns = 0
 input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
 projection_policies = []
 interpolation_policies = []
@@ -942,6 +945,56 @@ fn runtime_engine_rejects_unconfigured_ingest_source_before_storage() {
             .get(&IvRejectReason::SourceNotConfigured),
         Some(&1)
     );
+}
+
+#[test]
+fn runtime_engine_rejects_source_clock_ahead_of_receive_time() {
+    let config = configured_runtime_config();
+    let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();
+    let mut event = greeks_ingest_event("greeks-source", 7);
+    event.ts_event_ns = UnixNanos::new(2_100);
+    event.received_ts_ns = UnixNanos::new(2_000);
+
+    let error = engine
+        .ingest_event(event)
+        .expect_err("source-clock-ahead events must reject before storage");
+
+    assert_eq!(
+        error,
+        IvRuntimeEngineError::IngestRejected {
+            profile_id: "iv-profile".to_string(),
+            source_id: "greeks-source".to_string(),
+            reason: IvRejectReason::ClockSkew,
+        }
+    );
+    let state = engine.state_for_profile("iv-profile").unwrap();
+    assert_eq!(state.raw_event_count(), 0);
+    let health = engine
+        .source_health("iv-profile", "greeks-source")
+        .expect("clock-skew rejection should be queryable as source health");
+    assert_eq!(health.last_reject_reason, Some(IvRejectReason::ClockSkew));
+}
+
+#[test]
+fn runtime_engine_allows_source_clock_ahead_within_configured_future_skew() {
+    let mut config = configured_runtime_config();
+    config.profiles[0].max_source_event_future_skew_ns = 125;
+    let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();
+    let mut event = greeks_ingest_event("greeks-source", 7);
+    event.ts_event_ns = UnixNanos::new(2_100);
+    event.received_ts_ns = UnixNanos::new(2_000);
+
+    engine
+        .ingest_event(event)
+        .expect("source-clock-ahead event within configured skew should index");
+
+    let state = engine.state_for_profile("iv-profile").unwrap();
+    assert_eq!(state.raw_event_count(), 1);
+    let health = engine
+        .source_health("iv-profile", "greeks-source")
+        .expect("fresh ingest should publish source health");
+    assert_eq!(health.subscription_state, IvSourceHealthState::Active);
+    assert_eq!(health.last_reject_reason, None);
 }
 
 #[test]

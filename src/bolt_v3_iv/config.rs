@@ -35,6 +35,7 @@ pub struct IvProfile {
     pub max_derived_points: usize,
     pub max_source_health_events: usize,
     pub max_source_event_age_ns: Option<u64>,
+    pub max_source_event_future_skew_ns: u64,
     pub input_bounds: IvNumericBounds,
     pub audit_policy: IvAuditPolicy,
     pub projection_policies: Vec<IvProjectionPolicy>,

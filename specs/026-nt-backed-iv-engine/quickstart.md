@@ -29,6 +29,7 @@ max_smiles = operator_positive_integer
 max_surfaces = operator_positive_integer
 max_derived_points = operator_positive_integer
 max_source_health_events = operator_positive_integer
+max_source_event_future_skew_ns = operator_nonnegative_integer
 max_source_event_age_ns = operator_positive_integer
 interpolation_policies = []
 fallback_policies = []

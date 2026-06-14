@@ -65,6 +65,26 @@ fn greeks_event() -> IvIngestEvent {
     greeks_event_at(2_000)
 }
 
+fn greeks_event_for_source(source_id: &str) -> IvIngestEvent {
+    let mut event = greeks_event();
+    event.source_id = source_id.to_string();
+    event.selector_fingerprint = format!("{source_id}-selector");
+    event
+}
+
+fn raw_audit_request(raw_event_id: impl Into<String>) -> IvRawAuditRequest {
+    IvRawAuditRequest {
+        raw_event_id: raw_event_id.into(),
+        profile_id: "configured-profile".to_string(),
+        source_id: "configured-source".to_string(),
+        raw_product_kind: IvRawProductKind::OptionGreeks,
+        role: IvRawAccessRole::Audit,
+        audit_handle_id: "configured-audit-handle".to_string(),
+        access_purpose: "configured-replay-purpose".to_string(),
+        as_of_ns: UnixNanos::new(2_200),
+    }
+}
+
 #[test]
 fn raw_payload_access_is_audit_replay_or_test_only() {
     let mut store = IvStore::empty();
@@ -73,13 +93,7 @@ fn raw_payload_access_is_audit_replay_or_test_only() {
     let audit = read_raw_event(
         &store,
         &audit_policy(),
-        &IvRawAuditRequest {
-            raw_event_id: raw.raw_event_id.clone(),
-            role: IvRawAccessRole::Audit,
-            audit_handle_id: "configured-audit-handle".to_string(),
-            access_purpose: "configured-replay-purpose".to_string(),
-            as_of_ns: UnixNanos::new(2_200),
-        },
+        &raw_audit_request(raw.raw_event_id.clone()),
     )
     .unwrap();
 
@@ -93,11 +107,10 @@ fn raw_payload_access_is_audit_replay_or_test_only() {
         &store,
         &audit_policy(),
         &IvRawAuditRequest {
-            raw_event_id: raw.raw_event_id,
             role: IvRawAccessRole::Strategy,
             audit_handle_id: "configured-strategy-handle".to_string(),
             access_purpose: "configured-strategy-purpose".to_string(),
-            as_of_ns: UnixNanos::new(2_200),
+            ..raw_audit_request(raw.raw_event_id)
         },
     );
 
@@ -116,15 +129,106 @@ fn raw_payload_access_requires_matching_audit_policy() {
         &store,
         &audit_policy(),
         &IvRawAuditRequest {
-            raw_event_id: raw.raw_event_id,
-            role: IvRawAccessRole::Audit,
             audit_handle_id: "configured-denied-handle".to_string(),
-            access_purpose: "configured-replay-purpose".to_string(),
-            as_of_ns: UnixNanos::new(2_200),
+            ..raw_audit_request(raw.raw_event_id)
         },
     );
 
     assert!(matches!(denied, Err(IvRawAccessError::AuditPolicyRejected)));
+}
+
+#[test]
+fn raw_payload_access_hides_event_existence_from_unauthorized_audit_identity() {
+    let mut store = IvStore::empty();
+    let raw = store.ingest_event(greeks_event()).unwrap();
+    let policy = audit_policy();
+
+    let existing = read_raw_event(
+        &store,
+        &policy,
+        &IvRawAuditRequest {
+            audit_handle_id: "configured-unauthorized-audit-handle".to_string(),
+            ..raw_audit_request(raw.raw_event_id)
+        },
+    );
+    let missing = read_raw_event(
+        &store,
+        &policy,
+        &IvRawAuditRequest {
+            audit_handle_id: "configured-unauthorized-audit-handle".to_string(),
+            ..raw_audit_request("configured-profile:configured-source:999")
+        },
+    );
+
+    assert!(matches!(
+        existing,
+        Err(IvRawAccessError::AuditPolicyRejected)
+    ));
+    assert!(matches!(
+        missing,
+        Err(IvRawAccessError::AuditPolicyRejected)
+    ));
+}
+
+#[test]
+fn raw_payload_access_hides_ineligible_source_existence_from_authorized_audit_identity() {
+    let mut store = IvStore::empty();
+    let raw = store
+        .ingest_event(greeks_event_for_source("configured-ineligible-source"))
+        .unwrap();
+    let policy = audit_policy();
+
+    let existing = read_raw_event(
+        &store,
+        &policy,
+        &IvRawAuditRequest {
+            source_id: "configured-ineligible-source".to_string(),
+            ..raw_audit_request(raw.raw_event_id)
+        },
+    );
+    let missing = read_raw_event(
+        &store,
+        &policy,
+        &IvRawAuditRequest {
+            source_id: "configured-ineligible-source".to_string(),
+            ..raw_audit_request("configured-profile:configured-ineligible-source:999")
+        },
+    );
+
+    assert!(matches!(
+        existing,
+        Err(IvRawAccessError::AuditPolicyRejected)
+    ));
+    assert!(matches!(
+        missing,
+        Err(IvRawAccessError::AuditPolicyRejected)
+    ));
+}
+
+#[test]
+fn raw_payload_access_hides_cross_scope_raw_event_id_matches() {
+    let mut store = IvStore::empty();
+    let raw = store
+        .ingest_event(greeks_event_for_source("configured-ineligible-source"))
+        .unwrap();
+    let policy = audit_policy();
+
+    let existing_cross_scope =
+        read_raw_event(&store, &policy, &raw_audit_request(raw.raw_event_id));
+    let missing = read_raw_event(
+        &store,
+        &policy,
+        &raw_audit_request("configured-profile:configured-ineligible-source:999"),
+    );
+
+    assert!(matches!(
+        existing_cross_scope,
+        Err(IvRawAccessError::RawEventNotFound { .. })
+    ));
+    assert!(matches!(
+        missing,
+        Err(IvRawAccessError::RawEventNotFound { .. })
+    ));
 }
 
 #[test]
@@ -138,11 +242,8 @@ fn raw_payload_access_enforces_audit_retention_window() {
         &store,
         &audit_policy(),
         &IvRawAuditRequest {
-            raw_event_id: older_raw.raw_event_id.clone(),
-            role: IvRawAccessRole::Audit,
-            audit_handle_id: "configured-audit-handle".to_string(),
-            access_purpose: "configured-replay-purpose".to_string(),
             as_of_ns: UnixNanos::new(3_200),
+            ..raw_audit_request(older_raw.raw_event_id.clone())
         },
     );
     assert!(matches!(
@@ -154,11 +255,8 @@ fn raw_payload_access_enforces_audit_retention_window() {
         &store,
         &audit_policy(),
         &IvRawAuditRequest {
-            raw_event_id: older_raw.raw_event_id,
-            role: IvRawAccessRole::Audit,
-            audit_handle_id: "configured-audit-handle".to_string(),
-            access_purpose: "configured-replay-purpose".to_string(),
             as_of_ns: UnixNanos::new(11_101),
+            ..raw_audit_request(older_raw.raw_event_id)
         },
     );
     assert!(matches!(age_miss, Err(IvRawAccessError::RetentionMiss)));
@@ -204,11 +302,8 @@ fn raw_payload_access_rejects_audit_as_of_before_event_receipt() {
         &store,
         &audit_policy(),
         &IvRawAuditRequest {
-            raw_event_id: raw.raw_event_id,
-            role: IvRawAccessRole::Audit,
-            audit_handle_id: "configured-audit-handle".to_string(),
-            access_purpose: "configured-replay-purpose".to_string(),
             as_of_ns: UnixNanos::new(2_000),
+            ..raw_audit_request(raw.raw_event_id)
         },
     );
 
@@ -238,13 +333,7 @@ fn invalid_iv_payload_preserves_raw_event_without_indexing_products() {
     let audit = read_raw_event(
         &store,
         &audit_policy(),
-        &IvRawAuditRequest {
-            raw_event_id: raw.raw_event_id.clone(),
-            role: IvRawAccessRole::Audit,
-            audit_handle_id: "configured-audit-handle".to_string(),
-            access_purpose: "configured-replay-purpose".to_string(),
-            as_of_ns: UnixNanos::new(2_200),
-        },
+        &raw_audit_request(raw.raw_event_id.clone()),
     )
     .unwrap();
     assert_eq!(audit.raw_event_id, raw.raw_event_id);

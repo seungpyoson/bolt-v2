@@ -2513,6 +2513,38 @@ fn projected_scalar_point_query_deduplicates_tolerance_inputs_by_source() {
 }
 
 #[test]
+fn projected_scalar_point_query_rejects_future_input_inside_timestamp_tolerance() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            2_005,
+            test_implied_volatility(42),
+        ))
+        .unwrap();
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy_with_refs(1, None, None, None)]);
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(match point_query(None, 2_000) {
+                    IvQuery::Product(query) => query.selector,
+                    IvQuery::RawPayload(_) => panic!("expected product query"),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        })),
+        Err(IvQueryError::ProductNotFound)
+    );
+}
+
+#[test]
 fn projected_scalar_point_query_does_not_count_same_source_duplicates_for_quorum() {
     let mut store = IvStore::empty();
     store

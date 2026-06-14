@@ -90,6 +90,7 @@ struct IvRuntimeSourceConfig {
     selector_fingerprint: String,
     subscription_generation: u64,
     max_source_event_age_ns: Option<u64>,
+    max_source_event_future_skew_ns: u64,
     accepted_conventions: BTreeSet<String>,
     nt_provenance: IvSourceNtProvenance,
     selector: IvSelector,
@@ -712,6 +713,19 @@ impl IvRuntimeEngine {
         if source.subscription_generation != event.subscription_generation {
             return Err(self.reject_stale_generation_event(event, source.subscription_generation));
         }
+        if event
+            .ts_event_ns
+            .get()
+            .saturating_sub(event.received_ts_ns.get())
+            > source.max_source_event_future_skew_ns
+        {
+            return Err(self.reject_ingest_event(
+                event,
+                source.subscription_generation,
+                IvRejectReason::ClockSkew,
+                false,
+            ));
+        }
         if source.max_source_event_age_ns.is_some_and(|max_age_ns| {
             event
                 .received_ts_ns
@@ -1010,6 +1024,7 @@ fn runtime_sources_from_profile(profile: &IvProfile) -> BTreeMap<String, IvRunti
                     selector_fingerprint: source.selector_fingerprint.clone(),
                     subscription_generation: source.subscription_generation,
                     max_source_event_age_ns: profile.max_source_event_age_ns,
+                    max_source_event_future_skew_ns: profile.max_source_event_future_skew_ns,
                     accepted_conventions: source.accepted_conventions.clone(),
                     nt_provenance,
                     selector: source.selector.clone(),

@@ -20,6 +20,9 @@ pub enum IvRawAccessRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IvRawAuditRequest {
     pub raw_event_id: String,
+    pub profile_id: String,
+    pub source_id: String,
+    pub raw_product_kind: IvRawProductKind,
     pub role: IvRawAccessRole,
     pub audit_handle_id: String,
     pub access_purpose: String,
@@ -54,19 +57,28 @@ pub fn read_raw_event(
     if request.role == IvRawAccessRole::Strategy {
         return Err(IvRawAccessError::StrategyRawAccessDenied);
     }
+    if !audit_policy.authorizes(
+        request.raw_product_kind,
+        &request.source_id,
+        &request.audit_handle_id,
+        &request.access_purpose,
+    ) {
+        return Err(IvRawAccessError::AuditPolicyRejected);
+    }
 
     let raw_event = store.raw_event(&request.raw_event_id).ok_or_else(|| {
         IvRawAccessError::RawEventNotFound {
             raw_event_id: request.raw_event_id.clone(),
         }
     })?;
-    if !audit_policy.authorizes(
-        IvRawProductKind::from(raw_event.payload.payload_kind()),
-        &raw_event.source_id,
-        &request.audit_handle_id,
-        &request.access_purpose,
-    ) {
-        return Err(IvRawAccessError::AuditPolicyRejected);
+    let raw_product_kind = IvRawProductKind::from(raw_event.payload.payload_kind());
+    if raw_event.profile_id != request.profile_id
+        || raw_event.source_id != request.source_id
+        || raw_product_kind != request.raw_product_kind
+    {
+        return Err(IvRawAccessError::RawEventNotFound {
+            raw_event_id: request.raw_event_id.clone(),
+        });
     }
     if let Some(max_events) = audit_policy.audit_retention.max_events {
         let retained_start = store.raw_events().len().saturating_sub(max_events);

@@ -163,7 +163,7 @@ fn committed_packs_keep_golden_record_and_evict_the_rest() {
             .records
             .first()
             .unwrap_or_else(|| panic!("pack {} has no records", summary_path.display()));
-        for path in [&golden.run_spec_path, &golden.execution_plan_path] {
+        for path in golden.artifact_paths() {
             let key = path.to_str().expect("golden record path is UTF-8");
             assert!(
                 !evicted.contains(key),
@@ -177,7 +177,7 @@ fn committed_packs_keep_golden_record_and_evict_the_rest() {
         }
 
         for record in pack.records.iter().skip(1) {
-            for path in [&record.run_spec_path, &record.execution_plan_path] {
+            for path in record.artifact_paths() {
                 let key = path.to_str().expect("record path is UTF-8");
                 assert!(
                     evicted.contains(key),
@@ -193,6 +193,8 @@ fn committed_packs_keep_golden_record_and_evict_the_rest() {
         }
     }
 
+    // Non-vacuity: the boundary must have actually exercised both a kept golden
+    // record and at least one evicted non-golden record across the corpus.
     assert!(
         checked_packs >= 1,
         "no execution-pack summaries were checked"

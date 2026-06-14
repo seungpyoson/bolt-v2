@@ -4,8 +4,8 @@
 The capability contract (D8/FR-080) requires the controller to branch on venue
 *capabilities* read from `VenueContract`, never on a hardcoded venue name. This
 fence catches venue-name string-literal BRANCHES — equality (`==`/`!=`), the
-string membership/compare methods, `matches!`, `if let`, and `match` arms whose
-scrutinee is a venue-identity read — in `src/**/*.rs` outside
+string membership/compare methods, `matches!`, `if/while let`, and `match` arms
+whose scrutinee is a venue-identity read — in `src/**/*.rs` outside
 `src/bolt_v3_providers/` (where venue-name KEY literals legitimately live).
 
 DESIGN — soundness over completeness. A *text* fence cannot decide arbitrary
@@ -19,15 +19,21 @@ while covering the idiomatic evasions:
   * Comments, char literals, and *non-venue* string-literal bodies are blanked
     (newlines preserved), so a venue-branch phrase living inside a raw-string
     body or a comment is NOT scanned as code (no false positive).
-  * `match` arms are flagged only when the match scrutinee is itself a venue
-    read, so a benign `match mode { "gamma" => .. }` (gamma the domain word) is
-    not flagged while `match venue.as_str() { "polymarket" => .. }` is.
+  * `match` arms are flagged only when (a) the match scrutinee is itself a venue
+    read AND (b) the venue literal sits in arm-*pattern* position at the match's
+    top level — never in an arm body, an `if`-guard expression, or a nested
+    `match` on a non-venue scrutinee. So `match mode { "gamma" => .. }` and
+    `match venue { _ => { match mode { "gamma" => .. } } }` are both clean.
 
 KNOWN, DELIBERATELY-UNCAUGHT forms (they need type/flow analysis a regex cannot
 do soundly; the capability-contract design + code review cover them):
   * constructed/split literals: `concat!("poly","market")`, `format!(..)`;
   * wrapper/alias PartialEq where neither operand is a syntactic venue read:
-    `VenueId::from("polymarket") == other`, `some_non_venue_var == "polymarket"`.
+    `VenueId::from("polymarket") == other`, `some_non_venue_var == "polymarket"`;
+  * venue-name read via a `venue`-*suffixed* getter (`obj.get_venue()`) rather
+    than a `venue`-prefixed token;
+  * a `match`/`if let` guard comparing a non-venue operand to a venue literal;
+  * 2+ level nested-generic turbofish (`::<Vec<Cow<str>>>`).
 These are accepted false negatives, recorded here so the boundary is explicit.
 """
 
@@ -58,16 +64,18 @@ _VENUE = r"(?:" + "|".join(_VENUES) + r")"
 # A venue-identity READ expression: an optional dotted receiver path, a
 # `venue`-prefixed token (so `venue_id`, `venue_name`, `venue_wrapper` all
 # qualify), then any zero-arg reader-accessor calls incl. turbofish
-# (`.as_str()`, `.as_ref::<str>()`). The leading boundary stops `venue` from
-# matching inside a larger identifier (`subvenue`, `revenue`, `myvenue`).
-_TURBOFISH = r"(?:\s*::\s*<[^>]*>)?"
+# (`.as_str()`, `.as_ref::<str>()`, `.cast::<Cow<str>>()`). The leading boundary
+# stops `venue` from matching inside a larger identifier (`subvenue`,
+# `revenue`, `myvenue`). Receiver/accessor repetition is bounded so a
+# pathological line cannot drive quadratic backtracking.
+_TURBOFISH = r"(?:\s*::\s*<[^<>]*(?:<[^<>]*>[^<>]*)*>)?"
 _NAME = (
     r"(?<![A-Za-z0-9_])"
-    r"(?:[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)*"
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\s*\.\s*){0,16}"
     r"venue[A-Za-z0-9_]*"
     + _TURBOFISH
     + r"(?:\s*\(\s*\))?"
-    r"(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*" + _TURBOFISH + r"\s*\(\s*\))*"
+    r"(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*" + _TURBOFISH + r"\s*\(\s*\)){0,16}"
 )
 # After `_canonical_code` every venue string literal is a plain "venue".
 _LIT = r'"' + _VENUE + r'"'
@@ -99,12 +107,16 @@ FORBIDDEN_RULES = (
         ),
     ),
     Rule("venue-name matches! arm", re.compile(rf"matches!\s*\(\s*{_NAME}\s*,[^)]*{_LIT}", re.IGNORECASE)),
-    Rule("venue-name if-let", re.compile(rf"\bif\s+let\s+{_LIT}\s*=\s*{_NAME}", re.IGNORECASE)),
+    Rule(
+        "venue-name if/while-let",
+        re.compile(rf"\b(?:if|while)\s+let\s+[^=\n]*?{_LIT}[^=\n]*?=\s*{_NAME}", re.IGNORECASE),
+    ),
 )
 
 _MATCH_KW = re.compile(r"\bmatch\b")
 _NAME_RE = re.compile(_NAME, re.IGNORECASE)
-_ARM_RE = re.compile(rf"{_LIT}\s*=>", re.IGNORECASE)
+_LIT_RE = re.compile(_LIT, re.IGNORECASE)
+_GUARD = re.compile(r"\bif\b")
 _MATCH_ARM_LABEL = "venue-name match arm (venue scrutinee)"
 
 # A complete Rust char literal: `'a'`, `'\n'`, `'\''`, `'\x41'`, `'\u{1F600}'`,
@@ -231,12 +243,16 @@ def line_number(text: str, pos: int) -> int:
 
 
 def _match_arm_positions(scan_text: str) -> list[int]:
-    """Positions of venue-literal `match` arms whose match scrutinee is a venue
-    read. Scoped to the match block via paren/brace tracking on the (already
-    literal-neutralized) code view, so string/char braces cannot confuse it."""
+    """Positions of venue literals in the *arm-pattern* position of a `match`
+    whose scrutinee is a venue read. Only depth-0 arm patterns (not arm bodies,
+    not nested matches, not `if`-guard expressions) are scanned, so a benign
+    nested `match mode { "gamma" => .. }` inside a venue match is never flagged.
+    Runs on the literal-neutralized code view, so string/char braces cannot
+    confuse the depth tracking."""
     positions: list[int] = []
     n = len(scan_text)
     for kw in _MATCH_KW.finditer(scan_text):
+        # locate the head's opening brace at paren-depth 0
         j = kw.end()
         paren = 0
         brace = -1
@@ -256,21 +272,33 @@ def _match_arm_positions(scan_text: str) -> list[int]:
             continue
         if not _NAME_RE.search(scan_text[kw.end() : brace]):
             continue
+        # walk the body, isolating each arm's pattern (text before `=>`, minus
+        # any `if` guard) and flagging venue literals found there.
         depth = 0
-        end = n
-        k = brace
+        k = brace + 1
+        arm_start = k
+        in_pattern = True
         while k < n:
             ch = scan_text[k]
-            if ch == "{":
+            if ch in "([{":
                 depth += 1
-            elif ch == "}":
+            elif ch in ")]":
                 depth -= 1
+            elif ch == "}":
                 if depth == 0:
-                    end = k
-                    break
+                    break  # end of the match body
+                depth -= 1
+            elif depth == 0 and in_pattern and ch == "=" and k + 1 < n and scan_text[k + 1] == ">":
+                pattern = _GUARD.split(scan_text[arm_start:k], maxsplit=1)[0]
+                for lit in _LIT_RE.finditer(pattern):
+                    positions.append(arm_start + lit.start())
+                in_pattern = False
+                k += 2
+                continue
+            elif depth == 0 and not in_pattern and ch == ",":
+                in_pattern = True
+                arm_start = k + 1
             k += 1
-        for arm in _ARM_RE.finditer(scan_text, brace, end):
-            positions.append(arm.start())
     return positions
 
 

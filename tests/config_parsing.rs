@@ -5500,9 +5500,10 @@ fn outcome_group_root_parses_polymarket_event_source() {
     let source = &sources[0];
     assert_eq!(source.source_id, "poly_world_cup");
     assert_eq!(source.kind, OutcomeGroupSourceKind::GammaEvent);
+    let expected_event_slugs = ["world-cup-final".to_owned()];
     assert_eq!(
         source.event_slugs.as_deref(),
-        Some(&["world-cup-final"][..])
+        Some(expected_event_slugs.as_slice())
     );
     assert!(root.risk.basket_execution.is_some());
 }
@@ -5568,7 +5569,11 @@ fn outcome_group_root_parses_polymarket_market_slug_source() {
         .expect("configured outcome_group_sources should be present");
     let source = &sources[0];
     assert_eq!(source.kind, OutcomeGroupSourceKind::GammaMarketSlug);
-    assert_eq!(source.market_slugs.as_deref(), Some(&["winner-market"][..]));
+    let expected_market_slugs = ["winner-market".to_owned()];
+    assert_eq!(
+        source.market_slugs.as_deref(),
+        Some(expected_market_slugs.as_slice())
+    );
 }
 
 #[test]

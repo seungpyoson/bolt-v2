@@ -15652,6 +15652,14 @@ reason = "This validation code labels a missing required maker oms_type envelope
 [[allowed]]
 path = "src/strategies/binary_oracle_maker/config.rs"
 kind = "string"
+literal = '''"invalid_oms_type"'''
+context = '''const INVALID_OMS_TYPE_CODE: &str = "invalid_oms_type";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a maker oms_type envelope value that is a string but does not parse as a NautilusTrader OmsType (so the build-path .expect can never fire on operator input); it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
 literal = '''"unknown_field"'''
 context = '''const UNKNOWN_FIELD_CODE: &str = "unknown_field";'''
 classification = "strategy_runtime_validation_code"

@@ -42,9 +42,13 @@ pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
 
 /// Bolt-v3 startup validation for the inert maker.
 ///
-/// Slice 1 is registered-but-inert: there are no `[parameters]` rows to check
-/// yet, so this validator only confirms the archetype key and returns no errors
-/// for any otherwise-structurally-valid maker envelope. `context` and
+/// Slice 1 is registered-but-inert: it honors NO trading parameters. So this
+/// validator confirms the archetype key and then fails loud on any non-empty
+/// `[parameters]` table (and on a `[parameters]` block that is not a table at
+/// all) — silently dropping operator parameters the maker cannot honor would be
+/// fail-soft. An empty/absent table is the only accepted shape until later
+/// slices add real parameter rows (mirroring the taker validator's
+/// `strategy.parameters.try_into::<ParametersBlock>()` access). `context` and
 /// `_default_max_notional` mirror the taker validator's signature so the function
 /// is assignable to `ArchetypeValidationBinding::validate_strategy`; the
 /// risk-cap parameter is unused until later slices add notional parameters.
@@ -59,7 +63,19 @@ pub fn validate_strategy(
             strategy.strategy_archetype.as_str()
         )];
     }
-    Vec::new()
+    let mut errors = Vec::new();
+    match strategy.parameters.as_table() {
+        Some(table) if !table.is_empty() => errors.push(format!(
+            "{context}: [parameters] is not supported (the inert `{KEY}` honors no parameters); remove the {} configured parameter row(s)",
+            table.len()
+        )),
+        Some(_) => {}
+        None => errors.push(format!(
+            "{context}: [parameters] must be a table, got {} value",
+            strategy.parameters.type_str()
+        )),
+    }
+    errors
 }
 
 /// Register the inert maker on the live node.

@@ -51,6 +51,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/backtester-ci.yml": "backtester_ci",
     "ci-runner-debug.yml": "ci_runner_debug",
     ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
+    "rust-probe.yml": "rust_probe",
+    ".github/workflows/rust-probe.yml": "rust_probe",
     "actionlint.yml": "actionlint",
     ".github/workflows/actionlint.yml": "actionlint",
     "advisory.yml": "advisory",

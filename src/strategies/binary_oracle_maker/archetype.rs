@@ -117,6 +117,7 @@ pub fn register_runtime_strategy(
         fee_provider,
         context.decision_evidence.clone(),
         context.submit_admission.clone(),
+        context.order_execution_policy,
         execution_venue,
     )
     .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());

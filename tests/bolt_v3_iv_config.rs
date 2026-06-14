@@ -1,4 +1,5 @@
 use bolt_v2::bolt_v3_iv::{
+    audit::IvAuditHandleId,
     authz::IvAuthorizationMode,
     config::{IvConfigError, IvRootConfig, load_iv_config_from_toml, validate_iv_root_config},
     derive::{
@@ -497,6 +498,35 @@ fn audit_policy_profile_id_must_match_owning_profile() {
 
     assert!(errors.iter().any(|message| {
         message.contains("audit_policy.profile_id must match owning profile_id")
+    }));
+}
+
+#[test]
+fn audit_policy_rejects_blank_authorization_members() {
+    let mut config = load_iv_config_from_toml(valid_iv_toml()).unwrap();
+    config.profiles[0]
+        .audit_policy
+        .authorized_audit_handles
+        .insert(IvAuditHandleId(" ".to_string()));
+    config.profiles[0]
+        .audit_policy
+        .access_purposes
+        .insert(" ".to_string());
+    config.profiles[0]
+        .audit_policy
+        .eligible_sources
+        .insert(" ".to_string());
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("audit_policy.authorized_audit_handles must not contain blank handles")
+    }));
+    assert!(errors.iter().any(|message| {
+        message.contains("audit_policy.access_purposes must not contain blank purposes")
+    }));
+    assert!(errors.iter().any(|message| {
+        message.contains("audit_policy.eligible_sources must not contain blank sources")
     }));
 }
 

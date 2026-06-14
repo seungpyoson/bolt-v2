@@ -319,6 +319,11 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     if loaded.strategies.is_empty() {
         return Ok(BoltV3StrategyRegistrationSummary::empty());
     }
+    if loaded.root.iv.is_some() {
+        return Err(BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+            message: "IV-enabled configs must use runtime-backed strategy registration".to_string(),
+        });
+    }
     validate_iv_strategy_references(loaded)?;
     let iv_query_handles = Arc::new(build_iv_query_handle_registry(loaded, IvStore::empty())?);
     register_bolt_v3_strategies_on_node_with_handle_registry(

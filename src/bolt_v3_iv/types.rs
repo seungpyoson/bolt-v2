@@ -25,6 +25,7 @@ pub enum IvProductKind {
     CustomIvEvidence,
     ProjectedScalarIv,
     DerivedIv,
+    DerivedInputDiagnostics,
     SourceHealth,
 }
 

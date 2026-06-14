@@ -362,8 +362,22 @@ fn validate_audit_policy(
             "{audit_context}.authorized_audit_handles must be non-empty"
         ));
     }
+    for handle in &profile.audit_policy.authorized_audit_handles {
+        if handle.0.trim().is_empty() {
+            errors.push(format!(
+                "{audit_context}.authorized_audit_handles must not contain blank handles"
+            ));
+        }
+    }
     if profile.audit_policy.access_purposes.is_empty() {
         errors.push(format!("{audit_context}.access_purposes must be non-empty"));
+    }
+    for purpose in &profile.audit_policy.access_purposes {
+        if purpose.trim().is_empty() {
+            errors.push(format!(
+                "{audit_context}.access_purposes must not contain blank purposes"
+            ));
+        }
     }
     if profile.audit_policy.eligible_sources.is_empty() {
         errors.push(format!(
@@ -371,6 +385,12 @@ fn validate_audit_policy(
         ));
     }
     for source_id in &profile.audit_policy.eligible_sources {
+        if source_id.trim().is_empty() {
+            errors.push(format!(
+                "{audit_context}.eligible_sources must not contain blank sources"
+            ));
+            continue;
+        }
         if !source_ids.contains(source_id) {
             errors.push(format!(
                 "{audit_context}.eligible_sources contains unknown source {source_id}"

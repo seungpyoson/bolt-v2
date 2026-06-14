@@ -33,6 +33,7 @@ The public strategy-facing query types are:
 - `IvProductQuery`
 - `IvRawPayloadQuery`
 - `IvQueryProduct`
+- `IvDerivedInputDiagnostics`
 - `IvProjectedScalarIv`
 - `IvQueryError`
 - `IvQueryHandle`
@@ -48,7 +49,7 @@ The `selector` field is a typed `IvSelector` union. It is not an arbitrary key-v
 
 Authorization is evaluated through `IvSelectorAuthorization`. A profile may use profile-wide access or selector-scoped access, but the effective rule must authorize the strategy ID, product kind, source filter, and selector fingerprint. Raw-payload product kinds are never authorized for strategy query handles.
 
-Derived IV queries require engine-owned `IvDerivedInputSet` state with all required helper inputs. Strategy query handles name an instrument, helper policy, and timestamp; they do not receive raw payload DTOs or call NT helpers directly.
+Derived IV queries require engine-owned `IvDerivedInputSet` state with all required helper inputs. Strategy query handles name an instrument, helper policy, and timestamp; they do not receive raw payload DTOs or call NT helpers directly. Strategies that need to inspect resolved derived-input metadata use the `DerivedInputDiagnostics` product through `IvQuery`; there is no separate strategy-facing `derived_inputs` side accessor.
 
 Derived IV queries also require an `IvHelperPolicy` reference. The helper policy selects the NT helper symbol, parameter signature, allowed output shape, output bounds, and helper provenance fields. The engine rejects derived queries when helper policy is missing, unsupported by the capability ledger, or incompatible with resolved inputs.
 

@@ -77,7 +77,14 @@ pub enum IvQueryProduct {
     CustomIvEvidence(IvEvidence),
     ProjectedScalarIv(IvProjectedScalarIv),
     DerivedIv(Box<IvDerivedOutput>),
+    DerivedInputDiagnostics(IvDerivedInputDiagnostics),
     SourceHealth(IvSourceHealth),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvDerivedInputDiagnostics {
+    pub profile_id: String,
+    pub inputs: Vec<IvDerivedInputSet>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -151,10 +158,6 @@ impl IvStrategyQueryHandle {
 
     pub fn authorization(&self) -> &IvSelectorAuthorization {
         self.inner.authorization()
-    }
-
-    pub fn derived_inputs(&self) -> Vec<IvDerivedInputSet> {
-        self.inner.derived_inputs()
     }
 
     pub fn query(&self, query: &IvQuery) -> Result<IvQueryProduct, IvQueryError> {
@@ -896,6 +899,9 @@ impl IvQueryHandle {
         side_effects: &mut IvQuerySideEffects,
     ) -> Result<IvQueryProduct, IvQueryError> {
         let mut product = self.find_product(query, state, side_effects)?;
+        if matches!(product, IvQueryProduct::DerivedInputDiagnostics(_)) {
+            return Ok(product);
+        }
         let product_is_current = product_satisfies_current_state(&product, state);
         let product_is_authorized = product_is_current
             && self.authorization.authorizes(
@@ -1159,6 +1165,20 @@ impl IvQueryHandle {
                     as_of_ns: *as_of_ns,
                     request_inputs: inputs.as_deref(),
                 },
+            ),
+            (
+                IvProductKind::DerivedInputDiagnostics,
+                IvSelector::DerivedInputDiagnosticsQuery {
+                    instrument_id,
+                    as_of_ns,
+                    source_filter,
+                },
+            ) => self.derived_input_diagnostics_query(
+                query,
+                state,
+                instrument_id.as_deref(),
+                *as_of_ns,
+                source_filter,
             ),
             _ => Err(IvQueryError::ProductKindMismatch),
         }
@@ -1653,6 +1673,42 @@ impl IvQueryHandle {
         )
     }
 
+    fn derived_input_diagnostics_query(
+        &self,
+        query: &IvProductQuery,
+        state: &IvQueryState,
+        instrument_id: Option<&str>,
+        as_of_ns: Option<UnixNanos>,
+        source_filter: &Option<String>,
+    ) -> Result<IvQueryProduct, IvQueryError> {
+        let inputs = state
+            .derived_inputs
+            .iter()
+            .filter(|inputs| {
+                inputs.profile_id == query.profile_id
+                    && instrument_id.is_none_or(|expected| inputs.instrument_id == expected)
+                    && as_of_ns.is_none_or(|expected| inputs.as_of_ns == expected)
+                    && source_matches(&inputs.source_id, source_filter)
+                    && self.authorization.authorizes(
+                        &query.strategy_id,
+                        query.product_kind,
+                        Some(&inputs.source_id),
+                        &inputs.selector_fingerprint,
+                    )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if inputs.is_empty() {
+            return Err(IvQueryError::ProductNotFound);
+        }
+        Ok(IvQueryProduct::DerivedInputDiagnostics(
+            IvDerivedInputDiagnostics {
+                profile_id: query.profile_id.clone(),
+                inputs,
+            },
+        ))
+    }
+
     fn derive_iv_from_inputs(
         &self,
         state: &IvQueryState,
@@ -1722,6 +1778,7 @@ impl IvQueryProduct {
             Self::CustomIvEvidence(evidence) => Some(&evidence.source_id),
             Self::ProjectedScalarIv(projected) => Some(&projected.source_id),
             Self::DerivedIv(derived) => Some(&derived.point.source_id),
+            Self::DerivedInputDiagnostics(_) => None,
             Self::SourceHealth(health) => Some(&health.source_id),
         }
     }
@@ -1736,6 +1793,7 @@ impl IvQueryProduct {
             Self::CustomIvEvidence(evidence) => &evidence.provenance.selector_fingerprint,
             Self::ProjectedScalarIv(projected) => &projected.selector_fingerprint,
             Self::DerivedIv(derived) => &derived.point.provenance.selector_fingerprint,
+            Self::DerivedInputDiagnostics(_) => "",
             Self::SourceHealth(_) => "",
         }
     }
@@ -1750,6 +1808,7 @@ impl IvQueryProduct {
             Self::CustomIvEvidence(evidence) => Some(&evidence.provenance),
             Self::ProjectedScalarIv(projected) => Some(&projected.provenance),
             Self::DerivedIv(derived) => Some(&derived.provenance),
+            Self::DerivedInputDiagnostics(_) => None,
             Self::SourceHealth(_) => None,
         }
     }
@@ -1969,7 +2028,7 @@ fn projection_product_dedup_key(product: &IvQueryProduct) -> Option<ProjectionPr
             basis: derived.point.basis,
             source_id: derived.point.source_id.clone(),
         }),
-        IvQueryProduct::SourceHealth(_) => None,
+        IvQueryProduct::DerivedInputDiagnostics(_) | IvQueryProduct::SourceHealth(_) => None,
     }
 }
 
@@ -2124,9 +2183,9 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
             value: derived.point.iv,
             ts_event_ns: derived.point.ts_event_ns,
         }],
-        IvQueryProduct::ProjectedScalarIv(_) | IvQueryProduct::SourceHealth(_) => {
-            return Err(IvQueryError::UnsupportedProductKind);
-        }
+        IvQueryProduct::ProjectedScalarIv(_)
+        | IvQueryProduct::DerivedInputDiagnostics(_)
+        | IvQueryProduct::SourceHealth(_) => return Err(IvQueryError::UnsupportedProductKind),
     };
 
     if inputs.is_empty() {

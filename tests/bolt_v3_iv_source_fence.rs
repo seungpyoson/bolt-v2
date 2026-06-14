@@ -12,11 +12,24 @@ fn iv_source_fence_entrypoint_is_wired_to_the_iv_module_boundary() {
 fn source_fence_accepts_public_strategy_query_imports() {
     let source = r#"
 use crate::bolt_v3_iv::query::{IvQuery, IvStrategyQueryHandle};
+use crate::bolt_v3_iv::selector::IvSelector;
+use crate::bolt_v3_iv::time::UnixNanos;
+use crate::bolt_v3_iv::types::IvProductKind;
 
 fn strategy_consumes_iv(handle: &IvStrategyQueryHandle, query: &IvQuery) {
     let _ = handle.authorization();
-    let _ = handle.derived_inputs();
     let _ = handle.query(query);
+    let diagnostic_query = IvQuery::product(crate::bolt_v3_iv::query::IvProductQuery {
+        strategy_id: "configured-strategy".to_string(),
+        profile_id: "configured-profile".to_string(),
+        product_kind: IvProductKind::DerivedInputDiagnostics,
+        selector: IvSelector::DerivedInputDiagnosticsQuery {
+            instrument_id: None,
+            as_of_ns: Some(UnixNanos::new(1000)),
+            source_filter: None,
+        },
+    });
+    let _ = handle.query(&diagnostic_query);
 }
 "#;
 
@@ -262,6 +275,7 @@ fn iv_strategy_source_fence_violations(_source: &str) -> Vec<String> {
             "IV query state mutator",
         ),
         ("derived_outputs", "IV query state escape hatch"),
+        ("derived_inputs", "IV query state escape hatch"),
         ("query_rejections", "IV query state escape hatch"),
         ("source_health_for", "IV query state escape hatch"),
     ];

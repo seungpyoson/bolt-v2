@@ -74,6 +74,11 @@ pub enum IvSelector {
         as_of_ns: UnixNanos,
         inputs: Option<Box<IvDerivedInputSet>>,
     },
+    DerivedInputDiagnosticsQuery {
+        instrument_id: Option<String>,
+        as_of_ns: Option<UnixNanos>,
+        source_filter: Option<String>,
+    },
     SourceHealthQuery {
         source_filter: Option<String>,
         state_filter: Vec<String>,
@@ -90,6 +95,7 @@ impl IvSelector {
             Self::IvEvidenceQuery { .. } => IvProductKind::CustomIvEvidence,
             Self::ProjectedScalarIvQuery { .. } => IvProductKind::ProjectedScalarIv,
             Self::DerivedIvQuery { .. } => IvProductKind::DerivedIv,
+            Self::DerivedInputDiagnosticsQuery { .. } => IvProductKind::DerivedInputDiagnostics,
             Self::SourceHealthQuery { .. } => IvProductKind::SourceHealth,
             Self::SourceOptionGreeks { .. } => IvProductKind::IvGreeksPoint,
             Self::SourceOptionChain { .. } => IvProductKind::Smile,

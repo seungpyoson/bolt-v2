@@ -131,6 +131,33 @@ fn raw_payload_access_is_audit_replay_or_test_only() {
 }
 
 #[test]
+fn raw_payload_access_rejects_blank_audit_request_fields() {
+    let mut store = IvStore::empty();
+    let raw = store.ingest_event(greeks_event()).unwrap();
+
+    let mut blank_source = raw_audit_request(raw.raw_event_id.clone());
+    blank_source.source_id = " ".to_string();
+    assert_eq!(
+        read_raw_event(&store, &audit_policy(), &blank_source),
+        Err(IvRawAccessError::AuditPolicyRejected)
+    );
+
+    let mut blank_handle = raw_audit_request(raw.raw_event_id.clone());
+    blank_handle.audit_handle_id = " ".to_string();
+    assert_eq!(
+        read_raw_event(&store, &audit_policy(), &blank_handle),
+        Err(IvRawAccessError::AuditPolicyRejected)
+    );
+
+    let mut blank_purpose = raw_audit_request(raw.raw_event_id);
+    blank_purpose.access_purpose = " ".to_string();
+    assert_eq!(
+        read_raw_event(&store, &audit_policy(), &blank_purpose),
+        Err(IvRawAccessError::AuditPolicyRejected)
+    );
+}
+
+#[test]
 fn raw_payload_access_rejects_cross_profile_audit_policy() {
     let mut store = IvStore::empty();
     let raw = store.ingest_event(greeks_event()).unwrap();

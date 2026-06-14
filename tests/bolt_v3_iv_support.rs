@@ -22,6 +22,7 @@ pub fn all_product_kinds() -> Vec<IvProductKind> {
         IvProductKind::CustomIvEvidence,
         IvProductKind::ProjectedScalarIv,
         IvProductKind::DerivedIv,
+        IvProductKind::DerivedInputDiagnostics,
         IvProductKind::SourceHealth,
     ]
 }

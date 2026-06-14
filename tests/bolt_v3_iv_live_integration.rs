@@ -1255,9 +1255,15 @@ configured_source_param = "configured-value"
 fn live_root_registry_stamps_derived_inputs_with_cargo_pinned_nt_revision() {
     let mut root = live_event_router_root_config();
     let profile = root.iv.as_mut().unwrap().profiles.first_mut().unwrap();
+    profile
+        .enabled_products
+        .insert(bolt_v2::bolt_v3_iv::types::IvProductKind::DerivedInputDiagnostics);
     profile.strategy_authorizations[0]
         .allowed_product_kinds
         .insert(bolt_v2::bolt_v3_iv::types::IvProductKind::DerivedIv);
+    profile.strategy_authorizations[0]
+        .allowed_product_kinds
+        .insert(bolt_v2::bolt_v3_iv::types::IvProductKind::DerivedInputDiagnostics);
     profile.derived_inputs = vec![IvDerivedInputSet {
         profile_id: "configured-profile".to_string(),
         source_id: "configured-greeks-source".to_string(),
@@ -1288,7 +1294,22 @@ fn live_root_registry_stamps_derived_inputs_with_cargo_pinned_nt_revision() {
         .handle("configured-strategy", "configured-profile")
         .expect("configured strategy should receive configured IV profile handle");
 
-    let derived_inputs = handle.derived_inputs();
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::DerivedInputDiagnostics,
+            selector: IvSelector::DerivedInputDiagnosticsQuery {
+                instrument_id: Some("BTC-20240101-50000-C.DERIBIT".to_string()),
+                as_of_ns: Some(UnixNanos::new(2_000)),
+                source_filter: None,
+            },
+        }))
+        .unwrap();
+    let IvQueryProduct::DerivedInputDiagnostics(diagnostics) = product else {
+        panic!("expected derived input diagnostics product");
+    };
+    let derived_inputs = diagnostics.inputs;
     assert_eq!(derived_inputs.len(), 1);
     assert_eq!(derived_inputs[0].nt_revision, cargo_pinned_nt_revision());
 }

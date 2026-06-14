@@ -134,6 +134,7 @@ Variants:
 - `IvEvidenceQuerySelector`: `iv_evidence_kind`, `source_filter`, `as_of_ns`
 - `ProjectedScalarIvQuerySelector`: `input_selector`, `projection_policy_id`, `as_of_ns`
 - `DerivedIvQuerySelector`: `instrument_id`, `helper_policy_id`, `as_of_ns`
+- `DerivedInputDiagnosticsQuerySelector`: optional `instrument_id`, optional `as_of_ns`, optional `source_filter`
 - `SourceHealthQuerySelector`: `source_filter`, `state_filter`
 
 Product-kind mapping:
@@ -146,6 +147,7 @@ Product-kind mapping:
 - `custom_iv_evidence`: `IvEvidenceQuerySelector`
 - `projected_scalar_iv`: `ProjectedScalarIvQuerySelector`
 - `derived_iv`: `DerivedIvQuerySelector`
+- `derived_input_diagnostics`: `DerivedInputDiagnosticsQuerySelector`
 - `source_health`: `SourceHealthQuerySelector`
 
 Validation:
@@ -744,6 +746,7 @@ Validation:
 - Raw-payload product kinds reject on strategy-facing query handles.
 - Current queries reject stale or retained-only data.
 - Derived-product queries include `derived_inputs` or resolve them through the profile's `IvDerivedInputPolicy`.
+- Derived-input diagnostics are returned only through `IvQuery` and are filtered by the same profile/source/selector authorization model as derived-IV products.
 - Query-time policy overrides are allowed only when the owning profile permits them.
 
 ## IvRejectReason

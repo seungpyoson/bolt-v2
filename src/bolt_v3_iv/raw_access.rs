@@ -57,6 +57,12 @@ pub fn read_raw_event(
     if request.role == IvRawAccessRole::Strategy {
         return Err(IvRawAccessError::StrategyRawAccessDenied);
     }
+    if request.source_id.trim().is_empty()
+        || request.audit_handle_id.trim().is_empty()
+        || request.access_purpose.trim().is_empty()
+    {
+        return Err(IvRawAccessError::AuditPolicyRejected);
+    }
     if audit_policy.profile_id != request.profile_id {
         return Err(IvRawAccessError::AuditPolicyRejected);
     }

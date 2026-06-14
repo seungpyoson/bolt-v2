@@ -37,6 +37,7 @@ fn foundational_enums_cover_required_iv_surfaces() {
             IvProductKind::CustomIvEvidence,
             IvProductKind::ProjectedScalarIv,
             IvProductKind::DerivedIv,
+            IvProductKind::DerivedInputDiagnostics,
             IvProductKind::SourceHealth,
         ]
     );

@@ -280,6 +280,16 @@ fn selector_scoped_derived_authorization() -> IvSelectorAuthorization {
     }
 }
 
+fn selector_scoped_derived_input_diagnostics_authorization() -> IvSelectorAuthorization {
+    IvSelectorAuthorization {
+        authorization_mode: IvAuthorizationMode::SelectorScoped,
+        strategy_id: "configured-strategy".to_string(),
+        allowed_product_kinds: BTreeSet::from([IvProductKind::DerivedInputDiagnostics]),
+        allowed_selector_fingerprints: BTreeSet::from(["configured-allowed-selector".to_string()]),
+        allowed_source_ids: BTreeSet::from(["configured-allowed-source".to_string()]),
+    }
+}
+
 fn selector_scoped_source_health_authorization() -> IvSelectorAuthorization {
     IvSelectorAuthorization {
         authorization_mode: IvAuthorizationMode::SelectorScoped,
@@ -3771,6 +3781,51 @@ fn selector_scoped_derived_accessors_filter_unauthorized_shared_state() {
     assert_eq!(
         retained_outputs[0].point.source_id,
         "configured-allowed-source"
+    );
+}
+
+#[test]
+fn derived_input_diagnostics_query_filters_unauthorized_shared_state() {
+    let mut allowed_inputs = complete_inputs();
+    allowed_inputs.source_id = "configured-allowed-source".to_string();
+    allowed_inputs.selector_fingerprint = "configured-allowed-selector".to_string();
+    allowed_inputs.input_event_ids = vec!["configured-allowed-event".to_string()];
+    let mut denied_inputs = complete_inputs();
+    denied_inputs.source_id = "configured-denied-source".to_string();
+    denied_inputs.selector_fingerprint = "configured-denied-selector".to_string();
+    denied_inputs.input_event_ids = vec!["configured-denied-event".to_string()];
+
+    let state = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+    state.set_derived_inputs(vec![allowed_inputs, denied_inputs]);
+
+    let scoped = IvQueryHandle::from_state(
+        "configured-profile",
+        selector_scoped_derived_input_diagnostics_authorization(),
+        state,
+    );
+
+    let product = scoped
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::DerivedInputDiagnostics,
+            selector: IvSelector::DerivedInputDiagnosticsQuery {
+                instrument_id: Some("configured-option-instrument".to_string()),
+                as_of_ns: Some(UnixNanos::new(2_000)),
+                source_filter: None,
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::DerivedInputDiagnostics(diagnostics) = product else {
+        panic!("expected derived input diagnostics product");
+    };
+    assert_eq!(diagnostics.profile_id, "configured-profile");
+    assert_eq!(diagnostics.inputs.len(), 1);
+    assert_eq!(diagnostics.inputs[0].source_id, "configured-allowed-source");
+    assert_eq!(
+        diagnostics.inputs[0].input_event_ids,
+        vec!["configured-allowed-event".to_string()]
     );
 }
 

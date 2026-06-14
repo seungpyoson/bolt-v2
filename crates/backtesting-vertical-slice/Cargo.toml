@@ -25,6 +25,7 @@ chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 csv = "1"
 flate2 = "1.1.9"
+futures-util = "=0.3.32"
 hex = "0.4"
 parquet = "58.3.0"
 rust_decimal = "1.42.0"
@@ -42,7 +43,7 @@ nautilus-persistence = { git = "https://github.com/nautechsystems/nautilus_trade
 nautilus-serialization = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 object_store = { version = "=0.13.2", default-features = false, features = ["aws"] }
+bolt-v2 = { path = "../.." }
 
 [dev-dependencies]
-futures-util = "=0.3.32"
 tempfile = "3"

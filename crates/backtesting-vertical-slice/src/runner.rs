@@ -10,12 +10,27 @@
 //! There is no custom simulation behaviour: NautilusTrader owns the engine,
 //! catalog, fills, and results.
 
-use std::{path::Path, str::FromStr};
+use std::{path::Path, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result, bail, ensure};
+use bolt_v2::{
+    bolt_v3_decision_evidence::{
+        BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+        BoltV3StrategyInputEvidenceSnapshot,
+    },
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+    strategies::{
+        binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder,
+        registry::{FeeProvider, StrategyBuildContext},
+    },
+};
+use futures_util::future::BoxFuture;
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
 use nautilus_model::{
-    data::TradeTick, enums::AggressorSide, identifiers::InstrumentId, types::Quantity,
+    data::TradeTick,
+    enums::AggressorSide,
+    identifiers::{InstrumentId, Venue},
+    types::Quantity,
 };
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
 use rust_decimal::Decimal;
@@ -32,7 +47,9 @@ use super::{
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
-    run_manifest::{BacktestingRunManifest, STRATEGY_HURST_VPIN_DIRECTIONAL},
+    run_manifest::{
+        BacktestingRunManifest, STRATEGY_BINARY_ORACLE_EDGE_TAKER, STRATEGY_HURST_VPIN_DIRECTIONAL,
+    },
     source_proof::AcceptedDataset,
 };
 
@@ -40,6 +57,45 @@ use super::{
 const PARAM_BAR_TYPE: &str = "bar_type";
 /// Strategy parameter key for the trade size.
 const PARAM_TRADE_SIZE: &str = "trade_size";
+/// Strategy parameter key for the normalized binary-oracle builder TOML.
+const PARAM_CONFIG_TOML: &str = "config_toml";
+/// Strategy parameter key for the backtest fee-provider assumption.
+const PARAM_FEE_BPS: &str = "fee_bps";
+
+#[derive(Debug)]
+struct BacktestDecisionEvidenceWriter;
+
+impl BoltV3DecisionEvidenceWriter for BacktestDecisionEvidenceWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct ManifestFeeProvider {
+    fee_bps: Decimal,
+}
+
+impl FeeProvider for ManifestFeeProvider {
+    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
+        Some(self.fee_bps)
+    }
+
+    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
 
 /// Inputs for one end-to-end backtest run over accepted data.
 pub struct BacktestRunInputs<'a> {
@@ -105,6 +161,40 @@ fn add_manifest_strategy(
             engine
                 .add_strategy(HurstVpinDirectional::new(config))
                 .context("add HurstVpinDirectional strategy")
+        }
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
+            let raw_config = strategy
+                .parameters
+                .get(PARAM_CONFIG_TOML)
+                .with_context(|| format!("strategy parameter {PARAM_CONFIG_TOML} is required"))?;
+            let raw_config = toml::from_str::<toml::Value>(raw_config)
+                .with_context(|| format!("invalid {PARAM_CONFIG_TOML}"))?;
+            let fee_bps_raw = strategy
+                .parameters
+                .get(PARAM_FEE_BPS)
+                .with_context(|| format!("strategy parameter {PARAM_FEE_BPS} is required"))?;
+            let fee_bps = Decimal::from_str(fee_bps_raw)
+                .with_context(|| format!("invalid {PARAM_FEE_BPS} {fee_bps_raw:?}"))?;
+            ensure!(
+                fee_bps >= Decimal::ZERO,
+                "strategy parameter {PARAM_FEE_BPS} must be non-negative"
+            );
+            let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> =
+                Arc::new(BacktestDecisionEvidenceWriter);
+            let submit_admission =
+                Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
+            let fee_provider: Arc<dyn FeeProvider> = Arc::new(ManifestFeeProvider { fee_bps });
+            let build_context = StrategyBuildContext::new(
+                fee_provider,
+                decision_evidence,
+                submit_admission,
+                Venue::from(manifest.venue.nt_venue.as_str()),
+            );
+            let strategy =
+                BinaryOracleEdgeTakerBuilder::build_strategy(&raw_config, &build_context)
+                    .context("build binary_oracle_edge_taker strategy")?;
+            let result = engine.add_strategy(strategy);
+            result.context("add binary_oracle_edge_taker strategy")
         }
         other => bail!("strategy {other:?} is not a registered compiled Rust strategy"),
     }

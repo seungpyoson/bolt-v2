@@ -79,6 +79,58 @@ def write_complete_fixture(root: Path) -> None:
         "specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md",
         documented_tasks_text(),
     )
+    write_file(
+        root,
+        "crates/backtesting-vertical-slice/Cargo.toml",
+        'bolt-v2 = { path = "../.." }\nfutures-util = "=0.3.32"\n',
+    )
+    write_file(
+        root,
+        "crates/backtesting-vertical-slice/src/run_manifest.rs",
+        """
+use bolt_v2::strategies::{
+    binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder,
+    production_strategy_registry,
+    registry::StrategyBuilder,
+};
+pub const STRATEGY_BINARY_ORACLE_EDGE_TAKER: &str = "binary_oracle_edge_taker";
+pub const STRATEGY_PARAM_CONFIG_TOML: &str = "config_toml";
+pub const STRATEGY_PARAM_FEE_BPS: &str = "fee_bps";
+pub fn registered_strategies() -> &'static [&'static str] {
+    &[STRATEGY_BINARY_ORACLE_EDGE_TAKER]
+}
+fn validate() {
+    let _ = production_strategy_registry();
+    let _ = BinaryOracleEdgeTakerBuilder::kind();
+}
+""",
+    )
+    write_file(
+        root,
+        "crates/backtesting-vertical-slice/src/runner.rs",
+        """
+use bolt_v2::{
+    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+    strategies::{
+        binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder,
+        registry::StrategyBuildContext,
+    },
+};
+use nautilus_model::identifiers::Venue;
+use crate::run_manifest::STRATEGY_BINARY_ORACLE_EDGE_TAKER;
+fn add_binary_oracle(manifest: Manifest, engine: &mut Engine) {
+    let context = StrategyBuildContext::new(
+        fee_provider,
+        decision_evidence.clone(),
+        BoltV3SubmitAdmissionState::new(decision_evidence),
+        Venue::from(manifest.venue.nt_venue.as_str()),
+    );
+    let strategy = BinaryOracleEdgeTakerBuilder::build_strategy(raw, &context).unwrap();
+    engine.add_strategy(strategy).unwrap();
+}
+""",
+    )
 
 
 def run_script(*args: str) -> subprocess.CompletedProcess[str]:
@@ -115,6 +167,22 @@ def test_missing_bolt_strategy_is_a_finding() -> None:
         findings = verifier.scan_root(root)
 
     assert any("binary_oracle_edge_taker" in finding for finding in findings)
+
+
+def test_missing_bte_runner_wiring_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        write_file(
+            root,
+            "crates/backtesting-vertical-slice/src/runner.rs",
+            "use crate::run_manifest::STRATEGY_BINARY_ORACLE_EDGE_TAKER;\n",
+        )
+
+        findings = verifier.scan_root(root)
+
+    assert any("BinaryOracleEdgeTakerBuilder::build_strategy" in finding for finding in findings)
 
 
 def test_unchecked_task_is_a_finding() -> None:
@@ -163,6 +231,7 @@ def main() -> int:
     tests = [
         test_documented_prerequisite_passes,
         test_missing_bolt_strategy_is_a_finding,
+        test_missing_bte_runner_wiring_is_a_finding,
         test_unchecked_task_is_a_finding,
         test_cli_fails_with_actionable_output,
     ]

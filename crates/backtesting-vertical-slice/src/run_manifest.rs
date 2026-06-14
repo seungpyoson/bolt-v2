@@ -13,6 +13,10 @@
 use std::{collections::BTreeMap, str::FromStr};
 
 use anyhow::{Result, bail};
+use bolt_v2::strategies::{
+    binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder, production_strategy_registry,
+    registry::StrategyBuilder,
+};
 use nautilus_backtest::config::{
     BacktestDataConfig, BacktestRunConfig, BacktestVenueConfig, NautilusDataType,
 };
@@ -31,10 +35,16 @@ use super::source_proof::{AcceptedDataset, FixtureType, SourceProofFidelityClass
 
 /// Registry key for the compiled Rust trade-driven example strategy.
 pub const STRATEGY_HURST_VPIN_DIRECTIONAL: &str = "hurst_vpin_directional";
+/// Registry key for Bolt's compiled Rust binary-oracle taker strategy.
+pub const STRATEGY_BINARY_ORACLE_EDGE_TAKER: &str = "binary_oracle_edge_taker";
 /// Strategy parameter key for the bar type.
 pub const STRATEGY_PARAM_BAR_TYPE: &str = "bar_type";
 /// Strategy parameter key for the trade size.
 pub const STRATEGY_PARAM_TRADE_SIZE: &str = "trade_size";
+/// Strategy parameter key for the normalized binary-oracle builder TOML.
+pub const STRATEGY_PARAM_CONFIG_TOML: &str = "config_toml";
+/// Strategy parameter key for the backtest fee-provider assumption.
+pub const STRATEGY_PARAM_FEE_BPS: &str = "fee_bps";
 
 /// Existing compiled Rust strategies selectable from a run manifest.
 ///
@@ -42,7 +52,10 @@ pub const STRATEGY_PARAM_TRADE_SIZE: &str = "trade_size";
 /// and strategy instantiation (gate 5 runner).
 #[must_use]
 pub fn registered_strategies() -> &'static [&'static str] {
-    &[STRATEGY_HURST_VPIN_DIRECTIONAL]
+    &[
+        STRATEGY_HURST_VPIN_DIRECTIONAL,
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER,
+    ]
 }
 
 #[must_use]
@@ -50,6 +63,9 @@ pub fn registered_strategy_parameters(registry_key: &str) -> Option<&'static [&'
     match registry_key {
         STRATEGY_HURST_VPIN_DIRECTIONAL => {
             Some(&[STRATEGY_PARAM_BAR_TYPE, STRATEGY_PARAM_TRADE_SIZE])
+        }
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
+            Some(&[STRATEGY_PARAM_CONFIG_TOML, STRATEGY_PARAM_FEE_BPS])
         }
         _ => None,
     }
@@ -377,6 +393,48 @@ fn validate_strategy_source(strategy: &StrategySource) -> Result<(), ManifestErr
             bar_type
                 .parse::<BarType>()
                 .map_err(|_| ManifestError::MissingField("strategy.parameters.bar_type"))?;
+        }
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
+            for parameter in [STRATEGY_PARAM_CONFIG_TOML, STRATEGY_PARAM_FEE_BPS] {
+                if !strategy.parameters.contains_key(parameter) {
+                    return Err(ManifestError::MissingField(match parameter {
+                        STRATEGY_PARAM_CONFIG_TOML => "strategy.parameters.config_toml",
+                        STRATEGY_PARAM_FEE_BPS => "strategy.parameters.fee_bps",
+                        _ => unreachable!(),
+                    }));
+                }
+            }
+            let fee_bps = strategy
+                .parameters
+                .get(STRATEGY_PARAM_FEE_BPS)
+                .expect("presence checked above");
+            let fee_bps = rust_decimal::Decimal::from_str(fee_bps)
+                .map_err(|_| ManifestError::MissingField("strategy.parameters.fee_bps"))?;
+            if fee_bps < rust_decimal::Decimal::ZERO {
+                return Err(ManifestError::MissingField("strategy.parameters.fee_bps"));
+            }
+            let raw_config = strategy
+                .parameters
+                .get(STRATEGY_PARAM_CONFIG_TOML)
+                .expect("presence checked above");
+            let raw_config = toml::from_str::<toml::Value>(raw_config)
+                .map_err(|_| ManifestError::MissingField("strategy.parameters.config_toml"))?;
+            let registry =
+                production_strategy_registry().map_err(|_| ManifestError::UnknownStrategy {
+                    registry_key: BinaryOracleEdgeTakerBuilder::kind().to_string(),
+                })?;
+            let mut errors = Vec::new();
+            registry.validate(
+                BinaryOracleEdgeTakerBuilder::kind(),
+                &raw_config,
+                "strategy.parameters.config_toml",
+                &mut errors,
+            );
+            if !errors.is_empty() {
+                return Err(ManifestError::MissingField(
+                    "strategy.parameters.config_toml",
+                ));
+            }
         }
         _ => unreachable!("registered strategy was already matched"),
     }

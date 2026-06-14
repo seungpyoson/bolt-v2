@@ -635,11 +635,18 @@ fn complete_set_runtime_fixture() -> (
 }
 
 fn complete_set_root_toml() -> String {
-    let fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml");
-    let fixture = fixture.replace(
+    let mut fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml");
+    fixture = fixture.replace(
         "strategy_files = [\n  \"strategies/binary_oracle.toml\",\n]",
         "strategy_files = [\n  \"strategies/complete_set.toml\",\n]",
     );
+    let gate_provider_start = fixture
+        .find("\n[gate_providers.resolution_oracle_primary]\n")
+        .expect("fixture root should include binary-oracle gate provider");
+    let gate_provider_end = fixture
+        .find("\n[clients.polymarket_main]\n")
+        .expect("fixture root should include polymarket client block");
+    fixture.replace_range(gate_provider_start..gate_provider_end, "\n");
     format!(
         "{fixture}\n{}\n{}",
         outcome_group_basket_execution_toml(),

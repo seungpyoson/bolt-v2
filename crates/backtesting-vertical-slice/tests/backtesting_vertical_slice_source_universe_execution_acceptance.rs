@@ -45,6 +45,7 @@ fn normalize_artifact_ref_path(
     universe_id: &str,
     role: &str,
     path: &str,
+    sha256: &str,
 ) {
     let record = ledger
         .records
@@ -57,6 +58,7 @@ fn normalize_artifact_ref_path(
         .find(|artifact_ref| artifact_ref.role == role)
         .expect("artifact ref exists");
     artifact_ref.path = Path::new(path).to_path_buf();
+    artifact_ref.sha256 = sha256.to_string();
 }
 
 fn artifact_ref_sha256(
@@ -605,6 +607,8 @@ fn committed_source_universe_execution_acceptance_ledger_round_trips_through_eva
     let bybit_run_plan_artifact =
         write_source_universe_conversion_run_plan_from_spec_file(&bybit_run_plan_spec)
             .expect("Bybit run plan is reproducible");
+    let bybit_run_plan_sha256 =
+        indexed_evicted_sha256(&evicted_index, TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH);
 
     let pmxt_queue_spec = temp_dir
         .path()
@@ -665,12 +669,14 @@ fn committed_source_universe_execution_acceptance_ledger_round_trips_through_eva
         "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
         "source_universe_conversion_run_plan",
         TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH,
+        &bybit_run_plan_sha256,
     );
     normalize_artifact_ref_path(
         &mut evaluated,
         "backfill-source-universe-pmxt-polymarket-v2-current",
         "source_universe_conversion_queue",
         TIER1_PMXT_CONVERSION_QUEUE_PATH,
+        &pmxt_queue_sha256,
     );
 
     assert_eq!(

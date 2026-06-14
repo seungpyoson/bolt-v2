@@ -299,8 +299,10 @@ mod tests {
     // Re-derived after adding the production complete-set strategy shell to the
     // strategy policy source set and moving NT command type evidence under the
     // shared order-execution boundary.
+    // Re-derived after fixing complete-set registration for main's shared
+    // order-execution policy context.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "ddf9b9c9de9cd84f3ab8860754ccf8b69d0def0e72d458437b98228a8f4f7f8f";
+        "0c2c65b54a4011513f5a0d72666088a882b087621f37443426ef86473012928f";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -328,8 +330,10 @@ mod tests {
     // Re-derived after the NT order-management contract moved to the shared
     // order-execution boundary while basket execution and complete-set shell
     // delegate to it.
+    // Re-derived after fixing complete-set registration for main's shared
+    // order-execution policy context.
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "80f84c7d1c2c25c93cd996d7ddd0557dac39326e8d99d5a6efa576dab31bb5a1";
+        "942e1aaa963bdfdae79a4e1d1934c85c61d8f35a9bdbf440dceae9ec9fb5b79c";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

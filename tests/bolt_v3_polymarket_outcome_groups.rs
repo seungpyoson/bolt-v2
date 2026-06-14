@@ -110,7 +110,10 @@ fn polymarket_normalizer_builds_three_way_neg_risk_group_from_attested_roles() {
     } = group
         .role_binding_proof
         .as_ref()
-        .expect("role binding proof should exist");
+        .expect("role binding proof should exist")
+    else {
+        panic!("expected Polymarket operator-attested role binding proof");
+    };
     assert_eq!(positive_side_bindings.len(), 3);
     assert!(
         group

@@ -26,6 +26,17 @@ GATE_NAME = """name: >-
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
           && 'gate-deferred'
           || 'gate' }}"""
+GATE_DEFER_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}\""""
+GATE_DEFER_CONTEXT_GUARD = """            if [[ "$defer_run_context" != "true" ]]; then
+              echo "deferred CI policy outside deferred draft PR context"
+              exit 1
+            fi
+"""
+GATE_DEFER_BLOCK = f"""          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
+{GATE_DEFER_CONTEXT_GUARD}            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
+            exit 0
+          fi
+"""
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
@@ -667,7 +678,12 @@ jobs:
           if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
             exit 1
           fi
+          defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}"
           if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
+            if [[ "$defer_run_context" != "true" ]]; then
+              echo "deferred CI policy outside deferred draft PR context"
+              exit 1
+            fi
             echo "full CI deferred for draft PR; run just verify-remote or mark ready"
             exit 0
           fi
@@ -1066,6 +1082,53 @@ check_name = "test"
             "ci_provenance.policy.override.ignore_emit_failure must default to false",
             valid.replace("ignore_emit_failure = false\n", ""),
         ),
+        (
+            "ci_provenance.policy.ready_pr must be full",
+            valid.replace('ready_pr = "full"', 'ready_pr = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.ready_for_review must be full",
+            valid.replace('ready_for_review = "full"', 'ready_for_review = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.workflow_dispatch must be full",
+            valid.replace('workflow_dispatch = "full"', 'workflow_dispatch = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.main_push must be full",
+            valid.replace('main_push = "full"', 'main_push = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.draft_pr_synchronize must be defer",
+            valid.replace('draft_pr_synchronize = "defer"', 'draft_pr_synchronize = "full"'),
+        ),
+        (
+            "ci_provenance.policy.draft_pr_opened must be defer",
+            valid.replace('draft_pr_opened = "defer"', 'draft_pr_opened = "full"'),
+        ),
+        (
+            "ci_provenance.policy.draft_pr_reopened must be defer",
+            valid.replace('draft_pr_reopened = "defer"', 'draft_pr_reopened = "full"'),
+        ),
+        (
+            "ci_provenance.policy.converted_to_draft must be defer",
+            valid.replace('converted_to_draft = "defer"', 'converted_to_draft = "full"'),
+        ),
+        (
+            "ci_provenance.policy.tag must be tag_reuse",
+            valid.replace('tag = "tag_reuse"', 'tag = "full"'),
+        ),
+        (
+            "ci_provenance.policy.unknown_event must be full",
+            valid.replace('unknown_event = "full"', 'unknown_event = "defer"'),
+        ),
+        (
+            "ci_provenance.policy has unexpected keys",
+            valid.replace(
+                "[ci_provenance.policy.override]",
+                'unexpected_policy_row = "defer"\n\n[ci_provenance.policy.override]',
+            ),
+        ),
     ]
     for fragment, config_text in cases:
         error = runner_config_load_error(config_text)
@@ -1306,19 +1369,23 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
         ),
         (
             "gate must pass deferred full CI without failing stale draft checks",
-            replace_once(
-                workflow,
-                '          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then\n            echo "full CI deferred for draft PR; run just verify-remote or mark ready"\n            exit 0\n          fi\n',
-                "",
-            ),
+            replace_once(workflow, GATE_DEFER_BLOCK, ""),
         ),
         (
             "gate must pass deferred full CI without failing stale draft checks",
-            replace_once(
-                workflow,
-                '          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then\n            echo "full CI deferred for draft PR; run just verify-remote or mark ready"\n            exit 0\n          fi\n',
-                '          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then\n            echo "full CI deferred for draft PR; run just verify-remote or mark ready"\n            exit 1\n          fi\n',
-            ),
+            replace_once(workflow, GATE_DEFER_BLOCK, GATE_DEFER_BLOCK.replace("            exit 0\n", "            exit 1\n")),
+        ),
+        (
+            "gate must compute deferred draft PR run context",
+            replace_once(workflow, f"          {GATE_DEFER_CONTEXT_ASSIGNMENT}\n", ""),
+        ),
+        (
+            "gate must fail deferred policy outside deferred draft PR context",
+            replace_once(workflow, GATE_DEFER_CONTEXT_GUARD, ""),
+        ),
+        (
+            "gate must fail deferred policy outside deferred draft PR context",
+            replace_once(workflow, '"$defer_run_context" != "true"', '"$defer_run_context" == "true"'),
         ),
         (
             "gate must branch on ci_policy_path full",
@@ -4256,6 +4323,13 @@ def assert_ci_lint_runs_verify_remote_tests() -> None:
         raise AssertionError("ci-lint-workflow must run remote verification watcher self-tests")
 
 
+def assert_ci_lint_runs_ci_provenance_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_ci_provenance.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run CI provenance self-tests")
+
+
 def assert_ci_lint_runs_command_understanding_tests() -> None:
     justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     expected = "python3 scripts/test_command_understanding.py"
@@ -4273,6 +4347,7 @@ def assert_cargo_zigbuild_probe_has_no_redundant_true() -> None:
 def main() -> int:
     assert_ci_lint_runs_rust_verification_cache_retention_tests()
     assert_ci_lint_runs_verify_remote_tests()
+    assert_ci_lint_runs_ci_provenance_tests()
     assert_ci_lint_runs_command_understanding_tests()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()

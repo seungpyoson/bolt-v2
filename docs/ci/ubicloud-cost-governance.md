@@ -161,7 +161,7 @@ The meter generated the report at `2026-06-13T05:10:26Z`. It reported `9023.518`
 
 Slice 2b implements Lever B only for `.github/workflows/ci.yml`. `backtester-ci.yml` remains measured by the same meter, but its draft-stage policy is out of scope for this slice.
 
-Deferred draft CI is intentionally red at the `gate` job. A draft PR push runs cheap feedback, skips heavy full-CI lanes, and fails `gate` with the operator path to run `just verify-remote` or mark the PR ready. This preserves branch-protection semantics: cheap draft feedback is not represented as merge-ready green CI.
+Deferred draft CI publishes `gate-deferred`, not `gate`. A draft PR push runs cheap feedback, skips heavy full-CI lanes, and exits `gate-deferred` successfully with the operator path to run `just verify-remote` or mark the PR ready. This preserves branch-protection semantics: cheap draft feedback is not represented as merge-ready green CI because the required `gate` check is not published by deferred draft runs.
 
 For draft PRs, `just verify-remote` dispatches configured full CI on the PR branch when no matching full-CI run already exists, then waits on the matching workflow run for the exact pushed head SHA. That dispatched run proves branch-head confidence for the operator. It is not a merge-readiness substitute; merge readiness still requires the ready/non-draft `pull_request` full run and branch protection to go green on that PR state.
 

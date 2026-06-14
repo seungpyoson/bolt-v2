@@ -1918,6 +1918,46 @@ reason = "Each admitted risk-reducing exit increments the lifecycle counter so o
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''inner.admitted_order_count = inner.admitted_order_count.saturating_sub(1);'''
+classification = "submit_admission_counter_rollback"
+reason = "Dropping an uncommitted submit permit releases exactly one previously consumed order-count slot after NT submit fails before commit."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''*count = count.saturating_sub(1);'''
+classification = "submit_admission_counter_rollback"
+reason = "Dropping an uncommitted submit permit releases exactly one per-client live-submit approval slot consumed by the matching admission."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''0'''
+context = '''remove_execution_client = *count == 0;'''
+classification = "submit_admission_counter_identity"
+reason = "A per-client counter at zero has no remaining consumed approvals and is removed from the sparse counter map."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''inner.admitted_entry_order_count.saturating_sub(1);'''
+classification = "submit_admission_counter_rollback"
+reason = "Dropping an uncommitted entry permit releases exactly one exposure-opening lifecycle slot after NT submit fails before commit."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''inner.admitted_replace_submit_order_count.saturating_sub(1);'''
+classification = "submit_admission_counter_rollback"
+reason = "Dropping an uncommitted replace-submit permit releases exactly one replace lifecycle slot after NT submit fails before commit."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"bolt-v3 submit admission lifecycle policy disallows {intent:?} submit"'''
 context = '''"bolt-v3 submit admission lifecycle policy disallows {intent:?} submit"'''
@@ -4003,6 +4043,14 @@ literal = '''0'''
 context = '''None => 0,'''
 classification = "chainlink_feed_binding_cardinality"
 reason = "This is the zero matching feed-binding count for a TOML-owned Chainlink mapping when no binding key is present."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''0'''
+context = '''.is_some_and(|max_bytes| max_bytes == 0)'''
+classification = "positive_integer_validation_zero_floor"
+reason = "This is the zero floor for the TOML-owned decision-evidence recovery read cap; zero is rejected before startup recovery can use it."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"

@@ -198,7 +198,7 @@ derived_inputs = []
 derived_input_policies = []
 
 [profiles.audit_policy]
-profile_id = "configured-profile"
+profile_id = "iv-profile"
 enabled_raw_products = ["option_greeks", "option_chain_slice"]
 authorized_audit_handles = ["configured-audit-handle"]
 access_purposes = ["configured-replay-purpose"]
@@ -685,7 +685,7 @@ derived_inputs = []
 derived_input_policies = []
 
 [profiles.audit_policy]
-profile_id = "configured-profile"
+profile_id = "iv-profile"
 enabled_raw_products = ["option_greeks"]
 authorized_audit_handles = ["configured-audit-handle"]
 access_purposes = ["configured-replay-purpose"]
@@ -807,7 +807,7 @@ derived_inputs = []
 derived_input_policies = []
 
 [profiles.audit_policy]
-profile_id = "configured-profile"
+profile_id = "iv-profile"
 enabled_raw_products = ["option_greeks"]
 authorized_audit_handles = ["configured-audit-handle"]
 access_purposes = ["configured-replay-purpose"]

@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     artifact_store::{
         ArtifactStoreConfig, CatalogDispatchConfig, CreateOnlyArtifactWriter,
-        CreateOnlyProbeTranscript, PersistedCatalogProjectionObject,
+        CreateOnlyProbeTranscript, PersistedCatalogProjection, PersistedCatalogProjectionObject,
         persist_catalog_projection_for_source_binding,
     },
     canonical_trades::CanonicalInstrumentIdentity,
@@ -81,6 +81,7 @@ pub struct RunArtifacts {
     pub canonical_catalog_uri: Option<String>,
     pub nt_catalog_capability_plan: Option<NtCatalogCapabilityPlan>,
     pub create_only_probe_transcript: Option<CreateOnlyProbeTranscript>,
+    pub persisted_catalog_projection: Option<PersistedCatalogProjection>,
     pub persisted_catalog_objects: Vec<PersistedCatalogProjectionObject>,
     pub output: BacktestRunOutput,
 }
@@ -223,6 +224,7 @@ pub fn run_from_run_spec(
         canonical_catalog_uri: None,
         nt_catalog_capability_plan: None,
         create_only_probe_transcript: None,
+        persisted_catalog_projection: None,
         persisted_catalog_objects: Vec::new(),
         output,
     })
@@ -271,7 +273,8 @@ pub async fn run_from_run_spec_with_artifact_store(
     artifacts.canonical_catalog_uri = Some(persisted.catalog_root_uri);
     artifacts.nt_catalog_capability_plan = Some(nt_catalog_capability_plan);
     artifacts.create_only_probe_transcript = Some(create_only_probe_transcript);
-    artifacts.persisted_catalog_objects = persisted.objects;
+    artifacts.persisted_catalog_objects = persisted.objects.clone();
+    artifacts.persisted_catalog_projection = Some(persisted);
     Ok(artifacts)
 }
 

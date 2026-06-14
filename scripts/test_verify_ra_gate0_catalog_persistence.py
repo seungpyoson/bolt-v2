@@ -48,6 +48,7 @@ pub struct CreateOnlyProbeTranscript {
 
 pub struct ArtifactStoreConfig {
     pub s3: S3ArtifactStoreConfig,
+    pub catalog_projection_manifest_object: String,
     pub subpaths: ArtifactSubpaths,
 }
 pub struct ArtifactSubpaths {
@@ -107,8 +108,12 @@ pub struct PersistedCatalogProjectionObject {
     pub create_only_write: CreateOnlyWriteDisposition,
 }
 
+pub struct CatalogProjectionManifestDocument;
+
 pub struct PersistedCatalogProjection {
+    pub manifest_uri: String,
     pub manifest_sha256: String,
+    pub manifest_create_only_write: CreateOnlyWriteDisposition,
     pub binding: CatalogProjectionBinding,
     pub objects: Vec<PersistedCatalogProjectionObject>,
 }
@@ -127,14 +132,18 @@ pub async fn persist_catalog_projection_for_source_binding() {
     let _root = dispatch.catalog_root_for(source_binding, expected_market_structure_fixture, artifact_root)?;
     pub binding: CatalogProjectionBinding,
     assert!(binding.market_structure_fixture == expected_market_structure_fixture);
+    let _manifest_uri = artifact_root.catalog_projection_manifest_object_uri("projection-run-123");
     let _persisted = PersistedCatalogProjection {
+        manifest_uri: _manifest_uri,
         manifest_sha256: catalog_projection_manifest_sha256(&objects),
+        manifest_create_only_write: CreateOnlyWriteDisposition::Created,
         binding,
         objects: vec![PersistedCatalogProjectionObject {
             relative_path: String::from("data/trade_tick/part-000.parquet"),
             create_only_write: CreateOnlyWriteDisposition::Created,
         }],
     };
+    let _schema = "catalog-projection-manifest-v1";
     let writer = CreateOnlyArtifactWriter::new(store);
     let bytes = fs::read(path)?;
     writer.put_create_idempotent(path, bytes.clone()).await?;
@@ -289,6 +298,7 @@ pub struct RunSpec {{
 
 pub struct RunArtifacts {{
     pub nt_catalog_capability_plan: Option<NtCatalogCapabilityPlan>,
+    pub persisted_catalog_projection: Option<PersistedCatalogProjection>,
 }}
 
 pub fn run_from_run_spec_with_artifact_store() {{
@@ -309,7 +319,9 @@ fn persists_catalog_projection_directory_with_create_only_dispatch() {
     let _store = InMemory::new();
     let _expected_manifest_sha256 = expected_catalog_projection_manifest_sha256(&[]);
     persist_catalog_projection_for_source_binding();
+    let _manifest_uri = persisted.manifest_uri;
     let _manifest_sha256 = persisted.manifest_sha256;
+    let _manifest_write = persisted.manifest_create_only_write;
     let _relative_path = persisted.objects[0].relative_path.clone();
 }
 
@@ -332,6 +344,8 @@ fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
     let _capability_plan = artifacts.nt_catalog_capability_plan;
     let _capability_plan_expect = "NT catalog capability proof plan";
     let _persisted_catalog_objects = artifacts.persisted_catalog_objects;
+    let persisted_projection = artifacts.persisted_catalog_projection.unwrap();
+    let _manifest_write = persisted_projection.manifest_create_only_write;
     let _persisted_source_binding = persisted.binding.source_binding;
     let _persisted_market_structure = persisted.binding.market_structure_fixture;
     let _expected_fixture = MarketStructureFixture::PerpsSpot;
@@ -453,6 +467,7 @@ def write_compliant_tree(root: Path) -> None:
         ),
         """
 create_only_probe_id = "probe-run"
+catalog_projection_manifest_object = "catalog-projection-manifest.json"
 
 [nt_catalog_capability_proof]
 proof_run_id = "synthetic-capability-proof"

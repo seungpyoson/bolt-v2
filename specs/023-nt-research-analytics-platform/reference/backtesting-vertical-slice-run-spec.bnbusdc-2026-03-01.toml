@@ -183,6 +183,7 @@ nt_instrument_id = "BNBUSDC.BYBIT"
 
 [artifact_store]
 artifact_root = "s3://bolt-parquet/nt-research-analytics"
+catalog_projection_manifest_object = "catalog-projection-manifest.json"
 
 [artifact_store.s3]
 region = "us-east-1"

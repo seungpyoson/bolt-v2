@@ -19,6 +19,7 @@ pub struct ArtifactStoreConfig {
     pub artifact_root: String,
     pub s3: S3ArtifactStoreConfig,
     pub create_only_probe: CreateOnlyProbeConfig,
+    pub catalog_projection_manifest_object: String,
     pub subpaths: ArtifactSubpaths,
     pub lifecycle: ArtifactLifecycleConfig,
 }
@@ -130,6 +131,7 @@ pub struct ResolvedArtifactRoot {
     artifact_root: String,
     s3: S3ArtifactStoreConfig,
     create_only_probe: CreateOnlyProbeConfig,
+    catalog_projection_manifest_object: String,
     subpaths: ArtifactSubpaths,
     lifecycle: ArtifactLifecyclePolicy,
 }
@@ -157,6 +159,10 @@ impl ArtifactStoreConfig {
                 &self.create_only_probe.copy_dest_object_name,
             )?,
         };
+        let catalog_projection_manifest_object = normalize_subpath(
+            "catalog_projection_manifest_object",
+            &self.catalog_projection_manifest_object,
+        )?;
         let subpaths = ArtifactSubpaths {
             raw: normalize_subpath("subpaths.raw", &self.subpaths.raw)?,
             nt_catalog: normalize_subpath("subpaths.nt_catalog", &self.subpaths.nt_catalog)?,
@@ -184,6 +190,7 @@ impl ArtifactStoreConfig {
             artifact_root,
             s3,
             create_only_probe,
+            catalog_projection_manifest_object,
             subpaths,
             lifecycle: self.lifecycle.resolve()?,
         })
@@ -264,6 +271,15 @@ impl ResolvedArtifactRoot {
             &format!("projection={catalog_projection_id}"),
             "",
         ])
+    }
+
+    #[must_use]
+    pub fn catalog_projection_manifest_object_uri(&self, catalog_projection_id: &str) -> String {
+        format!(
+            "{}{}",
+            self.nt_catalog_projection_root(catalog_projection_id),
+            self.catalog_projection_manifest_object.as_str()
+        )
     }
 
     /// # Errors
@@ -532,7 +548,7 @@ pub struct CatalogProjectionBinding {
     pub catalog_projection_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PersistedCatalogProjectionObject {
     pub relative_path: String,
     pub uri: String,
@@ -544,9 +560,20 @@ pub struct PersistedCatalogProjectionObject {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistedCatalogProjection {
     pub catalog_root_uri: String,
+    pub manifest_uri: String,
     pub manifest_sha256: String,
+    pub manifest_create_only_write: CreateOnlyWriteDisposition,
     pub binding: CatalogProjectionBinding,
     pub objects: Vec<PersistedCatalogProjectionObject>,
+}
+
+#[derive(Serialize)]
+struct CatalogProjectionManifestDocument<'a> {
+    schema_version: &'static str,
+    catalog_root_uri: &'a str,
+    manifest_sha256: &'a str,
+    binding: &'a CatalogProjectionBinding,
+    objects: &'a [PersistedCatalogProjectionObject],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -651,6 +678,10 @@ pub async fn persist_catalog_projection_for_source_binding(
             .strip_prefix(local_catalog_root)
             .with_context(|| format!("derive catalog relative path for {}", file_path.display()))?;
         let relative_key = relative_catalog_object_key(relative_path)?;
+        ensure!(
+            relative_key != artifact_root.catalog_projection_manifest_object.as_str(),
+            "local catalog projection contains reserved manifest object {relative_key}"
+        );
         let uri = format!(
             "{}/{}",
             catalog_root_uri.trim_end_matches('/'),
@@ -675,9 +706,26 @@ pub async fn persist_catalog_projection_for_source_binding(
     }
     objects.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     let manifest_sha256 = catalog_projection_manifest_sha256(&objects);
+    let manifest_uri =
+        artifact_root.catalog_projection_manifest_object_uri(&binding.catalog_projection_id);
+    let manifest_path = artifact_root.object_path_for_uri(&manifest_uri)?;
+    let manifest_payload = serde_json::to_vec_pretty(&CatalogProjectionManifestDocument {
+        schema_version: "catalog-projection-manifest-v1",
+        catalog_root_uri: catalog_root_uri.as_str(),
+        manifest_sha256: manifest_sha256.as_str(),
+        binding: &binding,
+        objects: &objects,
+    })
+    .context("serialize catalog projection manifest")?;
+    let (_version, manifest_create_only_write) = writer
+        .put_create_idempotent_with_disposition(&manifest_path, manifest_payload)
+        .await
+        .with_context(|| format!("persist catalog projection manifest {manifest_uri}"))?;
     Ok(PersistedCatalogProjection {
         catalog_root_uri,
+        manifest_uri,
         manifest_sha256,
+        manifest_create_only_write,
         binding,
         objects,
     })

@@ -117,6 +117,7 @@ fn successful_capability_evidence(root: &ResolvedArtifactRoot) -> NtCatalogCapab
 fn artifact_config_toml() -> &'static str {
     r#"
 artifact_root = "s3://bolt-ra-artifacts/prod"
+catalog_projection_manifest_object = "catalog-projection-manifest.json"
 
 [s3]
 region = "us-east-1"
@@ -755,6 +756,14 @@ async fn persists_catalog_projection_directory_with_create_only_dispatch() {
     let metadata_sha256 = sha256_hex(br#"{"schema":"nt"}"#);
     let catalog_sha256 = sha256_hex(b"trade-ticks");
     assert_eq!(
+        persisted.manifest_uri,
+        "s3://bolt-ra-artifacts/prod/nt-catalog/v1/projection=projection-run-123/catalog-projection-manifest.json"
+    );
+    assert_eq!(
+        persisted.manifest_create_only_write,
+        CreateOnlyWriteDisposition::Created
+    );
+    assert_eq!(
         persisted.manifest_sha256,
         expected_catalog_projection_manifest_sha256(&[
             (
@@ -776,6 +785,30 @@ async fn persists_catalog_projection_directory_with_create_only_dispatch() {
             .iter()
             .all(|object| object.create_only_write == CreateOnlyWriteDisposition::Created),
         "first catalog projection persist must record create-only object creation"
+    );
+    let manifest_object_path = root
+        .object_path_for_uri(&persisted.manifest_uri)
+        .expect("manifest under artifact root");
+    let manifest_bytes = store
+        .get(&manifest_object_path)
+        .await
+        .expect("projection manifest object")
+        .bytes()
+        .await
+        .expect("projection manifest bytes");
+    let manifest_json: serde_json::Value =
+        serde_json::from_slice(&manifest_bytes).expect("projection manifest json");
+    assert_eq!(
+        manifest_json["schema_version"].as_str(),
+        Some("catalog-projection-manifest-v1")
+    );
+    assert_eq!(
+        manifest_json["manifest_sha256"].as_str(),
+        Some(persisted.manifest_sha256.as_str())
+    );
+    assert_eq!(
+        manifest_json["binding"]["source_binding"].as_str(),
+        Some(persisted.binding.source_binding.as_str())
     );
     assert!(
         persisted
@@ -849,6 +882,11 @@ async fn rejects_duplicate_catalog_projection_bytes() {
     assert_eq!(
         idempotent.manifest_sha256, first.manifest_sha256,
         "same catalog bytes must produce the same sorted projection manifest hash"
+    );
+    assert_eq!(
+        idempotent.manifest_create_only_write,
+        CreateOnlyWriteDisposition::AlreadyExistedSamePayload,
+        "same manifest bytes must be an idempotent create-only replay"
     );
     assert!(
         idempotent
@@ -989,6 +1027,34 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         !artifacts.persisted_catalog_objects.is_empty(),
         "operator must persist projected catalog objects through artifact-store dispatch"
     );
+    let persisted_projection = artifacts
+        .persisted_catalog_projection
+        .as_ref()
+        .expect("operator must expose persisted catalog projection proof");
+    assert_eq!(
+        persisted_projection.manifest_create_only_write,
+        CreateOnlyWriteDisposition::Created
+    );
+    assert_eq!(
+        persisted_projection.binding.source_binding,
+        spec.source_proof.source_binding
+    );
+    assert_eq!(
+        persisted_projection.manifest_sha256,
+        expected_catalog_projection_manifest_sha256(
+            &persisted_projection
+                .objects
+                .iter()
+                .map(|object| {
+                    (
+                        object.relative_path.as_str(),
+                        object.byte_len,
+                        object.sha256.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        )
+    );
     assert!(
         artifacts
             .persisted_catalog_objects
@@ -1015,6 +1081,24 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             .expect("persisted catalog bytes");
         assert_eq!(stored.len(), object.byte_len);
     }
+    let manifest_path = artifact_root
+        .object_path_for_uri(&persisted_projection.manifest_uri)
+        .expect("operator projection manifest under artifact root");
+    let manifest_bytes = store
+        .get(&manifest_path)
+        .await
+        .expect("operator projection manifest")
+        .bytes()
+        .await
+        .expect("operator projection manifest bytes");
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(&manifest_bytes)
+            .expect("operator projection manifest json")["objects"]
+            .as_array()
+            .expect("objects array")
+            .len()
+            == persisted_projection.objects.len()
+    );
 }
 
 #[tokio::test]

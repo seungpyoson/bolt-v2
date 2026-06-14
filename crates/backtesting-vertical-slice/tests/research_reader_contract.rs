@@ -11,7 +11,7 @@ use nautilus_model::{
     instruments::{CurrencyPair, Instrument, InstrumentAny},
     types::{Currency, Price, Quantity},
 };
-use nautilus_persistence::backend::catalog::ParquetDataCatalog;
+use nautilus_persistence::backend::catalog::{CatalogPathPrefix, ParquetDataCatalog};
 use tempfile::TempDir;
 
 const VENUE_NAME: &str = "SIM";
@@ -87,8 +87,9 @@ fn write_catalog() -> (TempDir, InstrumentId) {
     (temp_dir, instrument_id)
 }
 
-fn first_parquet_file(root: &Path) -> PathBuf {
-    for entry in std::fs::read_dir(root).expect("read catalog dir") {
+fn first_parquet_file(root: &Path, path_prefix: &str) -> PathBuf {
+    let root = root.join(path_prefix);
+    for entry in std::fs::read_dir(&root).expect("read catalog data type dir") {
         let path = entry.expect("catalog entry").path();
         if path.is_dir() {
             if let Some(found) = first_parquet_file_if_any(&path) {
@@ -98,7 +99,7 @@ fn first_parquet_file(root: &Path) -> PathBuf {
             return path;
         }
     }
-    panic!("catalog did not contain a parquet file")
+    panic!("catalog did not contain a parquet file under {path_prefix}")
 }
 
 fn first_parquet_file_if_any(root: &Path) -> Option<PathBuf> {
@@ -139,7 +140,7 @@ fn typed_reader_delegates_to_nt_catalog_query() {
 #[test]
 fn sql_reader_delegates_to_data_backend_session_for_arrow_batches() {
     let (catalog, _instrument_id) = write_catalog();
-    let parquet_file = first_parquet_file(catalog.path());
+    let parquet_file = first_parquet_file(catalog.path(), TradeTick::path_prefix());
     let spec = SqlBatchQuerySpec {
         table_name: "trade_ticks".to_string(),
         file_path: parquet_file,

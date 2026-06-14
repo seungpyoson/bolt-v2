@@ -21,7 +21,7 @@
 > (settlement double-booking §8, TradeTick-corpus fills §10, μ=0 guard §15,
 > atomic requote budget §15).
 >
-> A **third, external multi-model review (5 engines, 2026-06-15)** was likewise
+> A **third, external multi-model review (4 engines, 2026-06-15)** was likewise
 > re-verified finding-by-finding at the pinned SHAs (21 findings: 7 confirmed
 > blockers, 5 majors, 2 minors, 8 partial, 1 refuted). It surfaced genuine design
 > gaps the earlier passes missed: the settlement signal the slot relies on

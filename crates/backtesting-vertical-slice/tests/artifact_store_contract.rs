@@ -642,6 +642,25 @@ fn rejects_local_or_non_s3_canonical_artifact_roots() {
 }
 
 #[test]
+fn rejects_invalid_s3_artifact_root_prefix_segments() {
+    for artifact_root in [
+        "s3://bolt-ra-artifacts/prod//bad",
+        "s3://bolt-ra-artifacts/prod/./bad",
+        "s3://bolt-ra-artifacts/prod/../bad",
+    ] {
+        let mut config = artifact_config();
+        config.artifact_root = artifact_root.to_string();
+        let err = config
+            .resolve()
+            .expect_err("invalid S3 prefix segment must be rejected");
+        assert!(
+            err.to_string().contains("artifact_root prefix"),
+            "unexpected error for {artifact_root}: {err}"
+        );
+    }
+}
+
+#[test]
 fn lifecycle_config_rejects_delete_expiration_and_keeps_hot_index_active() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let policy = root.lifecycle_policy();

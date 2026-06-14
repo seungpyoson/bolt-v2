@@ -518,11 +518,14 @@ impl ResolvedArtifactRoot {
     fn join<const N: usize>(&self, parts: [&str; N]) -> String {
         let mut uri = self.artifact_root.clone();
         for part in parts {
-            if part.is_empty() {
+            let trimmed = part.trim_matches('/');
+            if !trimmed.is_empty() {
+                if !uri.ends_with('/') {
+                    uri.push('/');
+                }
+                uri.push_str(trimmed);
+            } else if !uri.ends_with('/') {
                 uri.push('/');
-            } else {
-                uri.push('/');
-                uri.push_str(part.trim_matches('/'));
             }
         }
         uri
@@ -1977,10 +1980,7 @@ fn normalize_artifact_root(value: &str) -> Result<String> {
         !bucket.trim().is_empty(),
         "artifact_root S3 bucket is empty"
     );
-    ensure!(
-        !prefix.trim_matches('/').is_empty(),
-        "artifact_root S3 prefix is empty"
-    );
+    ensure_path_token("artifact_root prefix", prefix, PathTokenMode::AllowEquals)?;
     Ok(root.to_string())
 }
 

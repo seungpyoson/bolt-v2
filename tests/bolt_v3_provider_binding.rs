@@ -1764,10 +1764,9 @@ fn configure_outcome_group_strategy(
     group_sources: Vec<String>,
 ) {
     let strategy = &mut loaded.strategies[0];
-    strategy.config.strategy_archetype = toml::from_str::<
-        bolt_v2::bolt_v3_config::StrategyArchetypeKey,
-    >("\"complete_set_arbitrage\"")
-    .expect("complete-set archetype key should parse");
+    strategy.config.strategy_archetype = toml::Value::String("complete_set_arbitrage".to_string())
+        .try_into()
+        .expect("complete-set archetype key should parse");
     strategy.config.execution_client_id = ClientId::from("polymarket_main");
     strategy.config.target = toml::toml! {
         configured_target_id = "complete_set_target"

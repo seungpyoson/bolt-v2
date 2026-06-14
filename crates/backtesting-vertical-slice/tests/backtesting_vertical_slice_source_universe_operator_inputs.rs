@@ -1,9 +1,38 @@
 use std::{fs, path::Path};
 
+use backtesting_vertical_slice::reference_fixture_index::TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH;
+use backtesting_vertical_slice::source_universe_conversion_run_plan::write_source_universe_conversion_run_plan_from_spec_file;
 use backtesting_vertical_slice::source_universe_operator_inputs::{
     SourceUniverseOperatorInputRecordStatus, SourceUniverseOperatorInputs,
     SourceUniverseOperatorInputsStatus, write_source_universe_operator_inputs_from_spec_file,
 };
+
+fn copy_spec_with_output_dir(source_spec: &Path, target_spec: &Path, output_dir: &Path) {
+    let spec = fs::read_to_string(source_spec).expect("read committed source-universe spec");
+    let mut replaced = false;
+    let updated = spec
+        .lines()
+        .map(|line| {
+            if line.starts_with("output_dir = ") {
+                replaced = true;
+                format!("output_dir = \"{}\"", output_dir.display())
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(replaced, "committed source-universe spec has output_dir");
+    fs::write(target_spec, format!("{updated}\n")).expect("write temp source-universe spec");
+}
+
+fn replace_spec_path(spec_text: &str, committed_path: &str, temp_path: &Path) -> String {
+    assert!(
+        spec_text.contains(committed_path),
+        "committed spec contains {committed_path}"
+    );
+    spec_text.replace(committed_path, &temp_path.display().to_string())
+}
 
 #[test]
 fn source_universe_operator_inputs_materialize_ready_bybit_spot_object() {
@@ -388,7 +417,42 @@ fn committed_bybit_source_universe_operator_inputs_track_current_gates() {
     let spec_path = reference_root
         .join("source-universe-operator-inputs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01")
         .join("source-universe-operator-inputs.toml");
-    let artifact = write_source_universe_operator_inputs_from_spec_file(&spec_path)
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+
+    let run_plan_spec_path = temp_dir
+        .path()
+        .join("bybit-source-universe-conversion-run-plan.toml");
+    copy_spec_with_output_dir(
+        &reference_root
+            .join("source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01")
+            .join("source-universe-conversion-run-plan.toml"),
+        &run_plan_spec_path,
+        &temp_dir.path().join("source-universe-conversion-run-plan"),
+    );
+    let run_plan_artifact =
+        write_source_universe_conversion_run_plan_from_spec_file(&run_plan_spec_path)
+            .expect("Bybit run plan is reproducible");
+
+    let temp_spec_path = temp_dir
+        .path()
+        .join("bybit-source-universe-operator-inputs.toml");
+    copy_spec_with_output_dir(
+        &spec_path,
+        &temp_spec_path,
+        &temp_dir.path().join("source-universe-operator-inputs"),
+    );
+    let spec_text = fs::read_to_string(&temp_spec_path).expect("read temp operator-inputs spec");
+    fs::write(
+        &temp_spec_path,
+        replace_spec_path(
+            &spec_text,
+            TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH,
+            &run_plan_artifact.path,
+        ),
+    )
+    .expect("write temp operator-inputs spec with regenerated run plan");
+
+    let artifact = write_source_universe_operator_inputs_from_spec_file(&temp_spec_path)
         .expect("committed Bybit operator inputs are reproducible");
     let inputs: SourceUniverseOperatorInputs =
         serde_json::from_slice(&fs::read(&artifact.path).expect("read inputs"))

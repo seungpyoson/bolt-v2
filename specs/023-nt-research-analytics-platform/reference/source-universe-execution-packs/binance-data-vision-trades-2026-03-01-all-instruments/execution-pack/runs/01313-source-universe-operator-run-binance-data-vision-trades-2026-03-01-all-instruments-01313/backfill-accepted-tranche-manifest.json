@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:WINEUR:2026-03-01:90d49f93896e793c0511d95c59ae2310828e5c8bf67d0f28893f10ec653c027c:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:WINEUR:2026-03-01:90d49f93896e793c0511d95c59ae2310828e5c8bf67d0f28893f10ec653c027c:source-proof-scope",
+  "source_proof_scope_report_hash": "f3743f31c7c66e72f9d4956dcb4d92f9de07f1cc962f3b282d99a3b1b4e7bc77",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-spot",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 4727,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=WINEUR/object=90d49f93896e793c0511d95c59ae2310828e5c8bf67d0f28893f10ec653c027c.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/WINEUR/WINEUR-trades-2026-03-01.zip",
+      "sha256": "90d49f93896e793c0511d95c59ae2310828e5c8bf67d0f28893f10ec653c027c",
+      "bytes": 4727,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

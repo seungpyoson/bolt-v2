@@ -1,0 +1,5009 @@
+{
+  "captured_at_utc": "2026-06-10T11:38:41Z",
+  "category_summaries": [
+    {
+      "category": "spot",
+      "instrument_count": 58,
+      "source_binding": "bybit-spot-tick-trades",
+      "symbols": [
+        "0GUSDT",
+        "1INCHUSDT",
+        "2ZUSDC",
+        "2ZUSDT",
+        "A8USDT",
+        "AAPLXUSDT",
+        "AAVEUSDC",
+        "AAVEUSDT",
+        "ACHUSDT",
+        "BNBUSDC",
+        "BNBUSDT",
+        "BTCAED",
+        "BTCBRL",
+        "BTCEUR",
+        "BTCGBP",
+        "BTCPLN",
+        "BTCRLUSD",
+        "BTCTRY",
+        "BTCUSD",
+        "BTCUSD1",
+        "BTCUSDC",
+        "BTCUSDE",
+        "BTCUSDT",
+        "BTCXUSD",
+        "DOGEEUR",
+        "DOGEMNT",
+        "DOGEUSDC",
+        "DOGEUSDT",
+        "ETHAED",
+        "ETHBRL",
+        "ETHBTC",
+        "ETHEUR",
+        "ETHGBP",
+        "ETHMNT",
+        "ETHPLN",
+        "ETHRLUSD",
+        "ETHTRY",
+        "ETHUSD",
+        "ETHUSD1",
+        "ETHUSDC",
+        "ETHUSDE",
+        "ETHUSDT",
+        "HYPEUSDT",
+        "SOLAED",
+        "SOLBRL",
+        "SOLBTC",
+        "SOLEUR",
+        "SOLGBP",
+        "SOLMNT",
+        "SOLUSDC",
+        "SOLUSDE",
+        "SOLUSDT",
+        "XRPBTC",
+        "XRPEUR",
+        "XRPMNT",
+        "XRPRLUSD",
+        "XRPUSDC",
+        "XRPUSDT"
+      ]
+    },
+    {
+      "category": "linear",
+      "instrument_count": 38,
+      "source_binding": "bybit-linear-tick-trades",
+      "symbols": [
+        "1000000BABYDOGEUSDT",
+        "BNBPERP",
+        "BNBUSDT",
+        "BTCPERP",
+        "BTCUSDT",
+        "BTCUSDT-05JUN26",
+        "BTCUSDT-12JUN26",
+        "BTCUSDT-25DEC26",
+        "BTCUSDT-25SEP26",
+        "BTCUSDT-26JUN26",
+        "BTCUSDT-26MAR27",
+        "BTCUSDT-31JUL26",
+        "DOGEPERP",
+        "DOGEUSDT",
+        "DOGEUSDT-05JUN26",
+        "DOGEUSDT-12JUN26",
+        "DOGEUSDT-26JUN26",
+        "ETHPERP",
+        "ETHUSDT",
+        "ETHUSDT-05JUN26",
+        "ETHUSDT-12JUN26",
+        "ETHUSDT-25DEC26",
+        "ETHUSDT-25SEP26",
+        "ETHUSDT-26JUN26",
+        "ETHUSDT-26MAR27",
+        "ETHUSDT-31JUL26",
+        "HYPEPERP",
+        "HYPEUSDT",
+        "SOLPERP",
+        "SOLUSDT",
+        "SOLUSDT-05JUN26",
+        "SOLUSDT-12JUN26",
+        "SOLUSDT-26JUN26",
+        "XRPPERP",
+        "XRPUSDT",
+        "XRPUSDT-05JUN26",
+        "XRPUSDT-12JUN26",
+        "XRPUSDT-26JUN26"
+      ]
+    },
+    {
+      "category": "inverse",
+      "instrument_count": 10,
+      "source_binding": "bybit-inverse-tick-trades",
+      "symbols": [
+        "AAVEUSD",
+        "BTCUSD",
+        "BTCUSDM26",
+        "BTCUSDU26",
+        "DOGEUSD",
+        "ETHUSD",
+        "ETHUSDM26",
+        "ETHUSDU26",
+        "SOLUSD",
+        "XRPUSD"
+      ]
+    }
+  ],
+  "category_symbol_count": 106,
+  "coverage": {
+    "closed_linear_futures": [
+      "BTCUSDT-05JUN26",
+      "DOGEUSDT-05JUN26",
+      "ETHUSDT-05JUN26",
+      "SOLUSDT-05JUN26",
+      "XRPUSDT-05JUN26"
+    ],
+    "duplicate_category_symbols": [],
+    "missing_category_symbols": []
+  },
+  "records": [
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "inverse",
+      "instrument": {
+        "baseCoin": "AAVE",
+        "contractType": "InversePerpetual",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1741333341000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "20.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "50000",
+          "maxOrderQty": "250000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "250000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "-0.025",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "AAVE",
+        "status": "Trading",
+        "symbol": "AAVEUSD",
+        "symbolId": 2232,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.025"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-inverse-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=inverse&symbol=AAVEUSD&limit=1000",
+      "symbol": "AAVEUSD"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "inverse",
+      "instrument": {
+        "baseCoin": "BTC",
+        "contractType": "InversePerpetual",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1542211200000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "100.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "5000000",
+          "maxOrderQty": "25000000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "25000000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "-0.005",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999999.80",
+          "minPrice": "0.10",
+          "tickSize": "0.10"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.03",
+          "priceLimitRatioY": "0.05"
+        },
+        "settleCoin": "BTC",
+        "status": "Trading",
+        "symbol": "BTCUSD",
+        "symbolId": 1,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.005"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-inverse-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=inverse&symbol=BTCUSD&limit=1000",
+      "symbol": "BTCUSD"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "inverse",
+      "instrument": {
+        "baseCoin": "BTC",
+        "contractType": "InverseFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0.0005",
+        "deliveryTime": "1782460800000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1765526400000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "100.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "1000000",
+          "maxOrderQty": "5000000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "5000000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "9999999.00",
+          "minPrice": "0.50",
+          "tickSize": "0.50"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "BTC",
+        "status": "Trading",
+        "symbol": "BTCUSDM26",
+        "symbolId": 2529,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-inverse-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=inverse&symbol=BTCUSDM26&limit=1000",
+      "symbol": "BTCUSDM26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "inverse",
+      "instrument": {
+        "baseCoin": "BTC",
+        "contractType": "InverseFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0.0005",
+        "deliveryTime": "1790323200000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1773388800000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "100.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "1000000",
+          "maxOrderQty": "5000000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "5000000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "9999999.00",
+          "minPrice": "0.50",
+          "tickSize": "0.50"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "BTC",
+        "status": "Trading",
+        "symbol": "BTCUSDU26",
+        "symbolId": 2591,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-inverse-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=inverse&symbol=BTCUSDU26&limit=1000",
+      "symbol": "BTCUSDU26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "inverse",
+      "instrument": {
+        "baseCoin": "DOGE",
+        "contractType": "InversePerpetual",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1741155587000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "25.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "300000",
+          "maxOrderQty": "1500000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "1500000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "-0.02",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199.99998",
+          "minPrice": "0.00001",
+          "tickSize": "0.00001"
+        },
+        "priceScale": "5",
+        "quoteCoin": "USD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "DOGE",
+        "status": "Trading",
+        "symbol": "DOGEUSD",
+        "symbolId": 2236,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.02"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-inverse-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=inverse&symbol=DOGEUSD&limit=1000",
+      "symbol": "DOGEUSD"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "inverse",
+      "instrument": {
+        "baseCoin": "ETH",
+        "contractType": "InversePerpetual",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1546300800000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "100.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "2000000",
+          "maxOrderQty": "10000000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "10000000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "-0.005",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.03",
+          "priceLimitRatioY": "0.05"
+        },
+        "settleCoin": "ETH",
+        "status": "Trading",
+        "symbol": "ETHUSD",
+        "symbolId": 2,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.005"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-inverse-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=inverse&symbol=ETHUSD&limit=1000",
+      "symbol": "ETHUSD"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "inverse",
+      "instrument": {
+        "baseCoin": "ETH",
+        "contractType": "InverseFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0.0005",
+        "deliveryTime": "1782460800000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1765526400000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "1000000",
+          "maxOrderQty": "5000000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "5000000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "999999.90",
+          "minPrice": "0.05",
+          "tickSize": "0.05"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "ETH",
+        "status": "Trading",
+        "symbol": "ETHUSDM26",
+        "symbolId": 2530,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-inverse-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=inverse&symbol=ETHUSDM26&limit=1000",
+      "symbol": "ETHUSDM26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "inverse",
+      "instrument": {
+        "baseCoin": "ETH",
+        "contractType": "InverseFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0.0005",
+        "deliveryTime": "1790323200000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1773388800000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "1000000",
+          "maxOrderQty": "5000000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "5000000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "999999.90",
+          "minPrice": "0.05",
+          "tickSize": "0.05"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "ETH",
+        "status": "Trading",
+        "symbol": "ETHUSDU26",
+        "symbolId": 2592,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-inverse-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=inverse&symbol=ETHUSDU26&limit=1000",
+      "symbol": "ETHUSDU26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "inverse",
+      "instrument": {
+        "baseCoin": "SOL",
+        "contractType": "InversePerpetual",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1712714400000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "1000000",
+          "maxOrderQty": "1000000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "1000000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "-0.01",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "SOL",
+        "status": "Trading",
+        "symbol": "SOLUSD",
+        "symbolId": 94,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.01"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-inverse-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=inverse&symbol=SOLUSD&limit=1000",
+      "symbol": "SOLUSD"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "inverse",
+      "instrument": {
+        "baseCoin": "XRP",
+        "contractType": "InversePerpetual",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1555927080000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "1000000",
+          "maxOrderQty": "1000000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "1000000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "-0.01",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999.9998",
+          "minPrice": "0.0001",
+          "tickSize": "0.0001"
+        },
+        "priceScale": "4",
+        "quoteCoin": "USD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "XRP",
+        "status": "Trading",
+        "symbol": "XRPUSD",
+        "symbolId": 4,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.01"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-inverse-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=inverse&symbol=XRPUSD&limit=1000",
+      "symbol": "XRPUSD"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "1000000BABYDOGE",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "both",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 240,
+        "isPreListing": false,
+        "launchTime": "1718105652000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "25.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "45000000",
+          "maxOrderQty": "220000000",
+          "minNotionalValue": "5",
+          "minOrderQty": "100",
+          "postOnlyMaxOrderQty": "220000000",
+          "qtyStep": "100"
+        },
+        "lowerFundingRate": "-0.02",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1.9999998",
+          "minPrice": "0.0000001",
+          "tickSize": "0.0000001"
+        },
+        "priceScale": "7",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.15",
+          "priceLimitRatioY": "0.3"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "1000000BABYDOGEUSDT",
+        "symbolId": 527,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.02"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=1000000BABYDOGEUSDT&limit=1000",
+      "symbol": "1000000BABYDOGEUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "BNB",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "BNBUSDC",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1664459242000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "20.00",
+          "maxOrderQty": "100.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "100.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "-0.01",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999999.80",
+          "minPrice": "0.10",
+          "tickSize": "0.10"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDC",
+        "status": "Trading",
+        "symbol": "BNBPERP",
+        "symbolId": 248,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.01"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=BNBPERP&limit=1000",
+      "symbol": "BNBPERP"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "BNB",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "both",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1624951080000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "370.00",
+          "maxOrderQty": "940.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "940.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "-0.01",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999999.80",
+          "minPrice": "0.10",
+          "tickSize": "0.10"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "BNBUSDT",
+        "symbolId": 36,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.01"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=BNBUSDT&limit=1000",
+      "symbol": "BNBUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "BTC",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "BTCUSDC",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1610604231000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "125.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "200.000",
+          "maxOrderQty": "1000.000",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.001",
+          "postOnlyMaxOrderQty": "1000.000",
+          "qtyStep": "0.001"
+        },
+        "lowerFundingRate": "-0.005",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999999.80",
+          "minPrice": "0.10",
+          "tickSize": "0.10"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.03",
+          "priceLimitRatioY": "0.05"
+        },
+        "settleCoin": "USDC",
+        "status": "Trading",
+        "symbol": "BTCPERP",
+        "symbolId": 45,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.005"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=BTCPERP&limit=1000",
+      "symbol": "BTCPERP"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "BTC",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "both",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1584230400000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "100.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "150.000",
+          "maxOrderQty": "1500.000",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.001",
+          "postOnlyMaxOrderQty": "1500.000",
+          "qtyStep": "0.001"
+        },
+        "lowerFundingRate": "-0.005",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999999.80",
+          "minPrice": "0.10",
+          "tickSize": "0.10"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.01",
+          "priceLimitRatioY": "0.02"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "BTCUSDT",
+        "symbolId": 5,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.005"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=BTCUSDT&limit=1000",
+      "symbol": "BTCUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "BTC",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "1780646400000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1778832000000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "10.000",
+          "maxOrderQty": "10.000",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.001",
+          "postOnlyMaxOrderQty": "10.000",
+          "qtyStep": "0.001"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999999.8",
+          "minPrice": "0.1",
+          "tickSize": "0.1"
+        },
+        "priceScale": "1",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Closed",
+        "symbol": "BTCUSDT-05JUN26",
+        "symbolId": 1251,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=BTCUSDT-05JUN26&limit=1000",
+      "symbol": "BTCUSDT-05JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "BTC",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1781251200000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1779436800000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "10.000",
+          "maxOrderQty": "10.000",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.001",
+          "postOnlyMaxOrderQty": "10.000",
+          "qtyStep": "0.001"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999999.8",
+          "minPrice": "0.1",
+          "tickSize": "0.1"
+        },
+        "priceScale": "1",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "BTCUSDT-12JUN26",
+        "symbolId": 1258,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=BTCUSDT-12JUN26&limit=1000",
+      "symbol": "BTCUSDT-12JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "BTC",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1798185600000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1767945600000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "10.000",
+          "maxOrderQty": "10.000",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.001",
+          "postOnlyMaxOrderQty": "10.000",
+          "qtyStep": "0.001"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999999.80",
+          "minPrice": "0.10",
+          "tickSize": "0.10"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "BTCUSDT-25DEC26",
+        "symbolId": 1133,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=BTCUSDT-25DEC26&limit=1000",
+      "symbol": "BTCUSDT-25DEC26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "BTC",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1790323200000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1760083200000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "10.000",
+          "maxOrderQty": "10.000",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.001",
+          "postOnlyMaxOrderQty": "10.000",
+          "qtyStep": "0.001"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999999.80",
+          "minPrice": "0.10",
+          "tickSize": "0.10"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "BTCUSDT-25SEP26",
+        "symbolId": 1051,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=BTCUSDT-25SEP26&limit=1000",
+      "symbol": "BTCUSDT-25SEP26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "BTC",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1782460800000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1751616000000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "10.000",
+          "maxOrderQty": "10.000",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.001",
+          "postOnlyMaxOrderQty": "10.000",
+          "qtyStep": "0.001"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999999.80",
+          "minPrice": "0.10",
+          "tickSize": "0.10"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "BTCUSDT-26JUN26",
+        "symbolId": 1009,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=BTCUSDT-26JUN26&limit=1000",
+      "symbol": "BTCUSDT-26JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "BTC",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1806048000000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1775203200000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "10.000",
+          "maxOrderQty": "10.000",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.001",
+          "postOnlyMaxOrderQty": "10.000",
+          "qtyStep": "0.001"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999999.8",
+          "minPrice": "0.1",
+          "tickSize": "0.1"
+        },
+        "priceScale": "1",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "BTCUSDT-26MAR27",
+        "symbolId": 1209,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=BTCUSDT-26MAR27&limit=1000",
+      "symbol": "BTCUSDT-26MAR27"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "BTC",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1785484800000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1778227200000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "10.000",
+          "maxOrderQty": "10.000",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.001",
+          "postOnlyMaxOrderQty": "10.000",
+          "qtyStep": "0.001"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999999.8",
+          "minPrice": "0.1",
+          "tickSize": "0.1"
+        },
+        "priceScale": "1",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "BTCUSDT-31JUL26",
+        "symbolId": 1244,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=BTCUSDT-31JUL26&limit=1000",
+      "symbol": "BTCUSDT-31JUL26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "DOGE",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "DOGEUSDC",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1713793607000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "400000",
+          "maxOrderQty": "2000000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "2000000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "-0.008",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199.99998",
+          "minPrice": "0.00001",
+          "tickSize": "0.00001"
+        },
+        "priceScale": "5",
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDC",
+        "status": "Trading",
+        "symbol": "DOGEPERP",
+        "symbolId": 477,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.008"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=DOGEPERP&limit=1000",
+      "symbol": "DOGEPERP"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "DOGE",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "both",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1622630640000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "75.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "5991100",
+          "maxOrderQty": "43678900",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "43678900",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "-0.0058",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199.99998",
+          "minPrice": "0.00001",
+          "tickSize": "0.00001"
+        },
+        "priceScale": "5",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "DOGEUSDT",
+        "symbolId": 33,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.0058"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=DOGEUSDT&limit=1000",
+      "symbol": "DOGEUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "DOGE",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "1780646400000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1778832000000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "200000",
+          "maxOrderQty": "1000000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "1000000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199.99998",
+          "minPrice": "0.00001",
+          "tickSize": "0.00001"
+        },
+        "priceScale": "5",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Closed",
+        "symbol": "DOGEUSDT-05JUN26",
+        "symbolId": 1256,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=DOGEUSDT-05JUN26&limit=1000",
+      "symbol": "DOGEUSDT-05JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "DOGE",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1781251200000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1779436800000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "200000",
+          "maxOrderQty": "1000000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "1000000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199.99998",
+          "minPrice": "0.00001",
+          "tickSize": "0.00001"
+        },
+        "priceScale": "5",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "DOGEUSDT-12JUN26",
+        "symbolId": 1263,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=DOGEUSDT-12JUN26&limit=1000",
+      "symbol": "DOGEUSDT-12JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "DOGE",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1782460800000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1778227200000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "200000",
+          "maxOrderQty": "1000000",
+          "minNotionalValue": "5",
+          "minOrderQty": "1",
+          "postOnlyMaxOrderQty": "1000000",
+          "qtyStep": "1"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199.99998",
+          "minPrice": "0.00001",
+          "tickSize": "0.00001"
+        },
+        "priceScale": "5",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "DOGEUSDT-26JUN26",
+        "symbolId": 1249,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=DOGEUSDT-26JUN26&limit=1000",
+      "symbol": "DOGEUSDT-26JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "ETH",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "ETHUSDC",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1659657600000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "66.67",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "500.00",
+          "maxOrderQty": "2500.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "2500.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "-0.005",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.03",
+          "priceLimitRatioY": "0.05"
+        },
+        "settleCoin": "USDC",
+        "status": "Trading",
+        "symbol": "ETHPERP",
+        "symbolId": 230,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.005"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=ETHPERP&limit=1000",
+      "symbol": "ETHPERP"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "ETH",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "both",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1615766400000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "100.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "2000.00",
+          "maxOrderQty": "10000.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "10000.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "-0.005",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.04"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "ETHUSDT",
+        "symbolId": 6,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.005"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=ETHUSDT&limit=1000",
+      "symbol": "ETHUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "ETH",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "1780646400000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1778832000000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "150.00",
+          "maxOrderQty": "150.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "150.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Closed",
+        "symbol": "ETHUSDT-05JUN26",
+        "symbolId": 1252,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=ETHUSDT-05JUN26&limit=1000",
+      "symbol": "ETHUSDT-05JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "ETH",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1781251200000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1779436800000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "150.00",
+          "maxOrderQty": "150.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "150.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "ETHUSDT-12JUN26",
+        "symbolId": 1259,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=ETHUSDT-12JUN26&limit=1000",
+      "symbol": "ETHUSDT-12JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "ETH",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1798185600000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1767945600000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "150.00",
+          "maxOrderQty": "150.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "150.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "ETHUSDT-25DEC26",
+        "symbolId": 1134,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=ETHUSDT-25DEC26&limit=1000",
+      "symbol": "ETHUSDT-25DEC26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "ETH",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1790323200000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1760083200000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "150.00",
+          "maxOrderQty": "150.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "150.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "ETHUSDT-25SEP26",
+        "symbolId": 1052,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=ETHUSDT-25SEP26&limit=1000",
+      "symbol": "ETHUSDT-25SEP26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "ETH",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1782460800000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1751616000000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "150.00",
+          "maxOrderQty": "150.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "150.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "ETHUSDT-26JUN26",
+        "symbolId": 1010,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=ETHUSDT-26JUN26&limit=1000",
+      "symbol": "ETHUSDT-26JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "ETH",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1806048000000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1775203200000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "150.00",
+          "maxOrderQty": "150.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "150.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "ETHUSDT-26MAR27",
+        "symbolId": 1210,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=ETHUSDT-26MAR27&limit=1000",
+      "symbol": "ETHUSDT-26MAR27"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "ETH",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1785484800000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1778227200000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "150.00",
+          "maxOrderQty": "150.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "150.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "ETHUSDT-31JUL26",
+        "symbolId": 1245,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=ETHUSDT-31JUL26&limit=1000",
+      "symbol": "ETHUSDT-31JUL26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "HYPE",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "HYPEUSDC",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 240,
+        "isPreListing": false,
+        "launchTime": "1746008090000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "20.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "1200.00",
+          "maxOrderQty": "6000.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "6000.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "-0.025",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "19999.998",
+          "minPrice": "0.001",
+          "tickSize": "0.001"
+        },
+        "priceScale": "3",
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.2"
+        },
+        "settleCoin": "USDC",
+        "status": "Trading",
+        "symbol": "HYPEPERP",
+        "symbolId": 2290,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.025"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=HYPEPERP&limit=1000",
+      "symbol": "HYPEPERP"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "HYPE",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "both",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1733316740000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "75.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "14700.00",
+          "maxOrderQty": "73500.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "73500.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "-0.0063",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "19999.998",
+          "minPrice": "0.001",
+          "tickSize": "0.001"
+        },
+        "priceScale": "3",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "HYPEUSDT",
+        "symbolId": 654,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.0063"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=HYPEUSDT&limit=1000",
+      "symbol": "HYPEUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "SOL",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "SOLUSDC",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1659657600000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "66.67",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "300.0",
+          "maxOrderQty": "1500.0",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxOrderQty": "1500.0",
+          "qtyStep": "0.1"
+        },
+        "lowerFundingRate": "-0.005",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.980",
+          "minPrice": "0.010",
+          "tickSize": "0.010"
+        },
+        "priceScale": "3",
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDC",
+        "status": "Trading",
+        "symbol": "SOLPERP",
+        "symbolId": 234,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.005"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=SOLPERP&limit=1000",
+      "symbol": "SOLPERP"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "SOL",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "both",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1634256000000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "100.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "12000.0",
+          "maxOrderQty": "96000.0",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxOrderQty": "96000.0",
+          "qtyStep": "0.1"
+        },
+        "lowerFundingRate": "-0.005",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.980",
+          "minPrice": "0.010",
+          "tickSize": "0.010"
+        },
+        "priceScale": "3",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "SOLUSDT",
+        "symbolId": 38,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.005"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=SOLUSDT&limit=1000",
+      "symbol": "SOLUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "SOL",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "1780646400000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1778832000000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "200.00",
+          "maxOrderQty": "1000.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "1000.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Closed",
+        "symbol": "SOLUSDT-05JUN26",
+        "symbolId": 1253,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=SOLUSDT-05JUN26&limit=1000",
+      "symbol": "SOLUSDT-05JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "SOL",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1781251200000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1779436800000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "200.00",
+          "maxOrderQty": "1000.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "1000.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "SOLUSDT-12JUN26",
+        "symbolId": 1260,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=SOLUSDT-12JUN26&limit=1000",
+      "symbol": "SOLUSDT-12JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "SOL",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1782460800000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1778227200000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "200.00",
+          "maxOrderQty": "1000.00",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxOrderQty": "1000.00",
+          "qtyStep": "0.01"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "199999.98",
+          "minPrice": "0.01",
+          "tickSize": "0.01"
+        },
+        "priceScale": "2",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "SOLUSDT-26JUN26",
+        "symbolId": 1246,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=SOLUSDT-26JUN26&limit=1000",
+      "symbol": "SOLUSDT-26JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "XRP",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "XRPUSDC",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1659657600000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "50000.0",
+          "maxOrderQty": "250000.0",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxOrderQty": "250000.0",
+          "qtyStep": "0.1"
+        },
+        "lowerFundingRate": "-0.01",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999.9998",
+          "minPrice": "0.0001",
+          "tickSize": "0.0001"
+        },
+        "priceScale": "4",
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDC",
+        "status": "Trading",
+        "symbol": "XRPPERP",
+        "symbolId": 235,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.01"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=XRPPERP&limit=1000",
+      "symbol": "XRPPERP"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "XRP",
+        "contractType": "LinearPerpetual",
+        "copyTrading": "both",
+        "deliveryFeeRate": "",
+        "deliveryTime": "0",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 480,
+        "isPreListing": false,
+        "launchTime": "1620898440000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "100.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "1500000.0",
+          "maxOrderQty": "7500000.0",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxOrderQty": "7500000.0",
+          "qtyStep": "0.1"
+        },
+        "lowerFundingRate": "-0.005",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999.9998",
+          "minPrice": "0.0001",
+          "tickSize": "0.0001"
+        },
+        "priceScale": "4",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "XRPUSDT",
+        "symbolId": 8,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0.005"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=XRPUSDT&limit=1000",
+      "symbol": "XRPUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "XRP",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "",
+        "deliveryTime": "1780646400000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1778832000000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "16600.0",
+          "maxOrderQty": "83000.0",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxOrderQty": "83000.0",
+          "qtyStep": "0.1"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999.9998",
+          "minPrice": "0.0001",
+          "tickSize": "0.0001"
+        },
+        "priceScale": "4",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Closed",
+        "symbol": "XRPUSDT-05JUN26",
+        "symbolId": 1254,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=XRPUSDT-05JUN26&limit=1000",
+      "symbol": "XRPUSDT-05JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "XRP",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1781251200000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1779436800000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "16600.0",
+          "maxOrderQty": "83000.0",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxOrderQty": "83000.0",
+          "qtyStep": "0.1"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999.9998",
+          "minPrice": "0.0001",
+          "tickSize": "0.0001"
+        },
+        "priceScale": "4",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "XRPUSDT-12JUN26",
+        "symbolId": 1261,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=XRPUSDT-12JUN26&limit=1000",
+      "symbol": "XRPUSDT-12JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "linear",
+      "instrument": {
+        "baseCoin": "XRP",
+        "contractType": "LinearFutures",
+        "copyTrading": "none",
+        "deliveryFeeRate": "0",
+        "deliveryTime": "1782460800000",
+        "displayName": "",
+        "forbidUplWithdrawal": false,
+        "fundingInterval": 0,
+        "isPreListing": false,
+        "launchTime": "1778227200000",
+        "leverageFilter": {
+          "leverageStep": "0.01",
+          "maxLeverage": "50.00",
+          "minLeverage": "1"
+        },
+        "lotSizeFilter": {
+          "maxMktOrderQty": "16600.0",
+          "maxOrderQty": "83000.0",
+          "minNotionalValue": "5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxOrderQty": "83000.0",
+          "qtyStep": "0.1"
+        },
+        "lowerFundingRate": "0",
+        "preListingInfo": null,
+        "priceFilter": {
+          "maxPrice": "1999.9998",
+          "minPrice": "0.0001",
+          "tickSize": "0.0001"
+        },
+        "priceScale": "4",
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "settleCoin": "USDT",
+        "status": "Trading",
+        "symbol": "XRPUSDT-26JUN26",
+        "symbolId": 1247,
+        "symbolType": "",
+        "unifiedMarginTrade": true,
+        "upperFundingRate": "0"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=XRPUSDT-26JUN26&limit=1000",
+      "symbol": "XRPUSDT-26JUN26"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "0G",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.01",
+          "maxLimitOrderQty": "123220",
+          "maxMarketOrderQty": "61610",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "123220",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxLimitOrderSize": "616100",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.0001"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "0GUSDT",
+        "symbolId": 1118,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=0GUSDT&limit=1000",
+      "symbol": "0GUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "1INCH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.01",
+          "maxLimitOrderQty": "1300000",
+          "maxMarketOrderQty": "260000",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "1300000",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxLimitOrderSize": "6500000",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.00001"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.015",
+          "priceLimitRatioY": "0.03"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "1INCHUSDT",
+        "symbolId": 104,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=1INCHUSDT&limit=1000",
+      "symbol": "1INCHUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "2Z",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.1",
+          "maxLimitOrderQty": "427500",
+          "maxMarketOrderQty": "142500",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "427500",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxLimitOrderSize": "2137500",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.00001"
+        },
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "2ZUSDC",
+        "symbolId": 1134,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=2ZUSDC&limit=1000",
+      "symbol": "2ZUSDC"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "2Z",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.1",
+          "maxLimitOrderQty": "667400",
+          "maxMarketOrderQty": "333700",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "667400",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxLimitOrderSize": "3337000",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.00001"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "2ZUSDT",
+        "symbolId": 1135,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=2ZUSDT&limit=1000",
+      "symbol": "2ZUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "A8",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.1",
+          "maxLimitOrderQty": "1437000",
+          "maxMarketOrderQty": "479000",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "1437000",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxLimitOrderSize": "7185000",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.000001"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "A8USDT",
+        "symbolId": 711,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=A8USDT&limit=1000",
+      "symbol": "A8USDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "AAPLX",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.001",
+          "maxLimitOrderQty": "270",
+          "maxMarketOrderQty": "270",
+          "maxOrderAmt": "65000",
+          "maxOrderQty": "270",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.001",
+          "postOnlyMaxLimitOrderSize": "1350",
+          "quotePrecision": "0.00001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "AAPLXUSDT",
+        "symbolId": 1002,
+        "symbolType": "xstocks",
+        "xstockMultiplier": "1.0026642075893797"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=AAPLXUSDT&limit=1000",
+      "symbol": "AAPLXUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "AAVE",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "maxLimitOrderQty": "150",
+          "maxMarketOrderQty": "50",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "150",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.0001",
+          "postOnlyMaxLimitOrderSize": "750",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "AAVEUSDC",
+        "symbolId": 922,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=AAVEUSDC&limit=1000",
+      "symbol": "AAVEUSDC"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "AAVE",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "maxLimitOrderQty": "3700",
+          "maxMarketOrderQty": "1800",
+          "maxOrderAmt": "600000",
+          "maxOrderQty": "3700",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.0001",
+          "postOnlyMaxLimitOrderSize": "18500",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.015",
+          "priceLimitRatioY": "0.03"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "AAVEUSDT",
+        "symbolId": 26,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=AAVEUSDT&limit=1000",
+      "symbol": "AAVEUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ACH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.1",
+          "maxLimitOrderQty": "1110200",
+          "maxMarketOrderQty": "555100",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "1110200",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxLimitOrderSize": "5551000",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.000001"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ACHUSDT",
+        "symbolId": 185,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ACHUSDT&limit=1000",
+      "symbol": "ACHUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BNB",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "maxLimitOrderQty": "405",
+          "maxMarketOrderQty": "135",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "405",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.0001",
+          "postOnlyMaxLimitOrderSize": "2025",
+          "quotePrecision": "0.00001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.015",
+          "priceLimitRatioY": "0.03"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BNBUSDC",
+        "symbolId": 723,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BNBUSDC&limit=1000",
+      "symbol": "BNBUSDC"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BNB",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "maxLimitOrderQty": "2200",
+          "maxMarketOrderQty": "1100",
+          "maxOrderAmt": "4000000",
+          "maxOrderQty": "2200",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.0001",
+          "postOnlyMaxLimitOrderSize": "11000",
+          "quotePrecision": "0.00001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.005",
+          "priceLimitRatioY": "0.01"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BNBUSDT",
+        "symbolId": 200,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BNBUSDT&limit=1000",
+      "symbol": "BNBUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BTC",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.000001",
+          "maxLimitOrderQty": "2.805691",
+          "maxMarketOrderQty": "0.561139",
+          "maxOrderAmt": "734106.59",
+          "maxOrderQty": "2.805691",
+          "minOrderAmt": "18.35",
+          "minOrderQty": "0.000001",
+          "postOnlyMaxLimitOrderSize": "14.028455",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "quoteCoin": "AED",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BTCAED",
+        "symbolId": 1262,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BTCAED&limit=1000",
+      "symbol": "BTCAED"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BTC",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.000001",
+          "maxLimitOrderQty": "3.3",
+          "maxMarketOrderQty": "0.7",
+          "maxOrderAmt": "1100000",
+          "maxOrderQty": "3.3",
+          "minOrderAmt": "6",
+          "minOrderQty": "0.000001",
+          "postOnlyMaxLimitOrderSize": "16.5",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "1"
+        },
+        "quoteCoin": "BRL",
+        "riskParameters": {
+          "priceLimitRatioX": "0.015",
+          "priceLimitRatioY": "0.03"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BTCBRL",
+        "symbolId": 687,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BTCBRL&limit=1000",
+      "symbol": "BTCBRL"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BTC",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.000001",
+          "maxLimitOrderQty": "46",
+          "maxMarketOrderQty": "9.2",
+          "maxOrderAmt": "180000",
+          "maxOrderQty": "46",
+          "minOrderAmt": "1",
+          "minOrderQty": "0.000001",
+          "postOnlyMaxLimitOrderSize": "230",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "quoteCoin": "EUR",
+        "riskParameters": {
+          "priceLimitRatioX": "0.015",
+          "priceLimitRatioY": "0.03"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BTCEUR",
+        "symbolId": 490,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BTCEUR&limit=1000",
+      "symbol": "BTCEUR"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BTC",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.000001",
+          "maxLimitOrderQty": "2.771468",
+          "maxMarketOrderQty": "0.554294",
+          "maxOrderAmt": "152000",
+          "maxOrderQty": "2.771468",
+          "minOrderAmt": "3.8",
+          "minOrderQty": "0.000001",
+          "postOnlyMaxLimitOrderSize": "13.85734",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "quoteCoin": "GBP",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BTCGBP",
+        "symbolId": 1275,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BTCGBP&limit=1000",
+      "symbol": "BTCGBP"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BTC",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.000001",
+          "maxLimitOrderQty": "1.8453",
+          "maxMarketOrderQty": "0.6151",
+          "maxOrderAmt": "773200",
+          "maxOrderQty": "1.8453",
+          "minOrderAmt": "4",
+          "minOrderQty": "0.000001",
+          "postOnlyMaxLimitOrderSize": "9.2265",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "1"
+        },
+        "quoteCoin": "PLN",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BTCPLN",
+        "symbolId": 730,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BTCPLN&limit=1000",
+      "symbol": "BTCPLN"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BTC",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.000001",
+          "maxLimitOrderQty": "14",
+          "maxMarketOrderQty": "7",
+          "maxOrderAmt": "8000000",
+          "maxOrderQty": "14",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.000001",
+          "postOnlyMaxLimitOrderSize": "70",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "quoteCoin": "RLUSD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BTCRLUSD",
+        "symbolId": 1123,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BTCRLUSD&limit=1000",
+      "symbol": "BTCRLUSD"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BTC",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.000001",
+          "maxLimitOrderQty": "9.8",
+          "maxMarketOrderQty": "2",
+          "maxOrderAmt": "6810795",
+          "maxOrderQty": "9.8",
+          "minOrderAmt": "225",
+          "minOrderQty": "0.000001",
+          "postOnlyMaxLimitOrderSize": "49",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "1"
+        },
+        "quoteCoin": "TRY",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BTCTRY",
+        "symbolId": 736,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BTCTRY&limit=1000",
+      "symbol": "BTCTRY"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BTC",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.000001",
+          "maxLimitOrderQty": "2.663375",
+          "maxMarketOrderQty": "0.532675",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "2.663375",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.000001",
+          "postOnlyMaxLimitOrderSize": "13.316875",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "quoteCoin": "USD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BTCUSD",
+        "symbolId": 1285,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BTCUSD&limit=1000",
+      "symbol": "BTCUSD"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BTC",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.000001",
+          "maxLimitOrderQty": "2.658384",
+          "maxMarketOrderQty": "0.531677",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "2.658384",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.000001",
+          "postOnlyMaxLimitOrderSize": "13.29192",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "quoteCoin": "USD1",
+        "riskParameters": {
+          "priceLimitRatioX": "0.015",
+          "priceLimitRatioY": "0.03"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BTCUSD1",
+        "symbolId": 1291,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BTCUSD1&limit=1000",
+      "symbol": "BTCUSD1"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BTC",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.000001",
+          "maxLimitOrderQty": "48",
+          "maxMarketOrderQty": "24",
+          "maxOrderAmt": "8000000",
+          "maxOrderQty": "48",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.000001",
+          "postOnlyMaxLimitOrderSize": "240",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.005",
+          "priceLimitRatioY": "0.01"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BTCUSDC",
+        "symbolId": 117,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BTCUSDC&limit=1000",
+      "symbol": "BTCUSDC"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BTC",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.000001",
+          "maxLimitOrderQty": "20",
+          "maxMarketOrderQty": "4",
+          "maxOrderAmt": "400000",
+          "maxOrderQty": "20",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.000001",
+          "postOnlyMaxLimitOrderSize": "100",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "quoteCoin": "USDE",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BTCUSDE",
+        "symbolId": 660,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BTCUSDE&limit=1000",
+      "symbol": "BTCUSDE"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BTC",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.000001",
+          "maxLimitOrderQty": "230",
+          "maxMarketOrderQty": "120",
+          "maxOrderAmt": "8000000",
+          "maxOrderQty": "230",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.000001",
+          "postOnlyMaxLimitOrderSize": "1150",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.005",
+          "priceLimitRatioY": "0.01"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BTCUSDT",
+        "symbolId": 9,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BTCUSDT&limit=1000",
+      "symbol": "BTCUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "BTC",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.000001",
+          "maxLimitOrderQty": "0.59",
+          "maxMarketOrderQty": "0.3",
+          "maxOrderAmt": "8000000",
+          "maxOrderQty": "0.59",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.000001",
+          "postOnlyMaxLimitOrderSize": "2.95",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "quoteCoin": "XUSD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "BTCXUSD",
+        "symbolId": 1107,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=BTCXUSD&limit=1000",
+      "symbol": "BTCXUSD"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "DOGE",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.1",
+          "maxLimitOrderQty": "559800",
+          "maxMarketOrderQty": "279900",
+          "maxOrderAmt": "180000",
+          "maxOrderQty": "559800",
+          "minOrderAmt": "1",
+          "minOrderQty": "0.1",
+          "postOnlyMaxLimitOrderSize": "2799000",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.00001"
+        },
+        "quoteCoin": "EUR",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "DOGEEUR",
+        "symbolId": 486,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=DOGEEUR&limit=1000",
+      "symbol": "DOGEEUR"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "DOGE",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.1",
+          "maxLimitOrderQty": "2791800",
+          "maxMarketOrderQty": "930600",
+          "maxOrderAmt": "1200000",
+          "maxOrderQty": "2791800",
+          "minOrderAmt": "7.5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxLimitOrderSize": "13959000",
+          "quotePrecision": "0.00001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.0001"
+        },
+        "quoteCoin": "MNT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "DOGEMNT",
+        "symbolId": 1080,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=DOGEMNT&limit=1000",
+      "symbol": "DOGEMNT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "DOGE",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.1",
+          "maxLimitOrderQty": "3808000",
+          "maxMarketOrderQty": "1904000",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "3808000",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxLimitOrderSize": "19040000",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.00001"
+        },
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.015",
+          "priceLimitRatioY": "0.03"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "DOGEUSDC",
+        "symbolId": 280,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=DOGEUSDC&limit=1000",
+      "symbol": "DOGEUSDC"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "DOGE",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.1",
+          "maxLimitOrderQty": "14000000",
+          "maxMarketOrderQty": "6800000",
+          "maxOrderAmt": "4000000",
+          "maxOrderQty": "14000000",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.1",
+          "postOnlyMaxLimitOrderSize": "70000000",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.00001"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.005",
+          "priceLimitRatioY": "0.01"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "DOGEUSDT",
+        "symbolId": 18,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=DOGEUSDT&limit=1000",
+      "symbol": "DOGEUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "maxLimitOrderQty": "95.808",
+          "maxMarketOrderQty": "19.1616",
+          "maxOrderAmt": "734106.59",
+          "maxOrderQty": "95.808",
+          "minOrderAmt": "18.35",
+          "minOrderQty": "0.0001",
+          "postOnlyMaxLimitOrderSize": "479.04",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "AED",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHAED",
+        "symbolId": 1261,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHAED&limit=1000",
+      "symbol": "ETHAED"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.00001",
+          "maxLimitOrderQty": "88",
+          "maxMarketOrderQty": "18",
+          "maxOrderAmt": "1100000",
+          "maxOrderQty": "88",
+          "minOrderAmt": "6",
+          "minOrderQty": "0.00001",
+          "postOnlyMaxLimitOrderSize": "440",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "BRL",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHBRL",
+        "symbolId": 688,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHBRL&limit=1000",
+      "symbol": "ETHBRL"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.00001",
+          "maxLimitOrderQty": "7713",
+          "maxMarketOrderQty": "2571",
+          "maxOrderAmt": "10",
+          "maxOrderQty": "7713",
+          "minOrderAmt": "0.000065",
+          "minOrderQty": "0.00001",
+          "postOnlyMaxLimitOrderSize": "38565",
+          "quotePrecision": "0.00000000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.000001"
+        },
+        "quoteCoin": "BTC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.005",
+          "priceLimitRatioY": "0.01"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHBTC",
+        "symbolId": 13,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHBTC&limit=1000",
+      "symbol": "ETHBTC"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.00001",
+          "maxLimitOrderQty": "1500",
+          "maxMarketOrderQty": "500",
+          "maxOrderAmt": "180000",
+          "maxOrderQty": "1500",
+          "minOrderAmt": "1",
+          "minOrderQty": "0.00001",
+          "postOnlyMaxLimitOrderSize": "7500",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "EUR",
+        "riskParameters": {
+          "priceLimitRatioX": "0.015",
+          "priceLimitRatioY": "0.03"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHEUR",
+        "symbolId": 489,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHEUR&limit=1000",
+      "symbol": "ETHEUR"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.00001",
+          "maxLimitOrderQty": "88.94299",
+          "maxMarketOrderQty": "17.7886",
+          "maxOrderAmt": "152000",
+          "maxOrderQty": "88.94299",
+          "minOrderAmt": "3.8",
+          "minOrderQty": "0.00001",
+          "postOnlyMaxLimitOrderSize": "444.71495",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "GBP",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHGBP",
+        "symbolId": 1274,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHGBP&limit=1000",
+      "symbol": "ETHGBP"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.00001",
+          "maxLimitOrderQty": "630",
+          "maxMarketOrderQty": "130",
+          "maxOrderAmt": "1200000",
+          "maxOrderQty": "630",
+          "minOrderAmt": "7.5",
+          "minOrderQty": "0.00001",
+          "postOnlyMaxLimitOrderSize": "3150",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "MNT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHMNT",
+        "symbolId": 1067,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHMNT&limit=1000",
+      "symbol": "ETHMNT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.00001",
+          "maxLimitOrderQty": "22",
+          "maxMarketOrderQty": "11",
+          "maxOrderAmt": "773200",
+          "maxOrderQty": "22",
+          "minOrderAmt": "4",
+          "minOrderQty": "0.00001",
+          "postOnlyMaxLimitOrderSize": "110",
+          "quotePrecision": "0.00001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "1"
+        },
+        "quoteCoin": "PLN",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHPLN",
+        "symbolId": 729,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHPLN&limit=1000",
+      "symbol": "ETHPLN"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.00001",
+          "maxLimitOrderQty": "1800",
+          "maxMarketOrderQty": "360",
+          "maxOrderAmt": "7000000",
+          "maxOrderQty": "1800",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.00001",
+          "postOnlyMaxLimitOrderSize": "9000",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "RLUSD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHRLUSD",
+        "symbolId": 1126,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHRLUSD&limit=1000",
+      "symbol": "ETHRLUSD"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.00001",
+          "maxLimitOrderQty": "110",
+          "maxMarketOrderQty": "22",
+          "maxOrderAmt": "6806840",
+          "maxOrderQty": "110",
+          "minOrderAmt": "225",
+          "minOrderQty": "0.00001",
+          "postOnlyMaxLimitOrderSize": "550",
+          "quotePrecision": "0.00001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "1"
+        },
+        "quoteCoin": "TRY",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHTRY",
+        "symbolId": 735,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHTRY&limit=1000",
+      "symbol": "ETHTRY"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.00001",
+          "maxLimitOrderQty": "84.34477",
+          "maxMarketOrderQty": "16.86896",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "84.34477",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.00001",
+          "postOnlyMaxLimitOrderSize": "421.72385",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "USD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHUSD",
+        "symbolId": 1286,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHUSD&limit=1000",
+      "symbol": "ETHUSD"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.00001",
+          "maxLimitOrderQty": "86.61984",
+          "maxMarketOrderQty": "17.32397",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "86.61984",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.00001",
+          "postOnlyMaxLimitOrderSize": "433.0992",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "USD1",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHUSD1",
+        "symbolId": 1290,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHUSD1&limit=1000",
+      "symbol": "ETHUSD1"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.00001",
+          "maxLimitOrderQty": "1500",
+          "maxMarketOrderQty": "730",
+          "maxOrderAmt": "7000000",
+          "maxOrderQty": "1500",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.00001",
+          "postOnlyMaxLimitOrderSize": "7500",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.005",
+          "priceLimitRatioY": "0.01"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHUSDC",
+        "symbolId": 116,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHUSDC&limit=1000",
+      "symbol": "ETHUSDC"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.00001",
+          "maxLimitOrderQty": "290",
+          "maxMarketOrderQty": "57",
+          "maxOrderAmt": "300000",
+          "maxOrderQty": "290",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.00001",
+          "postOnlyMaxLimitOrderSize": "1450",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "USDE",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHUSDE",
+        "symbolId": 659,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHUSDE&limit=1000",
+      "symbol": "ETHUSDE"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "ETH",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.00001",
+          "maxLimitOrderQty": "2600",
+          "maxMarketOrderQty": "1300",
+          "maxOrderAmt": "7000000",
+          "maxOrderQty": "2600",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.00001",
+          "postOnlyMaxLimitOrderSize": "13000",
+          "quotePrecision": "0.0000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.005",
+          "priceLimitRatioY": "0.01"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "ETHUSDT",
+        "symbolId": 10,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=ETHUSDT&limit=1000",
+      "symbol": "ETHUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "HYPE",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.001",
+          "maxLimitOrderQty": "7056",
+          "maxMarketOrderQty": "3528",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "7056",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.001",
+          "postOnlyMaxLimitOrderSize": "35280",
+          "quotePrecision": "0.00001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.015",
+          "priceLimitRatioY": "0.03"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "HYPEUSDT",
+        "symbolId": 1026,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=HYPEUSDT&limit=1000",
+      "symbol": "HYPEUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "SOL",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.001",
+          "maxLimitOrderQty": "2263.247",
+          "maxMarketOrderQty": "452.65",
+          "maxOrderAmt": "734106.59",
+          "maxOrderQty": "2263.247",
+          "minOrderAmt": "18.35",
+          "minOrderQty": "0.001",
+          "postOnlyMaxLimitOrderSize": "11316.235",
+          "quotePrecision": "0.00001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "AED",
+        "riskParameters": {
+          "priceLimitRatioX": "0.1",
+          "priceLimitRatioY": "0.2"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "SOLAED",
+        "symbolId": 1260,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=SOLAED&limit=1000",
+      "symbol": "SOLAED"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "SOL",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "maxLimitOrderQty": "1314",
+          "maxMarketOrderQty": "438",
+          "maxOrderAmt": "50000",
+          "maxOrderQty": "1314",
+          "minOrderAmt": "6",
+          "minOrderQty": "0.0001",
+          "postOnlyMaxLimitOrderSize": "6570",
+          "quotePrecision": "0.00001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "quoteCoin": "BRL",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "SOLBRL",
+        "symbolId": 689,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=SOLBRL&limit=1000",
+      "symbol": "SOLBRL"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "SOL",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "maxLimitOrderQty": "3447",
+          "maxMarketOrderQty": "1149",
+          "maxOrderAmt": "10",
+          "maxOrderQty": "3447",
+          "minOrderAmt": "0.000065",
+          "minOrderQty": "0.0001",
+          "postOnlyMaxLimitOrderSize": "17235",
+          "quotePrecision": "0.00000000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.0000001"
+        },
+        "quoteCoin": "BTC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.015",
+          "priceLimitRatioY": "0.03"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "SOLBTC",
+        "symbolId": 137,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=SOLBTC&limit=1000",
+      "symbol": "SOLBTC"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "SOL",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "maxLimitOrderQty": "1136",
+          "maxMarketOrderQty": "568",
+          "maxOrderAmt": "180000",
+          "maxOrderQty": "1136",
+          "minOrderAmt": "1",
+          "minOrderQty": "0.0001",
+          "postOnlyMaxLimitOrderSize": "5680",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "EUR",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "SOLEUR",
+        "symbolId": 483,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=SOLEUR&limit=1000",
+      "symbol": "SOLEUR"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "SOL",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "maxLimitOrderQty": "2532.0673",
+          "maxMarketOrderQty": "506.4135",
+          "maxOrderAmt": "152000",
+          "maxOrderQty": "2532.0673",
+          "minOrderAmt": "3.8",
+          "minOrderQty": "0.0001",
+          "postOnlyMaxLimitOrderSize": "12660.3365",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "GBP",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "SOLGBP",
+        "symbolId": 1273,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=SOLGBP&limit=1000",
+      "symbol": "SOLGBP"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "SOL",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "maxLimitOrderQty": "14181",
+          "maxMarketOrderQty": "4727",
+          "maxOrderAmt": "1200000",
+          "maxOrderQty": "14181",
+          "minOrderAmt": "7.5",
+          "minOrderQty": "0.0001",
+          "postOnlyMaxLimitOrderSize": "70905",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "MNT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "SOLMNT",
+        "symbolId": 1069,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=SOLMNT&limit=1000",
+      "symbol": "SOLMNT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "SOL",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "maxLimitOrderQty": "14510",
+          "maxMarketOrderQty": "7255",
+          "maxOrderAmt": "2000000",
+          "maxOrderQty": "14510",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.0001",
+          "postOnlyMaxLimitOrderSize": "72550",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.015",
+          "priceLimitRatioY": "0.03"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "SOLUSDC",
+        "symbolId": 133,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=SOLUSDC&limit=1000",
+      "symbol": "SOLUSDC"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "SOL",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "maxLimitOrderQty": "4400",
+          "maxMarketOrderQty": "890",
+          "maxOrderAmt": "200000",
+          "maxOrderQty": "4400",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.0001",
+          "postOnlyMaxLimitOrderSize": "22000",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "USDE",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "SOLUSDE",
+        "symbolId": 658,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=SOLUSDE&limit=1000",
+      "symbol": "SOLUSDE"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "SOL",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "maxLimitOrderQty": "26000",
+          "maxMarketOrderQty": "13000",
+          "maxOrderAmt": "5000000",
+          "maxOrderQty": "26000",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.0001",
+          "postOnlyMaxLimitOrderSize": "130000",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.01"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.005",
+          "priceLimitRatioY": "0.01"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "SOLUSDT",
+        "symbolId": 42,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=SOLUSDT&limit=1000",
+      "symbol": "SOLUSDT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "XRP",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.01",
+          "maxLimitOrderQty": "535200",
+          "maxMarketOrderQty": "178400",
+          "maxOrderAmt": "10",
+          "maxOrderQty": "535200",
+          "minOrderAmt": "0.000065",
+          "minOrderQty": "0.01",
+          "postOnlyMaxLimitOrderSize": "2676000",
+          "quotePrecision": "0.0000000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.00000001"
+        },
+        "quoteCoin": "BTC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.015",
+          "priceLimitRatioY": "0.03"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "XRPBTC",
+        "symbolId": 14,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=XRPBTC&limit=1000",
+      "symbol": "XRPBTC"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "XRP",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.01",
+          "maxLimitOrderQty": "420000",
+          "maxMarketOrderQty": "84000",
+          "maxOrderAmt": "180000",
+          "maxOrderQty": "420000",
+          "minOrderAmt": "1",
+          "minOrderQty": "0.01",
+          "postOnlyMaxLimitOrderSize": "2100000",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.0001"
+        },
+        "quoteCoin": "EUR",
+        "riskParameters": {
+          "priceLimitRatioX": "0.015",
+          "priceLimitRatioY": "0.03"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "XRPEUR",
+        "symbolId": 488,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=XRPEUR&limit=1000",
+      "symbol": "XRPEUR"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "XRP",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.01",
+          "maxLimitOrderQty": "1006500",
+          "maxMarketOrderQty": "335500",
+          "maxOrderAmt": "1200000",
+          "maxOrderQty": "1006500",
+          "minOrderAmt": "7.5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxLimitOrderSize": "5032500",
+          "quotePrecision": "0.00001"
+        },
+        "marginTrading": "none",
+        "priceFilter": {
+          "tickSize": "0.001"
+        },
+        "quoteCoin": "MNT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "XRPMNT",
+        "symbolId": 1070,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=XRPMNT&limit=1000",
+      "symbol": "XRPMNT"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "XRP",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.01",
+          "maxLimitOrderQty": "203600",
+          "maxMarketOrderQty": "101800",
+          "maxOrderAmt": "4000000",
+          "maxOrderQty": "203600",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxLimitOrderSize": "1018000",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.0001"
+        },
+        "quoteCoin": "RLUSD",
+        "riskParameters": {
+          "priceLimitRatioX": "0.02",
+          "priceLimitRatioY": "0.05"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "XRPRLUSD",
+        "symbolId": 1125,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=XRPRLUSD&limit=1000",
+      "symbol": "XRPRLUSD"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "XRP",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.01",
+          "maxLimitOrderQty": "643200",
+          "maxMarketOrderQty": "321600",
+          "maxOrderAmt": "600000",
+          "maxOrderQty": "643200",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxLimitOrderSize": "3216000",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.0001"
+        },
+        "quoteCoin": "USDC",
+        "riskParameters": {
+          "priceLimitRatioX": "0.005",
+          "priceLimitRatioY": "0.01"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "XRPUSDC",
+        "symbolId": 134,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=XRPUSDC&limit=1000",
+      "symbol": "XRPUSDC"
+    },
+    {
+      "api_ret_code": 0,
+      "api_ret_msg": "OK",
+      "category": "spot",
+      "instrument": {
+        "baseCoin": "XRP",
+        "innovation": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.01",
+          "maxLimitOrderQty": "1200000",
+          "maxMarketOrderQty": "620000",
+          "maxOrderAmt": "4000000",
+          "maxOrderQty": "1200000",
+          "minOrderAmt": "5",
+          "minOrderQty": "0.01",
+          "postOnlyMaxLimitOrderSize": "6000000",
+          "quotePrecision": "0.000001"
+        },
+        "marginTrading": "utaOnly",
+        "priceFilter": {
+          "tickSize": "0.0001"
+        },
+        "quoteCoin": "USDT",
+        "riskParameters": {
+          "priceLimitRatioX": "0.005",
+          "priceLimitRatioY": "0.01"
+        },
+        "stTag": "0",
+        "status": "Trading",
+        "symbol": "XRPUSDT",
+        "symbolId": 11,
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      },
+      "instrument_count": 1,
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri": "https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=XRPUSDT&limit=1000",
+      "symbol": "XRPUSDT"
+    }
+  ],
+  "schema_version": "bybit-instrument-metadata-snapshot.v1",
+  "selection": {
+    "instrument_universe": "all_staged_category_symbols",
+    "metadata_query_strategy": "category_symbol_exact"
+  },
+  "snapshot_id": "bybit-instrument-metadata-snapshot-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_endpoint": "https://api.bybit.com/v5/market/instruments-info",
+  "source_universe_path": "repo://specs/023-nt-research-analytics-platform/reference/backfill-source-universes/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-source-universe.json",
+  "universe_id": "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
+}

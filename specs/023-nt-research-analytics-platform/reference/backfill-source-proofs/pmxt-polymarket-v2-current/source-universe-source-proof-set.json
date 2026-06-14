@@ -1,0 +1,23 @@
+{
+  "schema_version": "source-universe-source-proof-set.v1",
+  "proof_set_id": "source-universe-source-proofs-pmxt-polymarket-v2-current",
+  "proof_count": 1,
+  "accepted_proof_count": 0,
+  "total_completed_objects": 1351,
+  "total_accepted_bytes": 557815904970,
+  "proofs": [
+    {
+      "source_binding": "polymarket-parquet-archive-index",
+      "source_proof_id": "source-proof-pmxt-polymarket-v2-current-orderbook",
+      "source_proof_version": 1,
+      "category_manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current-category-orderbook",
+      "category": "orderbook",
+      "object_count": 1351,
+      "accepted_bytes": 557815904970,
+      "first_archive_date": "2026-04-13T19:00:00Z",
+      "last_archive_date": "2026-06-10T15:00:00Z",
+      "proof_path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-proof-pmxt-polymarket-v2-current-orderbook.json",
+      "proof_hash": "7f833f02d31b127efef7a404e89d2b6868b474e9322b35531ed413de4bdda3fe"
+    }
+  ]
+}

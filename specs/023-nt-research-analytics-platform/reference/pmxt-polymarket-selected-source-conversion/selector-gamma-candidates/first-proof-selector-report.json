@@ -1,0 +1,41 @@
+{
+  "schema_version": "first-proof-selector-report.v1",
+  "selector_id": "pmxt-polymarket-first-proof-2026-05-20T22-gamma-backed",
+  "status": "selected",
+  "selection": {
+    "required_event_families": [
+      "book",
+      "price_change",
+      "last_trade_price"
+    ],
+    "excluded_event_families": [
+      "tick_size_change"
+    ],
+    "candidate_asset_ids": [
+      "73895424095742155573626958367283533358717984717096075221396743226794070701077",
+      "43628795712486515833828470752867039200350376777314237956256694829779429130222",
+      "49444756644707500998425362003350300889304966604464917505823446083561306410717",
+      "93645472426873845959841350724010926189006909810584484349935259903268657129023",
+      "31623217819038603813783350826187730431369952540273671534916386825104775476271",
+      "3591592734621538900250105906480402152414999010955894949082670586294455191149"
+    ],
+    "row_budget": 1000,
+    "max_selected_assets": 1
+  },
+  "event_count_ledger_hash": "985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a",
+  "total_assets": 71593,
+  "eligible_assets": 6,
+  "selected_assets": [
+    {
+      "asset_id": "73895424095742155573626958367283533358717984717096075221396743226794070701077",
+      "replay_rows": 5,
+      "source_row_groups": [
+        35
+      ]
+    }
+  ],
+  "selected_asset_ids_hash": "1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110",
+  "excluded_event_asset_count": 0,
+  "excluded_event_row_count": 0,
+  "blocking_issues": []
+}

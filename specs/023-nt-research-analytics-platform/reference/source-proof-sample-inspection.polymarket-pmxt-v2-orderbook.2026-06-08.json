@@ -1,0 +1,140 @@
+{
+  "schema_version": "source-proof-sample-inspection.v1",
+  "source_binding": "polymarket-parquet-archive-index",
+  "market_structure_fixture": "binary-option",
+  "observed_at_utc": "2026-06-07T20:25:48Z",
+  "method": "HEAD + bounded local parquet schema inspection",
+  "archive_index_uri": "https://archive.pmxt.dev/Polymarket/v2",
+  "source_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+  "source_docs_uri": "https://archive.pmxt.dev/docs/v2-data-overview",
+  "upstream_event_docs_uri": "https://docs.polymarket.com/market-data/websocket/market-channel",
+  "head_response": {
+    "status": 200,
+    "content_length": 361365244,
+    "etag": "\"f99d7c5ea0f65a4ffbb0a51c7a948c0f-44\"",
+    "last_modified": "Wed, 20 May 2026 23:07:44 GMT",
+    "accept_ranges": "bytes"
+  },
+  "local_sample_observation": {
+    "path": "/private/tmp/polymarket-may20-one.parquet",
+    "bytes": 361365244,
+    "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "durability_limit": "local file matches source HEAD content-length, but artifact-root staging remains pending"
+  },
+  "source_contract_summary": {
+    "source": "Polymarket CLOB market WebSocket event stream as archived by pmxt",
+    "access": "public HTTPS, no credentials required",
+    "cadence": "one parquet object per UTC hour, written after the hour closes",
+    "license": "CC BY 4.0 with commercial use allowed when attribution is retained"
+  },
+  "parquet_schema": [
+    {
+      "name": "timestamp_received",
+      "type": "timestamp with time zone",
+      "meaning": "exporter ingest timestamp"
+    },
+    {
+      "name": "timestamp",
+      "type": "timestamp with time zone",
+      "meaning": "source event timestamp"
+    },
+    {
+      "name": "market",
+      "type": "blob",
+      "meaning": "condition id"
+    },
+    {
+      "name": "event_type",
+      "type": "varchar",
+      "meaning": "book, price_change, last_trade_price, or tick_size_change"
+    },
+    {
+      "name": "asset_id",
+      "type": "varchar",
+      "meaning": "outcome token id"
+    },
+    {
+      "name": "bids",
+      "type": "varchar",
+      "meaning": "raw JSON book-side levels on book events"
+    },
+    {
+      "name": "asks",
+      "type": "varchar",
+      "meaning": "raw JSON book-side levels on book events"
+    },
+    {
+      "name": "price",
+      "type": "decimal(9,4)",
+      "meaning": "event price"
+    },
+    {
+      "name": "size",
+      "type": "decimal(18,6)",
+      "meaning": "event size"
+    },
+    {
+      "name": "side",
+      "type": "varchar",
+      "meaning": "BUY or SELL"
+    },
+    {
+      "name": "best_bid",
+      "type": "decimal(9,4)",
+      "meaning": "best bid at event time"
+    },
+    {
+      "name": "best_ask",
+      "type": "decimal(9,4)",
+      "meaning": "best ask at event time"
+    },
+    {
+      "name": "fee_rate_bps",
+      "type": "usmallint",
+      "meaning": "fee rate on last_trade_price events"
+    },
+    {
+      "name": "transaction_hash",
+      "type": "varchar",
+      "meaning": "transaction hash when present"
+    },
+    {
+      "name": "old_tick_size",
+      "type": "decimal(9,4)",
+      "meaning": "tick size before tick_size_change"
+    },
+    {
+      "name": "new_tick_size",
+      "type": "decimal(9,4)",
+      "meaning": "tick size after tick_size_change"
+    }
+  ],
+  "sample_counts": {
+    "rows": 64877467,
+    "asset_ids": 71593,
+    "markets": 36803,
+    "event_type_counts": {
+      "price_change": 64768138,
+      "last_trade_price": 80052,
+      "book": 28858,
+      "tick_size_change": 419
+    },
+    "rows_with_bids": 28858,
+    "rows_with_asks": 28858,
+    "rows_with_best_bid": 64768138,
+    "rows_with_best_ask": 64768138,
+    "rows_with_fee_rate": 80052
+  },
+  "sample_time_ranges": {
+    "timestamp_received_start_utc": "2026-05-20T22:00:00.118Z",
+    "timestamp_received_end_utc": "2026-05-20T22:59:59.807Z",
+    "source_timestamp_start_utc": "2026-04-29T08:58:39.323Z",
+    "source_timestamp_end_utc": "2026-05-20T22:59:59.795Z"
+  },
+  "sample_interpretation": [
+    "PMXT exposes a historical hourly replay source for binary-option order-book events, not only current metadata.",
+    "The sample has full-depth book snapshots on book events, price-level changes on price_change events, trade-like last_trade_price events, and tick-size changes.",
+    "timestamp_received is the archive-hour coverage axis; timestamp is the upstream event timestamp and can include older source events.",
+    "This sample is source-access and schema evidence only; accepted artifact-root staging, coverage ledger scope, generic conversion, and NT read-back proof remain pending."
+  ]
+}

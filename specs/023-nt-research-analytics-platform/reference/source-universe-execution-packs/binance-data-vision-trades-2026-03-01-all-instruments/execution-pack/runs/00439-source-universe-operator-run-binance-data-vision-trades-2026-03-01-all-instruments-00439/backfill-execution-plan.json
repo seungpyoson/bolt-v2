@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00439:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ERAUSDT:2026-03-01:7ed20b0beda32e0ca45a878b3b4498779c7d564577e5c9edc31176ce79b79004:accepted-tranche",
+  "accepted_tranche_manifest_hash": "7f02d1b1be2e11d9f31d76d55f75aef563c757d40e096c42e18527de47bcb14f",
+  "run_spec_hash": "354ac12de62132134113884577ab8ffa3e624424a37d7f8c1bd6b77a4047ce83",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00439",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ERAUSDT/dt=2026-03-01/object=7ed20b0beda32e0ca45a878b3b4498779c7d564577e5c9edc31176ce79b79004",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 230852,
+  "max_object_bytes": 230852,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=ERAUSDT/object=7ed20b0beda32e0ca45a878b3b4498779c7d564577e5c9edc31176ce79b79004.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/ERAUSDT/ERAUSDT-trades-2026-03-01.zip",
+      "sha256": "7ed20b0beda32e0ca45a878b3b4498779c7d564577e5c9edc31176ce79b79004",
+      "bytes": 230852,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

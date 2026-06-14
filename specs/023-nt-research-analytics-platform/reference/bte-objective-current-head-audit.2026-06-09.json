@@ -1,0 +1,216 @@
+{
+  "schema": "bolt-v2.bte.objective-current-head-audit.v1",
+  "created_at_utc": "2026-06-09T02:32:25Z",
+  "updated_at_utc": "2026-06-09T10:17:21Z",
+  "objective_prompt": {
+    "declared_path": "/Users/spson/Downloads/prompts/backtesting.md",
+    "declared_path_status": "missing_on_disk",
+    "actual_path_used": "/Users/spson/Downloads/New Folder With Items/prompts/backtesting.md",
+    "actual_path_size_bytes": 6229
+  },
+  "current_state": {
+    "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
+    "audited_subject_head_sha": "e78c00d6f25dac3d9f05e0424119ca9ce9aacadd",
+    "audited_subject_commit": "Materialize Binance backfill gate run spec",
+    "audit_record_note": "This JSON is committed after the audited subject head; use the containing Git commit or PR head for the record carrier identity, not as the audited subject itself.",
+    "local_worktree": "clean_at_audit_time",
+    "github_pr": "https://github.com/seungpyoson/bolt-v2/pull/610",
+    "audited_subject_ci": {
+      "actionlint": {
+        "run_id": 27181340505,
+        "conclusion": "success"
+      },
+      "Backtester CI": {
+        "run_id": 27181340511,
+        "conclusion": "success"
+      },
+      "CI": {
+        "run_id": 27181340518,
+        "conclusion": "success"
+      }
+    },
+    "post_audit_native_trade_cli_recheck": {
+      "observed_at_utc": "2026-06-09T10:17:21Z",
+      "head_sha": "3e38528369372e75399d01386ab7b5f74f9c9f82",
+      "head_commit": "Fail closed on unaccepted binding coverage",
+      "scope": "bounded accepted Binance native-trades materialized-run-spec CLI rerun only",
+      "scratch_output_dir": "/private/tmp/bte-binance-materialized-run-current-pYrehuc1",
+      "publish_output": false,
+      "raw_object_sha256": "433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81",
+      "result_contract_sha256_after_idempotence_rerun": "c523e5b27266e52cc1f05f79674a3a016c933fae5897970c224987d4c11e05f7",
+      "catalog_hash": "8c128fe5acbb2e0df7c0f9b30d80de16acb285ca95f67a7bfc08c969f6b48362",
+      "canonical_trades_rows": 71431,
+      "catalog_read_back_trade_ticks": 71431,
+      "nt_iterations": 71431,
+      "ci_status_for_this_head": "not_checked"
+    }
+  },
+  "bounded_current_head_claims": [
+    {
+      "claim": "Accepted native-trades CSV/ZIP/GZIP sources can flow through source-proof acceptance, canonical TradeTick parquet, NT ParquetDataCatalog, NT BacktestNode, and objective result-contract binding.",
+      "status": "proven_for_committed_binance_daily_sample_and_existing_bybit_reference_sample",
+      "evidence": [
+        "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml",
+        "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-03-01.json",
+        "repo://specs/023-nt-research-analytics-platform/reference/result-contract-idempotence-native-trades-current-head.2026-06-09.json"
+      ]
+    },
+    {
+      "claim": "Completed-output reruns for the accepted native-trades path are byte-idempotent for the result contract while still rerunning NT to verify catalog consumption.",
+      "status": "proven_on_current_head",
+      "evidence": [
+        "RED focused test failed before the fix because nt_result.instance_id rewrote backtest-result-contract.json.",
+        "GREEN focused test passed after preserving existing stable result-contract bytes.",
+        "Post-audit real CLI rerun from the committed materialized run spec preserved backtest-result-contract.json SHA-256 c523e5b27266e52cc1f05f79674a3a016c933fae5897970c224987d4c11e05f7 on head 3e38528369372e75399d01386ab7b5f74f9c9f82."
+      ]
+    },
+    {
+      "claim": "Generic BTE gate/readiness logic is source_binding/table_family/NT-data-type driven, not venue-name driven.",
+      "status": "mostly_proven_with_adapter_registry_gap_and_run_spec_materialization_proven",
+      "evidence": [
+        "repo://specs/023-nt-research-analytics-platform/reference/source-agnostic-backfill-boundary-status.2026-06-09.json",
+        "repo://specs/023-nt-research-analytics-platform/reference/backfill-run-spec-materialization-current-head.2026-06-09.json",
+        "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_sample_venue_guard.rs"
+      ]
+    },
+    {
+      "claim": "Accepted-tranche metadata can now be bound into a validated operator run-spec before payload fetch.",
+      "status": "proven_on_current_head",
+      "evidence": [
+        "repo://specs/023-nt-research-analytics-platform/reference/backfill-run-spec-materialization-current-head.2026-06-09.json",
+        "repo://crates/backtesting-vertical-slice/src/backfill_run_spec_materialization.rs",
+        "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_run_spec_materialization.rs",
+        "Backtester CI run 27181340511 passed on e78c00d6f25dac3d9f05e0424119ca9ce9aacadd"
+      ]
+    },
+    {
+      "claim": "PMXT one-off uses NautilusTrader Polymarket/model/catalog/backtest surfaces instead of a custom backtest engine.",
+      "status": "proven_for_bounded_one_off_only",
+      "evidence": [
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-current-schema-existing-data-conversion.2026-06-09.json",
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-nt-surface-usage-boundary.2026-06-09.json"
+      ]
+    }
+  ],
+  "prompt_requirement_audit": [
+    {
+      "requirement": "Confirm repo state, branch, status, and relevant PRs.",
+      "current_evidence": "Local branch codex/bte-clean-converter-nt-use-main-reconcile was clean at audited subject head e78c00d6f25dac3d9f05e0424119ca9ce9aacadd. PR #610 is the active BTE branch PR and its body is updated with current-head evidence. Audited subject actionlint run 27181340505, Backtester CI run 27181340511, and CI run 27181340518 are green.",
+      "status": "proven_current_head"
+    },
+    {
+      "requirement": "Inventory artifacts and classify dirty/partial/complete outputs.",
+      "current_evidence": "Large investigation report records artifact inventory and dirty-output guidance; current accepted native-trades proof uses committed materialized run spec plus scratch output /private/tmp/bte-binance-materialized-run-current-pYrehuc1 and classifies it as clean only for the bounded proof. Existing converted/NT catalog outputs remain reference-only unless separately verified.",
+      "status": "partially_proven_bounded_clean_path_only"
+    },
+    {
+      "requirement": "Investigate NautilusTrader and produce NT-use matrix.",
+      "current_evidence": "Investigation report contains an NT-use matrix for raw conversion, catalog write/read, BacktestNode execution, BacktestDataConfig cloud path, resume/checkpoint/idempotency, and artifact governance. PMXT-specific NT surface reports record what pinned NT provides and does not provide.",
+      "status": "proven_for_current_slice"
+    },
+    {
+      "requirement": "Investigate existing Bolt BTE implementation and unsafe converter/idempotency behavior.",
+      "current_evidence": "Existing tests cover dirty output rejection, mismatched conversion fingerprints, checkpoint resume/refusal, clean manifest/checkpoint/catalog metadata writes, NT catalog readback, BacktestNode consumption, result-contract provenance, and accepted-tranche-to-run-spec materialization. The newest idempotence gap was fixed at ef716813 and rechecked by CLI on post-guard head 3e38528369372e75399d01386ab7b5f74f9c9f82.",
+      "status": "proven_for_current_slice"
+    },
+    {
+      "requirement": "Do not implement unless hard-stop unknowns are resolved.",
+      "current_evidence": "For the accepted Binance native-trades path: raw object/source proof, clean scratch output prefix, accepted-tranche-to-run-spec materialization, execution-plan gating, materialized-run-spec operator CLI run, idempotence proof, NT catalog/backtest mechanism, BacktestNode consumption, and result-contract provenance are all proven. For broad PMXT/production backfill: these are not all proven, so the current decision remains no-go.",
+      "status": "bounded_go_broad_no_go"
+    },
+    {
+      "requirement": "Use NT APIs wherever available and do not build a custom backtest engine/catalog.",
+      "current_evidence": "Current paths use NT model objects, ParquetDataCatalog write/read/query, and BacktestNode. Bolt-owned code remains source-proof gating, raw-source adapters, conversion manifests/checkpoints, catalog metadata, and objective result-contract governance where pinned NT has no source-proof/idempotency concept.",
+      "status": "proven_for_current_slice"
+    },
+    {
+      "requirement": "No hardcoded runtime IDs, paths, quantities, venues, instruments, or hashes.",
+      "current_evidence": "Sample-value guard test rejects Bybit/Binance/BNBUSDC/PMXT/Polymarket/public_archive, Korean venue names, and former cross-market sample source-family/role literals in generic production Rust. The run-spec materializer reads source_binding and table_family from the accepted tranche instead of matching venue names, and source-proof cross-market role requirements come from required_cross_market_component_roles in the source-binding registry. Search still finds sample values in tests and explicit PMXT/Polymarket proof modules, which the guard allows. The remaining adapter gap is structural, not generic venue branching.",
+      "status": "mostly_proven_current_slice"
+    }
+  ],
+  "required_test_coverage_map": [
+    {
+      "prompt_test": "Dirty existing converted output without matching manifest/checkpoint is rejected.",
+      "evidence": "backtesting_vertical_slice_conversion_boundary::dirty_existing_converted_output_without_manifest_or_checkpoint_is_rejected and operator::run_from_run_spec_rejects_dirty_output_without_conversion_checkpoint",
+      "status": "covered"
+    },
+    {
+      "prompt_test": "Existing output with mismatched source proof/hash/converter identity is rejected.",
+      "evidence": "backtesting_vertical_slice_conversion_boundary::existing_output_with_mismatched_source_or_converter_identity_is_rejected plus operator converter table-family and tampered-object rejection tests",
+      "status": "covered"
+    },
+    {
+      "prompt_test": "Same manifest/checkpoint rerun is idempotent.",
+      "evidence": "backtesting_vertical_slice_conversion_boundary::same_manifest_and_checkpoint_rerun_is_idempotent and operator::run_from_run_spec_reuses_completed_output_without_rebuilding_catalog, extended at ef716813 and verified by the materialized-run-spec CLI proof to assert result-contract bytes are unchanged",
+      "status": "covered_current_head"
+    },
+    {
+      "prompt_test": "Accepted backfill tranche binds into a current operator run-spec before payload fetch.",
+      "evidence": "backtesting_vertical_slice_backfill_run_spec_materialization::materialized_run_spec_binds_accepted_tranche_before_payload_fetch and backtesting_vertical_slice_backfill_gate_reference_artifacts::binance_backfill_gate_commits_materialized_run_spec_before_execution_plan plus Backtester CI run 27181340511",
+      "status": "covered_current_head"
+    },
+    {
+      "prompt_test": "Partial failed run resumes only from a validated checkpoint.",
+      "evidence": "backtesting_vertical_slice_conversion_boundary::partial_failed_run_resumes_only_from_validated_checkpoint",
+      "status": "covered"
+    },
+    {
+      "prompt_test": "Partial failed run without valid checkpoint refuses to continue.",
+      "evidence": "backtesting_vertical_slice_conversion_boundary::partial_failed_run_without_valid_checkpoint_refuses_to_continue",
+      "status": "covered"
+    },
+    {
+      "prompt_test": "Clean new output prefix writes manifest/checkpoint/catalog metadata.",
+      "evidence": "backtesting_vertical_slice_conversion_boundary::clean_new_output_writes_manifest_checkpoint_and_catalog_metadata and operator::run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them",
+      "status": "covered"
+    },
+    {
+      "prompt_test": "Converter output projects into NT ParquetDataCatalog and reads back faithfully.",
+      "evidence": "backtesting_vertical_slice_catalog_and_node::catalog_round_trips_trade_ticks_and_node_runs_compiled_strategy, catalog_round_trips_binary_option_l2_deltas_and_node_consumes_them, and accepted materialized-run-spec CLI evidence with 71431 read-back TradeTicks",
+      "status": "covered"
+    },
+    {
+      "prompt_test": "BacktestNode consumes only the verified clean NT catalog.",
+      "evidence": "runner/operator assert NT iterations equal the accepted in-window row count; current materialized-run-spec CLI evidence shows 71431 accepted rows, 71431 catalog read-back rows, and 71431 NT iterations.",
+      "status": "covered_for_bounded_clean_paths"
+    },
+    {
+      "prompt_test": "BacktestResultContract binds source proof, object hash, converter, conversion artifacts, catalog hash, NT revision, and claim limits.",
+      "evidence": "operator::run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them, end-to-end accepted_data_flows_through_to_objective_result_contract, PMXT result-contract tests, and current result-contract idempotence proof",
+      "status": "covered"
+    }
+  ],
+  "current_go_no_go": {
+    "native_trade_csv_accepted_object_path": "go_for_bounded_accepted_tranches_after_source_proof_and_run_spec_materialization",
+    "pmxt_one_off_current_schema_path": "go_only_for_one_off_backfill_data_scope",
+    "broad_pmxt_or_polymarket_l2_backfill": "no_go",
+    "production_broad_backfill_publish_delete_old_outputs": "no_go_without_additional_approval_and_artifact_index_iam_or_coordinator_proof",
+    "new_source_with_existing_native_trade_csv_adapter": "go_after_source_proof_accepted_tranche_and_run_spec_materialization",
+    "new_raw_format_or_new_nt_data_family": "no_go_until_registered_adapter_and_source_proof_are_added"
+  },
+  "remaining_unknowns_or_open_work": [
+    {
+      "item": "Production/broad backfill publishing and old-output disposition",
+      "reason": "Current clean proofs use bounded scratch outputs or bounded S3 proof paths; the latest accepted native-trades proof used /private/tmp/bte-binance-materialized-run-current-pYrehuc1 from the committed materialized run spec. Deleting or replacing old partial converted outputs still requires separately approved production action after clean new catalog proof.",
+      "next_evidence_needed": "Artifact Index producer IAM or approved coordinator proof, production output prefix proof, and explicit delete/archive approval."
+    },
+    {
+      "item": "Broad PMXT/Polymarket L2 backfill",
+      "reason": "Accepted durable source proof, broad cost/storage/coverage proof, and dynamic tick-size replay or accepted no-tick-size-change exclusion policy are not all proven.",
+      "next_evidence_needed": "Manifest/index-only coverage gate, accepted source proof, bounded row-group/object budgets, and NT-compatible tick-size policy."
+    },
+    {
+      "item": "General non-trade-CSV adapter runner",
+      "reason": "The accepted-tranche-to-run-spec materializer is source-agnostic and the accepted-object operator is systematic for registered native-trades CSV inputs, but the operator is not a generic runner for arbitrary raw formats or NT data families.",
+      "next_evidence_needed": "A registered adapter contract and TDD proof for the next durable non-trade data family."
+    },
+    {
+      "item": "Full production BTE/research-analytics rollout",
+      "reason": "PR #610 is current and green, but it remains a draft slice rather than the full production rollout. Research analytics can consume result contracts without mutating them, but production source selection, manifest finalization, and broad backfill scheduling remain outside the bounded proof.",
+      "next_evidence_needed": "Accepted production manifest, approved publish/delete plan, broad source proof where applicable, and final non-draft review once production scope is intentionally selected."
+    }
+  ],
+  "goal_completion_status": "not_complete",
+  "reason_not_complete": "The bounded native-trades converter/backtest/result-contract path and accepted-tranche-to-run-spec materialization are now proven on current head, but the full objective includes broad backfill/research analytics readiness and full end-to-end production disposition. Those remain explicitly no-go until the remaining evidence exists."
+}

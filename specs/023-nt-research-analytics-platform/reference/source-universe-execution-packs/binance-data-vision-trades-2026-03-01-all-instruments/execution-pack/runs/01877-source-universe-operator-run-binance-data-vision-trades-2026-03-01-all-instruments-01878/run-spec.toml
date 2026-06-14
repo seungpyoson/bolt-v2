@@ -1,0 +1,264 @@
+accepted_at_utc = "2026-06-10T00:00:00Z"
+accepted_by = "backtesting-vertical-slice-operator"
+capture_time_utc = "2026-06-07T00:00:00Z"
+created_at_utc = "2026-06-07T00:00:00Z"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
+
+[accepted_object]
+archive_date = "2026-03-01"
+bytes = 821879
+s3_uri = "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=SOMIUSDT/object=3f75cbeb0e1f963f494eae5ca3b22487414c368ae670d834ae69ef601afa225b.zip"
+schema_columns = [
+    "id",
+    "price",
+    "qty",
+    "quote_qty",
+    "time",
+    "is_buyer_maker",
+]
+sha256 = "3f75cbeb0e1f963f494eae5ca3b22487414c368ae670d834ae69ef601afa225b"
+source_url = "https://data.binance.vision/data/futures/um/daily/trades/SOMIUSDT/SOMIUSDT-trades-2026-03-01.zip"
+
+[converter]
+identity = "csv-native-trades-to-canonical-trades.v1"
+version = "1"
+
+[converter.csv]
+buyer_side_values = ["false"]
+has_headers = true
+price_column = "price"
+seller_side_values = ["true"]
+side_column = "is_buyer_maker"
+size_column = "qty"
+timestamp_column = "time"
+timestamp_unit = "milliseconds"
+trade_id_column = "id"
+
+[converter.raw_payload]
+container = "single_csv_zip"
+max_decoded_bytes = 1073741824
+max_object_bytes = 821879
+zip_member = "SOMIUSDT-trades-2026-03-01.csv"
+
+[identity]
+instrument_id = "SOMIUSDT"
+nt_instrument_id = "SOMIUSDT.BINANCE"
+venue_symbol = "SOMIUSDT"
+
+[instrument_spec]
+base_currency = "SOMI"
+instrument_kind = "crypto_perpetual"
+is_inverse = false
+lot_size = "1"
+maker_fee = "0"
+max_notional = "1000000000"
+max_price = "200"
+max_quantity = "4000000"
+min_notional = "5"
+min_price = "0.0010000"
+min_quantity = "1"
+multiplier = "1"
+nt_instrument_id = "SOMIUSDT.BINANCE"
+price_increment = "0.0001000"
+quote_currency = "USDT"
+raw_symbol = "SOMIUSDT"
+settlement_currency = "USDT"
+size_increment = "1"
+taker_fee = "0"
+
+[manifest]
+artifact_root = "s3://bolt-parquet/nt-research-analytics"
+catalog_hash = "8c128fe5acbb2e0df7c0f9b30d80de16acb285ca95f67a7bfc08c969f6b48362"
+execution_model = "nt_backtest_node"
+manifest_schema_version = "backtesting-run-manifest.v1"
+market_structure_fixture = "perps-spot"
+output_prefix = "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=SOMIUSDT/dt=2026-03-01/object=3f75cbeb0e1f963f494eae5ca3b22487414c368ae670d834ae69ef601afa225b"
+pins_non_latest_proof = false
+resolved_nt_version = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+run_id = "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01878"
+run_purpose = "normal"
+source_proof_id = "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments"
+source_proof_version = 1
+strategy_config_hash = "31aff2fb41be2576afbace153b27362ce53aadf7efe6ef245233fae2a4797851"
+target_bolt_v2_branch = "main"
+target_bolt_v2_ref = "refs/heads/main"
+venue_binding_key = "binance-usd-m-perpetual-native-trades"
+
+[manifest.artifact_store.rust_storage_options]
+conditional_put = "etag"
+region = "us-east-1"
+
+[manifest.artifact_store.ssm_parameters]
+access_key_id = "/bolt/artifact-store/s3/access-key-id"
+region = "us-east-1"
+secret_access_key = "/bolt/artifact-store/s3/secret-access-key"
+
+[manifest.artifact_store.storage_options]
+
+[[manifest.catalog_inputs]]
+catalog_fs_protocol = "NONE"
+catalog_path = "overridden-by-binary-at-runtime"
+data_type = "TradeTick"
+nt_instrument_id = "SOMIUSDT.BINANCE"
+
+[manifest.catalog_inputs.catalog_fs_rust_storage_options]
+
+[manifest.catalog_inputs.catalog_fs_storage_options]
+
+[manifest.strategy]
+registry_key = "hurst_vpin_directional"
+source_kind = "compiled_rust_registry"
+
+[manifest.strategy.parameters]
+bar_type = "SOMIUSDT.BINANCE-1-MINUTE-LAST-INTERNAL"
+trade_size = "0.01"
+
+[manifest.venue]
+account_type = "MARGIN"
+allow_cash_borrowing = false
+bar_adaptive_high_low_ordering = false
+bar_execution = true
+base_currency = "NONE"
+book_type = "L1_MBP"
+default_leverage = "1"
+frozen_account = false
+liquidity_consumption = false
+nt_venue = "BINANCE"
+oms_type = "NETTING"
+oto_trigger_mode = "PARTIAL"
+price_protection_points = 0
+queue_position = false
+reject_stop_orders = true
+routing = false
+starting_balances = ["1_000_000 USDC"]
+support_contingent_orders = true
+support_gtd_orders = true
+trade_execution = true
+use_market_order_acks = false
+use_position_ids = true
+use_random_ids = false
+use_reduce_only = true
+
+[source_proof]
+acceptance_mode = "manual"
+accepted_at = "2026-06-10T00:00:00Z"
+accepted_by = "backtesting-vertical-slice-operator"
+contract_version = "backfill-table-contract.v1"
+cost_ref = "cost://free-public-archive"
+evidence_state = "directly_backfillable"
+fidelity_class = "TRADE_REPLAY"
+fixture_type = "perps-spot"
+forbidden_claims = [
+    "No execution-quality, queue-position, or order-book-liquidity claims.",
+    "No L2/L3 order-book replay claims from trade prints.",
+    "No historical venue-rule, fillability, rounding, sizing, or execution-quality claims.",
+]
+gap_policy_id = ""
+instrument_universe_id = "binance-usd-m-perpetual-instruments-2026-03-01-all-instruments"
+license_ref = "https://github.com/binance/binance-public-data README: Licence MIT; observed 2026-06-07"
+license_scope = "public"
+nt_mapping_status = "accepted"
+product_category = "usd_m_perpetual"
+product_family = "usd_m_perpetual"
+raw_sample_hash = "3f75cbeb0e1f963f494eae5ca3b22487414c368ae670d834ae69ef601afa225b"
+raw_sample_uri = "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=SOMIUSDT/object=3f75cbeb0e1f963f494eae5ca3b22487414c368ae670d834ae69ef601afa225b.zip"
+retention_ref = "https://github.com/binance/binance-public-data README: daily/monthly public archive and checksum sidecars; observed 2026-06-07"
+schema_sample_hash = "af41c00260cded4b93d0ade1324c14a7d127e9f195e84b73bef54c2750bee9bc"
+schema_sample_uri = "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=0GUSDT/object=af41c00260cded4b93d0ade1324c14a7d127e9f195e84b73bef54c2750bee9bc.zip"
+schema_version = "backfill-source-proof.v1"
+source_binding = "binance-usd-m-perpetual-native-trades"
+source_candidate_class = "official_free"
+source_proof_id = "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments"
+source_proof_version = 1
+source_selection_status = "ACCEPTED_LOWER_FIDELITY"
+status = "accepted"
+table_family = "trades"
+usage_scope = "canonical_backfill_input"
+venue = "binance"
+
+[source_proof.acceptance_scope]
+accepted_bytes = 821879
+completed_objects = 1
+failed_objects = 0
+planned_objects = 1
+selector_scope_violations = 0
+skipped_objects = 0
+
+[[source_proof.claim_limits]]
+claim = "No execution-quality, queue-position, or order-book-liquidity claims."
+evidence_ref = "source-proof://source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments/fidelity"
+id = "source-proof-claim-limit-001"
+reason = "TRADE_REPLAY source proof is native trade-print replay, not order-book replay."
+severity = "blocking"
+
+[[source_proof.claim_limits]]
+claim = "No L2/L3 order-book replay claims from trade prints."
+evidence_ref = "source-proof://source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments/schema"
+id = "source-proof-claim-limit-002"
+reason = "The accepted category manifest contains trade prints and no L2/L3 order-book deltas or depth snapshots."
+severity = "blocking"
+
+[[source_proof.claim_limits]]
+claim = "No historical venue-rule, fillability, rounding, sizing, or execution-quality claims."
+evidence_ref = "source-proof://source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments/claim-limits"
+id = "source-proof-claim-limit-003"
+reason = "The category proof establishes native trade-print replay input only; dated venue-rule and execution-admissibility evidence remains outside this proof."
+severity = "blocking"
+
+[source_proof.coverage_time_range]
+end_utc = "2026-03-02T00:00:00Z"
+start_utc = "2026-03-01T00:00:00Z"
+
+[source_proof.l2_replay_evidence]
+
+[source_proof.requested_time_range]
+end_utc = "2026-03-02T00:00:00Z"
+start_utc = "2026-03-01T00:00:00Z"
+
+[source_proof.required_checks.completeness]
+evidence_ref = "object_count=593 compressed_bytes=1316489815 from committed category manifest"
+outcome = "passed"
+
+[source_proof.required_checks.cost]
+evidence_ref = "cost://free-public-archive"
+outcome = "passed"
+
+[source_proof.required_checks.coverage]
+evidence_ref = "category=usd_m_perpetual object_count=593 archive_date_range=[2026-03-01,2026-03-01]"
+outcome = "passed"
+
+[source_proof.required_checks.granularity]
+evidence_ref = "Binance Data Vision daily trades files are native trade prints"
+outcome = "passed"
+
+[source_proof.required_checks.instrument_universe]
+evidence_ref = "binance-usd-m-perpetual-instruments-2026-03-01-all-instruments category=usd_m_perpetual instrument_count=593"
+outcome = "passed"
+
+[source_proof.required_checks.license]
+evidence_ref = "Binance public data README license review permits BTE canonical/backtest input"
+outcome = "passed"
+
+[source_proof.required_checks.nt_mapping]
+evidence_ref = "nautilus_model::data::TradeTick; converter mappings are committed for Binance native trade CSV contracts"
+outcome = "passed"
+
+[source_proof.required_checks.retention_freshness]
+evidence_ref = "Binance public data archive retention reviewed 2026-06-07"
+outcome = "passed"
+
+[source_proof.required_checks.schema]
+evidence_ref = "Schema columns are committed in category manifest backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-usd_m_perpetual"
+outcome = "passed"
+
+[source_proof.required_checks.source_access]
+evidence_ref = "Binance Data Vision source URLs are enumerated in category manifest backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-usd_m_perpetual"
+outcome = "passed"
+
+[source_proof.required_checks.storage]
+evidence_ref = "raw objects are staged under category manifest backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-usd_m_perpetual"
+outcome = "passed"
+
+[source_proof.required_checks.time_semantics]
+evidence_ref = "Binance native trade time column maps to Unix milliseconds"
+outcome = "passed"

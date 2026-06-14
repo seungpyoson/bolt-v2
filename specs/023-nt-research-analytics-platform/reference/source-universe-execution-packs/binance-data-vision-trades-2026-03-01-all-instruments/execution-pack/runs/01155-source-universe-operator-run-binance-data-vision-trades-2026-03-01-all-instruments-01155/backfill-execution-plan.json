@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01155:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TFUELBTC:2026-03-01:3ec3a8d34eb1b2b40d962aef7a8a14cdf1c909dbe4d199408b30c03f37b354d3:accepted-tranche",
+  "accepted_tranche_manifest_hash": "6dbd178618a6cc01397209431feee40cb7fa941b222e7c40cff30c2bc3de4acc",
+  "run_spec_hash": "eae5a451f6480669baa20bddb769c6a3660d03ea8deee5f79c7f08f677a64f0c",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01155",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TFUELBTC/dt=2026-03-01/object=3ec3a8d34eb1b2b40d962aef7a8a14cdf1c909dbe4d199408b30c03f37b354d3",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 603,
+  "max_object_bytes": 603,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=TFUELBTC/object=3ec3a8d34eb1b2b40d962aef7a8a14cdf1c909dbe4d199408b30c03f37b354d3.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/TFUELBTC/TFUELBTC-trades-2026-03-01.zip",
+      "sha256": "3ec3a8d34eb1b2b40d962aef7a8a14cdf1c909dbe4d199408b30c03f37b354d3",
+      "bytes": 603,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

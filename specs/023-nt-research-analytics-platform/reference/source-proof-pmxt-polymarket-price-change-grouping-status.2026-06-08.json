@@ -1,0 +1,111 @@
+{
+  "schema_version": "source-proof-pmxt-polymarket-price-change-grouping-status.v1",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "source_binding": "polymarket-parquet-archive-index",
+  "status": "policy_narrowed_to_received_message_boundary_not_catalog_proven",
+  "recorded_at_utc": "2026-06-08T00:00:00Z",
+  "scope": {
+    "question": "How should flattened PMXT price_change rows be grouped before mapping to NT OrderBookDelta data?",
+    "answer": "Do not group by source timestamp alone. Treat timestamp_received as part of the source message boundary and as the ts_init/coverage axis. For NT live-client parity, the preferred mapping emits each PMXT price_change row as a single-change PolymarketQuotes payload in source order; multi-row source-message groups are preserved for ordering/provenance but not blindly collapsed into one batch unless implementation tests prove that grouped parser output is desired.",
+    "not_implementation": true,
+    "not_catalog_readback_proof": true,
+    "not_source_selection": true
+  },
+  "pinned_nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+  "nt_price_change_evidence": [
+    {
+      "source": "nt://crates/adapters/polymarket/src/websocket/messages.rs:116",
+      "finding": "PolymarketQuotes carries a Vec<PolymarketQuote> and one timestamp for the websocket price-change message."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/data.rs:756",
+      "finding": "Pinned NT's live PolymarketDataClient handles MarketWsMessage::PriceChange by iterating quotes.price_changes."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/data.rs:786",
+      "finding": "For book deltas, pinned NT wraps each individual change into PolymarketQuotes { price_changes: vec![change.clone()], timestamp: quotes.timestamp.clone() } before calling parse_book_deltas."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/data.rs:822",
+      "finding": "For QuoteTick emission, pinned NT calls parse_quote_from_price_change on the same individual change, with ts_event from quotes.timestamp and ts_init from the receive clock."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/websocket/parse.rs:137",
+      "finding": "parse_book_deltas can parse a multi-change PolymarketQuotes batch and places F_LAST on the final delta in that batch."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/websocket/parse.rs:392",
+      "finding": "Pinned NT tests prove multi-change parser behavior, but the live client still feeds one change at a time for emitted book deltas."
+    }
+  ],
+  "pmxt_sample_evidence": {
+    "source_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+    "local_path": "/private/tmp/polymarket-may20-one.parquet",
+    "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "bounded_window": "timestamp_received < 2026-05-21T07:00:10+09",
+    "row_count": 184734,
+    "message_like_group_key": [
+      "market",
+      "timestamp_received",
+      "timestamp"
+    ],
+    "message_like_groups": 94106,
+    "max_rows_per_message_like_group": 6,
+    "max_assets_per_message_like_group": 2,
+    "multi_row_message_like_groups": 89302,
+    "instrument_message_like_group_key": [
+      "market",
+      "timestamp_received",
+      "timestamp",
+      "asset_id"
+    ],
+    "instrument_message_like_groups": 183322,
+    "max_rows_per_instrument_message_like_group": 3,
+    "multi_row_instrument_message_like_groups": 1391,
+    "source_timestamp_asset_groups_crossing_received_batches": 16,
+    "max_received_batches_per_source_timestamp_asset": 2
+  },
+  "failed_full_object_aggregate": {
+    "attempted": true,
+    "purpose": "Check the same grouping metrics across the full one-hour local sample.",
+    "outcome": "aborted_by_duckdb_temp_spill_no_space_left_on_device",
+    "local_disk_available_before_cleanup": "5.2Gi",
+    "temporary_file_created_bytes": 487325696,
+    "temporary_file_cleanup": "removed generated .tmp/duckdb_temp_storage_DEFAULT-0.tmp and empty .tmp directory",
+    "decision_effect": "Do not make full-object grouping scans part of default source-proof flow. Use bounded windows and explicit benchmark budgets unless the result is required for source acceptance."
+  },
+  "policy_implications": [
+    {
+      "policy": "do_not_group_by_source_timestamp_without_timestamp_received",
+      "decision": "accepted",
+      "reason": "The bounded sample has source timestamp + asset groups that cross distinct timestamp_received batches."
+    },
+    {
+      "policy": "timestamp_received_as_message_boundary_and_ts_init",
+      "decision": "accepted_for_implementation_plan",
+      "reason": "PMXT provides timestamp_received as archive receipt time, while pinned NT live client uses receive clock time as ts_init for price_change handling."
+    },
+    {
+      "policy": "single_change_delta_emission_for_live_client_parity",
+      "decision": "preferred_candidate",
+      "reason": "Pinned NT's live data client feeds parse_book_deltas one price_change at a time before emitting OrderBookDeltas."
+    },
+    {
+      "policy": "multi_change_batch_parser_output",
+      "decision": "allowed_only_if_test_proves_desired_semantics",
+      "reason": "Pinned NT parser supports multi-change batches, but the live client does not use that path for emitted price_change deltas."
+    }
+  ],
+  "required_green_tests_when_implementation_starts": [
+    "Rows with the same market, source timestamp, and asset_id but different timestamp_received must not be collapsed into one NT batch.",
+    "Rows from one PMXT message-like group preserve source order and timestamp_received as ts_init provenance.",
+    "The preferred one-row-to-one-OrderBookDeltas policy matches pinned NT live-client output for representative price_change rows.",
+    "If grouped output is chosen instead, a focused test must prove the F_LAST placement and resulting OrderBook state matches the intended NT semantics."
+  ],
+  "current_decision": {
+    "price_change_policy_can_close_as_design_input": true,
+    "bte_022_can_close": false,
+    "broad_backfill_allowed": false,
+    "next_required_evidence": "TDD implementation proof through pinned NT parser reuse, ParquetDataCatalog write/read-back, and BacktestNode consumption for the one-object PMXT Polymarket sample."
+  }
+}

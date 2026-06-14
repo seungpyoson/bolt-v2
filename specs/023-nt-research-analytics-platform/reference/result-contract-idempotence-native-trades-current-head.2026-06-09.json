@@ -1,0 +1,114 @@
+{
+  "schema": "bolt-v2.bte.result-contract-idempotence-proof.v1",
+  "created_at_utc": "2026-06-09T00:24:30Z",
+  "updated_at_utc": "2026-06-09T10:17:21Z",
+  "base_commit_before_fix": "21c544aae9dc35c8a74990ca59de101f897764aa",
+  "scope": "accepted native-trades converter/backtest completed-output reuse path",
+  "root_cause": "The completed-output path re-ran NautilusTrader to prove catalog consumption, then rewrote backtest-result-contract.json with volatile NT pointer fields. The conversion manifest, checkpoint, catalog metadata, catalog hash, and semantic contract bindings were stable, but the result-contract artifact bytes were not.",
+  "fix_summary": "The completed-output path now verifies the newly generated stable contract content against the existing result contract while normalizing known volatile NT pointer fields, then preserves the existing result-contract artifact bytes.",
+  "tdd_evidence": {
+    "red_test": {
+      "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked operator::tests::run_from_run_spec_reuses_completed_output_without_rebuilding_catalog -- --nocapture",
+      "observed_exit_code": 101,
+      "failure": "second run changed backtest-result-contract.json because nt_result.instance_id differed"
+    },
+    "green_test": {
+      "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked operator::tests::run_from_run_spec_reuses_completed_output_without_rebuilding_catalog -- --nocapture",
+      "observed_exit_code": 0,
+      "result": "focused unit test passed; completed-output rerun preserves conversion artifacts and result-contract bytes"
+    }
+  },
+  "real_cli_evidence": {
+    "observed_at_utc": "2026-06-09T10:17:21Z",
+    "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
+    "head_sha": "3e38528369372e75399d01386ab7b5f74f9c9f82",
+    "head_commit": "Fail closed on unaccepted binding coverage",
+    "run_spec": "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml",
+    "run_spec_sha256": "498fcdea74e5089d722e26913e77a53d49bb6245a3234f157107184100782bfe",
+    "execution_plan": "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-plan/backfill-execution-plan.json",
+    "execution_plan_sha256": "a27e8a9094a990e700eb63a700207a46bffa3452426b6203c4de1d079b995855",
+    "scratch_output_dir": "/private/tmp/bte-binance-materialized-run-current-pYrehuc1",
+    "raw_object": "/private/tmp/bte-binance-bnbusdc-2026-03-01.zip",
+    "raw_object_sha256": "433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81",
+    "command": [
+      "python3",
+      "scripts/rust_verification.py",
+      "cargo",
+      "--repo",
+      "crates/backtesting-vertical-slice",
+      "--",
+      "run",
+      "--locked",
+      "--bin",
+      "backtesting-vertical-slice",
+      "--",
+      "--run-spec",
+      "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml",
+      "--execution-plan",
+      "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-plan/backfill-execution-plan.json",
+      "--object",
+      "/private/tmp/bte-binance-bnbusdc-2026-03-01.zip",
+      "--output-dir",
+      "/private/tmp/bte-binance-materialized-run-current-pYrehuc1"
+    ],
+    "publish_output": false,
+    "source_proof_id": "source-proof-binance-spot-native-trades-bnbusdc-2026-03-01",
+    "run_id": "backtesting-vertical-slice-binance-bnbusdc-2026-03-01-accepted",
+    "canonical_trades_rows": 71431,
+    "catalog_read_back_trade_ticks": 71431,
+    "nt_catalog_hash": "8c128fe5acbb2e0df7c0f9b30d80de16acb285ca95f67a7bfc08c969f6b48362",
+    "contract_bindings": {
+      "contract_version": "backtest-result-contract.v1",
+      "source_proof_version": 1,
+      "accepted_object_sha256": "433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81",
+      "catalog_hash": "8c128fe5acbb2e0df7c0f9b30d80de16acb285ca95f67a7bfc08c969f6b48362",
+      "catalog_metadata_hash": "3bb3599139bb8545477b9d44e81376a0daa94d19734409bf1c4fdcda61de2622",
+      "conversion_manifest_hash": "9203c797a0a289838cca1969b95463ab4f1b9764e0402c0be2808401e1c253b5",
+      "conversion_checkpoint_hash": "c2e2ec360c4e3c63a20535a68f515e54d98a846a5bb7f4470feba5a10f3a47fd",
+      "nt_result_iterations": 71431,
+      "nt_result_total_events": 0,
+      "nt_result_total_orders": 0,
+      "nt_result_total_positions": 0,
+      "nt_version": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+      "strategy_config_hash": "31aff2fb41be2576afbace153b27362ce53aadf7efe6ef245233fae2a4797851",
+      "fidelity_class": "TRADE_REPLAY"
+    },
+    "catalog_metadata_summary": {
+      "metadata_version": "catalog-metadata.v1",
+      "canonical_rows": 71431,
+      "catalog_nt_data_types": [
+        "TradeTick"
+      ],
+      "catalog_rows_by_nt_data_type": {
+        "TradeTick": 71431
+      },
+      "nt_data_type": "TradeTick"
+    },
+    "conversion_manifest_summary": {
+      "manifest_version": "conversion-manifest.v1",
+      "canonical_rows": 71431,
+      "catalog_nt_data_types": [
+        "TradeTick"
+      ],
+      "catalog_rows_by_nt_data_type": {
+        "TradeTick": 71431
+      }
+    },
+    "file_hashes_after_idempotence_rerun": {
+      "canonical_trades_parquet_sha256": "be908f312b61d112a25748d6641a9162f12d568f80d3f2ca94180285cc821a91",
+      "conversion_manifest_json_sha256": "419fa73d941cdfe819dfdb051ad48b0ab614c231301aad8a61d61ddabc28e6cb",
+      "conversion_checkpoint_json_sha256": "7e203ac5d90fc8d1b48e0455a54c9c0edb40bed8e7a943818624bc1e28c28119",
+      "catalog_metadata_json_sha256": "dadd665097a494e3ea8301bc3f343b14fa7213466557e5d3ea925329bd0f4aef",
+      "backtest_result_contract_json_sha256": "c523e5b27266e52cc1f05f79674a3a016c933fae5897970c224987d4c11e05f7"
+    },
+    "idempotence_check": {
+      "pre_rerun_result_contract_json_sha256": "c523e5b27266e52cc1f05f79674a3a016c933fae5897970c224987d4c11e05f7",
+      "post_rerun_result_contract_json_sha256": "c523e5b27266e52cc1f05f79674a3a016c933fae5897970c224987d4c11e05f7",
+      "same_result_contract_bytes": true
+    }
+  },
+  "remaining_limits": [
+    "This proves the accepted native-trades converter/backtest completed-output reuse path, not broad production backfill publishing.",
+    "PMXT remains a one-off source proof path and is not promoted to a durable broad backfill source by this evidence."
+  ]
+}

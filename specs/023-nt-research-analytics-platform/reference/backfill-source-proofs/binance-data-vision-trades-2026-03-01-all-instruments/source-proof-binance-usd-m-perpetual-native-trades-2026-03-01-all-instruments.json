@@ -1,0 +1,127 @@
+{
+  "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "contract_version": "backfill-table-contract.v1",
+  "schema_version": "backfill-source-proof.v1",
+  "status": "accepted",
+  "source_binding": "binance-usd-m-perpetual-native-trades",
+  "venue": "binance",
+  "product_family": "usd_m_perpetual",
+  "product_category": "usd_m_perpetual",
+  "table_family": "trades",
+  "evidence_state": "directly_backfillable",
+  "source_candidate_class": "official_free",
+  "source_selection_status": "ACCEPTED_LOWER_FIDELITY",
+  "usage_scope": "canonical_backfill_input",
+  "fixture_type": "perps-spot",
+  "requested_time_range": {
+    "start_utc": "2026-03-01T00:00:00Z",
+    "end_utc": "2026-03-02T00:00:00Z"
+  },
+  "coverage_time_range": {
+    "start_utc": "2026-03-01T00:00:00Z",
+    "end_utc": "2026-03-02T00:00:00Z"
+  },
+  "instrument_universe_id": "binance-usd-m-perpetual-instruments-2026-03-01-all-instruments",
+  "raw_sample_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=0GUSDT/object=af41c00260cded4b93d0ade1324c14a7d127e9f195e84b73bef54c2750bee9bc.zip",
+  "raw_sample_hash": "af41c00260cded4b93d0ade1324c14a7d127e9f195e84b73bef54c2750bee9bc",
+  "schema_sample_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=0GUSDT/object=af41c00260cded4b93d0ade1324c14a7d127e9f195e84b73bef54c2750bee9bc.zip",
+  "schema_sample_hash": "af41c00260cded4b93d0ade1324c14a7d127e9f195e84b73bef54c2750bee9bc",
+  "license_ref": "https://github.com/binance/binance-public-data README: Licence MIT; observed 2026-06-07",
+  "license_scope": "public",
+  "retention_ref": "https://github.com/binance/binance-public-data README: daily/monthly public archive and checksum sidecars; observed 2026-06-07",
+  "cost_ref": "cost://free-public-archive",
+  "nt_mapping_status": "accepted",
+  "fidelity_class": "TRADE_REPLAY",
+  "l2_replay_evidence": {},
+  "forbidden_claims": [
+    "No execution-quality, queue-position, or order-book-liquidity claims.",
+    "No L2/L3 order-book replay claims from trade prints.",
+    "No historical venue-rule, fillability, rounding, sizing, or execution-quality claims."
+  ],
+  "claim_limits": [
+    {
+      "id": "source-proof-claim-limit-001",
+      "severity": "blocking",
+      "claim": "No execution-quality, queue-position, or order-book-liquidity claims.",
+      "reason": "TRADE_REPLAY source proof is native trade-print replay, not order-book replay.",
+      "evidence_ref": "source-proof://source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments/fidelity"
+    },
+    {
+      "id": "source-proof-claim-limit-002",
+      "severity": "blocking",
+      "claim": "No L2/L3 order-book replay claims from trade prints.",
+      "reason": "The accepted category manifest contains trade prints and no L2/L3 order-book deltas or depth snapshots.",
+      "evidence_ref": "source-proof://source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments/schema"
+    },
+    {
+      "id": "source-proof-claim-limit-003",
+      "severity": "blocking",
+      "claim": "No historical venue-rule, fillability, rounding, sizing, or execution-quality claims.",
+      "reason": "The category proof establishes native trade-print replay input only; dated venue-rule and execution-admissibility evidence remains outside this proof.",
+      "evidence_ref": "source-proof://source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments/claim-limits"
+    }
+  ],
+  "acceptance_scope": {
+    "planned_objects": 593,
+    "completed_objects": 593,
+    "failed_objects": 0,
+    "skipped_objects": 0,
+    "accepted_bytes": 1316489815,
+    "selector_scope_violations": 0
+  },
+  "gap_policy_id": "",
+  "required_checks": {
+    "source_access": {
+      "outcome": "passed",
+      "evidence_ref": "Binance Data Vision source URLs are enumerated in category manifest backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-usd_m_perpetual"
+    },
+    "license": {
+      "outcome": "passed",
+      "evidence_ref": "Binance public data README license review permits BTE canonical/backtest input"
+    },
+    "schema": {
+      "outcome": "passed",
+      "evidence_ref": "Schema columns are committed in category manifest backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-usd_m_perpetual"
+    },
+    "time_semantics": {
+      "outcome": "passed",
+      "evidence_ref": "Binance native trade time column maps to Unix milliseconds"
+    },
+    "instrument_universe": {
+      "outcome": "passed",
+      "evidence_ref": "binance-usd-m-perpetual-instruments-2026-03-01-all-instruments category=usd_m_perpetual instrument_count=593"
+    },
+    "coverage": {
+      "outcome": "passed",
+      "evidence_ref": "category=usd_m_perpetual object_count=593 archive_date_range=[2026-03-01,2026-03-01]"
+    },
+    "retention_freshness": {
+      "outcome": "passed",
+      "evidence_ref": "Binance public data archive retention reviewed 2026-06-07"
+    },
+    "granularity": {
+      "outcome": "passed",
+      "evidence_ref": "Binance Data Vision daily trades files are native trade prints"
+    },
+    "completeness": {
+      "outcome": "passed",
+      "evidence_ref": "object_count=593 compressed_bytes=1316489815 from committed category manifest"
+    },
+    "nt_mapping": {
+      "outcome": "passed",
+      "evidence_ref": "nautilus_model::data::TradeTick; converter mappings are committed for Binance native trade CSV contracts"
+    },
+    "cost": {
+      "outcome": "passed",
+      "evidence_ref": "cost://free-public-archive"
+    },
+    "storage": {
+      "outcome": "passed",
+      "evidence_ref": "raw objects are staged under category manifest backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-usd_m_perpetual"
+    }
+  },
+  "acceptance_mode": "manual",
+  "accepted_by": "backtesting-vertical-slice-operator",
+  "accepted_at": "2026-06-10T00:00:00Z"
+}

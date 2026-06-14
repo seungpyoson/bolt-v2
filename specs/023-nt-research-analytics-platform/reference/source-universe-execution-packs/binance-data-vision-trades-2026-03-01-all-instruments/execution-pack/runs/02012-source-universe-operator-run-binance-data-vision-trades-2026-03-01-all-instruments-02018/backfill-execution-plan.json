@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-02018:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-perpetual-native-trades:AVAXUSD_PERP:2026-03-01:18a4af77631b6e054f568937c1ff85c5b52d07ca5af8779f5d3d900e78ecaa7b:accepted-tranche",
+  "accepted_tranche_manifest_hash": "6130f0d571c69bcd4ffd405043378e96d619d0ce307c98c092c32c7fda0175b9",
+  "run_spec_hash": "9c3ac2464a4c20e5e4cd63fa074204ed9183e3915943c35a19754beeac694ea9",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-02018",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=coin_m_perpetual/symbol=AVAXUSD_PERP/dt=2026-03-01/object=18a4af77631b6e054f568937c1ff85c5b52d07ca5af8779f5d3d900e78ecaa7b",
+  "source_proof_id": "source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-coin-m-perpetual-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 122483,
+  "max_object_bytes": 122483,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=AVAXUSD_PERP/object=18a4af77631b6e054f568937c1ff85c5b52d07ca5af8779f5d3d900e78ecaa7b.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/AVAXUSD_PERP/AVAXUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "18a4af77631b6e054f568937c1ff85c5b52d07ca5af8779f5d3d900e78ecaa7b",
+      "bytes": 122483,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

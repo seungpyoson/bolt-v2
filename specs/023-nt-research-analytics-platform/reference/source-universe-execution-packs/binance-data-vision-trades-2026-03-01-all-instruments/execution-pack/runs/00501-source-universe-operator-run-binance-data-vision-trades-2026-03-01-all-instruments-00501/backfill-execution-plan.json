@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00501:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:FLOKIUSDC:2026-03-01:354f87f6d58e164c1426b537590bc2f295b4b0eca068484490fbb59c0447f2f0:accepted-tranche",
+  "accepted_tranche_manifest_hash": "d9cfd1a76c11ab7b0906b63b70818892389c729055b548b79ea04c8bf86edd01",
+  "run_spec_hash": "f818aec8ad5e34108c528b4b6084150180454a2c7a1687bdf5df7a715e989d29",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00501",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=FLOKIUSDC/dt=2026-03-01/object=354f87f6d58e164c1426b537590bc2f295b4b0eca068484490fbb59c0447f2f0",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 46373,
+  "max_object_bytes": 46373,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=FLOKIUSDC/object=354f87f6d58e164c1426b537590bc2f295b4b0eca068484490fbb59c0447f2f0.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/FLOKIUSDC/FLOKIUSDC-trades-2026-03-01.zip",
+      "sha256": "354f87f6d58e164c1426b537590bc2f295b4b0eca068484490fbb59c0447f2f0",
+      "bytes": 46373,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

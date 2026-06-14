@@ -1,0 +1,77 @@
+//! Generate a Polymarket NT metadata-gate report from a config-owned TOML spec.
+
+use std::{fs, path::PathBuf};
+
+use anyhow::{Context, Result};
+use backtesting_vertical_slice::atomic_write;
+use backtesting_vertical_slice::polymarket_metadata_gate::{
+    PolymarketMetadataGateSpec, evaluate_polymarket_metadata_gate,
+};
+use clap::Parser;
+use serde::Deserialize;
+
+#[derive(Debug, Parser)]
+#[command(about = "Write a Polymarket NT metadata-gate report from a TOML spec.")]
+struct Cli {
+    /// Path to the Polymarket metadata gate spec TOML.
+    #[arg(long)]
+    spec: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileSpec {
+    source_binding: String,
+    selected_token_id: String,
+    selected_condition_id: String,
+    gamma_markets_path: PathBuf,
+    output_path: PathBuf,
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let spec_text = fs::read_to_string(&cli.spec)
+        .with_context(|| format!("read metadata gate spec {}", cli.spec.display()))?;
+    let file_spec: FileSpec = toml::from_str(&spec_text)
+        .with_context(|| format!("parse metadata gate spec TOML {}", cli.spec.display()))?;
+    let report = evaluate_polymarket_metadata_gate(&PolymarketMetadataGateSpec {
+        source_binding: file_spec.source_binding,
+        selected_token_id: file_spec.selected_token_id,
+        selected_condition_id: file_spec.selected_condition_id,
+        gamma_markets_path: file_spec.gamma_markets_path,
+    })?;
+
+    if let Some(parent) = file_spec.output_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create metadata gate report dir {}", parent.display()))?;
+    }
+    atomic_write(&file_spec.output_path, &serde_json::to_vec_pretty(&report)?).with_context(
+        || {
+            format!(
+                "write metadata gate report {}",
+                file_spec.output_path.display()
+            )
+        },
+    )?;
+
+    let status = serde_json::to_value(report.status)?
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    println!(
+        "polymarket_metadata_gate_report = {}",
+        file_spec.output_path.display()
+    );
+    println!("status = {status}");
+    println!("gamma_market_count = {}", report.gamma_market_count);
+    println!(
+        "matching_gamma_market_count = {}",
+        report.matching_gamma_market_count
+    );
+    println!(
+        "selected_token_nt_def_count = {}",
+        report.selected_token_nt_def_count
+    );
+    println!("gamma_markets_sha256 = {}", report.gamma_markets_sha256);
+    Ok(())
+}

@@ -35,7 +35,7 @@ just verify-remote
 
 Use exact-head PR CI as the proof for compile, clippy, and Rust tests. Do not substitute stale branch or local compile-heavy output for completion evidence.
 
-Latest recorded evidence:
+Recorded implementation behavior evidence:
 
 ```text
 PR: https://github.com/seungpyoson/bolt-v2/pull/695

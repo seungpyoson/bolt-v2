@@ -1170,6 +1170,79 @@ fn duplicate_known_full_fill_trade_id_does_not_apply_external_delta_after_releas
 }
 
 #[test]
+fn distinct_post_cancel_fill_updates_product_position_after_terminal_release() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+
+    let partial = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("partial fill should revalue reservation");
+    assert!(partial.accepted);
+    assert_eq!(partial.action, PositionSizingLifecycleAction::Revalued);
+
+    let terminal = feed
+        .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+            "client-order-1",
+            1_200,
+        )))
+        .expect("cancel should release residual reservation");
+    assert!(terminal.accepted);
+    assert_eq!(terminal.action, PositionSizingLifecycleAction::Released);
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_300,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("post-terminal duplicate fill should not mutate product state");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.observed_at_ns, 1_100);
+    assert_eq!(product.yes_position, Decimal::new(4, 0));
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-2",
+            1_400,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(2),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("distinct post-terminal fill should publish product state");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_order_fill");
+    assert_eq!(product.observed_at_ns, 1_400);
+    assert_eq!(product.yes_position, Decimal::new(6, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(6, 0));
+}
+
+#[test]
 fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);

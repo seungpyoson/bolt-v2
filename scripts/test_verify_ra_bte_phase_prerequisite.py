@@ -99,9 +99,39 @@ pub const STRATEGY_PARAM_FEE_BPS: &str = "fee_bps";
 pub fn registered_strategies() -> &'static [&'static str] {
     &[STRATEGY_BINARY_ORACLE_EDGE_TAKER]
 }
-fn validate() {
-    let _ = production_strategy_registry();
-    let _ = BinaryOracleEdgeTakerBuilder::kind();
+pub fn registered_strategy_parameters(registry_key: &str) -> Option<&'static [&'static str]> {
+    match registry_key {
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER => Some(&[
+            STRATEGY_PARAM_CONFIG_TOML,
+            STRATEGY_PARAM_FEE_BPS,
+        ]),
+        _ => None,
+    }
+}
+fn validate_strategy_source(strategy: StrategySource) -> Result<(), ManifestError> {
+    match strategy.registry_key.as_str() {
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
+            let _ = strategy.parameters.get(STRATEGY_PARAM_CONFIG_TOML);
+            let fee_bps = rust_decimal::Decimal::from_str(
+                strategy.parameters.get(STRATEGY_PARAM_FEE_BPS).unwrap()
+            ).unwrap();
+            if fee_bps < rust_decimal::Decimal::ZERO {
+                return Err(ManifestError::MissingField("strategy.parameters.fee_bps"));
+            }
+            let raw_config = toml::from_str::<toml::Value>(
+                strategy.parameters.get(STRATEGY_PARAM_CONFIG_TOML).unwrap()
+            ).unwrap();
+            let registry = production_strategy_registry().unwrap();
+            registry.validate(
+                BinaryOracleEdgeTakerBuilder::kind(),
+                &raw_config,
+                "strategy.parameters.config_toml",
+                &mut Vec::new(),
+            );
+        }
+        _ => {}
+    }
+    Ok(())
 }
 """,
     )
@@ -119,15 +149,31 @@ use bolt_v2::{
 };
 use nautilus_model::identifiers::Venue;
 use crate::run_manifest::STRATEGY_BINARY_ORACLE_EDGE_TAKER;
-fn add_binary_oracle(manifest: Manifest, engine: &mut Engine) {
-    let context = StrategyBuildContext::new(
-        fee_provider,
-        decision_evidence.clone(),
-        BoltV3SubmitAdmissionState::new(decision_evidence),
-        Venue::from(manifest.venue.nt_venue.as_str()),
-    );
-    let strategy = BinaryOracleEdgeTakerBuilder::build_strategy(raw, &context).unwrap();
-    engine.add_strategy(strategy).unwrap();
+fn add_manifest_strategy(engine: &mut Engine, manifest: &Manifest) -> Result<()> {
+    match manifest.strategy.registry_key.as_str() {
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
+            let raw_config = manifest.strategy.parameters.get(PARAM_CONFIG_TOML).unwrap();
+            let raw_config = toml::from_str::<toml::Value>(raw_config).unwrap();
+            let fee_bps_raw = manifest.strategy.parameters.get(PARAM_FEE_BPS).unwrap();
+            let fee_bps = Decimal::from_str(fee_bps_raw).unwrap();
+            ensure!(fee_bps >= Decimal::ZERO);
+            let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> =
+                Arc::new(BacktestDecisionEvidenceWriter);
+            let submit_admission =
+                Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
+            let fee_provider = Arc::new(ManifestFeeProvider { fee_bps });
+            let context = StrategyBuildContext::new(
+                fee_provider,
+                decision_evidence,
+                submit_admission,
+                Venue::from(manifest.venue.nt_venue.as_str()),
+            );
+            let strategy = BinaryOracleEdgeTakerBuilder::build_strategy(&raw_config, &context).unwrap();
+            engine.add_strategy(strategy).unwrap();
+        }
+        _ => {}
+    }
+    Ok(())
 }
 """,
     )
@@ -182,7 +228,38 @@ def test_missing_bte_runner_wiring_is_a_finding() -> None:
 
         findings = verifier.scan_root(root)
 
-    assert any("BinaryOracleEdgeTakerBuilder::build_strategy" in finding for finding in findings)
+    assert any("runner" in finding or "add_manifest_strategy" in finding for finding in findings)
+
+
+def test_runner_tokens_in_comments_and_strings_do_not_satisfy_wiring() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        write_file(
+            root,
+            "crates/backtesting-vertical-slice/src/runner.rs",
+            """
+const FAKE: &str = "STRATEGY_BINARY_ORACLE_EDGE_TAKER BinaryOracleEdgeTakerBuilder \
+BoltV3SubmitAdmissionState BoltV3DecisionEvidenceWriter StrategyBuildContext::new \
+Venue::from(manifest.venue.nt_venue.as_str()) BinaryOracleEdgeTakerBuilder::build_strategy \
+engine.add_strategy(strategy)";
+
+// STRATEGY_BINARY_ORACLE_EDGE_TAKER
+// BinaryOracleEdgeTakerBuilder
+// BoltV3SubmitAdmissionState
+// BoltV3DecisionEvidenceWriter
+// StrategyBuildContext::new
+// Venue::from(manifest.venue.nt_venue.as_str())
+// BinaryOracleEdgeTakerBuilder::build_strategy
+// engine.add_strategy(strategy)
+fn add_manifest_strategy() {}
+""",
+        )
+
+        findings = verifier.scan_root(root)
+
+    assert any("runner" in finding and "binary_oracle_edge_taker" in finding for finding in findings)
 
 
 def test_unchecked_task_is_a_finding() -> None:
@@ -232,6 +309,7 @@ def main() -> int:
         test_documented_prerequisite_passes,
         test_missing_bolt_strategy_is_a_finding,
         test_missing_bte_runner_wiring_is_a_finding,
+        test_runner_tokens_in_comments_and_strings_do_not_satisfy_wiring,
         test_unchecked_task_is_a_finding,
         test_cli_fails_with_actionable_output,
     ]

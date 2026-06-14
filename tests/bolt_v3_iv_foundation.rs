@@ -136,6 +136,7 @@ fn foundational_structs_use_typed_time_bounds_audit_and_provenance() {
     };
 
     let audit_policy = IvAuditPolicy {
+        profile_id: bolt_v3_iv_support::profile_id(),
         enabled_raw_products: BTreeSet::from([IvRawProductKind::OptionGreeks]),
         authorized_audit_handles: BTreeSet::from([IvAuditHandleId(
             bolt_v3_iv_support::audit_handle_id(),

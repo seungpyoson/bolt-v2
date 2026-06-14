@@ -5,7 +5,7 @@ use bolt_v2::bolt_v3_iv::{
     error::IvRejectReason,
     health::IvSourceHealthState,
     ingest::{IvBasisValue, IvGreekValues, IvIngestEvent, IvOptionGreeksPayload, IvRawPayload},
-    provenance::validate_iv_provenance,
+    provenance::{IvPolicyDecision, IvRawRetentionResult, validate_iv_provenance},
     raw_access::{IvRawAccessError, IvRawAccessRole, IvRawAuditRequest, read_raw_event},
     store::{IvStore, IvStoreError},
     time::UnixNanos,
@@ -14,6 +14,7 @@ use bolt_v2::bolt_v3_iv::{
 
 fn audit_policy() -> IvAuditPolicy {
     IvAuditPolicy {
+        profile_id: "configured-profile".to_string(),
         enabled_raw_products: BTreeSet::from([IvRawProductKind::OptionGreeks]),
         authorized_audit_handles: BTreeSet::from([IvAuditHandleId(
             "configured-audit-handle".to_string(),
@@ -102,6 +103,15 @@ fn raw_payload_access_is_audit_replay_or_test_only() {
     assert_eq!(audit.access_purpose, "configured-replay-purpose");
     assert!(audit.provenance.has_typed_policy_decision());
     validate_iv_provenance(&audit.provenance).unwrap();
+    assert!(audit.provenance.policy_decisions.iter().any(|decision| {
+        matches!(
+            decision,
+            IvPolicyDecision::RawAuditDecision {
+                retention_result: IvRawRetentionResult::Retained,
+                ..
+            }
+        )
+    }));
 
     let strategy_result = read_raw_event(
         &store,
@@ -118,6 +128,22 @@ fn raw_payload_access_is_audit_replay_or_test_only() {
         strategy_result,
         Err(IvRawAccessError::StrategyRawAccessDenied)
     ));
+}
+
+#[test]
+fn raw_payload_access_rejects_cross_profile_audit_policy() {
+    let mut store = IvStore::empty();
+    let raw = store.ingest_event(greeks_event()).unwrap();
+    let mut policy = audit_policy();
+    policy.profile_id = "configured-other-profile".to_string();
+
+    let denied = read_raw_event(
+        &store,
+        &policy,
+        &raw_audit_request(raw.raw_event_id.clone()),
+    );
+
+    assert!(matches!(denied, Err(IvRawAccessError::AuditPolicyRejected)));
 }
 
 #[test]

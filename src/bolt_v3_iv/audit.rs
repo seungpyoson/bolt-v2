@@ -47,6 +47,7 @@ impl IvAuditRetention {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IvAuditPolicy {
+    pub profile_id: String,
     pub enabled_raw_products: BTreeSet<IvRawProductKind>,
     pub authorized_audit_handles: BTreeSet<IvAuditHandleId>,
     pub access_purposes: BTreeSet<String>,

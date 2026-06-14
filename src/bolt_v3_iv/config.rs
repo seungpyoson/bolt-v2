@@ -347,6 +347,11 @@ fn validate_audit_policy(
     let mut errors = Vec::new();
     let audit_context = format!("{context}.audit_policy");
 
+    if profile.audit_policy.profile_id != profile.profile_id {
+        errors.push(format!(
+            "{audit_context}.profile_id must match owning profile_id"
+        ));
+    }
     if profile.audit_policy.enabled_raw_products.is_empty() {
         errors.push(format!(
             "{audit_context}.enabled_raw_products must be non-empty"

@@ -14,6 +14,8 @@ fn source_fence_accepts_public_strategy_query_imports() {
 use crate::bolt_v3_iv::query::{IvQuery, IvStrategyQueryHandle};
 
 fn strategy_consumes_iv(handle: &IvStrategyQueryHandle, query: &IvQuery) {
+    let _ = handle.authorization();
+    let _ = handle.derived_inputs();
     let _ = handle.query(query);
 }
 "#;
@@ -115,6 +117,26 @@ fn strategy_mutates_iv_handle(handle: IvQueryHandle) {
 }
 
 #[test]
+fn source_fence_rejects_iv_engine_internal_modules() {
+    let source = r#"
+use crate::bolt_v3_iv::ingest::IvIngestEvent;
+use crate::bolt_v3_iv::policy::project_scalar;
+use crate::bolt_v3_iv::runtime::IvRuntimeEngine;
+use crate::bolt_v3_iv::store::IvStore;
+use crate::bolt_v3_iv::subscription::apply_subscription_plans;
+
+fn strategy_owns_iv_mechanics() {
+    let _ = IvRuntimeEngine::new;
+    let _ = IvStore::empty;
+    let _ = apply_subscription_plans;
+    let _ = project_scalar;
+}
+"#;
+
+    assert_strategy_source_fence_rejects(source, "IV engine internal bypass");
+}
+
+#[test]
 fn source_fence_rejects_forbidden_iv_bypass_in_strategy_tree() {
     let temp = tempfile::tempdir().unwrap();
     let strategy_dir = temp.path().join("src/strategies/configured_strategy");
@@ -192,6 +214,18 @@ fn iv_strategy_source_fence_violations(_source: &str) -> Vec<String> {
             "IV engine derivation bypass",
         ),
         ("select_helper_policy", "IV engine derivation bypass"),
+        ("bolt_v3_iv::runtime", "IV engine internal bypass"),
+        ("bolt_v3_iv::store", "IV engine internal bypass"),
+        ("bolt_v3_iv::subscription", "IV engine internal bypass"),
+        ("bolt_v3_iv::ingest", "IV engine internal bypass"),
+        ("bolt_v3_iv::policy", "IV engine internal bypass"),
+        ("IvRuntimeEngine", "IV engine internal bypass"),
+        ("IvStore", "IV engine internal bypass"),
+        ("IvSubscriptionPlan", "IV engine internal bypass"),
+        ("IvIngestEvent", "IV engine internal bypass"),
+        ("apply_subscription_plans", "IV engine internal bypass"),
+        ("apply_plan_outcomes", "IV engine internal bypass"),
+        ("project_scalar", "IV engine internal bypass"),
         ("read_raw_event", "raw IV payload bypass"),
         ("raw_event", "raw IV payload bypass"),
         ("IvRawPayloadQuery", "raw IV payload bypass"),
@@ -228,10 +262,8 @@ fn iv_strategy_source_fence_violations(_source: &str) -> Vec<String> {
             "IV query state mutator",
         ),
         ("derived_outputs", "IV query state escape hatch"),
-        ("derived_inputs", "IV query state escape hatch"),
         ("query_rejections", "IV query state escape hatch"),
         ("source_health_for", "IV query state escape hatch"),
-        ("authorization", "IV query state escape hatch"),
     ];
 
     for (needle, reason) in checks {

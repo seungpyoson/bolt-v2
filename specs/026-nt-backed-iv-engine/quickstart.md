@@ -49,6 +49,7 @@ unit = "unitless"
 allowed_conventions = ["operator_iv_convention"]
 
 [iv.profiles.audit_policy]
+profile_id = "operator_profile"
 enabled_raw_products = ["operator_raw_product_kind"]
 authorized_audit_handles = ["operator_audit_handle"]
 access_purposes = ["operator_access_purpose"]

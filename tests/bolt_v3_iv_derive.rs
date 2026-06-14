@@ -11,7 +11,7 @@ use bolt_v2::bolt_v3_iv::{
     },
     error::IvRejectReason,
     health::IvSourceHealthState,
-    provenance::{IvPolicyDecision, validate_iv_provenance},
+    provenance::{IvHelperEngineMapping, IvPolicyDecision, validate_iv_provenance},
     time::UnixNanos,
     types::{IvBasis, IvConvention, IvSourceKind},
 };
@@ -263,6 +263,10 @@ fn complete_inputs_derive_iv_with_nt_helper_and_helper_provenance() {
     assert_eq!(
         output.helper_identity.nt_symbol,
         "nautilus_model::data::imply_vol_and_greeks"
+    );
+    assert_eq!(
+        output.helper_identity.engine_mapping,
+        IvHelperEngineMapping::IvDerivedHelper
     );
     assert_eq!(
         output.provenance.helper_identity.as_ref(),

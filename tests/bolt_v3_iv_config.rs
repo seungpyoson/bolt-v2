@@ -30,6 +30,7 @@ input_bounds = { finite_required = true, positive_required = true, inclusive_min
 derived_inputs = []
 
 [profiles.audit_policy]
+profile_id = "configured-profile"
 enabled_raw_products = ["option_greeks"]
 authorized_audit_handles = ["configured-audit-handle"]
 access_purposes = ["configured-replay-purpose"]
@@ -485,6 +486,18 @@ fn selector_scoped_source_health_authorization_can_scope_by_source_id() {
         config.profiles[0].strategy_authorizations[0].authorization_mode,
         IvAuthorizationMode::SelectorScoped
     );
+}
+
+#[test]
+fn audit_policy_profile_id_must_match_owning_profile() {
+    let mut config = load_iv_config_from_toml(valid_iv_toml()).unwrap();
+    config.profiles[0].audit_policy.profile_id = "configured-other-profile".to_string();
+
+    let errors = validate_iv_root_config(&config).unwrap_err();
+
+    assert!(errors.iter().any(|message| {
+        message.contains("audit_policy.profile_id must match owning profile_id")
+    }));
 }
 
 #[test]

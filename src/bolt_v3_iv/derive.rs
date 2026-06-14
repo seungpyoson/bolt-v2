@@ -7,7 +7,10 @@ use super::{
     error::IvRejectReason,
     health::IvSourceHealthState,
     ingest::IvGreekValues,
-    provenance::{IvHelperIdentity, IvPolicyDecision, IvProvenance, validate_iv_provenance},
+    provenance::{
+        IvHelperEngineMapping, IvHelperIdentity, IvPolicyDecision, IvProvenance,
+        validate_iv_provenance,
+    },
     store::IvPoint,
     time::UnixNanos,
     types::{IvBasis, IvConvention, IvSourceKind},
@@ -426,7 +429,7 @@ pub fn derive_iv(
         nt_revision: inputs.nt_revision.clone(),
         parameter_signature: policy.parameter_signature.clone(),
         helper_policy_id: policy.helper_policy_id.clone(),
-        engine_mapping: "derived_iv".to_string(),
+        engine_mapping: IvHelperEngineMapping::IvDerivedHelper,
     };
     let input_event_ids = inputs.input_event_ids.clone();
     let input_set_id = format!(

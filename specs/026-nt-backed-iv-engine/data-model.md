@@ -72,6 +72,7 @@ Per-profile audit/replay boundary for raw payload access.
 
 Fields:
 
+- `profile_id`
 - `enabled_raw_products`
 - `authorized_audit_handles`
 - `access_purposes`
@@ -80,6 +81,7 @@ Fields:
 
 Validation:
 
+- `profile_id` must match the owning `IvProfile.profile_id`; a policy from another profile cannot authorize raw access.
 - Raw payload access is disabled unless the raw product, source, handle, and access purpose all match this policy.
 - Strategy query handles cannot be listed as authorized audit handles.
 - Audit retention cannot exceed profile memory bounds.
@@ -257,6 +259,7 @@ Validation:
 
 - Strategy query handles cannot request or receive `IvRawAuditAccess`.
 - `src/strategies/**` source-fence rejects imports or calls of the raw audit reader and raw payload DTOs.
+- The supplied audit policy must belong to the requested profile before any raw event lookup occurs.
 - Raw access is allowed for audit, replay, and tests only when provenance and access purpose are recorded.
 - Strategy-facing products may expose `raw_event_id` through provenance but not the raw payload value.
 
@@ -297,6 +300,7 @@ Validation:
 - Required when rejected: `reject_reason`.
 - Derived products include all input references and helper identity.
 - `helper_identity` uses the typed `IvHelperIdentity` shape: `nt_symbol`, `nt_revision`, `parameter_signature`, `helper_policy_id`, and `engine_mapping`.
+- `engine_mapping` is a typed `IvHelperEngineMapping` value; NT IV helper outputs use `iv_derived_helper`.
 - `policy_decisions` is a non-empty list of typed `IvPolicyDecision` variants, not a free-form string.
 - Policy outputs include candidate lists, rejected candidates, accepted candidates, policy IDs, and policy decision variants.
 - Timestamp fields are typed nanoseconds.
@@ -313,7 +317,7 @@ Variants:
 - `FallbackDecision`: candidate order, rejected candidates with reasons, accepted candidate, timestamp-skew check, and source eligibility
 - `QuorumDecision`: participating sources, rejected sources, agreement band, tie-break, and final quorum state
 - `HelperDecision`: helper policy ID, helper identity, input set ID, output validation, and rejection reason when applicable
-- `RawAuditDecision`: audit handle ID, raw product kind, access purpose, source eligibility, and retention result
+- `RawAuditDecision`: audit handle ID, raw product kind, access purpose, source eligibility, and typed `IvRawRetentionResult`
 - `RejectionDecision`: reject reason, failed field, policy ID, source health state, and subscription generation
 
 Validation:

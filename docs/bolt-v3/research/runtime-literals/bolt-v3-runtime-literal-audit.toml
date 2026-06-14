@@ -9626,14 +9626,6 @@ reason = "IV derivation uses typed helper/input/provenance labels and numeric va
 
 [[allowed]]
 path = "src/bolt_v3_iv/derive.rs"
-kind = "string"
-literal = '''"derived_iv"'''
-context = '''engine_mapping: "derived_iv".to_string(),'''
-classification = "iv_helper_contract_literal"
-reason = "IV derivation uses typed helper/input/provenance labels and numeric validation sentinels for NT helper integration; query/runtime values are provided by inputs and policy structs."
-
-[[allowed]]
-path = "src/bolt_v3_iv/derive.rs"
 kind = "number"
 literal = '''0.0'''
 context = '''if !value.is_finite() || (positive_required && value <= 0.0) {'''
@@ -10032,13 +10024,6 @@ context = '''Self::Reject => "reject",'''
 classification = "iv_policy_algorithm_literal"
 reason = "This is the stable serde/provenance label for the typed extrapolation-rejection policy; policy selection and inputs remain config/query-owned."
 
-[[allowed]]
-path = "src/bolt_v3_iv/raw_access.rs"
-kind = "string"
-literal = '''"retained"'''
-context = '''retention_result: "retained".to_string(),'''
-classification = "iv_raw_audit_provenance_literal"
-reason = "This is the stable provenance result label for an audit-authorized raw IV payload read; raw retention policy and access authorization remain config-owned."
 # Realized-volatility surface implementation literals.
 
 [[allowed]]

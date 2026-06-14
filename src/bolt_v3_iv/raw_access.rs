@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     audit::{IvAuditPolicy, IvRawProductKind},
     ingest::IvRawPayload,
-    provenance::{IvPolicyDecision, IvProvenance, validate_iv_provenance},
+    provenance::{IvPolicyDecision, IvProvenance, IvRawRetentionResult, validate_iv_provenance},
     store::IvStore,
     time::UnixNanos,
 };
@@ -56,6 +56,9 @@ pub fn read_raw_event(
 ) -> Result<IvRawAuditAccess, IvRawAccessError> {
     if request.role == IvRawAccessRole::Strategy {
         return Err(IvRawAccessError::StrategyRawAccessDenied);
+    }
+    if audit_policy.profile_id != request.profile_id {
+        return Err(IvRawAccessError::AuditPolicyRejected);
     }
     if !audit_policy.authorizes(
         request.raw_product_kind,
@@ -121,7 +124,7 @@ pub fn read_raw_event(
             payload_kind: raw_event.payload_kind.clone(),
             access_purpose: request.access_purpose.clone(),
             source_eligibility: audit_policy.eligible_sources.iter().cloned().collect(),
-            retention_result: "retained".to_string(),
+            retention_result: IvRawRetentionResult::Retained,
         });
 
     validate_iv_provenance(&provenance).map_err(|_| IvRawAccessError::ProvenanceIncomplete)?;

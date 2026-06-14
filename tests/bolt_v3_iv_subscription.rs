@@ -198,6 +198,7 @@ derived_inputs = []
 derived_input_policies = []
 
 [profiles.audit_policy]
+profile_id = "configured-profile"
 enabled_raw_products = ["option_greeks", "option_chain_slice"]
 authorized_audit_handles = ["configured-audit-handle"]
 access_purposes = ["configured-replay-purpose"]
@@ -684,6 +685,7 @@ derived_inputs = []
 derived_input_policies = []
 
 [profiles.audit_policy]
+profile_id = "configured-profile"
 enabled_raw_products = ["option_greeks"]
 authorized_audit_handles = ["configured-audit-handle"]
 access_purposes = ["configured-replay-purpose"]
@@ -805,6 +807,7 @@ derived_inputs = []
 derived_input_policies = []
 
 [profiles.audit_policy]
+profile_id = "configured-profile"
 enabled_raw_products = ["option_greeks"]
 authorized_audit_handles = ["configured-audit-handle"]
 access_purposes = ["configured-replay-purpose"]
@@ -1263,6 +1266,7 @@ fn runtime_engine_reload_invalidates_existing_handles_for_removed_profiles() {
     let mut current = configured_runtime_config();
     let mut retained_profile = current.profiles[0].clone();
     retained_profile.profile_id = "retained-profile".to_string();
+    retained_profile.audit_policy.profile_id = "retained-profile".to_string();
     current.profiles.push(retained_profile);
     let mut next = current.clone();
     next.profiles
@@ -1301,6 +1305,7 @@ fn runtime_engine_apply_plan_outcomes_skips_removed_profiles_and_applies_survivo
     let mut current = configured_runtime_config();
     let mut retained_profile = current.profiles[0].clone();
     retained_profile.profile_id = "retained-profile".to_string();
+    retained_profile.audit_policy.profile_id = "retained-profile".to_string();
     current.profiles.push(retained_profile.clone());
     let mut next = current.clone();
     next.profiles

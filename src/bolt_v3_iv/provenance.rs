@@ -62,7 +62,7 @@ pub enum IvPolicyDecision {
         payload_kind: String,
         access_purpose: String,
         source_eligibility: Vec<String>,
-        retention_result: String,
+        retention_result: IvRawRetentionResult,
     },
     RejectionDecision {
         reject_reason: IvRejectReason,
@@ -79,13 +79,25 @@ pub struct IvRejectedCandidate {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvRawRetentionResult {
+    Retained,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvHelperEngineMapping {
+    IvDerivedHelper,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IvHelperIdentity {
     pub nt_symbol: String,
     pub nt_revision: String,
     pub parameter_signature: String,
     pub helper_policy_id: String,
-    pub engine_mapping: String,
+    pub engine_mapping: IvHelperEngineMapping,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

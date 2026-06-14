@@ -82,7 +82,7 @@ Raw payloads are evidence, observability, replay, and test outputs. IV-shaped st
 
 The strategy-facing `IvQueryHandle` rejects raw-payload product kinds. Full raw payload retrieval is limited to `IvRawAuditReader` or equivalent audit/test modules outside `src/strategies/**`. Strategy-facing products may include `raw_event_id` references in provenance, but the raw NT payload bytes or typed NT payload structs remain engine-owned.
 
-Raw payload retrieval also requires the owning profile's `IvAuditPolicy` to authorize the raw product kind, source, audit handle, access purpose, and audit retention boundary.
+Raw payload retrieval also requires the owning profile's `IvAuditPolicy` to match the requested profile ID and authorize the raw product kind, source, audit handle, access purpose, and audit retention boundary.
 
 For NT custom-data backed aggregate greeks and custom implied-volatility sources, the preserved raw payload includes the serialized custom-data JSON in addition to the typed indexed fields. Strategy-facing products still expose only typed products and provenance references.
 

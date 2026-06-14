@@ -21,7 +21,9 @@
 //! own archetype parameter bounds such as parameter decimal syntax and
 //! root-cap comparison. `validate_strategies` dispatches into the
 //! matching archetype validator via
-//! `crate::bolt_v3_archetypes::validate_strategy_archetype`.
+//! `crate::bolt_v3_archetypes::validate_strategy_archetype_with_bindings`,
+//! passing the production binding list from
+//! `crate::strategy_bindings::production_validation_bindings`.
 //! Per-provider venue-block validation (provider-shaped
 //! `[clients.<id>.{data,execution,secrets}]` rules: typed
 //! deserialization, cross-block presence rules, provider data /
@@ -2352,12 +2354,15 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
         errors.extend(target_errors.into_iter().map(|error| error.to_string()));
 
         errors.extend(validate_reference_current_price(&context, root, strategy));
-        errors.extend(crate::bolt_v3_archetypes::validate_strategy_archetype(
-            &context,
-            root,
-            strategy,
-            default_max_notional_decimal.as_ref(),
-        ));
+        errors.extend(
+            crate::bolt_v3_archetypes::validate_strategy_archetype_with_bindings(
+                &context,
+                root,
+                strategy,
+                default_max_notional_decimal.as_ref(),
+                crate::strategy_bindings::production_validation_bindings(),
+            ),
+        );
     }
     errors.extend(validate_target_gate_provider_references(root, strategies));
     errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));

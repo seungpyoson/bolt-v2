@@ -23,8 +23,8 @@
 //!
 //! Core startup validation in `crate::bolt_v3_validate` keeps target and
 //! market-data structural checks and dispatches archetype-specific rules through
-//! `crate::bolt_v3_archetypes::validate_strategy_archetype` based on
-//! `strategy.strategy_archetype`. Archetype-specific error-message
+//! `crate::bolt_v3_archetypes::validate_strategy_archetype_with_bindings`
+//! based on `strategy.strategy_archetype`. Archetype-specific error-message
 //! policy (the headline "is not allowed for `binary_oracle_edge_taker`"
 //! phrase, the per-field rule listing, and the
 //! market-data structural wording) lives here so that a future archetype can

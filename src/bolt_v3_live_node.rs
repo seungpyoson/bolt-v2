@@ -5027,7 +5027,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             &mut node,
             loaded,
             resolved,
-            crate::strategy_runtime_bindings::runtime_bindings(),
+            crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
             decision_evidence.clone(),
             iv_runtime,
@@ -5037,7 +5037,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             &mut node,
             loaded,
             resolved,
-            crate::strategy_runtime_bindings::runtime_bindings(),
+            crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
             decision_evidence.clone(),
         )

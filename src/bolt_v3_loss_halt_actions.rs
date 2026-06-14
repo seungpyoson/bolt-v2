@@ -245,10 +245,20 @@ pub fn next_loss_governor_manual_recovery_trading_state(
     if now_ns - snapshot.observed_at_ns > max_snapshot_age_ns {
         return None;
     }
-    evidence?
-        .validate(max_evidence_path_bytes)
-        .ok()
-        .map(|()| TradingState::Active)
+    let evidence = evidence?;
+    if evidence.validate(max_evidence_path_bytes).is_err() {
+        return None;
+    }
+    if evidence.observed_at_ns > now_ns {
+        return None;
+    }
+    if now_ns - evidence.observed_at_ns > max_snapshot_age_ns {
+        return None;
+    }
+    if evidence.observed_at_ns < snapshot.observed_at_ns {
+        return None;
+    }
+    Some(TradingState::Active)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -580,6 +590,63 @@ mod tests {
                 &accepted(),
                 Some(&unattributed),
                 Some(&evidence),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn manual_recovery_rejects_stale_future_or_pre_snapshot_evidence() {
+        let stale_evidence = LossGovernorManualRecoveryEvidence::new(
+            "operator-1",
+            "manual-recovery/evidence.json",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            99,
+            128,
+        )
+        .expect("structurally valid stale evidence should build");
+        assert_eq!(
+            manual_recovery_target(
+                TradingState::Halted,
+                &accepted(),
+                Some(&fresh_snapshot()),
+                Some(&stale_evidence),
+            ),
+            None
+        );
+
+        let future_evidence = LossGovernorManualRecoveryEvidence::new(
+            "operator-1",
+            "manual-recovery/evidence.json",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            1_101,
+            128,
+        )
+        .expect("structurally valid future evidence should build");
+        assert_eq!(
+            manual_recovery_target(
+                TradingState::Halted,
+                &accepted(),
+                Some(&fresh_snapshot()),
+                Some(&future_evidence),
+            ),
+            None
+        );
+
+        let pre_snapshot_evidence = LossGovernorManualRecoveryEvidence::new(
+            "operator-1",
+            "manual-recovery/evidence.json",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            999,
+            128,
+        )
+        .expect("structurally valid pre-snapshot evidence should build");
+        assert_eq!(
+            manual_recovery_target(
+                TradingState::Halted,
+                &accepted(),
+                Some(&fresh_snapshot()),
+                Some(&pre_snapshot_evidence),
             ),
             None
         );

@@ -50,7 +50,7 @@ pub struct PositionSizerRuntimeFeed {
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     component_builder: PositionSizerRuntimeComponentBuilder,
     latest_terminal_observed_at_ns: Option<u64>,
-    seen_external_fill_trade_ids: BTreeSet<String>,
+    seen_position_fill_trade_ids: BTreeSet<String>,
 }
 
 pub struct PositionSizerRuntimeFeedSubscription {
@@ -155,7 +155,7 @@ impl PositionSizerRuntimeFeed {
             submit_admission,
             component_builder,
             latest_terminal_observed_at_ns: None,
-            seen_external_fill_trade_ids: BTreeSet::new(),
+            seen_position_fill_trade_ids: BTreeSet::new(),
         }
     }
 
@@ -391,12 +391,19 @@ impl PositionSizerRuntimeFeed {
                 crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Revalued
                     | crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Released
             );
+        if decision.accepted
+            && !decision.unknown_reservation
+            && !trade_id.trim().is_empty()
+            && fill_quantity > Decimal::ZERO
+        {
+            self.seen_position_fill_trade_ids.insert(trade_id.clone());
+        }
         let unknown_external_fill_changes_position = decision.unknown_reservation
             && !submit_owned
             && !fill.reconciliation
             && !trade_id.trim().is_empty()
             && fill_quantity > Decimal::ZERO
-            && self.seen_external_fill_trade_ids.insert(trade_id);
+            && self.seen_position_fill_trade_ids.insert(trade_id);
         if fill_changes_position || unknown_external_fill_changes_position {
             self.component_builder.record_fill_position_delta(
                 &instrument_id,

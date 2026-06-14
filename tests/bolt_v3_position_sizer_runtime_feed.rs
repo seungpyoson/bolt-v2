@@ -1089,6 +1089,48 @@ fn full_fill_event_releases_reservation_and_closes_live_order_count() {
 }
 
 #[test]
+fn duplicate_known_full_fill_trade_id_does_not_apply_external_delta_after_release() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+
+    feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+        "client-order-1",
+        "trade-1",
+        1_100,
+        AccountId::from("ACCOUNT-001"),
+        Quantity::from(10),
+        OrderSide::Buy,
+        InstrumentId::from("instrument-yes.VENUE-A"),
+    )))
+    .expect("matching full fill should release reservation");
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_200,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(10),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("duplicate known trade id should not mutate product state");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.observed_at_ns, 1_100);
+    assert_eq!(product.yes_position, Decimal::new(10, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(10, 0));
+}
+
+#[test]
 fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);

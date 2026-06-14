@@ -1,3 +1,12 @@
+[profile.default]
+# Run every test in a shard even after a failure, instead of cancelling the
+# rest. An intentional fail-loud placeholder (e.g. an un-harvested
+# bolt_v3_source_integrity golden digest, which must stay red until the source
+# set settles) would otherwise trip nextest's default fail-fast and cancel all
+# downstream tests in that shard, hiding their real pass/fail signal. Full
+# per-run failure visibility; no effect on a green tree.
+fail-fast = false
+
 [test-groups]
 live-node = { max-threads = 1 }
 

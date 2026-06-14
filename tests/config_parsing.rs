@@ -5725,9 +5725,9 @@ fn root_with_venue_spendability_source_binding(path: &str, sha256: &str, max_byt
         "enforce_submit_admission = true",
     )
     .replace(
-        "max_snapshot_age_ns = 5000000000\n\n[risk.capital_pools.prediction_market_binary]",
+        "max_snapshot_age_ns = 5000000000\ndedupe_retention_ns = 60000000000\n\n[risk.capital_pools.prediction_market_binary]",
         &format!(
-            "max_snapshot_age_ns = 5000000000\nvenue_spendability_source_path = \"{path}\"\nvenue_spendability_source_sha256 = \"{sha256}\"\nvenue_spendability_source_max_bytes = {max_bytes}\n\n[risk.capital_pools.prediction_market_binary]"
+            "max_snapshot_age_ns = 5000000000\ndedupe_retention_ns = 60000000000\nvenue_spendability_source_path = \"{path}\"\nvenue_spendability_source_sha256 = \"{sha256}\"\nvenue_spendability_source_max_bytes = {max_bytes}\n\n[risk.capital_pools.prediction_market_binary]"
         ),
     )
 }
@@ -5844,6 +5844,76 @@ fn enforced_submit_admission_uses_nt_account_spendability_without_source_binding
 }
 
 #[test]
+fn enforced_submit_admission_rejects_zero_dedupe_retention() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "dedupe_retention_ns = 60000000000",
+        "dedupe_retention_ns = 0",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("zero dedupe retention fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.capital_pools[polymarket-prediction-live].dedupe_retention_ns")
+                && message.contains("positive integer")
+        }),
+        "capital pool dedupe retention must reject zero: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_more_than_one_enforced_capital_pool() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = format!(
+        "{}\n{}",
+        replace_in_fixture_root(
+            "enforce_submit_admission = false",
+            "enforce_submit_admission = true"
+        ),
+        r#"
+[[risk.capital_pools]]
+pool_id = "secondary-prediction-live"
+venue_id = "POLYMARKET"
+account_id = "POLYMARKET-001"
+collateral_currency = "PUSD"
+product_kind = "prediction_market_binary"
+enforce_submit_admission = true
+max_pool_liability = "10.00"
+max_snapshot_age_ns = 5000000000
+dedupe_retention_ns = 60000000000
+
+[risk.capital_pools.prediction_market_binary]
+yes_instrument_id = "condition-secondary-yes.POLYMARKET"
+no_instrument_id = "condition-secondary-no.POLYMARKET"
+collateral_coupled_group_id = "condition-secondary"
+
+[risk.capital_pools.sizing_policy]
+min_remaining_pool_balance = "1.00"
+
+[risk.capital_pools.sizing_policy.fee_slippage]
+max_fee_liability = "0.10"
+max_slippage_liability = "0.20"
+"#
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("two enforced pool fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains(
+                "risk.capital_pools may enable submit admission enforcement for at most one pool",
+            )
+        }),
+        "multiple enforced capital pools must fail validation: {messages:#?}"
+    );
+}
+
+#[test]
 fn enforced_submit_admission_rejects_invalid_venue_spendability_source_sha256() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
@@ -5875,8 +5945,8 @@ fn enforced_submit_admission_rejects_incomplete_venue_spendability_source_bindin
         "enforce_submit_admission = true",
     )
     .replace(
-        "max_snapshot_age_ns = 5000000000\n\n[risk.capital_pools.prediction_market_binary]",
-        "max_snapshot_age_ns = 5000000000\nvenue_spendability_source_path = \"/var/lib/bolt/operator-evidence/venue-spendability.json\"\nvenue_spendability_source_sha256 = \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\n\n[risk.capital_pools.prediction_market_binary]",
+        "max_snapshot_age_ns = 5000000000\ndedupe_retention_ns = 60000000000\n\n[risk.capital_pools.prediction_market_binary]",
+        "max_snapshot_age_ns = 5000000000\ndedupe_retention_ns = 60000000000\nvenue_spendability_source_path = \"/var/lib/bolt/operator-evidence/venue-spendability.json\"\nvenue_spendability_source_sha256 = \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\n\n[risk.capital_pools.prediction_market_binary]",
     );
     let root: BoltV3RootConfig =
         toml::from_str(&source).expect("incomplete source-binding fixture should parse");

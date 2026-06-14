@@ -2045,6 +2045,7 @@ fn runtime_feed_config() -> PositionSizerRuntimeFeedConfig {
             },
         ),
         startup_observed_at_ns: 900,
+        dedupe_retention_ns: 500,
     }
 }
 
@@ -2141,6 +2142,7 @@ fn position_sized_admission() -> BoltV3SubmitAdmissionState {
                     max_slippage_liability: Decimal::new(20, 2),
                 }),
             },
+            dedupe_retention_ns: 500,
         },
     )
 }

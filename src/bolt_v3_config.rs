@@ -213,6 +213,7 @@ pub struct CapitalPoolBlock {
     pub enforce_submit_admission: bool,
     pub max_pool_liability: String,
     pub max_snapshot_age_ns: u64,
+    pub dedupe_retention_ns: u64,
     pub venue_spendability_source_path: Option<String>,
     pub venue_spendability_source_sha256: Option<String>,
     pub venue_spendability_source_max_bytes: Option<u64>,

@@ -127,9 +127,15 @@ impl ReservationLedger {
         now_ns: u64,
         min_remaining_pool_balance: Option<Decimal>,
     ) -> ReservationDecision {
-        let available_before = pool.max_pool_liability
-            - pool.committed_liability
-            - self.live_reserved_liability(&pool.pool_id);
+        let Some(available_before) =
+            available_pool_liability(pool, self.live_reserved_liability(&pool.pool_id))
+        else {
+            return rejected(
+                ReservationRejectionReason::OverBudget,
+                request.liability,
+                Decimal::ZERO,
+            );
+        };
 
         if !self.reconciliation_complete {
             return rejected(
@@ -169,11 +175,9 @@ impl ReservationLedger {
                 available_before,
             );
         }
-        if self
-            .live_reservations
-            .iter()
-            .any(|reservation| reservation.request_id == request.request_id)
-        {
+        if self.live_reservations.iter().any(|reservation| {
+            reservation.pool_id == request.pool_id && reservation.request_id == request.request_id
+        }) {
             return rejected(
                 ReservationRejectionReason::DuplicateReservation,
                 request.liability,
@@ -187,8 +191,15 @@ impl ReservationLedger {
                 available_before,
             );
         }
+        let Some(available_after) = available_before.checked_sub(request.liability) else {
+            return rejected(
+                ReservationRejectionReason::OverBudget,
+                request.liability,
+                available_before,
+            );
+        };
         if let Some(min_remaining_pool_balance) = min_remaining_pool_balance
-            && available_before - request.liability < min_remaining_pool_balance
+            && available_after < min_remaining_pool_balance
         {
             return rejected(
                 ReservationRejectionReason::OverBudget,
@@ -210,7 +221,7 @@ impl ReservationLedger {
             reason: None,
             requested_liability: request.liability,
             available_before,
-            available_after: Some(available_before - request.liability),
+            available_after: Some(available_after),
         }
     }
 
@@ -218,8 +229,10 @@ impl ReservationLedger {
         self.live_reservations
             .iter()
             .filter(|reservation| reservation.pool_id == pool_id)
-            .map(|reservation| reservation.liability)
-            .sum()
+            .try_fold(Decimal::ZERO, |sum, reservation| {
+                sum.checked_add(reservation.liability)
+            })
+            .unwrap_or(Decimal::MAX)
     }
 
     pub fn rollback_uncommitted(&mut self, pool_id: &str, request_id: &str) -> Option<Decimal> {
@@ -258,11 +271,9 @@ impl ReservationLedger {
         {
             return rejected_release(ReservationRejectionReason::StaleRequest);
         }
-        let Some(index) = self
-            .live_reservations
-            .iter()
-            .position(|reservation| reservation.request_id == request.request_id)
-        else {
+        let Some(index) = self.live_reservations.iter().position(|reservation| {
+            reservation.pool_id == request.pool_id && reservation.request_id == request.request_id
+        }) else {
             return rejected_release(ReservationRejectionReason::UnknownRelease);
         };
         if self.live_reservations[index].pool_id != pool.pool_id {
@@ -312,11 +323,9 @@ impl ReservationLedger {
         {
             return rejected_revalue(ReservationRejectionReason::StaleRequest);
         }
-        let Some(index) = self
-            .live_reservations
-            .iter()
-            .position(|reservation| reservation.request_id == request.request_id)
-        else {
+        let Some(index) = self.live_reservations.iter().position(|reservation| {
+            reservation.pool_id == request.pool_id && reservation.request_id == request.request_id
+        }) else {
             return rejected_revalue(ReservationRejectionReason::UnknownReservation);
         };
         if self.live_reservations[index].pool_id != pool.pool_id {
@@ -329,15 +338,20 @@ impl ReservationLedger {
             return rejected_revalue(ReservationRejectionReason::StaleRequest);
         }
         let previous_liability = self.live_reservations[index].liability;
-        let available_before = pool.max_pool_liability
-            - pool.committed_liability
-            - self.live_reserved_liability(&pool.pool_id)
-            + previous_liability;
+        let Some(available_before) =
+            available_pool_liability(pool, self.live_reserved_liability(&pool.pool_id))
+                .and_then(|available| available.checked_add(previous_liability))
+        else {
+            return rejected_revalue(ReservationRejectionReason::OverBudget);
+        };
         if request.liability > available_before {
             return rejected_revalue(ReservationRejectionReason::OverBudget);
         }
+        let Some(available_after) = available_before.checked_sub(request.liability) else {
+            return rejected_revalue(ReservationRejectionReason::OverBudget);
+        };
         if let Some(min_remaining_pool_balance) = min_remaining_pool_balance
-            && available_before - request.liability < min_remaining_pool_balance
+            && available_after < min_remaining_pool_balance
         {
             return rejected_revalue(ReservationRejectionReason::OverBudget);
         }
@@ -393,6 +407,15 @@ fn rejected_revalue(reason: ReservationRejectionReason) -> ReservationRevalueDec
 
 fn stale(observed_at_ns: u64, now_ns: u64, max_snapshot_age_ns: u64) -> bool {
     observed_at_ns > now_ns || now_ns - observed_at_ns > max_snapshot_age_ns
+}
+
+fn available_pool_liability(
+    pool: &CapitalPoolSnapshot,
+    live_reserved_liability: Decimal,
+) -> Option<Decimal> {
+    pool.max_pool_liability
+        .checked_sub(pool.committed_liability)?
+        .checked_sub(live_reserved_liability)
 }
 
 #[cfg(test)]
@@ -625,6 +648,35 @@ mod tests {
         );
         assert_eq!(
             ledger.live_reserved_liability(&pool.pool_id),
+            Decimal::new(40, 0)
+        );
+    }
+
+    #[test]
+    fn same_request_id_can_reserve_in_different_pool() {
+        let first_pool = pool();
+        let second_pool = CapitalPoolSnapshot {
+            pool_id: "kalshi-live".to_string(),
+            ..first_pool.clone()
+        };
+        let first_request = reservation_request("request-cross-pool");
+        let second_request = ReservationRequest {
+            pool_id: second_pool.pool_id.clone(),
+            ..first_request.clone()
+        };
+        let mut ledger = ReservationLedger::reconciled();
+
+        let first = ledger.reserve(&first_pool, &first_request, 1_020, None);
+        let second = ledger.reserve(&second_pool, &second_request, 1_030, None);
+
+        assert!(first.accepted);
+        assert!(second.accepted);
+        assert_eq!(
+            ledger.live_reserved_liability(&first_pool.pool_id),
+            Decimal::new(40, 0)
+        );
+        assert_eq!(
+            ledger.live_reserved_liability(&second_pool.pool_id),
             Decimal::new(40, 0)
         );
     }

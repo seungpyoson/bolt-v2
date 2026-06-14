@@ -427,7 +427,8 @@ fn fee_inclusive_notional_cannot_exceed_operator_cap() {
     // never let a fee push the cash debit past the operator cap.
     let cap = Decimal::new(5, 0);
     let positive_fee_bps = Decimal::new(700, 0);
-    let fee_inclusive_notional = fee_inclusive_admission_notional(cap, positive_fee_bps);
+    let fee_inclusive_notional = fee_inclusive_admission_notional(cap, positive_fee_bps)
+        .expect("fee-inclusive notional should fit for the fixture cap");
     assert!(
         fee_inclusive_notional > cap,
         "a positive fee must push the fee-inclusive notional strictly above the cap"
@@ -445,6 +446,17 @@ fn fee_inclusive_notional_cannot_exceed_operator_cap() {
     ));
     assert_eq!(admission.admitted_order_count(), 0);
     assert!(!nt_submit_called, "NT submit must not be reached");
+}
+
+#[test]
+fn fee_inclusive_notional_overflow_returns_admission_error() {
+    let error = fee_inclusive_admission_notional(Decimal::MAX, Decimal::new(1, 0))
+        .expect_err("overflowing fee-inclusive notional must fail closed");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::NotionalArithmeticOverflow
+    ));
 }
 
 #[test]
@@ -905,6 +917,7 @@ fn position_sized_admission_with_writer(
                     max_slippage_liability: Decimal::new(20, 2),
                 }),
             },
+            dedupe_retention_ns: 1_000,
         },
     )
 }

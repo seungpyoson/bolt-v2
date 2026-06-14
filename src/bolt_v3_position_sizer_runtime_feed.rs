@@ -48,6 +48,7 @@ pub struct PositionSizerRuntimeFeedConfig {
     pub collateral_currency: String,
     pub product_state: ProductSizingSnapshot,
     pub startup_observed_at_ns: u64,
+    pub dedupe_retention_ns: u64,
 }
 
 #[derive(Debug)]
@@ -56,7 +57,7 @@ pub struct PositionSizerRuntimeFeed {
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     component_builder: PositionSizerRuntimeComponentBuilder,
     latest_terminal_observed_at_ns: Option<u64>,
-    seen_position_fill_trade_ids: BTreeSet<PositionFillTradeKey>,
+    seen_position_fill_trade_ids: BTreeMap<PositionFillTradeKey, u64>,
 }
 
 pub struct PositionSizerRuntimeFeedSubscription {
@@ -72,7 +73,7 @@ struct PositionSizerRuntimeComponentBuilder {
     latest_portfolio: Option<PortfolioSizingSnapshot>,
     latest_venue_spendability: Option<VenueSpendabilitySnapshot>,
     live_order_attribution: BTreeMap<String, bool>,
-    terminal_order_ids_seen: BTreeSet<String>,
+    terminal_order_ids_seen: BTreeMap<String, u64>,
     order_lifecycle: OrderLifecycleSizingSnapshot,
     product_state: ProductSizingSnapshot,
 }
@@ -161,7 +162,7 @@ impl PositionSizerRuntimeFeed {
             submit_admission,
             component_builder,
             latest_terminal_observed_at_ns: None,
-            seen_position_fill_trade_ids: BTreeSet::new(),
+            seen_position_fill_trade_ids: BTreeMap::new(),
         }
     }
 
@@ -271,6 +272,7 @@ impl PositionSizerRuntimeFeed {
             yes_position,
             no_position,
             observed_at_ns,
+            self.config.dedupe_retention_ns,
         );
         self.publish_components_if_ready()
     }
@@ -320,6 +322,7 @@ impl PositionSizerRuntimeFeed {
                 client_order_id,
                 submit_owned,
                 event.ts_event().as_u64(),
+                self.config.dedupe_retention_ns,
             );
             self.publish_components_if_ready();
             return None;
@@ -337,8 +340,11 @@ impl PositionSizerRuntimeFeed {
         }
 
         let observed_at_ns = event.ts_event().as_u64();
-        self.component_builder
-            .record_terminal_order_event(event.client_order_id().to_string(), observed_at_ns);
+        self.component_builder.record_terminal_order_event(
+            event.client_order_id().to_string(),
+            observed_at_ns,
+            self.config.dedupe_retention_ns,
+        );
         self.publish_components_if_ready();
         let decision = self
             .submit_admission
@@ -406,15 +412,14 @@ impl PositionSizerRuntimeFeed {
             && !trade_id.trim().is_empty()
             && fill_quantity > Decimal::ZERO
         {
-            self.seen_position_fill_trade_ids
-                .insert(fill_trade_key.clone());
+            self.record_seen_position_fill_trade_id(fill_trade_key.clone(), observed_at_ns);
         }
         let unknown_external_fill_changes_position = decision.unknown_reservation
             && !submit_owned
             && !fill.reconciliation
             && !trade_id.trim().is_empty()
             && fill_quantity > Decimal::ZERO
-            && self.seen_position_fill_trade_ids.insert(fill_trade_key);
+            && self.record_new_position_fill_trade_id(fill_trade_key, observed_at_ns);
         if fill_changes_position || unknown_external_fill_changes_position {
             self.component_builder.record_fill_position_delta(
                 &instrument_id,
@@ -425,8 +430,11 @@ impl PositionSizerRuntimeFeed {
         }
         if decision.action == crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Released
         {
-            self.component_builder
-                .record_terminal_order_event(client_order_id, observed_at_ns);
+            self.component_builder.record_terminal_order_event(
+                client_order_id,
+                observed_at_ns,
+                self.config.dedupe_retention_ns,
+            );
             self.latest_terminal_observed_at_ns = Some(observed_at_ns);
         }
         if fill_changes_position || unknown_external_fill_changes_position {
@@ -443,6 +451,35 @@ impl PositionSizerRuntimeFeed {
         self.latest_terminal_observed_at_ns
     }
 
+    fn record_seen_position_fill_trade_id(
+        &mut self,
+        key: PositionFillTradeKey,
+        observed_at_ns: u64,
+    ) {
+        prune_observed_dedupe_entries(
+            &mut self.seen_position_fill_trade_ids,
+            observed_at_ns,
+            self.config.dedupe_retention_ns,
+        );
+        self.seen_position_fill_trade_ids
+            .insert(key, observed_at_ns);
+    }
+
+    fn record_new_position_fill_trade_id(
+        &mut self,
+        key: PositionFillTradeKey,
+        observed_at_ns: u64,
+    ) -> bool {
+        prune_observed_dedupe_entries(
+            &mut self.seen_position_fill_trade_ids,
+            observed_at_ns,
+            self.config.dedupe_retention_ns,
+        );
+        self.seen_position_fill_trade_ids
+            .insert(key, observed_at_ns)
+            .is_none()
+    }
+
     fn publish_components_if_ready(&mut self) -> Option<BoltV3SubmitPositionSizingNtComponents> {
         let submit_admission = Arc::clone(&self.submit_admission);
         self.component_builder
@@ -456,6 +493,16 @@ impl PositionSizerRuntimeFeed {
     }
 }
 
+fn prune_observed_dedupe_entries<K: Ord>(
+    entries: &mut BTreeMap<K, u64>,
+    now_ns: u64,
+    retention_ns: u64,
+) {
+    entries.retain(|_, observed_at_ns| {
+        *observed_at_ns > now_ns || now_ns - *observed_at_ns <= retention_ns
+    });
+}
+
 impl PositionSizerRuntimeComponentBuilder {
     fn new(config: &PositionSizerRuntimeFeedConfig) -> Self {
         Self {
@@ -463,7 +510,7 @@ impl PositionSizerRuntimeComponentBuilder {
             latest_portfolio: None,
             latest_venue_spendability: None,
             live_order_attribution: BTreeMap::new(),
-            terminal_order_ids_seen: BTreeSet::new(),
+            terminal_order_ids_seen: BTreeMap::new(),
             order_lifecycle: OrderLifecycleSizingSnapshot {
                 source: "nt_order_lifecycle_seed".to_string(),
                 observed_at_ns: config.startup_observed_at_ns,
@@ -480,12 +527,19 @@ impl PositionSizerRuntimeComponentBuilder {
         yes_position: Decimal,
         no_position: Decimal,
         observed_at_ns: u64,
+        dedupe_retention_ns: u64,
     ) where
         I: IntoIterator<Item = String>,
     {
         let cache_open_ids = client_order_ids.into_iter().collect::<BTreeSet<_>>();
+        self.prune_terminal_order_ids_seen(observed_at_ns, dedupe_retention_ns);
         let existing_live_order_ids = self
             .live_order_attribution
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let terminal_order_ids_seen = self
+            .terminal_order_ids_seen
             .keys()
             .cloned()
             .collect::<BTreeSet<_>>();
@@ -494,7 +548,7 @@ impl PositionSizerRuntimeComponentBuilder {
             .cloned()
             .collect::<BTreeSet<_>>();
         self.live_order_attribution = merged_live_order_ids
-            .difference(&self.terminal_order_ids_seen)
+            .difference(&terminal_order_ids_seen)
             .map(|client_order_id| {
                 let attributed = self
                     .live_order_attribution
@@ -623,8 +677,10 @@ impl PositionSizerRuntimeComponentBuilder {
         client_order_id: String,
         attributed: bool,
         observed_at_ns: u64,
+        dedupe_retention_ns: u64,
     ) {
-        if !self.terminal_order_ids_seen.contains(&client_order_id) {
+        self.prune_terminal_order_ids_seen(observed_at_ns, dedupe_retention_ns);
+        if !self.terminal_order_ids_seen.contains_key(&client_order_id) {
             self.live_order_attribution
                 .entry(client_order_id)
                 .and_modify(|existing| *existing = *existing || attributed)
@@ -650,10 +706,25 @@ impl PositionSizerRuntimeComponentBuilder {
         }
     }
 
-    fn record_terminal_order_event(&mut self, client_order_id: String, observed_at_ns: u64) {
-        self.terminal_order_ids_seen.insert(client_order_id.clone());
+    fn record_terminal_order_event(
+        &mut self,
+        client_order_id: String,
+        observed_at_ns: u64,
+        dedupe_retention_ns: u64,
+    ) {
+        self.prune_terminal_order_ids_seen(observed_at_ns, dedupe_retention_ns);
+        self.terminal_order_ids_seen
+            .insert(client_order_id.clone(), observed_at_ns);
         self.live_order_attribution.remove(&client_order_id);
         self.refresh_order_lifecycle_from_event(observed_at_ns);
+    }
+
+    fn prune_terminal_order_ids_seen(&mut self, now_ns: u64, dedupe_retention_ns: u64) {
+        prune_observed_dedupe_entries(
+            &mut self.terminal_order_ids_seen,
+            now_ns,
+            dedupe_retention_ns,
+        );
     }
 
     fn refresh_order_lifecycle_from_event(&mut self, observed_at_ns: u64) {
@@ -761,4 +832,45 @@ fn is_live_order_event(event: &OrderEventAny) -> bool {
         event,
         OrderEventAny::Submitted(_) | OrderEventAny::Accepted(_)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{PositionFillTradeKey, prune_observed_dedupe_entries};
+
+    #[test]
+    fn observed_dedupe_pruning_removes_only_entries_older_than_retention() {
+        let mut entries = BTreeMap::from([
+            (
+                PositionFillTradeKey {
+                    instrument_id: "instrument-old".to_string(),
+                    trade_id: "trade-old".to_string(),
+                },
+                100,
+            ),
+            (
+                PositionFillTradeKey {
+                    instrument_id: "instrument-recent".to_string(),
+                    trade_id: "trade-recent".to_string(),
+                },
+                175,
+            ),
+            (
+                PositionFillTradeKey {
+                    instrument_id: "instrument-future".to_string(),
+                    trade_id: "trade-future".to_string(),
+                },
+                250,
+            ),
+        ]);
+
+        prune_observed_dedupe_entries(&mut entries, 200, 50);
+
+        assert_eq!(entries.len(), 2);
+        assert!(entries.keys().any(|key| key.trade_id == "trade-recent"));
+        assert!(entries.keys().any(|key| key.trade_id == "trade-future"));
+        assert!(!entries.keys().any(|key| key.trade_id == "trade-old"));
+    }
 }

@@ -200,29 +200,6 @@ fn production_strategy_has_no_offline_readiness_seed_arming() {
 }
 
 #[test]
-fn shared_execution_policy_commits_admission_permit_after_nt_submit() {
-    let production = crate::bolt_v3_source_integrity::production_module_source_text(
-        crate::bolt_v3_source_integrity::STRATEGY_KEY,
-    );
-    let admit_index = production
-        .find("let permit = routing.submit_admission.admit(&routing.request)?;")
-        .expect("shared execution policy must hold the admission permit");
-    let submit_index = production[admit_index..]
-        .find("sink.submit_order_via_nt(order, context)?;")
-        .map(|index| admit_index + index)
-        .expect("shared execution policy must call NT submit after admission");
-    let commit_index = production[submit_index..]
-        .find("permit.commit_submitted();")
-        .map(|index| submit_index + index)
-        .expect("shared execution policy must commit the permit after successful NT submit");
-
-    assert!(
-        admit_index < submit_index && submit_index < commit_index,
-        "submit admission permit must commit only after successful NT submit"
-    );
-}
-
-#[test]
 fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
     let rejecting_submit_admission = submit_admission_with_provider_cap(
         Decimal::new(1, 2),

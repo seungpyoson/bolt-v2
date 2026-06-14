@@ -2444,6 +2444,7 @@ fn position_sizer_runtime_feed_config_from_loaded(
             },
         ),
         startup_observed_at_ns,
+        dedupe_retention_ns: pool.dedupe_retention_ns,
     })
 }
 
@@ -2561,6 +2562,7 @@ fn position_sizer_config_from_loaded(
             max_snapshot_age_ns: pool.max_snapshot_age_ns,
         },
         policy: sizing_policy_from_pool(pool)?,
+        dedupe_retention_ns: pool.dedupe_retention_ns,
     }))
 }
 

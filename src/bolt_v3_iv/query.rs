@@ -910,10 +910,8 @@ impl IvQueryHandle {
                     product.source_id(),
                     product.selector_fingerprint(),
                 );
-                if stale_product_is_authorized {
-                    if let Some(provenance) = product.provenance() {
-                        side_effects.record_query_rejection(provenance, IvRejectReason::StaleData);
-                    }
+                if stale_product_is_authorized && let Some(provenance) = product.provenance() {
+                    side_effects.record_query_rejection(provenance, IvRejectReason::StaleData);
                 }
                 return Err(IvQueryError::ProductNotFound);
             }

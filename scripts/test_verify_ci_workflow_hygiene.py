@@ -4401,6 +4401,18 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
             "      - name: Detect fingerprint-reuse governance changes",
             "        shell: bash\n",
             """        shell: bash
+        "working-directory" : /tmp
+        "continue-on-error" : true
+""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        shell: bash\n",
+            """        shell: bash
         "working-directory": /tmp
         "continue-on-error": true
 """,
@@ -4529,6 +4541,18 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
 """,
     )
     assert_error("nextest-fingerprint-reuse resolver step must match canonical envelope", resolver_extra_quoted_env)
+    resolver_extra_quoted_env_spaced_colon = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        "          GITHUB_TOKEN: ${{ github.token }}\n",
+        """          GITHUB_TOKEN: ${{ github.token }}
+          "EXTRA" : injected
+""",
+    )
+    assert_error(
+        "nextest-fingerprint-reuse resolver step must match canonical envelope",
+        resolver_extra_quoted_env_spaced_colon,
+    )
     fabricated_reuse_outputs = replace_once_after(
         BASE_WORKFLOW,
         "  nextest-fingerprint-reuse:",

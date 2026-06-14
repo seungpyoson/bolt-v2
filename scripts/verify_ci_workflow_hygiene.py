@@ -1153,7 +1153,7 @@ def block_step_property_indent(block: list[str]) -> int | None:
         if not clean.strip():
             continue
         match = re.match(
-            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?{YAML_KEY_PATTERN}:\s*.*$",
+            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?{YAML_KEY_PATTERN}\s*:\s*.*$",
             clean,
         )
         if match is None:
@@ -1173,7 +1173,7 @@ def block_top_level_items(block: list[str]) -> dict[str, str] | None:
         if not clean.strip():
             continue
         step_match = re.match(
-            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?({YAML_KEY_PATTERN}):\s*(.*?)\s*$",
+            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$",
             clean,
         )
         if step_match is not None:
@@ -1185,9 +1185,9 @@ def block_top_level_items(block: list[str]) -> dict[str, str] | None:
             indent = len(clean) - len(clean.lstrip(" "))
             if indent != property_indent:
                 continue
-            item_match = re.match(rf"^\s*({YAML_KEY_PATTERN}):\s*(.*?)\s*$", clean)
+            item_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
             if item_match is None:
-                continue
+                return None
             key = unquote_yaml_scalar(item_match.group(1))
             value = item_match.group(2)
         if key in items:
@@ -1209,7 +1209,7 @@ def block_nested_mapping_items(block: list[str], parent_key: str) -> dict[str, s
             continue
         indent = len(clean) - len(clean.lstrip(" "))
         if parent_indent is None:
-            parent_match = re.match(rf"^\s*({YAML_KEY_PATTERN}):\s*(.*?)\s*$", clean)
+            parent_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
             if (
                 parent_match is not None
                 and indent == property_indent
@@ -1224,9 +1224,9 @@ def block_nested_mapping_items(block: list[str], parent_key: str) -> dict[str, s
             item_indent = indent
         if indent != item_indent:
             continue
-        item_match = re.match(rf"^\s*({YAML_KEY_PATTERN}):\s*(.*?)\s*$", clean)
+        item_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
         if item_match is None:
-            continue
+            return None
         key = unquote_yaml_scalar(item_match.group(1))
         if key in items:
             return None

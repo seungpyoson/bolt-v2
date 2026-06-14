@@ -911,6 +911,37 @@ fn shadow_order_execution_mode_rejects_managed_venue_action_knobs() {
 }
 
 #[test]
+fn shadow_order_execution_mode_reports_every_managed_venue_action_knob() {
+    let root_toml = fixture_root_with_order_execution_mode("shadow");
+    let strategy_toml = strategy_fixture_without_submit_orders()
+        .replace("manage_stop = false", "manage_stop = true")
+        .replace("manage_gtd_expiry = false", "manage_gtd_expiry = true")
+        .replace(
+            "manage_contingent_orders = false",
+            "manage_contingent_orders = true",
+        )
+        .replace(
+            "external_order_claims = []",
+            "external_order_claims = [\"AUXILIARY.SOURCE\"]",
+        );
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    let rendered = messages.join("\n");
+
+    for field in [
+        "manage_stop",
+        "manage_gtd_expiry",
+        "manage_contingent_orders",
+        "external_order_claims",
+    ] {
+        assert!(
+            rendered.contains(field),
+            "shadow validation should collect {field}; got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn bolt_v3_logging_levels_use_nt_canonical_enum() {
     // FINDING-1: `logging.stdout_level` and `logging.fileout_level` are typed
     // as `nautilus_common::enums::LogLevel` (not a bolt shadow). NT's

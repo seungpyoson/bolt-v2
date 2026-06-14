@@ -16,6 +16,9 @@ Shadow mode is global. Every loaded strategy must disable NautilusTrader-managed
 `manage_stop = false`, `manage_gtd_expiry = false`, `manage_contingent_orders = false`, and
 `external_order_claims = []`.
 
+This managed-action safety is enforced by config validation during load. Source integrity covers the
+reviewed strategy source; operator TOML knobs are guarded by the fail-closed validator instead.
+
 Run the normal bolt-v3 live process. Evaluation, sizing, order-intent evidence, and submit-admission evidence still write to:
 
 ```text

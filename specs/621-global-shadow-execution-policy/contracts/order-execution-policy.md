@@ -87,6 +87,12 @@ Verification must fail if production source outside allowlisted boundaries uses 
 
 This verifier is a guardrail, not the authoritative future-strategy safety proof. Future strategy safety under this PR scope comes from source-integrity review of registered production strategy roots. A compile-time guarantee that future strategies cannot import NautilusTrader venue-mutation APIs is tracked separately in issue #710.
 
+NT-managed venue-action knobs such as `manage_stop`, `manage_gtd_expiry`,
+`manage_contingent_orders`, and `external_order_claims` are operator TOML
+inputs, not source text. Shadow-mode safety for those knobs is enforced by the
+fail-closed config validator during load; source integrity covers the reviewed
+strategy source separately.
+
 ## Boundary Contract
 
 The shared execution module may depend on:

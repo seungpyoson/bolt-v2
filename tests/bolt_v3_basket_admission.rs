@@ -306,6 +306,34 @@ fn basket_submit_slots_enforce_kill_switch_and_risk_reducing_proof_binding() {
         invalid,
         BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof
     );
+
+    let mut mismatched = valid_exit_proof(first_leg);
+    mismatched.instrument_id = "other.POLYMARKET".to_string();
+    let invalid = submit_state
+        .reserve_basket_submit_slots(
+            "polymarket_main",
+            &[risk_reducing_claim(first_leg, mismatched)],
+            &basket_slot_evidence("invalid-instrument-proof", &group),
+        )
+        .expect_err("risk-reducing proof must bind to the submitted instrument");
+    assert_eq!(
+        invalid,
+        BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof
+    );
+
+    let mut mismatched = valid_exit_proof(first_leg);
+    mismatched.exit_quantity = dec!(2);
+    let invalid = submit_state
+        .reserve_basket_submit_slots(
+            "polymarket_main",
+            &[risk_reducing_claim(first_leg, mismatched)],
+            &basket_slot_evidence("invalid-quantity-proof", &group),
+        )
+        .expect_err("risk-reducing proof must bind to the submitted quantity");
+    assert_eq!(
+        invalid,
+        BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof
+    );
 }
 
 fn assert_basket_rejects(

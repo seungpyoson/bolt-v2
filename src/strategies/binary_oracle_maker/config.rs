@@ -8,6 +8,7 @@
 //! copy the taker's parameter rows.
 
 use anyhow::{Context, Result};
+use nautilus_model::enums::OmsType;
 use serde::Deserialize;
 use toml::Value;
 
@@ -38,6 +39,7 @@ const WRONG_TYPE_CODE: &str = "wrong_type";
 const MISSING_STRATEGY_ID_CODE: &str = "missing_strategy_id";
 const MISSING_ORDER_ID_TAG_CODE: &str = "missing_order_id_tag";
 const MISSING_OMS_TYPE_CODE: &str = "missing_oms_type";
+const INVALID_OMS_TYPE_CODE: &str = "invalid_oms_type";
 const UNKNOWN_FIELD_CODE: &str = "unknown_field";
 
 const STRATEGY_ID_FIELD: &str = "strategy_id";
@@ -100,6 +102,32 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
         MISSING_OMS_TYPE_CODE,
         errors,
     );
+    validate_oms_type_parses(table, field_prefix, errors);
+}
+
+/// Fail loud at load when `oms_type` is a string that does not parse as a
+/// NautilusTrader `OmsType`. The string-presence/type check above only proves
+/// `oms_type` is a string; `BinaryOracleMaker::new` then parses it with
+/// `.expect(...)`, so an unparseable value that passed validation would panic at
+/// build instead of surfacing as a clean validation error. Mirrors the taker's
+/// `parse_configured_oms_type` (`value.parse::<OmsType>()`) so validation
+/// guarantees exactly what build assumes. A missing or non-string `oms_type` is
+/// already reported by `validate_string_field`, so it is skipped here.
+fn validate_oms_type_parses(
+    table: &toml::map::Map<String, Value>,
+    field_prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(value) = table.get(OMS_TYPE_FIELD).and_then(Value::as_str) else {
+        return;
+    };
+    if value.parse::<OmsType>().is_err() {
+        errors.push(ValidationError {
+            field: format!("{field_prefix}.{OMS_TYPE_FIELD}"),
+            code: INVALID_OMS_TYPE_CODE,
+            message: format!("must be a NautilusTrader OmsType, got `{value}`"),
+        });
+    }
 }
 
 fn validate_string_field(
@@ -167,6 +195,42 @@ mod tests {
                 .iter()
                 .any(|error| error.code == MISSING_STRATEGY_ID_CODE),
             "expected missing_strategy_id, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_config_flags_unparseable_oms_type() {
+        let raw: Value = toml::toml! {
+            strategy_id = "BINARY-ORACLE-MAKER-001"
+            order_id_tag = "001"
+            oms_type = "not-an-oms-type"
+        }
+        .into();
+        let mut errors = Vec::new();
+        validate_config(&raw, "strategy", &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.code == INVALID_OMS_TYPE_CODE),
+            "expected invalid_oms_type, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_config_accepts_parseable_oms_type() {
+        // The minimal envelope's `oms_type = "netting"` must parse as an NT
+        // OmsType so build's `.expect(...)` can never fire on validated config.
+        assert!(
+            "netting".parse::<OmsType>().is_ok(),
+            "minimal envelope oms_type must parse as an NT OmsType"
+        );
+        let mut errors = Vec::new();
+        validate_config(&minimal_raw(), "strategy", &mut errors);
+        assert!(
+            !errors
+                .iter()
+                .any(|error| error.code == INVALID_OMS_TYPE_CODE),
+            "unexpected invalid_oms_type: {errors:?}"
         );
     }
 

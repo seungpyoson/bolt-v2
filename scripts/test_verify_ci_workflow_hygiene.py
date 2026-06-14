@@ -4337,6 +4337,13 @@ def assert_ci_lint_runs_command_understanding_tests() -> None:
         raise AssertionError("ci-lint-workflow must run command understanding self-tests")
 
 
+def assert_ci_lint_runs_rust_probe_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_run_rust_probe.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run Rust Probe runner self-tests")
+
+
 def assert_cargo_zigbuild_probe_has_no_redundant_true() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     redundant = 'test -x "$HOME/.cargo/bin/cargo-zigbuild" && true'
@@ -4349,6 +4356,7 @@ def main() -> int:
     assert_ci_lint_runs_verify_remote_tests()
     assert_ci_lint_runs_ci_provenance_tests()
     assert_ci_lint_runs_command_understanding_tests()
+    assert_ci_lint_runs_rust_probe_tests()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})

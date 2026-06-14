@@ -22,6 +22,8 @@ if [ ! -d "$workspace" ]; then
   reject "GITHUB_WORKSPACE must be an existing directory"
 fi
 
+# Require an alphanumeric/underscore first character so user input cannot
+# become a leading cargo or nextest option such as --help.
 target_regex='^[A-Za-z0-9_][A-Za-z0-9_.-]*$'
 name_regex='^[A-Za-z0-9_][A-Za-z0-9_:.@/-]*$'
 

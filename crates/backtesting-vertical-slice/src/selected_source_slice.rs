@@ -198,14 +198,17 @@ pub fn write_selected_source_slice(
     }
 
     let temp_output_path = temp_artifact_path(&spec.output_parquet_path);
-    ensure!(
-        !temp_output_path.exists(),
-        "temporary selected source artifact {} already exists",
-        temp_output_path.display()
-    );
-    let file = File::create(&temp_output_path).with_context(|| {
+    // Atomic exclusive create (O_CREAT|O_EXCL): a pre-existing temp — crash
+    // residue OR a concurrent writer for the same output — fails loud here
+    // instead of being silently truncated and shared. This is the single-writer
+    // enforcement. A prior `exists()` check followed by a plain `File::create`
+    // would be TOCTOU: two racers could both pass the check, both truncate the
+    // same inode, and one keep writing into it after the other renames it onto
+    // the final artifact — publishing a torn parquet with a stale recorded hash.
+    let file = File::create_new(&temp_output_path).with_context(|| {
         format!(
-            "create temporary selected source parquet {}",
+            "create temporary selected source parquet {} (a pre-existing temp \
+             means a crashed prior run or a concurrent writer for the same output)",
             temp_output_path.display()
         )
     })?;

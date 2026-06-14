@@ -208,6 +208,49 @@ projected_columns = ["asset", "event_type", "payload"]
     );
 }
 
+/// A pre-existing temp artifact — crash residue OR a concurrent writer that has
+/// already taken the exclusive temp — makes the slice fail loud at the atomic
+/// `File::create_new`, instead of silently truncating and sharing the temp
+/// inode. Regresses the prior TOCTOU (`ensure!(!exists)` + truncating
+/// `File::create`): the error now originates from the exclusive create (so a
+/// revert to the pre-check pattern, which reported "already exists", breaks this
+/// test), and no final artifact is published off the colliding writer.
+#[test]
+fn selected_source_slice_rejects_preexisting_temp_artifact() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let source_path = dir.path().join("source.parquet");
+    let selector_path = dir.path().join("selector.json");
+    let output_path = dir.path().join("selected.parquet");
+    let report_path = dir.path().join("selected-report.json");
+    let spec_path = dir.path().join("selected.toml");
+    write_source_parquet(&source_path);
+    write_selector_report(&selector_path);
+    write_spec(
+        &spec_path,
+        &source_path,
+        &selector_path,
+        &output_path,
+        &report_path,
+    );
+
+    // Deterministic temp name (output path + ".tmp"): seed it to stand in for a
+    // crashed prior run / a concurrent writer that already created the temp.
+    let temp_path = std::path::PathBuf::from(format!("{}.tmp", output_path.display()));
+    std::fs::write(&temp_path, b"in-flight").expect("seed pre-existing temp");
+
+    let err = write_selected_source_slice_from_spec_file(&spec_path)
+        .expect_err("a pre-existing temp artifact must fail loud, not truncate-and-share");
+    assert!(
+        err.to_string()
+            .contains("create temporary selected source parquet"),
+        "error must originate from the exclusive create_new gate, got: {err}"
+    );
+    assert!(
+        !output_path.exists(),
+        "a pre-existing temp must block the final output from being published"
+    );
+}
+
 fn write_selector_report(path: &std::path::Path) -> Vec<u8> {
     let selector_bytes = serde_json::to_vec_pretty(&FirstProofSelectorReport {
         schema_version: FIRST_PROOF_SELECTOR_SCHEMA_VERSION.to_string(),

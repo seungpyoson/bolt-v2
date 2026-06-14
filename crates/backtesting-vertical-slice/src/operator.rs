@@ -124,14 +124,60 @@ pub struct RunSpec {
     pub identity: RunSpecInstrumentIdentities,
     pub converter: ConverterConfig,
     pub manifest: BacktestingRunManifest,
-    pub artifact_store: ArtifactStoreConfig,
-    pub catalog_dispatch: CatalogDispatchConfig,
-    pub create_only_probe_id: String,
-    pub nt_catalog_capability_proof: NtCatalogCapabilityRunSpec,
+    #[serde(default)]
+    pub artifact_store: Option<ArtifactStoreConfig>,
+    #[serde(default)]
+    pub catalog_dispatch: Option<CatalogDispatchConfig>,
+    #[serde(default)]
+    pub create_only_probe_id: Option<String>,
+    #[serde(default)]
+    pub nt_catalog_capability_proof: Option<NtCatalogCapabilityRunSpec>,
     /// Selector provenance hashes required for L2 replay result contracts.
     /// Only valid on run-specs whose accepted data is `L2_REPLAY`.
     #[serde(default)]
     pub selector_provenance: Option<RunSpecSelectorProvenance>,
+}
+
+impl RunSpec {
+    /// # Errors
+    ///
+    /// Returns an error when the run-spec omits the durable artifact store
+    /// configuration required by the publish/proof path.
+    pub fn required_artifact_store(&self) -> Result<&ArtifactStoreConfig> {
+        self.artifact_store
+            .as_ref()
+            .context("run spec missing [artifact_store] required for artifact-store publish path")
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the run-spec omits source-binding catalog dispatch
+    /// configuration required by the publish/proof path.
+    pub fn required_catalog_dispatch(&self) -> Result<&CatalogDispatchConfig> {
+        self.catalog_dispatch.as_ref().context(
+            "run spec missing [[catalog_dispatch.bindings]] required for artifact-store publish path",
+        )
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the run-spec omits the create-only probe id required
+    /// by the publish/proof path.
+    pub fn required_create_only_probe_id(&self) -> Result<&str> {
+        self.create_only_probe_id.as_deref().context(
+            "run spec missing create_only_probe_id required for artifact-store publish path",
+        )
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the run-spec omits the synthetic NT catalog
+    /// capability proof required by the publish/proof path.
+    pub fn required_nt_catalog_capability_proof(&self) -> Result<&NtCatalogCapabilityRunSpec> {
+        self.nt_catalog_capability_proof.as_ref().context(
+            "run spec missing [nt_catalog_capability_proof] required for artifact-store publish path",
+        )
+    }
 }
 
 /// Instrument specs for the run-spec's projected tables.
@@ -1147,23 +1193,24 @@ where
     })
     .await
     .context("join base run for artifact-store path")??;
-    let artifact_root = spec.artifact_store.resolve()?;
-    let nt_catalog_capability_plan = spec
-        .nt_catalog_capability_proof
-        .proof_plan(&spec.artifact_store)?;
+    let artifact_store = spec.required_artifact_store()?;
+    let catalog_dispatch = spec.required_catalog_dispatch()?;
+    let create_only_probe_id = spec.required_create_only_probe_id()?;
+    let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
+    let artifact_root = artifact_store.resolve()?;
+    let nt_catalog_capability_plan = nt_catalog_capability_proof.proof_plan(artifact_store)?;
     let writer = CreateOnlyArtifactWriter::new(store);
     let create_only_probe_transcript = writer
-        .probe_create_only(&artifact_root, &spec.create_only_probe_id)
+        .probe_create_only(&artifact_root, create_only_probe_id)
         .await?;
     let nt_catalog_capability_evidence = build_capability_evidence(
         &artifact_root,
         &nt_catalog_capability_plan,
         create_only_probe_transcript.clone(),
     )?;
-    let nt_catalog_capability_proof_artifact = spec
-        .nt_catalog_capability_proof
+    let nt_catalog_capability_proof_artifact = nt_catalog_capability_proof
         .persist_completed_proof_from_evidence(
-            &spec.artifact_store,
+            artifact_store,
             &writer,
             &nt_catalog_capability_evidence,
         )
@@ -1171,7 +1218,7 @@ where
     let persisted = persist_catalog_projection_for_source_binding(
         store,
         &artifact_root,
-        &spec.catalog_dispatch,
+        catalog_dispatch,
         &spec.source_proof.source_binding,
         spec.manifest.market_structure_fixture,
         &artifacts.catalog_root,

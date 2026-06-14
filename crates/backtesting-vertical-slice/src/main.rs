@@ -114,11 +114,13 @@ where
     .with_context(|| format!("run-manifest {}", cli.run_spec.display()))?;
     ensure_object_read_within_raw_payload_limit(&spec)?;
     let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
-    let artifact_root = spec.artifact_store.resolve()?;
+    let artifact_store = spec.required_artifact_store()?;
+    let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
+    let artifact_root = artifact_store.resolve()?;
     let credential_resolver =
         NtCatalogSsmCredentialResolver::from_region(artifact_root.s3_region()).await?;
     let credentials = credential_resolver
-        .resolve(&spec.nt_catalog_capability_proof.ssm_parameter_refs)
+        .resolve(&nt_catalog_capability_proof.ssm_parameter_refs)
         .await?;
     let store = artifact_root.build_s3_object_store_with_credentials(&credentials)?;
     let artifacts = run_from_run_spec_with_artifact_store(
@@ -127,8 +129,8 @@ where
         &cli.output_dir,
         &store,
         |_, _, create_only_probe| {
-            spec.nt_catalog_capability_proof.runtime_evidence(
-                &spec.artifact_store,
+            nt_catalog_capability_proof.runtime_evidence(
+                artifact_store,
                 &credentials,
                 create_only_probe,
             )

@@ -1066,12 +1066,17 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     let spec = committed_run_spec_for(&gz);
     let output_dir = tempfile::TempDir::new().expect("temp dir");
     let store = InMemory::new();
-    let artifact_root = spec
-        .artifact_store
-        .resolve()
-        .expect("artifact root resolves");
-    let expected_catalog_root = spec
-        .catalog_dispatch
+    let artifact_store = spec
+        .required_artifact_store()
+        .expect("artifact-store config");
+    let catalog_dispatch = spec
+        .required_catalog_dispatch()
+        .expect("catalog dispatch config");
+    let nt_catalog_capability_proof = spec
+        .required_nt_catalog_capability_proof()
+        .expect("NT catalog capability proof config");
+    let artifact_root = artifact_store.resolve().expect("artifact root resolves");
+    let expected_catalog_root = catalog_dispatch
         .catalog_root_for(
             &spec.source_proof.source_binding,
             spec.manifest.market_structure_fixture,
@@ -1086,7 +1091,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         &store,
         |artifact_root, plan, create_only_probe| {
             let mut evidence =
-                successful_capability_evidence(artifact_root, &spec.nt_catalog_capability_proof);
+                successful_capability_evidence(artifact_root, nt_catalog_capability_proof);
             evidence.read_back.catalog_uri = plan.synthetic_catalog_root_uri.clone();
             evidence.nt_catalog_storage_option_keys = plan.storage_options_keys.clone();
             evidence.create_only_probe = create_only_probe;
@@ -1161,8 +1166,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         proof_artifact.evidence.read_back.catalog_uri,
         nt_catalog_capability_plan.synthetic_catalog_root_uri
     );
-    let proof_artifact_path = spec
-        .artifact_store
+    let proof_artifact_path = artifact_store
         .resolve()
         .expect("artifact root")
         .object_path_for_uri(&proof_artifact.proof_artifact_uri)

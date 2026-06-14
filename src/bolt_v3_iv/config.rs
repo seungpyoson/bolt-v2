@@ -952,6 +952,12 @@ fn validate_projection_policies(context: &str, profile: &IvProfile) -> Vec<Strin
             &policy.output_bounds,
             true,
         );
+        validate_projection_output_bounds_subset(
+            &mut errors,
+            &format!("{policy_context}.{}.output_bounds", policy.policy_id),
+            &profile.input_bounds,
+            &policy.output_bounds,
+        );
         if policy
             .source_eligibility
             .iter()
@@ -1024,8 +1030,144 @@ fn validate_iv_numeric_bounds(
     if bounds.unit != IvBoundUnit::Unitless {
         errors.push(format!("{context}.unit must be unitless for IV values"));
     }
+    if bounds.inclusive_max.is_none() && bounds.exclusive_max.is_none() {
+        errors.push(format!(
+            "{context} must define inclusive_max or exclusive_max for IV values"
+        ));
+    }
     if require_conventions && bounds.allowed_conventions.allowed_conventions.is_empty() {
         errors.push(format!("{context}.allowed_conventions must be non-empty"));
+    }
+}
+
+fn validate_projection_output_bounds_subset(
+    errors: &mut Vec<String>,
+    context: &str,
+    input_bounds: &IvNumericBounds,
+    output_bounds: &IvNumericBounds,
+) {
+    validate_lower_bound_subset(errors, context, input_bounds, output_bounds);
+    validate_upper_bound_subset(errors, context, input_bounds, output_bounds);
+    if !input_bounds
+        .allowed_conventions
+        .allowed_conventions
+        .is_superset(&output_bounds.allowed_conventions.allowed_conventions)
+    {
+        errors.push(format!(
+            "{context}.allowed_conventions must be a subset of profile input_bounds.allowed_conventions"
+        ));
+    }
+}
+
+fn validate_lower_bound_subset(
+    errors: &mut Vec<String>,
+    context: &str,
+    input_bounds: &IvNumericBounds,
+    output_bounds: &IvNumericBounds,
+) {
+    let Some(input_lower) = lower_bound_edge(input_bounds) else {
+        return;
+    };
+    let Some(output_lower) = lower_bound_edge(output_bounds) else {
+        errors.push(format!(
+            "{context} lower bound must be at least profile input_bounds lower bound"
+        ));
+        return;
+    };
+    if output_lower.value < input_lower.value
+        || (output_lower.value == input_lower.value
+            && output_lower.inclusive
+            && !input_lower.inclusive)
+    {
+        errors.push(format!(
+            "{context} lower bound must be at least profile input_bounds lower bound"
+        ));
+    }
+}
+
+fn validate_upper_bound_subset(
+    errors: &mut Vec<String>,
+    context: &str,
+    input_bounds: &IvNumericBounds,
+    output_bounds: &IvNumericBounds,
+) {
+    let Some(input_upper) = upper_bound_edge(input_bounds) else {
+        return;
+    };
+    let Some(output_upper) = upper_bound_edge(output_bounds) else {
+        errors.push(format!(
+            "{context} upper bound must not exceed profile input_bounds upper bound"
+        ));
+        return;
+    };
+    if output_upper.value > input_upper.value
+        || (output_upper.value == input_upper.value
+            && output_upper.inclusive
+            && !input_upper.inclusive)
+    {
+        errors.push(format!(
+            "{context} upper bound must not exceed profile input_bounds upper bound"
+        ));
+    }
+}
+
+#[derive(Clone, Copy)]
+struct BoundEdge {
+    value: f64,
+    inclusive: bool,
+}
+
+fn lower_bound_edge(bounds: &IvNumericBounds) -> Option<BoundEdge> {
+    match (bounds.inclusive_min, bounds.exclusive_min) {
+        (Some(inclusive), Some(exclusive)) => {
+            if exclusive >= inclusive {
+                Some(BoundEdge {
+                    value: exclusive,
+                    inclusive: false,
+                })
+            } else {
+                Some(BoundEdge {
+                    value: inclusive,
+                    inclusive: true,
+                })
+            }
+        }
+        (Some(value), None) => Some(BoundEdge {
+            value,
+            inclusive: true,
+        }),
+        (None, Some(value)) => Some(BoundEdge {
+            value,
+            inclusive: false,
+        }),
+        (None, None) => None,
+    }
+}
+
+fn upper_bound_edge(bounds: &IvNumericBounds) -> Option<BoundEdge> {
+    match (bounds.inclusive_max, bounds.exclusive_max) {
+        (Some(inclusive), Some(exclusive)) => {
+            if exclusive <= inclusive {
+                Some(BoundEdge {
+                    value: exclusive,
+                    inclusive: false,
+                })
+            } else {
+                Some(BoundEdge {
+                    value: inclusive,
+                    inclusive: true,
+                })
+            }
+        }
+        (Some(value), None) => Some(BoundEdge {
+            value,
+            inclusive: true,
+        }),
+        (None, Some(value)) => Some(BoundEdge {
+            value,
+            inclusive: false,
+        }),
+        (None, None) => None,
     }
 }
 

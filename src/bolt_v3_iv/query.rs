@@ -163,10 +163,6 @@ struct IvQuerySideEffects {
 #[derive(Debug)]
 enum IvQuerySideEffect {
     RetentionMiss(IvRetainedProductKey),
-    ProductQueryRejection {
-        product: Box<IvQueryProduct>,
-        reject_reason: IvRejectReason,
-    },
     QueryRejection {
         provenance: Box<IvProvenance>,
         reject_reason: IvRejectReason,
@@ -199,18 +195,6 @@ impl IvQuerySideEffects {
 
     fn record_retention_miss(&mut self, miss: IvRetainedProductKey) {
         self.effects.push(IvQuerySideEffect::RetentionMiss(miss));
-        self.enforce_retention();
-    }
-
-    fn record_product_query_rejection(
-        &mut self,
-        product: &IvQueryProduct,
-        reject_reason: IvRejectReason,
-    ) {
-        self.effects.push(IvQuerySideEffect::ProductQueryRejection {
-            product: Box::new(product.clone()),
-            reject_reason,
-        });
         self.enforce_retention();
     }
 
@@ -247,19 +231,16 @@ impl IvQuerySideEffects {
         self.effects.push(IvQuerySideEffect::EnforceRetention);
     }
 
+    fn discard_derived_outputs(&mut self) {
+        self.effects
+            .retain(|effect| !matches!(effect, IvQuerySideEffect::DerivedOutput(_)));
+    }
+
     fn apply(self, handle: &IvQueryHandle) {
         for effect in self.effects {
             match effect {
                 IvQuerySideEffect::RetentionMiss(miss) => {
                     handle.state.record_retention_miss(&miss);
-                }
-                IvQuerySideEffect::ProductQueryRejection {
-                    product,
-                    reject_reason,
-                } => {
-                    handle
-                        .state
-                        .record_product_query_rejection(product.as_ref(), reject_reason);
                 }
                 IvQuerySideEffect::QueryRejection {
                     provenance,
@@ -508,12 +489,12 @@ impl IvQueryStateHandle {
         state.source_health.push(IvSourceHealth {
             profile_id,
             source_id,
-            subscription_state: IvSourceHealthState::Active,
+            subscription_state: rejection_health_state(reject_reason),
             last_event_ts_ns: Some(last_event_ts_ns),
             last_reject_reason: Some(reject_reason),
             reject_counts,
-            stale_state: false,
-            retention_state: false,
+            stale_state: reject_reason == IvRejectReason::StaleData,
+            retention_state: reject_reason == IvRejectReason::RetentionMiss,
             subscription_generation,
         });
     }
@@ -521,25 +502,6 @@ impl IvQueryStateHandle {
     pub fn record_query_rejection(&self, provenance: &IvProvenance, reject_reason: IvRejectReason) {
         let mut state = self.write_state();
         record_query_rejection_locked(&mut state, provenance, reject_reason);
-    }
-
-    fn record_product_query_rejection(
-        &self,
-        product: &IvQueryProduct,
-        reject_reason: IvRejectReason,
-    ) {
-        let mut state = self.write_state();
-        if let Some(provenance) = product.provenance() {
-            record_query_rejection_locked(&mut state, provenance, reject_reason);
-            return;
-        }
-        if let Some(subscription_generation) = product.subscription_generation() {
-            push_query_rejection_decision_locked(
-                &mut state,
-                reject_reason,
-                subscription_generation,
-            );
-        }
     }
 
     fn record_retention_miss(&self, miss: &IvRetainedProductKey) {
@@ -883,7 +845,7 @@ impl IvQueryHandle {
                             side_effects.record_retention_miss(miss);
                             Err(IvQueryError::RetentionMiss)
                         } else {
-                            Err(IvQueryError::StrategyNotAuthorized)
+                            Err(IvQueryError::ProductNotFound)
                         }
                     } else {
                         Err(IvQueryError::RetentionMiss)
@@ -891,6 +853,9 @@ impl IvQueryHandle {
                 }
                 Err(error) => Err(error),
             };
+            if result.is_err() {
+                side_effects.discard_derived_outputs();
+            }
             (result, side_effects)
         };
 
@@ -919,10 +884,6 @@ impl IvQueryHandle {
             {
                 product = authorized_product;
             } else if product_is_current {
-                side_effects.record_product_query_rejection(
-                    &product,
-                    authorization_reject_reason(&self.authorization, query),
-                );
                 return Err(IvQueryError::StrategyNotAuthorized);
             } else {
                 if let Some(provenance) = product.provenance() {
@@ -938,10 +899,6 @@ impl IvQueryHandle {
             product.source_id(),
             product.selector_fingerprint(),
         ) {
-            side_effects.record_product_query_rejection(
-                &product,
-                authorization_reject_reason(&self.authorization, query),
-            );
             return Err(IvQueryError::StrategyNotAuthorized);
         }
 
@@ -1273,6 +1230,8 @@ impl IvQueryHandle {
                 Ok(output) => output,
                 Err(_) => return Err(IvQueryError::ProjectionRejected),
             };
+            inputs = quorum_filtered_inputs(quorum_policy, &inputs);
+            fallback_inputs = inputs.clone();
             policy_decisions.extend(quorum_output.policy_decisions);
         }
 
@@ -1759,29 +1718,6 @@ impl IvQueryProduct {
             Self::DerivedIv(derived) => Some(&derived.provenance),
             Self::SourceHealth(_) => None,
         }
-    }
-
-    fn subscription_generation(&self) -> Option<u64> {
-        match self {
-            Self::SourceHealth(health) => Some(health.subscription_generation),
-            _ => self
-                .provenance()
-                .map(|provenance| provenance.subscription_generation),
-        }
-    }
-}
-
-fn authorization_reject_reason(
-    authorization: &IvSelectorAuthorization,
-    query: &IvProductQuery,
-) -> IvRejectReason {
-    if !authorization
-        .allowed_product_kinds
-        .contains(&query.product_kind)
-    {
-        IvRejectReason::UnauthorizedProduct
-    } else {
-        IvRejectReason::SelectorNotAuthorized
     }
 }
 
@@ -2357,11 +2293,33 @@ fn fallback_only(
     }
     let output = resolve_fallback(fallback_policy, &candidates)
         .map_err(|_| IvQueryError::ProjectionRejected)?;
+    let convention = IvConvention::Named(
+        inputs
+            .iter()
+            .find(|input| input.product_id == selected_input.product_id)
+            .ok_or(IvQueryError::ProjectionRejected)?
+            .convention
+            .clone(),
+    );
+    if !policy.output_bounds.accepts(output.value, &convention) {
+        return Err(IvQueryError::ProjectionRejected);
+    }
     Ok(QueryPolicyOutput {
         value: output.value,
         policy_decisions: output.policy_decisions,
         selected_input: Some(selected_input),
     })
+}
+
+fn quorum_filtered_inputs(policy: &IvQuorumPolicy, inputs: &[IvPolicyInput]) -> Vec<IvPolicyInput> {
+    if policy.eligible_sources.is_empty() {
+        return inputs.to_vec();
+    }
+    inputs
+        .iter()
+        .filter(|input| policy.eligible_sources.contains(&input.source_id))
+        .cloned()
+        .collect()
 }
 
 fn projected_output_provenance(

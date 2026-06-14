@@ -67,7 +67,14 @@ fn strategy_owned_derived_iv() {
 fn source_fence_rejects_raw_audit_reader_and_raw_dto_strategy_imports() {
     let source = r#"
 use crate::bolt_v3_iv::raw_access::read_raw_event;
+use crate::bolt_v3_iv::raw_access::IvRawAuditAccess;
 use crate::bolt_v3_iv::ingest::{IvRawEvent, IvRawPayload};
+use crate::bolt_v3_iv::query::{IvQueryHandle, IvRawPayloadQuery};
+
+fn strategy_tries_raw_payload_query(handle: &IvQueryHandle, query: IvRawPayloadQuery) {
+    let _ = query.raw_event_id;
+    let _ = handle.raw_event("configured-raw-event");
+}
 "#;
 
     assert_strategy_source_fence_rejects(source, "raw IV payload bypass");
@@ -166,7 +173,10 @@ fn iv_strategy_source_fence_violations(_source: &str) -> Vec<String> {
         ),
         ("select_helper_policy", "IV engine derivation bypass"),
         ("read_raw_event", "raw IV payload bypass"),
+        ("raw_event", "raw IV payload bypass"),
+        ("IvRawPayloadQuery", "raw IV payload bypass"),
         ("IvRawAuditRequest", "raw IV payload bypass"),
+        ("IvRawAuditAccess", "raw IV payload bypass"),
         ("IvRawEvent", "raw IV payload bypass"),
         ("IvRawPayload", "raw IV payload bypass"),
         ("derived_outputs", "IV query state escape hatch"),

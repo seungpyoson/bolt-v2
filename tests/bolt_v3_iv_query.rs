@@ -674,7 +674,7 @@ fn selector_scoped_strategy_query_requires_matching_source_and_selector() {
 }
 
 #[test]
-fn selector_scoped_point_query_records_rejection_decision_for_unauthorized_source() {
+fn selector_scoped_point_query_does_not_record_rejection_for_unauthorized_source() {
     let mut store = IvStore::empty();
     store
         .ingest_event(greeks_event(
@@ -684,7 +684,14 @@ fn selector_scoped_point_query_records_rejection_decision_for_unauthorized_sourc
             test_implied_volatility(43),
         ))
         .unwrap();
-    let handle = IvQueryHandle::new("configured-profile", selector_scoped_authorization(), store);
+    let state = IvQueryStateHandle::new(IvQueryState::new(store));
+    let handle = IvQueryHandle::from_state(
+        "configured-profile",
+        selector_scoped_authorization(),
+        state.clone(),
+    );
+    let observer =
+        IvQueryHandle::from_state("configured-profile", profile_wide_authorization(), state);
 
     assert_eq!(
         handle.query(&point_query(Some("configured-denied-source"), 2_000)),
@@ -692,22 +699,29 @@ fn selector_scoped_point_query_records_rejection_decision_for_unauthorized_sourc
     );
 
     assert!(
+        observer.query_rejections().is_empty(),
+        "authorization failures must not mutate the shared rejection log"
+    );
+    assert!(
         handle.query_rejections().is_empty(),
         "selector-scoped handles must not expose the shared rejection log"
     );
 }
 
 #[test]
-fn selector_scoped_source_health_query_records_rejection_decision_for_unauthorized_source() {
-    let handle = IvQueryHandle::new(
+fn selector_scoped_source_health_query_does_not_record_rejection_for_unauthorized_source() {
+    let state = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+    let handle = IvQueryHandle::from_state(
         "configured-profile",
         selector_scoped_source_health_authorization(),
-        IvStore::empty(),
+        state.clone(),
     )
     .with_source_health(vec![source_health(
         "configured-denied-source",
         IvSourceHealthState::Active,
     )]);
+    let observer =
+        IvQueryHandle::from_state("configured-profile", profile_wide_authorization(), state);
 
     assert_eq!(
         handle.query(&IvQuery::product(IvProductQuery {
@@ -722,6 +736,10 @@ fn selector_scoped_source_health_query_records_rejection_decision_for_unauthoriz
         Err(IvQueryError::StrategyNotAuthorized)
     );
 
+    assert!(
+        observer.query_rejections().is_empty(),
+        "authorization failures must not mutate the shared rejection log"
+    );
     assert!(
         handle.query_rejections().is_empty(),
         "selector-scoped handles must not expose the shared rejection log"
@@ -1364,13 +1382,55 @@ fn unauthorized_retention_miss_query_does_not_leak_or_mutate_source_health() {
 
     assert_eq!(
         scoped.query(&point_query(None, 2_000)),
-        Err(IvQueryError::StrategyNotAuthorized)
+        Err(IvQueryError::ProductNotFound)
     );
 
     let after = observer
         .source_health_for("configured-profile", "configured-source")
         .expect("retention source health should remain observable");
     assert_eq!(after.reject_counts, before.reject_counts);
+}
+
+#[test]
+fn projected_scalar_fallback_rejects_output_outside_configured_bounds() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            2_000,
+            test_implied_volatility(42),
+        ))
+        .unwrap();
+    let mut projection_policy =
+        projection_policy_with_refs(2, Some("configured-fallback-policy"), None, None);
+    projection_policy.output_bounds.inclusive_max = Some(0.30);
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy])
+        .with_fallback_policies(vec![IvFallbackPolicy {
+            policy_id: "configured-fallback-policy".to_string(),
+            candidate_order: vec!["configured-option-instrument".to_string()],
+            eligible_sources: vec!["configured-source".to_string()],
+            maximum_timestamp_skew_ns: 10,
+            required_provenance_fields: vec!["raw_event_id".to_string()],
+        }]);
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(match point_query(None, 2_000) {
+                    IvQuery::Product(query) => query.selector,
+                    IvQuery::RawPayload(_) => panic!("expected product query"),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        })),
+        Err(IvQueryError::ProjectionRejected)
+    );
 }
 
 #[test]
@@ -2316,6 +2376,75 @@ fn projected_scalar_point_query_aggregates_matching_sources_for_quorum() {
 }
 
 #[test]
+fn projected_scalar_point_query_uses_quorum_eligible_inputs_for_emitted_value() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            2_000,
+            test_implied_volatility(40),
+        ))
+        .unwrap();
+    store
+        .ingest_event(greeks_event(
+            "configured-backup-source",
+            "configured-backup-selector-fingerprint",
+            2_000,
+            test_implied_volatility(42),
+        ))
+        .unwrap();
+    store
+        .ingest_event(greeks_event(
+            "configured-third-source",
+            "configured-third-selector-fingerprint",
+            2_000,
+            test_implied_volatility(90),
+        ))
+        .unwrap();
+    let mut projection_policy =
+        projection_policy_with_refs(2, None, None, Some("configured-quorum-policy"));
+    projection_policy.source_eligibility = vec![
+        "configured-source".to_string(),
+        "configured-backup-source".to_string(),
+        "configured-third-source".to_string(),
+    ];
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy])
+        .with_quorum_policies(vec![IvQuorumPolicy {
+            policy_id: "configured-quorum-policy".to_string(),
+            minimum_sources: 2,
+            eligible_sources: vec![
+                "configured-source".to_string(),
+                "configured-backup-source".to_string(),
+            ],
+            agreement_band: 0.05,
+            tie_break: IvQuorumTieBreak::Mean,
+        }]);
+
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(match point_query(None, 2_000) {
+                    IvQuery::Product(query) => query.selector,
+                    IvQuery::RawPayload(_) => panic!("expected product query"),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::ProjectedScalarIv(projected) = product else {
+        panic!("expected projected scalar IV product");
+    };
+    assert!((projected.value - test_implied_volatility(41)).abs() < f64::EPSILON);
+}
+
+#[test]
 fn projected_scalar_point_query_deduplicates_tolerance_inputs_by_source() {
     let mut store = IvStore::empty();
     store
@@ -2988,6 +3117,48 @@ fn projected_scalar_derived_iv_query_derives_profile_inputs_for_quorum_without_w
 }
 
 #[test]
+fn failed_projected_scalar_query_does_not_cache_derived_inputs() {
+    let mut projection_policy = projection_policy_with_refs(1, None, None, None);
+    projection_policy.output_bounds.inclusive_max = Some(0.10);
+
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_retention_policy(retention_policy(4, 2))
+    .with_helper_policies(vec![helper_policy()])
+    .with_derived_input_policies(vec![query_supplied_derived_input_policy(
+        "configured-derived-input-policy",
+    )])
+    .with_derived_inputs(vec![complete_inputs()])
+    .with_projection_policies(vec![projection_policy]);
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(IvSelector::DerivedIvQuery {
+                    instrument_id: "configured-option-instrument".to_string(),
+                    helper_policy_id: "configured-helper-policy".to_string(),
+                    as_of_ns: UnixNanos::new(2_000),
+                    inputs: None,
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        })),
+        Err(IvQueryError::ProjectionRejected)
+    );
+    assert!(
+        handle.derived_outputs().is_empty(),
+        "failed projection queries must not cache derived outputs"
+    );
+}
+
+#[test]
 fn current_generation_source_health_lookup_ignores_stale_history() {
     let mut store = IvStore::empty();
     store
@@ -3283,6 +3454,31 @@ fn source_health_current_generation_lookup_does_not_fall_back_to_stale_history()
         handle.source_health_for("configured-profile", "configured-source"),
         None
     );
+}
+
+#[test]
+fn stale_source_rejection_diagnostic_creates_stale_health_when_no_row_exists() {
+    let state = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+    let handle = IvQueryHandle::from_state(
+        "configured-profile",
+        profile_wide_authorization(),
+        state.clone(),
+    );
+
+    state.record_source_rejection_diagnostic(
+        "configured-profile".to_string(),
+        "configured-source".to_string(),
+        1,
+        UnixNanos::new(2_000),
+        IvRejectReason::StaleData,
+    );
+
+    let health = handle
+        .source_health_for("configured-profile", "configured-source")
+        .expect("diagnostic should create source health");
+    assert_eq!(health.subscription_state, IvSourceHealthState::Stale);
+    assert!(health.stale_state);
+    assert_eq!(health.last_reject_reason, Some(IvRejectReason::StaleData));
 }
 
 #[test]

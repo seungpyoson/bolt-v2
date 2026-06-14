@@ -936,6 +936,33 @@ fn profile_input_bounds_must_be_finite_positive_and_convention_scoped() {
 }
 
 #[test]
+fn iv_bounds_must_define_an_upper_ceiling() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0].input_bounds.inclusive_max = None;
+    config.profiles[0].input_bounds.exclusive_max = None;
+    config.profiles[0].projection_policies[0]
+        .output_bounds
+        .inclusive_max = None;
+    config.profiles[0].projection_policies[0]
+        .output_bounds
+        .exclusive_max = None;
+
+    let errors = validate_iv_root_config(&config);
+    let message = errors.join("\n");
+
+    assert!(
+        message.contains("profiles.configured-profile.input_bounds")
+            && message.contains("inclusive_max or exclusive_max"),
+        "expected input-bound ceiling rejection, got {errors:?}"
+    );
+    assert!(
+        message.contains("projection_policies.configured-projection-policy.output_bounds")
+            && message.contains("inclusive_max or exclusive_max"),
+        "expected projection-bound ceiling rejection, got {errors:?}"
+    );
+}
+
+#[test]
 fn projection_output_bounds_must_be_ordered_and_convention_scoped() {
     let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
     let bounds = &mut config.profiles[0].projection_policies[0].output_bounds;
@@ -957,6 +984,24 @@ fn projection_output_bounds_must_be_ordered_and_convention_scoped() {
             "projection_policies.configured-projection-policy.output_bounds.allowed_conventions"
         ),
         "expected convention-scoped projection-bound rejection, got {errors:?}"
+    );
+}
+
+#[test]
+fn projection_output_bounds_must_be_subset_of_profile_input_bounds() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0].input_bounds.inclusive_max = Some(0.50);
+    config.profiles[0].projection_policies[0]
+        .output_bounds
+        .inclusive_max = Some(0.75);
+
+    let errors = validate_iv_root_config(&config);
+    let message = errors.join("\n");
+
+    assert!(
+        message.contains("projection_policies.configured-projection-policy.output_bounds")
+            && message.contains("profile input_bounds upper bound"),
+        "expected projection output/input subset rejection, got {errors:?}"
     );
 }
 

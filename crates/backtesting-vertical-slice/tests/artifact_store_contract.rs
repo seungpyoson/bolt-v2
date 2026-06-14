@@ -1970,7 +1970,10 @@ async fn artifact_index_parent_lookup_requires_declared_lineage() {
         )
         .await
         .expect_err("undeclared independent latest parent must be rejected");
-    assert!(err.to_string().contains("declared lineage"), "{err}");
+    assert!(
+        err.to_string().contains("does not declare lineage"),
+        "{err}"
+    );
 }
 
 #[tokio::test]

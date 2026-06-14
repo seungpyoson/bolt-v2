@@ -231,22 +231,22 @@ fn basket_submit_slots_share_single_order_gate_and_count_cap_arithmetic() {
     );
 
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_state = submit_state(writer.clone(), 2, dec!(10));
-    submit_state
+    let submit_gate = submit_state(writer.clone(), 2, dec!(10));
+    submit_gate
         .reserve_basket_submit_slots(
             "polymarket_main",
             &entry_claims(&fixture_group(), dec!(0.9)),
             &basket_slot_evidence("exact-cap", &fixture_group()),
         )
         .expect("two-leg basket should exactly consume a two-order cap");
-    assert_eq!(submit_state.admitted_order_count(), 2);
+    assert_eq!(submit_gate.admitted_order_count(), 2);
 
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_state = submit_state(writer.clone(), 2, dec!(10));
-    submit_state
+    let submit_gate = submit_state(writer.clone(), 2, dec!(10));
+    submit_gate
         .admit(&single_order_request("seed-order", dec!(1)))
         .expect("seed single order should consume one slot");
-    let exhausted = submit_state
+    let exhausted = submit_gate
         .reserve_basket_submit_slots(
             "polymarket_main",
             &entry_claims(&fixture_group(), dec!(0.9)),
@@ -256,8 +256,8 @@ fn basket_submit_slots_share_single_order_gate_and_count_cap_arithmetic() {
     assert_eq!(exhausted, BoltV3SubmitAdmissionError::CountCapExhausted);
 
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_state = submit_state(writer, 2, dec!(0.5));
-    let notional = submit_state
+    let submit_gate = submit_state(writer, 2, dec!(0.5));
+    let notional = submit_gate
         .reserve_basket_submit_slots(
             "polymarket_main",
             &entry_claims(&fixture_group(), dec!(0.9)),
@@ -277,9 +277,9 @@ fn basket_submit_slots_enforce_kill_switch_and_risk_reducing_proof_binding() {
         .expect("fixture should have at least one leg");
 
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_state = submit_state(writer.clone(), 2, dec!(10));
-    submit_state.replace_kill_switch_state(halted_kill_switch_state());
-    let latched_entry = submit_state
+    let submit_gate = submit_state(writer.clone(), 2, dec!(10));
+    submit_gate.replace_kill_switch_state(halted_kill_switch_state());
+    let latched_entry = submit_gate
         .reserve_basket_submit_slots(
             "polymarket_main",
             &entry_claims(&group, dec!(0.9)),
@@ -291,20 +291,20 @@ fn basket_submit_slots_enforce_kill_switch_and_risk_reducing_proof_binding() {
         BoltV3SubmitAdmissionError::KillSwitchLatched { .. }
     ));
 
-    let risk_reducing_claim = risk_reducing_claim(first_leg, valid_exit_proof(first_leg));
-    submit_state
+    let latched_risk_reducing_claim = risk_reducing_claim(first_leg, valid_exit_proof(first_leg));
+    submit_gate
         .reserve_basket_submit_slots(
             "polymarket_main",
-            &[risk_reducing_claim],
+            &[latched_risk_reducing_claim],
             &basket_slot_evidence("risk-reducing", &group),
         )
         .expect("risk-reducing repair/unwind claims with valid proof may admit while latched");
 
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_state = submit_state(writer, 2, dec!(10));
+    let submit_gate = submit_state(writer, 2, dec!(10));
     let mut mismatched = valid_exit_proof(first_leg);
     mismatched.exit_order_side = OrderSide::Buy;
-    let invalid = submit_state
+    let invalid = submit_gate
         .reserve_basket_submit_slots(
             "polymarket_main",
             &[risk_reducing_claim(first_leg, mismatched)],
@@ -318,7 +318,7 @@ fn basket_submit_slots_enforce_kill_switch_and_risk_reducing_proof_binding() {
 
     let mut mismatched = valid_exit_proof(first_leg);
     mismatched.instrument_id = "other.POLYMARKET".to_string();
-    let invalid = submit_state
+    let invalid = submit_gate
         .reserve_basket_submit_slots(
             "polymarket_main",
             &[risk_reducing_claim(first_leg, mismatched)],
@@ -332,7 +332,7 @@ fn basket_submit_slots_enforce_kill_switch_and_risk_reducing_proof_binding() {
 
     let mut mismatched = valid_exit_proof(first_leg);
     mismatched.exit_quantity = dec!(2);
-    let invalid = submit_state
+    let invalid = submit_gate
         .reserve_basket_submit_slots(
             "polymarket_main",
             &[risk_reducing_claim(first_leg, mismatched)],

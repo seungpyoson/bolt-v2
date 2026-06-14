@@ -56,6 +56,7 @@ fn test_strategy_with_realized_volatility_surface(
         RecordingFeeProvider::cold(),
         decision_evidence,
         submit_admission,
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     )
     .with_realized_volatility_surfaces(surfaces);
@@ -768,7 +769,7 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
 }
 
 #[test]
-fn submit_orders_false_does_not_leave_pending_entry_between_would_be_entries() {
+fn shadow_policy_does_not_leave_pending_entry_between_would_be_entries() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
@@ -777,7 +778,7 @@ fn submit_orders_false_does_not_leave_pending_entry_between_would_be_entries() {
         evidence.clone(),
         submit_admission.clone(),
     );
-    strategy.config.submit_orders = false;
+    set_shadow_order_execution_policy(&mut strategy);
     register_test_strategy_with_active_instruments(&mut strategy);
 
     let first_client_order_id = strategy
@@ -812,7 +813,7 @@ fn submit_orders_false_does_not_leave_pending_entry_between_would_be_entries() {
 }
 
 #[test]
-fn submit_orders_false_entries_do_not_exhaust_live_admission_count_cap() {
+fn shadow_policy_entries_do_not_exhaust_live_admission_count_cap() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission =
         submit_admission_with_provider_cap(Decimal::new(10_000, 0), evidence.clone());
@@ -820,7 +821,7 @@ fn submit_orders_false_entries_do_not_exhaust_live_admission_count_cap() {
         evidence.clone(),
         submit_admission.clone(),
     );
-    strategy.config.submit_orders = false;
+    set_shadow_order_execution_policy(&mut strategy);
     register_test_strategy_with_active_instruments(&mut strategy);
 
     let first_client_order_id = strategy
@@ -857,7 +858,7 @@ fn submit_orders_false_entries_do_not_exhaust_live_admission_count_cap() {
 }
 
 #[test]
-fn submit_orders_false_exit_keeps_pending_exit_between_would_be_exits() {
+fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
@@ -866,7 +867,7 @@ fn submit_orders_false_exit_keeps_pending_exit_between_would_be_exits() {
         evidence.clone(),
         submit_admission.clone(),
     );
-    strategy.config.submit_orders = false;
+    set_shadow_order_execution_policy(&mut strategy);
     strategy.active.phase = SelectionPhase::Freeze;
     register_test_strategy_with_active_instruments(&mut strategy);
     let instrument_id = configured_outcome_instruments(&strategy)
@@ -925,14 +926,14 @@ fn submit_orders_false_exit_keeps_pending_exit_between_would_be_exits() {
 }
 
 #[test]
-fn submit_orders_false_surfaces_admission_rejection_and_clears_pending_entry() {
+fn shadow_policy_surfaces_admission_rejection_and_clears_pending_entry() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         submit_admission.clone(),
     );
-    strategy.config.submit_orders = false;
+    set_shadow_order_execution_policy(&mut strategy);
     register_test_strategy_with_active_instruments(&mut strategy);
 
     let error = strategy.try_submit_entry_order(1_200).expect_err(

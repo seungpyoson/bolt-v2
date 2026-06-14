@@ -767,6 +767,31 @@ def assert_missing_current_fingerprint_path_fails_closed() -> None:
             raise AssertionError(stdout)
 
 
+def assert_fingerprint_reuse_api_errors_fail_closed() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+
+        def failing_api_json(repo, token, path, query):  # noqa: ARG001 - test fake matches API shape.
+            raise module.ProvenanceError("GitHub API request failed for actions/workflows/ci.yml/runs")
+
+        result = module.resolve_fingerprint_reuse(
+            repo="seungpyoson/bolt-v2",
+            token="token",
+            current_fingerprint=NEXTEST_FINGERPRINT,
+            current_run_id=RUN_ID + 999,
+            config=module.load_config(config),
+            config_path=config,
+            api_json=failing_api_json,
+            api_bytes=lambda _repo, _token, _url: b"",
+            now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+        )
+        if result.reuse_found is not False:
+            raise AssertionError(result)
+        if "fingerprint reuse lookup failed" not in result.reason:
+            raise AssertionError(result)
+
+
 def assert_fingerprint_reuse_selects_newest_valid_prior_green() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1464,6 +1489,7 @@ def main() -> int:
     assert_fingerprint_reuse_rejects_source_workflow_digest_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
     assert_missing_current_fingerprint_path_fails_closed()
+    assert_fingerprint_reuse_api_errors_fail_closed()
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
     assert_ci_policy_outputs_matrix()

@@ -1274,70 +1274,76 @@ def resolve_fingerprint_reuse(
     candidates: list[dict[str, object]] = []
     page_limit_exhausted = False
 
-    for page in range(1, config.max_lookback_pages + 1):
-        runs_payload = api_json(
-            repo,
-            token,
-            workflow_runs_path(config),
-            {
-                "per_page": str(config.workflow_runs_per_page),
-                "page": str(page),
-                "sort": "created",
-                "direction": "desc",
-            },
-        )
-        runs = runs_payload.get("workflow_runs")
-        if not isinstance(runs, list):
-            raise ProvenanceError("workflow runs payload is malformed")
-        if not runs:
-            break
-        page_has_fresh_run = False
-        page_has_old_run = False
-        for run in runs:
-            if not isinstance(run, dict):
+    try:
+        for page in range(1, config.max_lookback_pages + 1):
+            runs_payload = api_json(
+                repo,
+                token,
+                workflow_runs_path(config),
+                {
+                    "per_page": str(config.workflow_runs_per_page),
+                    "page": str(page),
+                    "sort": "created",
+                    "direction": "desc",
+                },
+            )
+            runs = runs_payload.get("workflow_runs")
+            if not isinstance(runs, list):
                 raise ProvenanceError("workflow runs payload is malformed")
-            created_at = run.get("created_at")
-            if not isinstance(created_at, str):
-                raise ProvenanceError("workflow run created_at must be a string")
-            if parse_timestamp(created_at) < cutoff:
-                page_has_old_run = True
-                continue
-            page_has_fresh_run = True
-            if run_matches_fingerprint_reuse(run, config, current_run_id):
-                candidates.append(run)
-        if page_has_old_run and not page_has_fresh_run:
-            last_reason = "lookback age limit exhausted before reusable fingerprint evidence was found"
-            break
-        if len(runs) < config.workflow_runs_per_page:
-            break
-    else:
-        page_limit_exhausted = True
+            if not runs:
+                break
+            page_has_fresh_run = False
+            page_has_old_run = False
+            for run in runs:
+                if not isinstance(run, dict):
+                    raise ProvenanceError("workflow runs payload is malformed")
+                created_at = run.get("created_at")
+                if not isinstance(created_at, str):
+                    raise ProvenanceError("workflow run created_at must be a string")
+                if parse_timestamp(created_at) < cutoff:
+                    page_has_old_run = True
+                    continue
+                page_has_fresh_run = True
+                if run_matches_fingerprint_reuse(run, config, current_run_id):
+                    candidates.append(run)
+            if page_has_old_run and not page_has_fresh_run:
+                last_reason = "lookback age limit exhausted before reusable fingerprint evidence was found"
+                break
+            if len(runs) < config.workflow_runs_per_page:
+                break
+        else:
+            page_limit_exhausted = True
+    except ProvenanceError as exc:
+        return no_fingerprint_reuse(f"fingerprint reuse lookup failed: {exc}")
 
     if page_limit_exhausted:
         last_reason = "lookback page limit exhausted before reusable fingerprint evidence was found"
 
-    candidates.sort(
-        key=lambda run: (
-            as_text(run.get("created_at")),
-            as_text(run.get("updated_at")),
-            positive_int_value(run.get("id"), "workflow run id"),
-        ),
-        reverse=True,
-    )
-    for run in candidates:
-        result = validate_fingerprint_candidate(
-            repo=repo,
-            token=token,
-            run=run,
-            current_fingerprint=parsed_current,
-            config=config,
-            config_path=config_path,
-            api_json=api_json,
-            api_bytes=api_bytes,
+    try:
+        candidates.sort(
+            key=lambda run: (
+                as_text(run.get("created_at")),
+                as_text(run.get("updated_at")),
+                positive_int_value(run.get("id"), "workflow run id"),
+            ),
+            reverse=True,
         )
-        if result.reuse_found:
-            return result
-        last_reason = result.reason
+        for run in candidates:
+            result = validate_fingerprint_candidate(
+                repo=repo,
+                token=token,
+                run=run,
+                current_fingerprint=parsed_current,
+                config=config,
+                config_path=config_path,
+                api_json=api_json,
+                api_bytes=api_bytes,
+            )
+            if result.reuse_found:
+                return result
+            last_reason = result.reason
+    except ProvenanceError as exc:
+        return no_fingerprint_reuse(f"fingerprint reuse lookup failed: {exc}")
 
     return no_fingerprint_reuse(last_reason)
 

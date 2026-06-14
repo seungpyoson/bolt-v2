@@ -36,17 +36,16 @@ pub use config::{
 pub const KEY: &str = "binary_oracle_maker";
 
 /// Inert binary-oracle market-making strategy. Carries only the NautilusTrader
-/// envelope (`core`) plus its parsed config and build context; no active,
-/// pricing, or exposure state exists yet.
+/// envelope (`core`) plus its parsed config; no active, pricing, or exposure
+/// state exists yet.
 #[derive(Debug)]
 pub struct BinaryOracleMaker {
     core: StrategyCore,
     config: BinaryOracleMakerConfig,
-    context: StrategyBuildContext,
 }
 
 impl BinaryOracleMaker {
-    pub fn new(config: BinaryOracleMakerConfig, context: StrategyBuildContext) -> Self {
+    pub fn new(config: BinaryOracleMakerConfig) -> Self {
         let oms_type = config
             .oms_type
             .parse::<OmsType>()
@@ -59,19 +58,12 @@ impl BinaryOracleMaker {
                 ..Default::default()
             }),
             config,
-            context,
         }
     }
 
     /// The parsed maker config (read by later slices once they add behaviour).
     pub fn config(&self) -> &BinaryOracleMakerConfig {
         &self.config
-    }
-
-    /// The build context (fee provider / execution venue / submit-admission)
-    /// the maker is wired with (read by later slices once they add behaviour).
-    pub fn context(&self) -> &StrategyBuildContext {
-        &self.context
     }
 }
 
@@ -90,19 +82,16 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
         validate_config(raw, field_prefix, errors);
     }
 
-    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-        Ok(Box::new(BinaryOracleMaker::new(
-            parse_config(raw)?,
-            context.clone(),
-        )))
+    fn build(raw: &Value, _context: &StrategyBuildContext) -> Result<BoxedStrategy> {
+        Ok(Box::new(BinaryOracleMaker::new(parse_config(raw)?)))
     }
 
     fn register(
         raw: &Value,
-        context: &StrategyBuildContext,
+        _context: &StrategyBuildContext,
         trader: &Rc<RefCell<Trader>>,
     ) -> Result<StrategyId> {
-        let strategy = BinaryOracleMaker::new(parse_config(raw)?, context.clone());
+        let strategy = BinaryOracleMaker::new(parse_config(raw)?);
         let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
         trader.borrow_mut().add_strategy(strategy)?;
         Ok(strategy_id)

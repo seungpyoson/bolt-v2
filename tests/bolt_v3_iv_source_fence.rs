@@ -231,6 +231,7 @@ fn iv_strategy_source_fence_violations(_source: &str) -> Vec<String> {
         ("derived_inputs", "IV query state escape hatch"),
         ("query_rejections", "IV query state escape hatch"),
         ("source_health_for", "IV query state escape hatch"),
+        ("authorization", "IV query state escape hatch"),
     ];
 
     for (needle, reason) in checks {

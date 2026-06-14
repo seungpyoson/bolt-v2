@@ -149,6 +149,14 @@ impl IvStrategyQueryHandle {
         Self { inner }
     }
 
+    pub fn authorization(&self) -> &IvSelectorAuthorization {
+        self.inner.authorization()
+    }
+
+    pub fn derived_inputs(&self) -> Vec<IvDerivedInputSet> {
+        self.inner.derived_inputs()
+    }
+
     pub fn query(&self, query: &IvQuery) -> Result<IvQueryProduct, IvQueryError> {
         self.inner.query(query)
     }

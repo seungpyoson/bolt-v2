@@ -1209,6 +1209,7 @@ impl IvQueryHandle {
         };
         let mut input_products = self.find_projection_input_products(
             &input_query,
+            query,
             state,
             side_effects,
             projection_input_timestamp_tolerance(policy, state),
@@ -1321,22 +1322,30 @@ impl IvQueryHandle {
         state: &IvQueryState,
         side_effects: &mut IvQuerySideEffects,
     ) -> Result<Vec<IvQueryProduct>, IvQueryError> {
-        self.find_projection_products_with_tolerance(query, state, side_effects, None)
+        self.find_projection_products_with_tolerance(query, None, state, side_effects, None)
     }
 
     fn find_projection_input_products(
         &self,
         query: &IvProductQuery,
+        projection_query: &IvProductQuery,
         state: &IvQueryState,
         side_effects: &mut IvQuerySideEffects,
         tolerance_ns: u64,
     ) -> Result<Vec<IvQueryProduct>, IvQueryError> {
-        self.find_projection_products_with_tolerance(query, state, side_effects, Some(tolerance_ns))
+        self.find_projection_products_with_tolerance(
+            query,
+            Some(projection_query),
+            state,
+            side_effects,
+            Some(tolerance_ns),
+        )
     }
 
     fn find_projection_products_with_tolerance(
         &self,
         query: &IvProductQuery,
+        projection_query: Option<&IvProductQuery>,
         state: &IvQueryState,
         side_effects: &mut IvQuerySideEffects,
         tolerance_ns: Option<u64>,
@@ -1510,6 +1519,7 @@ impl IvQueryHandle {
                 },
             ) => self.find_derived_projection_products(
                 query,
+                projection_query.unwrap_or(query),
                 state,
                 side_effects,
                 IvDerivedQueryKey {
@@ -1528,14 +1538,29 @@ impl IvQueryHandle {
     fn find_derived_projection_products(
         &self,
         query: &IvProductQuery,
+        authorization_query: &IvProductQuery,
         state: &IvQueryState,
         side_effects: &mut IvQuerySideEffects,
         derived_query: IvDerivedQueryKey<'_>,
     ) -> Result<Vec<IvQueryProduct>, IvQueryError> {
-        if derived_query.request_inputs.is_some() {
+        if let Some(inputs) = derived_query.request_inputs {
+            if inputs.profile_id != query.profile_id
+                || inputs.instrument_id != derived_query.instrument_id
+                || inputs.as_of_ns != derived_query.as_of_ns
+            {
+                return Err(IvQueryError::DerivedInputNotFound);
+            }
+            if !self.authorizes_derived_input(authorization_query, inputs) {
+                return Err(IvQueryError::StrategyNotAuthorized);
+            }
             return self
-                .find_product(query, state, side_effects)
-                .map(|product| vec![product]);
+                .derive_iv_from_inputs(
+                    state,
+                    side_effects,
+                    derived_query.helper_policy_id,
+                    inputs.clone(),
+                )
+                .map(|derived| vec![IvQueryProduct::DerivedIv(Box::new(derived))]);
         }
 
         let matching_outputs = active_slice(&state.derived_outputs, state.derived_outputs_start)
@@ -1552,7 +1577,7 @@ impl IvQueryHandle {
         let mut unauthorized_candidate = false;
         let mut outputs = Vec::new();
         for derived in matching_outputs {
-            if self.authorizes_derived_output(query, derived) {
+            if self.authorizes_derived_output(authorization_query, derived) {
                 outputs.push(derived.clone());
             } else {
                 unauthorized_candidate = true;
@@ -1566,7 +1591,7 @@ impl IvQueryHandle {
                 && inputs.instrument_id == derived_query.instrument_id
                 && inputs.as_of_ns == derived_query.as_of_ns
         }) {
-            if !self.authorizes_derived_input(query, inputs) {
+            if !self.authorizes_derived_input(authorization_query, inputs) {
                 unauthorized_candidate = true;
                 continue;
             }

@@ -3290,6 +3290,47 @@ fn failed_projected_scalar_query_does_not_cache_derived_inputs() {
 }
 
 #[test]
+fn unauthorized_projected_scalar_query_does_not_derive_or_record_rejections() {
+    let state = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+    state.set_helper_policies(vec![helper_policy()]);
+    state.set_derived_inputs(vec![complete_inputs()]);
+    state.set_projection_policies(vec![projection_policy_with_refs(1, None, None, None)]);
+
+    let handle = IvQueryHandle::from_state(
+        "configured-profile",
+        selector_scoped_derived_authorization(),
+        state.clone(),
+    );
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(IvSelector::DerivedIvQuery {
+                    instrument_id: "configured-option-instrument".to_string(),
+                    helper_policy_id: "configured-helper-policy".to_string(),
+                    as_of_ns: UnixNanos::new(2_000),
+                    inputs: None,
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        })),
+        Err(IvQueryError::StrategyNotAuthorized)
+    );
+    assert!(
+        state.query_rejections().is_empty(),
+        "unauthorized projected query must not record derived-input rejections"
+    );
+    assert!(
+        state.derived_outputs().is_empty(),
+        "unauthorized projected query must not cache derived outputs"
+    );
+}
+
+#[test]
 fn current_generation_source_health_lookup_ignores_stale_history() {
     let mut store = IvStore::empty();
     store

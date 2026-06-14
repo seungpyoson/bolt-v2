@@ -127,9 +127,9 @@ mod exposure;
 
 use self::exposure::{
     BlindRecoveryReason, BlindRecoveryState, ConfiguredPositionContract, EntryReconcileReason,
-    ExitPendingState, ExposureOccupancy, ExposureState, ManagedPositionOrigin, ManagedPositionState,
-    OpenPositionState, PendingEntryState, PendingExitState, PositionMaterializationSpec,
-    UnsupportedObservedReason, UnsupportedObservedState,
+    ExitPendingState, ExposureOccupancy, ExposureState, ManagedPositionOrigin,
+    ManagedPositionState, OpenPositionState, PendingEntryState, PendingExitState,
+    PositionMaterializationSpec, UnsupportedObservedReason, UnsupportedObservedState,
     infer_strategy_position_side_from_entry_fill, managed_position_effective_entry_cost,
     supports_strategy_managed_position,
 };

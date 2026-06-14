@@ -1113,6 +1113,7 @@ pub(crate) fn synthetic_accepted_dataset_for_tests() -> AcceptedDataset {
         venue: "synthetic-venue".to_string(),
         product_family: "spot".to_string(),
         product_category: "spot".to_string(),
+        fixture_type: FixtureType::PerpsSpot,
         table_family: "trades".to_string(),
         instrument_universe_id: "synthetic-instrument-universe".to_string(),
         fidelity_class: SourceProofFidelityClass::TradeReplay,

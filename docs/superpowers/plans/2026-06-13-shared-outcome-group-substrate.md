@@ -677,24 +677,26 @@ Completion evidence: local `just fmt-check`, `git diff --check`, and `just sourc
 - Modify `src/bolt_v3_providers/polymarket.rs`
 - Test `tests/bolt_v3_polymarket_outcome_groups.rs`
 
-- [ ] Write tests using synthetic Gamma event/market metadata for a three-way group with one shared non-null `GroupingProof::PolymarketNegRisk { neg_risk_market_id = <negRiskMarketID>, ... }`.
-- [ ] Prove that both YES and NO token legs are preserved.
-- [ ] Prove source-specific role mapping: each Polymarket market maps to exactly one configured terminal state; operator-attested positive-side binding names the native leg that becomes `PaysOnTerminalState(state_id)` and the inverse native leg that becomes `PaysUnlessTerminalState(state_id)`; unknown, missing, re-keyed, or multi-state side semantics reject before matrix construction.
-- [ ] Forbid hardcoded "Yes", "No", "Up", "Down", or positional token-order heuristics in Polymarket role assignment; tests must use non-Yes/No labels to prove the normalizer reads only attested native-leg bindings plus venue metadata consistency.
-- [ ] Prove terminal-state label binding rejects missing labels, duplicate labels, unmatched Gamma outcomes, and extra standard outcomes under the same `GroupingProof::PolymarketNegRisk.neg_risk_market_id`.
-- [ ] Prove that Polymarket grouping requires one shared non-null `GroupingProof::PolymarketNegRisk.neg_risk_market_id`; it must not rely on event slug, sports market type, question text, or slug patterns alone.
-- [ ] Prove market-slug-only and bounded-Gamma-query-only complete sets work with empty `event_slugs`; event membership is evidence, not a required proof field.
-- [ ] Prove that event containers with unrelated markets are rejected unless all admitted markets share the same source-native grouping identity, one-to-one terminal-state binding, price-scale proof, and terminal-state contract.
-- [ ] Prove that missing void/refund policy rejects the group.
-- [ ] Map Polymarket Gamma/NT metadata to `OutcomeGroup`.
-- [ ] Implement the evidence-selected `negRiskMarketID` path for Polymarket sources. If Task 0 selects NT metadata surfacing, consume the surfaced NT field and prove it is present in the loaded instruments. If Task 0 selects a Bolt provider-local cache, fetch each configured Gamma event, market slug, event query, or bounded Gamma query once; cache the raw response keyed by native token id, condition id, and market slug; recover `negRiskMarketID`; and emit the exact NT discovery filters/market slugs from the same cached response.
-- [ ] Bind Gamma cache TTL to the Polymarket client data `update_instruments_interval_mins`, not to live book `freshness.max_age_ms`; refresh before scan/admission when stale; invalidate on NT instrument reload conflicts; and fail closed rather than using expired grouping proof.
-- [ ] Do not add two active runtime paths for outcome-group metadata. NT may still load instruments from emitted filters. If Task 0 selects a provider-local cache, that cache is the sole Bolt metadata source used for `negRiskMarketID` proof, terminal-state binding, price-scale evidence, and conflict checks. If Task 0 selects NT metadata surfacing, do not keep a parallel Bolt proof cache for the same field.
-- [ ] Fail closed when any leg lacks a non-null `negRiskMarketID`, when recovered metadata conflicts with the NT instrument, or when Gamma cache age exceeds `metadata_ttl_ms` derived from `clients.<id>.data.update_instruments_interval_mins` and capped by `risk.basket_execution.max_metadata_age_ms`. Never compare Gamma metadata age to live-book `freshness.max_age_ms`.
-- [ ] Add provider mapping for TOML-driven NT discovery filters: explicit event slugs, market slugs, event queries, and bounded Gamma queries.
-- [ ] Extend Polymarket `SUPPORTED_MARKET_FAMILIES` with `outcome_group::KEY` and add adapter-mapping tests proving outcome-group sources produce the expected NT filters for the configured `client_id`.
-- [ ] Enforce first-slice live scope by rejecting any Polymarket outcome group whose source `client_id` differs from the strategy `execution_client_id`.
-- [ ] Avoid per-scope NT `accept()` outcome predicates because NT applies accept predicates globally across filters.
+Completion evidence: local `cargo fmt`, `just fmt-check`, `git diff --check`, and `just source-fence-static` passed; exact-head remote verification passed for PR #703 at `93974889992bc5166d4561cf775bed0eb1ea82f3`.
+
+- [x] Write tests using synthetic Gamma event/market metadata for a three-way group with one shared non-null `GroupingProof::PolymarketNegRisk { neg_risk_market_id = <negRiskMarketID>, ... }`.
+- [x] Prove that both YES and NO token legs are preserved.
+- [x] Prove source-specific role mapping: each Polymarket market maps to exactly one configured terminal state; operator-attested positive-side binding names the native leg that becomes `PaysOnTerminalState(state_id)` and the inverse native leg that becomes `PaysUnlessTerminalState(state_id)`; unknown, missing, re-keyed, or multi-state side semantics reject before matrix construction.
+- [x] Forbid hardcoded "Yes", "No", "Up", "Down", or positional token-order heuristics in Polymarket role assignment; tests must use non-Yes/No labels to prove the normalizer reads only attested native-leg bindings plus venue metadata consistency.
+- [x] Prove terminal-state label binding rejects missing labels, duplicate labels, unmatched Gamma outcomes, and extra standard outcomes under the same `GroupingProof::PolymarketNegRisk.neg_risk_market_id`.
+- [x] Prove that Polymarket grouping requires one shared non-null `GroupingProof::PolymarketNegRisk.neg_risk_market_id`; it must not rely on event slug, sports market type, question text, or slug patterns alone.
+- [x] Prove market-slug-only and bounded-Gamma-query-only complete sets work with empty `event_slugs`; event membership is evidence, not a required proof field.
+- [x] Prove that event containers with unrelated markets are rejected unless all admitted markets share the same source-native grouping identity, one-to-one terminal-state binding, price-scale proof, and terminal-state contract.
+- [x] Prove that missing void/refund policy rejects the group.
+- [x] Map Polymarket Gamma/NT metadata to `OutcomeGroup`.
+- [x] Implement the evidence-selected `negRiskMarketID` path for Polymarket sources. If Task 0 selects NT metadata surfacing, consume the surfaced NT field and prove it is present in the loaded instruments. If Task 0 selects a Bolt provider-local cache, fetch each configured Gamma event, market slug, event query, or bounded Gamma query once; cache the raw response keyed by native token id, condition id, and market slug; recover `negRiskMarketID`; and emit the exact NT discovery filters/market slugs from the same cached response.
+- [x] Bind Gamma cache TTL to the Polymarket client data `update_instruments_interval_mins`, not to live book `freshness.max_age_ms`; refresh before scan/admission when stale; invalidate on NT instrument reload conflicts; and fail closed rather than using expired grouping proof.
+- [x] Do not add two active runtime paths for outcome-group metadata. NT may still load instruments from emitted filters. If Task 0 selects a provider-local cache, that cache is the sole Bolt metadata source used for `negRiskMarketID` proof, terminal-state binding, price-scale evidence, and conflict checks. If Task 0 selects NT metadata surfacing, do not keep a parallel Bolt proof cache for the same field.
+- [x] Fail closed when any leg lacks a non-null `negRiskMarketID`, when recovered metadata conflicts with the NT instrument, or when Gamma cache age exceeds `metadata_ttl_ms` derived from `clients.<id>.data.update_instruments_interval_mins` and capped by `risk.basket_execution.max_metadata_age_ms`. Never compare Gamma metadata age to live-book `freshness.max_age_ms`.
+- [x] Add provider mapping for TOML-driven NT discovery filters: explicit event slugs, market slugs, event queries, and bounded Gamma queries.
+- [x] Extend Polymarket `SUPPORTED_MARKET_FAMILIES` with `outcome_group::KEY` and add adapter-mapping tests proving outcome-group sources produce the expected NT filters for the configured `client_id`.
+- [x] Enforce first-slice live scope by rejecting any Polymarket outcome group whose source `client_id` differs from the strategy `execution_client_id`.
+- [x] Avoid per-scope NT `accept()` outcome predicates because NT applies accept predicates globally across filters.
 
 ### Task 5: Read-Only Outcome-Group Scanner
 

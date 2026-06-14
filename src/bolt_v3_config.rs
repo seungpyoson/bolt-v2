@@ -94,6 +94,7 @@ pub struct BoltV3RootConfig {
 #[serde(deny_unknown_fields)]
 pub struct RuntimeBlock {
     pub mode: Environment,
+    pub order_execution_mode: crate::bolt_v3_order_execution::BoltV3OrderExecutionMode,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

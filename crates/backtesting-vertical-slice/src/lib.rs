@@ -47,6 +47,7 @@ pub mod conversion_boundary;
 pub mod first_proof_selector;
 pub mod hashing;
 pub mod io_safety;
+pub mod leadlag_catalog_reader;
 pub mod mechanical_probe_strategy;
 pub mod nt_catalog_capability;
 pub mod nt_catalog_proof;

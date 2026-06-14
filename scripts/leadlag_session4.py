@@ -16,9 +16,12 @@ the session-4 report: spread reality, fee reality, the spot->Polymarket
 lead-lag event study, market-implied calibration, and the GO/NO-GO inputs.
 
 Data sources (all read-only, no live-host access required):
-  - Polymarket CLOB events (top-of-book + trades): the pmxt archive staged in the
-    project lake, s3://bolt-parquet/backfill-staging/2026-06-01/
-    polymarket-pmxt-v2-streaming/ (hourly parquet objects, hash-named per day).
+  - Strategy-fidelity Polymarket CLOB events (top-of-book + trades): NT
+    ParquetDataCatalog reads through the Rust leadlag_catalog_extract helper,
+    with catalog URI, instrument aliases, book type, clock, and storage options
+    supplied by TOML.
+  - Raw fallback: receive-offset latency work only, until #677 writes
+    `ts_init = capture_time` and the remaining latency reads can retire.
   - Spot leader mid: Hyperliquid perp l2Book 20-level snapshots (~0.54s cadence)
     from the bolt-parquet staging lake. OKX L2 books in the lake cover
     2026-03-01..03-11 only — zero overlap with Polymarket book coverage — so the
@@ -29,7 +32,8 @@ Data sources (all read-only, no live-host access required):
 
 Reproduction (from repo root; aws CLI must hold read access to bolt-parquet):
   uv run scripts/leadlag_session4.py resolve        --dates 2026-04-22:2026-04-28
-  uv run scripts/leadlag_session4.py extract-pm     --dates 2026-04-22:2026-04-28
+  uv run scripts/leadlag_session4.py extract-pm-catalog --dates 2026-04-22:2026-04-28 \
+      --catalog-config <leadlag-catalog.toml>
   uv run scripts/leadlag_session4.py extract-leader --dates 2026-04-22:2026-04-28
   uv run scripts/leadlag_session4.py analyze        --dates 2026-04-22:2026-04-28 \
       --report /tmp/leadlag_tables.md
@@ -47,6 +51,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -264,6 +269,131 @@ def tokens_for_day(cycles: list[Cycle], day_start: int) -> list[str]:
             out.add(c.up_token)
             out.add(c.down_token)
     return sorted(out)
+
+
+# ----- extract-pm-catalog: NT catalog top-of-book + trades ------------------
+
+
+TOB_CATALOG_SCHEMA = {
+    "asset_id": pl.String,
+    "instrument_id": pl.String,
+    "ts_ms": pl.Int64,
+    "ts_venue_ms": pl.Int64,
+    "best_bid": pl.Float64,
+    "best_ask": pl.Float64,
+}
+TRADES_CATALOG_SCHEMA = {
+    "asset_id": pl.String,
+    "instrument_id": pl.String,
+    "ts_ms": pl.Int64,
+    "ts_venue_ms": pl.Int64,
+    "price": pl.Float64,
+    "size": pl.Float64,
+    "side": pl.String,
+}
+
+
+def load_pm_catalog_extract_config(path: str | Path) -> dict:
+    config_path = Path(path)
+    with config_path.open("rb") as handle:
+        config = tomllib.load(handle)
+    missing = [key for key in ("reader_bin", "cache_stem") if key not in config]
+    if missing:
+        raise SystemExit(f"catalog extract config missing required keys: {', '.join(missing)}")
+    config["__config_path"] = str(config_path)
+    return config
+
+
+def run_leadlag_catalog_extract(config: dict, kind: str, output: Path) -> None:
+    subprocess.run(
+        [
+            str(config["reader_bin"]),
+            "--config",
+            str(config["__config_path"]),
+            "--kind",
+            kind,
+            "--output",
+            str(output),
+        ],
+        check=True,
+    )
+
+
+def read_catalog_jsonl(path: Path, schema: dict[str, pl.DataType]) -> pl.DataFrame:
+    if path.stat().st_size == 0:
+        return pl.DataFrame(schema=schema)
+    frame = pl.read_ndjson(path)
+    return frame.select([pl.col(name).cast(dtype).alias(name) for name, dtype in schema.items()])
+
+
+def catalog_fee_rate_by_token(cycles: list[Cycle]) -> dict[str, int]:
+    rates: dict[str, int] = {}
+    for cycle in cycles:
+        fee_rate_bps = int(round(cycle.taker_fee_rate * ENTRY_FEE_BPS_SCALE))
+        for token in (cycle.up_token, cycle.down_token):
+            existing = rates.get(token)
+            if existing is not None and existing != fee_rate_bps:
+                raise SystemExit(f"conflicting fee rates for token {token}: {existing} vs {fee_rate_bps}")
+            rates[token] = fee_rate_bps
+    return rates
+
+
+def write_catalog_extract_frames(
+    workdir: Path,
+    dates: list[str],
+    cycles: list[Cycle],
+    cache_stem: str,
+    tob_json: Path,
+    trades_json: Path,
+) -> str:
+    tob = read_catalog_jsonl(tob_json, TOB_CATALOG_SCHEMA)
+    trades = read_catalog_jsonl(trades_json, TRADES_CATALOG_SCHEMA)
+    fee_rates = catalog_fee_rate_by_token(cycles)
+    trades = trades.with_columns(
+        pl.col("asset_id").replace_strict(fee_rates, default=None).cast(pl.Int64).alias("fee_rate_bps")
+    )
+
+    summaries = []
+    for date in dates:
+        lo = day_epoch(date) * 1000
+        hi = lo + 86_400_000
+        tob_day = tob.filter((pl.col("ts_ms") >= lo) & (pl.col("ts_ms") < hi))
+        trades_day = trades.filter((pl.col("ts_ms") >= lo) & (pl.col("ts_ms") < hi))
+        tob_out = tob_path(workdir, date, cache_stem)
+        trades_out = trades_path(workdir, date, cache_stem)
+        tob_out.parent.mkdir(parents=True, exist_ok=True)
+        trades_out.parent.mkdir(parents=True, exist_ok=True)
+        tob_day.write_parquet(tob_out)
+        trades_day.write_parquet(trades_out)
+        summaries.append(f"{date}/{cache_stem}: tob={tob_day.height} trades={trades_day.height}")
+    return "\n".join(summaries)
+
+
+def cmd_extract_pm_catalog(args: argparse.Namespace) -> None:
+    workdir = Path(args.workdir)
+    dates = parse_dates(args.dates)
+    cycles = load_cycles(workdir, dates, args.assets.split(","))
+    config = load_pm_catalog_extract_config(args.catalog_config)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpdir = Path(tmp)
+        tob_json = tmpdir / "tob.jsonl"
+        trades_json = tmpdir / "trades.jsonl"
+        run_leadlag_catalog_extract(config, "tob", tob_json)
+        run_leadlag_catalog_extract(config, "trades", trades_json)
+        print(
+            write_catalog_extract_frames(
+                workdir,
+                dates,
+                cycles,
+                str(config["cache_stem"]),
+                tob_json,
+                trades_json,
+            ),
+            flush=True,
+        )
+
+
+# ----- extract-pm: legacy raw fallback for receive-offset work ---------------
 
 
 def extract_pm_object(workdir: Path, date: str, key: str, tokens: list[str]) -> str:
@@ -888,7 +1018,12 @@ def main() -> None:
     p_resolve.add_argument("--concurrency", type=int, default=8)
     p_resolve.set_defaults(func=cmd_resolve)
 
-    p_pm = sub.add_parser("extract-pm", help="extract Polymarket top-of-book + trades")
+    p_pm_catalog = sub.add_parser("extract-pm-catalog", help="extract Polymarket top-of-book + trades from NT catalog")
+    common(p_pm_catalog)
+    p_pm_catalog.add_argument("--catalog-config", required=True)
+    p_pm_catalog.set_defaults(func=cmd_extract_pm_catalog)
+
+    p_pm = sub.add_parser("extract-pm", help="legacy raw fallback for receive-offset work")
     common(p_pm)
     p_pm.add_argument("--concurrency", type=int, default=3)
     p_pm.set_defaults(func=cmd_extract_pm)

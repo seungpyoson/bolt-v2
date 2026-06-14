@@ -25,7 +25,9 @@ Companion to scripts/leadlag_session4.py (imported as a module; same caches unde
 2. `extract-sizes` + `fillability` — the GO verdict assumed the displayed ask is
    fillable. This re-extracts the tob stream WITH the level-delta price/size columns and
    measures the displayed size (shares and $ notional) resting at the best ask at signal
-   time — an upper bound on what an IOC can capture without walking the book.
+   time — an upper bound on what an IOC can capture without walking the book. This is
+   the RA raw receive-offset fallback and sunsets when #677 makes the converter write
+   `ts_init = capture_time` into the NT catalog.
 
 Reproduction (after the session-4 extracts exist):
   uv run scripts/leadlag_subsecond.py subsecond     --dates 2026-04-22:2026-04-28

@@ -19,6 +19,8 @@ timestamps against Polymarket COLLECTOR RECEIVE timestamps (pmxt `timestamp_rece
 A systematic offset between those clocks shifts the whole sub-second grid. The raw pmxt
 objects also carry Polymarket's own venue event timestamp (`timestamp`), which the
 extracts never used — so the offset is measurable directly over the study window:
+this is the RA raw receive-offset fallback, and it sunsets when #677 makes the
+converter write `ts_init = capture_time` into the NT catalog.
 
 1. `lake` — per date, the distribution of (timestamp_received - timestamp) for the
    event types the study consumed. Reads only three columns via duckdb httpfs column

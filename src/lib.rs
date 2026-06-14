@@ -70,5 +70,5 @@ pub mod secrets;
 pub mod shadow_pnl;
 pub mod source_canonicalization;
 pub mod strategies;
-pub mod strategy_runtime_bindings;
+pub mod strategy_bindings;
 pub mod venue_contract;

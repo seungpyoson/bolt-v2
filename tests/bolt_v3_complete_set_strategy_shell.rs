@@ -1,8 +1,8 @@
 use bolt_v2::{
-    bolt_v3_archetypes::{complete_set_arbitrage, validation_bindings},
+    bolt_v3_archetypes::complete_set_arbitrage,
     bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig},
     strategies::{complete_set_arbitrage as complete_set_strategy, production_strategy_registry},
-    strategy_runtime_bindings::runtime_bindings,
+    strategy_bindings::{production_runtime_bindings, production_validation_bindings},
 };
 use nautilus_model::enums::{OrderType, TimeInForce};
 
@@ -12,13 +12,13 @@ fn complete_set_source_files_are_registered_for_runtime_activation() {
     assert_eq!(complete_set_strategy::KEY, "complete_set_arbitrage");
 
     assert!(
-        validation_bindings()
+        production_validation_bindings()
             .iter()
             .any(|binding| binding.key == complete_set_arbitrage::KEY),
         "Task 10 must activate complete_set_arbitrage validation binding"
     );
     assert!(
-        runtime_bindings()
+        production_runtime_bindings()
             .iter()
             .any(|binding| binding.key == complete_set_arbitrage::KEY),
         "Task 10 must activate complete_set_arbitrage runtime binding"

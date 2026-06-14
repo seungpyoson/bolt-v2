@@ -259,7 +259,7 @@ mod tests {
                 "src/bolt_v3_basket_store.rs",
                 "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
                 "src/bolt_v3_market_families/outcome_group.rs",
-                "src/strategy_runtime_bindings.rs",
+                "src/strategy_bindings.rs",
                 "src/strategies/complete_set_arbitrage",
             ]
         );
@@ -308,9 +308,7 @@ mod tests {
                 "src/bolt_v3_outcome_group_sources.rs".to_string(),
                 "src/bolt_v3_outcome_groups.rs".to_string(),
                 "src/strategies/complete_set_arbitrage/mod.rs".to_string(),
-                "src/strategies/complete_set_arbitrage/tests/mod.rs".to_string(),
-                "src/strategies/complete_set_arbitrage/tests/shell.rs".to_string(),
-                "src/strategy_runtime_bindings.rs".to_string(),
+                "src/strategy_bindings.rs".to_string(),
             ],
             "Task 11 covers the HIP-4 normalizer root alongside shared outcome-group roots"
         );

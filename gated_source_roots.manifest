@@ -49,5 +49,5 @@ src/bolt_v3_basket_execution.rs
 src/bolt_v3_basket_store.rs
 src/bolt_v3_archetypes/complete_set_arbitrage.rs
 src/bolt_v3_market_families/outcome_group.rs
-src/strategy_runtime_bindings.rs
+src/strategy_bindings.rs
 src/strategies/complete_set_arbitrage

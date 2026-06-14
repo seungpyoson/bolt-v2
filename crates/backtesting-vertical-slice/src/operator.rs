@@ -24,11 +24,14 @@ use crate::{
     artifact_store::{
         ArtifactStoreConfig, CatalogDispatchConfig, CreateOnlyArtifactWriter,
         CreateOnlyProbeTranscript, PersistedCatalogProjection, PersistedCatalogProjectionObject,
-        persist_catalog_projection_for_source_binding,
+        ResolvedArtifactRoot, persist_catalog_projection_for_source_binding,
     },
     canonical_trades::CanonicalInstrumentIdentity,
     catalog_projection::SpotInstrumentSpec,
-    nt_catalog_capability::{NtCatalogCapabilityPlan, NtCatalogCapabilityRunSpec},
+    nt_catalog_capability::{
+        NtCatalogCapabilityEvidence, NtCatalogCapabilityPlan, NtCatalogCapabilityProofArtifact,
+        NtCatalogCapabilityRunSpec,
+    },
     result_contract::ResultArtifactUris,
     run_manifest::BacktestingRunManifest,
     runner::{BacktestRunInputs, BacktestRunOutput, run_backtest},
@@ -80,6 +83,7 @@ pub struct RunArtifacts {
     pub contract_path: PathBuf,
     pub canonical_catalog_uri: Option<String>,
     pub nt_catalog_capability_plan: Option<NtCatalogCapabilityPlan>,
+    pub nt_catalog_capability_proof_artifact: Option<NtCatalogCapabilityProofArtifact>,
     pub create_only_probe_transcript: Option<CreateOnlyProbeTranscript>,
     pub persisted_catalog_projection: Option<PersistedCatalogProjection>,
     pub persisted_catalog_objects: Vec<PersistedCatalogProjectionObject>,
@@ -224,6 +228,7 @@ pub fn run_from_run_spec(
         contract_path,
         canonical_catalog_uri: None,
         nt_catalog_capability_plan: None,
+        nt_catalog_capability_proof_artifact: None,
         create_only_probe_transcript: None,
         persisted_catalog_projection: None,
         persisted_catalog_objects: Vec::new(),
@@ -239,12 +244,20 @@ pub fn run_from_run_spec(
 /// Returns an error if the base run fails, artifact-store config is invalid, the
 /// source binding cannot dispatch to one catalog root, or any create-only write
 /// is rejected.
-pub async fn run_from_run_spec_with_artifact_store(
+pub async fn run_from_run_spec_with_artifact_store<F>(
     spec: &RunSpec,
     gz_bytes: &[u8],
     output_dir: &Path,
     store: &dyn ObjectStore,
-) -> Result<RunArtifacts> {
+    build_capability_evidence: F,
+) -> Result<RunArtifacts>
+where
+    F: FnOnce(
+        &ResolvedArtifactRoot,
+        &NtCatalogCapabilityPlan,
+        CreateOnlyProbeTranscript,
+    ) -> Result<NtCatalogCapabilityEvidence>,
+{
     let mut artifacts = run_from_run_spec(spec, gz_bytes, output_dir)?;
     let artifact_root = spec.artifact_store.resolve()?;
     let nt_catalog_capability_plan = spec
@@ -253,6 +266,19 @@ pub async fn run_from_run_spec_with_artifact_store(
     let writer = CreateOnlyArtifactWriter::new(store);
     let create_only_probe_transcript = writer
         .probe_create_only(&artifact_root, &spec.create_only_probe_id)
+        .await?;
+    let nt_catalog_capability_evidence = build_capability_evidence(
+        &artifact_root,
+        &nt_catalog_capability_plan,
+        create_only_probe_transcript.clone(),
+    )?;
+    let nt_catalog_capability_proof_artifact = spec
+        .nt_catalog_capability_proof
+        .persist_completed_proof_from_evidence(
+            &spec.artifact_store,
+            &writer,
+            &nt_catalog_capability_evidence,
+        )
         .await?;
     let persisted = persist_catalog_projection_for_source_binding(
         store,
@@ -279,9 +305,18 @@ pub async fn run_from_run_spec_with_artifact_store(
     .with_context(|| format!("write {}", artifacts.contract_path.display()))?;
     artifacts.canonical_catalog_uri = Some(persisted.catalog_root_uri.clone());
     artifacts.nt_catalog_capability_plan = Some(nt_catalog_capability_plan);
+    artifacts.nt_catalog_capability_proof_artifact = Some(nt_catalog_capability_proof_artifact);
     artifacts.create_only_probe_transcript = Some(create_only_probe_transcript);
     artifacts.persisted_catalog_objects = persisted.objects.clone();
     artifacts.persisted_catalog_projection = Some(persisted);
+    if artifacts.catalog_root.exists() {
+        fs::remove_dir_all(&artifacts.catalog_root).with_context(|| {
+            format!(
+                "remove transient local catalog root {}",
+                artifacts.catalog_root.display()
+            )
+        })?;
+    }
     Ok(artifacts)
 }
 

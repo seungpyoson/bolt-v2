@@ -1,13 +1,17 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, env, str::FromStr};
 
 use ahash::AHashMap;
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use aws_config::BehaviorVersion;
 use aws_sdk_ssm::{Client as SsmClient, config::Region};
 use nautilus_model::{
     data::TradeTick,
-    instruments::{Instrument, InstrumentAny},
+    enums::{AggressorSide, AssetClass},
+    identifiers::{InstrumentId, Symbol, TradeId},
+    instruments::{BinaryOption, CryptoPerpetual, Instrument, InstrumentAny},
+    types::{Currency, Price, Quantity},
 };
+use nautilus_core::UnixNanos;
 use nautilus_persistence::backend::catalog::{CatalogPathPrefix, ParquetDataCatalog};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -156,6 +160,52 @@ pub struct AmbientCredentialScrubPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct NtCatalogSyntheticFixtures {
+    pub binary_option: NtCatalogSyntheticBinaryOptionSpec,
+    pub perps_spot: NtCatalogSyntheticPerpsSpotSpec,
+    pub trade_ticks: Vec<NtCatalogSyntheticTradeTickSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NtCatalogSyntheticBinaryOptionSpec {
+    pub instrument_id: String,
+    pub raw_symbol: String,
+    pub asset_class: String,
+    pub currency: String,
+    pub activation_ns: u64,
+    pub expiration_ns: u64,
+    pub price_increment: String,
+    pub size_increment: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NtCatalogSyntheticPerpsSpotSpec {
+    pub instrument_id: String,
+    pub raw_symbol: String,
+    pub base_currency: String,
+    pub quote_currency: String,
+    pub settlement_currency: String,
+    pub is_inverse: bool,
+    pub price_increment: String,
+    pub size_increment: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NtCatalogSyntheticTradeTickSpec {
+    pub instrument_id: String,
+    pub price: String,
+    pub size: String,
+    pub aggressor_side: String,
+    pub trade_id: String,
+    pub ts_event: u64,
+    pub ts_init: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NtCatalogCapabilityRunSpec {
     pub proof_run_id: String,
     pub nt_revision: String,
@@ -163,6 +213,7 @@ pub struct NtCatalogCapabilityRunSpec {
     pub proof_artifact_object_name: String,
     pub expected_storage_options_keys: Vec<String>,
     pub synthetic_fixture_coverage: Vec<MarketStructureFixture>,
+    pub synthetic_fixtures: NtCatalogSyntheticFixtures,
     pub synthetic_source_proof_id: String,
     pub provenance: String,
     pub ambient_credential_scrub: AmbientCredentialScrubPlan,
@@ -517,6 +568,26 @@ fn ensure_read_back_catalog_uri_matches(
     Ok(())
 }
 
+fn parse_instrument_id(field: &'static str, value: &str) -> Result<InstrumentId> {
+    InstrumentId::from_str(value).with_context(|| format!("invalid {field} {value:?}"))
+}
+
+fn parse_symbol(field: &'static str, value: &str) -> Result<Symbol> {
+    Symbol::new_checked(value).map_err(|error| anyhow!("invalid {field} {value:?}: {error}"))
+}
+
+fn parse_currency(field: &'static str, value: &str) -> Result<Currency> {
+    Currency::from_str(value).with_context(|| format!("invalid {field} {value:?}"))
+}
+
+fn parse_price(field: &'static str, value: &str) -> Result<Price> {
+    Price::from_str(value).map_err(|error| anyhow!("invalid {field} {value:?}: {error}"))
+}
+
+fn parse_quantity(field: &'static str, value: &str) -> Result<Quantity> {
+    Quantity::from_str(value).map_err(|error| anyhow!("invalid {field} {value:?}: {error}"))
+}
+
 fn validate_read_back_instrument_id(label: &str, instrument_id: &str) -> Result<()> {
     ensure!(
         !instrument_id.trim().is_empty(),
@@ -597,6 +668,179 @@ impl AmbientCredentialScrubPlan {
         );
         Ok(())
     }
+
+    fn runtime_is_scrubbed(&self) -> bool {
+        self.profile_file_paths_redirected
+            && self.imds_blocked
+            && self
+                .unset_env_vars
+                .iter()
+                .all(|name| env::var_os(name).is_none())
+    }
+}
+
+impl NtCatalogSyntheticFixtures {
+    fn validate(&self) -> Result<()> {
+        let (instruments, binary_option_instrument_id, perps_spot_instrument_id) =
+            self.instruments()?;
+        let instrument_ids = instruments
+            .iter()
+            .map(|instrument| instrument.id().to_string())
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            instrument_ids.contains(&binary_option_instrument_id),
+            "synthetic fixtures must include the configured binary-option instrument"
+        );
+        ensure!(
+            instrument_ids.contains(&perps_spot_instrument_id),
+            "synthetic fixtures must include the configured perps-spot instrument"
+        );
+        let trade_ticks = self.trade_ticks()?;
+        ensure!(
+            !trade_ticks.is_empty(),
+            "synthetic fixtures must include trade ticks"
+        );
+        for trade_tick in trade_ticks {
+            ensure!(
+                instrument_ids.contains(&trade_tick.instrument_id.to_string()),
+                "synthetic trade tick instrument {} is not in synthetic instruments",
+                trade_tick.instrument_id
+            );
+        }
+        Ok(())
+    }
+
+    fn instruments(&self) -> Result<(Vec<InstrumentAny>, String, String)> {
+        let binary_option = self.binary_option.instrument()?;
+        let perps_spot = self.perps_spot.instrument()?;
+        let binary_option_instrument_id = binary_option.id().to_string();
+        let perps_spot_instrument_id = perps_spot.id().to_string();
+        Ok((
+            vec![
+                InstrumentAny::BinaryOption(binary_option),
+                InstrumentAny::CryptoPerpetual(perps_spot),
+            ],
+            binary_option_instrument_id,
+            perps_spot_instrument_id,
+        ))
+    }
+
+    fn trade_ticks(&self) -> Result<Vec<TradeTick>> {
+        self.trade_ticks
+            .iter()
+            .map(NtCatalogSyntheticTradeTickSpec::trade_tick)
+            .collect()
+    }
+}
+
+impl NtCatalogSyntheticBinaryOptionSpec {
+    fn instrument(&self) -> Result<BinaryOption> {
+        let price_increment = parse_price("synthetic_fixtures.binary_option.price_increment", &self.price_increment)?;
+        let size_increment =
+            parse_quantity("synthetic_fixtures.binary_option.size_increment", &self.size_increment)?;
+        BinaryOption::new_checked(
+            parse_instrument_id(
+                "synthetic_fixtures.binary_option.instrument_id",
+                &self.instrument_id,
+            )?,
+            parse_symbol("synthetic_fixtures.binary_option.raw_symbol", &self.raw_symbol)?,
+            AssetClass::from_str(&self.asset_class).with_context(|| {
+                format!(
+                    "invalid synthetic_fixtures.binary_option.asset_class {:?}",
+                    self.asset_class
+                )
+            })?,
+            parse_currency("synthetic_fixtures.binary_option.currency", &self.currency)?,
+            UnixNanos::from(self.activation_ns),
+            UnixNanos::from(self.expiration_ns),
+            price_increment.precision,
+            size_increment.precision,
+            price_increment,
+            size_increment,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            UnixNanos::default(),
+            UnixNanos::default(),
+        )
+        .map_err(|error| anyhow!("invalid synthetic binary-option instrument: {error}"))
+    }
+}
+
+impl NtCatalogSyntheticPerpsSpotSpec {
+    fn instrument(&self) -> Result<CryptoPerpetual> {
+        let price_increment =
+            parse_price("synthetic_fixtures.perps_spot.price_increment", &self.price_increment)?;
+        let size_increment =
+            parse_quantity("synthetic_fixtures.perps_spot.size_increment", &self.size_increment)?;
+        CryptoPerpetual::new_checked(
+            parse_instrument_id(
+                "synthetic_fixtures.perps_spot.instrument_id",
+                &self.instrument_id,
+            )?,
+            parse_symbol("synthetic_fixtures.perps_spot.raw_symbol", &self.raw_symbol)?,
+            parse_currency("synthetic_fixtures.perps_spot.base_currency", &self.base_currency)?,
+            parse_currency(
+                "synthetic_fixtures.perps_spot.quote_currency",
+                &self.quote_currency,
+            )?,
+            parse_currency(
+                "synthetic_fixtures.perps_spot.settlement_currency",
+                &self.settlement_currency,
+            )?,
+            self.is_inverse,
+            price_increment.precision,
+            size_increment.precision,
+            price_increment,
+            size_increment,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            UnixNanos::default(),
+            UnixNanos::default(),
+        )
+        .map_err(|error| anyhow!("invalid synthetic perps-spot instrument: {error}"))
+    }
+}
+
+impl NtCatalogSyntheticTradeTickSpec {
+    fn trade_tick(&self) -> Result<TradeTick> {
+        TradeTick::new_checked(
+            parse_instrument_id("synthetic_fixtures.trade_ticks.instrument_id", &self.instrument_id)?,
+            parse_price("synthetic_fixtures.trade_ticks.price", &self.price)?,
+            parse_quantity("synthetic_fixtures.trade_ticks.size", &self.size)?,
+            AggressorSide::from_str(&self.aggressor_side).with_context(|| {
+                format!(
+                    "invalid synthetic_fixtures.trade_ticks.aggressor_side {:?}",
+                    self.aggressor_side
+                )
+            })?,
+            TradeId::from(self.trade_id.as_str()),
+            UnixNanos::from(self.ts_event),
+            UnixNanos::from(self.ts_init),
+        )
+        .map_err(|error| anyhow!("invalid synthetic trade tick {:?}: {error}", self.trade_id))
+    }
 }
 
 impl NtCatalogCapabilityRunSpec {
@@ -622,6 +866,7 @@ impl NtCatalogCapabilityRunSpec {
             "NT catalog capability run spec provenance must be synthetic"
         );
         ensure_required_fixture_coverage(&self.synthetic_fixture_coverage)?;
+        self.synthetic_fixtures.validate()?;
         ensure_proof_artifact_object_name(&self.proof_artifact_object_name)?;
         self.ambient_credential_scrub.validate()?;
         self.ssm_parameter_refs.validate()?;
@@ -657,6 +902,96 @@ impl NtCatalogCapabilityRunSpec {
         };
         plan.validate(&artifact_root)?;
         Ok(plan)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the run spec, artifact store, credentials, or
+    /// synthetic fixtures cannot produce a direct-S3 NT catalog conformance
+    /// probe.
+    pub fn s3_conformance_probe(
+        &self,
+        artifact_store: &ArtifactStoreConfig,
+        credentials: &S3ArtifactStoreCredentials,
+    ) -> Result<NtCatalogS3ConformanceProbe> {
+        let plan = self.proof_plan(artifact_store)?;
+        let storage_options = artifact_store.nt_catalog_storage_options_with_credentials(credentials)?;
+        self.s3_conformance_probe_with_storage_options(plan.synthetic_catalog_root_uri, storage_options)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if runtime controls fail or the positive SSM-backed NT
+    /// S3 read-back probe cannot write, reopen, and query the synthetic catalog.
+    pub fn runtime_evidence(
+        &self,
+        artifact_store: &ArtifactStoreConfig,
+        credentials: &S3ArtifactStoreCredentials,
+        create_only_probe: CreateOnlyProbeTranscript,
+    ) -> Result<NtCatalogCapabilityEvidence> {
+        let plan = self.proof_plan(artifact_store)?;
+        let no_cloud_feature_gate_failed = self
+            .s3_conformance_probe_with_storage_options(
+                plan.synthetic_catalog_root_uri.clone(),
+                AHashMap::new(),
+            )
+            .is_err();
+        let ambient_credentials_scrubbed = self.ambient_credential_scrub.runtime_is_scrubbed();
+        let invalid_credentials_write_failed = self.invalid_credentials_write_fails(
+            artifact_store,
+            credentials,
+        )?;
+        let read_back = run_nt_catalog_s3_conformance_probe(
+            self.s3_conformance_probe(artifact_store, credentials)?,
+        )?;
+        let ssm_credentials_write_reopen_query_succeeded = read_back.write_instruments_succeeded
+            && read_back.write_trade_ticks_succeeded
+            && read_back.query_files_succeeded
+            && read_back.query_instruments_succeeded
+            && read_back.query_trade_ticks_succeeded;
+        Ok(NtCatalogCapabilityEvidence {
+            no_cloud_feature_gate_failed,
+            ambient_credentials_scrubbed,
+            invalid_credentials_write_failed,
+            ssm_credentials_write_reopen_query_succeeded,
+            nt_catalog_storage_option_keys: plan.storage_options_keys,
+            read_back,
+            create_only_probe,
+        })
+    }
+
+    fn invalid_credentials_write_fails(
+        &self,
+        artifact_store: &ArtifactStoreConfig,
+        credentials: &S3ArtifactStoreCredentials,
+    ) -> Result<bool> {
+        let invalid_credentials = S3ArtifactStoreCredentials::new(
+            format!("{}-{}", credentials.access_key_id(), self.proof_run_id),
+            format!("{}-{}", credentials.secret_access_key(), self.proof_run_id),
+            credentials
+                .session_token()
+                .map(|token| format!("{token}-{}", self.proof_run_id)),
+        )?;
+        let invalid_probe = self.s3_conformance_probe(artifact_store, &invalid_credentials)?;
+        Ok(run_nt_catalog_s3_conformance_probe(invalid_probe).is_err())
+    }
+
+    fn s3_conformance_probe_with_storage_options(
+        &self,
+        synthetic_catalog_root_uri: String,
+        storage_options: AHashMap<String, String>,
+    ) -> Result<NtCatalogS3ConformanceProbe> {
+        let (instruments, binary_option_instrument_id, perps_spot_instrument_id) =
+            self.synthetic_fixtures.instruments()?;
+        let trade_ticks = self.synthetic_fixtures.trade_ticks()?;
+        NtCatalogS3ConformanceProbe::new(
+            synthetic_catalog_root_uri,
+            storage_options,
+            instruments,
+            trade_ticks,
+            binary_option_instrument_id,
+            perps_spot_instrument_id,
+        )
     }
 
     /// # Errors

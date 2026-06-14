@@ -26,6 +26,44 @@ synthetic_fixture_coverage = ["binary-option", "perps-spot"]
 synthetic_source_proof_id = "synthetic-fixture"
 provenance = "synthetic"
 
+[nt_catalog_capability_proof.synthetic_fixtures.binary_option]
+instrument_id = "RA001BINARY.POLYMARKET"
+raw_symbol = "RA001BINARY"
+asset_class = "ALTERNATIVE"
+currency = "USDC"
+activation_ns = 1700000000000000000
+expiration_ns = 1700086400000000000
+price_increment = "0.001"
+size_increment = "0.01"
+
+[nt_catalog_capability_proof.synthetic_fixtures.perps_spot]
+instrument_id = "RA001PERP.BYBIT"
+raw_symbol = "RA001PERP"
+base_currency = "BTC"
+quote_currency = "USDC"
+settlement_currency = "USDC"
+is_inverse = false
+price_increment = "0.1"
+size_increment = "0.001"
+
+[[nt_catalog_capability_proof.synthetic_fixtures.trade_ticks]]
+instrument_id = "RA001BINARY.POLYMARKET"
+price = "0.500"
+size = "1.00"
+aggressor_side = "BUYER"
+trade_id = "ra001-binary-0"
+ts_event = 1700000000000000001
+ts_init = 1700000000000000001
+
+[[nt_catalog_capability_proof.synthetic_fixtures.trade_ticks]]
+instrument_id = "RA001PERP.BYBIT"
+price = "50000.0"
+size = "0.010"
+aggressor_side = "SELLER"
+trade_id = "ra001-perps-spot-0"
+ts_event = 1700000000000000002
+ts_init = 1700000000000000002
+
 [nt_catalog_capability_proof.ambient_credential_scrub]
 unset_env_vars = [
   "AWS_ACCESS_KEY_ID",

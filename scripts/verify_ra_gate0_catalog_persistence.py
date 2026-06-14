@@ -161,6 +161,11 @@ CAPABILITY_PROOF_REQUIRED = (
     "conditional_put_probe_succeeded",
     "copy_if_not_exists_probe_succeeded",
     "synthetic_fixture_coverage",
+    "synthetic_fixtures",
+    "runtime_evidence",
+    "runtime_is_scrubbed",
+    "invalid_credentials_write_fails",
+    "s3_conformance_probe",
     "MarketStructureFixture::BinaryOption",
     "MarketStructureFixture::PerpsSpot",
     "nt_catalog_synthetic_proof_root",
@@ -183,11 +188,15 @@ OPERATOR_REQUIRED = (
     "pub create_only_probe_id: String",
     "pub nt_catalog_capability_proof: NtCatalogCapabilityRunSpec",
     "pub nt_catalog_capability_plan: Option<NtCatalogCapabilityPlan>",
+    "pub nt_catalog_capability_proof_artifact: Option<NtCatalogCapabilityProofArtifact>",
     "create_only_probe_transcript",
     "run_from_run_spec_with_artifact_store",
+    "build_capability_evidence",
     ".nt_catalog_capability_proof",
     ".proof_plan(&spec.artifact_store)?",
     ".probe_create_only(",
+    ".persist_completed_proof_from_evidence(",
+    "fs::remove_dir_all(&artifacts.catalog_root)",
     "persist_catalog_projection_for_source_binding",
 )
 MAIN_REQUIRED = (
@@ -196,7 +205,11 @@ MAIN_REQUIRED = (
     "NtCatalogSsmCredentialResolver::from_region",
     ".resolve(&spec.nt_catalog_capability_proof.ssm_parameter_refs)",
     ".build_s3_object_store_with_credentials(&credentials)",
+    ".runtime_evidence(",
     "#[tokio::main",
+)
+MAIN_FORBIDDEN = (
+    "local_nt_catalog_root",
 )
 TEST_REQUIRED = (
     "S3ArtifactStoreCredentials",
@@ -254,6 +267,9 @@ TEST_REQUIRED = (
     "canonical_catalog_uri",
     "nt_catalog_capability_plan",
     ".nt_catalog_capability_plan",
+    ".nt_catalog_capability_proof_artifact",
+    "proof_artifact.evidence",
+    "transient local NT catalog",
     "NT catalog capability proof plan",
     "persisted_catalog_objects",
     "persisted_catalog_projection",
@@ -288,6 +304,9 @@ RUN_SPEC_REQUIRED = (
     "proof_artifact_object_name",
     "expected_storage_options_keys",
     "synthetic_fixture_coverage",
+    "[nt_catalog_capability_proof.synthetic_fixtures.binary_option]",
+    "[nt_catalog_capability_proof.synthetic_fixtures.perps_spot]",
+    "[[nt_catalog_capability_proof.synthetic_fixtures.trade_ticks]]",
     "synthetic_source_proof_id = \"synthetic-fixture\"",
     "provenance = \"synthetic\"",
     "[nt_catalog_capability_proof.ambient_credential_scrub]",
@@ -421,6 +440,11 @@ def scan_root(root: Path) -> list[str]:
             findings.append(
                 f"{MAIN_RS}: runtime S3 object store must use SSM-resolved explicit credentials"
             )
+        for forbidden in MAIN_FORBIDDEN:
+            if forbidden in main_text:
+                findings.append(
+                    f"{MAIN_RS}: must not expose transient local catalog output `{forbidden}`"
+                )
 
     test_file = root / CONTRACT_TEST
     if not test_file.exists():

@@ -81,11 +81,24 @@ fn committed_capability_proof_fixture() -> CommittedCapabilityProofFixture {
     toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec capability proof parses")
 }
 
-fn successful_capability_evidence(root: &ResolvedArtifactRoot) -> NtCatalogCapabilityEvidence {
+fn successful_capability_evidence(
+    root: &ResolvedArtifactRoot,
+    proof: &NtCatalogCapabilityRunSpec,
+) -> NtCatalogCapabilityEvidence {
     let probe_id = "capability-proof-test-probe";
     let catalog_uri = root
-        .nt_catalog_synthetic_proof_root("synthetic-capability-proof")
+        .nt_catalog_synthetic_proof_root(&proof.proof_run_id)
         .expect("synthetic proof root");
+    let binary_option_instrument_id = proof
+        .synthetic_fixtures
+        .binary_option
+        .instrument_id
+        .clone();
+    let perps_spot_instrument_id = proof
+        .synthetic_fixtures
+        .perps_spot
+        .instrument_id
+        .clone();
     NtCatalogCapabilityEvidence {
         no_cloud_feature_gate_failed: true,
         ambient_credentials_scrubbed: true,
@@ -103,9 +116,9 @@ fn successful_capability_evidence(root: &ResolvedArtifactRoot) -> NtCatalogCapab
             query_instruments_succeeded: true,
             query_instruments_result_count: 2,
             binary_option_instrument_read_back: true,
-            binary_option_instrument_id: String::from("binary-option-synthetic"),
+            binary_option_instrument_id,
             perps_spot_instrument_read_back: true,
-            perps_spot_instrument_id: String::from("perps-spot-synthetic"),
+            perps_spot_instrument_id,
         },
         create_only_probe: CreateOnlyProbeTranscript {
             probe_uri: root.create_only_probe_uri(probe_id),
@@ -406,7 +419,8 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
         .artifact_store
         .resolve()
         .expect("committed artifact root");
-    let evidence = successful_capability_evidence(&committed_root);
+    let evidence =
+        successful_capability_evidence(&committed_root, &fixture.nt_catalog_capability_proof);
     assert_eq!(
         evidence.read_back.catalog_uri,
         plan.synthetic_catalog_root_uri
@@ -1071,13 +1085,30 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         )
         .expect("source binding dispatches");
 
-    let artifacts = run_from_run_spec_with_artifact_store(&spec, &gz, output_dir.path(), &store)
-        .await
-        .expect("operator artifact-store run");
+    let artifacts = run_from_run_spec_with_artifact_store(
+        &spec,
+        &gz,
+        output_dir.path(),
+        &store,
+        |artifact_root, plan, create_only_probe| {
+            let mut evidence =
+                successful_capability_evidence(artifact_root, &spec.nt_catalog_capability_proof);
+            evidence.read_back.catalog_uri = plan.synthetic_catalog_root_uri.clone();
+            evidence.nt_catalog_storage_option_keys = plan.storage_options_keys.clone();
+            evidence.create_only_probe = create_only_probe;
+            Ok(evidence)
+        },
+    )
+    .await
+    .expect("operator artifact-store run");
 
     assert_eq!(
         artifacts.canonical_catalog_uri.as_deref(),
         Some(expected_catalog_root.as_str())
+    );
+    assert!(
+        !artifacts.catalog_root.exists(),
+        "artifact-store path must remove the transient local NT catalog after durable persistence"
     );
     assert_eq!(
         artifacts.output.contract.artifact_uris.nt_catalog_uri,
@@ -1113,6 +1144,50 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         nt_catalog_capability_plan.storage_options_keys,
         vec!["region".to_string()]
     );
+    let proof_artifact = artifacts
+        .nt_catalog_capability_proof_artifact
+        .as_ref()
+        .expect("operator must persist NT catalog capability proof artifact");
+    assert_eq!(
+        proof_artifact.proof_artifact_uri,
+        nt_catalog_capability_plan.proof_artifact_uri
+    );
+    assert_eq!(
+        proof_artifact.proof_artifact_create_only_write,
+        CreateOnlyWriteDisposition::Created
+    );
+    assert_eq!(
+        proof_artifact.evidence.create_only_probe,
+        *artifacts
+            .create_only_probe_transcript
+            .as_ref()
+            .expect("create-only probe transcript")
+    );
+    assert_eq!(
+        proof_artifact.evidence.read_back.catalog_uri,
+        nt_catalog_capability_plan.synthetic_catalog_root_uri
+    );
+    let proof_artifact_path = spec
+        .artifact_store
+        .resolve()
+        .expect("artifact root")
+        .object_path_for_uri(&proof_artifact.proof_artifact_uri)
+        .expect("proof artifact path");
+    let proof_artifact_bytes = store
+        .get(&proof_artifact_path)
+        .await
+        .expect("proof artifact exists")
+        .bytes()
+        .await
+        .expect("proof artifact bytes");
+    assert_eq!(
+        sha256_hex(proof_artifact_bytes.as_ref()),
+        proof_artifact.proof_artifact_sha256
+    );
+    let proof_document: NtCatalogCapabilityProofDocument =
+        serde_json::from_slice(proof_artifact_bytes.as_ref()).expect("proof document parses");
+    assert_eq!(proof_document.proof, proof_artifact.proof);
+    assert_eq!(proof_document.evidence, proof_artifact.evidence);
     assert!(
         !artifacts.persisted_catalog_objects.is_empty(),
         "operator must persist projected catalog objects through artifact-store dispatch"

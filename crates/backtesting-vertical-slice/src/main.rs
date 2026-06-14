@@ -48,8 +48,20 @@ async fn main() -> Result<()> {
         .resolve(&spec.nt_catalog_capability_proof.ssm_parameter_refs)
         .await?;
     let store = artifact_root.build_s3_object_store_with_credentials(&credentials)?;
-    let artifacts =
-        run_from_run_spec_with_artifact_store(&spec, &gz_bytes, &cli.output_dir, &store).await?;
+    let artifacts = run_from_run_spec_with_artifact_store(
+        &spec,
+        &gz_bytes,
+        &cli.output_dir,
+        &store,
+        |_, _, create_only_probe| {
+            spec.nt_catalog_capability_proof.runtime_evidence(
+                &spec.artifact_store,
+                &credentials,
+                create_only_probe,
+            )
+        },
+    )
+    .await?;
     let output = &artifacts.output;
 
     println!("accepted_object_sha256 = {}", artifacts.verified_sha256);
@@ -68,10 +80,6 @@ async fn main() -> Result<()> {
     if let Some(canonical_catalog_uri) = &artifacts.canonical_catalog_uri {
         println!("nt_catalog_uri = {canonical_catalog_uri}");
     }
-    println!(
-        "local_nt_catalog_root = {}",
-        artifacts.catalog_root.display()
-    );
     println!("catalog_hash = {}", output.projection.catalog_hash);
     println!("catalog_read_back_trade_ticks = {}", output.read_back_count);
     println!("nt_version = {}", output.contract.nt_version);

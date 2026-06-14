@@ -240,9 +240,11 @@ pub struct NtCatalogCapabilityRunSpec {
     pub synthetic_source_proof_id: String,
     pub provenance: String,
     pub synthetic_fixture_coverage: Vec<MarketStructureFixture>,
+    pub synthetic_fixtures: NtCatalogSyntheticFixtures,
     pub ambient_credential_scrub: AmbientCredentialScrubPlan,
     pub ssm_parameter_refs: NtCatalogSsmParameterRefs,
 }
+pub struct NtCatalogSyntheticFixtures;
 pub struct NtCatalogCapabilityPlan;
 pub struct NtCatalogCapabilityProofArtifact {
     pub proof_artifact_uri: String,
@@ -329,6 +331,15 @@ impl NtCatalogCapabilityProof {
         }
     }
     pub fn proof_plan(&self) -> NtCatalogCapabilityPlan { NtCatalogCapabilityPlan }
+    pub fn runtime_evidence(&self) -> NtCatalogCapabilityEvidence {
+        self.s3_conformance_probe();
+        self.invalid_credentials_write_fails();
+        self.runtime_is_scrubbed();
+        NtCatalogCapabilityEvidence {}
+    }
+    pub fn s3_conformance_probe(&self) -> NtCatalogS3ConformanceProbe { NtCatalogS3ConformanceProbe }
+    pub fn invalid_credentials_write_fails(&self) -> bool { true }
+    pub fn runtime_is_scrubbed(&self) -> bool { true }
     pub fn completed_proof(&self) -> Self { Self {
         synthetic_source_proof_id: self.synthetic_source_proof_id.clone(),
         provenance: self.provenance.clone(),
@@ -365,7 +376,7 @@ impl NtCatalogCapabilityProof {
 def compliant_operator() -> str:
     return f"""
 use crate::artifact_store::{{ArtifactStoreConfig, CatalogDispatchConfig}};
-use crate::nt_catalog_capability::{{NtCatalogCapabilityPlan, NtCatalogCapabilityRunSpec}};
+use crate::nt_catalog_capability::{{NtCatalogCapabilityPlan, NtCatalogCapabilityProofArtifact, NtCatalogCapabilityRunSpec}};
 
 pub struct RunSpec {{
     pub artifact_store: ArtifactStoreConfig,
@@ -376,13 +387,18 @@ pub struct RunSpec {{
 
 pub struct RunArtifacts {{
     pub nt_catalog_capability_plan: Option<NtCatalogCapabilityPlan>,
+    pub nt_catalog_capability_proof_artifact: Option<NtCatalogCapabilityProofArtifact>,
     pub persisted_catalog_projection: Option<PersistedCatalogProjection>,
 }}
 
 pub fn run_from_run_spec_with_artifact_store() {{
     let _plan = spec.nt_catalog_capability_proof.proof_plan(&spec.artifact_store)?;
     let create_only_probe_transcript = writer.probe_create_only();
+    let evidence = build_capability_evidence();
+    let _proof = spec.nt_catalog_capability_proof
+        .persist_completed_proof_from_evidence(&spec.artifact_store, &writer, &evidence);
     persist_catalog_projection_for_source_binding();
+    fs::remove_dir_all(&artifacts.catalog_root);
 }}
 """
 
@@ -401,7 +417,9 @@ async fn main() {
         .await?;
     let store = artifact_root.build_s3_object_store_with_credentials(&credentials)?;
     let _artifacts =
-        run_from_run_spec_with_artifact_store(&spec, &gz_bytes, &output_dir, &store).await?;
+        run_from_run_spec_with_artifact_store(&spec, &gz_bytes, &output_dir, &store, |_, _, create_only_probe| {
+            spec.nt_catalog_capability_proof.runtime_evidence(&spec.artifact_store, &credentials, create_only_probe)
+        }).await?;
 }
 """
 
@@ -450,7 +468,10 @@ fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
     let _store = InMemory::new();
     let artifacts = run_from_run_spec_with_artifact_store();
     let _canonical_catalog_uri = artifacts.canonical_catalog_uri;
+    assert!(!artifacts.catalog_root.exists(), "transient local NT catalog");
     let _capability_plan = artifacts.nt_catalog_capability_plan;
+    let proof_artifact = artifacts.nt_catalog_capability_proof_artifact.unwrap();
+    let _proof_evidence = proof_artifact.evidence;
     let _capability_plan_expect = "NT catalog capability proof plan";
     let _persisted_catalog_objects = artifacts.persisted_catalog_objects;
     let persisted_projection = artifacts.persisted_catalog_projection.unwrap();
@@ -605,6 +626,35 @@ expected_storage_options_keys = ["region"]
 synthetic_fixture_coverage = ["binary-option", "perps-spot"]
 synthetic_source_proof_id = "synthetic-fixture"
 provenance = "synthetic"
+
+[nt_catalog_capability_proof.synthetic_fixtures.binary_option]
+instrument_id = "RA001BINARY.POLYMARKET"
+raw_symbol = "RA001BINARY"
+asset_class = "ALTERNATIVE"
+currency = "USDC"
+activation_ns = 1700000000000000000
+expiration_ns = 1700086400000000000
+price_increment = "0.001"
+size_increment = "0.01"
+
+[nt_catalog_capability_proof.synthetic_fixtures.perps_spot]
+instrument_id = "RA001PERP.BYBIT"
+raw_symbol = "RA001PERP"
+base_currency = "BTC"
+quote_currency = "USDC"
+settlement_currency = "USDC"
+is_inverse = false
+price_increment = "0.1"
+size_increment = "0.001"
+
+[[nt_catalog_capability_proof.synthetic_fixtures.trade_ticks]]
+instrument_id = "RA001BINARY.POLYMARKET"
+price = "0.500"
+size = "1.00"
+aggressor_side = "BUYER"
+trade_id = "ra001-binary-0"
+ts_event = 1700000000000000001
+ts_init = 1700000000000000001
 
 [nt_catalog_capability_proof.ambient_credential_scrub]
 unset_env_vars = [

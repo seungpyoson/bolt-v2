@@ -127,7 +127,10 @@ FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = (
 
 SHARED_MARKET_FAMILY_NAMES: frozenset[str] = frozenset({"outcome_group"})
 PROVIDER_SPECIFIC_ROOT_MODULES: frozenset[str] = frozenset(
-    {"src/bolt_v3_outcome_group_polymarket.rs"}
+    {
+        "src/bolt_v3_outcome_group_hyperliquid.rs",
+        "src/bolt_v3_outcome_group_polymarket.rs",
+    }
 )
 
 

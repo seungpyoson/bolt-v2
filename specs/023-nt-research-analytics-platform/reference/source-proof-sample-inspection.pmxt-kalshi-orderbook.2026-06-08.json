@@ -1,0 +1,155 @@
+{
+  "schema_version": "source-proof-sample-inspection.v1",
+  "source_binding": "pmxt-kalshi-orderbook-archive",
+  "market_structure_fixture": "binary-option",
+  "observed_at_utc": "2026-06-07T21:36:14Z",
+  "method": "bounded_single_object_download",
+  "source_uri": "https://r2kalshi.pmxt.dev/kalshi_orderbook_2026-06-06T00.parquet",
+  "http_head": {
+    "status": 200,
+    "content_length_bytes": 15324930,
+    "etag": "eeefbbe5fbe113877a6be54085d42c0f-2",
+    "last_modified": "Sat, 06 Jun 2026 01:05:57 GMT",
+    "accept_ranges": "bytes"
+  },
+  "local_sample": {
+    "path": "/private/tmp/pmxt-kalshi-orderbook-2026-06-06T00.parquet",
+    "sha256": "a89c4d22f8e838bcd3e3a986af8037c0cd71a9a5993b328eb4bcc0b7e119ccfe",
+    "duckdb_version": "v1.5.3 (Variegata) 14eca11bd9"
+  },
+  "schema": [
+    {
+      "column_name": "timestamp_received",
+      "column_type": "TIMESTAMP WITH TIME ZONE"
+    },
+    {
+      "column_name": "timestamp",
+      "column_type": "TIMESTAMP WITH TIME ZONE"
+    },
+    {
+      "column_name": "market_ticker",
+      "column_type": "VARCHAR"
+    },
+    {
+      "column_name": "market_id",
+      "column_type": "VARCHAR"
+    },
+    {
+      "column_name": "event_type",
+      "column_type": "VARCHAR"
+    },
+    {
+      "column_name": "yes_bids",
+      "column_type": "STRUCT(\"1\" DECIMAL(9,4), \"2\" DECIMAL(18,6))[]"
+    },
+    {
+      "column_name": "no_bids",
+      "column_type": "STRUCT(\"1\" DECIMAL(9,4), \"2\" DECIMAL(18,6))[]"
+    },
+    {
+      "column_name": "price",
+      "column_type": "DECIMAL(9,4)"
+    },
+    {
+      "column_name": "delta",
+      "column_type": "DECIMAL(18,6)"
+    },
+    {
+      "column_name": "side",
+      "column_type": "VARCHAR"
+    }
+  ],
+  "row_summary": {
+    "row_count": 525589,
+    "distinct_market_tickers": 413341,
+    "distinct_market_ids": 406069,
+    "timestamp_received_min": "2026-06-06 09:00:00.412+09",
+    "timestamp_received_max": "2026-06-06 09:59:59.551+09",
+    "timestamp_min": "2026-06-06 09:01:26.452533+09",
+    "timestamp_max": "2026-06-06 09:01:27.967985+09"
+  },
+  "event_type_summary": [
+    {
+      "event_type": "orderbook_snapshot",
+      "rows": 525425,
+      "timestamp_received_min": "2026-06-06 09:00:00.412+09",
+      "timestamp_received_max": "2026-06-06 09:59:59.551+09",
+      "timestamp_min": null,
+      "timestamp_max": null
+    },
+    {
+      "event_type": "orderbook_delta",
+      "rows": 164,
+      "timestamp_received_min": "2026-06-06 09:15:00.481+09",
+      "timestamp_received_max": "2026-06-06 09:20:39.5+09",
+      "timestamp_min": "2026-06-06 09:01:26.452533+09",
+      "timestamp_max": "2026-06-06 09:01:27.967985+09"
+    }
+  ],
+  "field_presence": {
+    "rows_with_yes_bids": 525589,
+    "rows_with_no_bids": 525589,
+    "rows_with_price": 164,
+    "rows_with_delta": 164,
+    "rows_with_side": 525589,
+    "side_counts": [
+      {
+        "side": "",
+        "rows": 525425
+      },
+      {
+        "side": "no",
+        "rows": 122
+      },
+      {
+        "side": "yes",
+        "rows": 42
+      }
+    ]
+  },
+  "snapshot_depth_summary": {
+    "min_yes_levels": 0,
+    "max_yes_levels": 114,
+    "avg_yes_levels": 0.4622334300804111,
+    "min_no_levels": 0,
+    "max_no_levels": 204,
+    "avg_no_levels": 0.9589056478089166
+  },
+  "pinned_nt_kalshi_surface_check": {
+    "nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+    "search_scope": [
+      "nt://crates",
+      "nt://docs"
+    ],
+    "search_patterns": [
+      "Kalshi",
+      "kalshi"
+    ],
+    "matches_found": 0,
+    "interpretation": "The pinned NT revision has generic BinaryOption support and other venue prediction-market adapters, but no Kalshi-specific instrument provider/parser surface was found in crates or docs."
+  },
+  "sample_interpretation": [
+    "PMXT Kalshi exposes historical hourly orderbook_snapshot and orderbook_delta rows, not only an archive index.",
+    "Snapshot rows carry timestamp_received as the archive-hour receipt axis and have null source event timestamp.",
+    "Delta rows carry price, signed delta, yes/no side, timestamp_received, and a source timestamp.",
+    "The sample does not contain trade rows; PMXT Kalshi orderbook data should not be treated as a TradeTick source.",
+    "yes_bids and no_bids are arrays of price/size structs with numeric field names; a typed adapter must normalize these fields before any NT projection.",
+    "Pinned NT has no Kalshi-specific instrument provider/parser to reuse, so checked BinaryOption instrument fields must be source-backed from Kalshi/PMXT evidence before catalog acceptance."
+  ],
+  "mapping_implications": {
+    "candidate_nt_data_classes": [
+      "OrderBookDelta",
+      "OrderBookDepth10"
+    ],
+    "candidate_only": true,
+    "not_accepted_catalog_input": true,
+    "required_next_evidence": [
+      "source-backed BinaryOption instrument fields for Kalshi market_ticker or market_id",
+      "explicit timestamp policy for snapshot rows with null source timestamp",
+      "source-schema to NT OrderBookDelta projection contract for yes_bids, no_bids, price, delta, and side",
+      "decision on whether OrderBookDepth10 would be a lossy lower-fidelity projection for deep snapshots",
+      "ParquetDataCatalog write plus query_typed_data read-back under artifact-root staging",
+      "coverage ledger for accepted market universe and time window before broad backfill"
+    ]
+  }
+}

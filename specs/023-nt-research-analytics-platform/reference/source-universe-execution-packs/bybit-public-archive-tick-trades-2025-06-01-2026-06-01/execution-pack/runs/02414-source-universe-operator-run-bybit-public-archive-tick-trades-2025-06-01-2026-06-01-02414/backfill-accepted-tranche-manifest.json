@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:HYPEPERP:2026-05-20:fd71e778ce7b1b2933421b3060f34a921b9598c493425950e8aae99f91e94b6c:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:HYPEPERP:2026-05-20:fd71e778ce7b1b2933421b3060f34a921b9598c493425950e8aae99f91e94b6c:source-proof-scope",
+  "source_proof_scope_report_hash": "1172be2859baef046af0bc5b3a4e76a80dee94f48158b88d8084736422076c6e",
+  "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-linear-tick-trades",
+  "table_family": "trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-category-linear",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 354930,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-20/symbol=HYPEPERP/object=fd71e778ce7b1b2933421b3060f34a921b9598c493425950e8aae99f91e94b6c.csv.gz",
+      "source_url": "https://public.bybit.com/trading/HYPEPERP/HYPEPERP2026-05-20.csv.gz",
+      "sha256": "fd71e778ce7b1b2933421b3060f34a921b9598c493425950e8aae99f91e94b6c",
+      "bytes": 354930,
+      "archive_date": "2026-05-20"
+    }
+  ],
+  "blocking_issues": []
+}

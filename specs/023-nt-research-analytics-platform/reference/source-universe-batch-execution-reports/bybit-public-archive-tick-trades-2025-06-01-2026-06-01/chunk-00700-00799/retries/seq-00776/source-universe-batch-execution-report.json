@@ -1,0 +1,30 @@
+{
+  "schema_version": "source-universe-batch-execution-report.v1",
+  "batch_id": "source-universe-batch-bybit-public-archive-tick-trades-retry-00776",
+  "status": "completed",
+  "pack_id": "source-universe-execution-pack-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "universe_id": "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "venue": "bybit",
+  "selected_record_count": 1,
+  "completed_record_count": 1,
+  "failed_record_count": 0,
+  "total_canonical_rows": 3955946,
+  "total_nt_catalog_rows": 3955946,
+  "records": [
+    {
+      "sequence": 776,
+      "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00776",
+      "source_binding": "bybit-linear-tick-trades",
+      "category": "linear",
+      "symbol": "ETHUSDT",
+      "archive_date": "2026-03-04",
+      "selected_object_sha256": "5c94ef4059ce280ee203ab64a1bc7fa9315f889511be2d2bbce84101a9841eba",
+      "selected_object_bytes": 140780219,
+      "canonical_rows": 3955946,
+      "nt_catalog_rows": 3955946,
+      "catalog_hash": "801af4a76161b9a7139a6fd2c3606abfe013e10b701bc6df31e7dd3858b04999",
+      "output_dir": "/private/tmp/bolt-v2-source-universe-bybit-full/retry-decoded-1g-seq-00776/source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00776"
+    }
+  ],
+  "failures": []
+}

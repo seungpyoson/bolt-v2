@@ -1,0 +1,15 @@
+{
+  "checkpoint_version": "conversion-checkpoint.v1",
+  "fingerprint": {
+    "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
+    "source_proof_version": 1,
+    "accepted_object_sha256": "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e",
+    "converter_identity": "pmxt-one-off-selected-source-l2-to-nt.v1",
+    "converter_version": "1",
+    "converter_config_hash": "d01d62323e7112a30bd21ba0e647347fd779139d4c65471d9d5b782384fd3a45"
+  },
+  "stage": "completed",
+  "canonical_rows": 103,
+  "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
+  "updated_at": "2026-06-10T14:30:00Z"
+}

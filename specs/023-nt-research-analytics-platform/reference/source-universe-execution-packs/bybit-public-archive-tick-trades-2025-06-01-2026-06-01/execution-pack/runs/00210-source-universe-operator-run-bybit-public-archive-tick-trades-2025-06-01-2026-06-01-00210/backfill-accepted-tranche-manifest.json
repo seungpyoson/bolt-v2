@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-inverse-tick-trades:XRPUSD:2026-03-26:9e09a9d6e54b43f71a52eee65cc38782d836b42b861afe736b597cdd247356e2:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-inverse-tick-trades:XRPUSD:2026-03-26:9e09a9d6e54b43f71a52eee65cc38782d836b42b861afe736b597cdd247356e2:source-proof-scope",
+  "source_proof_scope_report_hash": "de6147edff5f55122cb09b48ba002c536a539258adf2a39acf843e338b6b5a1e",
+  "source_proof_id": "source-proof-bybit-inverse-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-inverse-tick-trades",
+  "table_family": "trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-category-inverse",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 962940,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-03-26/symbol=XRPUSD/object=9e09a9d6e54b43f71a52eee65cc38782d836b42b861afe736b597cdd247356e2.csv.gz",
+      "source_url": "https://public.bybit.com/trading/XRPUSD/XRPUSD2026-03-26.csv.gz",
+      "sha256": "9e09a9d6e54b43f71a52eee65cc38782d836b42b861afe736b597cdd247356e2",
+      "bytes": 962940,
+      "archive_date": "2026-03-26"
+    }
+  ],
+  "blocking_issues": []
+}

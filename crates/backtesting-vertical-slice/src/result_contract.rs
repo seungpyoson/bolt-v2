@@ -122,6 +122,7 @@ pub struct ResultArtifactUris {
     pub source_proof_uri: String,
     pub canonical_table_uri: String,
     pub nt_catalog_uri: String,
+    pub catalog_metadata_uri: String,
     pub result_contract_uri: String,
 }
 
@@ -138,7 +139,17 @@ pub struct BacktestResultContract {
     pub accepted_by: String,
     pub accepted_at: String,
     pub accepted_object_sha256: String,
+    pub converter_identity: String,
+    pub converter_version: String,
+    pub converter_config_hash: String,
+    pub conversion_manifest_hash: String,
+    pub conversion_checkpoint_hash: String,
     pub catalog_hash: String,
+    pub catalog_metadata_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_count_ledger_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_asset_ids_hash: Option<String>,
     pub strategy_config_hash: String,
     pub run_purpose: String,
     pub market_structure_fixture: String,
@@ -192,12 +203,47 @@ impl BacktestResultContract {
                 "accepted_object_sha256",
                 self.accepted_object_sha256.as_str(),
             ),
+            ("converter_identity", self.converter_identity.as_str()),
+            ("converter_version", self.converter_version.as_str()),
+            ("converter_config_hash", self.converter_config_hash.as_str()),
+            (
+                "conversion_manifest_hash",
+                self.conversion_manifest_hash.as_str(),
+            ),
+            (
+                "conversion_checkpoint_hash",
+                self.conversion_checkpoint_hash.as_str(),
+            ),
             ("catalog_hash", self.catalog_hash.as_str()),
+            ("catalog_metadata_hash", self.catalog_metadata_hash.as_str()),
             ("strategy_config_hash", self.strategy_config_hash.as_str()),
             ("run_purpose", self.run_purpose.as_str()),
             (
                 "market_structure_fixture",
                 self.market_structure_fixture.as_str(),
+            ),
+            ("nt_result.trader_id", self.nt_result.trader_id.as_str()),
+            ("nt_result.machine_id", self.nt_result.machine_id.as_str()),
+            ("nt_result.instance_id", self.nt_result.instance_id.as_str()),
+            (
+                "artifact_uris.source_proof_uri",
+                self.artifact_uris.source_proof_uri.as_str(),
+            ),
+            (
+                "artifact_uris.canonical_table_uri",
+                self.artifact_uris.canonical_table_uri.as_str(),
+            ),
+            (
+                "artifact_uris.nt_catalog_uri",
+                self.artifact_uris.nt_catalog_uri.as_str(),
+            ),
+            (
+                "artifact_uris.catalog_metadata_uri",
+                self.artifact_uris.catalog_metadata_uri.as_str(),
+            ),
+            (
+                "artifact_uris.result_contract_uri",
+                self.artifact_uris.result_contract_uri.as_str(),
             ),
             ("created_at", self.created_at.as_str()),
         ] {
@@ -205,8 +251,29 @@ impl BacktestResultContract {
                 return Err(ResultContractError::MissingField(name));
             }
         }
+        if let Some(run_config_id) = &self.nt_result.run_config_id
+            && run_config_id.trim().is_empty()
+        {
+            return Err(ResultContractError::MissingField("nt_result.run_config_id"));
+        }
         if self.claim_limits.is_empty() {
             return Err(ResultContractError::MissingField("claim_limits"));
+        }
+        if self.fidelity_class == SourceProofFidelityClass::L2Replay
+            && self
+                .event_count_ledger_hash
+                .as_deref()
+                .is_none_or(|hash| hash.trim().is_empty())
+        {
+            return Err(ResultContractError::MissingField("event_count_ledger_hash"));
+        }
+        if self.fidelity_class == SourceProofFidelityClass::L2Replay
+            && self
+                .selected_asset_ids_hash
+                .as_deref()
+                .is_none_or(|hash| hash.trim().is_empty())
+        {
+            return Err(ResultContractError::MissingField("selected_asset_ids_hash"));
         }
         self.assert_objective()
     }
@@ -259,7 +326,15 @@ pub struct ResultContractInputs<'a> {
     pub accepted_by: &'a str,
     pub accepted_at: &'a str,
     pub accepted_object_sha256: &'a str,
+    pub converter_identity: &'a str,
+    pub converter_version: &'a str,
+    pub converter_config_hash: &'a str,
+    pub conversion_manifest_hash: &'a str,
+    pub conversion_checkpoint_hash: &'a str,
     pub catalog_hash: &'a str,
+    pub catalog_metadata_hash: &'a str,
+    pub event_count_ledger_hash: Option<&'a str>,
+    pub selected_asset_ids_hash: Option<&'a str>,
     pub strategy: &'a StrategySource,
     pub run_purpose: &'a str,
     pub market_structure_fixture: &'a str,
@@ -294,7 +369,15 @@ pub fn build_result_contract(
         accepted_by: inputs.accepted_by.to_string(),
         accepted_at: inputs.accepted_at.to_string(),
         accepted_object_sha256: inputs.accepted_object_sha256.to_string(),
+        converter_identity: inputs.converter_identity.to_string(),
+        converter_version: inputs.converter_version.to_string(),
+        converter_config_hash: inputs.converter_config_hash.to_string(),
+        conversion_manifest_hash: inputs.conversion_manifest_hash.to_string(),
+        conversion_checkpoint_hash: inputs.conversion_checkpoint_hash.to_string(),
         catalog_hash: inputs.catalog_hash.to_string(),
+        catalog_metadata_hash: inputs.catalog_metadata_hash.to_string(),
+        event_count_ledger_hash: inputs.event_count_ledger_hash.map(str::to_string),
+        selected_asset_ids_hash: inputs.selected_asset_ids_hash.map(str::to_string),
         strategy_config_hash: strategy_config_hash(inputs.strategy),
         run_purpose: inputs.run_purpose.to_string(),
         market_structure_fixture: inputs.market_structure_fixture.to_string(),
@@ -343,7 +426,15 @@ mod tests {
             accepted_at: "2026-06-02T00:00:00Z".to_string(),
             accepted_object_sha256:
                 "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598".to_string(),
+            converter_identity: "csv-native-trades-to-canonical-trades.v1".to_string(),
+            converter_version: "1".to_string(),
+            converter_config_hash: "converterconfigabc".to_string(),
+            conversion_manifest_hash: "conversionmanifestabc".to_string(),
+            conversion_checkpoint_hash: "conversioncheckpointabc".to_string(),
             catalog_hash: "abc123".to_string(),
+            catalog_metadata_hash: "metahashabc".to_string(),
+            event_count_ledger_hash: None,
+            selected_asset_ids_hash: None,
             strategy_config_hash: "def456".to_string(),
             run_purpose: "normal".to_string(),
             market_structure_fixture: "perps-spot".to_string(),
@@ -362,6 +453,7 @@ mod tests {
                 source_proof_uri: "s3://.../source-proofs/p.json".to_string(),
                 canonical_table_uri: "s3://.../trades.parquet".to_string(),
                 nt_catalog_uri: "s3://.../nt-catalog/".to_string(),
+                catalog_metadata_uri: "s3://.../catalog-metadata.json".to_string(),
                 result_contract_uri: "s3://.../backtests/run/result.json".to_string(),
             },
             created_at: "2026-06-02T00:00:00Z".to_string(),
@@ -405,6 +497,19 @@ features = ["streaming", "examples"]
             c.accepted_object_sha256,
             "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598"
         );
+        assert_eq!(
+            c.converter_identity,
+            "csv-native-trades-to-canonical-trades.v1"
+        );
+        assert_eq!(c.converter_version, "1");
+        assert_eq!(c.converter_config_hash, "converterconfigabc");
+        assert_eq!(c.conversion_manifest_hash, "conversionmanifestabc");
+        assert_eq!(c.conversion_checkpoint_hash, "conversioncheckpointabc");
+        assert_eq!(c.catalog_metadata_hash, "metahashabc");
+        assert_eq!(
+            c.artifact_uris.catalog_metadata_uri,
+            "s3://.../catalog-metadata.json"
+        );
 
         let json = serde_json::to_value(&c).expect("serialize");
         for field in [
@@ -413,6 +518,12 @@ features = ["streaming", "examples"]
             "accepted_by",
             "accepted_at",
             "accepted_object_sha256",
+            "converter_identity",
+            "converter_version",
+            "converter_config_hash",
+            "conversion_manifest_hash",
+            "conversion_checkpoint_hash",
+            "catalog_metadata_hash",
         ] {
             assert!(
                 json.get(field).is_some(),
@@ -510,6 +621,40 @@ features = ["streaming", "examples"]
     }
 
     #[test]
+    fn l2_result_contract_requires_event_count_ledger_hash() {
+        let mut c = contract();
+        c.fidelity_class = SourceProofFidelityClass::L2Replay;
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("event_count_ledger_hash")
+        );
+    }
+
+    #[test]
+    fn l2_result_contract_requires_and_binds_selected_asset_ids_hash() {
+        let mut c = contract();
+        c.fidelity_class = SourceProofFidelityClass::L2Replay;
+        c.event_count_ledger_hash = Some("eventledgerabc".to_string());
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("selected_asset_ids_hash")
+        );
+
+        c.selected_asset_ids_hash = Some("selectedassetsabc".to_string());
+        c.validate()
+            .expect("L2 contract with selector hashes is complete");
+        let json = serde_json::to_value(&c).expect("serialize");
+        assert_eq!(
+            json.get("event_count_ledger_hash").and_then(|v| v.as_str()),
+            Some("eventledgerabc")
+        );
+        assert_eq!(
+            json.get("selected_asset_ids_hash").and_then(|v| v.as_str()),
+            Some("selectedassetsabc")
+        );
+    }
+
+    #[test]
     fn rejects_missing_contract_version() {
         let mut c = contract();
         c.contract_version.clear();
@@ -536,6 +681,26 @@ features = ["streaming", "examples"]
         assert_eq!(
             c.validate().unwrap_err(),
             ResultContractError::MissingField("market_structure_fixture")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_artifact_uri() {
+        let mut c = contract();
+        c.artifact_uris.result_contract_uri.clear();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("artifact_uris.result_contract_uri")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_nt_pointer_identity() {
+        let mut c = contract();
+        c.nt_result.trader_id.clear();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("nt_result.trader_id")
         );
     }
 

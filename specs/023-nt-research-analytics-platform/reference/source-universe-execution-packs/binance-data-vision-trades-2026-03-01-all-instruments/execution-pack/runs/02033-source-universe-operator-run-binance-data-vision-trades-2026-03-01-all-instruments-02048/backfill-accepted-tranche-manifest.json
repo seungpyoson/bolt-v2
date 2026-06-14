@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-delivery-native-trades:SOLUSD_260626:2026-03-01:a3847739142ba4aff8691e700e6910928f5eb2a93078aed2264b87798df71f47:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-delivery-native-trades:SOLUSD_260626:2026-03-01:a3847739142ba4aff8691e700e6910928f5eb2a93078aed2264b87798df71f47:source-proof-scope",
+  "source_proof_scope_report_hash": "ed9b3cc93764f8881c510d53ce2b3381ce06e248e6d150ad549313a7a4656a3b",
+  "source_proof_id": "source-proof-binance-coin-m-delivery-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-coin-m-delivery-native-trades",
+  "table_family": "trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-coin_m_delivery",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 8365,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_delivery/dt=2026-03-01/symbol=SOLUSD_260626/object=a3847739142ba4aff8691e700e6910928f5eb2a93078aed2264b87798df71f47.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/SOLUSD_260626/SOLUSD_260626-trades-2026-03-01.zip",
+      "sha256": "a3847739142ba4aff8691e700e6910928f5eb2a93078aed2264b87798df71f47",
+      "bytes": 8365,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

@@ -311,6 +311,14 @@ reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TO
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"submit_orders"'''
+context = '''insert_bool(&mut table, "submit_orders", parameters.submit_orders);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the configured shadow-mode submission switch projected from bolt-v3 TOML into the runtime strategy config; the value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"log_rejected_due_post_only_as_warning"'''
 context = '''"log_rejected_due_post_only_as_warning",'''
 classification = "strategy_runtime_schema_field"
@@ -736,7 +744,7 @@ reason = "This is the decision-evidence JSONL envelope schema version. v9 adds g
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"strategy_input_snapshot"'''
-context = '''const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";'''
+context = '''pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";'''
 classification = "decision_evidence_record_kind"
 reason = "This is the JSONL envelope discriminator for strategy-input snapshot records and is part of the audit-record contract, not an operator runtime value."
 
@@ -744,7 +752,7 @@ reason = "This is the JSONL envelope discriminator for strategy-input snapshot r
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"order_intent"'''
-context = '''const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";'''
+context = '''pub const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";'''
 classification = "decision_evidence_record_kind"
 reason = "This is the JSONL envelope discriminator for order-intent records and is part of the audit-record contract, not an operator runtime value."
 
@@ -752,9 +760,57 @@ reason = "This is the JSONL envelope discriminator for order-intent records and 
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"admission_decision"'''
-context = '''const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";'''
+context = '''pub const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";'''
 classification = "decision_evidence_record_kind"
 reason = "This is the JSONL envelope discriminator for admission-decision records and is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/shadow_pnl.rs"
+kind = "number"
+literal = '''1'''
+context = '''const SHADOW_PNL_COUNT_INCREMENT: u64 = 1;'''
+classification = "shadow_pnl_aggregation_unit"
+reason = "Each admitted entry chain contributes one would-be trade and, when settlement wins, one win to the report aggregate; this is report structure, not an operator runtime value."
+
+[[allowed]]
+path = "src/shadow_pnl.rs"
+kind = "number"
+literal = '''1'''
+context = '''const SHADOW_PNL_LINE_NUMBER_BASE: usize = 1;'''
+classification = "shadow_pnl_diagnostic_line_number_base"
+reason = "This converts zero-based JSONL iterator indexes to one-based operator diagnostics; it does not affect trading behavior."
+
+[[allowed]]
+path = "src/shadow_pnl.rs"
+kind = "number"
+literal = '''6'''
+context = '''const SHADOW_PNL_DECIMAL_SCALE: u32 = 6;'''
+classification = "shadow_pnl_report_display_precision"
+reason = "This controls CSV decimal display precision for the shadow PnL report only; no strategy or execution behavior reads it."
+
+[[allowed]]
+path = "src/shadow_pnl.rs"
+kind = "number"
+literal = '''0'''
+context = '''0 => Ok(None),'''
+classification = "shadow_pnl_settlement_cardinality"
+reason = "This is the zero-match arm in the settlement selector; it is structural match-cardinality logic, not an operator runtime value."
+
+[[allowed]]
+path = "src/shadow_pnl.rs"
+kind = "number"
+literal = '''1'''
+context = '''1 => Ok(Some(settlements[0])),'''
+classification = "shadow_pnl_settlement_cardinality"
+reason = "This is the single-match arm in the settlement selector; it is structural match-cardinality logic, not an operator runtime value."
+
+[[allowed]]
+path = "src/shadow_pnl.rs"
+kind = "number"
+literal = '''0'''
+context = '''1 => Ok(Some(settlements[0])),'''
+classification = "shadow_pnl_settlement_single_match_index"
+reason = "This selects the sole settlement row after the cardinality check has proven exactly one match; it is collection indexing structure, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -8183,6 +8239,14 @@ reason = '''Repo-relative root path of the binary-oracle strategy source module 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
 kind = '''string'''
+literal = '''"src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"'''
+context = '''"src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the archetype config translator, brought into the binary-oracle strategy source set so the sole TOML->runtime-table mapping for the shadow-mode submit_orders kill switch and NT-managed venue-action knobs is tamper-evidenced alongside its validating consumer; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
 literal = '''"src/bolt_v3_book_sizing.rs"'''
 context = '''"src/bolt_v3_book_sizing.rs",'''
 classification = '''gated_source_registry_relative_root'''
@@ -12062,3 +12126,27 @@ literal = '''"source_id"'''
 context = '''CanonicalField::new(["role_binding", "source_id"], &source.source_id),'''
 classification = "outcome_group_normalizer_evidence_schema_label"
 reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remain supplied by NT BinaryOption.info or TOML source configuration."
+
+[[allowed]]
+path = "src/shadow_pnl.rs"
+kind = "string"
+literal = '''"settlement inconsistency for {}: winning_side {} marks a win but settlement_price {settlement_price} is below entry_price {entry_price}"'''
+context = '''"settlement inconsistency for {}: winning_side {} marks a win but settlement_price {settlement_price} is below entry_price {entry_price}",'''
+classification = "shadow_pnl_settlement_consistency_diagnostic_template"
+reason = "Fail-loud diagnostic asserting the settlement winning_side agrees with settlement_price direction relative to entry_price before a would-be trade is scored; error-message template, not a runtime value."
+
+[[allowed]]
+path = "src/shadow_pnl.rs"
+kind = "string"
+literal = '''"settlement inconsistency for {}: winning_side {} marks a loss but settlement_price {settlement_price} is above entry_price {entry_price}"'''
+context = '''"settlement inconsistency for {}: winning_side {} marks a loss but settlement_price {settlement_price} is above entry_price {entry_price}",'''
+classification = "shadow_pnl_settlement_consistency_diagnostic_template"
+reason = "Fail-loud diagnostic asserting the settlement winning_side agrees with settlement_price direction relative to entry_price before a would-be trade is scored; error-message template, not a runtime value."
+
+[[allowed]]
+path = "src/shadow_pnl.rs"
+kind = "string"
+literal = '''"duplicate {record_kind} decision evidence for client_order_id {client_order_id} at line {line_number}; cannot disambiguate would-be trades"'''
+context = '''"duplicate {record_kind} decision evidence for client_order_id {client_order_id} at line {line_number}; cannot disambiguate would-be trades"'''
+classification = "shadow_pnl_duplicate_decision_evidence_diagnostic_template"
+reason = "Fail-loud diagnostic rejecting a second decision-evidence record for an already-seen client_order_id so would-be trades cannot be silently disambiguated; error-message template, not a runtime value."

@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-01153:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:ETHUSDT-25DEC26:2026-03-23:d7073cab4c51317ca177dd4fdbfce97c2442bc988a5fc1ed33327d5b31612b24:accepted-tranche",
+  "accepted_tranche_manifest_hash": "f226fb036bbb52a335d9a5be6feee127788a34ab04826b78d6570ae1abbd7528",
+  "run_spec_hash": "9281d69e88fb409ff4fc86096cc786ba96a054c753015bdb3e7c1f7a00ccfd90",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-01153",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=linear/symbol=ETHUSDT-25DEC26/dt=2026-03-23/object=d7073cab4c51317ca177dd4fdbfce97c2442bc988a5fc1ed33327d5b31612b24",
+  "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-linear-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 18278,
+  "max_object_bytes": 18278,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-23/symbol=ETHUSDT-25DEC26/object=d7073cab4c51317ca177dd4fdbfce97c2442bc988a5fc1ed33327d5b31612b24.csv.gz",
+      "source_url": "https://public.bybit.com/trading/ETHUSDT-25DEC26/ETHUSDT-25DEC262026-03-23.csv.gz",
+      "sha256": "d7073cab4c51317ca177dd4fdbfce97c2442bc988a5fc1ed33327d5b31612b24",
+      "bytes": 18278,
+      "archive_date": "2026-03-23"
+    }
+  ],
+  "blocking_issues": []
+}

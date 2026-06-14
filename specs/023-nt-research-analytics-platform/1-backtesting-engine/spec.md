@@ -397,10 +397,31 @@ NT output shape.
 
 ## Issue Dependencies
 
-Link, update, or depend on #19, #23, #24, #34, #112, #115, #127, #148, #158,
-#236, #254, and #407 as applicable. Do not claim this project closes those
-broader issues unless its implementation actually satisfies their accepted
-scope.
+Current dependency status is recorded in
+`../reference/issue-dependency-status.backtesting-engine-039.2026-06-09.json`.
+The listed GitHub issues are live scope boundaries for implementation review,
+not closure claims.
+
+Link, update, or depend on:
+
+| Issue | Backtesting Engine relation |
+|---|---|
+| [#19](https://github.com/seungpyoson/bolt-v2/issues/19) | Raw/catalog/result lineage context; do not claim normalized-lake lineage closure. |
+| [#23](https://github.com/seungpyoson/bolt-v2/issues/23) | Instrument/catalog completeness context; do not claim instrument-spool bridge closure. |
+| [#24](https://github.com/seungpyoson/bolt-v2/issues/24) | Parent NT-first data-lake scope; avoid redefining canonical lake layout. |
+| [#34](https://github.com/seungpyoson/bolt-v2/issues/34) | Strategy-platform consumer context; result contracts must not encode promotion decisions. |
+| [#112](https://github.com/seungpyoson/bolt-v2/issues/112) | Kalshi venue/source context; source proof is required before any catalog/backtest use. |
+| [#115](https://github.com/seungpyoson/bolt-v2/issues/115) | HIP-4 venue context; historical replay claims remain source-proof gated. |
+| [#127](https://github.com/seungpyoson/bolt-v2/issues/127) | Polymarket native depth constraint; do not overclaim `OrderBookDepth10`. |
+| [#148](https://github.com/seungpyoson/bolt-v2/issues/148) | Capture-isolation risk context; provider recorder/live capture expansion stays out of scope. |
+| [#158](https://github.com/seungpyoson/bolt-v2/issues/158) | Analytics-adjacent sidecar source context; BTE records gaps but does not build collectors. |
+| [#236](https://github.com/seungpyoson/bolt-v2/issues/236) | Thin NT architecture parent; no custom simulator or dual catalog path. |
+| [#254](https://github.com/seungpyoson/bolt-v2/issues/254) | Polymarket V2 readiness context; one-off PMXT evidence is not production V2 readiness. |
+| [#407](https://github.com/seungpyoson/bolt-v2/issues/407) | Controlled discovery boundary; source/instrument coverage must stay TOML/proof bounded. |
+
+Do not claim this project closes those broader issues unless its implementation
+actually satisfies their accepted scope. Do not create or mutate GitHub issues
+from this spec without explicit user approval.
 
 ## Non-Goals
 

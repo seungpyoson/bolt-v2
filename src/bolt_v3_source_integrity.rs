@@ -266,8 +266,26 @@ mod tests {
     // and entry-evaluation sizing-input observability with the archetype path.
     // Re-derived after adding coverage for the within-tolerance sized
     // re-evaluation acceptance branch.
+    // Re-derived after adding the TOML-owned shadow-mode submit switch and
+    // preserving decision evidence before skipped NT submits.
+    // Re-derived after the shadow-submit test started seeding admission
+    // instruments before asserting no NT submit command is emitted.
+    // Re-derived after shadow skipped submits stopped retaining pending
+    // strategy exposure without an NT order.
+    // Re-derived after skipped shadow exits retained the exit-pending latch.
+    // Re-derived after shadow skipped submits stopped consuming live admission
+    // capacity while still recording admission evidence.
+    // Re-derived after merging #623's dollar-sizing strategy source roots into
+    // the shadow-mode submit switch.
+    // Re-derived after adding the shadow-mode fail-closed config guard
+    // (submit_orders=false forbids NautilusTrader-managed venue actions) and its
+    // tests in config.rs.
+    // Re-derived after bringing the archetype config translator
+    // (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs) into the strategy
+    // source set, so the sole TOML->runtime-table mapping for the shadow-mode
+    // kill switch is now tamper-evidenced alongside its validating consumer.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "1ad5babbee2a00448759ed7bf6dc6c7b3a4412f06c9ee73b1ad32ecd30579ef6";
+        "c5ad6466a12fe43623769431d571e86a24366768508a1cdd991de952cd1ad036";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -278,10 +296,14 @@ mod tests {
     // Re-derived again after adding checked fee-inclusive admission arithmetic.
     // Re-derived after moving entry limit-notional guarding into shared submit
     // admission.
-    // Re-derived after Task 6 added basket submit-slot reservation on the shared
-    // submit-admission gate.
+    // Re-derived again after adding observed admission decisions for shadow
+    // submit skips that must not consume live capacity.
+    // Re-derived after merging main's shared submit-admission changes into the
+    // shadow-mode submit switch.
+    // Re-derived after merging main into the shared outcome-group substrate
+    // branch.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "466c7d50f06fa4a21c67a2252386118e876ab593527376480283b216caf6e741";
+        "cc1d03a8245cf3df7ef35a452cf527fcdc889a3603512f88353ba3abd7b9bd68";
     // GOLDEN_OUTCOME_GROUP_DIGEST is introduced by the shared outcome-group
     // substrate source-integrity task after every first-slice source root exists
     // on disk. Re-derived after Task 10 activated the complete-set runtime
@@ -419,6 +441,7 @@ mod tests {
             registry_relative_roots(STRATEGY_KEY),
             &[
                 "src/strategies/binary_oracle_edge_taker",
+                "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
                 "src/bolt_v3_book_sizing.rs",
                 "src/bolt_v3_binary_outcome_edge.rs",
                 "src/bolt_v3_executable_cost.rs",

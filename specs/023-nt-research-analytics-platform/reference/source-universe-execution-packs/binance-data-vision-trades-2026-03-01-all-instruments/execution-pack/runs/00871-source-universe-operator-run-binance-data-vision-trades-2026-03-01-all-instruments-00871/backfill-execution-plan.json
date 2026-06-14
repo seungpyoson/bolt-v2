@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00871:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PENDLEBTC:2026-03-01:e317161a71db24d66d4dd544ce725ef0ee78d403f63cceecce544252ce4e8218:accepted-tranche",
+  "accepted_tranche_manifest_hash": "56bccd7617eadcc735a5a65dded4eef7e7bcf97c46f072a50918ec99750e4472",
+  "run_spec_hash": "8784777d331a06d5d80f478f3ec61265815a8a99560c2361c347be359f90e052",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00871",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PENDLEBTC/dt=2026-03-01/object=e317161a71db24d66d4dd544ce725ef0ee78d403f63cceecce544252ce4e8218",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 5741,
+  "max_object_bytes": 5741,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=PENDLEBTC/object=e317161a71db24d66d4dd544ce725ef0ee78d403f63cceecce544252ce4e8218.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/PENDLEBTC/PENDLEBTC-trades-2026-03-01.zip",
+      "sha256": "e317161a71db24d66d4dd544ce725ef0ee78d403f63cceecce544252ce4e8218",
+      "bytes": 5741,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

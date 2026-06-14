@@ -1,0 +1,118 @@
+{
+  "schema_version": "source-proof-evidence.v1",
+  "evidence_id": "source-proof-pmxt-current-head-existing-data-conversion-2026-06-09",
+  "verified_at_utc": "2026-06-09T11:30:09Z",
+  "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
+  "bolt_v2_ref": "4ea54d806183fb82371de2088034de03c737b633",
+  "purpose": "Record current-head repeatability evidence for the bounded PMXT selected-source conversion and BacktestNode consumption slice.",
+  "claim": {
+    "status": "bounded_one_off_current_head_go",
+    "statement": "The selected PMXT existing-data tranche can be converted into a NautilusTrader catalog and consumed by NautilusTrader BacktestNode idempotently on current head when written to a clean output prefix.",
+    "scope": [
+      "one_off_backfill_data",
+      "selected-source PMXT tranche only",
+      "no tick-size-change replay claim",
+      "no full PMXT L2 acceptance claim",
+      "no broad PMXT/Polymarket backfill claim",
+      "no production S3 or distributed backfill claim"
+    ]
+  },
+  "source_input": {
+    "selected_source_parquet": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source/selected-source.parquet",
+    "selected_source_parquet_sha256": "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e",
+    "selected_rows": 5,
+    "selected_asset_count": 1,
+    "projected_row_groups": 1,
+    "selected_asset_ids_hash": "1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110",
+    "event_count_ledger_hash": "985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a",
+    "selector_excluded_event_families": [
+      "tick_size_change"
+    ]
+  },
+  "current_head_rerun": {
+    "scratch_root": "/private/tmp/bte-pmxt-current-head-rerun-2026-06-09",
+    "manifest_path": "/private/tmp/bte-pmxt-current-head-rerun-2026-06-09/manifest.toml",
+    "artifact_root_spec_path": "/private/tmp/bte-pmxt-current-head-rerun-2026-06-09/artifact-root-run.toml",
+    "result_contract_path": "/private/tmp/bte-pmxt-current-head-rerun-2026-06-09/backtests/pmxt-run/backtest-result-contract.json",
+    "result_contract_hash": "6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de",
+    "conversion_manifest_hash": "a2b5407aa56068bb31e094e2d28dec71c8c2a87d592c6e1b3f30803a2ddc3c7f",
+    "conversion_manifest_file_sha256": "bb87db58049a7c98eb631a7d6431971c9ba0095a2f58ac908f666e4f73dea710",
+    "conversion_checkpoint_hash": "a391fa44215459c72e0077c5448fb0d89a2f8dc5ae0ecaf411be742368d36013",
+    "conversion_checkpoint_file_sha256": "6b0023d68d8697d217d4f738d4b59e377f18ee123729e966abe160a4d79a8990",
+    "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
+    "catalog_metadata_hash": "3940d7d9cc60f53ddcbf065bebd0f76ca0b275b753b95b7a754718da3b9abadb",
+    "catalog_metadata_file_sha256": "c90bb8a155e73581fa8ef1e5d6eb4dd86208626048c666b47e0eb13e6109fdc4",
+    "converter_config_hash": "d01d62323e7112a30bd21ba0e647347fd779139d4c65471d9d5b782384fd3a45",
+    "strategy_config_hash": "3525b543a1bb3cbc499e7bcf7ff2e473aeff650b19fccade0d7b2e9012a62c9b",
+    "nt_version": "6e059dcbb59ac1e582132fc431a581936c216c3c"
+  },
+  "nt_catalog": {
+    "output_catalog_uri": "file:///private/tmp/bte-pmxt-current-head-rerun-2026-06-09/backtests/pmxt-run/nt-catalog",
+    "direct_s3_catalog_access_proven": false,
+    "catalog_nt_data_types": [
+      "OrderBookDelta",
+      "TradeTick"
+    ],
+    "catalog_rows_by_nt_data_type": {
+      "OrderBookDelta": 103,
+      "TradeTick": 1
+    },
+    "canonical_rows": 103
+  },
+  "nt_backtest": {
+    "engine": "NautilusTrader BacktestNode",
+    "run_config_id": "pmxt-one-off-l2-trade-current-head-rerun-2026-06-09",
+    "backtest_start_unix_nanos": 1779315389332000000,
+    "backtest_end_unix_nanos": 1779317875600000000,
+    "iterations": 104,
+    "total_events": 0,
+    "total_orders": 0,
+    "total_positions": 0
+  },
+  "verification": [
+    {
+      "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-current-schema-rerun-2026-06-09/artifact-root-run.toml",
+      "result": "EXPECTED_FAIL_STALE_PREFIX",
+      "observed": "The older current-schema scratch prefix refused reuse because the existing result contract differs from newly generated stable content on current head."
+    },
+    {
+      "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-current-head-rerun-2026-06-09/artifact-root-run.toml",
+      "result": "PASS",
+      "observed": {
+        "result_contract_hash": "6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de",
+        "conversion_manifest_hash": "a2b5407aa56068bb31e094e2d28dec71c8c2a87d592c6e1b3f30803a2ddc3c7f",
+        "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
+        "selected_source_parquet_hash": "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e",
+        "event_count_ledger_hash": "985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a",
+        "selected_asset_ids_hash": "1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110",
+        "projected_l2_rows": 5,
+        "nt_iterations": 104
+      }
+    },
+    {
+      "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-current-head-rerun-2026-06-09/artifact-root-run.toml",
+      "result": "PASS_IDEMPOTENT_RERUN",
+      "observed": {
+        "result_contract_hash": "6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de",
+        "conversion_manifest_hash": "a2b5407aa56068bb31e094e2d28dec71c8c2a87d592c6e1b3f30803a2ddc3c7f",
+        "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
+        "selected_source_parquet_hash": "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e",
+        "event_count_ledger_hash": "985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a",
+        "selected_asset_ids_hash": "1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110",
+        "projected_l2_rows": 5,
+        "nt_iterations": 104
+      }
+    }
+  ],
+  "supersedes": {
+    "path": "/private/tmp/bte-pmxt-current-schema-rerun-2026-06-09",
+    "reason": "The older scratch prefix is historical only on current head; its existing result contract is stable-content incompatible with a fresh current-head run, and the create-only guard correctly refuses to overwrite it."
+  },
+  "remaining_unknowns": [
+    "Full PMXT L2 acceptance with tick-size changes remains unproven.",
+    "Production object-store backfill execution remains unproven.",
+    "Durable Polymarket source selection remains unaccepted.",
+    "Broad PMXT coverage, throughput, and cost remain unaccepted."
+  ],
+  "next_backfill_action": "Generate clean, current-schema output prefixes from accepted tranche materialization before any future bounded conversion rerun; do not reuse historical scratch prefixes as current acceptance evidence."
+}

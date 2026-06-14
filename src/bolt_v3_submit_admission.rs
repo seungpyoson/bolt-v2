@@ -160,6 +160,50 @@ impl BoltV3SubmitAdmissionState {
             .lock()
             .expect("submit admission state mutex should not be poisoned");
         let outcome = Self::evaluate(&inner, request);
+        self.record_admission_decision(request, outcome.clone())?;
+        Self::admission_result(&inner, request, &outcome)?;
+        if outcome == BoltV3AdmissionOutcome::Admitted {
+            inner.admitted_order_count += 1;
+            *inner
+                .admitted_order_count_by_execution_client
+                .entry(request.execution_client_id.clone())
+                .or_insert(0) += 1;
+            match request.intent_kind {
+                BoltV3SubmitIntentKind::Entry => {
+                    inner.admitted_entry_order_count += 1;
+                }
+                BoltV3SubmitIntentKind::RiskReducingExit => {
+                    inner.admitted_risk_reducing_exit_order_count += 1;
+                }
+                BoltV3SubmitIntentKind::ReplaceSubmit => {
+                    inner.admitted_replace_submit_order_count += 1;
+                }
+                BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
+                    inner.live_kill_switch_forced_reduction_order_count += 1;
+                }
+            }
+        }
+        Ok(BoltV3SubmitAdmissionPermit(()))
+    }
+
+    pub fn evaluate_and_record_without_consuming_capacity(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+    ) -> Result<(), BoltV3SubmitAdmissionError> {
+        let inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        let outcome = Self::evaluate(&inner, request);
+        self.record_admission_decision(request, outcome.clone())?;
+        Self::admission_result(&inner, request, &outcome)
+    }
+
+    fn record_admission_decision(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+        outcome: BoltV3AdmissionOutcome,
+    ) -> Result<(), BoltV3SubmitAdmissionError> {
         let evidence = BoltV3AdmissionDecisionEvidence {
             strategy_id: request.strategy_id.clone(),
             execution_client_id: request.execution_client_id.clone(),
@@ -167,36 +211,22 @@ impl BoltV3SubmitAdmissionState {
             instrument_id: request.instrument_id.clone(),
             notional: request.notional.to_string(),
             intent_kind: request.intent_kind,
-            outcome: outcome.clone(),
+            outcome,
         };
         self.decision_evidence
             .record_admission_decision(&evidence)
             .map_err(|err| BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                 reason: format!("{err:#}"),
-            })?;
+            })
+    }
+
+    fn admission_result(
+        inner: &BoltV3SubmitAdmissionInner,
+        request: &BoltV3SubmitAdmissionRequest,
+        outcome: &BoltV3AdmissionOutcome,
+    ) -> Result<(), BoltV3SubmitAdmissionError> {
         match outcome {
-            BoltV3AdmissionOutcome::Admitted => {
-                inner.admitted_order_count += 1;
-                *inner
-                    .admitted_order_count_by_execution_client
-                    .entry(request.execution_client_id.clone())
-                    .or_insert(0) += 1;
-                match request.intent_kind {
-                    BoltV3SubmitIntentKind::Entry => {
-                        inner.admitted_entry_order_count += 1;
-                    }
-                    BoltV3SubmitIntentKind::RiskReducingExit => {
-                        inner.admitted_risk_reducing_exit_order_count += 1;
-                    }
-                    BoltV3SubmitIntentKind::ReplaceSubmit => {
-                        inner.admitted_replace_submit_order_count += 1;
-                    }
-                    BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
-                        inner.live_kill_switch_forced_reduction_order_count += 1;
-                    }
-                }
-                Ok(BoltV3SubmitAdmissionPermit(()))
-            }
+            BoltV3AdmissionOutcome::Admitted => Ok(()),
             BoltV3AdmissionOutcome::RejectedKillSwitchLatched => {
                 Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
                     state: inner.kill_switch_state.kind(),

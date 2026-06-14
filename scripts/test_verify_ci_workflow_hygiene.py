@@ -19,7 +19,24 @@ VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 SYNC_CI_DEBUG_SSH_PATH = REPO_ROOT / "scripts" / "sync_ci_debug_ssh_secret.py"
 DEBUG_WORKFLOW_PATH = ".github/workflows/ci-runner-debug.yml"
 SSH_RUNNER_ACTION = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
-GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]"
+GATE_NEEDS = "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]"
+GATE_NAME = """name: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == true
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && 'gate-deferred'
+          || 'gate' }}"""
+GATE_DEFER_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}\""""
+GATE_DEFER_CONTEXT_GUARD = """            if [[ "$defer_run_context" != "true" ]]; then
+              echo "deferred CI policy outside deferred draft PR context"
+              exit 1
+            fi
+"""
+GATE_DEFER_BLOCK = f"""          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
+{GATE_DEFER_CONTEXT_GUARD}            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
+            exit 0
+          fi
+"""
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
@@ -27,6 +44,98 @@ EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.no-mistakes.yaml'",
     "'scripts/command_understanding.py'",
 )
+
+CI_PROVENANCE_TOML = """
+[ci_provenance]
+schema_version = 1
+artifact_name_template = "ci-provenance-attempt-{run_attempt}"
+workflow_key = "ci"
+workflow_name = "CI"
+workflow_path = ".github/workflows/ci.yml"
+fingerprint_source = "meter"
+
+[ci_provenance.full_ci]
+required_jobs = [
+  "detector",
+  "fmt-check",
+  "deny",
+  "clippy",
+  "check-aarch64",
+  "source-fence",
+  "test-archive",
+  "test-shards",
+  "test",
+]
+conditional_jobs = ["build"]
+conditional_job_outputs = { build = "detector.build_required" }
+
+[ci_provenance.full_ci.jobs.detector]
+check_name = "detector"
+
+[ci_provenance.full_ci.jobs.fmt-check]
+check_name = "fmt-check"
+
+[ci_provenance.full_ci.jobs.deny]
+check_name = "deny"
+
+[ci_provenance.full_ci.jobs.clippy]
+check_name = "clippy"
+
+[ci_provenance.full_ci.jobs.check-aarch64]
+check_name = "check-aarch64"
+
+[ci_provenance.full_ci.jobs.source-fence]
+check_name = "source-fence"
+
+[ci_provenance.full_ci.jobs.test-archive]
+check_name = "nextest archive"
+
+[ci_provenance.full_ci.jobs.test-shards]
+check_name_template = "nextest shard {shard} of {shard_count}"
+shard_count = 4
+
+[ci_provenance.full_ci.jobs.test]
+check_name = "test"
+
+[ci_provenance.full_ci.jobs.build]
+check_name = "build"
+conditional = "detector.build_required"
+
+[ci_provenance.deploy]
+artifact_name = "bolt-v2-binary"
+require_source_event = "push"
+require_source_branch = "main"
+require_gate_check = true
+
+[ci_provenance.dispatch]
+workflow_input = "full_ci"
+
+[ci_provenance.api_limits]
+workflow_runs_per_page = 100
+run_jobs_per_page = 100
+run_artifacts_per_page = 100
+max_lookback_pages = 10
+max_lookback_age_seconds = 2592000
+
+[ci_provenance.artifacts]
+retention_days = 30
+
+[ci_provenance.policy]
+draft_pr_synchronize = "defer"
+draft_pr_opened = "defer"
+draft_pr_reopened = "defer"
+converted_to_draft = "defer"
+ready_pr = "full"
+ready_for_review = "full"
+workflow_dispatch = "full"
+main_push = "full"
+tag = "tag_reuse"
+unknown_event = "full"
+
+[ci_provenance.policy.override]
+force_full_ci = false
+ignore_emit_failure = false
+"""
 
 
 def load_verifier(
@@ -57,6 +166,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
     paths-ignore:
       - 'AGENTS.md'
       - 'CLAUDE.md'
@@ -74,24 +184,83 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      full_ci:
+        description: "Run full CI for the selected ref"
+        required: false
+        default: "true"
 
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && format('pr-{0}-deferred', github.event.number)
+        || github.event_name == 'pull_request'
+        && format('pr-{0}-full', github.event.number)
+        || github.event_name == 'workflow_dispatch'
+        && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) }}
 
 permissions:
   contents: read
   actions: read
 
 jobs:
+  ci-policy:
+    name: ci-policy
+    outputs:
+      ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
+      full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
+      full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}
+      reason: ${{ steps.policy.outputs.reason }}
+      ignore_emit_failure: ${{ steps.policy.outputs.ignore_emit_failure }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Compute CI policy
+        id: policy
+        shell: bash
+        run: >
+          python3 scripts/ci_provenance.py ci-policy
+          --event-name "${{ github.event_name }}"
+          --event-action "${{ github.event.action || '' }}"
+          --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --ref "${{ github.ref }}"
+          | tee -a "$GITHUB_OUTPUT"
+
   detector:
     name: detector
+    outputs:
+      build_required: ${{ steps.build_required.outputs.value }}
     runs-on: ubuntu-latest
     steps:
-      - run: echo detector
+      # detector probe insertion point
+      - name: Detect build-affecting changes
+        id: build_inputs_changed
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: echo "any_changed=false" >> "$GITHUB_OUTPUT"
+
+      - name: Determine build requirement
+        id: build_required
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ steps.build_inputs_changed.outputs.any_changed }}" == "true" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
 
   fmt-check:
     name: fmt-check
@@ -158,7 +327,8 @@ jobs:
 
   check-aarch64:
     name: check-aarch64
-    needs: detector
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'tag_reuse' }}
     runs-on: ubuntu-latest
     steps:
       - name: Resolve aarch64 coverage owner
@@ -198,8 +368,8 @@ jobs:
 
   source-fence:
     name: source-fence
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -223,8 +393,8 @@ jobs:
 
   test-archive:
     name: nextest archive
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
@@ -285,8 +455,8 @@ jobs:
 
   test-shards:
     name: nextest shard ${{ matrix.shard }} of 4
-    needs: test-archive
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, test-archive]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -321,8 +491,8 @@ jobs:
 
   test:
     name: test
-    needs: test-shards
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}
+    needs: [ci-policy, test-shards]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -332,8 +502,8 @@ jobs:
 
   build:
     name: build
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.outputs.build_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -403,6 +573,42 @@ jobs:
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
 
+  ci-provenance-emit:
+    name: ci-provenance-emit
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          pattern: nextest-archive-fingerprint-*
+          path: .ci-provenance/fingerprint
+          merge-multiple: true
+      - name: Emit CI provenance
+        run: >
+          python3 scripts/ci_provenance.py emit-full-ci
+          --output ci-provenance.json
+          --required-job detector=${{ needs.detector.result }}
+          --required-job fmt-check=${{ needs.fmt-check.result }}
+          --required-job deny=${{ needs.deny.result }}
+          --required-job clippy=${{ needs.clippy.result }}
+          --required-job check-aarch64=${{ needs.check-aarch64.result }}
+          --required-job source-fence=${{ needs.source-fence.result }}
+          --required-job test-archive=${{ needs.test-archive.result }}
+          --required-job test-shards=${{ needs.test-shards.result }}
+          --required-job test=${{ needs.test.result }}
+          --conditional-job build.required=${{ needs.detector.outputs.build_required }}
+          --conditional-job build.result=${{ needs.build.result }}
+          --nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt
+      - name: Upload CI provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-provenance-attempt-${{ github.run_attempt }}
+          path: ci-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
   same-sha-main-evidence:
     name: same-sha-main-evidence
     needs: detector
@@ -419,17 +625,27 @@ jobs:
         run: python3 scripts/find_same_sha_main_evidence.py
 
   gate:
-    name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]
+    name: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == true
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && 'gate-deferred'
+          || 'gate' }}
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - run: |
-          tag_ref="${{ startsWith(github.ref, 'refs/tags/v') }}"
+          policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
+          full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
+          ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"
+          if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
+            exit 1
+          fi
           if [[ "${{ needs.detector.result }}" != "success" ]]; then
             exit 1
           fi
-          if [[ "$tag_ref" == "true" ]]; then
+          if [[ "$policy_path" == "tag_reuse" ]]; then
             if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
               exit 1
             fi
@@ -454,10 +670,34 @@ jobs:
             if [[ "${{ needs.build.result }}" != "skipped" ]]; then
               exit 1
             fi
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+              exit 1
+            fi
             exit 0
           fi
           if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
             exit 1
+          fi
+          defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}"
+          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
+            if [[ "$defer_run_context" != "true" ]]; then
+              echo "deferred CI policy outside deferred draft PR context"
+              exit 1
+            fi
+            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
+            exit 0
+          fi
+          if [[ "$policy_path" == "full" ]]; then
+            echo "full CI required"
+          else
+            exit 1
+          fi
+          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
+            if [[ "$ignore_emit_failure" == "true" ]]; then
+              echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
+            else
+              exit 1
+            fi
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
             exit 1
@@ -761,7 +1001,445 @@ def replace_once(text: str, old: str, new: str) -> str:
 
 
 def repo_workflow_text(path: str) -> str:
-    return (REPO_ROOT / path).read_text()
+    return (REPO_ROOT / path).read_text().replace("\r\n", "\n")
+
+
+def strip_ci_provenance_config(config_text: str) -> str:
+    lines = config_text.splitlines()
+    kept: list[str] = []
+    skip = False
+    for line in lines:
+        if line.startswith("[ci_provenance"):
+            skip = True
+            continue
+        if skip and line.startswith("["):
+            skip = False
+        if not skip:
+            kept.append(line)
+    return "\n".join(kept).rstrip() + "\n"
+
+
+def ci_provenance_config_fixture() -> str:
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text()
+    return strip_ci_provenance_config(config_text) + "\n" + CI_PROVENANCE_TOML
+
+
+def runner_config_load_error(config_text: str) -> str:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
+        config_path.write_text(config_text, encoding="utf-8")
+        try:
+            verifier.load_github_actions_runners_config(config_path)
+        except Exception as exc:  # noqa: BLE001 - loader raises domain errors.
+            return str(exc)
+    return ""
+
+
+def assert_ci_provenance_config_contract() -> None:
+    valid = ci_provenance_config_fixture()
+    if runner_config_load_error(valid):
+        raise AssertionError("valid ci_provenance fixture must load")
+
+    cases = [
+        (
+            "ci/github-actions-runners.toml must define [ci_provenance]",
+            strip_ci_provenance_config(valid),
+        ),
+        (
+            "ci_provenance.full_ci.jobs.test missing",
+            valid.replace(
+                """
+[ci_provenance.full_ci.jobs.test]
+check_name = "test"
+""",
+                "",
+            ),
+        ),
+        (
+            "ci_provenance.full_ci.jobs.test-shards shard_count",
+            valid.replace("shard_count = 4", "shard_count = 3"),
+        ),
+        (
+            "ci_provenance.full_ci.jobs.test-shards template count",
+            valid.replace(
+                'check_name_template = "nextest shard {shard} of {shard_count}"',
+                'check_name_template = "nextest shard {shard} of 3"',
+            ),
+        ),
+        (
+            "must reference [meter] fingerprint keys",
+            valid.replace(
+                'fingerprint_source = "meter"',
+                'fingerprint_source = "meter"\nfingerprint_artifact_prefix = "nextest-archive-fingerprint-"',
+            ),
+        ),
+        (
+            "ci_provenance.policy.override.force_full_ci must default to false",
+            valid.replace("force_full_ci = false\n", ""),
+        ),
+        (
+            "ci_provenance.policy.override.ignore_emit_failure must default to false",
+            valid.replace("ignore_emit_failure = false\n", ""),
+        ),
+        (
+            "ci_provenance.policy.ready_pr must be full",
+            valid.replace('ready_pr = "full"', 'ready_pr = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.ready_for_review must be full",
+            valid.replace('ready_for_review = "full"', 'ready_for_review = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.workflow_dispatch must be full",
+            valid.replace('workflow_dispatch = "full"', 'workflow_dispatch = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.main_push must be full",
+            valid.replace('main_push = "full"', 'main_push = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.draft_pr_synchronize must be defer",
+            valid.replace('draft_pr_synchronize = "defer"', 'draft_pr_synchronize = "full"'),
+        ),
+        (
+            "ci_provenance.policy.draft_pr_opened must be defer",
+            valid.replace('draft_pr_opened = "defer"', 'draft_pr_opened = "full"'),
+        ),
+        (
+            "ci_provenance.policy.draft_pr_reopened must be defer",
+            valid.replace('draft_pr_reopened = "defer"', 'draft_pr_reopened = "full"'),
+        ),
+        (
+            "ci_provenance.policy.converted_to_draft must be defer",
+            valid.replace('converted_to_draft = "defer"', 'converted_to_draft = "full"'),
+        ),
+        (
+            "ci_provenance.policy.tag must be tag_reuse",
+            valid.replace('tag = "tag_reuse"', 'tag = "full"'),
+        ),
+        (
+            "ci_provenance.policy.unknown_event must be full",
+            valid.replace('unknown_event = "full"', 'unknown_event = "defer"'),
+        ),
+        (
+            "ci_provenance.policy has unexpected keys",
+            valid.replace(
+                "[ci_provenance.policy.override]",
+                'unexpected_policy_row = "defer"\n\n[ci_provenance.policy.override]',
+            ),
+        ),
+    ]
+    for fragment, config_text in cases:
+        error = runner_config_load_error(config_text)
+        if fragment not in error:
+            raise AssertionError(f"expected {fragment!r}, got {error!r}")
+
+
+def assert_ci_policy_matrix() -> None:
+    verifier = load_verifier()
+    config = verifier.validate_ci_provenance_config(
+        verifier.tomllib.loads(ci_provenance_config_fixture())
+    )
+    policy = config["policy"]
+    cases = [
+        ("push", "", False, "refs/heads/main", "full"),
+        ("push", "", False, "refs/tags/v1.2.3", "tag_reuse"),
+        ("pull_request", "opened", True, "refs/pull/1/merge", "defer"),
+        ("pull_request", "synchronize", True, "refs/pull/1/merge", "defer"),
+        ("pull_request", "reopened", True, "refs/pull/1/merge", "defer"),
+        ("pull_request", "converted_to_draft", True, "refs/pull/1/merge", "defer"),
+        ("pull_request", "opened", False, "refs/pull/1/merge", "full"),
+        ("pull_request", "ready_for_review", True, "refs/pull/1/merge", "full"),
+        ("workflow_dispatch", "", True, "refs/heads/codex/branch", "full"),
+        ("unknown_event", "", True, "refs/heads/codex/branch", "full"),
+    ]
+    for event_name, action, draft, ref, expected in cases:
+        result = verifier.evaluate_ci_policy(
+            policy,
+            event_name=event_name,
+            action=action,
+            pull_request_draft=draft,
+            ref=ref,
+        )
+        if result.ci_policy_path != expected:
+            raise AssertionError((event_name, action, draft, ref, expected, result))
+        if result.full_ci_required != (expected == "full"):
+            raise AssertionError(f"full_ci_required must derive from {expected}: {result}")
+        if result.full_ci_deferred != (expected == "defer"):
+            raise AssertionError(f"full_ci_deferred must derive from {expected}: {result}")
+
+    forced = dict(policy)
+    forced["override"] = dict(policy["override"])
+    forced["override"]["force_full_ci"] = True
+    forced_result = verifier.evaluate_ci_policy(
+        forced,
+        event_name="pull_request",
+        action="synchronize",
+        pull_request_draft=True,
+        ref="refs/pull/1/merge",
+    )
+    if forced_result.ci_policy_path != "full":
+        raise AssertionError(f"force_full_ci must force PR events to full, got {forced_result}")
+
+
+def assert_pull_request_type_parser_accepts_block_list_indentation() -> None:
+    verifier = load_verifier()
+    workflow = """\
+name: CI
+
+on:
+  pull_request:
+    types:
+    - opened
+    - synchronize
+    - ready_for_review
+    - converted_to_draft
+  push:
+    branches: [main]
+"""
+    errors = verifier.workflow_pull_request_type_errors(workflow)
+    if errors:
+        raise AssertionError(errors)
+
+
+def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "workflow must define workflow_dispatch",
+            re.sub(r"\n  workflow_dispatch:\n(?:    .+\n)+", "\n", workflow, count=1),
+        ),
+        (
+            "workflow_dispatch must define configured full CI input",
+            replace_once(workflow, "      full_ci:\n", "      not_full_ci:\n"),
+        ),
+        (
+            "pull_request types must include ready_for_review",
+            replace_once(
+                workflow,
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
+                "types: [opened, synchronize, reopened, converted_to_draft]",
+            ),
+        ),
+        (
+            "pull_request types must include converted_to_draft",
+            replace_once(
+                workflow,
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
+                "types: [opened, synchronize, reopened, ready_for_review]",
+            ),
+        ),
+        ("missing required job ci-policy", without_job(workflow, "ci-policy")),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
+    # Negative test: removing workflow_dispatch from the combined if-arm must trigger the guard.
+    # The production shape is: if [[ "..." == "push" || "..." == "workflow_dispatch" ]]; then
+    # Stripping the || clause leaves only push coverage and breaks the workflow_dispatch invariant.
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    dispatch_clause = ' || "${{ github.event_name }}" == "workflow_dispatch"'
+    mutated = workflow.replace(dispatch_clause, "", 1)
+    errors = verifier.verify_workflow(mutated)
+    if not any("detector must force build_required=true for workflow_dispatch full CI" in error for error in errors):
+        raise AssertionError(f"expected workflow_dispatch detector guard error, got: {errors}")
+
+
+def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "source-fence needs ci-policy",
+            replace_once(
+                workflow,
+                "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]",
+                "  source-fence:\n    name: source-fence\n    needs: detector",
+            ),
+        ),
+        (
+            "source-fence must gate on full_ci_required",
+            replace_once(
+                workflow,
+                "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+                "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}",
+            ),
+        ),
+        (
+            "test-archive needs ci-policy",
+            replace_once(
+                workflow,
+                "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector]",
+                "  test-archive:\n    name: nextest archive\n    needs: detector",
+            ),
+        ),
+        (
+            "test-shards needs ci-policy",
+            replace_once(
+                workflow,
+                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive]",
+                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: test-archive",
+            ),
+        ),
+        (
+            "test needs ci-policy",
+            replace_once(
+                workflow,
+                "  test:\n    name: test\n    needs: [ci-policy, test-shards]",
+                "  test:\n    name: test\n    needs: test-shards",
+            ),
+        ),
+        (
+            "build needs ci-policy",
+            replace_once(
+                workflow,
+                "  build:\n    name: build\n    needs: [ci-policy, detector]",
+                "  build:\n    name: build\n    needs: detector",
+            ),
+        ),
+        (
+            "ci-provenance-emit needs ci-policy",
+            replace_once(
+                workflow,
+                "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
+                "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
+            ),
+        ),
+        (
+            "ci-provenance-emit must gate on full_ci_required",
+            replace_once(
+                workflow,
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
+            ),
+        ),
+        (
+            "check-aarch64 needs ci-policy",
+            replace_once(
+                workflow,
+                "  check-aarch64:\n    name: check-aarch64\n    needs: [ci-policy, detector]",
+                "  check-aarch64:\n    name: check-aarch64\n    needs: detector",
+            ),
+        ),
+        (
+            "check-aarch64 must run on full CI or tag reuse",
+            replace_once(
+                workflow,
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'tag_reuse' }}",
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            ),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_gate_policy_truth_table_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "gate needs ci-policy",
+            replace_once(workflow, GATE_NEEDS, without_inline_need(GATE_NEEDS, "ci-policy")),
+        ),
+        (
+            "gate must publish gate-deferred for deferred draft PR runs",
+            replace_once(workflow, GATE_NAME, "name: gate"),
+        ),
+        (
+            "gate must publish gate-deferred for deferred draft PR runs",
+            replace_once(workflow, "'gate-deferred'", "'gate'"),
+        ),
+        (
+            "gate must check needs.ci-policy.result",
+            replace_once(
+                workflow,
+                '"${{ needs.ci-policy.result }}" != "success"',
+                '"${{ omitted.ci-policy.result }}" != "success"',
+            ),
+        ),
+        (
+            "gate must pass deferred full CI without failing stale draft checks",
+            replace_once(workflow, GATE_DEFER_BLOCK, ""),
+        ),
+        (
+            "gate must pass deferred full CI without failing stale draft checks",
+            replace_once(workflow, GATE_DEFER_BLOCK, GATE_DEFER_BLOCK.replace("            exit 0\n", "            exit 1\n")),
+        ),
+        (
+            "gate must compute deferred draft PR run context",
+            replace_once(workflow, f"          {GATE_DEFER_CONTEXT_ASSIGNMENT}\n", ""),
+        ),
+        (
+            "gate must fail deferred policy outside deferred draft PR context",
+            replace_once(workflow, GATE_DEFER_CONTEXT_GUARD, ""),
+        ),
+        (
+            "gate must fail deferred policy outside deferred draft PR context",
+            replace_once(workflow, '"$defer_run_context" != "true"', '"$defer_run_context" == "true"'),
+        ),
+        (
+            "gate must branch on ci_policy_path full",
+            replace_once(workflow, 'if [[ "$policy_path" == "full" ]]; then', 'if [[ "$policy_path" != "defer" ]]; then'),
+        ),
+        (
+            "gate must branch on ci_policy_path tag_reuse",
+            replace_once(workflow, 'if [[ "$policy_path" == "tag_reuse" ]]; then', 'if [[ "$tag_ref" == "true" ]]; then'),
+        ),
+        (
+            "gate must read ignore_emit_failure only for ci-provenance-emit",
+            replace_once(workflow, '            if [[ "$ignore_emit_failure" == "true" ]]; then\n', ""),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_ci_concurrency_split_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "concurrency group must split deferred PR runs from full CI runs",
+            replace_once(workflow, "pr-{0}-deferred", "pr-{0}"),
+        ),
+        (
+            "workflow_dispatch full CI runs must use a full-CI concurrency group",
+            replace_once(
+                workflow,
+                "        || github.event_name == 'workflow_dispatch'\n        && format('{0}-full-ci', github.ref_name)\n",
+                "",
+            ),
+        ),
+        (
+            "cancel-in-progress must be true only for deferred draft PR runs",
+            re.sub(
+                r"  cancel-in-progress: >-\n    \$\{\{ github\.event_name == 'pull_request'\n        && github\.event\.pull_request\.draft == true\n        && contains\(fromJSON\('\[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\"\]'\), github\.event\.action\) \}\}\n",
+                "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n",
+                workflow,
+                count=1,
+            ),
+        ),
+        (
+            "workflow-level concurrency must not reference job outputs",
+            replace_once(workflow, "github.event.number", "needs.ci-policy.outputs.reason"),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
 
 def assert_runner_contract_rejects_missing_and_extra_jobs() -> None:
@@ -1075,9 +1753,18 @@ def without_pr_concurrency(workflow: str) -> str:
         """concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && format('pr-{0}-deferred', github.event.number)
+        || github.event_name == 'pull_request'
+        && format('pr-{0}-full', github.event.number)
+        || github.event_name == 'workflow_dispatch'
+        && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) }}
 
 """,
         "",
@@ -1487,7 +2174,7 @@ def assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action() -> N
 def workflow_with_detector_probe(script: str) -> str:
     return replace_once(
         BASE_WORKFLOW,
-        "      - run: echo detector",
+        "      # detector probe insertion point",
         "      - name: V6 raw Rust storage policy probe\n        run: |\n"
         + textwrap.indent(script.strip(), "          "),
     )
@@ -3636,6 +4323,13 @@ def assert_ci_lint_runs_verify_remote_tests() -> None:
         raise AssertionError("ci-lint-workflow must run remote verification watcher self-tests")
 
 
+def assert_ci_lint_runs_ci_provenance_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_ci_provenance.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run CI provenance self-tests")
+
+
 def assert_ci_lint_runs_command_understanding_tests() -> None:
     justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     expected = "python3 scripts/test_command_understanding.py"
@@ -3653,6 +4347,7 @@ def assert_cargo_zigbuild_probe_has_no_redundant_true() -> None:
 def main() -> int:
     assert_ci_lint_runs_rust_verification_cache_retention_tests()
     assert_ci_lint_runs_verify_remote_tests()
+    assert_ci_lint_runs_ci_provenance_tests()
     assert_ci_lint_runs_command_understanding_tests()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()
@@ -3680,18 +4375,21 @@ def main() -> int:
     assert_shell_logical_lines_handles_crlf_continuations()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(
-        "concurrency group must key pull_request runs by PR number",
-        replace_once(BASE_WORKFLOW, "format('pr-{0}', github.event.number)", "github.ref_name"),
+        "concurrency group must split deferred PR runs from full CI runs",
+        replace_once(BASE_WORKFLOW, "format('pr-{0}-deferred', github.event.number)", "github.ref_name"),
     )
     assert_error(
         "concurrency group must keep non-PR runs isolated by ref and SHA",
         replace_once(BASE_WORKFLOW, "format('{0}-{1}', github.ref_name, github.sha)", "github.ref_name"),
     )
     assert_error(
-        "cancel-in-progress must be limited to pull_request events",
+        "cancel-in-progress must be true only for deferred draft PR runs",
         replace_once(
             BASE_WORKFLOW,
-            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+            """cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) }}""",
             "cancel-in-progress: true",
         ),
     )
@@ -3701,31 +4399,27 @@ def main() -> int:
             BASE_WORKFLOW,
             """  group: >-
     ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && format('pr-{0}-deferred', github.event.number)
+        || github.event_name == 'pull_request'
+        && format('pr-{0}-full', github.event.number)
+        || github.event_name == 'workflow_dispatch'
+        && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}""",
             "  group: format('pr-{0}', github.event.number)",
         ),
     )
     assert_error(
         "concurrency group must branch on pull_request event",
-        replace_once(
-            BASE_WORKFLOW,
-            "github.event_name == 'pull_request'\n        &&",
-            "github.event_name != 'pull_request'\n        &&",
-        ),
+        BASE_WORKFLOW.replace("github.event_name == 'pull_request'", "github.event_name != 'pull_request'"),
     )
     assert_error(
-        "concurrency group must key pull_request runs by PR number",
+        "workflow_dispatch full CI runs must use a full-CI concurrency group",
         replace_once(
             BASE_WORKFLOW,
-            """  group: >-
-    ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
-        || format('{0}-{1}', github.ref_name, github.sha) }}""",
-            """  group: >-
-    ${{ github.event_name == 'pull_request'
-        && format('{0}-{1}', github.ref_name, github.sha)
-        || format('pr-{0}', github.event.number) }}""",
+            "        || github.event_name == 'workflow_dispatch'\n        && format('{0}-full-ci', github.ref_name)\n",
+            "",
         ),
     )
     assert_parse_jobs_strips_comments()
@@ -3788,8 +4482,8 @@ def main() -> int:
         "check-aarch64 needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  check-aarch64:\n    name: check-aarch64\n    needs: detector",
-            "  check-aarch64:\n    name: check-aarch64",
+            "  check-aarch64:\n    name: check-aarch64\n    needs: [ci-policy, detector]",
+            "  check-aarch64:\n    name: check-aarch64\n    needs: ci-policy",
         ),
     )
     assert_error(
@@ -3806,14 +4500,6 @@ def main() -> int:
             BASE_WORKFLOW,
             "        run: sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross",
             "        run: sudo apt-get install -y gcc-aarch64-linux-gnu",
-        ),
-    )
-    assert_error(
-        "check-aarch64 must have no job-level if condition",
-        replace_once(
-            BASE_WORKFLOW,
-            "  check-aarch64:\n    name: check-aarch64\n    needs: detector\n    runs-on: ubuntu-latest",
-            "  check-aarch64:\n    name: check-aarch64\n    needs: detector\n    if: needs.detector.outputs.build_required != 'true'\n    runs-on: ubuntu-latest",
         ),
     )
     assert_error(
@@ -4295,32 +4981,32 @@ def main() -> int:
         "test-archive needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: detector",
-            "  test-archive:\n    name: nextest archive\n    needs: fmt-check",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector]",
+            "  test-archive:\n    name: nextest archive\n    needs: ci-policy",
         ),
     )
     assert_error(
         "test-archive must not need source-fence",
         replace_once(
             BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: detector",
-            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector]",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector, source-fence]",
         ),
     )
     assert_error(
         "test-shards needs test-archive",
         replace_once(
             BASE_WORKFLOW,
-            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: test-archive",
-            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: detector",
+            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive]",
+            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: ci-policy",
         ),
     )
     assert_error(
         "test needs test-shards",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: test-shards",
-            "  test:\n    name: test\n    needs: detector",
+            "  test:\n    name: test\n    needs: [ci-policy, test-shards]",
+            "  test:\n    name: test\n    needs: ci-policy",
         ),
     )
     assert_error(
@@ -4331,8 +5017,8 @@ def main() -> int:
         "test must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: test-shards\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}",
-            "  test:\n    name: test\n    needs: test-shards",
+            "  test:\n    name: test\n    needs: [ci-policy, test-shards]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  test:\n    name: test\n    needs: [ci-policy, test-shards]",
         ),
     )
     assert_error(
@@ -4359,8 +5045,8 @@ def main() -> int:
         "source-fence needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  source-fence:\n    name: source-fence\n    needs: detector",
-            "  source-fence:\n    name: source-fence",
+            "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]",
+            "  source-fence:\n    name: source-fence\n    needs: ci-policy",
         ),
     )
     assert_error(
@@ -4405,8 +5091,8 @@ def main() -> int:
         "pull_request paths-ignore must match baseline",
         replace_once(
             BASE_WORKFLOW,
-            "    branches: [main]\n    paths-ignore:\n",
-            "    branches: [main]\n    # paths-ignore:\n",
+            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]\n    paths-ignore:\n",
+            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]\n    # paths-ignore:\n",
         ),
     )
     assert_error(
@@ -4421,15 +5107,15 @@ def main() -> int:
         "build needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  build:\n    name: build\n    needs: detector",
-            "  build:\n    name: build",
+            "  build:\n    name: build\n    needs: [ci-policy, detector]",
+            "  build:\n    name: build\n    needs: ci-policy",
         ),
     )
     assert_error(
         "build must gate on needs.detector.outputs.build_required",
         replace_once(
             BASE_WORKFLOW,
-            "if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}",
+            "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.outputs.build_required == 'true' }}",
             "if: ${{ needs.detector.outputs.build_required != 'true' }}",
         ),
     )
@@ -4438,11 +5124,138 @@ def main() -> int:
         replace_once(
             replace_once(
                 BASE_WORKFLOW,
-                "    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}\n",
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.outputs.build_required == 'true' }}\n",
                 "",
             ),
             "      - uses: ./.github/actions/setup-environment",
             "      - if: needs.detector.outputs.build_required == 'true'\n        uses: ./.github/actions/setup-environment",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit needs source-fence",
+        replace_once(
+            BASE_WORKFLOW,
+            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]",
+            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, test-archive, test-shards, test, build]",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must use always()",
+        replace_once(
+            BASE_WORKFLOW,
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, test-shards, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must pass detector result from needs.detector.result",
+        replace_once(
+            BASE_WORKFLOW,
+            "--required-job detector=${{ needs.detector.result }}",
+            "--required-job detector=success\n          printf '%s\\n' '${{ needs.detector.result }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must pass build.required from needs.detector.outputs.build_required",
+        replace_once(
+            BASE_WORKFLOW,
+            "--conditional-job build.required=${{ needs.detector.outputs.build_required }}",
+            "--conditional-job build.required=true\n          printf '%s\\n' '${{ needs.detector.outputs.build_required }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must pass build.result from needs.build.result",
+        replace_once(
+            BASE_WORKFLOW,
+            "--conditional-job build.result=${{ needs.build.result }}",
+            "--conditional-job build.result=success\n          printf '%s\\n' '${{ needs.build.result }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            BASE_WORKFLOW,
+            "--nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
+            "--nextest-fingerprint-path .ci-provenance/wrong/cache-key.txt",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            BASE_WORKFLOW,
+            "          path: .ci-provenance/fingerprint",
+            "          path: .ci-provenance/downloaded",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            BASE_WORKFLOW,
+            "          path: .ci-provenance/fingerprint",
+            "          path: .ci-provenance/fingerprint-backup",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit fingerprint download path must match emitter argument",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                "          path: .ci-provenance/fingerprint",
+                "          path: .ci-provenance/downloaded",
+            ),
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+            "          printf '%s\\n' 'path: .ci-provenance/fingerprint'\n"
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must record nextest fingerprint when present",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                "          pattern: nextest-archive-fingerprint-*",
+                "          pattern: nextest-archive-fingerprint-backup-*",
+            ),
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+            "          printf '%s\\n' 'pattern: nextest-archive-fingerprint-*'\n"
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must record nextest fingerprint when present",
+        replace_once(
+            replace_once(
+                BASE_WORKFLOW,
+                "        continue-on-error: true",
+                "        continue-on-error: false",
+            ),
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+            "          printf '%s\\n' 'continue-on-error: true'\n"
+            "          python3 scripts/ci_provenance.py emit-full-ci",
+        ),
+    )
+    assert_error(
+        "actions/upload-artifact must be pinned to a 40-character SHA",
+        replace_once(
+            BASE_WORKFLOW,
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "uses: actions/upload-artifact@v7",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit retention-days must match TOML",
+        replace_once(
+            BASE_WORKFLOW,
+            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 30",
+            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 7",
+        ),
+    )
+    assert_error(
+        "gate must not read nextest_fingerprint",
+        replace_once(
+            BASE_WORKFLOW,
+            '          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then\n',
+            '          if [[ "${{ needs.ci-provenance-emit.outputs.nextest_fingerprint }}" != "" ]]; then\n',
         ),
     )
     assert_error("same-sha-main-evidence needs detector", replace_once(BASE_WORKFLOW, "    needs: detector\n    if: startsWith(github.ref, 'refs/tags/v')", "    if: startsWith(github.ref, 'refs/tags/v')"))
@@ -4479,8 +5292,8 @@ def main() -> int:
         "gate must check same-sha-main-evidence success",
         replace_once(
             BASE_WORKFLOW,
-            '          if [[ "$tag_ref" == "true" ]]; then\n',
-            '          if [[ "$tag_ref" == "true" ]]; then\n            exit 0\n',
+            '          if [[ "$policy_path" == "tag_reuse" ]]; then\n',
+            '          if [[ "$policy_path" == "tag_reuse" ]]; then\n            exit 0\n',
         ),
     )
     assert_error(
@@ -5324,8 +6137,8 @@ def main() -> int:
         "gate must use always()",
         replace_once(
             BASE_WORKFLOW,
-            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}",
-            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    if: ${{{{ always() && false }}}}",
+            f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}",
+            f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    if: ${{{{ always() && false }}}}",
         ),
     )
     assert_error(
@@ -5333,11 +6146,11 @@ def main() -> int:
         replace_once(
             replace_once(
                 BASE_WORKFLOW,
-                f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}\n",
-                f"  gate:\n    name: gate\n    {GATE_NEEDS}\n",
+                f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}\n",
+                f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n",
             ),
-            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - run: |",
-            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - if: ${{{{ always() }}}}\n        run: |",
+            f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - run: |",
+            f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - if: ${{{{ always() }}}}\n        run: |",
         ),
     )
     assert_error(
@@ -5656,6 +6469,7 @@ def main() -> int:
     )
     assert_v6_deploy_artifact_s3_stays_allowed()
     assert_v6_red_workflow_policy_gaps()
+    assert_ci_provenance_config_contract()
     assert_runner_contract_rejects_missing_and_extra_jobs()
     assert_runner_contract_rejects_unmapped_workflow_jobs()
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()
@@ -5670,6 +6484,13 @@ def main() -> int:
     assert_actionlint_rejects_stale_config_variables()
     assert_source_fence_static_ignores_comments()
     assert_rust_verification_policy_parse_errors_are_domain_specific()
+    assert_ci_policy_matrix()
+    assert_pull_request_type_parser_accepts_block_list_indentation()
+    assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
+    assert_ci_detector_forces_build_on_workflow_dispatch()
+    assert_ci_policy_heavy_lane_gaps_are_reported()
+    assert_gate_policy_truth_table_gaps_are_reported()
+    assert_ci_concurrency_split_gaps_are_reported()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

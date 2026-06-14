@@ -67,6 +67,7 @@ use nautilus_model::{
     enums::BarIntervalType,
     identifiers::{ClientId, StrategyId},
 };
+use serde::Deserialize;
 use ustr::Ustr;
 use zeroize::Zeroizing;
 
@@ -1682,19 +1683,11 @@ fn insert_gate_provider_client_keys(
         return;
     };
     for strategy in &loaded.strategies {
-        if let Ok(target) = crate::bolt_v3_market_families::updown::deserialize_target_block(
-            &strategy.config.target,
-        ) {
-            insert_gate_subscription_client_keys(
-                client_keys,
-                providers,
-                target.gate_subscriptions.as_ref(),
-            );
-        }
-        if let Ok(target) =
-            crate::bolt_v3_market_families::hyperliquid_instrument::deserialize_target_block(
-                &strategy.config.target,
-            )
+        if let Ok(target) = strategy
+            .config
+            .target
+            .clone()
+            .try_into::<TargetGateReferences>()
         {
             insert_gate_subscription_client_keys(
                 client_keys,
@@ -1708,9 +1701,7 @@ fn insert_gate_provider_client_keys(
 fn insert_gate_subscription_client_keys(
     client_keys: &mut BTreeSet<String>,
     providers: &BTreeMap<String, crate::bolt_v3_config::GateProviderBlock>,
-    subscriptions: Option<
-        &BTreeMap<String, crate::bolt_v3_market_families::updown::TargetGateSubscription>,
-    >,
+    subscriptions: Option<&BTreeMap<String, TargetGateSubscriptionReferences>>,
 ) {
     let Some(subscriptions) = subscriptions else {
         return;
@@ -1734,6 +1725,23 @@ fn insert_gate_subscription_client_keys(
             }
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct TargetGateReferences {
+    gate_subscriptions: Option<BTreeMap<String, TargetGateSubscriptionReferences>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TargetGateSubscriptionReferences {
+    allowed_provider_ids: Option<Vec<String>>,
+    provider_preference: Option<Vec<String>>,
+    market_mappings: Option<Vec<TargetGateMarketMappingReference>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TargetGateMarketMappingReference {
+    provider_id: Option<String>,
 }
 
 fn insert_gate_provider_client_key(

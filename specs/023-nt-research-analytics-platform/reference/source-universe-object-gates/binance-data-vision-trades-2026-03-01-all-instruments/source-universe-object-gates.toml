@@ -1,0 +1,30 @@
+gate_id = "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments"
+queue_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/binance-data-vision-trades-2026-03-01-all-instruments/queue/source-universe-conversion-queue.json"
+output_dir = "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
+overwrite_existing_artifacts = true
+
+[[source_binding]]
+source_binding = "binance-spot-native-trades"
+source_proof_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-spot-native-trades-2026-03-01-all-instruments.json"
+category_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/category-manifests/binance-data-vision-trades-object-manifest-spot.json"
+
+[[source_binding]]
+source_binding = "binance-usd-m-perpetual-native-trades"
+source_proof_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments.json"
+category_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/category-manifests/binance-data-vision-trades-object-manifest-usd_m_perpetual.json"
+
+[[source_binding]]
+source_binding = "binance-usd-m-delivery-native-trades"
+source_proof_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-usd-m-delivery-native-trades-2026-03-01-all-instruments.json"
+category_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/category-manifests/binance-data-vision-trades-object-manifest-usd_m_delivery.json"
+
+[[source_binding]]
+source_binding = "binance-coin-m-perpetual-native-trades"
+source_proof_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments.json"
+category_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/category-manifests/binance-data-vision-trades-object-manifest-coin_m_perpetual.json"
+
+[[source_binding]]
+source_binding = "binance-coin-m-delivery-native-trades"
+source_proof_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-coin-m-delivery-native-trades-2026-03-01-all-instruments.json"
+category_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/category-manifests/binance-data-vision-trades-object-manifest-coin_m_delivery.json"

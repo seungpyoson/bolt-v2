@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01292:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:WALTRY:2026-03-01:331d45e71d306fbe5315e0713ef83ddb9696f6a3d701ffc322b2452953f2fccc:accepted-tranche",
+  "accepted_tranche_manifest_hash": "db5646df6c67b94250abd144c5123f0246930f21344612c140905b591ee7adeb",
+  "run_spec_hash": "b713aa83b57a7bf1958f32176858f3b24b67976785a93983fb18e11d51c2f230",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01292",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=WALTRY/dt=2026-03-01/object=331d45e71d306fbe5315e0713ef83ddb9696f6a3d701ffc322b2452953f2fccc",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 7252,
+  "max_object_bytes": 7252,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=WALTRY/object=331d45e71d306fbe5315e0713ef83ddb9696f6a3d701ffc322b2452953f2fccc.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/WALTRY/WALTRY-trades-2026-03-01.zip",
+      "sha256": "331d45e71d306fbe5315e0713ef83ddb9696f6a3d701ffc322b2452953f2fccc",
+      "bytes": 7252,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00465:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ETHUSD1:2026-03-01:b31395ac32e0a9f21cd3173a6d7462380406bd0526f26667719fa3d1906685c0:accepted-tranche",
+  "accepted_tranche_manifest_hash": "60b8e0a5ddcb0a7be73685cf74aa69dff2c2915c867922f5d3582a67b1a74658",
+  "run_spec_hash": "32ec848808055ac6cb7c36e0e02bf0e8518e58ea4d4deef201af82f12a86aaef",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00465",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ETHUSD1/dt=2026-03-01/object=b31395ac32e0a9f21cd3173a6d7462380406bd0526f26667719fa3d1906685c0",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 9387055,
+  "max_object_bytes": 9387055,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=ETHUSD1/object=b31395ac32e0a9f21cd3173a6d7462380406bd0526f26667719fa3d1906685c0.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/ETHUSD1/ETHUSD1-trades-2026-03-01.zip",
+      "sha256": "b31395ac32e0a9f21cd3173a6d7462380406bd0526f26667719fa3d1906685c0",
+      "bytes": 9387055,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

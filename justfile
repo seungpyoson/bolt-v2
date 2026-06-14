@@ -81,6 +81,10 @@ verify-bolt-v3-strategy-policy-fence: check-workspace
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py
 
+verify-bolt-v3-no-exit-market-command: check-workspace
+    python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
+    python3 scripts/verify_bolt_v3_no_exit_market_command.py
+
 verify-bolt-v3-dependency-direction: check-workspace
     python3 scripts/test_verify_bolt_v3_dependency_direction.py
     python3 scripts/verify_bolt_v3_dependency_direction.py
@@ -189,6 +193,8 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/test_verify_outcome_group_nt_reuse.py
     python3 scripts/verify_outcome_group_nt_reuse.py
+    python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
+    python3 scripts/verify_bolt_v3_no_exit_market_command.py
     python3 scripts/test_verify_runtime_capture_yaml.py
     python3 scripts/test_lane_governor.py
     python3 scripts/test_verify_lane_governance.py
@@ -259,6 +265,9 @@ ci-lint-workflow:
     toml_target="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_target"])')"
     toml_profile="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_profile"])')"
     if ! python3 scripts/test_verify_ci_workflow_hygiene.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_ci_provenance.py; then
         failed=1
     fi
     if ! python3 scripts/test_find_same_sha_main_evidence.py; then

@@ -1,0 +1,6 @@
+queue_id = "source-universe-conversion-queue-binance-data-vision-trades-2026-03-01-all-instruments"
+source_universe_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/binance-data-vision-trades-object-manifest.json"
+output_dir = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/binance-data-vision-trades-2026-03-01-all-instruments/queue"
+table_family = "trades"
+output_prefix_template = "source-universe={universe_id}/category={category}/symbol={symbol}/dt={archive_date}/object={sha256}"
+overwrite_existing_artifacts = true

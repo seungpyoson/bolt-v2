@@ -1,0 +1,81 @@
+{
+  "schema_version": "artifact-index-commit-proof-status.v1",
+  "task_id": "BACKTESTING_ENGINE-006",
+  "status": "open_iam_scope_unproven",
+  "recorded_at": "2026-06-08",
+  "reconciled_at": "2026-06-09",
+  "decision": "Do not rely on Artifact Index producer commits for broad backfill until per-kind producer IAM scope is proven, or an approved coordinator/table format is selected.",
+  "store_commit_mechanics": {
+    "status": "proven",
+    "direct_s3_commit_proven": true,
+    "real_s3_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529",
+    "report_path": "specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-direct-s3.2026-06-08.json",
+    "report_content_hash": "091501378ca70ca99b353d2252f040ef6b4d20c3d9b9e6db1dc29cc5d0489bf8",
+    "event_create_only_proven": true,
+    "snapshot_create_only_proven": true,
+    "audit_epoch_create_only_proven": true,
+    "latest_pointer_create_only_proven": true,
+    "latest_pointer_update_if_match_proven": true,
+    "stale_etag_update_rejected": true,
+    "latest_pointer_readback_proven": true,
+    "snapshot_readback_proven": true
+  },
+  "producer_iam_scope": {
+    "status": "blocked_by_broad_generic_credential",
+    "current_generic_ssm_binding": "/bolt/artifact-store/s3/*",
+    "real_s3_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca",
+    "report_path": "specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-iam-scope.2026-06-08.json",
+    "report_content_hash": "be58042fd0f0391523720b9e94f32b5df88da139cd5237a914bac5ee57109c64",
+    "denied_artifact_kinds": [
+      "research_analytics"
+    ],
+    "denied_write_attempts": 3,
+    "denied_write_rejections": 0,
+    "violation_count": 3,
+    "producer_iam_scope_proven": false
+  },
+  "read_only_ssm_probe": {
+    "observed_at_utc": "2026-06-08T21:29:52Z",
+    "rechecked_at_utc": "2026-06-09T03:55:04Z",
+    "commands": [
+      "aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-index --query Parameters[].Name --output text",
+      "aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-store --query Parameters[].Name --output text"
+    ],
+    "artifact_index_parameter_names": [],
+    "artifact_store_parameter_names": [
+      "/bolt/artifact-store/s3/access-key-id",
+      "/bolt/artifact-store/s3/secret-access-key"
+    ],
+    "credential_values_read": false,
+    "aws_mutation_performed": false,
+    "conclusion": "Current SSM state has only the broad artifact-store S3 credential binding and no per-kind /bolt/artifact-index producer credential namespace, so the denied-kind IAM proof cannot be closed by rerunning with current parameters."
+  },
+  "repo_side_progress": {
+    "per_kind_policy_generator": "crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs",
+    "per_kind_provisioning_plan": "crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs::artifact_index_producer_iam_provisioning_plan",
+    "provisioning_plan_cli": "crates/backtesting-vertical-slice/src/bin/artifact_index_iam_plan.rs",
+    "backtests_provisioning_plan_spec": "specs/023-nt-research-analytics-platform/reference/artifact-index-producer-iam-provisioning-plan.backtesting-engine-006.backtests.2026-06-09.toml",
+    "backtests_provisioning_plan_artifact": "specs/023-nt-research-analytics-platform/reference/artifact-index-producer-iam-provisioning-plan.backtesting-engine-006.backtests.2026-06-09.json",
+    "backtests_provisioning_plan_generated_at_utc": "2026-06-09T03:55:04Z",
+    "policy_test": "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_artifact_index_iam_policy.rs",
+    "provisioning_plan_test": "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_artifact_index_iam_policy.rs::producer_iam_provisioning_plan_binds_policy_ssm_paths_and_denied_probe_kinds",
+    "policy_shape": "The generated policy allows S3 GetObject/PutObject only for the configured Artifact Index kind's events, snapshots, latest pointer, and audit epoch paths under the configured artifact_root and optional proof roots.",
+    "provisioning_plan_shape": "The generated provisioning plan binds one Artifact Index kind to one SSM parameter namespace, one per-kind IAM policy, explicit denied_artifact_kinds for proof probing, and the expected denied write attempt count.",
+    "runtime_secret_source": "SSM parameter names only; no credential values are stored in repo artifacts."
+  },
+  "backfill_safety_impact": {
+    "prevents_recursive_discovery_dependency": true,
+    "prevents_unconditional_pointer_overwrite": true,
+    "prevents_silent_reuse_of_partial_outputs": true,
+    "remaining_risk": "A broad producer credential can still write another artifact kind's event/snapshot/pointer paths, so producer ownership is not enforced by AWS yet."
+  },
+  "next_required_evidence": [
+    "Use repo://specs/023-nt-research-analytics-platform/reference/artifact-index-producer-iam-closeout-plan.backtesting-engine-006.2026-06-09.json as the current closeout plan: current SSM state still has no /bolt/artifact-index producer parameters, direct S3 mechanics are proven, and BTE-006 can close only through per-kind Artifact Index producer credentials or an approved coordinator/table format.",
+    "Explicit approval for AWS security mutation if per-kind IAM is the selected path.",
+    "Provision one producer identity and SSM parameter set per top-level Artifact Index kind using the generated provisioning plan and policy.",
+    "Rerun artifact_index_commit_proof with denied_artifact_kinds configured so denied event, snapshot, and latest-pointer writes are rejected by permissions.",
+    "If per-kind IAM is not acceptable, select and prove an approved commit coordinator or table format before relying on Artifact Index commits."
+  ],
+  "no_aws_mutation_performed_by_this_record": true,
+  "bte_006_can_close": false
+}

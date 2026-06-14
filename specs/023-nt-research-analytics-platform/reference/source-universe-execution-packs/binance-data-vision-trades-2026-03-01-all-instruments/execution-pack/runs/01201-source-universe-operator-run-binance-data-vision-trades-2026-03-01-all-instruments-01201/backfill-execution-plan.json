@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01201:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TRXBTC:2026-03-01:2c7fa51ae515227e257d6e3e6f44654451691a9ae57f64ed86fb3ae21bb5c235:accepted-tranche",
+  "accepted_tranche_manifest_hash": "f360308c7413547b87ae2af331d238a0ee551e0d8d9703c40acddc13140bccb6",
+  "run_spec_hash": "48b97900767c835a0b30b444dfb8db4ae73d7ba78ee7fb94d67f9b790d313914",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01201",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TRXBTC/dt=2026-03-01/object=2c7fa51ae515227e257d6e3e6f44654451691a9ae57f64ed86fb3ae21bb5c235",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 143102,
+  "max_object_bytes": 143102,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=TRXBTC/object=2c7fa51ae515227e257d6e3e6f44654451691a9ae57f64ed86fb3ae21bb5c235.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/TRXBTC/TRXBTC-trades-2026-03-01.zip",
+      "sha256": "2c7fa51ae515227e257d6e3e6f44654451691a9ae57f64ed86fb3ae21bb5c235",
+      "bytes": 143102,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

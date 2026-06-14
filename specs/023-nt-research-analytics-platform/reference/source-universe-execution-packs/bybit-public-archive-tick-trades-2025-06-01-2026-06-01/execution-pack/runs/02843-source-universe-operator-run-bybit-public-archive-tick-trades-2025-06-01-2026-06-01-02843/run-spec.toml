@@ -1,0 +1,254 @@
+accepted_at_utc = "2026-06-10T00:00:00Z"
+accepted_by = "backtesting-vertical-slice-operator"
+capture_time_utc = "2026-06-02T04:27:02Z"
+created_at_utc = "2026-06-02T00:00:00Z"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
+
+[accepted_object]
+archive_date = "2026-03-08"
+bytes = 6051
+s3_uri = "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-08/symbol=ETHEUR/object=ccd9a0b863364512425297957546410444e54561620b4558b7bf19ab534fc8c5.csv.gz"
+schema_columns = [
+    "id",
+    "timestamp",
+    "price",
+    "volume",
+    "side",
+    "rpi",
+]
+sha256 = "ccd9a0b863364512425297957546410444e54561620b4558b7bf19ab534fc8c5"
+source_url = "https://public.bybit.com/spot/ETHEUR/ETHEUR_2026-03-08.csv.gz"
+
+[converter]
+identity = "csv-native-trades-to-canonical-trades.v1"
+version = "1"
+
+[converter.csv]
+buyer_side_values = ["buy"]
+has_headers = true
+price_column = "price"
+seller_side_values = ["sell"]
+side_column = "side"
+size_column = "volume"
+timestamp_column = "timestamp"
+timestamp_unit = "milliseconds"
+trade_id_column = "id"
+
+[converter.raw_payload]
+container = "csv_gzip"
+max_decoded_bytes = 1073741824
+max_object_bytes = 6051
+
+[identity]
+instrument_id = "ETHEUR"
+nt_instrument_id = "ETHEUR.BYBIT"
+venue_symbol = "ETHEUR"
+
+[instrument_spec]
+base_currency = "ETH"
+max_notional = "180000"
+max_quantity = "1500"
+min_notional = "1"
+min_quantity = "0.00001"
+nt_instrument_id = "ETHEUR.BYBIT"
+price_increment = "0.01"
+quote_currency = "EUR"
+raw_symbol = "ETHEUR"
+size_increment = "0.00001"
+
+[manifest]
+artifact_root = "s3://bolt-parquet/nt-research-analytics"
+catalog_hash = "8ffeeb9f0c379fe5aff10f6353b82551378def991bf6e5a64737c41e29d1de36"
+execution_model = "nt_backtest_node"
+manifest_schema_version = "backtesting-run-manifest.v1"
+market_structure_fixture = "perps-spot"
+output_prefix = "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=spot/symbol=ETHEUR/dt=2026-03-08/object=ccd9a0b863364512425297957546410444e54561620b4558b7bf19ab534fc8c5"
+pins_non_latest_proof = false
+resolved_nt_version = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+run_id = "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02843"
+run_purpose = "normal"
+source_proof_id = "source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01"
+source_proof_version = 1
+strategy_config_hash = "a99e8a42bfa6df1f790ccc1a3a2c0a5ea7dd122e3ffab73e685be4132bbef396"
+target_bolt_v2_branch = "main"
+target_bolt_v2_ref = "refs/heads/main"
+venue_binding_key = "bybit-spot-tick-trades"
+
+[manifest.artifact_store.rust_storage_options]
+conditional_put = "etag"
+region = "us-east-1"
+
+[manifest.artifact_store.ssm_parameters]
+access_key_id = "/bolt/artifact-store/s3/access-key-id"
+region = "us-east-1"
+secret_access_key = "/bolt/artifact-store/s3/secret-access-key"
+
+[manifest.artifact_store.storage_options]
+
+[[manifest.catalog_inputs]]
+catalog_fs_protocol = "NONE"
+catalog_path = "overridden-by-binary-at-runtime"
+data_type = "TradeTick"
+nt_instrument_id = "ETHEUR.BYBIT"
+
+[manifest.catalog_inputs.catalog_fs_rust_storage_options]
+
+[manifest.catalog_inputs.catalog_fs_storage_options]
+
+[manifest.strategy]
+registry_key = "hurst_vpin_directional"
+source_kind = "compiled_rust_registry"
+
+[manifest.strategy.parameters]
+bar_type = "ETHEUR.BYBIT-1-MINUTE-LAST-INTERNAL"
+trade_size = "0.01"
+
+[manifest.venue]
+account_type = "CASH"
+allow_cash_borrowing = false
+bar_adaptive_high_low_ordering = false
+bar_execution = true
+base_currency = "NONE"
+book_type = "L1_MBP"
+default_leverage = "1"
+frozen_account = false
+liquidity_consumption = false
+nt_venue = "BYBIT"
+oms_type = "NETTING"
+oto_trigger_mode = "PARTIAL"
+price_protection_points = 0
+queue_position = false
+reject_stop_orders = true
+routing = false
+starting_balances = ["1_000_000 USDC"]
+support_contingent_orders = true
+support_gtd_orders = true
+trade_execution = true
+use_market_order_acks = false
+use_position_ids = true
+use_random_ids = false
+use_reduce_only = true
+
+[source_proof]
+acceptance_mode = "manual"
+accepted_at = "2026-06-10T00:00:00Z"
+accepted_by = "backtesting-vertical-slice-operator"
+contract_version = "backfill-table-contract.v1"
+cost_ref = "cost://free-public-archive"
+evidence_state = "owner_archive_backfillable"
+fidelity_class = "TRADE_REPLAY"
+fixture_type = "perps-spot"
+forbidden_claims = [
+    "No execution-quality, queue-position, or order-book-liquidity claims.",
+    "No L2/L3 order-book replay claims from trade prints.",
+    "No historical venue-rule, fillability, rounding, sizing, or execution-quality claims.",
+]
+gap_policy_id = ""
+instrument_universe_id = "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
+license_ref = "https://public.bybit.com/ (public archive terms reviewed 2026-06-02)"
+license_scope = "public"
+nt_mapping_status = "accepted"
+product_category = "spot"
+product_family = "spot"
+raw_sample_hash = "ccd9a0b863364512425297957546410444e54561620b4558b7bf19ab534fc8c5"
+raw_sample_uri = "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-08/symbol=ETHEUR/object=ccd9a0b863364512425297957546410444e54561620b4558b7bf19ab534fc8c5.csv.gz"
+retention_ref = "https://public.bybit.com/ (daily archive files retained; reviewed 2026-06-02)"
+schema_sample_hash = "39e28347f5cda21e991e99251cb4b39213e1d75a56e1042acf7b4b89273d861e"
+schema_sample_uri = "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2025-06-01/symbol=1INCHUSDT/object=39e28347f5cda21e991e99251cb4b39213e1d75a56e1042acf7b4b89273d861e.csv.gz"
+schema_version = "backfill-source-proof.v1"
+source_binding = "bybit-spot-tick-trades"
+source_candidate_class = "official_free"
+source_proof_id = "source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01"
+source_proof_version = 1
+source_selection_status = "ACCEPTED_LOWER_FIDELITY"
+status = "accepted"
+table_family = "trades"
+usage_scope = "canonical_backfill_input"
+venue = "bybit"
+
+[source_proof.acceptance_scope]
+accepted_bytes = 6051
+completed_objects = 1
+failed_objects = 0
+planned_objects = 1
+selector_scope_violations = 0
+skipped_objects = 0
+
+[[source_proof.claim_limits]]
+claim = "No execution-quality, queue-position, or order-book-liquidity claims."
+evidence_ref = "source-proof://source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01/fidelity"
+id = "source-proof-claim-limit-001"
+reason = "TRADE_REPLAY source proof is native trade-print replay, not order-book replay."
+severity = "blocking"
+
+[[source_proof.claim_limits]]
+claim = "No L2/L3 order-book replay claims from trade prints."
+evidence_ref = "source-proof://source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01/schema"
+id = "source-proof-claim-limit-002"
+reason = "The accepted category manifest contains trade prints and no L2/L3 order-book deltas or depth snapshots."
+severity = "blocking"
+
+[[source_proof.claim_limits]]
+claim = "No historical venue-rule, fillability, rounding, sizing, or execution-quality claims."
+evidence_ref = "source-proof://source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01/claim-limits"
+id = "source-proof-claim-limit-003"
+reason = "The category proof establishes native trade-print replay input only; dated venue-rule and execution-admissibility evidence remains outside this proof."
+severity = "blocking"
+
+[source_proof.coverage_time_range]
+end_utc = "2026-06-02T00:00:00Z"
+start_utc = "2025-06-01T00:00:00Z"
+
+[source_proof.l2_replay_evidence]
+
+[source_proof.requested_time_range]
+end_utc = "2026-06-02T00:00:00Z"
+start_utc = "2025-06-01T00:00:00Z"
+
+[source_proof.required_checks.completeness]
+evidence_ref = "object_count=3304 compressed_bytes=1264254131 from committed all-object manifest"
+outcome = "passed"
+
+[source_proof.required_checks.cost]
+evidence_ref = "cost://free-public-archive"
+outcome = "passed"
+
+[source_proof.required_checks.coverage]
+evidence_ref = "category=spot object_count=3304 archive_date_range=[2025-06-01,2026-06-01]"
+outcome = "passed"
+
+[source_proof.required_checks.granularity]
+evidence_ref = "Bybit public archive tick-trades files are native trade prints, not bars or aggregate trades."
+outcome = "passed"
+
+[source_proof.required_checks.instrument_universe]
+evidence_ref = "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01 category=spot instrument_count=58"
+outcome = "passed"
+
+[source_proof.required_checks.license]
+evidence_ref = "https://public.bybit.com/ public archive of historical trades; storage/derived-table use reviewed 2026-06-02"
+outcome = "passed"
+
+[source_proof.required_checks.nt_mapping]
+evidence_ref = "nautilus_model::data::TradeTick; converter mappings are committed for Bybit spot and derivative tick-trade CSV contracts"
+outcome = "passed"
+
+[source_proof.required_checks.retention_freshness]
+evidence_ref = "https://public.bybit.com/ daily archive retention reviewed 2026-06-02"
+outcome = "passed"
+
+[source_proof.required_checks.schema]
+evidence_ref = "spot schema columns are bound in backfill-source-universe-object-manifest.v1 and the converter CSV mapping is committed in backfill-source-universe.v1"
+outcome = "passed"
+
+[source_proof.required_checks.source_access]
+evidence_ref = "Bybit public archive URLs match the staged spot object manifest records under s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot"
+outcome = "passed"
+
+[source_proof.required_checks.storage]
+evidence_ref = "raw objects are staged under s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/ and enumerated by the committed object manifest"
+outcome = "passed"
+
+[source_proof.required_checks.time_semantics]
+evidence_ref = "timestamp is Unix milliseconds; event_time = ms*1e6 nanos"
+outcome = "passed"

@@ -10,6 +10,8 @@
   "product_category": "spot",
   "table_family": "trades",
   "evidence_state": "owner_archive_backfillable",
+  "source_candidate_class": "official_free",
+  "source_selection_status": "ACCEPTED_LOWER_FIDELITY",
   "fixture_type": "perps-spot",
   "requested_time_range": {
     "start_utc": "2025-06-01T00:00:00Z",
@@ -25,14 +27,48 @@
   "schema_sample_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/ingest-manifests/v1/run=bybit-backfill-run-fdcc0758bbd03113/bybit-backfill-manifest.json",
   "schema_sample_hash": "bf26db0b8fb8b62746b5724dccfb26a408d581f5598cb6be95c9173c8b1b5eed",
   "license_ref": "https://public.bybit.com/ (public archive terms reviewed 2026-06-02)",
+  "license_scope": "public",
   "retention_ref": "https://public.bybit.com/ (daily archive files retained; reviewed 2026-06-02)",
+  "cost_ref": "cost://free-public-archive",
   "nt_mapping_status": "accepted",
   "fidelity_class": "TRADE_REPLAY",
+  "l2_replay_evidence": {},
   "forbidden_claims": [
     "No execution-quality, queue-position, or order-book-liquidity claims.",
     "No L2/L3 order-book replay claims from trade prints.",
     "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims."
   ],
+  "claim_limits": [
+    {
+      "id": "source-proof-claim-limit-001",
+      "severity": "blocking",
+      "claim": "No execution-quality, queue-position, or order-book-liquidity claims.",
+      "reason": "TRADE_REPLAY source proof is native trade-print replay, not order-book replay.",
+      "evidence_ref": "source-proof://source-proof-bybit-spot-tick-trades/fidelity"
+    },
+    {
+      "id": "source-proof-claim-limit-002",
+      "severity": "blocking",
+      "claim": "No L2/L3 order-book replay claims from trade prints.",
+      "reason": "The accepted raw sample contains trade prints and no L2/L3 order-book deltas or depth snapshots.",
+      "evidence_ref": "source-proof://source-proof-bybit-spot-tick-trades/schema"
+    },
+    {
+      "id": "source-proof-claim-limit-003",
+      "severity": "blocking",
+      "claim": "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims.",
+      "reason": "The accepted manifest scope contains exactly one BNBUSDC spot object for 2026-03-01.",
+      "evidence_ref": "source-proof://source-proof-bybit-spot-tick-trades/acceptance-scope"
+    }
+  ],
+  "acceptance_scope": {
+    "planned_objects": 1,
+    "completed_objects": 1,
+    "failed_objects": 0,
+    "skipped_objects": 0,
+    "accepted_bytes": 8505,
+    "selector_scope_violations": 0
+  },
   "gap_policy_id": "",
   "required_checks": {
     "source_access": {
@@ -59,6 +95,10 @@
       "outcome": "passed",
       "evidence_ref": "object dt=2026-03-01 within coverage window [2026-03-01, 2026-03-02)"
     },
+    "retention_freshness": {
+      "outcome": "passed",
+      "evidence_ref": "https://public.bybit.com/ daily archive retention reviewed 2026-06-02"
+    },
     "granularity": {
       "outcome": "passed",
       "evidence_ref": "native trade prints (id,timestamp,price,volume,side,rpi); not aggregated/aggTrades"
@@ -70,6 +110,10 @@
     "nt_mapping": {
       "outcome": "passed",
       "evidence_ref": "nautilus_model::data::TradeTick; proven by ParquetDataCatalog projection + query_typed_data read-back"
+    },
+    "cost": {
+      "outcome": "passed",
+      "evidence_ref": "public archive sample; no paid vendor or subscription required for this accepted proof"
     },
     "storage": {
       "outcome": "passed",

@@ -1,0 +1,138 @@
+{
+  "schema_version": "backtesting-accepted-publication-evidence.v1",
+  "evidence_id": "binance-bnbusdc-2026-04-20-accepted-publication-2026-06-10",
+  "created_at_utc": "2026-06-10T00:00:00Z",
+  "scope": {
+    "status": "accepted_gate_committed_and_s3_published",
+    "source_binding": "binance-spot-native-trades",
+    "instrument_id": "BNBUSDC",
+    "nt_instrument_id": "BNBUSDC.BINANCE",
+    "table_family": "trades",
+    "nt_data_type": "TradeTick",
+    "archive_date": "2026-04-20",
+    "accepted_reference_gate_committed": true,
+    "staged_to_s3": true,
+    "published_to_s3": true,
+    "direct_s3_catalog_access_proven": true
+  },
+  "accepted_gate": {
+    "source_proof_ref": "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-04-20.json",
+    "run_spec_template_ref": "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-04-20.toml",
+    "materialized_run_spec_ref": "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-04-20/materialized-run-spec/backfill-run-spec.toml",
+    "execution_plan_ref": "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-04-20/execution-plan/backfill-execution-plan.json",
+    "execution_readiness_ref": "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-04-20/execution-readiness/backfill-execution-readiness-report.json",
+    "execution_readiness_status": "ready",
+    "artifact_index_required_readiness_ref": "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-04-20/execution-readiness-artifact-index-required/backfill-execution-readiness-report.json",
+    "artifact_index_required_status": "blocked",
+    "artifact_index_required_blocker": "artifact_index_producer_iam_scope_unproven"
+  },
+  "raw_object_staging": {
+    "manifest_ref": "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-04-20/object-staging/backfill-object-staging-manifest.json",
+    "manifest_sha256": "97db61e0756c2945dddf4e0b96373b61c403fcbfd7a2e898754b9e339b18aa14",
+    "manifest_bytes": 961,
+    "artifact_root": "s3://bolt-parquet/nt-research-analytics",
+    "object_uri": "s3://bolt-parquet/nt-research-analytics/raw/source=data.binance.vision/product=spot/frequency=daily/family=trades/symbol=BNBUSDC/dt=2026-04-20/object=203e2b6f299d5ab841009bfd88e9549e4d3e57634e8216f28b1f2809be974d4c.zip",
+    "object_sha256": "203e2b6f299d5ab841009bfd88e9549e4d3e57634e8216f28b1f2809be974d4c",
+    "object_bytes": 524442,
+    "payload_records": 1
+  },
+  "source_proof_evidence_staging": {
+    "manifest_sha256": "c815be7a6e0a4cd09977f0bf42c74842bbc94d2c50de50b740578799a10378d7",
+    "manifest_bytes": 1459,
+    "artifact_root": "s3://bolt-parquet/nt-research-analytics",
+    "record_count": 3,
+    "total_bytes": 5938,
+    "evidence_records": [
+      {
+        "evidence_kind": "schema_sample",
+        "uri": "s3://bolt-parquet/nt-research-analytics/source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-bnbusdc-2026-04-20/version=1/schema-sample.json",
+        "sha256": "22ec3fcfde7a72347dd059a88da31d0fb8fe2c585216190e5c2df2ca01ea1265",
+        "bytes": 289
+      },
+      {
+        "evidence_kind": "license",
+        "uri": "s3://bolt-parquet/nt-research-analytics/source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-bnbusdc-2026-04-20/version=1/binance-public-data-README.md",
+        "sha256": "085ab91377aa9325d44f4c7ad27cce4ab381e158403e1d7df2bad39d1a66f7c6",
+        "bytes": 5144
+      },
+      {
+        "evidence_kind": "instrument_universe_current_only",
+        "uri": "s3://bolt-parquet/nt-research-analytics/source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-bnbusdc-2026-04-20/version=1/instrument-universe-current-summary.json",
+        "sha256": "e4e3b2e373d1334d5a7c384ae6a36b956cb2f84611867e70000d57ad71c51da6",
+        "bytes": 505
+      }
+    ]
+  },
+  "accepted_conversion_and_publication": {
+    "command": "python3 scripts/rust_verification.py cargo --repo . -- run --locked --manifest-path crates/backtesting-vertical-slice/Cargo.toml --bin backtesting-vertical-slice -- --run-spec specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-04-20/materialized-run-spec/backfill-run-spec.toml --execution-plan specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-04-20/execution-plan/backfill-execution-plan.json --object /private/tmp/bte-binance-bnbusdc-2026-04-20.zip --output-dir /private/tmp/bte-binance-accepted-proof-20260610-0420/output --publish-output --prove-published-catalog",
+    "exit_code": 0,
+    "run_id": "backtesting-vertical-slice-binance-bnbusdc-2026-04-20-accepted",
+    "source_proof_id": "source-proof-binance-spot-native-trades-bnbusdc-2026-04-20",
+    "source_proof_version": 1,
+    "accepted_object_sha256": "203e2b6f299d5ab841009bfd88e9549e4d3e57634e8216f28b1f2809be974d4c",
+    "canonical_trades_rows": 35127,
+    "catalog_hash": "e3e36a735efeb02e8efa83993b2771a8290a21d0465ca8f86711a407f77db6cb",
+    "catalog_read_back_trade_ticks": 35127,
+    "published_catalog_uri": "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-binance-bnbusdc-2026-04-20-accepted/nt-catalog",
+    "published_catalog_direct_s3": true,
+    "published_catalog_expected_iterations": 35127,
+    "published_catalog_nt_iterations": 35127,
+    "nt_version": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+    "nt_result": {
+      "iterations": 35127,
+      "total_events": 0,
+      "total_orders": 0,
+      "total_positions": 0
+    },
+    "fidelity_class": "TRADE_REPLAY"
+  },
+  "published_uris": {
+    "source_proof_uri": "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-binance-bnbusdc-2026-04-20-accepted/accepted-source-proof.json",
+    "canonical_table_uri": "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-binance-bnbusdc-2026-04-20-accepted/canonical-trades.parquet",
+    "nt_catalog_uri": "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-binance-bnbusdc-2026-04-20-accepted/nt-catalog",
+    "catalog_metadata_uri": "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-binance-bnbusdc-2026-04-20-accepted/catalog-metadata.json",
+    "result_contract_uri": "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-binance-bnbusdc-2026-04-20-accepted/backtest-result-contract.json"
+  },
+  "published_artifacts": {
+    "accepted-source-proof.json": {
+      "bytes": 7472,
+      "sha256": "d4d6bee101611e6f668bd6d82218c7155fc2238523aede387a760f4694bd099d"
+    },
+    "backtest-result-contract.json": {
+      "bytes": 12746,
+      "sha256": "6cd87324a3ad69ec112315cfc14f104fb7b5caf442e399d9a4c5d94bd266d8be"
+    },
+    "backtest-run-manifest.json": {
+      "bytes": 14879,
+      "sha256": "49f13a8d5345fc67359937413125bfa17d1aa5bf6c88c4d68e3deeef72f21613"
+    },
+    "canonical-trades.parquet": {
+      "bytes": 1834759,
+      "sha256": "6701a8715ba33a846f4cd98093e9282a68399846189b498361a1c1f8ed70137b"
+    },
+    "catalog-metadata.json": {
+      "bytes": 870,
+      "sha256": "9b401d4994cf88e756e8467f26e104cf2fbcf6353e02f16740965c7b3681a68b"
+    },
+    "conversion-checkpoint.json": {
+      "bytes": 665,
+      "sha256": "1d5c55a19effb0ecc5c39264570a9f77fccef58e5b179702162fd04f015b9ab5"
+    },
+    "conversion-manifest.json": {
+      "bytes": 1114,
+      "sha256": "5194c9bbda5ed532879088c46c14797be2fecf8ad9389a82c564b6f88d23a161"
+    },
+    "nt-catalog/data/instruments/BNBUSDC.BINANCE/1970-01-01T00-00-00-000000000Z_1970-01-01T00-00-00-000000000Z.parquet": {
+      "bytes": 6729,
+      "sha256": "33e26534179a535b859a544718614f784aa926bd5817a83969efcf90798c749f"
+    },
+    "nt-catalog/data/trades/BNBUSDC.BINANCE/2026-04-20T00-00-00-478724000Z_2026-04-20T23-59-55-383403000Z.parquet": {
+      "bytes": 918946,
+      "sha256": "ad07bcdfb065aedfce2d7fe14c7335e36c250e956d7401e487b88e77c5753ff2"
+    },
+    "published-catalog-proof.json": {
+      "bytes": 512,
+      "sha256": "1a0226d84ed481074531b93920ec245bd9bff429eeaad1c686f4e80a1c174817"
+    }
+  }
+}

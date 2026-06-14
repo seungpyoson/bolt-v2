@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00311:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:CITYUSDT:2026-03-01:6c39a35cd362e46b8c982d85288729b78f37d3e6cf46971a5469d678318d0e55:accepted-tranche",
+  "accepted_tranche_manifest_hash": "fa49e8bc085be84b486949c606e3ed5bdbc986dc073f010ee7d4ce95b1660dd9",
+  "run_spec_hash": "b370a2f07a29d8c7ebe596733104d04b53b90c5fc557d1faf7f32ef8f8532107",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00311",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=CITYUSDT/dt=2026-03-01/object=6c39a35cd362e46b8c982d85288729b78f37d3e6cf46971a5469d678318d0e55",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 124357,
+  "max_object_bytes": 124357,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=CITYUSDT/object=6c39a35cd362e46b8c982d85288729b78f37d3e6cf46971a5469d678318d0e55.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/CITYUSDT/CITYUSDT-trades-2026-03-01.zip",
+      "sha256": "6c39a35cd362e46b8c982d85288729b78f37d3e6cf46971a5469d678318d0e55",
+      "bytes": 124357,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

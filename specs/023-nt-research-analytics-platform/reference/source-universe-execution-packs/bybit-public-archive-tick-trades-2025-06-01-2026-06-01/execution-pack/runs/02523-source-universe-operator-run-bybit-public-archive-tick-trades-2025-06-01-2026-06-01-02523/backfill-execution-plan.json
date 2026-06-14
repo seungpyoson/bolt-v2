@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02523:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:SOLUSDT-26JUN26:2026-05-23:5bf5b8fe66f9580ed7a41cb681f53912b96b7e8d8fb3bc618f6ada1c7e3cdb12:accepted-tranche",
+  "accepted_tranche_manifest_hash": "4ab4d5cbcdb7b777b8ef53bef30726a9754ccad70cee18df9373eeed12f2197f",
+  "run_spec_hash": "ac3e80e9bdea0224ba2cabcf7cb9072fe91d134e719b894d72c2a78ac659ddf7",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02523",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=linear/symbol=SOLUSDT-26JUN26/dt=2026-05-23/object=5bf5b8fe66f9580ed7a41cb681f53912b96b7e8d8fb3bc618f6ada1c7e3cdb12",
+  "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-linear-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 12031,
+  "max_object_bytes": 12031,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-23/symbol=SOLUSDT-26JUN26/object=5bf5b8fe66f9580ed7a41cb681f53912b96b7e8d8fb3bc618f6ada1c7e3cdb12.csv.gz",
+      "source_url": "https://public.bybit.com/trading/SOLUSDT-26JUN26/SOLUSDT-26JUN262026-05-23.csv.gz",
+      "sha256": "5bf5b8fe66f9580ed7a41cb681f53912b96b7e8d8fb3bc618f6ada1c7e3cdb12",
+      "bytes": 12031,
+      "archive_date": "2026-05-23"
+    }
+  ],
+  "blocking_issues": []
+}

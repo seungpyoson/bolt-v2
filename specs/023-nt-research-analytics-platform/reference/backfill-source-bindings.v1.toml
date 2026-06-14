@@ -19,6 +19,81 @@ evidence_state = "directly_backfillable"
 table_families = ["instruments"]
 
 [[source_binding]]
+key = "binance-spot-native-trades"
+venue = "binance"
+product_family = "spot"
+market_structure_fixture = "perps-spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://data.binance.vision/data/spot/daily/trades/{symbol}/{symbol}-trades-{dt}.zip"
+payload_extension = "zip"
+extractor = "binance_data_vision_spot_trades"
+evidence_state = "directly_backfillable"
+warning = "Registry binding only; no Binance trade object is accepted for BTE until source proof, sample schema, checksum/hash, license, and NT mapping checks pass. Aggregated trades must not satisfy this native-trades binding."
+table_families = ["trades"]
+
+[[source_binding]]
+key = "binance-usd-m-perpetual-native-trades"
+venue = "binance"
+product_family = "usd_m_perpetual"
+market_structure_fixture = "perps-spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://data.binance.vision/data/futures/um/daily/trades/{symbol}/{symbol}-trades-{dt}.zip"
+payload_extension = "zip"
+extractor = "binance_data_vision_futures_trades"
+evidence_state = "directly_backfillable"
+warning = "Registry binding only; no Binance USD-M perpetual trade object is accepted for BTE until source proof, sample schema, checksum/hash, license, and NT mapping checks pass."
+table_families = ["trades"]
+
+[[source_binding]]
+key = "binance-usd-m-delivery-native-trades"
+venue = "binance"
+product_family = "usd_m_delivery"
+market_structure_fixture = "perps-spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://data.binance.vision/data/futures/um/daily/trades/{symbol}/{symbol}-trades-{dt}.zip"
+payload_extension = "zip"
+extractor = "binance_data_vision_futures_trades"
+evidence_state = "directly_backfillable"
+warning = "Registry binding only; no Binance USD-M delivery trade object is accepted for BTE until source proof, sample schema, checksum/hash, license, and NT mapping checks pass."
+table_families = ["trades"]
+
+[[source_binding]]
+key = "binance-coin-m-perpetual-native-trades"
+venue = "binance"
+product_family = "coin_m_perpetual"
+market_structure_fixture = "perps-spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://data.binance.vision/data/futures/cm/daily/trades/{symbol}/{symbol}-trades-{dt}.zip"
+payload_extension = "zip"
+extractor = "binance_data_vision_futures_trades"
+evidence_state = "directly_backfillable"
+warning = "Registry binding only; no Binance COIN-M perpetual trade object is accepted for BTE until source proof, sample schema, checksum/hash, license, and NT mapping checks pass."
+table_families = ["trades"]
+
+[[source_binding]]
+key = "binance-coin-m-delivery-native-trades"
+venue = "binance"
+product_family = "coin_m_delivery"
+market_structure_fixture = "perps-spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://data.binance.vision/data/futures/cm/daily/trades/{symbol}/{symbol}-trades-{dt}.zip"
+payload_extension = "zip"
+extractor = "binance_data_vision_futures_trades"
+evidence_state = "directly_backfillable"
+warning = "Registry binding only; no Binance COIN-M delivery trade object is accepted for BTE until source proof, sample schema, checksum/hash, license, and NT mapping checks pass."
+table_families = ["trades"]
+
+[[source_binding]]
 key = "binance-usd-m-perpetual-instruments"
 venue = "binance"
 product_family = "usd_m_perpetual"
@@ -292,6 +367,7 @@ table_families = ["instruments"]
 key = "hyperliquid-hip4-outcome-meta"
 venue = "hyperliquid"
 product_family = "prediction_market_outcome"
+market_structure_fixture = "binary-option"
 fixture = "prediction-market"
 family = "instrument_universe"
 method = "POST"
@@ -307,6 +383,7 @@ table_families = ["prediction_market_events", "prediction_market_outcomes"]
 key = "polymarket-parquet-archive-index"
 venue = "polymarket"
 product_family = "prediction_market_outcome"
+market_structure_fixture = "binary-option"
 fixture = "prediction-market"
 family = "archive_index"
 method = "GET"
@@ -320,9 +397,26 @@ warning = "Archive index listing is source proof input; Parquet schema/license/c
 table_families = ["order_book_snapshots_fixed_depth", "order_book_snapshot_deltas", "bars"]
 
 [[source_binding]]
+key = "kalshi-official-historical-api"
+venue = "kalshi"
+product_family = "prediction_market_outcome"
+market_structure_fixture = "binary-option"
+fixture = "prediction-market"
+family = "historical_market_data"
+method = "GET"
+source_uri = "https://external-api.kalshi.com/trade-api/v2/historical"
+payload_extension = "json"
+extractor = "kalshi_historical_rest"
+pagination = "cursor"
+evidence_state = "pending_source_proof"
+warning = "Official historical API exposes historical markets, candlesticks, trades, fills, and orders; no official historical orderbook snapshot/delta endpoint is documented."
+table_families = ["bars", "trades", "prediction_market_events"]
+
+[[source_binding]]
 key = "bybit-spot-tick-trades"
 venue = "bybit"
 product_family = "spot"
+market_structure_fixture = "perps-spot"
 fixture = "native-trades"
 family = "market_data"
 method = "GET"
@@ -330,5 +424,35 @@ source_uri = "https://public.bybit.com/spot/{symbol}/{symbol}_{dt}.csv.gz"
 payload_extension = "csv.gz"
 extractor = "bybit_public_archive_spot_tick_trades"
 evidence_state = "owner_archive_backfillable"
-warning = "BNBUSDC 2026-03-01 is operator-attested for the minimal backtesting vertical slice; CI uses a synthetic fixture and this binding is not a global Bybit archive acceptance."
+warning = "Staged universe inventory covers the spot category for the Bybit public archive tick-trades source family; conversion completion remains governed by an explicit completion ledger."
+table_families = ["trades"]
+
+[[source_binding]]
+key = "bybit-linear-tick-trades"
+venue = "bybit"
+product_family = "linear"
+market_structure_fixture = "perps-spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://public.bybit.com/trading/{symbol}/{symbol}{dt}.csv.gz"
+payload_extension = "csv.gz"
+extractor = "bybit_public_archive_derivatives_tick_trades"
+evidence_state = "owner_archive_backfillable"
+warning = "Staged universe inventory covers the linear category for the Bybit public archive tick-trades source family; conversion completion remains governed by an explicit completion ledger."
+table_families = ["trades"]
+
+[[source_binding]]
+key = "bybit-inverse-tick-trades"
+venue = "bybit"
+product_family = "inverse"
+market_structure_fixture = "perps-spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://public.bybit.com/trading/{symbol}/{symbol}{dt}.csv.gz"
+payload_extension = "csv.gz"
+extractor = "bybit_public_archive_derivatives_tick_trades"
+evidence_state = "owner_archive_backfillable"
+warning = "Staged universe inventory covers the inverse category for the Bybit public archive tick-trades source family; conversion completion remains governed by an explicit completion ledger."
 table_families = ["trades"]

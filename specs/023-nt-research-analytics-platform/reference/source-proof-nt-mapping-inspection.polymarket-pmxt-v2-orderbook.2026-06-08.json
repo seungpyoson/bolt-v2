@@ -1,0 +1,132 @@
+{
+  "schema_version": "source-proof-nt-mapping-inspection.v1",
+  "source_binding": "polymarket-parquet-archive-index",
+  "market_structure_fixture": "binary-option",
+  "observed_at_utc": "2026-06-07T20:31:00Z",
+  "nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+  "nt_instrument_model": {
+    "class": "nautilus_model::instruments::BinaryOption",
+    "catalog_instrument_container": "nautilus_model::instruments::InstrumentAny::BinaryOption",
+    "catalog_write_api": "nautilus_persistence::backend::catalog::ParquetDataCatalog::write_instruments",
+    "required_checked_fields": [
+      "instrument_id",
+      "raw_symbol",
+      "asset_class",
+      "currency",
+      "activation_ns",
+      "expiration_ns",
+      "price_precision",
+      "size_precision",
+      "price_increment",
+      "size_increment"
+    ]
+  },
+  "nt_replay_data_classes": [
+    "QuoteTick",
+    "TradeTick",
+    "Bar",
+    "OrderBookDelta",
+    "OrderBookDepth10",
+    "MarkPriceUpdate",
+    "IndexPriceUpdate",
+    "InstrumentStatus",
+    "InstrumentClose"
+  ],
+  "source_sample": {
+    "source_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+    "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "event_types": [
+      "book",
+      "price_change",
+      "last_trade_price",
+      "tick_size_change"
+    ],
+    "historical_replay_fields": [
+      "timestamp_received",
+      "timestamp",
+      "market",
+      "asset_id",
+      "bids",
+      "asks",
+      "price",
+      "size",
+      "side",
+      "best_bid",
+      "best_ask",
+      "fee_rate_bps",
+      "old_tick_size",
+      "new_tick_size"
+    ]
+  },
+  "bounded_local_nt_projection_observation": {
+    "source": "/private/tmp/nt-polymarket-may20-crypto-catalog",
+    "durability_limit": "local prototype catalog output only; converter and artifact-root staged output are not committed",
+    "written_catalog_data_classes": [
+      "InstrumentAny::BinaryOption",
+      "OrderBookDelta",
+      "TradeTick"
+    ],
+    "order_book_delta_files": 46,
+    "trade_tick_files": 13,
+    "order_book_delta_schema": [
+      "action",
+      "side",
+      "price",
+      "size",
+      "order_id",
+      "flags",
+      "sequence",
+      "ts_event",
+      "ts_init"
+    ],
+    "trade_tick_schema": [
+      "price",
+      "size",
+      "aggressor_side",
+      "trade_id",
+      "ts_event",
+      "ts_init"
+    ],
+    "instrument_schema": [
+      "id",
+      "raw_symbol",
+      "asset_class",
+      "currency",
+      "price_precision",
+      "size_precision",
+      "price_increment",
+      "size_increment",
+      "activation_ns",
+      "expiration_ns",
+      "maker_fee",
+      "taker_fee",
+      "max_quantity",
+      "min_quantity",
+      "outcome",
+      "description",
+      "info",
+      "ts_event",
+      "ts_init"
+    ],
+    "instrument_blockers_observed": [
+      "activation_ns was placeholder 1",
+      "expiration_ns was placeholder u64::MAX",
+      "outcome was token id rather than source-backed outcome label",
+      "description was null",
+      "min_quantity and max_quantity were null"
+    ]
+  },
+  "mapping_conclusion": {
+    "instrument_mapping_status": "blocked",
+    "replay_mapping_status": "candidate_not_accepted",
+    "reason": "PMXT order-book parquet has fields that can feed NT OrderBookDelta and TradeTick replay classes, and a local prototype catalog physically wrote those NT classes, but accepted mapping cannot be claimed until checked BinaryOption instrument fields are source-backed and the generic converter/read-back proof is committed.",
+    "required_next_evidence": [
+      "generic source-schema to NT data-class mapping contract for order-book deltas, depth snapshots, trades, and tick-size changes",
+      "source-backed BinaryOption activation and expiration timestamps",
+      "source-backed price increment, size increment, price precision, and size precision rules",
+      "source-backed outcome label and market metadata mapping for each token id",
+      "ParquetDataCatalog write plus query_typed_data read-back for the selected source sample under artifact-root staging",
+      "coverage ledger for the requested time window using timestamp_received as the archive-hour coverage axis"
+    ]
+  }
+}

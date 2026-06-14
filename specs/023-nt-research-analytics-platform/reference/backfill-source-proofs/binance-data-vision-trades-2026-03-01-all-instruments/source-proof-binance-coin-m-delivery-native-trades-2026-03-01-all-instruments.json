@@ -1,0 +1,127 @@
+{
+  "source_proof_id": "source-proof-binance-coin-m-delivery-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "contract_version": "backfill-table-contract.v1",
+  "schema_version": "backfill-source-proof.v1",
+  "status": "accepted",
+  "source_binding": "binance-coin-m-delivery-native-trades",
+  "venue": "binance",
+  "product_family": "coin_m_delivery",
+  "product_category": "coin_m_delivery",
+  "table_family": "trades",
+  "evidence_state": "directly_backfillable",
+  "source_candidate_class": "official_free",
+  "source_selection_status": "ACCEPTED_LOWER_FIDELITY",
+  "usage_scope": "canonical_backfill_input",
+  "fixture_type": "perps-spot",
+  "requested_time_range": {
+    "start_utc": "2026-03-01T00:00:00Z",
+    "end_utc": "2026-03-02T00:00:00Z"
+  },
+  "coverage_time_range": {
+    "start_utc": "2026-03-01T00:00:00Z",
+    "end_utc": "2026-03-02T00:00:00Z"
+  },
+  "instrument_universe_id": "binance-coin-m-delivery-instruments-2026-03-01-all-instruments",
+  "raw_sample_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_delivery/dt=2026-03-01/symbol=BNBUSD_260327/object=4684edb4e6402718ce5e55754e5a8b55df6787bc748bb501d221327a4c6024b0.zip",
+  "raw_sample_hash": "4684edb4e6402718ce5e55754e5a8b55df6787bc748bb501d221327a4c6024b0",
+  "schema_sample_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_delivery/dt=2026-03-01/symbol=BNBUSD_260327/object=4684edb4e6402718ce5e55754e5a8b55df6787bc748bb501d221327a4c6024b0.zip",
+  "schema_sample_hash": "4684edb4e6402718ce5e55754e5a8b55df6787bc748bb501d221327a4c6024b0",
+  "license_ref": "https://github.com/binance/binance-public-data README: Licence MIT; observed 2026-06-07",
+  "license_scope": "public",
+  "retention_ref": "https://github.com/binance/binance-public-data README: daily/monthly public archive and checksum sidecars; observed 2026-06-07",
+  "cost_ref": "cost://free-public-archive",
+  "nt_mapping_status": "accepted",
+  "fidelity_class": "TRADE_REPLAY",
+  "l2_replay_evidence": {},
+  "forbidden_claims": [
+    "No execution-quality, queue-position, or order-book-liquidity claims.",
+    "No L2/L3 order-book replay claims from trade prints.",
+    "No historical venue-rule, fillability, rounding, sizing, or execution-quality claims."
+  ],
+  "claim_limits": [
+    {
+      "id": "source-proof-claim-limit-001",
+      "severity": "blocking",
+      "claim": "No execution-quality, queue-position, or order-book-liquidity claims.",
+      "reason": "TRADE_REPLAY source proof is native trade-print replay, not order-book replay.",
+      "evidence_ref": "source-proof://source-proof-binance-coin-m-delivery-native-trades-2026-03-01-all-instruments/fidelity"
+    },
+    {
+      "id": "source-proof-claim-limit-002",
+      "severity": "blocking",
+      "claim": "No L2/L3 order-book replay claims from trade prints.",
+      "reason": "The accepted category manifest contains trade prints and no L2/L3 order-book deltas or depth snapshots.",
+      "evidence_ref": "source-proof://source-proof-binance-coin-m-delivery-native-trades-2026-03-01-all-instruments/schema"
+    },
+    {
+      "id": "source-proof-claim-limit-003",
+      "severity": "blocking",
+      "claim": "No historical venue-rule, fillability, rounding, sizing, or execution-quality claims.",
+      "reason": "The category proof establishes native trade-print replay input only; dated venue-rule and execution-admissibility evidence remains outside this proof.",
+      "evidence_ref": "source-proof://source-proof-binance-coin-m-delivery-native-trades-2026-03-01-all-instruments/claim-limits"
+    }
+  ],
+  "acceptance_scope": {
+    "planned_objects": 10,
+    "completed_objects": 10,
+    "failed_objects": 0,
+    "skipped_objects": 0,
+    "accepted_bytes": 939173,
+    "selector_scope_violations": 0
+  },
+  "gap_policy_id": "",
+  "required_checks": {
+    "source_access": {
+      "outcome": "passed",
+      "evidence_ref": "Binance Data Vision source URLs are enumerated in category manifest backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-coin_m_delivery"
+    },
+    "license": {
+      "outcome": "passed",
+      "evidence_ref": "Binance public data README license review permits BTE canonical/backtest input"
+    },
+    "schema": {
+      "outcome": "passed",
+      "evidence_ref": "Schema columns are committed in category manifest backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-coin_m_delivery"
+    },
+    "time_semantics": {
+      "outcome": "passed",
+      "evidence_ref": "Binance native trade time column maps to Unix milliseconds"
+    },
+    "instrument_universe": {
+      "outcome": "passed",
+      "evidence_ref": "binance-coin-m-delivery-instruments-2026-03-01-all-instruments category=coin_m_delivery instrument_count=10"
+    },
+    "coverage": {
+      "outcome": "passed",
+      "evidence_ref": "category=coin_m_delivery object_count=10 archive_date_range=[2026-03-01,2026-03-01]"
+    },
+    "retention_freshness": {
+      "outcome": "passed",
+      "evidence_ref": "Binance public data archive retention reviewed 2026-06-07"
+    },
+    "granularity": {
+      "outcome": "passed",
+      "evidence_ref": "Binance Data Vision daily trades files are native trade prints"
+    },
+    "completeness": {
+      "outcome": "passed",
+      "evidence_ref": "object_count=10 compressed_bytes=939173 from committed category manifest"
+    },
+    "nt_mapping": {
+      "outcome": "passed",
+      "evidence_ref": "nautilus_model::data::TradeTick; converter mappings are committed for Binance native trade CSV contracts"
+    },
+    "cost": {
+      "outcome": "passed",
+      "evidence_ref": "cost://free-public-archive"
+    },
+    "storage": {
+      "outcome": "passed",
+      "evidence_ref": "raw objects are staged under category manifest backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-coin_m_delivery"
+    }
+  },
+  "acceptance_mode": "manual",
+  "accepted_by": "backtesting-vertical-slice-operator",
+  "accepted_at": "2026-06-10T00:00:00Z"
+}

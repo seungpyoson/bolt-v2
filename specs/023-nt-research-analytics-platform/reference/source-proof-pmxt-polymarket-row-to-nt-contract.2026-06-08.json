@@ -1,0 +1,303 @@
+{
+  "schema_version": "source-proof-pmxt-polymarket-row-to-nt-contract.v1",
+  "source_binding": "polymarket-parquet-archive-index",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "status": "bounded_one_off_projection_implemented_broad_backfill_blocked",
+  "recorded_at": "2026-06-08",
+  "reconciled_at": "2026-06-09",
+  "source_sample": {
+    "uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+    "local_path": "/private/tmp/polymarket-may20-one.parquet",
+    "bytes": 361365244,
+    "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "artifact_root_staging_status": "current_one_off_artifact_root_written"
+  },
+  "representative_row_shapes": [
+    {
+      "event_type": "book",
+      "present_fields": [
+        "timestamp_received",
+        "timestamp",
+        "market",
+        "asset_id",
+        "bids",
+        "asks"
+      ],
+      "absent_fields": [
+        "price",
+        "size",
+        "side",
+        "best_bid",
+        "best_ask",
+        "fee_rate_bps",
+        "transaction_hash",
+        "old_tick_size",
+        "new_tick_size"
+      ]
+    },
+    {
+      "event_type": "price_change",
+      "present_fields": [
+        "timestamp_received",
+        "timestamp",
+        "market",
+        "asset_id",
+        "price",
+        "size",
+        "side",
+        "best_bid",
+        "best_ask"
+      ],
+      "absent_fields": [
+        "bids",
+        "asks",
+        "fee_rate_bps",
+        "transaction_hash",
+        "old_tick_size",
+        "new_tick_size"
+      ]
+    },
+    {
+      "event_type": "last_trade_price",
+      "present_fields": [
+        "timestamp_received",
+        "timestamp",
+        "market",
+        "asset_id",
+        "price",
+        "size",
+        "side",
+        "fee_rate_bps",
+        "transaction_hash"
+      ],
+      "absent_fields": [
+        "bids",
+        "asks",
+        "best_bid",
+        "best_ask",
+        "old_tick_size",
+        "new_tick_size"
+      ]
+    },
+    {
+      "event_type": "tick_size_change",
+      "present_fields": [
+        "timestamp_received",
+        "timestamp",
+        "market",
+        "asset_id",
+        "old_tick_size",
+        "new_tick_size"
+      ],
+      "absent_fields": [
+        "bids",
+        "asks",
+        "price",
+        "size",
+        "side",
+        "best_bid",
+        "best_ask",
+        "fee_rate_bps",
+        "transaction_hash"
+      ]
+    }
+  ],
+  "bounded_shape_checks": [
+    {
+      "check": "full_object_price_change_grouping_by_market_timestamp",
+      "method": "DuckDB grouping on local one-hour sample, grouping by hex(market), timestamp",
+      "rows": 64768138,
+      "groups": 32066846,
+      "max_rows_per_group": 12,
+      "multi_row_groups": 31981978,
+      "implication": "PMXT price_change rows are flattened; source message boundaries must not be inferred from source timestamp alone. One-row NT delta emission is acceptable only as an explicit pinned live-client parity policy."
+    },
+    {
+      "check": "first_10_seconds_price_change_asset_grouping",
+      "method": "DuckDB grouping where timestamp_received < 2026-05-21T07:00:10+09",
+      "rows": 184734,
+      "market_timestamp_groups": 92076,
+      "max_asset_ids_per_market_timestamp": 2,
+      "multi_asset_market_timestamp_groups": 91230,
+      "instrument_groups": 183306,
+      "max_rows_per_market_timestamp_asset": 3,
+      "multi_row_instrument_groups": 1406,
+      "max_distinct_timestamp_received_per_instrument_group": 2,
+      "mixed_timestamp_received_instrument_groups": 16,
+      "implication": "A safe PMXT-to-NT contract must include timestamp_received in the boundary/ts_init policy; grouping by market, source timestamp, and asset_id alone crosses received batches."
+    }
+  ],
+  "nt_reuse_surfaces": [
+    {
+      "surface": "PolymarketInstrumentProvider::get_by_token_id/build_token_map",
+      "purpose": "Resolve PMXT asset_id token ids to NT InstrumentAny::BinaryOption without custom instrument mapping.",
+      "evidence": "nt://crates/adapters/polymarket/src/providers.rs:110"
+    },
+    {
+      "surface": "parse_gamma_market/create_instrument_from_def",
+      "purpose": "Derive checked BinaryOption fields from source-backed Gamma market metadata.",
+      "evidence": "nt://crates/adapters/polymarket/src/http/parse.rs:88"
+    },
+    {
+      "surface": "parse_book_snapshot",
+      "purpose": "Convert full-depth book snapshots into CLEAR plus ADD OrderBookDeltas with snapshot flags.",
+      "evidence": "nt://crates/adapters/polymarket/src/websocket/parse.rs:61"
+    },
+    {
+      "surface": "parse_book_deltas",
+      "purpose": "Convert PMXT price_change rows into incremental OrderBookDeltas. Pinned NT parser supports grouped PolymarketQuotes, but pinned NT live data-client emission wraps each individual change into a single-change PolymarketQuotes payload.",
+      "evidence": "nt://crates/adapters/polymarket/src/websocket/parse.rs:136"
+    },
+    {
+      "surface": "parse_trade_tick",
+      "purpose": "Convert last_trade_price rows into TradeTick using NT's deterministic Polymarket TradeId policy.",
+      "evidence": "nt://crates/adapters/polymarket/src/websocket/parse.rs:184"
+    },
+    {
+      "surface": "rebuild_instrument_with_tick_size",
+      "purpose": "Handle tick_size_change rows by producing a rebuilt BinaryOption instrument with updated price precision and price increment.",
+      "evidence": "nt://crates/adapters/polymarket/src/http/parse.rs:261"
+    }
+  ],
+  "nt_public_api_exposure": {
+    "status": "mostly_public_dependency_not_wired_trade_id_helper_private",
+    "pinned_nt_rev": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+    "public_module_evidence": [
+      {
+        "module": "nautilus_polymarket::http",
+        "evidence": "nt://crates/adapters/polymarket/src/lib.rs:54 and nt://crates/adapters/polymarket/src/http/mod.rs:20-24"
+      },
+      {
+        "module": "nautilus_polymarket::providers",
+        "evidence": "nt://crates/adapters/polymarket/src/lib.rs:55"
+      },
+      {
+        "module": "nautilus_polymarket::websocket::{messages,parse}",
+        "evidence": "nt://crates/adapters/polymarket/src/lib.rs:57 and nt://crates/adapters/polymarket/src/websocket/mod.rs:22-23"
+      }
+    ],
+    "directly_reusable_public_items": [
+      {
+        "surface": "PolymarketInstrumentProvider::{new,with_filter,with_filters,get_by_token_id,build_token_map,load_by_slugs}",
+        "access": "public",
+        "evidence": "nt://crates/adapters/polymarket/src/providers.rs:63,72,84,112,122,142"
+      },
+      {
+        "surface": "parse_gamma_market/create_instrument_from_def/rebuild_instrument_with_tick_size",
+        "access": "public",
+        "evidence": "nt://crates/adapters/polymarket/src/http/parse.rs:88,179,261"
+      },
+      {
+        "surface": "PolymarketBookLevel/PolymarketBookSnapshot/PolymarketQuote/PolymarketQuotes/PolymarketTrade/PolymarketTickSizeChange",
+        "access": "public",
+        "evidence": "nt://crates/adapters/polymarket/src/websocket/messages.rs:85,92,102,116,124,136"
+      },
+      {
+        "surface": "parse_book_snapshot/parse_book_deltas/parse_trade_tick/parse_quote_from_price_change",
+        "access": "public",
+        "evidence": "nt://crates/adapters/polymarket/src/websocket/parse.rs:62,137,185,265"
+      }
+    ],
+    "private_or_not_directly_reusable_items": [
+      {
+        "surface": "build_polymarket_trade_id",
+        "access": "pub(crate)",
+        "evidence": "nt://crates/adapters/polymarket/src/http/data_api.rs:55",
+        "implementation_constraint": "The BTE crate cannot call this helper directly through nautilus-polymarket. The selected PMXT historical trade-id path must either mirror the pinned helper format with tests/provenance or wait for an upstream/public NT API; direct helper reuse cannot be claimed."
+      }
+    ],
+    "bte_dependency_status": {
+      "root_workspace_dependency": "repo://Cargo.toml:41 pins nautilus-polymarket at the same NT revision.",
+      "isolated_bte_crate_dependency": "missing in repo://crates/backtesting-vertical-slice/Cargo.toml; adding it is an implementation-scope Cargo.toml/Cargo.lock change and must be covered by TDD."
+    }
+  },
+  "draft_mapping_contract": [
+    {
+      "source_event_type": "book",
+      "nt_output": "OrderBookDelta",
+      "mapping": "Decode market BLOB as the source condition id string, use asset_id as token-id lookup key, decode bids/asks JSON arrays into price/size levels, convert PMXT timestamp to NT source event time, use timestamp_received as ts_init/coverage evidence, call NT snapshot parsing or implement an equivalent wrapper that preserves NT CLEAR/ADD/F_SNAPSHOT/F_LAST semantics, then write flattened OrderBookDelta rows to ParquetDataCatalog."
+    },
+    {
+      "source_event_type": "price_change",
+      "nt_output": "OrderBookDelta",
+      "mapping": "Use timestamp_received as part of the PMXT source message boundary and as ts_init/coverage provenance. Do not merge rows by market/source timestamp/asset_id without timestamp_received. Preferred mapping for pinned NT live-client parity is one PMXT price_change row to one single-change PolymarketQuotes parse call, preserving source order within message-like groups; grouped parser output is allowed only if tests prove desired F_LAST and book-state semantics."
+    },
+    {
+      "source_event_type": "last_trade_price",
+      "nt_output": "TradeTick",
+      "mapping": "Use asset_id token lookup for instrument id, price/size/side/timestamp for TradeTick fields. Collapse exact semantic duplicate observations that differ only by timestamp_received, preserving duplicate_count provenance and earliest timestamp_received as ts_init. Then use pinned NT's historical Polymarket transaction_hash+asset+sequence TradeId shape for each remaining semantic trade event."
+    },
+    {
+      "source_event_type": "tick_size_change",
+      "nt_output": "InstrumentAny::BinaryOption update",
+      "mapping": "Apply NT rebuild_instrument_with_tick_size semantics before subsequent affected book/trade rows; prove whether the catalog should persist multiple instrument snapshots, an instrument event, or a single resolved instrument plus claim limit."
+    }
+  ],
+  "resolved_parser_field_findings": [
+    {
+      "field": "PolymarketQuote.hash",
+      "status": "neutral_empty_string_supported_by_pinned_nt_parse_surfaces",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-nt-parser-field-use.2026-06-08.json",
+      "mapping_policy": "For PMXT price_change rows, the converter may populate the NT PolymarketQuote hash field with an empty string for parse_book_deltas and parse_quote_from_price_change reuse, because pinned NT does not read this field in those parse paths and its own tests use String::new()."
+    }
+  ],
+  "trade_id_policy_status": {
+    "status": "bounded_one_off_tdd_proven",
+    "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-trade-id-policy-status.2026-06-08.json",
+    "mapping_constraint": "PMXT last_trade_price exposes transaction_hash, so transaction_hash must remain in TradeTick identity/provenance. Pinned NT's HTTP data API path provides the selected hash+asset+sequence TradeId shape. The PMXT sample's 42 duplicate semantic trade groups must dedupe before sequence assignment to avoid volume overcounting."
+  },
+  "price_change_grouping_status": {
+    "status": "bounded_one_off_catalog_proven",
+    "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-price-change-grouping-status.2026-06-08.json",
+    "mapping_constraint": "timestamp_received is part of the price_change boundary and must not be dropped; one-row-to-one OrderBookDelta projection is the bounded pinned-NT live-client parity policy now proven for the selected PMXT one-off artifact. Broad backfill still requires accepted durable source proof, expanded coverage, and dynamic tick-size replay proof or an accepted bounded-exclusion policy."
+  },
+  "tick_size_change_status": {
+    "status": "open_standard_backtestnode_catalog_replay_does_not_support_dynamic_instrument_epoch",
+    "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json",
+    "mapping_constraint": "Pinned NT live handling rebuilds BinaryOption instruments and starts a book epoch on tick_size_change, but standard BacktestNode catalog replay does not expose timed InstrumentAny replay in the pinned NT revision. A first proof may exclude tick-changing assets only with explicit claim limits; full L2 acceptance must either accept a bounded no-tick-size-change source universe or prove a separate timed instrument-epoch replay path."
+  },
+  "first_proof_universe_policy": {
+    "status": "bounded_selector_tdd_proven",
+    "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json",
+    "mapping_constraint": "A bounded first proof may select an instrument universe from source-proof event counts where tick_size_change_rows == 0, book_rows > 0, price_change_rows > 0, last_trade_price_rows > 0, and replay_rows <= configured row budget. The selector and row budget must be TOML/source-proof-owned, not code constants."
+  },
+  "resolved_by_current_code": [
+    "The isolated BTE crate now depends on pinned nautilus-polymarket and compile-checks the public Polymarket provider/parser surfaces.",
+    "The bounded one-off PMXT projection uses NT parse_gamma_market/create_instrument_from_def, parse_book_snapshot, and parse_book_deltas for the selected Gamma-backed BinaryOption sample.",
+    "The selected PMXT historical TradeTick path mirrors pinned NT's crate-private transaction_hash+asset+sequence TradeId shape with focused tests and provenance because build_polymarket_trade_id is not public.",
+    "Selected-source projection validates the selected-source report hash, selected-source parquet hash, selector hash chain, usage_scope, selected asset hash, and source-row-group constrained artifact before projection.",
+    "The bounded one-off artifact-root run writes OrderBookDelta and TradeTick data to NT ParquetDataCatalog, reads the typed catalog data back, runs NT BacktestNode over the verified catalog, and writes a BacktestResultContract with selector and catalog provenance.",
+    "The selected-source projection rejects configured non-ignorable tick_size_change rows instead of silently dropping dynamic instrument-epoch events."
+  ],
+  "remaining_before_broad_backfill": [
+    "The PMXT source proof remains pending and usage_scope remains one_off_backfill_data, so this artifact cannot become canonical backfill input.",
+    "Expanded PMXT coverage, gap/completeness, retention/freshness, throughput, storage, and exact cost evidence are still unproven for any durable broad tranche.",
+    "tick_size_change dynamic instrument-epoch representation remains unresolved for full L2 acceptance and must be proven with NT catalog read-back and BacktestNode consumption before broad backfill.",
+    "A durable Polymarket source selection proof is still required before PMXT coverage ledgers can authorize canonical-ready backfill.",
+    "The coverage ledger must continue to use timestamp_received as the archive-hour coverage axis because source timestamp can be older than the archive object hour."
+  ],
+  "current_code_reconciliation": {
+    "status": "current_one_off_pmxt_l2_trade_tick_projection_proven",
+    "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
+    "current_head": "21d53976",
+    "code_evidence": [
+      "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:698",
+      "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:444",
+      "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:985",
+      "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:1344",
+      "repo://crates/backtesting-vertical-slice/src/polymarket_metadata_gate.rs:57",
+      "repo://crates/backtesting-vertical-slice/src/polymarket_nt_surface_proof.rs:59"
+    ],
+    "test_evidence": [
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs:54",
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs:137",
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs:197",
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs:262",
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs:456",
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs:790"
+    ],
+    "ci_evidence": "PR #610 head 21d53976 passed Backtester CI bvs-test, bvs-clippy, bvs-fmt, backtester-gate and main CI fmt-check, clippy, source-fence, nextest archive plus all shards, deny, check-aarch64, gate, test, CodeQL, and actionlint.",
+    "claim_limit": "This reconciliation proves only the bounded one-off PMXT selected-source path. It does not prove durable source acceptance, expanded coverage/cost/storage, production throughput, dynamic tick-size replay, or broad PMXT backfill."
+  },
+  "broad_backfill_allowed": false
+}

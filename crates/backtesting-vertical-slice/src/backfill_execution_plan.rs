@@ -1,0 +1,532 @@
+//! Backfill execution planning gate.
+//!
+//! This module binds an accepted object-level tranche to one operator run-spec
+//! before any payload bytes are fetched. It is a cheap source-proof/object
+//! guard, not a downloader or converter.
+
+use std::{
+    error::Error,
+    fmt, fs,
+    path::{Path, PathBuf},
+};
+
+use serde::{Deserialize, Serialize};
+
+use crate::atomic_artifact_write::atomic_write;
+use crate::hashing::sha256_hex;
+use crate::{
+    backfill_accepted_tranche::{
+        BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheObject,
+        BackfillAcceptedTrancheStatus,
+    },
+    operator::RunSpec,
+    source_proof::SourceProofUsageScope,
+};
+
+pub const BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION: &str = "backfill-execution-plan.v1";
+pub const BACKFILL_EXECUTION_PLAN_FILE: &str = "backfill-execution-plan.json";
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackfillExecutionPlanSpec {
+    pub plan_id: String,
+    pub accepted_tranche_manifest_path: PathBuf,
+    pub run_spec_path: PathBuf,
+    pub max_source_rows: u64,
+    pub max_projected_row_groups: u64,
+    pub max_wall_seconds: u64,
+    #[serde(default)]
+    pub require_object_selection_metadata: bool,
+    pub output_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackfillExecutionWorkBudget {
+    pub max_source_rows: u64,
+    pub max_projected_row_groups: u64,
+    pub max_wall_seconds: u64,
+    pub require_object_selection_metadata: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackfillExecutionPlanStatus {
+    Ready,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackfillExecutionPlanIssue {
+    EmptyPlanId,
+    AcceptedTrancheNotAccepted,
+    AcceptedTrancheHasBlockingIssues,
+    AcceptedTrancheObjectCountNotOne,
+    AcceptedTrancheBytesMismatch,
+    RunSpecSourceProofMismatch,
+    RunSpecSourceUsageScopeMismatch,
+    RunSpecSourceBindingMismatch,
+    RunSpecTableFamilyMismatch,
+    RunSpecRawSampleUriMismatch,
+    RunSpecRawSampleHashMismatch,
+    RunSpecObjectS3UriMismatch,
+    RunSpecObjectSourceUrlMismatch,
+    RunSpecObjectShaMismatch,
+    RunSpecObjectBytesMismatch,
+    RunSpecObjectArchiveDateMismatch,
+    RunSpecObjectBudgetTooSmall,
+    ExecutionPlanSourceRowBudgetMissing,
+    ExecutionPlanProjectedRowGroupBudgetMissing,
+    ExecutionPlanWallTimeBudgetMissing,
+    ExecutionPlanObjectSelectionMetadataMissing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackfillExecutionRunBinding {
+    pub run_id: String,
+    pub output_prefix: String,
+    pub source_proof_id: String,
+    pub source_proof_version: u32,
+    pub source_binding: String,
+    pub table_family: String,
+    pub source_usage_scope: SourceProofUsageScope,
+    pub raw_sample_uri: String,
+    pub raw_sample_hash: String,
+    pub accepted_object_s3_uri: String,
+    pub accepted_object_source_url: String,
+    pub accepted_object_sha256: String,
+    pub accepted_object_bytes: u64,
+    pub accepted_object_archive_date: String,
+    pub max_object_bytes: u64,
+    pub max_decoded_bytes: u64,
+}
+
+impl BackfillExecutionRunBinding {
+    #[must_use]
+    pub fn from_run_spec(spec: &RunSpec) -> Self {
+        Self {
+            run_id: spec.manifest.run_id.clone(),
+            output_prefix: spec.manifest.output_prefix.clone(),
+            source_proof_id: spec.manifest.source_proof_id.clone(),
+            source_proof_version: spec.manifest.source_proof_version,
+            source_binding: spec.manifest.venue_binding_key.clone(),
+            table_family: spec.source_proof.table_family.clone(),
+            source_usage_scope: spec.source_proof.usage_scope,
+            raw_sample_uri: spec.source_proof.raw_sample_uri.clone(),
+            raw_sample_hash: spec.source_proof.raw_sample_hash.clone(),
+            accepted_object_s3_uri: spec.accepted_object.s3_uri.clone(),
+            accepted_object_source_url: spec.accepted_object.source_url.clone(),
+            accepted_object_sha256: spec.accepted_object.sha256.clone(),
+            accepted_object_bytes: spec.accepted_object.bytes,
+            accepted_object_archive_date: spec.accepted_object.archive_date.clone(),
+            max_object_bytes: spec.converter.raw_payload.max_object_bytes,
+            max_decoded_bytes: spec.converter.raw_payload.max_decoded_bytes,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackfillExecutionPlanObject {
+    pub s3_uri: String,
+    pub source_url: String,
+    pub sha256: String,
+    pub bytes: u64,
+    pub archive_date: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_row_groups: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicate_ref: Option<String>,
+}
+
+impl From<&BackfillAcceptedTrancheObject> for BackfillExecutionPlanObject {
+    fn from(object: &BackfillAcceptedTrancheObject) -> Self {
+        Self {
+            s3_uri: object.s3_uri.clone(),
+            source_url: object.source_url.clone(),
+            sha256: object.sha256.clone(),
+            bytes: object.bytes,
+            archive_date: object.archive_date.clone(),
+            source_row_groups: object.source_row_groups.clone(),
+            predicate_ref: object.predicate_ref.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackfillExecutionPlan {
+    pub schema_version: String,
+    pub plan_id: String,
+    pub status: BackfillExecutionPlanStatus,
+    pub accepted_tranche_id: String,
+    pub accepted_tranche_manifest_hash: String,
+    pub run_spec_hash: String,
+    pub operator_run_id: String,
+    pub output_prefix: String,
+    pub source_proof_id: String,
+    pub source_proof_version: u32,
+    pub source_binding: String,
+    pub table_family: String,
+    #[serde(
+        default = "default_source_usage_scope",
+        skip_serializing_if = "is_canonical_backfill_input"
+    )]
+    pub source_usage_scope: SourceProofUsageScope,
+    pub object_count: u64,
+    pub accepted_bytes: u64,
+    pub max_object_bytes: u64,
+    pub max_decoded_bytes: u64,
+    pub max_source_rows: u64,
+    pub max_projected_row_groups: u64,
+    pub max_wall_seconds: u64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub require_object_selection_metadata: bool,
+    pub objects: Vec<BackfillExecutionPlanObject>,
+    pub blocking_issues: Vec<BackfillExecutionPlanIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackfillExecutionPlanArtifact {
+    pub path: PathBuf,
+    pub content_hash: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackfillExecutionPlanError {
+    ReadSpec { path: String, error: String },
+    ParseSpecToml { path: String, error: String },
+    ReadAcceptedTrancheManifest { path: String, error: String },
+    ParseAcceptedTrancheManifestJson { path: String, error: String },
+    ReadRunSpec { path: String, error: String },
+    ParseRunSpecToml { path: String, error: String },
+    CreateDir { path: String, error: String },
+    ReadExisting { path: String, error: String },
+    Write { path: String, error: String },
+    ExistingArtifactMismatch { path: String },
+    Serialize(String),
+}
+
+impl fmt::Display for BackfillExecutionPlanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReadSpec { path, error } => {
+                write!(f, "read backfill execution-plan spec {path}: {error}")
+            }
+            Self::ParseSpecToml { path, error } => {
+                write!(f, "parse backfill execution-plan spec TOML {path}: {error}")
+            }
+            Self::ReadAcceptedTrancheManifest { path, error } => {
+                write!(f, "read accepted-tranche manifest {path}: {error}")
+            }
+            Self::ParseAcceptedTrancheManifestJson { path, error } => {
+                write!(f, "parse accepted-tranche manifest JSON {path}: {error}")
+            }
+            Self::ReadRunSpec { path, error } => write!(f, "read run-spec {path}: {error}"),
+            Self::ParseRunSpecToml { path, error } => {
+                write!(f, "parse run-spec TOML {path}: {error}")
+            }
+            Self::CreateDir { path, error } => {
+                write!(
+                    f,
+                    "create backfill execution-plan artifact directory {path}: {error}"
+                )
+            }
+            Self::ReadExisting { path, error } => {
+                write!(
+                    f,
+                    "read existing backfill execution-plan artifact {path}: {error}"
+                )
+            }
+            Self::Write { path, error } => {
+                write!(f, "write backfill execution-plan artifact {path}: {error}")
+            }
+            Self::ExistingArtifactMismatch { path } => write!(
+                f,
+                "dirty backfill execution-plan artifact {path}: existing file content differs"
+            ),
+            Self::Serialize(error) => {
+                write!(f, "serialize backfill execution-plan artifact: {error}")
+            }
+        }
+    }
+}
+
+impl Error for BackfillExecutionPlanError {}
+
+#[must_use]
+pub fn evaluate_backfill_execution_plan(
+    plan_id: impl Into<String>,
+    accepted_tranche_manifest_hash: impl Into<String>,
+    tranche: &BackfillAcceptedTrancheManifest,
+    run_spec_hash: impl Into<String>,
+    run_binding: &BackfillExecutionRunBinding,
+    work_budget: BackfillExecutionWorkBudget,
+) -> BackfillExecutionPlan {
+    let plan_id = plan_id.into();
+    let accepted_tranche_manifest_hash = accepted_tranche_manifest_hash.into();
+    let run_spec_hash = run_spec_hash.into();
+    let mut blocking_issues = Vec::new();
+
+    if plan_id.trim().is_empty() {
+        blocking_issues.push(BackfillExecutionPlanIssue::EmptyPlanId);
+    }
+    if tranche.status != BackfillAcceptedTrancheStatus::Accepted {
+        blocking_issues.push(BackfillExecutionPlanIssue::AcceptedTrancheNotAccepted);
+    }
+    if !tranche.blocking_issues.is_empty() {
+        blocking_issues.push(BackfillExecutionPlanIssue::AcceptedTrancheHasBlockingIssues);
+    }
+    if tranche.object_count != 1 || tranche.objects.len() != 1 {
+        blocking_issues.push(BackfillExecutionPlanIssue::AcceptedTrancheObjectCountNotOne);
+    }
+    if tranche
+        .objects
+        .first()
+        .is_some_and(|object| object.bytes != tranche.accepted_bytes)
+    {
+        blocking_issues.push(BackfillExecutionPlanIssue::AcceptedTrancheBytesMismatch);
+    }
+    if work_budget.max_source_rows == 0 {
+        blocking_issues.push(BackfillExecutionPlanIssue::ExecutionPlanSourceRowBudgetMissing);
+    }
+    if work_budget.max_projected_row_groups == 0 {
+        blocking_issues
+            .push(BackfillExecutionPlanIssue::ExecutionPlanProjectedRowGroupBudgetMissing);
+    }
+    if work_budget.max_wall_seconds == 0 {
+        blocking_issues.push(BackfillExecutionPlanIssue::ExecutionPlanWallTimeBudgetMissing);
+    }
+    if tranche.source_proof_id != run_binding.source_proof_id
+        || tranche.source_proof_version != run_binding.source_proof_version
+    {
+        blocking_issues.push(BackfillExecutionPlanIssue::RunSpecSourceProofMismatch);
+    }
+    if tranche.source_usage_scope != run_binding.source_usage_scope {
+        blocking_issues.push(BackfillExecutionPlanIssue::RunSpecSourceUsageScopeMismatch);
+    }
+    if tranche.source_binding != run_binding.source_binding {
+        blocking_issues.push(BackfillExecutionPlanIssue::RunSpecSourceBindingMismatch);
+    }
+    if tranche.table_family != run_binding.table_family {
+        blocking_issues.push(BackfillExecutionPlanIssue::RunSpecTableFamilyMismatch);
+    }
+
+    if let Some(object) = tranche.objects.first() {
+        if object.s3_uri != run_binding.raw_sample_uri {
+            blocking_issues.push(BackfillExecutionPlanIssue::RunSpecRawSampleUriMismatch);
+        }
+        if object.sha256 != run_binding.raw_sample_hash {
+            blocking_issues.push(BackfillExecutionPlanIssue::RunSpecRawSampleHashMismatch);
+        }
+        if object.s3_uri != run_binding.accepted_object_s3_uri {
+            blocking_issues.push(BackfillExecutionPlanIssue::RunSpecObjectS3UriMismatch);
+        }
+        if object.source_url != run_binding.accepted_object_source_url {
+            blocking_issues.push(BackfillExecutionPlanIssue::RunSpecObjectSourceUrlMismatch);
+        }
+        if object.sha256 != run_binding.accepted_object_sha256 {
+            blocking_issues.push(BackfillExecutionPlanIssue::RunSpecObjectShaMismatch);
+        }
+        if object.bytes != run_binding.accepted_object_bytes {
+            blocking_issues.push(BackfillExecutionPlanIssue::RunSpecObjectBytesMismatch);
+        }
+        if object.archive_date != run_binding.accepted_object_archive_date {
+            blocking_issues.push(BackfillExecutionPlanIssue::RunSpecObjectArchiveDateMismatch);
+        }
+        if object.bytes > run_binding.max_object_bytes {
+            blocking_issues.push(BackfillExecutionPlanIssue::RunSpecObjectBudgetTooSmall);
+        }
+        if work_budget.require_object_selection_metadata
+            && object.source_row_groups.is_empty()
+            && object.predicate_ref.is_none()
+        {
+            blocking_issues
+                .push(BackfillExecutionPlanIssue::ExecutionPlanObjectSelectionMetadataMissing);
+        }
+    }
+
+    let status = if blocking_issues.is_empty() {
+        BackfillExecutionPlanStatus::Ready
+    } else {
+        BackfillExecutionPlanStatus::Blocked
+    };
+    let objects = if status == BackfillExecutionPlanStatus::Ready {
+        tranche
+            .objects
+            .iter()
+            .map(BackfillExecutionPlanObject::from)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    BackfillExecutionPlan {
+        schema_version: BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION.to_string(),
+        plan_id,
+        status,
+        accepted_tranche_id: tranche.tranche_id.clone(),
+        accepted_tranche_manifest_hash,
+        run_spec_hash,
+        operator_run_id: run_binding.run_id.clone(),
+        output_prefix: run_binding.output_prefix.clone(),
+        source_proof_id: tranche.source_proof_id.clone(),
+        source_proof_version: tranche.source_proof_version,
+        source_binding: tranche.source_binding.clone(),
+        table_family: tranche.table_family.clone(),
+        source_usage_scope: tranche.source_usage_scope,
+        object_count: objects.len() as u64,
+        accepted_bytes: objects.iter().map(|object| object.bytes).sum(),
+        max_object_bytes: run_binding.max_object_bytes,
+        max_decoded_bytes: run_binding.max_decoded_bytes,
+        max_source_rows: work_budget.max_source_rows,
+        max_projected_row_groups: work_budget.max_projected_row_groups,
+        max_wall_seconds: work_budget.max_wall_seconds,
+        require_object_selection_metadata: work_budget.require_object_selection_metadata,
+        objects,
+        blocking_issues,
+    }
+}
+
+pub fn write_backfill_execution_plan_from_spec_file(
+    spec_path: &Path,
+) -> Result<BackfillExecutionPlanArtifact, BackfillExecutionPlanError> {
+    let spec_text =
+        fs::read_to_string(spec_path).map_err(|error| BackfillExecutionPlanError::ReadSpec {
+            path: spec_path.display().to_string(),
+            error: error.to_string(),
+        })?;
+    let spec: BackfillExecutionPlanSpec =
+        toml::from_str(&spec_text).map_err(|error| BackfillExecutionPlanError::ParseSpecToml {
+            path: spec_path.display().to_string(),
+            error: error.to_string(),
+        })?;
+    let (tranche, accepted_tranche_manifest_hash) =
+        read_accepted_tranche_manifest(&spec.accepted_tranche_manifest_path)?;
+    let (run_spec, run_spec_hash) = read_run_spec(&spec.run_spec_path)?;
+    let run_binding = BackfillExecutionRunBinding::from_run_spec(&run_spec);
+    let work_budget = BackfillExecutionWorkBudget {
+        max_source_rows: spec.max_source_rows,
+        max_projected_row_groups: spec.max_projected_row_groups,
+        max_wall_seconds: spec.max_wall_seconds,
+        require_object_selection_metadata: spec.require_object_selection_metadata,
+    };
+    let plan = evaluate_backfill_execution_plan(
+        spec.plan_id,
+        accepted_tranche_manifest_hash,
+        &tranche,
+        run_spec_hash,
+        &run_binding,
+        work_budget,
+    );
+    write_backfill_execution_plan(&spec.output_dir, &plan)
+}
+
+pub fn write_backfill_execution_plan(
+    output_dir: &Path,
+    plan: &BackfillExecutionPlan,
+) -> Result<BackfillExecutionPlanArtifact, BackfillExecutionPlanError> {
+    write_backfill_execution_plan_with_overwrite(output_dir, plan, false)
+}
+
+pub fn write_backfill_execution_plan_with_overwrite(
+    output_dir: &Path,
+    plan: &BackfillExecutionPlan,
+    overwrite_existing: bool,
+) -> Result<BackfillExecutionPlanArtifact, BackfillExecutionPlanError> {
+    fs::create_dir_all(output_dir).map_err(|error| BackfillExecutionPlanError::CreateDir {
+        path: output_dir.display().to_string(),
+        error: error.to_string(),
+    })?;
+    let bytes = serde_json::to_vec_pretty(plan)
+        .map_err(|error| BackfillExecutionPlanError::Serialize(error.to_string()))?;
+    let path = output_dir.join(BACKFILL_EXECUTION_PLAN_FILE);
+    if path.exists() {
+        let existing =
+            fs::read(&path).map_err(|error| BackfillExecutionPlanError::ReadExisting {
+                path: path.display().to_string(),
+                error: error.to_string(),
+            })?;
+        if existing != bytes {
+            if overwrite_existing {
+                atomic_write(&path, &bytes).map_err(|error| BackfillExecutionPlanError::Write {
+                    path: path.display().to_string(),
+                    error: error.to_string(),
+                })?;
+            } else {
+                return Err(BackfillExecutionPlanError::ExistingArtifactMismatch {
+                    path: path.display().to_string(),
+                });
+            }
+        }
+    } else {
+        atomic_write(&path, &bytes).map_err(|error| BackfillExecutionPlanError::Write {
+            path: path.display().to_string(),
+            error: error.to_string(),
+        })?;
+    }
+
+    Ok(BackfillExecutionPlanArtifact {
+        path,
+        content_hash: content_hash(plan)?,
+        bytes: bytes.len() as u64,
+    })
+}
+
+fn read_accepted_tranche_manifest(
+    path: &Path,
+) -> Result<(BackfillAcceptedTrancheManifest, String), BackfillExecutionPlanError> {
+    let bytes = fs::read(path).map_err(|error| {
+        BackfillExecutionPlanError::ReadAcceptedTrancheManifest {
+            path: path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    let hash = sha256_hex(&bytes);
+    let manifest = serde_json::from_slice(&bytes).map_err(|error| {
+        BackfillExecutionPlanError::ParseAcceptedTrancheManifestJson {
+            path: path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    Ok((manifest, hash))
+}
+
+fn read_run_spec(path: &Path) -> Result<(RunSpec, String), BackfillExecutionPlanError> {
+    let bytes = fs::read(path).map_err(|error| BackfillExecutionPlanError::ReadRunSpec {
+        path: path.display().to_string(),
+        error: error.to_string(),
+    })?;
+    let hash = sha256_hex(&bytes);
+    let text = std::str::from_utf8(&bytes).map_err(|error| {
+        BackfillExecutionPlanError::ParseRunSpecToml {
+            path: path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    let run_spec =
+        toml::from_str(text).map_err(|error| BackfillExecutionPlanError::ParseRunSpecToml {
+            path: path.display().to_string(),
+            error: error.to_string(),
+        })?;
+    Ok((run_spec, hash))
+}
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn default_source_usage_scope() -> SourceProofUsageScope {
+    SourceProofUsageScope::CanonicalBackfillInput
+}
+
+fn is_canonical_backfill_input(value: &SourceProofUsageScope) -> bool {
+    *value == SourceProofUsageScope::CanonicalBackfillInput
+}
+
+fn content_hash(plan: &BackfillExecutionPlan) -> Result<String, BackfillExecutionPlanError> {
+    let bytes = serde_json::to_vec(plan)
+        .map_err(|error| BackfillExecutionPlanError::Serialize(error.to_string()))?;
+    Ok(sha256_hex(&bytes))
+}

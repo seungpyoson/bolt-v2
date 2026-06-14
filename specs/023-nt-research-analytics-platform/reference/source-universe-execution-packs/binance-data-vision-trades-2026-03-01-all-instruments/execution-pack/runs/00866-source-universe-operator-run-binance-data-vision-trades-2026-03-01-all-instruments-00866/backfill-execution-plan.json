@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00866:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PAXGBTC:2026-03-01:adc7a339cb2aa2d70f44c84eb9a98a5b45b97e89120f310da46fa83c63b615ad:accepted-tranche",
+  "accepted_tranche_manifest_hash": "32fddc0d4c138109a633e5188d2379a8d722cfa91e92820aea233cefc1b0a41a",
+  "run_spec_hash": "303a206382c372b704a0b610f52f189ba838fe3ac8bc6951492dba7ad40b90ea",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00866",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PAXGBTC/dt=2026-03-01/object=adc7a339cb2aa2d70f44c84eb9a98a5b45b97e89120f310da46fa83c63b615ad",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 129034,
+  "max_object_bytes": 129034,
+  "max_decoded_bytes": 1073741824,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=PAXGBTC/object=adc7a339cb2aa2d70f44c84eb9a98a5b45b97e89120f310da46fa83c63b615ad.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/PAXGBTC/PAXGBTC-trades-2026-03-01.zip",
+      "sha256": "adc7a339cb2aa2d70f44c84eb9a98a5b45b97e89120f310da46fa83c63b615ad",
+      "bytes": 129034,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

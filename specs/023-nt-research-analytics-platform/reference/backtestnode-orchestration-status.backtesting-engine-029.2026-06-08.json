@@ -1,0 +1,70 @@
+{
+  "schema_version": "backtestnode-orchestration-status.v1",
+  "task_id": "BACKTESTING_ENGINE-029",
+  "recorded_at": "2026-06-08",
+  "status": "complete_for_current_nt_orchestration_boundary",
+  "decision": "The current backtesting vertical slice implements orchestration through NautilusTrader BacktestNode rather than a Bolt-owned simulator. BacktestNode receives manifest-mapped BacktestRunConfig, BacktestVenueConfig, and BacktestDataConfig values; Bolt-owned code performs validation, provenance binding, result packaging, and claim-limit enforcement around the NT run.",
+  "evidence": [
+    {
+      "kind": "source_code",
+      "ref": "repo://crates/backtesting-vertical-slice/src/runner.rs",
+      "proof": "run_nt_backtest_node maps the BacktestingRunManifest into NT config, constructs BacktestNode, builds the node, attaches an existing compiled Rust strategy to the NT engine, runs BacktestNode, and returns the single NT BacktestResult."
+    },
+    {
+      "kind": "source_code",
+      "ref": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs",
+      "proof": "BacktestingRunManifest maps venue settings, one or more catalog inputs, catalog storage options, instrument ids, start/end bounds, TradeTick, and OrderBookDelta into NT BacktestVenueConfig, BacktestDataConfig, and BacktestRunConfig. Unsupported NT catalog-query and complex venue surfaces are rejected before config construction."
+    },
+    {
+      "kind": "test_coverage",
+      "ref": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_catalog_and_node.rs",
+      "proof": "Catalog fixtures write/query NT-native instruments and data, then run BacktestNode over NT OrderBookDelta and TradeTick inputs with iteration-count assertions."
+    },
+    {
+      "kind": "test_coverage",
+      "ref": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_end_to_end.rs",
+      "proof": "The end-to-end slice validates accepted source proof, canonical projection, NT catalog read-back, BacktestNode execution, and objective result-contract construction."
+    },
+    {
+      "kind": "test_coverage",
+      "ref": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs",
+      "proof": "The one-off binary-option L2 path writes selected-source rows into NT ParquetDataCatalog, runs BacktestNode over verified OrderBookDelta catalog input, and binds the result contract to conversion and selector provenance."
+    },
+    {
+      "kind": "ci",
+      "ref": "github://seungpyoson/bolt-v2/actions/runs/27136231816",
+      "proof": "CI completed successfully on head 38a7faf2d842081c1c60085d77d19cb39c4d2569."
+    },
+    {
+      "kind": "ci",
+      "ref": "github://seungpyoson/bolt-v2/actions/runs/27136231760",
+      "proof": "Backtester CI completed successfully on head 38a7faf2d842081c1c60085d77d19cb39c4d2569."
+    }
+  ],
+  "nt_owned_surfaces": [
+    "BacktestNode construction/build/run",
+    "BacktestEngine execution loop",
+    "BacktestRunConfig",
+    "BacktestVenueConfig",
+    "BacktestDataConfig",
+    "ParquetDataCatalog loading through NT data configs",
+    "BacktestResult iteration/report surface"
+  ],
+  "bolt_owned_boundaries": [
+    "manifest validation",
+    "source-proof and selected-source gating",
+    "raw-source-to-NT-typed projection when NT does not already expose a parser for the raw artifact shape",
+    "compiled-strategy registration",
+    "result-contract packaging",
+    "claim-limit and mechanical-blocker enforcement"
+  ],
+  "not_closed_by_this_task": [
+    "BACKTESTING_ENGINE-006 Artifact Index producer IAM proof",
+    "BACKTESTING_ENGINE-022 broad source sample to NT catalog acceptance",
+    "BACKTESTING_ENGINE-039 issue dependency updates before implementation review",
+    "BACKTESTING_ENGINE-040 final implementation-branch verification checkpoint",
+    "BACKTESTING_ENGINE-041 final manifest TOML schema currentness rules",
+    "production or broad PMXT backfill authorization"
+  ],
+  "non_hardcoding_boundary": "The orchestration layer is selected by manifest/catalog/data-class configuration and uses NT config APIs. Source-specific conversion remains isolated to raw-source-to-NT-typed projection modules and must not become venue/provider branching inside BacktestNode orchestration."
+}

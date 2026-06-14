@@ -82,6 +82,24 @@ class FenceTests(unittest.TestCase):
     def test_match_arm_with_venue_scrutinee_is_caught(self):
         self.assertEqual(len(self._one('match venue.as_str() { "polymarket" => a, _ => b }')), 1)
 
+    def test_match_arm_with_guard_is_caught(self):
+        self.assertEqual(len(self._one('match venue_id { "polymarket" if c => a, _ => b }')), 1)
+
+    def test_match_arm_alternation_first_is_caught(self):
+        self.assertEqual(len(self._one('match venue_id { "polymarket" | "x" => a, _ => b }')), 1)
+
+    def test_match_arm_alternation_last_is_caught(self):
+        self.assertEqual(len(self._one('match venue_id { "x" | "polymarket" => a, _ => b }')), 1)
+
+    def test_nested_generic_turbofish_is_caught(self):
+        self.assertEqual(len(self._one('if venue.cast::<Cow<str>>() == "polymarket" {}')), 1)
+
+    def test_while_let_is_caught(self):
+        self.assertEqual(len(self._one('while let "polymarket" = venue_id {}')), 1)
+
+    def test_some_wrapped_if_let_with_venue_read_is_caught(self):
+        self.assertEqual(len(self._one('if let Some("polymarket") = venue_id.as_opt() {}')), 1)
+
     # --- soundness: char literals & lifetimes must not desync the scanner ---
 
     def test_char_literal_does_not_hide_following_compare(self):
@@ -128,6 +146,22 @@ class FenceTests(unittest.TestCase):
     def test_match_arm_with_non_venue_scrutinee_is_not_a_violation(self):
         # FP class: a benign domain-word arm under a non-venue scrutinee.
         self.assertEqual(self._one('match correction_mode { "gamma" => a, _ => b }'), [])
+
+    def test_nested_non_venue_match_inside_venue_match_is_not_a_violation(self):
+        # FP class: a benign nested match must not be flagged by the outer venue match.
+        self.assertEqual(
+            self._one('match venue_id { _ => { match mode { "gamma" => a, _ => b } } }'), []
+        )
+
+    def test_venue_literal_in_arm_body_is_not_a_violation(self):
+        # A venue literal returned as an arm body is not a branch on the name.
+        self.assertEqual(self._one('match venue_id { _ => "polymarket" }'), [])
+
+    def test_guard_with_non_venue_operand_is_not_a_violation(self):
+        # Documented boundary: a guard comparing a non-venue operand is uncaught.
+        self.assertEqual(
+            self._one('match venue_id { p if some_str == "binance" => a, _ => b }'), []
+        )
 
     def test_bare_arm_without_match_context_is_not_a_violation(self):
         self.assertEqual(self._one('"polymarket" => handle(),'), [])

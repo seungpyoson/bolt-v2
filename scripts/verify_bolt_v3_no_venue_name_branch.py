@@ -2,12 +2,33 @@
 """FR-080: forbid venue-name string-literal branches outside provider modules.
 
 The capability contract (D8/FR-080) requires the controller to branch on venue
-*capabilities* read from `VenueContract`, never on a hardcoded venue name. The
-existing `verify_bolt_v3_core_boundary.py` catches only `match venue.kind` /
-`VenueKind` enum dispatch over a fixed file set; it does NOT catch string-literal
-comparisons like `venue_id == "polymarket"`. This fence closes that gap. Provider
-modules under `src/bolt_v3_providers/` are exempt — that is where venue-name KEY
-literals legitimately live.
+*capabilities* read from `VenueContract`, never on a hardcoded venue name. This
+fence catches venue-name string-literal BRANCHES — equality (`==`/`!=`), the
+string membership/compare methods, `matches!`, `if let`, and `match` arms whose
+scrutinee is a venue-identity read — in `src/**/*.rs` outside
+`src/bolt_v3_providers/` (where venue-name KEY literals legitimately live).
+
+DESIGN — soundness over completeness. A *text* fence cannot decide arbitrary
+Rust semantics, so it is built to NEVER flag valid code (no false positives)
+while covering the idiomatic evasions:
+
+  * Every venue-string literal *spelling* is normalized by `_canonical_code`
+    before any rule runs — plain `"x"`, raw `r"x"`, raw-hashed `r#"x"#`, byte
+    `b"x"`, byte-raw `br#"x"#` all collapse to a plain `"x"`, so the `r`/`b`/`#`
+    prefix cannot slip a venue literal past the equality/method/match rules.
+  * Comments, char literals, and *non-venue* string-literal bodies are blanked
+    (newlines preserved), so a venue-branch phrase living inside a raw-string
+    body or a comment is NOT scanned as code (no false positive).
+  * `match` arms are flagged only when the match scrutinee is itself a venue
+    read, so a benign `match mode { "gamma" => .. }` (gamma the domain word) is
+    not flagged while `match venue.as_str() { "polymarket" => .. }` is.
+
+KNOWN, DELIBERATELY-UNCAUGHT forms (they need type/flow analysis a regex cannot
+do soundly; the capability-contract design + code review cover them):
+  * constructed/split literals: `concat!("poly","market")`, `format!(..)`;
+  * wrapper/alias PartialEq where neither operand is a syntactic venue read:
+    `VenueId::from("polymarket") == other`, `some_non_venue_var == "polymarket"`.
+These are accepted false negatives, recorded here so the boundary is explicit.
 """
 
 from __future__ import annotations
@@ -22,20 +43,35 @@ from verify_bolt_v3_pure_rust_runtime import production_text
 
 PROVIDERS_PREFIX = "src/bolt_v3_providers/"
 
-_VENUE = r"(?:polymarket|binance|bybit|okx|hyperliquid|deribit|chainlink|gamma)"
-# A venue-name READ expression: an optional dotted receiver path, the venue-name
-# token, then any reader-accessor calls. Built to (a) NOT match `venue` glued
-# inside a longer identifier (`myvenue`, `subvenue`) and (b) consume a trailing
-# accessor call so `venue.venue_id() == "x"` and `matches!(venue.as_str(), "x")`
-# are caught, not just the bare-field forms.
-_NAME = (
-    r"(?<![A-Za-z0-9_])"  # leading boundary: reject `venue` inside `myvenue`/`subvenue`
-    r"(?:[A-Za-z_][A-Za-z0-9_]*\.)*"  # optional dotted receiver path (self., foo.bar.)
-    r"(?:venue_id|venue_name|venue)\b"  # the venue-name token
-    r"(?:\s*\(\s*\))?"  # optional empty accessor call: venue_id()
-    r"(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\))*"  # reader-accessor chain: .as_str().value()
+_VENUES = (
+    "polymarket",
+    "binance",
+    "bybit",
+    "okx",
+    "hyperliquid",
+    "deribit",
+    "chainlink",
+    "gamma",
 )
-_LIT = rf'"{_VENUE}"'
+_VENUE = r"(?:" + "|".join(_VENUES) + r")"
+
+# A venue-identity READ expression: an optional dotted receiver path, a
+# `venue`-prefixed token (so `venue_id`, `venue_name`, `venue_wrapper` all
+# qualify), then any zero-arg reader-accessor calls incl. turbofish
+# (`.as_str()`, `.as_ref::<str>()`). The leading boundary stops `venue` from
+# matching inside a larger identifier (`subvenue`, `revenue`, `myvenue`).
+_TURBOFISH = r"(?:\s*::\s*<[^>]*>)?"
+_NAME = (
+    r"(?<![A-Za-z0-9_])"
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)*"
+    r"venue[A-Za-z0-9_]*"
+    + _TURBOFISH
+    + r"(?:\s*\(\s*\))?"
+    r"(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*" + _TURBOFISH + r"\s*\(\s*\))*"
+)
+# After `_canonical_code` every venue string literal is a plain "venue".
+_LIT = r'"' + _VENUE + r'"'
+_EQ = r"(?:==|!=)"
 
 
 @dataclass(frozen=True)
@@ -53,8 +89,8 @@ class Violation:
 
 
 FORBIDDEN_RULES = (
-    Rule("venue-name equality (name == lit)", re.compile(rf"{_NAME}\s*==\s*{_LIT}", re.IGNORECASE)),
-    Rule("venue-name equality (lit == name)", re.compile(rf"{_LIT}\s*==\s*{_NAME}", re.IGNORECASE)),
+    Rule("venue-name equality (name eq lit)", re.compile(rf"{_NAME}\s*{_EQ}\s*{_LIT}", re.IGNORECASE)),
+    Rule("venue-name equality (lit eq name)", re.compile(rf"{_LIT}\s*{_EQ}\s*{_NAME}", re.IGNORECASE)),
     Rule(
         "venue-name membership/method",
         re.compile(
@@ -63,55 +99,205 @@ FORBIDDEN_RULES = (
         ),
     ),
     Rule("venue-name matches! arm", re.compile(rf"matches!\s*\(\s*{_NAME}\s*,[^)]*{_LIT}", re.IGNORECASE)),
-    # A venue literal used directly as a `match` arm pattern (`"polymarket" => ...`)
-    # is always a venue-name branch regardless of the scrutinee, so this rule is
-    # anchored on the literal alone (no `_NAME` operand needed). A non-venue arm
-    # (`"foo" => ...`) cannot match because `_LIT` is constrained to venue names.
-    Rule("venue-name match arm (lit =>)", re.compile(rf"{_LIT}\s*=>", re.IGNORECASE)),
+    Rule("venue-name if-let", re.compile(rf"\bif\s+let\s+{_LIT}\s*=\s*{_NAME}", re.IGNORECASE)),
 )
 
-_COMMENT_OR_STRING = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/', re.DOTALL)
+_MATCH_KW = re.compile(r"\bmatch\b")
+_NAME_RE = re.compile(_NAME, re.IGNORECASE)
+_ARM_RE = re.compile(rf"{_LIT}\s*=>", re.IGNORECASE)
+_MATCH_ARM_LABEL = "venue-name match arm (venue scrutinee)"
+
+# A complete Rust char literal: `'a'`, `'\n'`, `'\''`, `'\x41'`, `'\u{1F600}'`,
+# `'"'`. Deliberately does NOT match a lifetime (`'a` with no closing quote).
+_CHAR = re.compile(r"'(?:\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]+\}|.)|[^\\'\n])'")
+_IDENT = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
 
 
-def strip_comments_keep_strings(text: str) -> str:
-    """Blank // and /* */ comments but PRESERVE string literals and newlines.
+def _scan_plain(text: str, quote: int, start: int) -> tuple[int, int, str | None]:
+    """Scan a plain/byte double-quoted string. `quote` = opening `"`, `start` =
+    literal start (may precede `quote` for a `b"` prefix). Returns
+    (start, end_exclusive, value) — value is None if the literal contains an
+    escape or a newline (so it can never be a bare venue name)."""
+    n = len(text)
+    j = quote + 1
+    escaped = False
+    while j < n:
+        ch = text[j]
+        if ch == "\\":
+            escaped = True
+            j += 2
+            continue
+        if ch == '"':
+            body = text[quote + 1 : j]
+            value = None if escaped else body
+            return (start, j + 1, value)
+        if ch == "\n":
+            return (start, j, None)  # unterminated at EOL
+        j += 1
+    return (start, n, None)  # unterminated at EOF
 
-    String literals are matched first in the alternation, so a `//` or `/*`
-    inside a string is consumed as part of the (preserved) literal. Comments are
-    replaced char-for-char with spaces so byte offsets and line numbers are
-    unchanged.
-    """
 
-    def repl(match: re.Match[str]) -> str:
-        token = match.group(0)
-        if token.startswith('"'):
-            return token
-        return re.sub(r"[^\n]", " ", token)
+def _scan_string(text: str, i: int) -> tuple[int, int, str | None] | None:
+    """If a string literal begins at index `i`, return (start, end_exclusive,
+    value); else None. Handles plain, raw `r"..."`, raw-hashed `r#"..."#`, byte
+    `b"..."`, and byte-raw `br#"..."#`. `value` is the decoded content, or None
+    when it cannot be a bare venue name (escapes, newlines, unterminated)."""
+    n = len(text)
+    c = text[i]
+    if c == '"':
+        return _scan_plain(text, i, i)
+    # raw/byte prefixes are only string starts when not the tail of an identifier
+    if c in ("r", "b") and (i == 0 or text[i - 1] not in _IDENT):
+        j = i
+        is_byte = False
+        if text[j] == "b":
+            is_byte = True
+            j += 1
+        if j < n and text[j] == "r":
+            j += 1
+            hashes = 0
+            while j < n and text[j] == "#":
+                hashes += 1
+                j += 1
+            if j < n and text[j] == '"':
+                closing = '"' + ("#" * hashes)
+                k = text.find(closing, j + 1)
+                if k == -1:
+                    return (i, n, None)
+                body = text[j + 1 : k]
+                value = None if "\n" in body else body
+                return (i, k + len(closing), value)
+            return None  # `r`/`br` not followed by a raw string body
+        if is_byte and j < n and text[j] == '"':
+            return _scan_plain(text, j, i)  # byte string b"..."
+        return None
+    return None
 
-    return _COMMENT_OR_STRING.sub(repl, text)
+
+def _canonical_code(text: str) -> str:
+    """Length-preserving 'code view': blank comments / char literals / non-venue
+    string-literal bodies (newlines kept), and normalize any string literal
+    whose value is exactly a venue name to a plain `"venue"` token so the rules
+    can match it regardless of r/b/# spelling. Length is preserved so caller
+    line/excerpt math against the original text stays aligned."""
+    out = list(text)
+    n = len(text)
+    i = 0
+
+    def blank(start: int, end: int) -> None:
+        for k in range(start, end):
+            if out[k] != "\n":
+                out[k] = " "
+
+    while i < n:
+        c = text[i]
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            j = text.find("\n", i)
+            j = n if j == -1 else j
+            blank(i, j)
+            i = j
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            j = text.find("*/", i + 2)
+            j = n if j == -1 else j + 2
+            blank(i, j)
+            i = j
+            continue
+        if c == "'":
+            m = _CHAR.match(text, i)
+            if m:
+                blank(m.start(), m.end())
+                i = m.end()
+                continue
+            i += 1  # a lifetime (`'a`) — leave as code
+            continue
+        lit = _scan_string(text, i)
+        if lit is not None:
+            start, end, value = lit
+            blank(start, end)
+            if value is not None and value.lower() in _VENUES:
+                token = '"' + value.lower() + '"'
+                for k, ch in enumerate(token):
+                    out[start + k] = ch
+            i = end
+            continue
+        i += 1
+
+    return "".join(out)
 
 
 def line_number(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
 
 
+def _match_arm_positions(scan_text: str) -> list[int]:
+    """Positions of venue-literal `match` arms whose match scrutinee is a venue
+    read. Scoped to the match block via paren/brace tracking on the (already
+    literal-neutralized) code view, so string/char braces cannot confuse it."""
+    positions: list[int] = []
+    n = len(scan_text)
+    for kw in _MATCH_KW.finditer(scan_text):
+        j = kw.end()
+        paren = 0
+        brace = -1
+        while j < n:
+            ch = scan_text[j]
+            if ch == "(":
+                paren += 1
+            elif ch == ")":
+                paren -= 1
+            elif ch == ";" and paren == 0:
+                break  # not a match-expression head
+            elif ch == "{" and paren == 0:
+                brace = j
+                break
+            j += 1
+        if brace == -1:
+            continue
+        if not _NAME_RE.search(scan_text[kw.end() : brace]):
+            continue
+        depth = 0
+        end = n
+        k = brace
+        while k < n:
+            ch = scan_text[k]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = k
+                    break
+            k += 1
+        for arm in _ARM_RE.finditer(scan_text, brace, end):
+            positions.append(arm.start())
+    return positions
+
+
 def find_violations_in_text(path: str, text: str) -> list[Violation]:
-    scan_text = strip_comments_keep_strings(text)
-    violations: list[Violation] = []
+    scan_text = _canonical_code(text)
+    found: list[tuple[int, str]] = []
     for rule in FORBIDDEN_RULES:
         for match in rule.pattern.finditer(scan_text):
-            line_start = scan_text.rfind("\n", 0, match.start()) + 1
-            line_end = scan_text.find("\n", match.end())
-            if line_end == -1:
-                line_end = len(text)
-            violations.append(
-                Violation(
-                    path=path,
-                    line=line_number(scan_text, match.start()),
-                    label=rule.label,
-                    excerpt=text[line_start:line_end].strip(),
-                )
+            found.append((match.start(), rule.label))
+    for pos in _match_arm_positions(scan_text):
+        found.append((pos, _MATCH_ARM_LABEL))
+
+    violations: list[Violation] = []
+    for pos, label in found:
+        line_start = scan_text.rfind("\n", 0, pos) + 1
+        line_end = scan_text.find("\n", pos)
+        if line_end == -1:
+            line_end = len(text)
+        violations.append(
+            Violation(
+                path=path,
+                line=line_number(scan_text, pos),
+                label=label,
+                excerpt=text[line_start:line_end].strip(),
             )
+        )
+    violations.sort(key=lambda v: (v.line, v.label))
     return violations
 
 

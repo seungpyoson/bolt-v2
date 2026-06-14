@@ -15594,6 +15594,102 @@ classification = "reference_price_data_contract"
 reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"strategy_id"'''
+context = '''table.insert("strategy_id".to_string(), Value::String(strategy_id));'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the maker strategy config schema field name, populated into the runtime config table from the bolt-v3 TOML-derived NT strategy id; mirrors the taker archetype's strategy_id table key."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"order_id_tag"'''
+context = '''"order_id_tag".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the maker strategy config schema field name, populated into the runtime config table from the bolt-v3 TOML order_id_tag; mirrors the taker archetype's order_id_tag table key."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"oms_type"'''
+context = '''"oms_type".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the maker strategy config schema field name, populated into the runtime config table from the bolt-v3 TOML oms_type; mirrors the taker archetype's oms_type table key."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"wrong_type"'''
+context = '''const WRONG_TYPE_CODE: &str = "wrong_type";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a maker config field with the wrong TOML type; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"missing_strategy_id"'''
+context = '''const MISSING_STRATEGY_ID_CODE: &str = "missing_strategy_id";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a missing required maker strategy_id envelope field; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"missing_order_id_tag"'''
+context = '''const MISSING_ORDER_ID_TAG_CODE: &str = "missing_order_id_tag";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a missing required maker order_id_tag envelope field; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"missing_oms_type"'''
+context = '''const MISSING_OMS_TYPE_CODE: &str = "missing_oms_type";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a missing required maker oms_type envelope field; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"unknown_field"'''
+context = '''const UNKNOWN_FIELD_CODE: &str = "unknown_field";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a stray unknown key in the maker config table; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"strategy_id"'''
+context = '''const STRATEGY_ID_FIELD: &str = "strategy_id";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable maker strategy_id config field label used in validation diagnostics; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"order_id_tag"'''
+context = '''const ORDER_ID_TAG_FIELD: &str = "order_id_tag";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable maker order_id_tag config field label used in validation diagnostics; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"oms_type"'''
+context = '''const OMS_TYPE_FIELD: &str = "oms_type";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable maker oms_type config field label used in validation diagnostics; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "string"
+literal = '''"binary_oracle_maker"'''
+context = '''pub const KEY: &str = "binary_oracle_maker";'''
+classification = "strategy_archetype_key"
+reason = "The single archetype key constant for the inert maker (its StrategyBuilder::kind, RUNTIME_BINDING.key, validation-binding key, and operator TOML strategy_archetype value); a stable internal archetype identifier owned here, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_reference_price.rs"
 kind = "string"
 literal = '''"asset"'''

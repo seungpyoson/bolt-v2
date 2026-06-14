@@ -18,10 +18,11 @@
 //!
 //! This index is the single source of truth for the *fingerprints* (sha256 +
 //! byte length) of each evicted blob. The *eviction scope* — which paths leave
-//! the tree — is additionally asserted by the eviction guard test and kept from
-//! regrowing by `.gitignore`; those three surfaces move together whenever the
-//! scope changes (e.g. Phase 2). Record-`00000` of each execution pack is always
-//! kept on disk (the acceptance test reads it); see `GOLDEN_RECORD_DIR_PREFIX`.
+//! the tree — is owned by this module's path predicates, asserted by the
+//! eviction guard test, and kept from regrowing by `.gitignore`; those surfaces
+//! move together whenever the scope changes. Record-`00000` of each execution
+//! pack is always kept on disk (the acceptance test reads it); see
+//! `GOLDEN_RECORD_DIR_PREFIX`.
 
 use std::path::{Path, PathBuf};
 
@@ -35,7 +36,45 @@ pub const INDEX_REPO_PATH: &str =
     "specs/023-nt-research-analytics-platform/reference/evicted-fixtures.index.json";
 
 /// Repo-relative prefix every evicted fixture path must start with.
-const REFERENCE_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/";
+pub const REFERENCE_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/";
+
+const EXECUTION_PACKS_PREFIX: &str =
+    "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/";
+const EXECUTION_PACK_RUN_MARKER: &str = "/execution-pack/runs/";
+
+const TIER1_CONVERSION_WORK_ORDERS_PREFIX: &str =
+    "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/";
+const TIER1_BATCH_EXECUTION_REPORTS_PREFIX: &str =
+    "specs/023-nt-research-analytics-platform/reference/source-universe-batch-execution-reports/";
+const TIER1_PMXT_CONVERSION_QUEUE_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/";
+const TIER1_BYBIT_CONVERSION_RUN_PLAN_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/";
+const TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/backfill-source-universes/binance-data-vision-trades-2026-03-01-all-instruments/";
+const TIER1_VENUE_SCALE_ACCEPTANCE_LEDGERS_PREFIX: &str =
+    "specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/";
+const TIER1_PMXT_SOURCE_PROOFS_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/";
+
+/// Tier-1 subtree prefixes whose generated JSON artifacts are evicted.
+pub const TIER1_EVICTED_SUBTREE_PREFIXES: &[&str] = &[
+    TIER1_CONVERSION_WORK_ORDERS_PREFIX,
+    TIER1_BATCH_EXECUTION_REPORTS_PREFIX,
+    TIER1_PMXT_CONVERSION_QUEUE_PREFIX,
+    TIER1_BYBIT_CONVERSION_RUN_PLAN_PREFIX,
+    TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX,
+    TIER1_VENUE_SCALE_ACCEPTANCE_LEDGERS_PREFIX,
+    TIER1_PMXT_SOURCE_PROOFS_PREFIX,
+];
+
+/// Tier-1 fixtures deliberately kept on disk: hand-authored `.toml` specs plus
+/// the bybit source-universe JSON read by the backfill-gate reference tests.
+pub const TIER1_KEPT_REFERENCE_PATHS: &[&str] = &[
+    "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/binance-data-vision-trades-2026-03-01-all-instruments/source-universe-conversion-work-order.toml",
+    "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/source-universe-conversion-work-order.toml",
+    "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/source-universe-conversion-queue.toml",
+    "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/source-universe-conversion-run-plan.toml",
+    "specs/023-nt-research-analytics-platform/reference/backfill-source-universes/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-source-universe.json",
+    "specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml",
+    "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml",
+];
 
 /// Directory-name prefix of the one execution-pack record kept on disk per pack
 /// (the `runs/00000-*` dir). The execution-pack acceptance test reads only this
@@ -192,6 +231,78 @@ impl EvictedFixtureIndex {
             bytes: bytes.len() as u64,
         })
     }
+}
+
+/// `true` iff `path` is in the declared #704 reference-fixture eviction scope.
+pub fn is_evicted_reference_fixture_path(path: &str) -> bool {
+    is_evicted_execution_pack_record_path(path) || is_tier1_evicted_reference_fixture_path(path)
+}
+
+/// `true` iff `path` is a per-record (non-`00000`) execution-pack run artifact.
+pub fn is_evicted_execution_pack_record_path(path: &str) -> bool {
+    if !path.starts_with(EXECUTION_PACKS_PREFIX) {
+        return false;
+    }
+    let Some(idx) = path.find(EXECUTION_PACK_RUN_MARKER) else {
+        return false;
+    };
+    let run = path[idx + EXECUTION_PACK_RUN_MARKER.len()..]
+        .split('/')
+        .next()
+        .unwrap_or("");
+    !run.is_empty() && !run.starts_with(GOLDEN_RECORD_DIR_PREFIX)
+}
+
+/// `true` iff `path` belongs to the #704 Phase 2 Tier 1 generated JSON scope.
+pub fn is_tier1_evicted_reference_fixture_path(path: &str) -> bool {
+    is_conversion_work_order_json(path)
+        || is_json_below(path, TIER1_BATCH_EXECUTION_REPORTS_PREFIX)
+        || is_direct_json_below(path, TIER1_PMXT_CONVERSION_QUEUE_PREFIX)
+        || is_direct_json_below(path, TIER1_BYBIT_CONVERSION_RUN_PLAN_PREFIX)
+        || is_direct_json_below(path, TIER1_BINANCE_SOURCE_UNIVERSE_PREFIX)
+        || is_venue_scale_acceptance_ledger_json(path)
+        || is_direct_json_below(path, TIER1_PMXT_SOURCE_PROOFS_PREFIX)
+}
+
+fn is_conversion_work_order_json(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix(TIER1_CONVERSION_WORK_ORDERS_PREFIX) else {
+        return false;
+    };
+    let Some((scope, file)) = rest.split_once("/work-order/") else {
+        return false;
+    };
+    !scope.is_empty() && !scope.contains('/') && is_direct_json_file(file)
+}
+
+fn is_venue_scale_acceptance_ledger_json(path: &str) -> bool {
+    is_single_scope_child_json(
+        path,
+        TIER1_VENUE_SCALE_ACCEPTANCE_LEDGERS_PREFIX,
+        "/ledger/",
+    )
+}
+
+fn is_single_scope_child_json(path: &str, prefix: &str, marker: &str) -> bool {
+    let Some(rest) = path.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some((scope, file)) = rest.split_once(marker) else {
+        return false;
+    };
+    !scope.is_empty() && !scope.contains('/') && is_direct_json_file(file)
+}
+
+fn is_json_below(path: &str, prefix: &str) -> bool {
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| !rest.is_empty() && rest.ends_with(".json"))
+}
+
+fn is_direct_json_below(path: &str, prefix: &str) -> bool {
+    path.strip_prefix(prefix).is_some_and(is_direct_json_file)
+}
+
+fn is_direct_json_file(value: &str) -> bool {
+    !value.is_empty() && !value.contains('/') && value.ends_with(".json")
 }
 
 /// `true` iff `value` is exactly 64 lowercase hex characters.

@@ -16,7 +16,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use backtesting_vertical_slice::reference_fixture_index::{
-    EvictedFixtureIndex, GOLDEN_RECORD_DIR_PREFIX, repo_root_from_manifest_dir,
+    EvictedFixtureIndex, GOLDEN_RECORD_DIR_PREFIX, TIER1_EVICTED_SUBTREE_PREFIXES,
+    TIER1_KEPT_REFERENCE_PATHS, is_evicted_execution_pack_record_path,
+    is_evicted_reference_fixture_path, is_tier1_evicted_reference_fixture_path,
+    repo_root_from_manifest_dir,
 };
 use backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPack;
 
@@ -25,20 +28,6 @@ const EXECUTION_PACKS_REL: &str =
 
 fn execution_packs_root() -> PathBuf {
     repo_root_from_manifest_dir().join(EXECUTION_PACKS_REL)
-}
-
-/// `true` iff `path` is a per-record (non-`00000`) execution-pack run artifact —
-/// the phase-1 eviction scope.
-fn is_evicted_per_record_path(path: &str) -> bool {
-    const MARKER: &str = "/execution-pack/runs/";
-    if !path.contains("/source-universe-execution-packs/") {
-        return false;
-    }
-    let Some(idx) = path.find(MARKER) else {
-        return false;
-    };
-    let run = path[idx + MARKER.len()..].split('/').next().unwrap_or("");
-    !run.is_empty() && !run.starts_with(GOLDEN_RECORD_DIR_PREFIX)
 }
 
 /// Immediate child directories of `dir` (empty if `dir` is absent).
@@ -50,6 +39,37 @@ fn child_dirs(dir: &Path) -> Vec<PathBuf> {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.is_dir())
         .collect()
+}
+
+/// All files under `dir` (empty if `dir` is absent).
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .flat_map(|path| {
+            if path.is_dir() {
+                files_under(&path)
+            } else {
+                vec![path]
+            }
+        })
+        .collect()
+}
+
+fn repo_relative_path(repo_root: &Path, path: &Path) -> String {
+    path.strip_prefix(repo_root)
+        .unwrap_or_else(|e| {
+            panic!(
+                "path {} should be under repo root {}: {e}",
+                path.display(),
+                repo_root.display()
+            )
+        })
+        .to_str()
+        .expect("repo-relative fixture path is UTF-8")
+        .to_string()
 }
 
 /// Every `runs/<run>` directory across all committed execution-pack scopes.
@@ -80,14 +100,13 @@ fn evicted_fixtures_are_absent_from_working_tree() {
 }
 
 #[test]
-fn every_indexed_entry_is_in_phase1_eviction_scope() {
+fn every_indexed_entry_is_in_declared_eviction_scope() {
     let repo_root = repo_root_from_manifest_dir();
     let index = EvictedFixtureIndex::load(&repo_root).expect("load evicted-fixtures index");
     for entry in &index.entries {
         assert!(
-            is_evicted_per_record_path(&entry.path),
-            "index entry {:?} is outside the phase-1 eviction scope \
-             (execution-pack runs/<non-00000> per-record artifacts)",
+            is_evicted_reference_fixture_path(&entry.path),
+            "index entry {:?} is outside the declared reference-fixture eviction scope",
             entry.path
         );
     }
@@ -144,7 +163,12 @@ fn kept_execution_pack_summaries_are_present() {
 fn committed_packs_keep_golden_record_and_evict_the_rest() {
     let repo_root = repo_root_from_manifest_dir();
     let index = EvictedFixtureIndex::load(&repo_root).expect("load evicted-fixtures index");
-    let evicted: HashSet<&str> = index.entries.iter().map(|e| e.path.as_str()).collect();
+    let evicted: HashSet<&str> = index
+        .entries
+        .iter()
+        .map(|e| e.path.as_str())
+        .filter(|path| is_evicted_execution_pack_record_path(path))
+        .collect();
 
     let scopes = child_dirs(&execution_packs_root());
     assert!(
@@ -221,4 +245,101 @@ fn committed_packs_keep_golden_record_and_evict_the_rest() {
         checked_packs >= 1,
         "no execution-pack summaries were checked"
     );
+}
+
+#[test]
+fn tier1_index_entries_match_declared_eviction_scope() {
+    let repo_root = repo_root_from_manifest_dir();
+    let index = EvictedFixtureIndex::load(&repo_root).expect("load evicted-fixtures index");
+    let tier1_entries: HashSet<&str> = index
+        .entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .filter(|path| is_tier1_evicted_reference_fixture_path(path))
+        .collect();
+    assert!(
+        !tier1_entries.is_empty(),
+        "expected Tier 1 reference-fixture entries in the eviction index"
+    );
+
+    for &subtree in TIER1_EVICTED_SUBTREE_PREFIXES {
+        let subtree_entries: HashSet<&str> = tier1_entries
+            .iter()
+            .copied()
+            .filter(|path| path.starts_with(subtree))
+            .collect();
+        assert!(
+            !subtree_entries.is_empty(),
+            "Tier 1 subtree {subtree:?} must have at least one indexed evicted path"
+        );
+
+        for path in &subtree_entries {
+            assert!(
+                is_tier1_evicted_reference_fixture_path(path),
+                "Tier 1 indexed path {path:?} is outside the declared subtree scope"
+            );
+            assert!(
+                !repo_root.join(path).exists(),
+                "Tier 1 indexed path {path:?} must be absent from the working tree"
+            );
+        }
+    }
+
+    let scoped: HashSet<&str> = index
+        .entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .filter(|path| {
+            TIER1_EVICTED_SUBTREE_PREFIXES
+                .iter()
+                .any(|&subtree| path.starts_with(subtree))
+        })
+        .collect();
+    assert_eq!(
+        tier1_entries,
+        scoped,
+        "Tier 1 index entries must equal the declared Tier 1 subtree scope; \
+         outside declared scope: {:?}; declared scope but not accepted: {:?}",
+        scoped.difference(&tier1_entries).collect::<Vec<_>>(),
+        tier1_entries.difference(&scoped).collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn tier1_evicted_scope_has_no_regrown_working_tree_artifacts() {
+    let repo_root = repo_root_from_manifest_dir();
+    let offenders: Vec<String> = TIER1_EVICTED_SUBTREE_PREFIXES
+        .iter()
+        .flat_map(|&subtree| files_under(&repo_root.join(subtree)))
+        .map(|path| repo_relative_path(&repo_root, &path))
+        .filter(|path| is_tier1_evicted_reference_fixture_path(path))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "Tier 1 evicted reference artifacts must stay out of the working tree; \
+         found {} committed/regrown artifacts: {offenders:?}",
+        offenders.len()
+    );
+}
+
+#[test]
+fn tier1_keep_list_fixtures_are_present_and_not_indexed() {
+    let repo_root = repo_root_from_manifest_dir();
+    let index = EvictedFixtureIndex::load(&repo_root).expect("load evicted-fixtures index");
+    let evicted: HashSet<&str> = index
+        .entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
+
+    for &path in TIER1_KEPT_REFERENCE_PATHS {
+        assert!(
+            repo_root.join(path).exists(),
+            "Tier 1 keep-list fixture {path:?} must remain in the working tree"
+        );
+        assert!(
+            !evicted.contains(path),
+            "Tier 1 keep-list fixture {path:?} must not be recorded as evicted"
+        );
+    }
 }

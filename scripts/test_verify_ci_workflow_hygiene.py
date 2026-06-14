@@ -4383,6 +4383,18 @@ def assert_github_scripts_are_repo_automation_fenced() -> None:
     if any(raw_cargo_message in error for error in wrapper_array_errors):
         raise AssertionError(f"wrapper-routed argv array data must stay allowed: {wrapper_array_errors!r}")
 
+    wrapper_star_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/wrapper-star-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(nextest run --locked --test target)\n"
+                'python3 scripts/rust_verification.py cargo --repo . -- "${probe_args[*]}"\n'
+            )
+        }
+    )
+    if any(raw_cargo_message in error for error in wrapper_star_array_errors):
+        raise AssertionError(f"wrapper-routed star argv array data must stay allowed: {wrapper_star_array_errors!r}")
+
     cargo_array_errors = verifier.verify_repo_automation_texts(
         {
             ".github/scripts/cargo-array.sh": (

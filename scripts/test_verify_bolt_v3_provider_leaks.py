@@ -111,6 +111,7 @@ def test_real_scan_covers_provider_neutral_source_files() -> None:
         "src/bolt_v3_providers/polymarket.rs",
         "src/bolt_v3_providers/polymarket/fees.rs",
         "src/bolt_v3_market_families/updown.rs",
+        "src/bolt_v3_outcome_group_polymarket.rs",
     ):
         assert rel not in core_files
 

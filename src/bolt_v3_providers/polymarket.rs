@@ -37,7 +37,7 @@ pub use collateral_accounting_source::materialize_clob_v2_collateral_accounting_
 pub use fee_behavior_source::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources;
 pub use venue_account_state_source::materialize_venue_account_state_source_from_configured_account_queries;
 
-use std::{any::Any, sync::Arc, time::Duration};
+use std::{any::Any, collections::BTreeMap, sync::Arc, time::Duration};
 
 use nautilus_core::string::secret::REDACTED;
 use nautilus_model::identifiers::AccountId;
@@ -48,8 +48,12 @@ use nautilus_polymarket::{
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
     factories::{PolymarketDataClientFactory, PolymarketExecutionClientFactory},
-    filters::{InstrumentFilter, MarketSlugFilter},
+    filters::{
+        EventQueryFilter, EventSlugFilter, GammaQueryFilter, InstrumentFilter, MarketSlugFilter,
+        SearchFilter,
+    },
     http::clob::PolymarketClobHttpClient,
+    http::query::{GetGammaMarketsParams, GetSearchParams},
 };
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::Deserialize;
@@ -60,10 +64,13 @@ use crate::{
         BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3DataClientAdapterConfig,
         BoltV3ExecutionClientAdapterConfig, BoltV3MarketClockFn,
     },
-    bolt_v3_config::ClientBlock,
+    bolt_v3_config::{BoltV3RootConfig, ClientBlock},
     bolt_v3_market_families::{
-        MarketIdentityPlan,
+        MarketIdentityPlan, outcome_group,
         updown::{self, UpdownTargetPlan, updown_market_slug, updown_period_pair},
+    },
+    bolt_v3_outcome_group_sources::{
+        GammaQueryBlock, OutcomeGroupSourceConfig, OutcomeGroupSourceKind,
     },
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
@@ -110,7 +117,7 @@ pub fn normalize_base_order_quantity(quantity: Decimal) -> Option<Decimal> {
 /// probes); the full shared REST budget is the venue egress-capability contract
 /// tracked in #501.
 pub const MAX_REST_REQUESTS_PER_ORDER_COMMAND: u32 = 2;
-pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
+pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY, outcome_group::KEY];
 const URL_SAFE_BASE64_BLOCK_WIDTH: usize = 4;
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,
@@ -664,6 +671,7 @@ pub fn map_adapters(
         Some(value) => Some(BoltV3DataClientAdapterConfig {
             factory: Box::new(PolymarketDataClientFactory),
             config: Box::new(map_data(
+                context.root,
                 context.client_key,
                 value,
                 context.plan,
@@ -750,6 +758,7 @@ pub fn build_fee_provider(
 }
 
 fn map_data(
+    root: &BoltV3RootConfig,
     client_key: &str,
     value: &toml::Value,
     plan: &MarketIdentityPlan,
@@ -780,7 +789,7 @@ fn map_data(
             ),
         }
     })?;
-    let filters = build_market_slug_filters_for_client(plan, client_key, clock);
+    let filters = build_instrument_filters_for_client(root, plan, client_key, clock)?;
     Ok(PolymarketDataClientConfig {
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),
@@ -802,15 +811,20 @@ fn map_data(
     })
 }
 
-fn build_market_slug_filters_for_client(
+fn build_instrument_filters_for_client(
+    root: &BoltV3RootConfig,
     plan: &MarketIdentityPlan,
     client_key: &str,
     clock: BoltV3MarketClockFn,
-) -> Vec<Arc<dyn InstrumentFilter>> {
-    updown::target_plans(plan)
+) -> Result<Vec<Arc<dyn InstrumentFilter>>, BoltV3AdapterMappingError> {
+    let mut filters = updown::target_plans(plan)
         .filter(|target| target.execution_client_id == client_key)
         .map(|target| build_market_slug_filter(target, clock.clone()))
-        .collect()
+        .collect::<Vec<_>>();
+    filters.extend(build_outcome_group_filters_for_client(
+        root, plan, client_key,
+    )?);
+    Ok(filters)
 }
 
 fn build_market_slug_filter(
@@ -841,6 +855,247 @@ fn build_market_slug_filter(
             }
         }
     }))
+}
+
+fn build_outcome_group_filters_for_client(
+    root: &BoltV3RootConfig,
+    plan: &MarketIdentityPlan,
+    client_key: &str,
+) -> Result<Vec<Arc<dyn InstrumentFilter>>, BoltV3AdapterMappingError> {
+    let configured_sources = match root.outcome_group_sources.as_deref() {
+        Some(sources) => sources,
+        None => &[],
+    };
+    let sources_by_id = configured_sources
+        .iter()
+        .map(|source| (source.source_id.as_str(), source))
+        .collect::<BTreeMap<_, _>>();
+    let mut filters = Vec::new();
+
+    for target in
+        outcome_group::target_plans(plan).filter(|target| target.execution_client_id == client_key)
+    {
+        for source_id in &target.group_sources {
+            let source = sources_by_id.get(source_id.as_str()).ok_or_else(|| {
+                BoltV3AdapterMappingError::ValidationInvariant {
+                    client_key: client_key.to_string(),
+                    field: "outcome_group_sources",
+                    message: format!(
+                        "target.group_sources references unknown outcome_group_sources source_id `{source_id}`"
+                    ),
+                }
+            })?;
+            if !source.enabled {
+                return Err(BoltV3AdapterMappingError::ValidationInvariant {
+                    client_key: client_key.to_string(),
+                    field: "outcome_group_sources.enabled",
+                    message: format!(
+                        "target.group_sources references disabled outcome_group_sources source_id `{source_id}`"
+                    ),
+                });
+            }
+            if source.client_id.to_string() != client_key {
+                return Err(BoltV3AdapterMappingError::ValidationInvariant {
+                    client_key: client_key.to_string(),
+                    field: "outcome_group_sources.client_id",
+                    message: format!(
+                        "target.group_sources source_id `{source_id}` maps to client_id `{}`",
+                        source.client_id
+                    ),
+                });
+            }
+            filters.push(build_outcome_group_filter(client_key, source)?);
+        }
+    }
+
+    Ok(filters)
+}
+
+fn build_outcome_group_filter(
+    client_key: &str,
+    source: &OutcomeGroupSourceConfig,
+) -> Result<Arc<dyn InstrumentFilter>, BoltV3AdapterMappingError> {
+    match source.kind {
+        OutcomeGroupSourceKind::GammaEvent => {
+            let event_slugs = required_values(
+                client_key,
+                "outcome_group_sources.event_slugs",
+                source.event_slugs.as_ref(),
+            )?;
+            if source.max_markets.is_some()
+                || source
+                    .sports_market_types
+                    .as_ref()
+                    .is_some_and(|values| !values.is_empty())
+            {
+                let params = gamma_market_params(
+                    client_key,
+                    "outcome_group_sources.max_markets",
+                    source.max_markets,
+                    source.sports_market_types.as_ref(),
+                    None,
+                )?;
+                let queries = event_slugs
+                    .into_iter()
+                    .map(|event_slug| (event_slug, params.clone()))
+                    .collect();
+                Ok(Arc::new(EventQueryFilter::from_queries(queries)))
+            } else {
+                Ok(Arc::new(EventSlugFilter::from_slugs(event_slugs)))
+            }
+        }
+        OutcomeGroupSourceKind::GammaMarketSlug => {
+            let market_slugs = required_values(
+                client_key,
+                "outcome_group_sources.market_slugs",
+                source.market_slugs.as_ref(),
+            )?;
+            Ok(Arc::new(MarketSlugFilter::from_slugs(market_slugs)))
+        }
+        OutcomeGroupSourceKind::GammaQuery => {
+            let query = source.gamma_query.as_ref().ok_or_else(|| {
+                BoltV3AdapterMappingError::ValidationInvariant {
+                    client_key: client_key.to_string(),
+                    field: "outcome_group_sources.gamma_query",
+                    message: "is required for polymarket_gamma_query".to_string(),
+                }
+            })?;
+            build_gamma_query_filter(client_key, query)
+        }
+        OutcomeGroupSourceKind::Hip4 => Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "outcome_group_sources.kind",
+            message: "hyperliquid_hip4 source cannot map to Polymarket NT filters".to_string(),
+        }),
+    }
+}
+
+fn build_gamma_query_filter(
+    client_key: &str,
+    query: &GammaQueryBlock,
+) -> Result<Arc<dyn InstrumentFilter>, BoltV3AdapterMappingError> {
+    let max_markets = required_cap_to_u32(
+        client_key,
+        "outcome_group_sources.gamma_query.max_markets",
+        query.max_markets,
+    )?;
+    if let Some(event_query) = query.event_query.as_ref() {
+        let params = gamma_market_params(
+            client_key,
+            "outcome_group_sources.gamma_query.max_markets",
+            Some(query.max_markets),
+            query.sports_market_types.as_ref(),
+            query.tag_id.as_ref(),
+        )?;
+        return Ok(Arc::new(EventQueryFilter::new(event_query.clone(), params)));
+    }
+    if let Some(search) = query
+        .search
+        .as_ref()
+        .or(query.market_query.as_ref())
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(Arc::new(SearchFilter::new(GetSearchParams {
+            q: Some(search.clone()),
+            events_status: None,
+            events_tag: query.tag_id.clone(),
+            sort: None,
+            ascending: None,
+            limit_per_type: Some(max_markets),
+            page: None,
+            keep_closed_markets: None,
+        })));
+    }
+
+    Ok(Arc::new(GammaQueryFilter::new(gamma_market_params(
+        client_key,
+        "outcome_group_sources.gamma_query.max_markets",
+        Some(query.max_markets),
+        query.sports_market_types.as_ref(),
+        query.tag_id.as_ref(),
+    )?)))
+}
+
+fn gamma_market_params(
+    client_key: &str,
+    cap_field: &'static str,
+    max_markets: Option<usize>,
+    sports_market_types: Option<&Vec<String>>,
+    tag_id: Option<&String>,
+) -> Result<GetGammaMarketsParams, BoltV3AdapterMappingError> {
+    Ok(GetGammaMarketsParams {
+        active: None,
+        closed: None,
+        archived: None,
+        id: None,
+        limit: None,
+        offset: None,
+        order: None,
+        ascending: None,
+        slug: None,
+        clob_token_ids: None,
+        condition_ids: None,
+        liquidity_num_min: None,
+        liquidity_num_max: None,
+        volume_num_min: None,
+        volume_num_max: None,
+        start_date_min: None,
+        start_date_max: None,
+        end_date_min: None,
+        end_date_max: None,
+        tag_id: tag_id.cloned(),
+        related_tags: None,
+        rewards_min_size: None,
+        include_tag: None,
+        question_ids: None,
+        game_id: None,
+        sports_market_types: joined_sports_market_types(sports_market_types),
+        market_maker_address: None,
+        max_markets: optional_cap_to_u32(client_key, cap_field, max_markets)?,
+    })
+}
+
+fn joined_sports_market_types(values: Option<&Vec<String>>) -> Option<String> {
+    values
+        .filter(|values| !values.is_empty())
+        .map(|values| values.join(","))
+}
+
+fn required_values(
+    client_key: &str,
+    field: &'static str,
+    values: Option<&Vec<String>>,
+) -> Result<Vec<String>, BoltV3AdapterMappingError> {
+    match values.filter(|values| !values.is_empty()) {
+        Some(values) => Ok(values.clone()),
+        None => Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field,
+            message: "must contain at least one value".to_string(),
+        }),
+    }
+}
+
+fn optional_cap_to_u32(
+    client_key: &str,
+    field: &'static str,
+    value: Option<usize>,
+) -> Result<Option<u32>, BoltV3AdapterMappingError> {
+    value
+        .map(|value| required_cap_to_u32(client_key, field, value))
+        .transpose()
+}
+
+fn required_cap_to_u32(
+    client_key: &str,
+    field: &'static str,
+    value: usize,
+) -> Result<u32, BoltV3AdapterMappingError> {
+    u32::try_from(value).map_err(|_| BoltV3AdapterMappingError::NumericRange {
+        client_key: client_key.to_string(),
+        field,
+        message: format!("value {value} does not fit in u32 expected by NT"),
+    })
 }
 
 fn map_execution(

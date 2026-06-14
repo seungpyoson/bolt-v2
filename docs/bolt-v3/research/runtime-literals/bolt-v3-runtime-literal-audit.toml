@@ -10592,6 +10592,422 @@ classification = "strategy_runtime_schema_field"
 reason = "TOML table name used to validate complete-set runtime parameters; values remain TOML-owned."
 
 [[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''","'''
+context = '''Some(values) => values.join(","),'''
+classification = "outcome_group_normalizer_evidence_separator"
+reason = "Stable separator for canonical Polymarket outcome-group evidence hashing; joined values come from TOML or Gamma metadata."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''","'''
+context = '''CanonicalField::new(["grouping", "condition_ids"], condition_ids.join(",")),'''
+classification = "outcome_group_normalizer_evidence_separator"
+reason = "Stable separator for canonical Polymarket grouping evidence hashing; condition IDs come from Gamma metadata."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''","'''
+context = '''CanonicalField::new(["grouping", "market_slugs"], market_slugs.join(",")),'''
+classification = "outcome_group_normalizer_evidence_separator"
+reason = "Stable separator for canonical Polymarket grouping evidence hashing; market slugs come from Gamma metadata."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"attestation_sha256"'''
+context = '''["role_binding", "attestation_sha256"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"binding_count"'''
+context = '''CanonicalField::new(["role_binding", "binding_count"], role_bindings.legs.len()),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"condition_ids"'''
+context = '''CanonicalField::new(["grouping", "condition_ids"], condition_ids.join(",")),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"event_query"'''
+context = '''["gamma_query", "event_query"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"gamma_query"'''
+context = '''CanonicalField::new(["gamma_query", "max_markets"], query.max_markets),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"gamma_query"'''
+context = '''["gamma_query", "event_query"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"gamma_query"'''
+context = '''["gamma_query", "market_query"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"gamma_query"'''
+context = '''["gamma_query", "max_events"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"gamma_query"'''
+context = '''["gamma_query", "search"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"gamma_query"'''
+context = '''["gamma_query", "sports_market_types"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"gamma_query"'''
+context = '''["gamma_query", "tag_id"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''CanonicalField::new(["grouping", "condition_ids"], condition_ids.join(",")),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''CanonicalField::new(["grouping", "market_slugs"], market_slugs.join(",")),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''CanonicalField::new(["grouping", "neg_risk_market_id"], neg_risk_market_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''CanonicalField::new(["grouping", "source_id"], &source.source_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"market_query"'''
+context = '''["gamma_query", "market_query"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"market_slugs"'''
+context = '''CanonicalField::new(["grouping", "market_slugs"], market_slugs.join(",")),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"max_events"'''
+context = '''["gamma_query", "max_events"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"max_markets"'''
+context = '''CanonicalField::new(["gamma_query", "max_markets"], query.max_markets),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"native_leg_id"'''
+context = '''CanonicalField::new(["price_scale", "native_leg_id"], &leg.native_leg_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"neg_risk_market_id"'''
+context = '''CanonicalField::new(["grouping", "neg_risk_market_id"], neg_risk_market_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"non_standard_terminal_payouts.payout_per_unit"'''
+context = '''"non_standard_terminal_payouts.payout_per_unit",'''
+classification = "outcome_group_source_schema_field"
+reason = "TOML schema-field label used only to report parse failures for operator-configured outcome-group payouts; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"operator_attested_static_payout_per_unit"'''
+context = '''"operator_attested_static_payout_per_unit"'''
+classification = "outcome_group_refund_convention_schema_token"
+reason = "Closed TOML enum token recorded in attested payout evidence; payout values remain supplied by TOML/operator attestation."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"order_constraints.default_min_notional"'''
+context = '''"order_constraints.default_min_notional",'''
+classification = "outcome_group_source_schema_field"
+reason = "TOML schema-field label used only to report parse failures for operator-configured outcome-group order constraints; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"order_constraints.default_min_quantity"'''
+context = '''"order_constraints.default_min_quantity",'''
+classification = "outcome_group_source_schema_field"
+reason = "TOML schema-field label used only to report parse failures for operator-configured outcome-group order constraints; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"order_constraints.per_leg.min_notional"'''
+context = '''"order_constraints.per_leg.min_notional",'''
+classification = "outcome_group_source_schema_field"
+reason = "TOML schema-field label used only to report parse failures for operator-configured outcome-group order constraints; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"order_constraints.per_leg.min_quantity"'''
+context = '''Some(value) => parse_decimal("order_constraints.per_leg.min_quantity", value)?,'''
+classification = "outcome_group_source_schema_field"
+reason = "TOML schema-field label used only to report parse failures for operator-configured outcome-group order constraints; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"payout_per_contract"'''
+context = '''["price_scale", "payout_per_contract"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"price_scale"'''
+context = '''CanonicalField::new(["price_scale", "native_leg_id"], &leg.native_leg_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"price_scale"'''
+context = '''["price_scale", "payout_per_contract"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"price_scale"'''
+context = '''["price_scale", "price_units_per_payout"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"price_scale"'''
+context = '''["price_scale", "settlement_asset_id"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"price_units_per_payout"'''
+context = '''["price_scale", "price_units_per_payout"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"role_binding"'''
+context = '''CanonicalField::new(["role_binding", "binding_count"], role_bindings.legs.len()),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"role_binding"'''
+context = '''CanonicalField::new(["role_binding", "source_id"], &source.source_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"role_binding"'''
+context = '''["role_binding", "attestation_sha256"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"search"'''
+context = '''["gamma_query", "search"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"settlement_asset_id"'''
+context = '''["price_scale", "settlement_asset_id"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''CanonicalField::new(["grouping", "source_id"], &source.source_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''CanonicalField::new(["role_binding", "source_id"], &source.source_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"sports_market_types"'''
+context = '''["gamma_query", "sports_market_types"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"tag_id"'''
+context = '''["gamma_query", "tag_id"],'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''","'''
+context = '''.map(|values| values.join(","))'''
+classification = "provider_gamma_query_separator"
+reason = "Stable separator for NT Gamma query list fields; source values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"outcome_group_sources.event_slugs"'''
+context = '''"outcome_group_sources.event_slugs",'''
+classification = "provider_mapping_schema_field"
+reason = "TOML schema-field label used only while projecting configured outcome-group sources into NT filters; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"outcome_group_sources.gamma_query.max_markets"'''
+context = '''"outcome_group_sources.gamma_query.max_markets",'''
+classification = "provider_mapping_schema_field"
+reason = "TOML schema-field label used only while projecting configured outcome-group sources into NT filters; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"outcome_group_sources.market_slugs"'''
+context = '''"outcome_group_sources.market_slugs",'''
+classification = "provider_mapping_schema_field"
+reason = "TOML schema-field label used only while projecting configured outcome-group sources into NT filters; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"outcome_group_sources.max_markets"'''
+context = '''"outcome_group_sources.max_markets",'''
+classification = "provider_mapping_schema_field"
+reason = "TOML schema-field label used only while projecting configured outcome-group sources into NT filters; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"target.group_sources references disabled outcome_group_sources source_id `{source_id}`"'''
+context = '''"target.group_sources references disabled outcome_group_sources source_id `{source_id}`"'''
+classification = "provider_mapping_validation_diagnostic"
+reason = "Fail-closed diagnostic for invalid already-configured outcome-group source references; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"target.group_sources source_id `{source_id}` maps to client_id `{}`"'''
+context = '''"target.group_sources source_id `{source_id}` maps to client_id `{}`",'''
+classification = "provider_mapping_validation_diagnostic"
+reason = "Fail-closed diagnostic for invalid already-configured outcome-group source references; it does not configure runtime behavior."
+
+[[allowed]]
 path = "src/bolt_v3_outcome_group_sources.rs"
 kind = "string"
 literal = '''"min_edge_bps"'''

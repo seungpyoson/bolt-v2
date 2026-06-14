@@ -126,6 +126,9 @@ FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = (
 )
 
 SHARED_MARKET_FAMILY_NAMES: frozenset[str] = frozenset({"outcome_group"})
+PROVIDER_SPECIFIC_ROOT_MODULES: frozenset[str] = frozenset(
+    {"src/bolt_v3_outcome_group_polymarket.rs"}
+)
 
 
 def rules_for(
@@ -150,6 +153,8 @@ def discovered_core_files(root: Path) -> tuple[str, ...]:
 
 def is_concrete_binding_module(root: Path, path: Path) -> bool:
     rel = path.relative_to(root).as_posix()
+    if rel in PROVIDER_SPECIFIC_ROOT_MODULES:
+        return True
     concrete_roots = ("src/bolt_v3_providers/", "src/bolt_v3_market_families/")
     if not rel.startswith(concrete_roots):
         return False

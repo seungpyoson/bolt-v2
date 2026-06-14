@@ -15,6 +15,13 @@
 //! structural validation, and the on-disk eviction/regrowth invariants the CI
 //! guard asserts. Hashes use the crate's single SHA-256 implementation
 //! ([`crate::hashing::sha256_hex`]).
+//!
+//! This index is the single source of truth for the *fingerprints* (sha256 +
+//! byte length) of each evicted blob. The *eviction scope* — which paths leave
+//! the tree — is additionally asserted by the eviction guard test and kept from
+//! regrowing by `.gitignore`; those three surfaces move together whenever the
+//! scope changes (e.g. Phase 2). Record-`00000` of each execution pack is always
+//! kept on disk (the acceptance test reads it); see `GOLDEN_RECORD_DIR_PREFIX`.
 
 use std::path::{Path, PathBuf};
 
@@ -29,6 +36,13 @@ pub const INDEX_REPO_PATH: &str =
 
 /// Repo-relative prefix every evicted fixture path must start with.
 const REFERENCE_PREFIX: &str = "specs/023-nt-research-analytics-platform/reference/";
+
+/// Directory-name prefix of the one execution-pack record kept on disk per pack
+/// (the `runs/00000-*` dir). The execution-pack acceptance test reads only this
+/// golden record; every other `runs/<NNNNN-...>` dir is evicted. Single source of
+/// truth shared with the eviction guard test (the `.gitignore` rule mirrors this
+/// literal but cannot reference a Rust const).
+pub const GOLDEN_RECORD_DIR_PREFIX: &str = "00000-";
 
 /// One evicted artifact: a repo-relative path plus the fingerprint of its bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,12 +83,19 @@ impl EvictedFixtureIndex {
         serde_json::from_slice(bytes).context("parse evicted-fixtures index JSON")
     }
 
-    /// Load and parse the index from a repo root.
+    /// Load, parse, and structurally validate the index from a repo root. A
+    /// successfully loaded index is always well-formed
+    /// ([`Self::validate_structure`]), so callers never operate on a malformed
+    /// index. Use [`Self::parse`] for the raw deserialize without validation.
     pub fn load(repo_root: &Path) -> Result<Self> {
         let path = repo_root.join(INDEX_REPO_PATH);
         let bytes = std::fs::read(&path)
             .with_context(|| format!("read evicted-fixtures index {}", path.display()))?;
-        Self::parse(&bytes)
+        let index = Self::parse(&bytes)?;
+        index
+            .validate_structure()
+            .with_context(|| format!("validate evicted-fixtures index {}", path.display()))?;
+        Ok(index)
     }
 
     /// Content-addressed object key for an entry: `<s3_artifact_root>/<sha256>`.
@@ -272,5 +293,22 @@ mod tests {
         let mut index = sample_index();
         index.entries.clear();
         assert!(index.validate_structure().is_err());
+    }
+
+    #[test]
+    fn entry_for_file_hashes_bytes_at_repo_relative_path() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rel = "sub/dir/fixture.json";
+        let abs = dir.path().join(rel);
+        std::fs::create_dir_all(abs.parent().expect("fixture has a parent dir"))
+            .expect("create parent dir");
+        let payload = br#"{"k":"v"}"#;
+        std::fs::write(&abs, payload).expect("write fixture");
+
+        let entry = EvictedFixtureIndex::entry_for_file(dir.path(), rel)
+            .expect("entry_for_file reads + hashes the file");
+        assert_eq!(entry.path, rel);
+        assert_eq!(entry.bytes, payload.len() as u64);
+        assert_eq!(entry.sha256, sha256_hex(payload));
     }
 }

@@ -651,10 +651,10 @@ fn validate_freshness(
         return vec![format!("{context}.freshness is required")];
     };
     let mut errors = Vec::new();
-    if freshness.max_age_ms == 0 {
+    if freshness.max_age_ms == Some(0) {
         errors.push(format!("{context}.freshness.max_age_ms must be positive"));
     }
-    if freshness.max_clock_skew_ms == 0 {
+    if freshness.max_clock_skew_ms == Some(0) {
         errors.push(format!(
             "{context}.freshness.max_clock_skew_ms must be positive"
         ));

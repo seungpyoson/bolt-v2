@@ -105,7 +105,6 @@ pub struct CompleteSetArbitrageConfig {
     pub max_unwind_attempts: u32,
 }
 
-#[derive(Debug)]
 pub struct CompleteSetArbitrage {
     core: StrategyCore,
     config: CompleteSetArbitrageConfig,

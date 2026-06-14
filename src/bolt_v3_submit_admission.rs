@@ -1165,7 +1165,7 @@ fn forced_reduction_admissible_halt_id(state: &KillSwitchState) -> Option<&str> 
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum BoltV3SubmitAdmissionError {
     KillSwitchLatched {
         state: KillSwitchStateKind,

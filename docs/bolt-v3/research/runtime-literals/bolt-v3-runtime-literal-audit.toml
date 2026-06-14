@@ -8237,6 +8237,86 @@ classification = "gated_source_registry_key"
 reason = "Stable registry key for the submit-admission source root; an internal registry identifier owned here, not an operator runtime value."
 
 [[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"outcome_group"'''
+context = '''pub const OUTCOME_GROUP_KEY: &str = "outcome_group";'''
+classification = "gated_source_registry_key"
+reason = "Stable registry key for the shared outcome-group substrate source set; an internal registry identifier owned here, not an operator runtime value."
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"src/bolt_v3_outcome_groups.rs"'''
+context = '''"src/bolt_v3_outcome_groups.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared outcome-group model source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"src/bolt_v3_outcome_group_sources.rs"'''
+context = '''"src/bolt_v3_outcome_group_sources.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared outcome-group source configuration and validation source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"src/bolt_v3_outcome_group_polymarket.rs"'''
+context = '''"src/bolt_v3_outcome_group_polymarket.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the first-slice Polymarket outcome-group normalizer source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"src/bolt_v3_outcome_group_scanner.rs"'''
+context = '''"src/bolt_v3_outcome_group_scanner.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared outcome-group scanner source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"src/bolt_v3_basket_admission.rs"'''
+context = '''"src/bolt_v3_basket_admission.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared basket-admission source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"src/bolt_v3_basket_execution.rs"'''
+context = '''"src/bolt_v3_basket_execution.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared basket-execution source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"src/bolt_v3_basket_store.rs"'''
+context = '''"src/bolt_v3_basket_store.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared basket-store source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"src/bolt_v3_archetypes/complete_set_arbitrage.rs"'''
+context = '''"src/bolt_v3_archetypes/complete_set_arbitrage.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the first-consumer complete-set archetype source included in the outcome-group source set before runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"src/strategies/complete_set_arbitrage"'''
+context = '''"src/strategies/complete_set_arbitrage",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the first-consumer complete-set strategy shell directory included in the outcome-group source set before runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"resolution_client_id"'''

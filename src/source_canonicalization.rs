@@ -541,6 +541,8 @@ const LF_LINE_ENDING: &str = "\n";
 pub const STRATEGY_KEY: &str = "strategy";
 /// Stable registry key for the submit-admission source root.
 pub const SUBMIT_ADMISSION_KEY: &str = "submit_admission";
+/// Stable registry key for the shared outcome-group substrate source set.
+pub const OUTCOME_GROUP_KEY: &str = "outcome_group";
 
 /// One registry entry: a stable key + its repo-relative source roots. A
 /// one-element set preserves the old single-root semantics; a multi-root set is
@@ -571,6 +573,20 @@ pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
     GatedSourceRoot {
         key: SUBMIT_ADMISSION_KEY,
         relative_roots: &["src/bolt_v3_submit_admission.rs"],
+    },
+    GatedSourceRoot {
+        key: OUTCOME_GROUP_KEY,
+        relative_roots: &[
+            "src/bolt_v3_outcome_groups.rs",
+            "src/bolt_v3_outcome_group_sources.rs",
+            "src/bolt_v3_outcome_group_polymarket.rs",
+            "src/bolt_v3_outcome_group_scanner.rs",
+            "src/bolt_v3_basket_admission.rs",
+            "src/bolt_v3_basket_execution.rs",
+            "src/bolt_v3_basket_store.rs",
+            "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
+            "src/strategies/complete_set_arbitrage",
+        ],
     },
 ];
 

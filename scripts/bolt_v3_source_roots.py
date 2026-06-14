@@ -36,6 +36,17 @@ STRATEGY_SOURCE_ROOTS = (
 STRATEGY_SOURCE_ROOT = STRATEGY_SOURCE_ROOTS[0]
 SUBMIT_ADMISSION_SOURCE_ROOTS = ("src/bolt_v3_submit_admission.rs",)
 SUBMIT_ADMISSION_SOURCE_ROOT = SUBMIT_ADMISSION_SOURCE_ROOTS[0]
+OUTCOME_GROUP_SOURCE_ROOTS = (
+    "src/bolt_v3_outcome_groups.rs",
+    "src/bolt_v3_outcome_group_sources.rs",
+    "src/bolt_v3_outcome_group_polymarket.rs",
+    "src/bolt_v3_outcome_group_scanner.rs",
+    "src/bolt_v3_basket_admission.rs",
+    "src/bolt_v3_basket_execution.rs",
+    "src/bolt_v3_basket_store.rs",
+    "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
+    "src/strategies/complete_set_arbitrage",
+)
 MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024
 
 

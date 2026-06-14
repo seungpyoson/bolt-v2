@@ -26,13 +26,18 @@ use nautilus_backtest::config::{
     BacktestDataConfig, BacktestRunConfig, BacktestVenueConfig, NautilusDataType,
 };
 use nautilus_core::UnixNanos;
+use nautilus_execution::models::{
+    fee::{FeeModelAny, MakerTakerFeeModel},
+    fill::{FillModelAny, ProbabilisticFillModel},
+    latency::{LatencyModelAny, StaticLatencyModel},
+};
 use nautilus_model::{
     data::BarType,
     enums::{AccountType, BookType, OmsType, OtoTriggerMode},
     identifiers::InstrumentId,
     types::{Currency, Money, Quantity},
 };
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ustr::Ustr;
@@ -63,16 +68,15 @@ pub const STRATEGY_PARAM_EXIT_AFTER_TRADES: &str = "exit_after_trades";
 pub const STRATEGY_PARAM_SIDE: &str = "side";
 /// Explicit manifest value for no catalog filesystem protocol.
 pub const CATALOG_FS_PROTOCOL_NONE: &str = "NONE";
+/// TOML selector for Polymarket fees resolved from instrument maker/taker rates.
+pub const FEE_MODEL_POLYMARKET_MAKER_TAKER: &str = "polymarket_maker_taker";
+/// TOML selector for Polymarket fill realism backed by NT's probabilistic fill model.
+pub const FILL_MODEL_POLYMARKET_PROBABILISTIC: &str = "polymarket_probabilistic";
+/// TOML selector for Polymarket venue latency backed by NT's static latency model.
+pub const LATENCY_MODEL_POLYMARKET_STATIC: &str = "polymarket_static";
 /// NT venue-model surfaces declared in TOML but rejected until typed mappings exist.
-pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] = &[
-    "leverages",
-    "margin_model",
-    "modules",
-    "fill_model",
-    "latency_model",
-    "fee_model",
-    "settlement_prices",
-];
+pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] =
+    &["leverages", "margin_model", "modules", "settlement_prices"];
 /// NT data-query surfaces declared in TOML but rejected until typed mappings are proven.
 pub const UNSUPPORTED_NT_CATALOG_QUERY_SURFACES: &[(&str, &str, &str)] = &[
     (
@@ -387,18 +391,47 @@ pub struct ManifestVenueConfig {
     /// NT simulation module selectors. Declared but unsupported until mapped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modules: Option<Vec<String>>,
-    /// NT fill model selector. Declared but unsupported until mapped.
+    /// Polymarket fill-cost model registered with the NT simulated venue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fill_model: Option<String>,
-    /// NT latency model selector. Declared but unsupported until mapped.
+    pub fill_model: Option<ManifestFillModelConfig>,
+    /// Polymarket latency model registered with the NT simulated venue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub latency_model: Option<String>,
-    /// NT fee model selector. Declared but unsupported until mapped.
+    pub latency_model: Option<ManifestLatencyModelConfig>,
+    /// Polymarket fee model registered with the NT simulated venue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fee_model: Option<String>,
+    pub fee_model: Option<ManifestFeeModelConfig>,
     /// NT settlement prices keyed by instrument id. Unsupported until mapped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settlement_prices: Option<BTreeMap<String, String>>,
+}
+
+/// TOML-selected fill realism settings for a Polymarket backtest venue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestFillModelConfig {
+    pub kind: String,
+    pub prob_fill_on_limit: String,
+    pub prob_slippage: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub random_seed: Option<u64>,
+}
+
+/// TOML-selected latency realism settings for a Polymarket backtest venue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestLatencyModelConfig {
+    pub kind: String,
+    pub base_latency_nanos: u64,
+    pub insert_latency_nanos: u64,
+    pub update_latency_nanos: u64,
+    pub delete_latency_nanos: u64,
+}
+
+/// TOML-selected fee realism settings for a Polymarket backtest venue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestFeeModelConfig {
+    pub kind: String,
 }
 
 /// Catalog input mapped into [`BacktestDataConfig`].
@@ -592,6 +625,10 @@ pub enum ManifestError {
     InvalidDefaultLeverage {
         leverage: String,
     },
+    InvalidVenueModelParameter {
+        field: &'static str,
+        value: String,
+    },
     InvalidInstrumentId {
         instrument_id: String,
     },
@@ -721,6 +758,9 @@ impl std::fmt::Display for ManifestError {
             }
             Self::InvalidDefaultLeverage { leverage } => {
                 write!(f, "invalid default leverage: {leverage:?}")
+            }
+            Self::InvalidVenueModelParameter { field, value } => {
+                write!(f, "invalid venue model parameter {field}: {value:?}")
             }
             Self::InvalidInstrumentId { instrument_id } => {
                 write!(f, "invalid instrument id: {instrument_id:?}")
@@ -1441,6 +1481,24 @@ impl BacktestingRunManifest {
                 "BacktestVenueConfig.price_protection_points",
                 venue.price_protection_points().to_string(),
             ),
+            resolved_surface(
+                "venue.fill_model",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.fill_model",
+                option_value(venue.fill_model()),
+            ),
+            resolved_surface(
+                "venue.latency_model",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.latency_model",
+                option_value(venue.latency_model()),
+            ),
+            resolved_surface(
+                "venue.fee_model",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.fee_model",
+                option_value(venue.fee_model()),
+            ),
         ];
         let data_configs = run_config.data();
         for (index, data) in data_configs.iter().enumerate() {
@@ -1769,6 +1827,9 @@ impl BacktestingRunManifest {
             .oto_trigger_mode(parse_oto_trigger_mode(&self.venue.oto_trigger_mode)?)
             .maybe_base_currency(parse_base_currency(&self.venue.base_currency)?)
             .default_leverage(parse_default_leverage(&self.venue.default_leverage)?)
+            .maybe_fill_model(resolve_fill_model(self.venue.fill_model.as_ref())?)
+            .maybe_latency_model(resolve_latency_model(self.venue.latency_model.as_ref())?)
+            .maybe_fee_model(resolve_fee_model(self.venue.fee_model.as_ref())?)
             .price_protection_points(self.venue.price_protection_points)
             .build())
     }
@@ -2180,6 +2241,9 @@ fn ensure_supported_enums(manifest: &BacktestingRunManifest) -> Result<(), Manif
     parse_oto_trigger_mode(&manifest.venue.oto_trigger_mode)?;
     parse_base_currency(&manifest.venue.base_currency)?;
     parse_default_leverage(&manifest.venue.default_leverage)?;
+    resolve_fill_model(manifest.venue.fill_model.as_ref())?;
+    resolve_latency_model(manifest.venue.latency_model.as_ref())?;
+    resolve_fee_model(manifest.venue.fee_model.as_ref())?;
     Ok(())
 }
 
@@ -2193,14 +2257,8 @@ fn ensure_unsupported_nt_venue_surfaces_absent(
             venue.margin_model.is_some(),
         ),
         (UNSUPPORTED_NT_VENUE_SURFACES[2], venue.modules.is_some()),
-        (UNSUPPORTED_NT_VENUE_SURFACES[3], venue.fill_model.is_some()),
         (
-            UNSUPPORTED_NT_VENUE_SURFACES[4],
-            venue.latency_model.is_some(),
-        ),
-        (UNSUPPORTED_NT_VENUE_SURFACES[5], venue.fee_model.is_some()),
-        (
-            UNSUPPORTED_NT_VENUE_SURFACES[6],
+            UNSUPPORTED_NT_VENUE_SURFACES[3],
             venue.settlement_prices.is_some(),
         ),
     ] {
@@ -2823,6 +2881,120 @@ fn parse_default_leverage(value: &str) -> Result<Decimal, ManifestError> {
     Ok(leverage)
 }
 
+fn parse_probability(value: &str, field: &'static str) -> Result<f64, ManifestError> {
+    let decimal =
+        Decimal::from_str(value).map_err(|_| ManifestError::InvalidVenueModelParameter {
+            field,
+            value: value.to_string(),
+        })?;
+    if !(Decimal::ZERO..=Decimal::ONE).contains(&decimal) {
+        return Err(ManifestError::InvalidVenueModelParameter {
+            field,
+            value: value.to_string(),
+        });
+    }
+    decimal
+        .to_f64()
+        .ok_or_else(|| ManifestError::InvalidVenueModelParameter {
+            field,
+            value: value.to_string(),
+        })
+}
+
+fn ensure_latency_component_sum(
+    base: u64,
+    component: u64,
+    field: &'static str,
+) -> Result<(), ManifestError> {
+    base.checked_add(component).map(|_| ()).ok_or_else(|| {
+        ManifestError::InvalidVenueModelParameter {
+            field,
+            value: component.to_string(),
+        }
+    })
+}
+
+fn resolve_fill_model(
+    config: Option<&ManifestFillModelConfig>,
+) -> Result<Option<FillModelAny>, ManifestError> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    match config.kind.as_str() {
+        FILL_MODEL_POLYMARKET_PROBABILISTIC => {
+            let prob_fill_on_limit = parse_probability(
+                &config.prob_fill_on_limit,
+                "venue.fill_model.prob_fill_on_limit",
+            )?;
+            let prob_slippage =
+                parse_probability(&config.prob_slippage, "venue.fill_model.prob_slippage")?;
+            let model =
+                ProbabilisticFillModel::new(prob_fill_on_limit, prob_slippage, config.random_seed)
+                    .map_err(|_| ManifestError::InvalidVenueModelParameter {
+                        field: "venue.fill_model",
+                        value: config.kind.clone(),
+                    })?;
+            Ok(Some(FillModelAny::Probabilistic(model)))
+        }
+        other => Err(ManifestError::UnsupportedEnum {
+            field: "venue.fill_model.kind",
+            value: other.to_string(),
+        }),
+    }
+}
+
+fn resolve_latency_model(
+    config: Option<&ManifestLatencyModelConfig>,
+) -> Result<Option<LatencyModelAny>, ManifestError> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    match config.kind.as_str() {
+        LATENCY_MODEL_POLYMARKET_STATIC => {
+            ensure_latency_component_sum(
+                config.base_latency_nanos,
+                config.insert_latency_nanos,
+                "venue.latency_model.insert_latency_nanos",
+            )?;
+            ensure_latency_component_sum(
+                config.base_latency_nanos,
+                config.update_latency_nanos,
+                "venue.latency_model.update_latency_nanos",
+            )?;
+            ensure_latency_component_sum(
+                config.base_latency_nanos,
+                config.delete_latency_nanos,
+                "venue.latency_model.delete_latency_nanos",
+            )?;
+            Ok(Some(LatencyModelAny::Static(StaticLatencyModel::new(
+                UnixNanos::from(config.base_latency_nanos),
+                UnixNanos::from(config.insert_latency_nanos),
+                UnixNanos::from(config.update_latency_nanos),
+                UnixNanos::from(config.delete_latency_nanos),
+            ))))
+        }
+        other => Err(ManifestError::UnsupportedEnum {
+            field: "venue.latency_model.kind",
+            value: other.to_string(),
+        }),
+    }
+}
+
+fn resolve_fee_model(
+    config: Option<&ManifestFeeModelConfig>,
+) -> Result<Option<FeeModelAny>, ManifestError> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    match config.kind.as_str() {
+        FEE_MODEL_POLYMARKET_MAKER_TAKER => Ok(Some(FeeModelAny::MakerTaker(MakerTakerFeeModel))),
+        other => Err(ManifestError::UnsupportedEnum {
+            field: "venue.fee_model.kind",
+            value: other.to_string(),
+        }),
+    }
+}
+
 /// Build the typed manifest from TOML text.
 ///
 /// # Errors
@@ -2841,6 +3013,7 @@ pub fn parse_manifest_toml(text: &str) -> Result<BacktestingRunManifest> {
 mod tests {
     use super::*;
     use crate::source_proof::{SourceProofFidelityClass, synthetic_accepted_dataset_for_tests};
+    use nautilus_execution::models::latency::LatencyModel;
 
     const TEST_INSTRUMENT_ID: &str = "TESTPAIR.TESTVENUE";
     const TEST_BAR_TYPE: &str = "TESTPAIR.TESTVENUE-1-MINUTE-LAST-EXTERNAL";
@@ -3128,6 +3301,58 @@ mod tests {
         );
         assert_eq!(venue.default_leverage(), rust_decimal::Decimal::from(2));
         assert_eq!(venue.price_protection_points(), 7);
+    }
+
+    #[test]
+    fn venue_config_registers_polymarket_cost_realism_models_with_nt() {
+        let mut manifest = valid_manifest();
+        manifest.venue.fill_model = Some(ManifestFillModelConfig {
+            kind: FILL_MODEL_POLYMARKET_PROBABILISTIC.to_string(),
+            prob_fill_on_limit: "0.75".to_string(),
+            prob_slippage: "0.04".to_string(),
+            random_seed: Some(42),
+        });
+        manifest.venue.latency_model = Some(ManifestLatencyModelConfig {
+            kind: LATENCY_MODEL_POLYMARKET_STATIC.to_string(),
+            base_latency_nanos: 100,
+            insert_latency_nanos: 500,
+            update_latency_nanos: 700,
+            delete_latency_nanos: 900,
+        });
+        manifest.venue.fee_model = Some(ManifestFeeModelConfig {
+            kind: FEE_MODEL_POLYMARKET_MAKER_TAKER.to_string(),
+        });
+
+        manifest
+            .validate(&accepted_dataset())
+            .expect("cost realism manifest should validate");
+        let venue = manifest.to_nt_venue_config().expect("venue config");
+
+        assert!(matches!(
+            venue.fill_model(),
+            Some(FillModelAny::Probabilistic(_))
+        ));
+        assert!(matches!(
+            venue.fee_model(),
+            Some(FeeModelAny::MakerTaker(_))
+        ));
+        match venue.latency_model() {
+            Some(LatencyModelAny::Static(model)) => {
+                assert_eq!(model.get_base_latency(), UnixNanos::from(100));
+                assert_eq!(model.get_insert_latency(), UnixNanos::from(600));
+                assert_eq!(model.get_update_latency(), UnixNanos::from(800));
+                assert_eq!(model.get_delete_latency(), UnixNanos::from(1000));
+            }
+            other => panic!("expected static latency model, got {other:?}"),
+        }
+
+        let surfaces = manifest.resolved_nt_surfaces().expect("surfaces");
+        for surface in ["venue.fill_model", "venue.latency_model", "venue.fee_model"] {
+            assert!(
+                surfaces.iter().any(|resolved| resolved.surface == surface),
+                "{surface} must be durably reported"
+            );
+        }
     }
 
     #[test]
@@ -3490,6 +3715,28 @@ mod tests {
         assert_hash_changes("venue.price_protection_points", |manifest| {
             manifest.venue.price_protection_points = 7;
         });
+        assert_hash_changes("venue.fill_model", |manifest| {
+            manifest.venue.fill_model = Some(ManifestFillModelConfig {
+                kind: FILL_MODEL_POLYMARKET_PROBABILISTIC.to_string(),
+                prob_fill_on_limit: "0.75".to_string(),
+                prob_slippage: "0.04".to_string(),
+                random_seed: Some(42),
+            });
+        });
+        assert_hash_changes("venue.latency_model", |manifest| {
+            manifest.venue.latency_model = Some(ManifestLatencyModelConfig {
+                kind: LATENCY_MODEL_POLYMARKET_STATIC.to_string(),
+                base_latency_nanos: 100,
+                insert_latency_nanos: 500,
+                update_latency_nanos: 700,
+                delete_latency_nanos: 900,
+            });
+        });
+        assert_hash_changes("venue.fee_model", |manifest| {
+            manifest.venue.fee_model = Some(ManifestFeeModelConfig {
+                kind: FEE_MODEL_POLYMARKET_MAKER_TAKER.to_string(),
+            });
+        });
         assert_hash_changes("catalog_inputs.catalog_fs_protocol", |manifest| {
             manifest.catalog_inputs[0].catalog_path =
                 "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
@@ -3818,6 +4065,21 @@ mod tests {
                 "venue.price_protection_points",
                 NtSurfaceClassification::PassThrough,
                 "BacktestVenueConfig.price_protection_points",
+            ),
+            (
+                "venue.fill_model",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.fill_model",
+            ),
+            (
+                "venue.latency_model",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.latency_model",
+            ),
+            (
+                "venue.fee_model",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.fee_model",
             ),
             (
                 "catalog.data_type",
@@ -5022,9 +5284,6 @@ mod tests {
             ("leverages", "{}"),
             ("margin_model", "\"standard\""),
             ("modules", "[]"),
-            ("fill_model", "\"probabilistic\""),
-            ("latency_model", "\"static\""),
-            ("fee_model", "\"maker_taker\""),
             ("settlement_prices", "{}"),
         ] {
             let text = serialized.replace("[venue]\n", &format!("[venue]\n{field} = {value}\n"));
@@ -5049,9 +5308,6 @@ mod tests {
             ("leverages", leverages.as_str()),
             ("margin_model", "\"standard\""),
             ("modules", "[\"latency-probe\"]"),
-            ("fill_model", "\"probabilistic\""),
-            ("latency_model", "\"static\""),
-            ("fee_model", "\"maker_taker\""),
             ("settlement_prices", settlement_prices.as_str()),
         ] {
             let text = serialized.replace("[venue]\n", &format!("[venue]\n{field} = {value}\n"));
@@ -5065,6 +5321,86 @@ mod tests {
                 "unsupported venue surface {field:?} should fail with a structured error, got {err}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_unknown_polymarket_cost_realism_model_selectors() {
+        let mut manifest = valid_manifest();
+        manifest.venue.fill_model = Some(ManifestFillModelConfig {
+            kind: "unknown-fill".to_string(),
+            prob_fill_on_limit: "0.5".to_string(),
+            prob_slippage: "0.0".to_string(),
+            random_seed: None,
+        });
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "venue.fill_model.kind",
+                value: "unknown-fill".to_string(),
+            }
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.venue.latency_model = Some(ManifestLatencyModelConfig {
+            kind: "unknown-latency".to_string(),
+            base_latency_nanos: 0,
+            insert_latency_nanos: 0,
+            update_latency_nanos: 0,
+            delete_latency_nanos: 0,
+        });
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "venue.latency_model.kind",
+                value: "unknown-latency".to_string(),
+            }
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.venue.fee_model = Some(ManifestFeeModelConfig {
+            kind: "unknown-fee".to_string(),
+        });
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "venue.fee_model.kind",
+                value: "unknown-fee".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_polymarket_cost_realism_parameters() {
+        let mut manifest = valid_manifest();
+        manifest.venue.fill_model = Some(ManifestFillModelConfig {
+            kind: FILL_MODEL_POLYMARKET_PROBABILISTIC.to_string(),
+            prob_fill_on_limit: "1.01".to_string(),
+            prob_slippage: "0".to_string(),
+            random_seed: None,
+        });
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::InvalidVenueModelParameter {
+                field: "venue.fill_model.prob_fill_on_limit",
+                value: "1.01".to_string(),
+            }
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.venue.latency_model = Some(ManifestLatencyModelConfig {
+            kind: LATENCY_MODEL_POLYMARKET_STATIC.to_string(),
+            base_latency_nanos: u64::MAX,
+            insert_latency_nanos: 1,
+            update_latency_nanos: 0,
+            delete_latency_nanos: 0,
+        });
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::InvalidVenueModelParameter {
+                field: "venue.latency_model.insert_latency_nanos",
+                value: "1".to_string(),
+            }
+        );
     }
 
     #[test]

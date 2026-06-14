@@ -1659,6 +1659,7 @@ dependencies = [
  "nautilus-backtest",
  "nautilus-common",
  "nautilus-core",
+ "nautilus-execution",
  "nautilus-model",
  "nautilus-persistence",
  "nautilus-polymarket",

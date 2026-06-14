@@ -11342,3 +11342,83 @@ literal = '''"{context}: target.group_sources[`{source_id}`] references a disabl
 context = '''"{context}: target.group_sources[`{source_id}`] references a disabled outcome_group_sources block"'''
 classification = "validation_diagnostic_template"
 reason = "Validation diagnostic for disabled TOML source references from outcome-group targets."
+
+[[allowed]]
+path = "src/bolt_v3_basket_execution.rs"
+kind = "number"
+literal = '''10_000u32'''
+context = '''((edge / total_cost) * Decimal::from(10_000u32)).trunc()'''
+classification = "algorithmic_constant"
+reason = "Basis-point denominator for normalized repair edge math; not a runtime-configured value."
+
+[[allowed]]
+path = "src/bolt_v3_basket_execution.rs"
+kind = "string"
+literal = '''"cancel"'''
+context = '''forwarded_nt_events: vec!["order", "fill", "cancel", "instrument_status", "settlement"],'''
+classification = "executor_contract_event_label"
+reason = "Static NT event-forwarding contract label for strategy shell integration tests."
+
+[[allowed]]
+path = "src/bolt_v3_basket_execution.rs"
+kind = "string"
+literal = '''"fill"'''
+context = '''forwarded_nt_events: vec!["order", "fill", "cancel", "instrument_status", "settlement"],'''
+classification = "executor_contract_event_label"
+reason = "Static NT event-forwarding contract label for strategy shell integration tests."
+
+[[allowed]]
+path = "src/bolt_v3_basket_execution.rs"
+kind = "string"
+literal = '''"instrument_status"'''
+context = '''forwarded_nt_events: vec!["order", "fill", "cancel", "instrument_status", "settlement"],'''
+classification = "executor_contract_event_label"
+reason = "Static NT event-forwarding contract label for strategy shell integration tests."
+
+[[allowed]]
+path = "src/bolt_v3_basket_execution.rs"
+kind = "string"
+literal = '''"min(M * (filled_qty + repair_qty)) - (filled_cost + repair_cost) preserves admitted absolute edge floor and normalized edge_bps floor"'''
+context = '''pub const REPAIR_EDGE_INEQUALITY: &str = "min(M * (filled_qty + repair_qty)) - (filled_cost + repair_cost) preserves admitted absolute edge floor and normalized edge_bps floor";'''
+classification = "algorithm_contract"
+reason = "Static documentation of the repair admissibility inequality checked by basket execution tests."
+
+[[allowed]]
+path = "src/bolt_v3_basket_execution.rs"
+kind = "string"
+literal = '''"order"'''
+context = '''forwarded_nt_events: vec!["order", "fill", "cancel", "instrument_status", "settlement"],'''
+classification = "executor_contract_event_label"
+reason = "Static NT event-forwarding contract label for strategy shell integration tests."
+
+[[allowed]]
+path = "src/bolt_v3_basket_execution.rs"
+kind = "string"
+literal = '''"repair cannot preserve admitted edge floors"'''
+context = '''reason: "repair cannot preserve admitted edge floors".to_string(),'''
+classification = "state_machine_diagnostic"
+reason = "Deterministic repair denial reason emitted after TOML-owned bounds and admitted edge floors fail."
+
+[[allowed]]
+path = "src/bolt_v3_basket_execution.rs"
+kind = "string"
+literal = '''"settlement"'''
+context = '''forwarded_nt_events: vec!["order", "fill", "cancel", "instrument_status", "settlement"],'''
+classification = "executor_contract_event_label"
+reason = "Static NT event-forwarding contract label for strategy shell integration tests."
+
+[[allowed]]
+path = "src/bolt_v3_basket_store.rs"
+kind = "number"
+literal = '''1'''
+context = '''pub const BASKET_STORE_SCHEMA_VERSION: u32 = 1;'''
+classification = "schema_version"
+reason = "Durable basket-state schema version for fail-closed recovery compatibility checks."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch.rs"
+kind = "string"
+literal = '''b"basket_execution_stuck"'''
+context = '''KillSwitchHaltTriggerKind::BasketExecutionStuck => b"basket_execution_stuck".as_slice(),'''
+classification = "hash_domain_variant"
+reason = "Stable kill-switch halt-id hash component for the dedicated basket-execution stuck trigger."

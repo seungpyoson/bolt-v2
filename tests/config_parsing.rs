@@ -6177,6 +6177,18 @@ max_state_file_bytes = 1048576
 recovery_policy = "fail_closed_reconcile_before_new_baskets"
 max_recovery_age_ms = 300000
 max_metadata_age_ms = 7200000
+
+[risk.basket_execution.repair]
+max_retries = 2
+max_book_age_ms = 250
+max_slippage_bps = 50
+max_depth_levels = 4
+
+[risk.basket_execution.unwind]
+max_retries = 2
+max_book_age_ms = 250
+max_slippage_bps = 50
+max_depth_levels = 4
 "#
     .to_string()
 }

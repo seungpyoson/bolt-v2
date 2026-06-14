@@ -200,12 +200,23 @@ pub struct BasketExecutionRiskBlock {
     pub recovery_policy: BasketExecutionRecoveryPolicy,
     pub max_recovery_age_ms: u64,
     pub max_metadata_age_ms: u64,
+    pub repair: Option<BasketExecutionBoundedPolicyBlock>,
+    pub unwind: Option<BasketExecutionBoundedPolicyBlock>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BasketExecutionRecoveryPolicy {
     FailClosedReconcileBeforeNewBaskets,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BasketExecutionBoundedPolicyBlock {
+    pub max_retries: u32,
+    pub max_book_age_ms: u64,
+    pub max_slippage_bps: u32,
+    pub max_depth_levels: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,7 +304,42 @@ pub fn validate_basket_execution(block: &BasketExecutionRiskBlock) -> Vec<String
     if block.max_metadata_age_ms == 0 {
         errors.push("risk.basket_execution.max_metadata_age_ms must be positive".to_string());
     }
+    validate_basket_execution_bounded_policy(
+        block.repair.as_ref(),
+        "risk.basket_execution.repair",
+        &mut errors,
+    );
+    validate_basket_execution_bounded_policy(
+        block.unwind.as_ref(),
+        "risk.basket_execution.unwind",
+        &mut errors,
+    );
     errors
+}
+
+fn validate_basket_execution_bounded_policy(
+    block: Option<&BasketExecutionBoundedPolicyBlock>,
+    context: &str,
+    errors: &mut Vec<String>,
+) {
+    let Some(block) = block else {
+        errors.push(format!(
+            "{context} must be configured before live basket execution"
+        ));
+        return;
+    };
+    if block.max_retries == 0 {
+        errors.push(format!("{context}.max_retries must be positive"));
+    }
+    if block.max_book_age_ms == 0 {
+        errors.push(format!("{context}.max_book_age_ms must be positive"));
+    }
+    if block.max_slippage_bps == 0 {
+        errors.push(format!("{context}.max_slippage_bps must be positive"));
+    }
+    if block.max_depth_levels == 0 {
+        errors.push(format!("{context}.max_depth_levels must be positive"));
+    }
 }
 
 pub fn validate_outcome_group_strategy_links(

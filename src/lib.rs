@@ -2,6 +2,8 @@ pub mod bolt_v3_adapters;
 pub mod bolt_v3_archetypes;
 pub mod bolt_v3_atomic_io;
 pub mod bolt_v3_basket_admission;
+pub mod bolt_v3_basket_execution;
+pub mod bolt_v3_basket_store;
 pub mod bolt_v3_binary_outcome_edge;
 pub mod bolt_v3_book_sizing;
 pub mod bolt_v3_client_registration;

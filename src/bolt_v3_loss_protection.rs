@@ -158,19 +158,20 @@ impl KillSwitchLossProtection {
         }
         self.admission.replace_kill_switch_state(state.clone());
         self.state = state.clone();
-        if matches!(state, KillSwitchState::Halting { .. }) && self.pending_halt_actions.is_none() {
-            if let Err(error) = self.emit_halt_actions(&state) {
-                self.pending_halt_actions = Some(PendingHaltActions {
-                    state: state.clone(),
-                    next_retry_at_unix_nanos: recovery_action_clock_unix_nanos,
-                    retry_deadline_unix_nanos: add_millis(
-                        recovery_action_clock_unix_nanos,
-                        self.config.action_retry_timeout_ms,
-                    ),
-                });
-                self.persist_runtime_snapshot_or_fail_closed()?;
-                log::error!("kill switch recovery halt action dispatch failed: {error:?}");
-            }
+        if matches!(state, KillSwitchState::Halting { .. })
+            && self.pending_halt_actions.is_none()
+            && let Err(error) = self.emit_halt_actions(&state)
+        {
+            self.pending_halt_actions = Some(PendingHaltActions {
+                state: state.clone(),
+                next_retry_at_unix_nanos: recovery_action_clock_unix_nanos,
+                retry_deadline_unix_nanos: add_millis(
+                    recovery_action_clock_unix_nanos,
+                    self.config.action_retry_timeout_ms,
+                ),
+            });
+            self.persist_runtime_snapshot_or_fail_closed()?;
+            log::error!("kill switch recovery halt action dispatch failed: {error:?}");
         }
         Ok(state)
     }

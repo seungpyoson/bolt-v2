@@ -288,9 +288,7 @@ struct PersistedKillSwitchLossProtectionSnapshot {
     daily_bucket: Option<u64>,
     daily_realized_pnl: String,
     cumulative_position_pnl: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
-    #[serde(default)]
     closed_position_pnl: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
-    #[serde(default)]
     adjusted_position_pnl: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_halt_actions: Option<KillSwitchPendingHaltActionsSnapshot>,

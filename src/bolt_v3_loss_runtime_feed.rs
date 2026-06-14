@@ -311,9 +311,7 @@ impl LossGovernorRuntimeFeed {
     fn invalidate_portfolio_facts(&mut self, observed_at_ns: u64) -> Option<LossSnapshot> {
         self.state.invalidate_portfolio_facts();
 
-        if self.state.latest_snapshot.is_none() {
-            return None;
-        }
+        self.state.latest_snapshot.as_ref()?;
 
         let snapshot = LossSnapshot {
             source: LOSS_RUNTIME_FEED_SOURCE.to_string(),

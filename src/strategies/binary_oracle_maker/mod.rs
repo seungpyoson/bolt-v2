@@ -51,12 +51,13 @@ impl BinaryOracleMaker {
             .parse::<OmsType>()
             .expect("validated binary_oracle_maker oms_type");
         Self {
-            core: StrategyCore::new(StrategyConfig {
-                strategy_id: Some(StrategyId::from(config.strategy_id.as_str())),
-                order_id_tag: Some(config.order_id_tag.clone()),
-                oms_type: Some(oms_type),
-                ..Default::default()
-            }),
+            core: StrategyCore::new(
+                StrategyConfig::builder()
+                    .strategy_id(StrategyId::from(config.strategy_id.as_str()))
+                    .order_id_tag(config.order_id_tag.clone())
+                    .oms_type(oms_type)
+                    .build(),
+            ),
             config,
         }
     }

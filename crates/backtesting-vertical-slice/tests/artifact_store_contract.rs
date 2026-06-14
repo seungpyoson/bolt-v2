@@ -1307,7 +1307,7 @@ async fn create_only_writer_refuses_to_overwrite_existing_object() {
         .put_create_uri(&root, &object_uri, br#"{"status":"second"}"#.to_vec())
         .await
         .expect_err("second create must fail");
-    assert!(err.to_string().contains("already exists"), "{err}");
+    assert!(format!("{err:#}").contains("already exists"), "{err:#}");
 
     let stored = store
         .get(&object_path)

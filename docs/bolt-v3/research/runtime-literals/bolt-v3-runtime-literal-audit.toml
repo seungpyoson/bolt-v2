@@ -11000,6 +11000,126 @@ classification = "provider_mapping_validation_diagnostic"
 reason = "Fail-closed diagnostic for invalid already-configured outcome-group source references; it does not configure runtime behavior."
 
 [[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "number"
+literal = '''12'''
+context = '''const DECIMAL_F64_ROUND_DP: u32 = 12;'''
+classification = "scanner_decimal_conversion_precision"
+reason = "Fixed Decimal rounding precision at the scanner's explicit f64/Decimal boundary; operator risk limits and prices remain supplied by config, books, and fees."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"missing_book"'''
+context = '''Self::MissingBook => "missing_book",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"missing_book_timestamp"'''
+context = '''Self::MissingBookTimestamp => "missing_book_timestamp",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"stale_book"'''
+context = '''Self::StaleBook => "stale_book",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"insufficient_depth"'''
+context = '''Self::InsufficientDepth => "insufficient_depth",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"fee_unavailable"'''
+context = '''Self::FeeUnavailable => "fee_unavailable",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"invalid_cost"'''
+context = '''Self::InvalidCost => "invalid_cost",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"invalid_price_scale"'''
+context = '''Self::InvalidPriceScale => "invalid_price_scale",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"min_quantity"'''
+context = '''Self::MinQuantity => "min_quantity",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"min_notional"'''
+context = '''Self::MinNotional => "min_notional",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"quantity_step"'''
+context = '''Self::QuantityStep => "quantity_step",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"non_positive_edge"'''
+context = '''Self::NonPositiveEdge => "non_positive_edge",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"edge_threshold"'''
+context = '''Self::EdgeThreshold => "edge_threshold",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"unknown_leg"'''
+context = '''Self::UnknownLeg => "unknown_leg",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"unsupported_order_side"'''
+context = '''Self::UnsupportedOrderSide => "unsupported_order_side",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = '''"target.group_sources source_id `{source_id}` maps to client_id `{}`"'''

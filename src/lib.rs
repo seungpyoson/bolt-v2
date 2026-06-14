@@ -21,6 +21,7 @@ pub mod bolt_v3_numeric;
 pub mod bolt_v3_operator_artifacts;
 pub mod bolt_v3_order_intent;
 pub mod bolt_v3_outcome_group_polymarket;
+pub mod bolt_v3_outcome_group_scanner;
 pub mod bolt_v3_outcome_group_sources;
 pub mod bolt_v3_outcome_groups;
 pub mod bolt_v3_position_contract;

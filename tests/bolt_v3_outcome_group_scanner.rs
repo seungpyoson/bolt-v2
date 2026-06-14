@@ -1,9 +1,8 @@
 use std::collections::BTreeMap;
 
-use anyhow::Result;
 use bolt_v2::{
     bolt_v3_outcome_group_scanner::{
-        OutcomeGroupBookSnapshot, OutcomeGroupCandidateLeg, OutcomeGroupScanBlockReason,
+        OutcomeGroupCandidateLeg, OutcomeGroupDepthSnapshot, OutcomeGroupScanBlockReason,
         OutcomeGroupScanInput, scan_outcome_group_candidate,
     },
     bolt_v3_outcome_groups::{
@@ -16,9 +15,7 @@ use bolt_v2::{
         derive_standard_payout_matrix, expected_metadata_fingerprint,
         payout_vector_attestation_sha256, role_binding_attestation_sha256,
     },
-    strategies::registry::FeeProvider,
 };
-use futures::{FutureExt, future::BoxFuture};
 use nautilus_model::{
     data::{BookOrder, DEPTH10_LEN, OrderBookDepth10},
     enums::{BookType, OrderSide},
@@ -32,10 +29,9 @@ use rust_decimal_macros::dec;
 #[test]
 fn scanner_accepts_all_true_complete_set_when_edge_exceeds_threshold() {
     let group = fixture_group();
-    let fees = StaticFeeProvider::zero();
     let result = scan_outcome_group_candidate(scan_input(
         &group,
-        &fees,
+        fees(&group, dec!(0)),
         vec![
             candidate("home-positive", dec!(0.4)),
             candidate("away-positive", dec!(0.4)),
@@ -64,10 +60,9 @@ fn scanner_accepts_all_true_complete_set_when_edge_exceeds_threshold() {
 #[test]
 fn scanner_evaluates_all_false_and_mixed_role_baskets_from_payout_matrix() {
     let group = fixture_group();
-    let fees = StaticFeeProvider::zero();
     let all_false = scan_outcome_group_candidate(scan_input(
         &group,
-        &fees,
+        fees(&group, dec!(0)),
         vec![
             candidate("home-negative", dec!(0.3)),
             candidate("away-negative", dec!(0.3)),
@@ -83,7 +78,7 @@ fn scanner_evaluates_all_false_and_mixed_role_baskets_from_payout_matrix() {
 
     let mixed = scan_outcome_group_candidate(scan_input(
         &group,
-        &fees,
+        fees(&group, dec!(0)),
         vec![
             candidate("home-positive", dec!(0.4)),
             candidate("away-negative", dec!(0.3)),
@@ -106,7 +101,7 @@ fn scanner_adapts_nt_depth10_order_book_and_book_levels_without_persistent_book(
     let instrument_id = instrument_id("home-positive");
     let depth = depth10(instrument_id, "0.39", "3", "0.40", "3", 1_000_000);
     let depth_snapshot =
-        OutcomeGroupBookSnapshot::from_depth10(&depth).expect("depth10 should adapt");
+        OutcomeGroupDepthSnapshot::from_depth10(&depth).expect("depth10 should adapt");
     assert_eq!(depth_snapshot.observed_unix_ms, Some(1));
     assert_eq!(depth_snapshot.best_ask, Some(0.40));
 
@@ -124,7 +119,7 @@ fn scanner_adapts_nt_depth10_order_book_and_book_levels_without_persistent_book(
         2_000_000.into(),
     );
     let order_book_snapshot =
-        OutcomeGroupBookSnapshot::from_order_book(&order_book).expect("OrderBook should adapt");
+        OutcomeGroupDepthSnapshot::from_order_book(&order_book).expect("OrderBook should adapt");
     assert_eq!(order_book_snapshot.observed_unix_ms, Some(2));
     assert_eq!(order_book_snapshot.best_bid, Some(0.39));
 
@@ -140,7 +135,7 @@ fn scanner_adapts_nt_depth10_order_book_and_book_levels_without_persistent_book(
         Quantity::from("3"),
         4,
     ));
-    let level_snapshot = OutcomeGroupBookSnapshot::from_book_levels(
+    let level_snapshot = OutcomeGroupDepthSnapshot::from_book_levels(
         instrument_id,
         Some(3),
         vec![bid_level],
@@ -154,10 +149,9 @@ fn scanner_adapts_nt_depth10_order_book_and_book_levels_without_persistent_book(
 #[test]
 fn scanner_blocks_insufficient_depth_stale_books_and_missing_timestamps() {
     let group = fixture_group();
-    let fees = StaticFeeProvider::zero();
     let insufficient = scan_outcome_group_candidate(scan_input(
         &group,
-        &fees,
+        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book(
             "home-positive",
@@ -175,7 +169,7 @@ fn scanner_blocks_insufficient_depth_stale_books_and_missing_timestamps() {
 
     let stale = scan_outcome_group_candidate(scan_input(
         &group,
-        &fees,
+        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book("home-positive", "0.39", "20", "0.40", "20", Some(100))]),
     ));
@@ -186,7 +180,7 @@ fn scanner_blocks_insufficient_depth_stale_books_and_missing_timestamps() {
 
     let missing_timestamp = scan_outcome_group_candidate(scan_input(
         &group,
-        &fees,
+        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book("home-positive", "0.39", "20", "0.40", "20", None)]),
     ));
@@ -199,10 +193,9 @@ fn scanner_blocks_insufficient_depth_stale_books_and_missing_timestamps() {
 #[test]
 fn scanner_applies_fee_slippage_and_minimum_depth_sizing() {
     let group = fixture_group();
-    let fees = StaticFeeProvider::new(dec!(100));
     let result = scan_outcome_group_candidate(scan_input(
         &group,
-        &fees,
+        fees(&group, dec!(100)),
         vec![
             candidate("home-positive", dec!(0.4)),
             candidate("away-positive", dec!(0.4)),
@@ -229,10 +222,9 @@ fn scanner_rejects_order_constraints_and_fee_boundaries() {
         .expect("leg")
         .order_constraints
         .min_quantity = dec!(2);
-    let fees = StaticFeeProvider::zero();
     let min_quantity = scan_outcome_group_candidate(scan_input(
         &group,
-        &fees,
+        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book(
             "home-positive",
@@ -257,7 +249,7 @@ fn scanner_rejects_order_constraints_and_fee_boundaries() {
         .quantity_step = dec!(2);
     let quantity_step = scan_outcome_group_candidate(scan_input(
         &group,
-        &fees,
+        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book(
             "home-positive",
@@ -275,7 +267,7 @@ fn scanner_rejects_order_constraints_and_fee_boundaries() {
 
     let missing_fee = scan_outcome_group_candidate(scan_input(
         &fixture_group(),
-        &StaticFeeProvider::missing(),
+        BTreeMap::new(),
         vec![candidate("home-positive", dec!(0.4))],
         books([book(
             "home-positive",
@@ -295,12 +287,11 @@ fn scanner_rejects_order_constraints_and_fee_boundaries() {
 #[test]
 fn scanner_rejects_non_positive_cost_edge_threshold_and_invalid_price_scale() {
     let group = fixture_group();
-    let fees = StaticFeeProvider::zero();
     let threshold = scan_outcome_group_candidate(OutcomeGroupScanInput {
         min_edge_bps: dec!(3_000),
         ..scan_input(
             &group,
-            &fees,
+            fees(&group, dec!(0)),
             vec![
                 candidate("home-positive", dec!(0.4)),
                 candidate("away-positive", dec!(0.4)),
@@ -318,7 +309,7 @@ fn scanner_rejects_non_positive_cost_edge_threshold_and_invalid_price_scale() {
 
     let invalid_cost = scan_outcome_group_candidate(scan_input(
         &group,
-        &fees,
+        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0))],
         books([book(
             "home-positive",
@@ -352,7 +343,7 @@ fn scanner_rejects_non_positive_cost_edge_threshold_and_invalid_price_scale() {
     };
     let invalid_scale = scan_outcome_group_candidate(scan_input(
         &invalid_scale,
-        &fees,
+        fees(&invalid_scale, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book(
             "home-positive",
@@ -371,21 +362,29 @@ fn scanner_rejects_non_positive_cost_edge_threshold_and_invalid_price_scale() {
 
 fn scan_input<'a>(
     group: &'a OutcomeGroup,
-    fee_provider: &'a dyn FeeProvider,
+    fee_bps: BTreeMap<InstrumentId, Decimal>,
     candidate_legs: Vec<OutcomeGroupCandidateLeg>,
-    books: BTreeMap<InstrumentId, OutcomeGroupBookSnapshot>,
+    books: BTreeMap<InstrumentId, OutcomeGroupDepthSnapshot>,
 ) -> OutcomeGroupScanInput<'a> {
     OutcomeGroupScanInput {
         group,
         candidate_legs,
         books,
-        fee_provider,
+        fee_bps,
         now_unix_ms: 1_000,
         max_book_age_ms: 100,
         min_edge_bps: dec!(100),
         vwap_depth_limit_bps: 2_000,
         slippage_buffer_bps: 100,
     }
+}
+
+fn fees(group: &OutcomeGroup, fee_bps: Decimal) -> BTreeMap<InstrumentId, Decimal> {
+    group
+        .tradable_legs
+        .values()
+        .map(|leg| (leg.instrument_id, fee_bps))
+        .collect()
 }
 
 fn candidate(leg_id: &str, target_notional: Decimal) -> OutcomeGroupCandidateLeg {
@@ -397,8 +396,8 @@ fn candidate(leg_id: &str, target_notional: Decimal) -> OutcomeGroupCandidateLeg
 }
 
 fn books<const N: usize>(
-    snapshots: [OutcomeGroupBookSnapshot; N],
-) -> BTreeMap<InstrumentId, OutcomeGroupBookSnapshot> {
+    snapshots: [OutcomeGroupDepthSnapshot; N],
+) -> BTreeMap<InstrumentId, OutcomeGroupDepthSnapshot> {
     snapshots
         .into_iter()
         .map(|snapshot| (snapshot.instrument_id, snapshot))
@@ -412,8 +411,8 @@ fn book(
     ask_price: &str,
     ask_size: &str,
     observed_unix_ms: Option<u64>,
-) -> OutcomeGroupBookSnapshot {
-    OutcomeGroupBookSnapshot::from_book_levels(
+) -> OutcomeGroupDepthSnapshot {
+    OutcomeGroupDepthSnapshot::from_book_levels(
         instrument_id(leg_id),
         observed_unix_ms,
         vec![BookLevel::from_order(BookOrder::new(
@@ -640,35 +639,4 @@ fn leg(leg_id: &str, outcome_label: &str, side_label: &str, role: OutcomeLegRole
 
 fn instrument_id(leg_id: &str) -> InstrumentId {
     InstrumentId::from(format!("{leg_id}.POLYMARKET"))
-}
-
-#[derive(Debug, Clone)]
-struct StaticFeeProvider {
-    fee_bps: Option<Decimal>,
-}
-
-impl StaticFeeProvider {
-    fn zero() -> Self {
-        Self::new(dec!(0))
-    }
-
-    fn new(fee_bps: Decimal) -> Self {
-        Self {
-            fee_bps: Some(fee_bps),
-        }
-    }
-
-    fn missing() -> Self {
-        Self { fee_bps: None }
-    }
-}
-
-impl FeeProvider for StaticFeeProvider {
-    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-        self.fee_bps
-    }
-
-    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-        async { Ok(()) }.boxed()
-    }
 }

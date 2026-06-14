@@ -508,6 +508,7 @@ pub struct ProviderBinding {
     pub key: &'static str,
     pub validate_client: fn(&str, &ClientBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
+    pub metadata_refresh_interval_mins: Option<fn(&ClientBlock) -> Result<Option<u64>, String>>,
     pub required_secret_blocks: &'static [ProviderSecretRequirement],
     pub secret_field_names: &'static [&'static str],
     pub credential_log_modules: &'static [&'static str],
@@ -536,6 +537,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: polymarket::KEY,
         validate_client: polymarket::validate_client,
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
+        metadata_refresh_interval_mins: Some(polymarket::metadata_refresh_interval_mins),
         required_secret_blocks: polymarket::REQUIRED_SECRET_BLOCKS,
         secret_field_names: polymarket::SECRET_FIELD_NAMES,
         credential_log_modules: polymarket::CREDENTIAL_LOG_MODULES,
@@ -553,6 +555,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: binance::KEY,
         validate_client: binance::validate_client,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
+        metadata_refresh_interval_mins: None,
         required_secret_blocks: binance::REQUIRED_SECRET_BLOCKS,
         secret_field_names: binance::SECRET_FIELD_NAMES,
         credential_log_modules: binance::CREDENTIAL_LOG_MODULES,
@@ -570,6 +573,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: hyperliquid::KEY,
         validate_client: hyperliquid::validate_client,
         supported_market_families: hyperliquid::SUPPORTED_MARKET_FAMILIES,
+        metadata_refresh_interval_mins: Some(hyperliquid::metadata_refresh_interval_mins),
         required_secret_blocks: hyperliquid::REQUIRED_SECRET_BLOCKS,
         secret_field_names: hyperliquid::SECRET_FIELD_NAMES,
         credential_log_modules: hyperliquid::CREDENTIAL_LOG_MODULES,
@@ -589,6 +593,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::BITMEX_KEY,
         validate_client: market_data::validate_bitmex_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        metadata_refresh_interval_mins: None,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
         credential_log_modules: market_data::BITMEX_CREDENTIAL_LOG_MODULES,
@@ -606,6 +611,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::BYBIT_KEY,
         validate_client: market_data::validate_bybit_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        metadata_refresh_interval_mins: None,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
         credential_log_modules: market_data::BYBIT_CREDENTIAL_LOG_MODULES,
@@ -623,6 +629,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::COINBASE_KEY,
         validate_client: market_data::validate_coinbase_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        metadata_refresh_interval_mins: None,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
         credential_log_modules: market_data::COINBASE_CREDENTIAL_LOG_MODULES,
@@ -640,6 +647,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::DERIBIT_KEY,
         validate_client: market_data::validate_deribit_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        metadata_refresh_interval_mins: None,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
         credential_log_modules: market_data::DERIBIT_CREDENTIAL_LOG_MODULES,
@@ -657,6 +665,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::OKX_KEY,
         validate_client: market_data::validate_okx_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        metadata_refresh_interval_mins: None,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
         credential_log_modules: market_data::OKX_CREDENTIAL_LOG_MODULES,
@@ -674,6 +683,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::KRAKEN_KEY,
         validate_client: market_data::validate_kraken_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        metadata_refresh_interval_mins: None,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
         credential_log_modules: market_data::KRAKEN_CREDENTIAL_LOG_MODULES,
@@ -691,6 +701,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: chainlink::KEY,
         validate_client: chainlink::validate_client,
         supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
+        metadata_refresh_interval_mins: None,
         required_secret_blocks: chainlink::REQUIRED_SECRET_BLOCKS,
         secret_field_names: chainlink::SECRET_FIELD_NAMES,
         credential_log_modules: chainlink::CREDENTIAL_LOG_MODULES,
@@ -714,6 +725,16 @@ pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
     provider_bindings()
         .iter()
         .find(|binding| binding.key == key)
+}
+
+pub fn metadata_refresh_interval_mins(client: &ClientBlock) -> Result<Option<u64>, String> {
+    let Some(binding) = binding_for_provider_key(client.venue.as_str()) else {
+        return Ok(None);
+    };
+    let Some(loader) = binding.metadata_refresh_interval_mins else {
+        return Ok(None);
+    };
+    loader(client)
 }
 
 /// A configured trading venue's modeled REST-egress capabilities. The per-minute

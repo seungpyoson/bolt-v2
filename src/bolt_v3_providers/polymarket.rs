@@ -159,6 +159,17 @@ pub struct PolymarketDataConfig {
     pub transport_backend: TransportBackend,
 }
 
+pub fn metadata_refresh_interval_mins(client: &ClientBlock) -> Result<Option<u64>, String> {
+    let Some(data) = client.data.as_ref() else {
+        return Ok(None);
+    };
+    let data = data
+        .clone()
+        .try_into::<PolymarketDataConfig>()
+        .map_err(|error| error.to_string())?;
+    Ok(Some(data.update_instruments_interval_mins))
+}
+
 /// NT's `impl_serialization_for_identifier!` macro deserializes typed
 /// identifiers through `&str: Deserialize`, which only the borrowed
 /// (zero-copy) visitor path supports. `toml::Value::try_into` — used

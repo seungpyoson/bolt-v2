@@ -116,6 +116,17 @@ pub struct HyperliquidDataConfig {
     pub transport_backend: TransportBackend,
 }
 
+pub fn metadata_refresh_interval_mins(client: &ClientBlock) -> Result<Option<u64>, String> {
+    let Some(data) = client.data.as_ref() else {
+        return Ok(None);
+    };
+    let data = data
+        .clone()
+        .try_into::<HyperliquidDataConfig>()
+        .map_err(|error| error.to_string())?;
+    Ok(Some(data.update_instruments_interval_mins))
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HyperliquidExecutionConfig {

@@ -178,6 +178,9 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
+    errors.extend(crate::bolt_v3_outcome_group_sources::validate_root_sources(
+        root,
+    ));
     errors.extend(crate::bolt_v3_providers::validate_resolution_oracle_client_consistency(root));
 
     errors
@@ -1250,6 +1253,11 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     if let Some(kill_switch) = &block.kill_switch {
         errors.extend(validate_kill_switch_block(kill_switch));
     }
+    if let Some(basket_execution) = &block.basket_execution {
+        errors.extend(
+            crate::bolt_v3_outcome_group_sources::validate_basket_execution(basket_execution),
+        );
+    }
     errors
 }
 
@@ -1814,24 +1822,17 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             ));
         }
 
-        match &strategy.realized_volatility_surface_id {
-            None => errors.push(format!(
-                "{context}: {} is required",
+        if let Some(surface_id) = &strategy.realized_volatility_surface_id
+            && !root
+                .realized_volatility_surfaces
+                .as_ref()
+                .is_some_and(|surfaces| surfaces.contains_key(surface_id))
+        {
+            errors.push(format!(
+                "{context}: {} `{surface_id}` references missing {}.{surface_id}",
                 stringify!(realized_volatility_surface_id),
-            )),
-            Some(surface_id)
-                if !root
-                    .realized_volatility_surfaces
-                    .as_ref()
-                    .is_some_and(|surfaces| surfaces.contains_key(surface_id)) =>
-            {
-                errors.push(format!(
-                    "{context}: {} `{surface_id}` references missing {}.{surface_id}",
-                    stringify!(realized_volatility_surface_id),
-                    stringify!(realized_volatility_surfaces),
-                ));
-            }
-            _ => {}
+                stringify!(realized_volatility_surfaces),
+            ));
         }
 
         if let Some(surface_id) = &strategy.realized_volatility_surface_id
@@ -1887,6 +1888,11 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
     errors.extend(validate_reference_quote_probe_sources(strategies));
     errors.extend(validate_target_gate_provider_references(root, strategies));
     errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));
+    errors.extend(
+        crate::bolt_v3_outcome_group_sources::validate_outcome_group_strategy_links(
+            root, strategies,
+        ),
+    );
 
     errors
 }

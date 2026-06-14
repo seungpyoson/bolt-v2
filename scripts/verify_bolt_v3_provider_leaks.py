@@ -125,6 +125,8 @@ FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = (
     ),
 )
 
+SHARED_MARKET_FAMILY_NAMES: frozenset[str] = frozenset({"outcome_group"})
+
 
 def rules_for(
     paths: tuple[str, ...],
@@ -247,7 +249,11 @@ def alternation(names: tuple[str, ...]) -> str:
 def rules_for_root(root: Path) -> list[Rule]:
     core_files = discovered_core_files(root)
     provider_names = discovered_binding_names(root, "bolt_v3_providers")
-    family_names = discovered_binding_names(root, "bolt_v3_market_families")
+    family_names = tuple(
+        name
+        for name in discovered_binding_names(root, "bolt_v3_market_families")
+        if name not in SHARED_MARKET_FAMILY_NAMES
+    )
     provider_alt = alternation(provider_names)
     provider_type_alt = alternation(tuple(snake_to_pascal(name) for name in provider_names))
     family_alt = alternation(family_names)

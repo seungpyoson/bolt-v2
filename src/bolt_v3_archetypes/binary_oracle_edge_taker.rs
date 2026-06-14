@@ -266,6 +266,11 @@ pub fn validate_strategy(
     default_max_notional: Option<&Decimal>,
 ) -> Vec<String> {
     let mut errors = validate_required_reference_data(context, strategy);
+    if strategy.realized_volatility_surface_id.is_none() {
+        errors.push(format!(
+            "{context}: realized_volatility_surface_id is required"
+        ));
+    }
 
     let parameters = match strategy.parameters.clone().try_into::<ParametersBlock>() {
         Ok(value) => value,

@@ -64,6 +64,7 @@ APPROVED_PROVIDER_NORMALIZER_PREFIXES: tuple[str, ...] = (
 
 OPAQUE_PROOF_ALLOWED_PREFIXES: tuple[str, ...] = (
     "src/bolt_v3_outcome_groups.rs",
+    "src/bolt_v3_outcome_group_sources.rs",
     "src/bolt_v3_outcome_group_polymarket.rs",
     "src/bolt_v3_outcome_group_hyperliquid.rs",
 )

@@ -10487,3 +10487,306 @@ literal = '''"kind"'''
 context = '''"kind".to_string(),'''
 classification = "outcome_group_model_evidence_schema_label"
 reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+[[allowed]]
+path = "src/bolt_v3_market_families/outcome_group.rs"
+kind = "string"
+literal = '''"outcome_group"'''
+context = '''pub const KEY: &str = "outcome_group";'''
+classification = "market_family_key"
+reason = "Stable market-family discriminator used only to route TOML target blocks through the shared market-family registry; operator selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/outcome_group.rs"
+kind = "string"
+literal = '''"{context}: target.group_sources source_id `{source_id}` is duplicated"'''
+context = '''"{context}: target.group_sources source_id `{source_id}` is duplicated"'''
+classification = "validation_diagnostic_template"
+reason = "Validation diagnostic for duplicate TOML group source references; no runtime value is configured here."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "number"
+literal = '''60_000'''
+context = '''let Some(refresh_ms) = update_mins.checked_mul(60_000) else {'''
+classification = "unit_conversion_constant"
+reason = "Fixed minute-to-millisecond conversion for provider metadata refresh intervals whose source value comes from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"POLYMARKET"'''
+context = '''errors.extend(validate_client_venue(context, client, "POLYMARKET"));'''
+classification = "provider_key_validation_token"
+reason = "Provider key used only to validate that a configured source references the matching TOML client venue."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"HYPERLIQUID"'''
+context = '''errors.extend(validate_client_venue(context, client, "HYPERLIQUID"));'''
+classification = "provider_key_validation_token"
+reason = "Provider key used only to validate that a configured source references the matching TOML client venue."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"complete_set_arbitrage"'''
+context = '''pub const COMPLETE_SET_ARBITRAGE_KEY: &str = "complete_set_arbitrage";'''
+classification = "strategy_archetype_key"
+reason = "Stable strategy-archetype discriminator for validation diagnostics; runtime activation remains separately registered by TOML-driven bindings."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"polymarket data"'''
+context = '''"polymarket data",'''
+classification = "validation_diagnostic_label"
+reason = "Diagnostic label naming the configured provider data block shape; no runtime value is configured here."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"hyperliquid data"'''
+context = '''"hyperliquid data",'''
+classification = "validation_diagnostic_label"
+reason = "Diagnostic label naming the configured provider data block shape; no runtime value is configured here."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"polymarket_gamma_event"'''
+context = '''Self::GammaEvent => "polymarket_gamma_event",'''
+classification = "source_kind_schema_token"
+reason = "Closed TOML enum token for operator-configured outcome-group source kind; values are selected in TOML."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"polymarket_gamma_market_slug"'''
+context = '''Self::GammaMarketSlug => "polymarket_gamma_market_slug",'''
+classification = "source_kind_schema_token"
+reason = "Closed TOML enum token for operator-configured outcome-group source kind; values are selected in TOML."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"polymarket_gamma_query"'''
+context = '''Self::GammaQuery => "polymarket_gamma_query",'''
+classification = "source_kind_schema_token"
+reason = "Closed TOML enum token for operator-configured outcome-group source kind; values are selected in TOML."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"hyperliquid_hip4"'''
+context = '''Self::Hip4 => "hyperliquid_hip4",'''
+classification = "source_kind_schema_token"
+reason = "Closed TOML enum token for operator-configured outcome-group source kind; values are selected in TOML."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"runtime"'''
+context = '''let Some(runtime) = parameters.get("runtime").and_then(toml::Value::as_table) else {'''
+classification = "strategy_runtime_schema_field"
+reason = "TOML table name used to validate complete-set runtime parameters; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"min_edge_bps"'''
+context = '''"min_edge_bps",'''
+classification = "strategy_runtime_schema_field"
+reason = "TOML field name used to validate complete-set runtime parameters; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"max_basket_notional"'''
+context = '''"max_basket_notional",'''
+classification = "strategy_runtime_schema_field"
+reason = "TOML field name used to validate complete-set runtime parameters; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"max_open_baskets"'''
+context = '''"max_open_baskets",'''
+classification = "strategy_runtime_schema_field"
+reason = "TOML field name used to validate complete-set runtime parameters; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"submit_mode"'''
+context = '''"submit_mode",'''
+classification = "strategy_runtime_schema_field"
+reason = "TOML field name used to validate complete-set runtime parameters; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"submit_mode"'''
+context = '''if let Some(submit_mode) = runtime.get("submit_mode").and_then(toml::Value::as_str)'''
+classification = "strategy_runtime_schema_field"
+reason = "TOML field lookup used only to improve submit-mode validation diagnostics."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"vwap_depth_limit_bps"'''
+context = '''"vwap_depth_limit_bps",'''
+classification = "strategy_runtime_schema_field"
+reason = "TOML field name used to validate scanner depth limits; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"slippage_buffer_bps"'''
+context = '''"slippage_buffer_bps",'''
+classification = "strategy_runtime_schema_field"
+reason = "TOML field name used to validate scanner slippage limits; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"max_repair_attempts"'''
+context = '''"max_repair_attempts",'''
+classification = "strategy_runtime_schema_field"
+reason = "TOML field name used to validate bounded basket repair policy; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"max_unwind_attempts"'''
+context = '''"max_unwind_attempts",'''
+classification = "strategy_runtime_schema_field"
+reason = "TOML field name used to validate bounded basket unwind policy; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"ioc"'''
+context = '''"ioc",'''
+classification = "submit_mode_schema_token"
+reason = "Closed submit-mode TOML enum token for the audited first-slice basket submit mode."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"ioc"'''
+context = '''&& submit_mode != "ioc"'''
+classification = "submit_mode_schema_token"
+reason = "Closed submit-mode TOML enum token used only for fail-closed validation."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"ioc"'''
+context = '''"ioc" => Some(OutcomeGroupSubmitMode::Ioc),'''
+classification = "submit_mode_schema_token"
+reason = "Closed submit-mode TOML enum token used only for fail-closed validation."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"max_markets"'''
+context = '''validate_positive_cap(&mut errors, context, "max_markets", source.max_markets);'''
+classification = "source_schema_field"
+reason = "TOML field name used to validate bounded source discovery caps; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"max_groups"'''
+context = '''validate_positive_cap(&mut errors, context, "max_groups", source.max_groups);'''
+classification = "source_schema_field"
+reason = "TOML field name used to validate bounded source discovery caps; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"pays_on_terminal_state_native_leg_id"'''
+context = '''"pays_on_terminal_state_native_leg_id",'''
+classification = "source_schema_field"
+reason = "TOML role-binding field name used only in validation diagnostics; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"pays_unless_terminal_state_native_leg_id"'''
+context = '''"pays_unless_terminal_state_native_leg_id",'''
+classification = "source_schema_field"
+reason = "TOML role-binding field name used only in validation diagnostics; value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"outcome_group_sources source_id `{source_id}` is duplicated"'''
+context = '''"outcome_group_sources source_id `{source_id}` is duplicated"'''
+classification = "validation_diagnostic_template"
+reason = "Validation diagnostic for duplicate root source ids; no runtime value is configured here."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"{context}.client_id data.update_instruments_interval_mins overflows metadata refresh milliseconds"'''
+context = '''"{context}.client_id data.update_instruments_interval_mins overflows metadata refresh milliseconds"'''
+classification = "validation_diagnostic_template"
+reason = "Validation diagnostic for checked arithmetic over a TOML-owned metadata refresh interval."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"{context}.client_id metadata refresh interval {refresh_ms}ms exceeds risk.basket_execution.max_metadata_age_ms {}"'''
+context = '''"{context}.client_id metadata refresh interval {refresh_ms}ms exceeds risk.basket_execution.max_metadata_age_ms {}",'''
+classification = "validation_diagnostic_template"
+reason = "Validation diagnostic comparing TOML-owned metadata refresh and basket max-age values."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"{context}.order_constraints.per_leg native_leg_id `{}` is duplicated"'''
+context = '''"{context}.order_constraints.per_leg native_leg_id `{}` is duplicated",'''
+classification = "validation_diagnostic_template"
+reason = "Validation diagnostic for duplicate per-leg order constraints in TOML."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"{context}.order_constraints.per_leg[`{}`].min_quantity"'''
+context = '''"{context}.order_constraints.per_leg[`{}`].min_quantity",'''
+classification = "validation_diagnostic_template"
+reason = "Validation diagnostic path for TOML-owned per-leg minimum quantity."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"{context}.order_constraints.per_leg[`{}`].min_notional"'''
+context = '''"{context}.order_constraints.per_leg[`{}`].min_notional",'''
+classification = "validation_diagnostic_template"
+reason = "Validation diagnostic path for TOML-owned per-leg minimum notional."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"{context}.role_bindings.legs terminal_state_label `{}` is duplicated"'''
+context = '''"{context}.role_bindings.legs terminal_state_label `{}` is duplicated",'''
+classification = "validation_diagnostic_template"
+reason = "Validation diagnostic for duplicate TOML role-binding labels."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"{context}.settlement_rules.non_standard_terminal_payouts.{payout_id}.legs.payout_per_unit"'''
+context = '''"{context}.settlement_rules.non_standard_terminal_payouts.{payout_id}.legs.payout_per_unit"'''
+classification = "validation_diagnostic_template"
+reason = "Validation diagnostic path for TOML-owned non-standard terminal payout values."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"{context}: target.group_sources[`{source_id}`] references a disabled outcome_group_sources block"'''
+context = '''"{context}: target.group_sources[`{source_id}`] references a disabled outcome_group_sources block"'''
+classification = "validation_diagnostic_template"
+reason = "Validation diagnostic for disabled TOML source references from outcome-group targets."

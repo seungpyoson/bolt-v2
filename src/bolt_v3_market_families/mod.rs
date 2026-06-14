@@ -5,6 +5,7 @@
 //! construction, and instrument-filter errors.
 
 pub mod hyperliquid_instrument;
+pub mod outcome_group;
 pub mod updown;
 
 use std::{any::Any, collections::BTreeMap, fmt, sync::Arc};
@@ -286,6 +287,19 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         maker_quote_targets: updown::maker_quote_targets,
         maker_settlement_payout: updown::maker_settlement_payout,
         maker_binary_fee_curve: updown::maker_binary_fee_curve,
+    },
+    MarketFamilyValidationBinding {
+        key: outcome_group::KEY,
+        validate_target: outcome_group::validate_target_block,
+        plan_strategy_target: outcome_group::plan_strategy_target,
+        target_runtime_fields: outcome_group::target_runtime_fields,
+        select_binary_option_market: outcome_group::select_binary_option_market,
+        market_selection_candidate_windows: outcome_group::market_selection_candidate_windows,
+        selected_market_requirement: outcome_group::selected_market_requirement,
+        fair_probability_up: outcome_group::fair_probability_up,
+        maker_quote_targets: unsupported_maker_quote_targets,
+        maker_settlement_payout: unsupported_maker_settlement_payout,
+        maker_binary_fee_curve: unsupported_maker_binary_fee_curve,
     },
     MarketFamilyValidationBinding {
         key: hyperliquid_instrument::KEY,

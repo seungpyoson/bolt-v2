@@ -398,9 +398,25 @@ jobs:
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
+    outputs:
+      nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
     steps:
+      - name: Publish nextest archive fingerprint
+        id: nextest-fingerprint
+        run: |
+          fingerprint="nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}"
+          mkdir -p .nextest-archive-fingerprint
+          printf '%s\\n' "$fingerprint" > .nextest-archive-fingerprint/cache-key.txt
+          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+      - name: Upload nextest archive fingerprint
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          path: .nextest-archive-fingerprint/cache-key.txt
+          if-no-files-found: error
+          retention-days: 30
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
@@ -443,18 +459,6 @@ jobs:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           if-no-files-found: error
           retention-days: 1
-      - name: Publish nextest archive fingerprint
-        run: |
-          mkdir -p .nextest-archive-fingerprint
-          printf '%s\\n' "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}" > .nextest-archive-fingerprint/cache-key.txt
-      - name: Upload nextest archive fingerprint
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
-          path: .nextest-archive-fingerprint/cache-key.txt
-          if-no-files-found: error
-          retention-days: 30
-
   nextest-fingerprint-reuse:
     name: nextest fingerprint reuse
     needs: [ci-policy, test-archive]
@@ -467,20 +471,13 @@ jobs:
       source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}
       reason: ${{ steps.reuse.outputs.reason }}
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: ${{ needs.test-archive.result == 'success' }}
-        continue-on-error: true
-        with:
-          pattern: nextest-archive-fingerprint-*
-          path: .ci-provenance/fingerprint
-          merge-multiple: true
       - name: Resolve nextest fingerprint reuse
         id: reuse
         shell: bash
         run: >
           python3 scripts/ci_provenance.py resolve-fingerprint
           --current-run-id "${{ github.run_id }}"
-          --current-fingerprint-path .ci-provenance/fingerprint/cache-key.txt
+          --current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
           | tee -a "$GITHUB_OUTPUT"
 
   test-shards:
@@ -632,12 +629,6 @@ jobs:
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        continue-on-error: true
-        with:
-          pattern: nextest-archive-fingerprint-*
-          path: .ci-provenance/fingerprint
-          merge-multiple: true
       - name: Emit CI provenance
         run: >
           python3 scripts/ci_provenance.py emit-full-ci
@@ -653,7 +644,7 @@ jobs:
           --required-job test=${{ needs.test.result }}
           --conditional-job build.required=${{ needs.detector.outputs.build_required }}
           --conditional-job build.result=${{ needs.build.result }}
-          --nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt
+          --nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
       - name: Upload CI provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -4850,11 +4841,11 @@ def main() -> int:
         replace_once(
             replace_once(
                 BASE_WORKFLOW,
-                "'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md'",
-                "'tests/**'",
+                "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+                "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
             ),
-            "'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md'",
-            "'tests/**'",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
         ),
     )
     assert_error(
@@ -5024,9 +5015,12 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Publish nextest archive fingerprint
+        id: nextest-fingerprint
         run: |
+          fingerprint="nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}"
           mkdir -p .nextest-archive-fingerprint
-          printf '%s\\n' "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}" > .nextest-archive-fingerprint/cache-key.txt
+          printf '%s\\n' "$fingerprint" > .nextest-archive-fingerprint/cache-key.txt
+          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
       - name: Upload nextest archive fingerprint
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -5036,6 +5030,31 @@ def main() -> int:
           retention-days: 30
 """,
             "",
+        ),
+    )
+    assert_error(
+        "test-archive must expose secure nextest fingerprint output",
+        replace_once(
+            BASE_WORKFLOW,
+            "    outputs:\n      nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must expose exactly one secure nextest fingerprint output",
+        replace_once(
+            BASE_WORKFLOW,
+            '          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"',
+            '          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"\n'
+            '          echo "nextest_fingerprint=stale" >> "$GITHUB_OUTPUT"',
+        ),
+    )
+    assert_error(
+        "test-archive must publish nextest fingerprint before repo-controlled steps",
+        replace_once(
+            BASE_WORKFLOW,
+            "    steps:\n      - name: Publish nextest archive fingerprint",
+            "    steps:\n      - uses: ./.github/actions/setup-environment\n      - name: Publish nextest archive fingerprint",
         ),
     )
     assert_error(
@@ -5150,6 +5169,14 @@ def main() -> int:
     assert_error(
         "nextest-fingerprint-reuse must skip main branch",
         replace_once(BASE_WORKFLOW, " && github.ref != 'refs/heads/main'", ""),
+    )
+    assert_error(
+        "nextest-fingerprint-reuse must use secure current nextest fingerprint output",
+        replace_once(
+            BASE_WORKFLOW,
+            '--current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
+            "--current-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
+        ),
     )
     assert_error(
         "fmt-check must run just fmt-check",
@@ -5268,75 +5295,19 @@ def main() -> int:
         ),
     )
     assert_error(
-        "ci-provenance-emit fingerprint download path must match emitter argument",
+        "ci-provenance-emit must record nextest fingerprint when present",
         replace_once(
             BASE_WORKFLOW,
+            '--nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
+            '--nextest-fingerprint ""',
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must use secure nextest fingerprint output",
+        replace_once(
+            BASE_WORKFLOW,
+            '--nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
             "--nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
-            "--nextest-fingerprint-path .ci-provenance/wrong/cache-key.txt",
-        ),
-    )
-    assert_error(
-        "ci-provenance-emit fingerprint download path must match emitter argument",
-        replace_once_after(
-            BASE_WORKFLOW,
-            "  ci-provenance-emit:",
-            "          path: .ci-provenance/fingerprint",
-            "          path: .ci-provenance/downloaded",
-        ),
-    )
-    assert_error(
-        "ci-provenance-emit fingerprint download path must match emitter argument",
-        replace_once_after(
-            BASE_WORKFLOW,
-            "  ci-provenance-emit:",
-            "          path: .ci-provenance/fingerprint",
-            "          path: .ci-provenance/fingerprint-backup",
-        ),
-    )
-    assert_error(
-        "ci-provenance-emit fingerprint download path must match emitter argument",
-        replace_once(
-            replace_once(
-                replace_once_after(
-                    BASE_WORKFLOW,
-                    "  ci-provenance-emit:",
-                    "          path: .ci-provenance/fingerprint",
-                    "          path: .ci-provenance/downloaded",
-                ),
-                "          python3 scripts/ci_provenance.py emit-full-ci",
-                "          printf '%s\\n' 'path: .ci-provenance/fingerprint'\n"
-                "          python3 scripts/ci_provenance.py emit-full-ci",
-            ),
-            "          python3 scripts/ci_provenance.py resolve-fingerprint",
-            "          python3 scripts/ci_provenance.py resolve-fingerprint",
-        ),
-    )
-    assert_error(
-        "ci-provenance-emit must record nextest fingerprint when present",
-        replace_once(
-            replace_once_after(
-                BASE_WORKFLOW,
-                "  ci-provenance-emit:",
-                "          pattern: nextest-archive-fingerprint-*",
-                "          pattern: nextest-archive-fingerprint-backup-*",
-            ),
-            "          python3 scripts/ci_provenance.py emit-full-ci",
-            "          printf '%s\\n' 'pattern: nextest-archive-fingerprint-*'\n"
-            "          python3 scripts/ci_provenance.py emit-full-ci",
-        ),
-    )
-    assert_error(
-        "ci-provenance-emit must record nextest fingerprint when present",
-        replace_once(
-            replace_once_after(
-                BASE_WORKFLOW,
-                "  ci-provenance-emit:",
-                "        continue-on-error: true",
-                "        continue-on-error: false",
-            ),
-            "          python3 scripts/ci_provenance.py emit-full-ci",
-            "          printf '%s\\n' 'continue-on-error: true'\n"
-            "          python3 scripts/ci_provenance.py emit-full-ci",
         ),
     )
     assert_error(

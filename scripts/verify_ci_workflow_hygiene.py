@@ -369,6 +369,12 @@ TEST_ARCHIVE_KEY_INPUTS = (
 TEST_ARCHIVE_KEY_PREFIX = "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
 TEST_ARCHIVE_FINGERPRINT_PREFIX = "nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
 TEST_ARCHIVE_FINGERPRINT_PATH = ".nextest-archive-fingerprint/cache-key.txt"
+TEST_ARCHIVE_FINGERPRINT_OUTPUT = "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+TEST_ARCHIVE_FINGERPRINT_JOB_OUTPUT = (
+    "nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}"
+)
+TEST_ARCHIVE_FINGERPRINT_STEP_ID = "id: nextest-fingerprint"
+TEST_ARCHIVE_FINGERPRINT_OUTPUT_WRITE = 'echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"'
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
     "'.github/actions/setup-environment/action.yml'",
@@ -1114,6 +1120,7 @@ def nextest_archive_key_identity(text: str) -> str | None:
 
 def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
     blocks = step_blocks(job_lines)
+    job_text = uncommented_text(job_lines)
     cache_blocks = [
         block
         for block in (
@@ -1122,16 +1129,22 @@ def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
         )
         if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
     ]
-    run_blocks = [
-        block
-        for block in blocks
+    run_block_indices = [
+        index
+        for index, block in enumerate(blocks)
         if TEST_ARCHIVE_FINGERPRINT_PATH in uncommented_text(block)
         and TEST_ARCHIVE_KEY_PREFIX in uncommented_text(block)
     ]
+    run_blocks = [blocks[index] for index in run_block_indices]
+    upload_block_indices = [
+        index
+        for index, block in enumerate(blocks)
+        if "actions/upload-artifact@" in uncommented_text(block)
+        and block_has_input(block, "path", TEST_ARCHIVE_FINGERPRINT_PATH)
+    ]
     upload_blocks = [
-        block
-        for block in action_blocks(job_lines, "actions/upload-artifact@")
-        if block_has_input(block, "path", TEST_ARCHIVE_FINGERPRINT_PATH)
+        blocks[index]
+        for index in upload_block_indices
     ]
     upload_names = [block_input_value(block, "name") or "" for block in upload_blocks]
 
@@ -1142,6 +1155,25 @@ def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
 
     run_text = "\n".join(uncommented_text(block) for block in run_blocks)
     names_text = "\n".join(upload_names)
+    if (
+        TEST_ARCHIVE_FINGERPRINT_JOB_OUTPUT not in job_text
+        or TEST_ARCHIVE_FINGERPRINT_STEP_ID not in run_text
+        or TEST_ARCHIVE_FINGERPRINT_OUTPUT_WRITE not in run_text
+    ):
+        return ["test-archive must expose secure nextest fingerprint output"]
+    if run_text.count("nextest_fingerprint=") != 1 or run_text.count("$GITHUB_OUTPUT") != 1:
+        return ["test-archive must expose exactly one secure nextest fingerprint output"]
+    repo_controlled_indices = [
+        index
+        for index, block in enumerate(blocks)
+        if "./.github/actions/setup-environment" in uncommented_text(block)
+        or 'just test-archive "$NEXTEST_ARCHIVE_PATH"' in uncommented_text(block)
+    ]
+    if repo_controlled_indices and (
+        min(run_block_indices) >= min(repo_controlled_indices)
+        or min(upload_block_indices) >= min(repo_controlled_indices)
+    ):
+        return ["test-archive must publish nextest fingerprint before repo-controlled steps"]
     if not all(fragment in run_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
         return ["test-archive fingerprint must include Rust and test graph inputs"]
     if not all(fragment in names_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
@@ -5685,17 +5717,17 @@ def fingerprint_reuse_job_has_outputs(job_lines: list[str]) -> bool:
     return all(item in text for item in required)
 
 
-def fingerprint_reuse_job_downloads_current_fingerprint(job_lines: list[str]) -> bool:
-    for block in action_blocks(job_lines, "actions/download-artifact@"):
-        if (
-            block_has_input(block, "pattern", "nextest-archive-fingerprint-*")
-            and block_has_input(block, "path", ".ci-provenance/fingerprint")
-            and block_has_input(block, "merge-multiple", "true")
-            and block_has_scalar(block, "continue-on-error", "true")
-            and any("needs.test-archive.result == 'success'" in line for line in block)
-        ):
-            return True
-    return False
+def fingerprint_reuse_job_uses_secure_current_fingerprint(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    downloads_current_fingerprint = any(
+        block_has_input(block, "pattern", "nextest-archive-fingerprint-*")
+        for block in action_blocks(job_lines, "actions/download-artifact@")
+    )
+    return (
+        f'--current-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"' in text
+        and "--current-fingerprint-path" not in text
+        and not downloads_current_fingerprint
+    )
 
 
 def fingerprint_reuse_job_runs_resolver(job_lines: list[str]) -> bool:
@@ -5704,7 +5736,7 @@ def fingerprint_reuse_job_runs_resolver(job_lines: list[str]) -> bool:
         "id: reuse",
         "python3 scripts/ci_provenance.py resolve-fingerprint",
         '--current-run-id "${{ github.run_id }}"',
-        "--current-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
+        f'--current-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"',
         '| tee -a "$GITHUB_OUTPUT"',
     )
     return all(item in text for item in required)
@@ -5742,19 +5774,9 @@ def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
     return "python3 scripts/ci_provenance.py emit-full-ci" in text and "--output ci-provenance.json" in text
 
 
-def ci_provenance_emit_fingerprint_download_blocks(job_lines: list[str]) -> list[list[str]]:
-    return [
-        block
-        for block in action_blocks(job_lines, "actions/download-artifact@")
-        if block_has_input(block, "pattern", "nextest-archive-fingerprint-*")
-    ]
-
-
 def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]) -> list[str]:
     text = uncommented_text(job_lines)
     errors = []
-    fingerprint_path = ".ci-provenance/fingerprint/cache-key.txt"
-    fingerprint_download_path = str(pathlib.PurePosixPath(fingerprint_path).parent)
     for need in needs:
         if need == "build":
             expected = "--conditional-job build.result=${{ needs.build.result }}"
@@ -5767,13 +5789,10 @@ def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]
     if "--conditional-job build.required=${{ needs.detector.outputs.build_required }}" not in text:
         errors.append("ci-provenance-emit must pass build.required from needs.detector.outputs.build_required")
     if (
-        f"--nextest-fingerprint-path {fingerprint_path}" not in text
-        or not any(
-            block_has_input(block, "path", fingerprint_download_path)
-            for block in ci_provenance_emit_fingerprint_download_blocks(job_lines)
-        )
+        f'--nextest-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"' not in text
+        or "--nextest-fingerprint-path" in text
     ):
-        errors.append("ci-provenance-emit fingerprint download path must match emitter argument")
+        errors.append("ci-provenance-emit must use secure nextest fingerprint output")
     return errors
 
 
@@ -5796,14 +5815,11 @@ def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) 
     return errors
 
 
-def ci_provenance_emit_downloads_fingerprint(job_lines: list[str]) -> bool:
+def ci_provenance_emit_records_secure_fingerprint(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
-    fingerprint_path = ".ci-provenance/fingerprint/cache-key.txt"
-    fingerprint_download_path = str(pathlib.PurePosixPath(fingerprint_path).parent)
-    return f"--nextest-fingerprint-path {fingerprint_path}" in text and any(
-        block_has_input(block, "path", fingerprint_download_path)
-        and block_has_scalar(block, "continue-on-error", "true")
-        for block in ci_provenance_emit_fingerprint_download_blocks(job_lines)
+    return (
+        f'--nextest-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"' in text
+        and "--nextest-fingerprint-path" not in text
     )
 
 
@@ -6484,8 +6500,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest-fingerprint-reuse must skip main branch")
         if not fingerprint_reuse_job_has_outputs(reuse_lines):
             errors.append("nextest-fingerprint-reuse must expose reuse provenance outputs")
-        if not fingerprint_reuse_job_downloads_current_fingerprint(reuse_lines):
-            errors.append("nextest-fingerprint-reuse must download current nextest fingerprint fail-closed")
+        if not fingerprint_reuse_job_uses_secure_current_fingerprint(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must use secure current nextest fingerprint output")
         if not fingerprint_reuse_job_runs_resolver(reuse_lines):
             errors.append("nextest-fingerprint-reuse must run ci_provenance.py resolve-fingerprint")
         if not fingerprint_reuse_resolver_uses_bash(reuse_lines):
@@ -6585,7 +6601,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 configured_ci_provenance_retention_days(),
             )
         )
-        if not ci_provenance_emit_downloads_fingerprint(emit_lines):
+        if not ci_provenance_emit_records_secure_fingerprint(emit_lines):
             errors.append("ci-provenance-emit must record nextest fingerprint when present")
 
     if "same-sha-main-evidence" in jobs:

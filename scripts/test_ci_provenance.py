@@ -9,6 +9,7 @@ import importlib.util
 import io
 import hashlib
 import json
+import os
 import pathlib
 import queue
 import socketserver
@@ -270,8 +271,25 @@ def run_cli(args: list[str]) -> tuple[int, str, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        code = module.main(args)
+        try:
+            code = module.main(args)
+        except SystemExit as exc:
+            code = int(exc.code or 0)
     return code, stdout.getvalue(), stderr.getvalue()
+
+
+@contextlib.contextmanager
+def patched_env(values: dict[str, str]):
+    old_values = {key: os.environ.get(key) for key in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for key, value in old_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def assert_fails(fragment: str, args: list[str]) -> None:
@@ -492,6 +510,49 @@ def assert_invalid_shard_count_fails() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML.replace("shard_count = 4", "shard_count = 0"))
         assert_fails("shard_count", ["emit-full-ci", "--config", str(config)])
+
+
+def assert_emit_full_ci_records_nextest_fingerprint_argument() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+
+        def fake_api_json(repo: str, token: str, path: str, query: dict[str, str] | None = None) -> dict[str, object]:
+            if path == f"actions/runs/{RUN_ID}":
+                return run_payload()
+            raise AssertionError((repo, token, path, query))
+
+        with patched_env(
+            {
+                "GITHUB_REPOSITORY": "seungpyoson/bolt-v2",
+                "GITHUB_TOKEN": "token",
+                "GITHUB_RUN_ID": str(RUN_ID),
+                "GITHUB_RUN_ATTEMPT": "1",
+                "GITHUB_SHA": SHA,
+                "GITHUB_EVENT_NAME": "push",
+            }
+        ):
+            record = module.emit_full_ci_record(
+                config=module.load_config(config),
+                config_path=config,
+                required_job_values=[
+                    "detector=success",
+                    "fmt-check=success",
+                    "deny=success",
+                    "clippy=success",
+                    "check-aarch64=success",
+                    "source-fence=success",
+                    "test-archive=success",
+                    "test-shards=success",
+                    "test=success",
+                ],
+                conditional_job_values=["build.required=true", "build.result=success"],
+                nextest_fingerprint=NEXTEST_FINGERPRINT,
+                api_json=fake_api_json,
+            )
+        if record["nextest_fingerprint"] != NEXTEST_FINGERPRINT:
+            raise AssertionError(record)
 
 
 def assert_literal_shard_count_template_loads() -> None:
@@ -732,11 +793,10 @@ def assert_fingerprint_reuse_malformed_fingerprint_fails_closed() -> None:
             raise AssertionError(result)
 
 
-def assert_missing_current_fingerprint_path_fails_closed() -> None:
+def assert_missing_current_fingerprint_arg_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         config = write_config(tmp_path)
-        missing = tmp_path / "missing-cache-key.txt"
         code, stdout, stderr = run_cli(
             [
                 "resolve-fingerprint",
@@ -748,8 +808,6 @@ def assert_missing_current_fingerprint_path_fails_closed() -> None:
                 "token",
                 "--current-run-id",
                 str(RUN_ID),
-                "--current-fingerprint-path",
-                str(missing),
             ]
         )
         if code != 0:
@@ -765,6 +823,11 @@ def assert_missing_current_fingerprint_path_fails_closed() -> None:
         }
         if set(stdout.splitlines()) != expected:
             raise AssertionError(stdout)
+
+
+def assert_nextest_fingerprint_path_args_are_rejected() -> None:
+    assert_fails("unrecognized arguments", ["emit-full-ci", "--nextest-fingerprint-path", "cache-key.txt"])
+    assert_fails("unrecognized arguments", ["resolve-fingerprint", "--current-fingerprint-path", "cache-key.txt"])
 
 
 def assert_fingerprint_reuse_api_errors_fail_closed() -> None:
@@ -1466,19 +1529,11 @@ def assert_test_archive_and_build_rules() -> None:
         )
 
 
-def assert_directory_nextest_fingerprint_is_ignored() -> None:
-    module = load_script()
-    with tempfile.TemporaryDirectory() as tmp:
-        directory = pathlib.Path(tmp) / "cache-key.txt"
-        directory.mkdir()
-        if module.read_nextest_fingerprint(directory) is not None:
-            raise AssertionError("directory fingerprint path should be ignored")
-
-
 def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
     assert_invalid_shard_count_fails()
+    assert_emit_full_ci_records_nextest_fingerprint_argument()
     assert_literal_shard_count_template_loads()
     assert_unknown_record_schema_fails()
     assert_fingerprint_reuse_prior_green_returns_reuse()
@@ -1488,7 +1543,8 @@ def main() -> int:
     assert_fingerprint_reuse_requires_exact_fingerprint_components()
     assert_fingerprint_reuse_rejects_source_workflow_digest_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
-    assert_missing_current_fingerprint_path_fails_closed()
+    assert_missing_current_fingerprint_arg_fails_closed()
+    assert_nextest_fingerprint_path_args_are_rejected()
     assert_fingerprint_reuse_api_errors_fail_closed()
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
@@ -1518,7 +1574,6 @@ def main() -> int:
     assert_job_evidence_success_passes()
     assert_shard_job_failures_rejected()
     assert_test_archive_and_build_rules()
-    assert_directory_nextest_fingerprint_is_ignored()
     print("OK: CI provenance self-tests passed.")
     return 0
 

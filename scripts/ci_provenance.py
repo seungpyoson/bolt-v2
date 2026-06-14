@@ -1421,13 +1421,6 @@ def parse_conditional_job_results(values: list[str], config: ProvenanceConfig) -
     return conditional_jobs
 
 
-def read_nextest_fingerprint(path: pathlib.Path | None) -> str | None:
-    if path is None or not path.is_file():
-        return None
-    value = path.read_text(encoding="utf-8").strip()
-    return value or None
-
-
 def pull_request_metadata_from_env(event_name: str) -> dict[str, object]:
     if event_name != "pull_request":
         return {"number": None, "base_sha": None}
@@ -1446,7 +1439,7 @@ def emit_full_ci_record(
     config_path: pathlib.Path,
     required_job_values: list[str],
     conditional_job_values: list[str],
-    nextest_fingerprint_path: pathlib.Path | None,
+    nextest_fingerprint: str | None,
     api_json=github_api_json,
 ) -> dict[str, object]:
     repo = require_env("GITHUB_REPOSITORY")
@@ -1465,6 +1458,9 @@ def emit_full_ci_record(
     if head_branch is not None and not isinstance(head_branch, str):
         raise ProvenanceError("current workflow run head_branch is malformed")
 
+    if nextest_fingerprint is not None:
+        nextest_fingerprint = parse_nextest_fingerprint(nextest_fingerprint, label="current")
+
     record = {
         "schema_version": config.schema_version,
         "kind": "full-ci",
@@ -1482,7 +1478,7 @@ def emit_full_ci_record(
         "pull_request": pull_request_metadata_from_env(event_name),
         "required_jobs": parse_required_job_results(required_job_values, config),
         "conditional_jobs": parse_conditional_job_results(conditional_job_values, config),
-        "nextest_fingerprint": read_nextest_fingerprint(nextest_fingerprint_path),
+        "nextest_fingerprint": nextest_fingerprint,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     validate_record_schema(record, config, config_path=config_path)
@@ -1501,7 +1497,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--output", type=pathlib.Path)
         parser.add_argument("--required-job", action="append", default=[])
         parser.add_argument("--conditional-job", action="append", default=[])
-        parser.add_argument("--nextest-fingerprint-path", type=pathlib.Path)
+        parser.add_argument("--nextest-fingerprint")
     if mode == "validate-record":
         parser.add_argument("--record", type=pathlib.Path, required=True)
     if mode == "resolve-exact-sha":
@@ -1514,7 +1510,6 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--token")
         parser.add_argument("--current-run-id")
         parser.add_argument("--current-fingerprint")
-        parser.add_argument("--current-fingerprint-path", type=pathlib.Path)
     return parser
 
 
@@ -1553,7 +1548,7 @@ def main(argv: list[str] | None = None) -> int:
                 config_path=args.config,
                 required_job_values=args.required_job,
                 conditional_job_values=args.conditional_job,
-                nextest_fingerprint_path=args.nextest_fingerprint_path,
+                nextest_fingerprint=args.nextest_fingerprint,
             )
             encoded = json.dumps(record, sort_keys=True, indent=2) + "\n"
             if args.output is None:
@@ -1575,13 +1570,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(evidence.record, sort_keys=True))
         elif mode == "resolve-fingerprint":
-            current_fingerprint = args.current_fingerprint
-            if current_fingerprint is None:
-                current_fingerprint = read_nextest_fingerprint(args.current_fingerprint_path)
             result = resolve_fingerprint_reuse(
                 repo=args.repo or require_env("GITHUB_REPOSITORY"),
                 token=args.token or require_env("GITHUB_TOKEN"),
-                current_fingerprint=current_fingerprint,
+                current_fingerprint=args.current_fingerprint,
                 current_run_id=args.current_run_id or require_env("GITHUB_RUN_ID"),
                 config=config,
                 config_path=args.config,

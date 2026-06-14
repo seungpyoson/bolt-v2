@@ -1,5 +1,8 @@
 use std::{fs, path::Path};
 
+use backtesting_vertical_slice::reference_fixture_index::{
+    EvictedFixtureIndex, repo_root_from_manifest_dir,
+};
 use backtesting_vertical_slice::source_universe_conversion_queue::write_source_universe_conversion_queue_from_spec_file;
 use backtesting_vertical_slice::source_universe_conversion_run_plan::write_source_universe_conversion_run_plan_from_spec_file;
 use backtesting_vertical_slice::source_universe_execution_acceptance::{
@@ -44,6 +47,7 @@ fn normalize_artifact_ref_path(
     universe_id: &str,
     role: &str,
     path: &str,
+    sha256: &str,
 ) {
     let record = ledger
         .records
@@ -56,6 +60,17 @@ fn normalize_artifact_ref_path(
         .find(|artifact_ref| artifact_ref.role == role)
         .expect("artifact ref exists");
     artifact_ref.path = Path::new(path).to_path_buf();
+    artifact_ref.sha256 = sha256.to_string();
+}
+
+fn indexed_evicted_sha256(index: &EvictedFixtureIndex, path: &str) -> String {
+    index
+        .entries
+        .iter()
+        .find(|entry| entry.path == path)
+        .unwrap_or_else(|| panic!("evicted fixture index contains {path}"))
+        .sha256
+        .clone()
 }
 
 #[test]
@@ -559,6 +574,8 @@ fn committed_source_universe_execution_acceptance_ledger_round_trips_through_eva
     let committed_bytes = fs::read(&committed_ledger_path).expect("read committed ledger");
     let committed_ledger: SourceUniverseExecutionAcceptanceLedger =
         serde_json::from_slice(&committed_bytes).expect("parse committed ledger");
+    let evicted_index =
+        EvictedFixtureIndex::load(&repo_root_from_manifest_dir()).expect("load eviction index");
 
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let bybit_run_plan_spec = temp_dir
@@ -606,12 +623,14 @@ fn committed_source_universe_execution_acceptance_ledger_round_trips_through_eva
         "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
         "source_universe_conversion_run_plan",
         BYBIT_RUN_PLAN_REPO_PATH,
+        &indexed_evicted_sha256(&evicted_index, BYBIT_RUN_PLAN_REPO_PATH),
     );
     normalize_artifact_ref_path(
         &mut evaluated,
         "backfill-source-universe-pmxt-polymarket-v2-current",
         "source_universe_conversion_queue",
         PMXT_QUEUE_REPO_PATH,
+        &indexed_evicted_sha256(&evicted_index, PMXT_QUEUE_REPO_PATH),
     );
 
     assert_eq!(

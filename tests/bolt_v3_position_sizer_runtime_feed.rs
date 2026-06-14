@@ -994,6 +994,62 @@ fn unknown_external_fill_updates_product_position_once_without_reservation_lifec
 }
 
 #[test]
+fn unknown_reconciliation_fill_does_not_replay_seeded_product_position() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut config = runtime_feed_config();
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
+    product.yes_position = Decimal::new(3, 0);
+    product.conditional_token_allowance = Decimal::new(3, 0);
+    let mut feed = PositionSizerRuntimeFeed::new(config, admission.clone());
+    let _ = feed.on_account_state(&account_state(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        900,
+        100.0,
+    ));
+    seed_venue_spendability(&mut feed, 925);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(Vec::<String>::new(), 1_000)
+            .is_some()
+    );
+    rebuild_empty_position_sizer(&admission);
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(
+            order_filled_event_with_reconciliation(
+                "external-order-1",
+                "external-trade-1",
+                1_100,
+                AccountId::from("ACCOUNT-001"),
+                Quantity::from(3),
+                OrderSide::Buy,
+                InstrumentId::from("instrument-yes.VENUE-A"),
+                true,
+            )
+        ))
+        .is_none()
+    );
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("reconciliation fill should preserve seeded product state");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "bolt_configured_binary_product");
+    assert_eq!(product.yes_position, Decimal::new(3, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(3, 0));
+}
+
+#[test]
 fn full_fill_event_releases_reservation_and_closes_live_order_count() {
     let (admission, mut feed) = committed_submit_runtime_feed();
     feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
@@ -2071,6 +2127,28 @@ fn order_filled_event_with(
     order_side: OrderSide,
     instrument_id: InstrumentId,
 ) -> OrderFilled {
+    order_filled_event_with_reconciliation(
+        client_order_id,
+        trade_id,
+        ts_event,
+        account_id,
+        quantity,
+        order_side,
+        instrument_id,
+        false,
+    )
+}
+
+fn order_filled_event_with_reconciliation(
+    client_order_id: &str,
+    trade_id: &str,
+    ts_event: u64,
+    account_id: AccountId,
+    quantity: Quantity,
+    order_side: OrderSide,
+    instrument_id: InstrumentId,
+    reconciliation: bool,
+) -> OrderFilled {
     OrderFilled::new(
         TraderId::from("TRADER-001"),
         StrategyId::from("strategy-a"),
@@ -2088,7 +2166,7 @@ fn order_filled_event_with(
         UUID4::default(),
         UnixNanos::from(ts_event),
         UnixNanos::from(ts_event),
-        false,
+        reconciliation,
         Some(PositionId::from("position-1")),
         None,
     )

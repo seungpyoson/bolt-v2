@@ -393,6 +393,7 @@ impl PositionSizerRuntimeFeed {
             );
         let unknown_external_fill_changes_position = decision.unknown_reservation
             && !submit_owned
+            && !fill.reconciliation
             && !trade_id.trim().is_empty()
             && fill_quantity > Decimal::ZERO
             && self.seen_external_fill_trade_ids.insert(trade_id);

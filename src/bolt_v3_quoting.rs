@@ -281,6 +281,18 @@ mod tests {
         let factor = time_widening_factor(REF_TAU / 4.0, REF_TAU, WIDEN_CAP).expect("factor");
         let mid = (band.bid() + band.ask()) / 2.0;
         assert!(((mid - near.yes_price) - factor * (mid - calm.yes_price)).abs() < EPSILON);
+        // A small positive inventory skew (net-long-YES) must lean the quote to
+        // REDUCE risk: relative to the neutral (zero-skew) `calm` legs it lowers the
+        // YES bid and raises the NO bid. This pins the SIGN of the skew, not merely
+        // that a large skew prunes -- a sign-flipped yes_raw/no_raw would move both
+        // legs the wrong way and fail here while still passing the large-skew prune
+        // assertion below.
+        let skewed = compose_binary_legs(
+            band, ZERO_F64, UNIT_F64, REF_TAU, REF_TAU, WIDEN_CAP, 0.01, TEST_EPS,
+        )
+        .expect("small skew still quotes");
+        assert!(skewed.yes_price < calm.yes_price);
+        assert!(skewed.no_price > calm.no_price);
         // A large inventory skew pushes the implied YES ask (1 - no_price) below the
         // fair, so the straddle guard (yes_price <= p_up <= yes_ask) fails -> pruned.
         assert!(

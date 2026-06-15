@@ -301,8 +301,10 @@ mod tests {
     // shared order-execution boundary.
     // Re-derived after fixing complete-set registration for main's shared
     // order-execution policy context.
+    // Re-derived after shared outcome freshness and basket submit validation
+    // moved into shared execution/source modules.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "0c2c65b54a4011513f5a0d72666088a882b087621f37443426ef86473012928f";
+        "4522a70d12ea197305f3034b31f58fc0467695d302b8c8ebab1ed597eb5fe8bc";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -332,8 +334,10 @@ mod tests {
     // delegate to it.
     // Re-derived after fixing complete-set registration for main's shared
     // order-execution policy context.
+    // Re-derived after shared outcome freshness and basket submit validation
+    // moved into shared execution/source modules.
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "942e1aaa963bdfdae79a4e1d1934c85c61d8f35a9bdbf440dceae9ec9fb5b79c";
+        "10dcb8181ae1972bb2ef4ae2f7f17fc4707ddc3e433bffdc6010178e69f91aea";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

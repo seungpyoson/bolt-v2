@@ -344,8 +344,9 @@ mod tests {
     // Re-derived after uncommitted submit permits learned to roll back
     // admission counters as well as position-sizer reservations.
     // Re-derived after final submit-admission rollback and dedupe cleanup.
+    // Re-derived after removing structurally unused per-intent admission counters.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "446bce42b400066fa4fcaf73515316f9a82eaba3a613cd08941177fed895352a";
+        "88619771c32b874741b5396751cfd28ead044145d1e8d184374a38f7c23802ab";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

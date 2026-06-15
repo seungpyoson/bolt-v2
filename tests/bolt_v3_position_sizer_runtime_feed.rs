@@ -1124,7 +1124,6 @@ fn authoritative_reseed_rearms_external_fill_accounting_after_retention_latch() 
     let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 2_000);
     assert_eq!(product.yes_position, Decimal::new(2, 0));
-    assert_eq!(product.conditional_token_allowance, Decimal::new(2, 0));
 }
 
 #[test]

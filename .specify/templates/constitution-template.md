@@ -14,9 +14,9 @@
 <!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
 
 ### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
+<!-- Example: III. Evidence-Driven Verification -->
 [PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+<!-- Example: Map every changed requirement to the smallest sufficient proof; use TDD when it is the clearest evidence, but allow static checks, integration artifacts, review, or live evidence when they prove the claim more directly -->
 
 ### [PRINCIPLE_4_NAME]
 <!-- Example: IV. Integration Testing -->

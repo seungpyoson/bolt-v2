@@ -2,6 +2,22 @@
 
 These repo-level rules are in addition to any higher-level agent instructions.
 
+## Instruction Precedence And Sources
+
+- Direct user instructions for the current turn win unless they would violate safety.
+- This `AGENTS.md` is the repo governance source and shared operational entrypoint for coding agents.
+- `.specify/memory/constitution.md` is the SpecKit project-principles artifact. Update it when a governance change also changes SpecKit principles or gates, but do not use it as the primary agent workflow document.
+- `CLAUDE.md`, `GEMINI.md`, generated SpecKit adapter prompts, Superpowers skills, and other plugin docs are lower-priority tool adapters. If they conflict with this file, follow `AGENTS.md`, then report the drift.
+- The active SpecKit plan is feature context, not governance. Stale feature branches, stale worktrees, or stale plan pointers do not override `main`.
+
+## Agent And Plugin Discipline
+
+- Do not create new per-agent policy documents unless the target tool is verified to load them and the same policy cannot live in `AGENTS.md`.
+- For tools that do not automatically load `AGENTS.md`, explicitly provide `AGENTS.md` as read-only context when launching them. Include `.specify/memory/constitution.md` only when SpecKit gates or project principles are relevant.
+- SpecKit and Superpowers are plugins. Their generated prompts may recommend strict TDD; in this repo, use the evidence-driven verification policy below unless the user, active spec, or risk analysis explicitly requires TDD.
+- Do not patch plugin caches as a durable repo fix. Prefer repo governance, SpecKit templates, verified extension/override surfaces, or regenerated adapters.
+- Known generated-adapter drift: current SpecKit implement prompts may still say to follow TDD. Treat that as lower-priority generated guidance, not as repo policy.
+
 ## Scope Discipline
 
 - One branch or PR may cover only one declared issue, spec, task, or an explicitly named slice of one broader item.
@@ -27,6 +43,21 @@ These repo-level rules are in addition to any higher-level agent instructions.
 7. **GROUP BY CHANGE** — if swapping a wallet, credential set, or venue requires editing more than one config section, the config is wrong. All values that share a lifecycle belong in one section. Test: "if I change X, how many places do I touch?" The answer must be one.
 8. **DO NOT REFERENCE BOLT V1** — `~/Projects/Claude/bolt/` is the old repo. Do not read from it, import from it, or depend on it. NT source is in the git cache at `~/.cargo/git/checkouts/nautilus_trader-*/` or on GitHub.
 9. **STRATEGIES PRODUCE INTENT ONLY** — strategy files may produce order intent and strategy-local signal state only. Execution admissibility, venue rules, fillability, rounding, minimum order size, fee-adjusted sizing, and submit gating must live in shared execution/admission modules built on NT APIs. Any change under `src/strategies/*` that handles submit mechanics is rejected unless explicitly approved as strategy-local signal logic.
+10. **CHAINLINK DATA STREAMS: TESTNET IS PRODUCTION** — for the Chainlink Data Streams resolution oracle (`price_to_beat` for the binary-oracle taker), testnet is the only and final environment because mainnet credentials cannot be obtained. Treat the testnet Chainlink stream as production for this oracle. Do not raise testnet-vs-mainnet as a concern or ask for reconfirmation solely because the stream is testnet. Real deploy concerns still apply: config-schema compatibility, service health, fail-closed behavior, and exact-head verification.
+
+## Evidence-Driven Verification
+
+- Follow the evidence-driven verification rule in this file. `.specify/memory/constitution.md` records the matching SpecKit principle, but `AGENTS.md` owns the operational workflow.
+- TDD is allowed and often useful, but it is not mandatory unless the user, active spec, or risk analysis requires it.
+- Every claim must map to evidence: tests, static checks, source-fence results, remote CI, live artifacts, direct inspection, or explicit user-approved risk acceptance that does not violate a MUST rule.
+- Documentation, prompt, template, and policy changes require targeted text/static checks plus internal adversarial review before completion claims.
+- Every plan or task list must state the evidence class for each changed requirement or risk:
+  - Production behavior: automated behavior test, integration proof, remote CI result, live artifact, or explicit user-approved risk acceptance that does not violate a MUST rule.
+  - Trading, admission, secrets, and config changes: fail-closed evidence for invalid or missing inputs plus exact-head proof before any live operation.
+  - Refactors: existing tests, static checks, source-fence checks, or documented structural equivalence review proving behavior is unchanged.
+  - Documentation, prompt, template, and policy changes: targeted text/static checks and internal adversarial review.
+  - External review: only after local findings are resolved and exact-head CI or the user-approved equivalent is green.
+- For agents/tools that do not automatically load this file, pass `AGENTS.md` as read-only launch context rather than creating another policy document. Add the SpecKit constitution only when the task needs SpecKit principle context.
 
 ## Remote-First Rust Verification
 

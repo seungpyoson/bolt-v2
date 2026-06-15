@@ -64,7 +64,7 @@ pub trait BacktestRunCatalogList {
 
 impl BacktestRunCatalogList for ParquetDataCatalog {
     fn list_backtest_runs(&self) -> anyhow::Result<Vec<String>> {
-        ParquetDataCatalog::list_backtest_runs(self).map_err(Into::into)
+        ParquetDataCatalog::list_backtest_runs(self)
     }
 }
 

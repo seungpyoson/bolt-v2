@@ -396,7 +396,6 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "just --evaluate target",
     "just --evaluate zig_version",
     "just --evaluate zigbuild_version",
-    "just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256",
     "just --evaluate rust_verification_owner",
     'target-dir --repo "$GITHUB_WORKSPACE"',
     "os.path.relpath",
@@ -408,7 +407,6 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
     "target": "steps.shared.outputs.target",
     "zig_version": "steps.shared.outputs.zig_version",
     "zigbuild_version": "steps.shared.outputs.zigbuild_version",
-    "zigbuild_x86_64_unknown_linux_gnu_sha256": "steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256",
     "rust_verification_owner": "steps.shared.outputs.rust_verification_owner",
     "managed_target_dir": "steps.target_dir.outputs.managed_target_dir",
     "managed_target_dir_relative": "steps.target_dir.outputs.managed_target_dir_relative",
@@ -531,12 +529,14 @@ TAIKI_INSTALL_ACTION_RE = re.compile(
 )
 TAIKI_INSTALL_ACTION_MENTION_RE = re.compile(r"\btaiki-e/install-action@")
 TAIKI_INSTALL_ACTION_USES_LINE_RE = re.compile(r"^\s*(?:-\s*)?uses\s*:")
-TAIKI_INSTALL_ACTION_BARE_USES_KEY_RE = re.compile(r"^\s*(?:-\s*)?uses\s*:\s*$")
+TAIKI_INSTALL_ACTION_BARE_USES_KEY_RE = re.compile(r"^\s*(?:-\s*)?uses\s*:\s*(?:[>|][0-9+-]*)?\s*$")
+SETUP_JUST_TOOL = "just@${{ inputs.just-version }}"
 CI_INSTALL_ACTION_TOOLS = {
     "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "test-archive": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
     "test-shards": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
+    "build": ("cargo-zigbuild", "steps.setup.outputs.zigbuild_version"),
 }
 CI_SOURCE_BUILD_TOOLS = ("cargo-deny", "cargo-nextest", "cargo-zigbuild")
 CI_INSTALL_ACTION_COMMANDS = {
@@ -544,33 +544,11 @@ CI_INSTALL_ACTION_COMMANDS = {
     "advisories": "just deny-advisories",
     "test-archive": 'just test-archive "$NEXTEST_ARCHIVE_PATH"',
     "test-shards": TEST_PARTITION_COMMAND,
+    "build": "just build",
 }
 # Static-only option consumption keeps this local constant intentionally; the
 # shared scanner has broader Cargo CLI coverage while preserving scan parity.
 CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "--quiet", "-q", "--verbose", "-v"}
-ZIGBUILD_PREBUILT_LITERALS = (
-    'version="${{ steps.setup.outputs.zigbuild_version }}"',
-    'archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"',
-    "https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}",
-    "curl \\",
-    "--retry 10",
-    "--retry-delay 3",
-    "--retry-all-errors",
-    "--fail",
-    "--location",
-    "--show-error",
-    "--silent",
-    '--output "$archive"',
-    '"$base_url/$archive"',
-    'expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"',
-    'actual="$(sha256sum "$archive" | awk \'{print $1}\')"',
-    'test "$actual" = "$expected"',
-    'tar --extract --xz --file "$archive"',
-    'mkdir -p "$HOME/.cargo/bin"',
-    'mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"',
-    'chmod +x "$HOME/.cargo/bin/cargo-zigbuild"',
-    'test -x "$HOME/.cargo/bin/cargo-zigbuild"',
-)
 
 
 def strip_comment(line: str) -> str:
@@ -588,7 +566,7 @@ def strip_comment(line: str) -> str:
         if char in {"'", '"'}:
             quote = char
             continue
-        if char == "#":
+        if char == "#" and (index == 0 or line[index - 1].isspace()):
             return line[:index].rstrip()
     return line.rstrip()
 
@@ -988,8 +966,13 @@ def setup_action_blocks(job_lines: list[str]) -> list[list[str]]:
     return [block for block in step_blocks(job_lines) if any("./.github/actions/setup-environment" in line for line in block)]
 
 
+def line_uses_action(line: str, action: str) -> bool:
+    match = re.match(r"^\s*(?:-\s*)?uses:\s*(['\"]?)(?P<value>[^'\"\s#]+)", strip_comment(line))
+    return match is not None and match.group("value").startswith(action)
+
+
 def action_blocks(job_lines: list[str], action: str) -> list[list[str]]:
-    return [block for block in step_blocks(job_lines) if any(action in strip_comment(line) for line in block)]
+    return [block for block in step_blocks(job_lines) if any(line_uses_action(line, action) for line in block)]
 
 
 def upload_artifact_pin_errors(job_lines: list[str]) -> list[str]:
@@ -1560,31 +1543,17 @@ def install_action_tool_step(job_lines: list[str], tool: str, output: str) -> tu
     return None
 
 
+def named_step_block(lines: list[str], step_name: str) -> list[str] | None:
+    name_re = re.compile(rf"^\s*(?:-\s*)?name:\s*{re.escape(step_name)}\s*$")
+    for block in step_blocks(lines):
+        if any(name_re.match(strip_comment(line)) for line in block):
+            return block
+    return None
+
+
 def first_step_running_command(job_lines: list[str], command: str) -> int | None:
     for index, block in enumerate(step_blocks(job_lines)):
         if block_runs_command(block, command):
-            return index
-    return None
-
-
-def first_step_containing_literals(job_lines: list[str], literals: tuple[str, ...]) -> int | None:
-    for index, block in enumerate(step_blocks(job_lines)):
-        text = uncommented_text(block)
-        if all(literal in text for literal in literals):
-            return index
-    return None
-
-
-def first_step_containing_literals_in_order(job_lines: list[str], literals: tuple[str, ...]) -> int | None:
-    for index, block in enumerate(step_blocks(job_lines)):
-        text = uncommented_text(block)
-        position = 0
-        for literal in literals:
-            found = text.find(literal, position)
-            if found < 0:
-                break
-            position = found + len(literal)
-        else:
             return index
     return None
 
@@ -1658,9 +1627,11 @@ SUDO_OPTIONS_WITHOUT_ARGUMENT = {
     "--version",
 }
 ENV_OPTIONS_WITH_ARGUMENT = {
+    "-a",
     "-S",
     "-u",
     "-C",
+    "--argv0",
     "--split-string",
     "--unset",
     "--chdir",
@@ -1674,6 +1645,45 @@ ENV_OPTIONS_WITHOUT_ARGUMENT = {
     "--ignore-environment",
     "--null",
 }
+SU_SG_OPTIONS_WITH_ARGUMENT = {
+    "-g",
+    "-G",
+    "-s",
+    "-w",
+    "--group",
+    "--shell",
+    "--supp-group",
+    "--whitelist-environment",
+}
+SU_SG_OPTIONS_WITHOUT_ARGUMENT = {
+    "-l",
+    "-m",
+    "-M",
+    "-p",
+    "-P",
+    "--fast",
+    "--login",
+    "--preserve-environment",
+    "--pty",
+}
+SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS = {"m", "M", "p", "P", "l"}
+FLOCK_OPTIONS_WITH_ARGUMENT = {"-E", "-w", "--conflict-exit-code", "--wait", "--timeout"}
+FLOCK_OPTIONS_WITHOUT_ARGUMENT = {
+    "-F",
+    "-n",
+    "-o",
+    "-s",
+    "-u",
+    "-x",
+    "--close",
+    "--exclusive",
+    "--no-fork",
+    "--nonblock",
+    "--shared",
+    "--unlock",
+    "--verbose",
+}
+FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS = {"s", "x", "n", "u", "o", "F"}
 TIME_OPTIONS_WITH_ARGUMENT = {"-f", "-o", "--format", "--output"}
 TIME_OPTIONS_WITHOUT_ARGUMENT = {"-a", "-p", "-v", "--append", "--portability", "--verbose"}
 SHELL_PUNCTUATION_CHARS = ";&|(){}!<>"
@@ -2633,6 +2643,66 @@ def chroot_inner_tokens(tokens: list[str]) -> list[str] | None:
     return tokens[index + 1 :] if index < len(tokens) else []
 
 
+def short_cluster_consumes_option_argument(
+    tokens: list[str],
+    index: int,
+    argument_flags: set[str],
+    no_argument_flags: set[str],
+) -> int | None:
+    token = tokens[index]
+    if not token.startswith("-") or token.startswith("--"):
+        return None
+    offset = 1
+    while offset < len(token):
+        flag = token[offset]
+        if flag in no_argument_flags:
+            offset += 1
+            continue
+        if flag in argument_flags:
+            return index + 1 if offset + 1 < len(token) or index + 1 >= len(tokens) else index + 2
+        return None
+    return index + 1
+
+
+def su_sg_command_option_tokens(tokens: list[str]) -> list[str] | None:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in SU_SG_OPTIONS_WITH_ARGUMENT and index + 1 < len(tokens):
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in SU_SG_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        if token in SU_SG_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        if token in {"-c", "--command"} and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        if token.startswith("--command="):
+            return command_tokens(token.split("=", 1)[1])
+        if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+            return command_tokens(token[2:])
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            prefix, suffix = token[1:].split("c", 1)
+            if set(prefix) <= SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS:
+                if suffix:
+                    return command_tokens(suffix)
+                if index + 1 < len(tokens):
+                    return command_tokens(tokens[index + 1])
+        next_index = short_cluster_consumes_option_argument(
+            tokens,
+            index,
+            {"g", "G", "s", "w"},
+            SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS,
+        )
+        if next_index is not None:
+            index = next_index
+            continue
+        index += 1
+    return None
+
+
 def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
     executable = pathlib.Path(tokens[0]).name if tokens else ""
     if executable == "command":
@@ -2797,7 +2867,7 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
                 index += 1
                 continue
             break
-        if index < len(tokens):
+        if index < len(tokens) and re.fullmatch(r"-?\d+", tokens[index]):
             index += 1
         return tokens[index:]
     if executable == "xargs":
@@ -2836,30 +2906,69 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
             return tokens[index:]
         return []
     if executable in {"su", "sg"}:
-        index = 1
-        while index < len(tokens):
-            token = tokens[index]
-            if token in {"-c", "--command"} and index + 1 < len(tokens):
-                return command_tokens(tokens[index + 1])
-            index += 1
-        return None
+        return su_sg_command_option_tokens(tokens)
     if executable == "runuser":
         index = 1
         while index < len(tokens):
             token = tokens[index]
             if token == "--":
                 return tokens[index + 1 :]
-            if token in {"-c", "--command"} and index + 1 < len(tokens):
-                return command_tokens(tokens[index + 1])
             if token in {"-u", "--user", "-g", "--group", "-G", "--supp-group", "-s", "--shell"} and index + 1 < len(tokens):
                 index += 2
                 continue
             if token.startswith(("--user=", "--group=", "--supp-group=", "--shell=")):
                 index += 1
                 continue
+            if token in {"-c", "--command"} and index + 1 < len(tokens):
+                return command_tokens(tokens[index + 1])
+            if token.startswith("--command="):
+                return command_tokens(token.split("=", 1)[1])
+            if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+                return command_tokens(token[2:])
+            if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+                prefix, suffix = token[1:].split("c", 1)
+                if set(prefix) <= {"m", "M", "p", "P", "l"}:
+                    if suffix:
+                        return command_tokens(suffix)
+                    if index + 1 < len(tokens):
+                        return command_tokens(tokens[index + 1])
+            next_index = short_cluster_consumes_option_argument(
+                tokens,
+                index,
+                {"G", "g", "s", "u"},
+                SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS,
+            )
+            if next_index is not None:
+                index = next_index
+                continue
             if token.startswith("-"):
                 index += 1
                 continue
+            command_index = index + 1
+            while command_index < len(tokens):
+                candidate = tokens[command_index]
+                if candidate in {"-u", "--user", "-g", "--group", "-G", "--supp-group", "-s", "--shell"} and command_index + 1 < len(tokens):
+                    command_index += 2
+                    continue
+                if candidate.startswith(("--user=", "--group=", "--supp-group=", "--shell=")):
+                    command_index += 1
+                    continue
+                if candidate in {"-c", "--command"} and command_index + 1 < len(tokens):
+                    return command_tokens(tokens[command_index + 1])
+                if candidate.startswith("--command="):
+                    return command_tokens(candidate.split("=", 1)[1])
+                if candidate.startswith("-c") and not candidate.startswith("--") and len(candidate) > 2:
+                    return command_tokens(candidate[2:])
+                next_command_index = short_cluster_consumes_option_argument(
+                    tokens,
+                    command_index,
+                    {"G", "g", "s", "u"},
+                    SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS,
+                )
+                if next_command_index is not None:
+                    command_index = next_command_index
+                    continue
+                command_index += 1
             return tokens[index:]
         return None
     starters = {
@@ -3002,9 +3111,9 @@ def env_command_prefix_index(tokens: list[str], index: int) -> int | None:
 
 def shell_redirection_next_index(tokens: list[str], index: int) -> int | None:
     token = tokens[index]
-    if token in {">", ">>", "<", "<<", "<>", ">|"}:
+    if token in SHELL_REDIRECTION_OPERATORS:
         return min(index + 2, len(tokens))
-    if re.match(r"^\d?(?:>>?|<<?|<>|>\|).+", token):
+    if re.match(r"^(?:\d?(?:>>?|<<?|<>|>\||>&|<&)|&>>?|<<<).+", token):
         return index + 1
     return None
 
@@ -3090,11 +3199,32 @@ def flock_inner_tokens(tokens: list[str]) -> list[str] | None:
             return command_tokens(tokens[index + 1])
         if token.startswith("--command="):
             return command_tokens(token.split("=", 1)[1])
-        if token in ("-E", "--conflict-exit-code", "-w", "--wait", "--timeout") and index + 1 < len(tokens):
+        if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+            return command_tokens(token[2:])
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            prefix, suffix = token[1:].split("c", 1)
+            if set(prefix) <= FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS:
+                if suffix:
+                    return command_tokens(suffix)
+                if index + 1 < len(tokens):
+                    return command_tokens(tokens[index + 1])
+        if token in FLOCK_OPTIONS_WITH_ARGUMENT and index + 1 < len(tokens):
             index += 2
             continue
         if token.startswith(("--conflict-exit-code=", "--wait=", "--timeout=")):
             index += 1
+            continue
+        if token in FLOCK_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        next_index = short_cluster_consumes_option_argument(
+            tokens,
+            index,
+            {"E", "w"},
+            FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS,
+        )
+        if next_index is not None:
+            index = next_index
             continue
         if token.startswith("-"):
             index += 1
@@ -3115,8 +3245,33 @@ def flock_command_option_tokens(tokens: list[str]) -> list[str] | None:
             return command_tokens(tokens[index + 1])
         if token.startswith("--command="):
             return command_tokens(token.split("=", 1)[1])
-        if token.startswith("-") and not token.startswith("--") and "c" in token[1:] and index + 1 < len(tokens):
-            return command_tokens(tokens[index + 1])
+        if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+            return command_tokens(token[2:])
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            prefix, suffix = token[1:].split("c", 1)
+            if set(prefix) <= FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS:
+                if suffix:
+                    return command_tokens(suffix)
+                if index + 1 < len(tokens):
+                    return command_tokens(tokens[index + 1])
+        if token in FLOCK_OPTIONS_WITH_ARGUMENT and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--conflict-exit-code=", "--wait=", "--timeout=")):
+            index += 1
+            continue
+        if token in FLOCK_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        next_index = short_cluster_consumes_option_argument(
+            tokens,
+            index,
+            {"E", "w"},
+            FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS,
+        )
+        if next_index is not None:
+            index = next_index
+            continue
         index += 1
     return None
 
@@ -3370,6 +3525,22 @@ def expand_known_shell_assignment_name(name: str, variables: dict[str, str]) -> 
         r"\$(?P<bare>[A-Za-z_][A-Za-z0-9_]*)|\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::?[-?+=][^}]*)?\}",
         replace_reference,
         name,
+    )
+
+
+def expand_known_shell_assignment_value(value: str, variables: dict[str, str]) -> str:
+    clean = storage_strip_quotes(value)
+
+    def replace_reference(match: re.Match[str]) -> str:
+        variable = match.group("bare") or match.group("braced")
+        if variable is None or variable not in variables:
+            return match.group(0)
+        return variables[variable]
+
+    return re.sub(
+        r"\$(?P<bare>[A-Za-z_][A-Za-z0-9_]*)|\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::?[-?+=][^}]*)?\}",
+        replace_reference,
+        clean,
     )
 
 
@@ -4616,20 +4787,93 @@ def command_operand_roles(
     )
 
 
-def record_active_copy_paths(
+def operand_has_s3_path_role(operand: str, s3_paths: set[str]) -> bool:
+    return storage_path_is_inside_active_path(storage_without_trailing_current_dir(operand), s3_paths)
+
+
+def local_transfer_operands(tokens: list[str], index: int) -> tuple[list[str], str] | None:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    operands: list[str] = []
+    target_directory: str | None = None
+    cluster_prefix_flags_without_argument = {"a", "d", "f", "H", "i", "L", "l", "n", "P", "p", "R", "r", "s", "u", "v", "x", "Z"}
+    cursor = 0
+    while cursor < len(tail):
+        token = tail[cursor]
+        if token == "--":
+            cursor += 1
+            continue
+        if token in {"-t", "--target-directory"} and cursor + 1 < len(tail):
+            target_directory = tail[cursor + 1]
+            cursor += 2
+            continue
+        if token.startswith("-t") and not token.startswith("--") and len(token) > 2:
+            target_directory = token[2:]
+            cursor += 1
+            continue
+        if token.startswith("-") and not token.startswith("--") and "t" in token[1:]:
+            prefix, suffix = token[1:].split("t", 1)
+            if set(prefix) <= cluster_prefix_flags_without_argument:
+                if suffix:
+                    target_directory = suffix
+                    cursor += 1
+                elif cursor + 1 < len(tail):
+                    target_directory = tail[cursor + 1]
+                    cursor += 2
+                else:
+                    cursor += 1
+                continue
+        if token.startswith("--target-directory="):
+            target_directory = token.split("=", 1)[1]
+            cursor += 1
+            continue
+        if token.startswith("-"):
+            cursor += 1
+            continue
+        operands.append(token)
+        cursor += 1
+    if target_directory is not None:
+        return (operands, target_directory) if operands else None
+    if len(operands) < 2:
+        return None
+    return operands[:-1], operands[-1]
+
+
+def command_copies_s3_path_to_active_target(
     tokens: list[str],
     index: int,
     variable_roles: dict[str, set[str]],
     active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    operands = local_transfer_operands(tokens, index)
+    if operands is None:
+        return False
+    sources, destination = operands
+    if not any(operand_has_s3_path_role(source, s3_paths) for source in sources):
+        return False
+    return STORAGE_ROLE_ACTIVE_TARGET in storage_value_roles(
+        destination,
+        variable_roles,
+        cwd_is_active_target=cwd_is_active_target,
+        active_paths=active_paths,
+    )
+
+
+def record_local_transfer_paths(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
     *,
     cwd_is_active_target: bool,
 ) -> None:
-    tail = command_tail_until_boundary(tokens, index + 1)
-    operands = [token for token in tail if not token.startswith("-")]
-    if len(operands) < 2:
+    operands = local_transfer_operands(tokens, index)
+    if operands is None:
         return
-    sources = operands[:-1]
-    destination = operands[-1]
+    sources, destination = operands
     if any(
         STORAGE_ROLE_ACTIVE_TARGET
         in command_operand_roles(
@@ -4641,39 +4885,357 @@ def record_active_copy_paths(
         for source in sources
     ):
         active_paths.add(storage_path_key(destination))
+    if any(operand_has_s3_path_role(source, s3_paths) for source in sources):
+        s3_paths.add(storage_path_key(destination))
+
+
+TAR_SHORT_OPTION_CLUSTER_FLAGS = set("AacdtruxvzjJfCOpPsSMWUmhk")
+TAR_SHORT_OPTIONS_WITH_ARGUMENT = {"C", "f"}
+
+
+def tar_cluster_looks_like_options(cluster: str) -> bool:
+    return bool(cluster) and set(cluster) <= TAR_SHORT_OPTION_CLUSTER_FLAGS
+
+
+def tar_option_parts(token: str, tail: list[str], index: int) -> tuple[set[str], dict[str, str], int, bool]:
+    flags: set[str] = set()
+    arguments: dict[str, str] = {}
+    consumed = 0
+    if token == "--":
+        return flags, arguments, consumed, True
+    if token in {"c", "-c", "--create"}:
+        flags.add("c")
+        return flags, arguments, consumed, True
+    if token in {"x", "-x", "--extract", "--get"}:
+        flags.add("x")
+        return flags, arguments, consumed, True
+    if token in {"-f", "--file"}:
+        if index + 1 < len(tail):
+            arguments["f"] = tail[index + 1]
+            consumed = 1
+        return flags, arguments, consumed, True
+    if token.startswith("--file="):
+        arguments["f"] = token.split("=", 1)[1]
+        return flags, arguments, consumed, True
+    if token in {"-C", "--directory"}:
+        if index + 1 < len(tail):
+            arguments["C"] = tail[index + 1]
+            consumed = 1
+        return flags, arguments, consumed, True
+    if token.startswith("--directory="):
+        arguments["C"] = token.split("=", 1)[1]
+        return flags, arguments, consumed, True
+    if token.startswith("--"):
+        return flags, arguments, consumed, True
+
+    traditional_cluster = False
+    cluster: str | None = None
+    if token.startswith("-") and len(token) > 1:
+        cluster = token[1:]
+    elif tar_cluster_looks_like_options(token):
+        cluster = token
+        traditional_cluster = True
+    if cluster is None:
+        return flags, arguments, consumed, False
+
+    argument_offset = 1
+    position = 0
+    while position < len(cluster):
+        flag = cluster[position]
+        if flag == "c":
+            flags.add("c")
+        elif flag == "x":
+            flags.add("x")
+        if flag in TAR_SHORT_OPTIONS_WITH_ARGUMENT:
+            suffix = cluster[position + 1 :]
+            if suffix and not (traditional_cluster or tar_cluster_looks_like_options(suffix)):
+                arguments[flag] = suffix
+                break
+            if index + argument_offset < len(tail):
+                arguments[flag] = tail[index + argument_offset]
+                consumed = max(consumed, argument_offset)
+                argument_offset += 1
+            position += 1
+            continue
+        position += 1
+    return flags, arguments, consumed, True
 
 
 def tar_writes_archive_to_stdout(tail: list[str]) -> bool:
     creates_archive = False
+    skip_count = 0
     for index, token in enumerate(tail):
-        if (
-            token
-            and not token.startswith("-")
-            and "c" in token
-            and all(char.isalnum() or char == "-" for char in token)
-        ):
-            creates_archive = True
-            if "f" in token:
-                suffix = token.split("f", 1)[1]
-                if suffix:
-                    return suffix == "-"
-                return index + 1 < len(tail) and tail[index + 1] == "-"
+        if skip_count:
+            skip_count -= 1
             continue
-        if token in {"c", "-c", "--create"}:
+        flags, arguments, consumed, _option_like = tar_option_parts(token, tail, index)
+        skip_count = consumed
+        if "c" in flags:
             creates_archive = True
-            continue
-        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
-            creates_archive = True
-        if token in {"-f", "--file"}:
-            return index + 1 < len(tail) and tail[index + 1] == "-"
-        if token.startswith("--file="):
-            return token.split("=", 1)[1] == "-"
-        if token.startswith("-") and not token.startswith("--") and "f" in token[1:]:
-            suffix = token[1:].split("f", 1)[1]
-            if suffix:
-                return suffix == "-"
-            return index + 1 < len(tail) and tail[index + 1] == "-"
+        if "f" in arguments:
+            return arguments["f"] == "-"
     return creates_archive
+
+
+def tar_archive_creation(tail: list[str]) -> tuple[str | None, list[str]]:
+    creates_archive = False
+    archive: str | None = None
+    sources: list[str] = []
+    skip_count = 0
+    for index, token in enumerate(tail):
+        if skip_count:
+            skip_count -= 1
+            continue
+        flags, arguments, consumed, option_like = tar_option_parts(token, tail, index)
+        skip_count = consumed
+        if "c" in flags:
+            creates_archive = True
+        if "f" in arguments:
+            archive = arguments["f"]
+        if option_like:
+            continue
+        sources.append(token)
+    return (archive, sources) if creates_archive else (None, [])
+
+
+def tar_archive_inputs(tail: list[str]) -> list[str]:
+    archives: list[str] = []
+    skip_count = 0
+    for index, token in enumerate(tail):
+        if skip_count:
+            skip_count -= 1
+            continue
+        _flags, arguments, consumed, option_like = tar_option_parts(token, tail, index)
+        skip_count = consumed
+        if "f" in arguments and arguments["f"] != "-":
+            archives.append(arguments["f"])
+            continue
+        if option_like:
+            continue
+        archives.append(token)
+    return archives
+
+
+def record_tar_archive_paths(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> None:
+    archive, sources = tar_archive_creation(command_tail_until_boundary(tokens, index + 1))
+    if archive is None or archive == "-":
+        return
+    if any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in command_operand_roles(
+            source,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for source in sources
+    ):
+        active_paths.add(storage_path_key(archive))
+    if any(operand_has_s3_path_role(source, s3_paths) for source in sources):
+        s3_paths.add(storage_path_key(archive))
+
+
+def tar_extracts_s3_archive_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    if not tar_extracts_to_active_target(
+        tokens,
+        index,
+        variable_roles,
+        active_paths,
+        cwd_is_active_target=cwd_is_active_target,
+    ):
+        return False
+    return any(operand_has_s3_path_role(archive, s3_paths) for archive in tar_archive_inputs(tail))
+
+
+def zip_archive_operands(tokens: list[str], index: int) -> tuple[str, list[str]] | None:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    operands: list[str] = []
+    options_with_argument = {
+        "-b",
+        "-i",
+        "-n",
+        "-O",
+        "-P",
+        "-t",
+        "-x",
+        "--before-date",
+        "--exclude",
+        "--from-date",
+        "--include",
+        "--out",
+        "--output-file",
+        "--password",
+        "--suffixes",
+        "--temp-path",
+    }
+    short_options_with_argument = {"b", "i", "n", "O", "P", "t", "x"}
+    cursor = 0
+    while cursor < len(tail):
+        token = tail[cursor]
+        if token == "--":
+            cursor += 1
+            continue
+        if token in options_with_argument and cursor + 1 < len(tail):
+            cursor += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
+            cursor += 1
+            continue
+        if token.startswith("-") and not token.startswith("--"):
+            cluster = token[1:]
+            argument_consumed = False
+            for position, flag in enumerate(cluster):
+                if flag not in short_options_with_argument:
+                    continue
+                if position + 1 < len(cluster):
+                    cursor += 1
+                elif cursor + 1 < len(tail):
+                    cursor += 2
+                else:
+                    cursor += 1
+                argument_consumed = True
+                break
+            if argument_consumed:
+                continue
+        if token.startswith("-"):
+            cursor += 1
+            continue
+        operands.append(token)
+        cursor += 1
+    if len(operands) < 2:
+        return None
+    return operands[0], operands[1:]
+
+
+def record_zip_archive_paths(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> None:
+    operands = zip_archive_operands(tokens, index)
+    if operands is None:
+        return
+    archive, sources = operands
+    if any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in command_operand_roles(
+            source,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for source in sources
+    ):
+        active_paths.add(storage_path_key(archive))
+    if any(operand_has_s3_path_role(source, s3_paths) for source in sources):
+        s3_paths.add(storage_path_key(archive))
+
+
+def unzip_extracts_s3_archive_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    archives: list[str] = []
+    members: list[str] = []
+    destination: str | None = None
+    cursor = 0
+    while cursor < len(tail):
+        token = tail[cursor]
+        if token in {"-d", "--directory"} and cursor + 1 < len(tail):
+            destination = tail[cursor + 1]
+            cursor += 2
+            continue
+        if token.startswith("--directory="):
+            destination = token.split("=", 1)[1]
+            cursor += 1
+            continue
+        if token in {"-x", "--exclude", "-P", "--password"} and cursor + 1 < len(tail):
+            cursor += 2
+            continue
+        if token.startswith(("--exclude=", "--password=")):
+            cursor += 1
+            continue
+        if token.startswith("-") and not token.startswith("--"):
+            cluster = token[1:]
+            argument_consumed = False
+            for position, flag in enumerate(cluster):
+                if flag == "d":
+                    if position + 1 < len(cluster):
+                        destination = cluster[position + 1 :]
+                        cursor += 1
+                    elif cursor + 1 < len(tail):
+                        destination = tail[cursor + 1]
+                        cursor += 2
+                    else:
+                        cursor += 1
+                    argument_consumed = True
+                    break
+                if flag in {"x", "P"}:
+                    if position + 1 < len(cluster):
+                        cursor += 1
+                    elif cursor + 1 < len(tail):
+                        cursor += 2
+                    else:
+                        cursor += 1
+                    argument_consumed = True
+                    break
+            if argument_consumed:
+                continue
+        if token == "--" or token.startswith("-"):
+            cursor += 1
+            continue
+        if archives:
+            members.append(token)
+        else:
+            archives.append(token)
+        cursor += 1
+    if not any(operand_has_s3_path_role(archive, s3_paths) for archive in archives):
+        return False
+    if cwd_is_active_target and destination is None:
+        return True
+    destination_is_active = destination is not None and STORAGE_ROLE_ACTIVE_TARGET in storage_value_roles(
+        destination,
+        variable_roles,
+        cwd_is_active_target=cwd_is_active_target,
+        active_paths=active_paths,
+    )
+    return destination_is_active or any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in storage_value_roles(
+            member,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for member in members
+    )
 
 
 def command_streams_active_target_to_stdout(
@@ -4699,6 +5261,141 @@ def command_streams_active_target_to_stdout(
         for token in tail
         if token != "-" and not token.startswith("-")
     )
+
+
+def output_redirection_targets(tokens: list[str], index: int) -> list[str]:
+    targets: list[str] = []
+    tail = command_tail_until_boundary(tokens, index + 1)
+    cursor = 0
+    while cursor < len(tail):
+        token = tail[cursor]
+        if token in {">", ">>", "<>", ">|", ">&", "&>", "&>>"}:
+            if cursor + 1 < len(tail):
+                targets.append(tail[cursor + 1])
+            cursor += 2
+            continue
+        match = re.match(r"^(?:\d?(?:>>?|<>|>\||>&)|&>>?)(.+)$", token)
+        if match is not None:
+            targets.append(match.group(1))
+        cursor += 1
+    return targets
+
+
+def command_output_redirects_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    return any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in storage_value_roles(
+            target,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for target in output_redirection_targets(tokens, index)
+    )
+
+
+def tar_extracts_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    extracts = False
+    directories: list[str] = []
+    members: list[str] = []
+    skip_count = 0
+    cursor = 0
+    while cursor < len(tail):
+        if skip_count:
+            skip_count -= 1
+            cursor += 1
+            continue
+        token = tail[cursor]
+        flags, arguments, consumed, option_like = tar_option_parts(token, tail, cursor)
+        skip_count = consumed
+        if "x" in flags:
+            extracts = True
+        if "C" in arguments:
+            directories.append(arguments["C"])
+        if option_like:
+            cursor += 1
+            continue
+        if token != "--":
+            members.append(token)
+        cursor += 1
+    if not extracts:
+        return False
+    if cwd_is_active_target:
+        return True
+    return any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in storage_value_roles(
+            directory,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for directory in directories
+    ) or any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in storage_value_roles(
+            member,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for member in members
+    )
+
+
+def command_writes_s3_stdin_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+    command_name: str,
+) -> bool:
+    if command_output_redirects_to_active_target(
+        tokens,
+        index,
+        variable_roles,
+        active_paths,
+        cwd_is_active_target=cwd_is_active_target,
+    ):
+        return True
+    if command_name == "tar" and tar_extracts_to_active_target(
+        tokens,
+        index,
+        variable_roles,
+        active_paths,
+        cwd_is_active_target=cwd_is_active_target,
+    ):
+        return True
+    if command_name == "tee":
+        return any(
+            STORAGE_ROLE_ACTIVE_TARGET
+            in storage_value_roles(
+                token,
+                variable_roles,
+                cwd_is_active_target=cwd_is_active_target,
+                active_paths=active_paths,
+            )
+            for token in command_tail_until_boundary(tokens, index + 1)
+            if token != "-" and not token.startswith("-")
+        )
+    return False
 
 
 def shell_assignment_from_tokens(tokens: list[str], index: int) -> tuple[str, str, int] | None:
@@ -4929,6 +5626,78 @@ def aws_s3_transfer_touches_active_target(
     return any(STORAGE_ROLE_ACTIVE_TARGET in roles for roles in endpoint_roles)
 
 
+def aws_s3_transfer_streams_s3_to_stdout(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    *,
+    cwd_is_active_target: bool,
+    active_paths: set[str],
+) -> bool:
+    service_index = aws_service_index(tokens, index)
+    if service_index is None or tokens[service_index] != "s3":
+        return False
+    op_index = service_index + 1
+    if op_index >= len(tokens) or tokens[op_index] != "cp":
+        return False
+    operands = aws_s3_operands(command_tail_until_boundary(tokens, op_index + 1))
+    if len(operands) < 2:
+        return False
+    source = operands[0]
+    destination = operands[1]
+    if destination != "-":
+        return False
+    return STORAGE_ROLE_S3 in storage_value_roles(
+        source,
+        variable_roles,
+        cwd_is_active_target=cwd_is_active_target,
+        active_paths=active_paths,
+    )
+
+
+def record_aws_s3_download_paths(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> None:
+    service_index = aws_service_index(tokens, index)
+    if service_index is None or tokens[service_index] != "s3":
+        return
+    op_index = service_index + 1
+    if op_index >= len(tokens) or tokens[op_index] in SHELL_COMMAND_BOUNDARIES:
+        return
+    operation = tokens[op_index]
+    if operation not in {"cp", "mv", "sync"}:
+        return
+    operands = aws_s3_operands(command_tail_until_boundary(tokens, op_index + 1))
+    if len(operands) < 2:
+        return
+    sources = operands[:-1]
+    destination = operands[-1]
+    if destination == "-" or STORAGE_ROLE_S3 in storage_value_roles(
+        destination,
+        variable_roles,
+        cwd_is_active_target=cwd_is_active_target,
+        active_paths=active_paths,
+    ):
+        return
+    if any(
+        STORAGE_ROLE_S3
+        in storage_value_roles(
+            source,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for source in sources
+    ):
+        s3_paths.add(storage_path_key(destination))
+
+
 def command_prefix_before_token(tokens: list[str], index: int) -> list[str]:
     cursor = index - 1
     while cursor >= 0 and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
@@ -4940,11 +5709,44 @@ def env_chdir_value(tokens: list[str]) -> str | None:
     command_index = env_command_prefix_index(tokens, 1)
     if command_index is None:
         return None
-    for index, token in enumerate(tokens[1:command_index], start=1):
+    index = 1
+    while index < command_index:
+        token = tokens[index]
         if token in ("-C", "--chdir") and index + 1 < command_index:
             return tokens[index + 1]
         if token.startswith("--chdir="):
             return token.split("=", 1)[1]
+        if token.startswith("-") and not token.startswith("--") and "C" in token[1:]:
+            offset = 1
+            while offset < len(token):
+                option = token[offset]
+                if option in "0iv":
+                    offset += 1
+                    continue
+                if option == "C":
+                    suffix = token[offset + 1 :]
+                    if suffix:
+                        return suffix
+                    if index + 1 < command_index:
+                        return tokens[index + 1]
+                    break
+                if option in "Su":
+                    index += 1 if offset + 1 < len(token) or index + 1 >= command_index else 2
+                    break
+                break
+            else:
+                index += 1
+                continue
+            if index >= command_index or token[offset] not in "Su":
+                index += 1
+            continue
+        if token in ENV_OPTIONS_WITH_ARGUMENT and index + 1 < command_index:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in ENV_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        index += 1
     return None
 
 
@@ -4958,13 +5760,46 @@ def sudo_chdir_value(tokens: list[str]) -> str | None:
     )
     if command_index is None:
         return None
-    for index, token in enumerate(tokens[1:command_index], start=1):
+    index = 1
+    short_options_with_argument = {option[1] for option in SUDO_OPTIONS_WITH_ARGUMENT if re.match(r"^-[A-Za-z0-9]$", option)}
+    short_options_without_argument = {option[1] for option in SUDO_OPTIONS_WITHOUT_ARGUMENT if re.match(r"^-[A-Za-z0-9]$", option)}
+    while index < command_index:
+        token = tokens[index]
         if token in ("-D", "--chdir") and index + 1 < command_index:
             return tokens[index + 1]
         if token.startswith("--chdir="):
             return token.split("=", 1)[1]
-        if token.startswith("-D") and len(token) > 2:
-            return token[2:]
+        if token.startswith("-") and not token.startswith("--") and "D" in token[1:]:
+            offset = 1
+            while offset < len(token):
+                option = token[offset]
+                if option in short_options_without_argument:
+                    offset += 1
+                    continue
+                if option == "D":
+                    suffix = token[offset + 1 :]
+                    if suffix:
+                        return suffix
+                    if index + 1 < command_index:
+                        return tokens[index + 1]
+                    break
+                if option in short_options_with_argument:
+                    index += 1 if offset + 1 < len(token) or index + 1 >= command_index else 2
+                    break
+                break
+            else:
+                index += 1
+                continue
+            if index >= command_index or token[offset] not in short_options_with_argument - {"D"}:
+                index += 1
+            continue
+        if token in SUDO_OPTIONS_WITH_ARGUMENT and index + 1 < command_index:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in SUDO_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        index += 1
     return None
 
 
@@ -5001,6 +5836,122 @@ def shell_directory_change_target(tokens: list[str], cursor: int) -> tuple[str |
     return tokens[index], index + 1
 
 
+def shell_group_end_index(tokens: list[str], cursor: int) -> int | None:
+    opener = tokens[cursor]
+    closer = "}" if opener == "{" else ")"
+    depth = 1
+    index = cursor + 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == opener:
+            depth += 1
+        elif token == closer:
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return None
+
+
+def skip_shell_redirections(tokens: list[str], cursor: int) -> int:
+    while cursor < len(tokens):
+        next_cursor = shell_redirection_next_index(tokens, cursor)
+        if next_cursor is None:
+            break
+        cursor = next_cursor
+    return cursor
+
+
+def storage_stdout_roles_from_tokens(
+    tokens: list[str],
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    *,
+    depth: int,
+    initial_cwd_is_active_target: bool,
+) -> set[str]:
+    if depth > 6:
+        return set()
+    roles: set[str] = set()
+    cursor = 0
+    cwd_is_active_target = initial_cwd_is_active_target
+    pipe_stdin_is_active_target = False
+    pipe_stdin_is_s3 = False
+    while cursor < len(tokens):
+        assignment = shell_assignment_from_tokens(tokens, cursor)
+        if assignment is not None:
+            cursor = assignment[2]
+            continue
+        token = tokens[cursor]
+        if token in {"{", "("}:
+            close_index = shell_group_end_index(tokens, cursor)
+            if close_index is None:
+                cursor += 1
+                continue
+            inner_roles = storage_stdout_roles_from_tokens(
+                tokens[cursor + 1 : close_index],
+                variable_roles,
+                active_paths,
+                depth=depth + 1,
+                initial_cwd_is_active_target=cwd_is_active_target,
+            )
+            roles.update(inner_roles)
+            cursor = skip_shell_redirections(tokens, close_index + 1)
+            continue
+        if token in SHELL_COMMAND_BOUNDARIES:
+            if token == "|":
+                pipe_stdin_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in roles
+                pipe_stdin_is_s3 = STORAGE_ROLE_S3 in roles
+            else:
+                pipe_stdin_is_active_target = False
+                pipe_stdin_is_s3 = False
+            cursor += 1
+            continue
+        name = executable_name(token)
+        if name in {"cd", "pushd"}:
+            directory_target, next_cursor = shell_directory_change_target(tokens, cursor)
+            if directory_target is None:
+                if name == "cd":
+                    cwd_is_active_target = False
+                cursor = next_cursor
+                continue
+            target_roles = storage_value_roles(
+                directory_target,
+                variable_roles,
+                cwd_is_active_target=cwd_is_active_target,
+                active_paths=active_paths,
+            )
+            cwd_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in target_roles
+            cursor = next_cursor
+            continue
+        if name in ACTIVE_TARGET_STDOUT_COMMANDS and (
+            pipe_stdin_is_active_target
+            or command_streams_active_target_to_stdout(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                cwd_is_active_target=cwd_is_active_target,
+                command_name=name,
+            )
+        ):
+            roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+        elif pipe_stdin_is_active_target and name != "aws":
+            roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+        if name == "aws" and aws_s3_transfer_streams_s3_to_stdout(
+            tokens,
+            cursor,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        ):
+            roles.add(STORAGE_ROLE_S3)
+        elif pipe_stdin_is_s3:
+            roles.add(STORAGE_ROLE_S3)
+        cursor += 1
+    return roles
+
+
 def storage_transfer_policy_errors_from_tokens(
     tokens: list[str],
     variable_roles: dict[str, set[str]],
@@ -5008,32 +5959,76 @@ def storage_transfer_policy_errors_from_tokens(
     depth: int = 0,
     initial_cwd_is_active_target: bool = False,
     initial_active_paths: set[str] | None = None,
+    initial_s3_paths: set[str] | None = None,
+    initial_pipe_stdin_is_active_target: bool = False,
+    initial_pipe_stdin_is_s3: bool = False,
 ) -> list[str]:
     if depth > 6:
         return []
     cursor = 0
     cwd_is_active_target = initial_cwd_is_active_target
     active_paths: set[str] = set(initial_active_paths or set())
+    s3_paths: set[str] = set(initial_s3_paths or set())
     pipe_stdout_is_active_target = False
-    pipe_stdin_is_active_target = False
+    pipe_stdin_is_active_target = initial_pipe_stdin_is_active_target
+    pipe_stdout_is_s3 = False
+    pipe_stdin_is_s3 = initial_pipe_stdin_is_s3
     while cursor < len(tokens):
         assignment = shell_assignment_from_tokens(tokens, cursor)
         if assignment is not None:
             cursor = assignment[2]
             continue
         token = tokens[cursor]
+        if token in {"{", "("}:
+            close_index = shell_group_end_index(tokens, cursor)
+            if close_index is None:
+                cursor += 1
+                continue
+            inner_tokens = tokens[cursor + 1 : close_index]
+            nested_errors = storage_transfer_policy_errors_from_tokens(
+                inner_tokens,
+                variable_roles,
+                depth=depth + 1,
+                initial_cwd_is_active_target=cwd_is_active_target,
+                initial_active_paths=active_paths,
+                initial_s3_paths=s3_paths,
+                initial_pipe_stdin_is_active_target=pipe_stdin_is_active_target,
+                initial_pipe_stdin_is_s3=pipe_stdin_is_s3,
+            )
+            if nested_errors:
+                return nested_errors
+            group_stdout_roles = storage_stdout_roles_from_tokens(
+                inner_tokens,
+                variable_roles,
+                active_paths,
+                depth=depth + 1,
+                initial_cwd_is_active_target=cwd_is_active_target,
+            )
+            if STORAGE_ROLE_S3 in group_stdout_roles and command_output_redirects_to_active_target(
+                tokens,
+                close_index,
+                variable_roles,
+                active_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            ):
+                return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
+            pipe_stdout_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in group_stdout_roles
+            pipe_stdout_is_s3 = STORAGE_ROLE_S3 in group_stdout_roles
+            cursor = skip_shell_redirections(tokens, close_index + 1)
+            continue
         if token in SHELL_COMMAND_BOUNDARIES:
             if token == "|":
                 pipe_stdin_is_active_target = pipe_stdout_is_active_target
+                pipe_stdin_is_s3 = pipe_stdout_is_s3
             else:
                 pipe_stdin_is_active_target = False
+                pipe_stdin_is_s3 = False
             pipe_stdout_is_active_target = False
+            pipe_stdout_is_s3 = False
             cursor += 1
             continue
         name = executable_name(token)
-        if name in {"bash", "dash", "fish", "sh", "zsh"} and command_prefix_allows_cargo(
-            command_prefix_before_token(tokens, cursor)
-        ):
+        if name in {"bash", "dash", "fish", "sh", "zsh"}:
             nested = shell_command(tokens[cursor:])
             if nested is not None:
                 nested_errors = storage_transfer_policy_errors_from_tokens(
@@ -5042,10 +6037,11 @@ def storage_transfer_policy_errors_from_tokens(
                     depth=depth + 1,
                     initial_cwd_is_active_target=cwd_is_active_target,
                     initial_active_paths=active_paths,
+                    initial_s3_paths=s3_paths,
                 )
                 if nested_errors:
                     return nested_errors
-        if name == "eval" and command_prefix_allows_cargo(command_prefix_before_token(tokens, cursor)):
+        if name == "eval":
             inner = tokens[cursor + 1 :]
             if inner and inner[0] == "--":
                 inner = inner[1:]
@@ -5056,6 +6052,7 @@ def storage_transfer_policy_errors_from_tokens(
                     depth=depth + 1,
                     initial_cwd_is_active_target=cwd_is_active_target,
                     initial_active_paths=active_paths,
+                    initial_s3_paths=s3_paths,
                 )
                 if nested_errors:
                     return nested_errors
@@ -5076,6 +6073,23 @@ def storage_transfer_policy_errors_from_tokens(
                     depth=depth + 1,
                     initial_cwd_is_active_target=STORAGE_ROLE_ACTIVE_TARGET in chdir_roles,
                     initial_active_paths=active_paths,
+                    initial_s3_paths=s3_paths,
+                )
+                if nested_errors:
+                    return nested_errors
+        if name in RECURSIVE_WRAPPER_EXECUTABLES:
+            segment = [token] + command_tail_until_boundary(tokens, cursor + 1)
+            inner = wrapper_inner_tokens(segment)
+            if inner:
+                nested_errors = storage_transfer_policy_errors_from_tokens(
+                    inner,
+                    variable_roles,
+                    depth=depth + 1,
+                    initial_cwd_is_active_target=cwd_is_active_target,
+                    initial_active_paths=active_paths,
+                    initial_s3_paths=s3_paths,
+                    initial_pipe_stdin_is_active_target=pipe_stdin_is_active_target,
+                    initial_pipe_stdin_is_s3=pipe_stdin_is_s3,
                 )
                 if nested_errors:
                     return nested_errors
@@ -5095,14 +6109,60 @@ def storage_transfer_policy_errors_from_tokens(
             cwd_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in target_roles
             cursor = next_cursor
             continue
-        if name in {"cp", "rsync"}:
-            record_active_copy_paths(
+        if name in {"cp", "rsync", "mv"}:
+            if command_copies_s3_path_to_active_target(
                 tokens,
                 cursor,
                 variable_roles,
                 active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            ):
+                return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
+            record_local_transfer_paths(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
                 cwd_is_active_target=cwd_is_active_target,
             )
+        if name == "tar":
+            if tar_extracts_s3_archive_to_active_target(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            ):
+                return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
+            record_tar_archive_paths(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            )
+        if name == "zip":
+            record_zip_archive_paths(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            )
+        if name == "unzip" and unzip_extracts_s3_archive_to_active_target(
+            tokens,
+            cursor,
+            variable_roles,
+            active_paths,
+            s3_paths,
+            cwd_is_active_target=cwd_is_active_target,
+        ):
+            return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
         if name in ACTIVE_TARGET_STDOUT_COMMANDS:
             pipe_stdout_is_active_target = pipe_stdin_is_active_target or command_streams_active_target_to_stdout(
                 tokens,
@@ -5114,6 +6174,15 @@ def storage_transfer_policy_errors_from_tokens(
             )
         elif pipe_stdin_is_active_target and name != "aws":
             pipe_stdout_is_active_target = True
+        if pipe_stdin_is_s3 and command_writes_s3_stdin_to_active_target(
+            tokens,
+            cursor,
+            variable_roles,
+            active_paths,
+            cwd_is_active_target=cwd_is_active_target,
+            command_name=name,
+        ):
+            return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
         if name == "aws" and aws_s3_transfer_touches_active_target(
             tokens,
             cursor,
@@ -5124,7 +6193,25 @@ def storage_transfer_policy_errors_from_tokens(
         ):
             return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
         if name == "aws":
+            record_aws_s3_download_paths(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            )
+            pipe_stdout_is_s3 = aws_s3_transfer_streams_s3_to_stdout(
+                tokens,
+                cursor,
+                variable_roles,
+                cwd_is_active_target=cwd_is_active_target,
+                active_paths=active_paths,
+            )
             pipe_stdin_is_active_target = False
+            pipe_stdin_is_s3 = False
+        elif pipe_stdin_is_s3:
+            pipe_stdout_is_s3 = True
         cursor += 1
     return []
 
@@ -5178,6 +6265,18 @@ def target_env_key_from_assignment_name(
     return None
 
 
+RUSTFLAGS_OUTPUT_OVERRIDE_KEYS = {
+    "CARGO_BUILD_RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "RUSTFLAGS",
+}
+
+
+def rustflags_value_has_output_override(value: str, assignments: dict[str, str] | None = None) -> bool:
+    clean = expand_known_shell_assignment_value(value, assignments or {})
+    return "--out-dir" in clean or "--artifact-dir" in clean
+
+
 def dynamic_env_assignment_message(
     token: str,
     assignments: dict[str, str],
@@ -5185,9 +6284,13 @@ def dynamic_env_assignment_message(
 ) -> str | None:
     if "=" not in token:
         return None
-    name, _value = token.split("=", 1)
+    name, value = token.split("=", 1)
     target_key = target_env_key_from_assignment_name(name, assignments, target_keys)
-    return target_keys[target_key] if target_key is not None else None
+    if target_key is None:
+        return None
+    if target_key in RUSTFLAGS_OUTPUT_OVERRIDE_KEYS and not rustflags_value_has_output_override(value, assignments):
+        return None
+    return target_keys[target_key]
 
 
 def dynamic_env_segment_messages(
@@ -5454,6 +6557,15 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
         "CARGO_TARGET_DIR": "CARGO_TARGET_DIR raw target override must be classified",
         "CARGO_BUILD_TARGET_DIR": "CARGO_BUILD_TARGET_DIR raw target override must be classified",
         "CARGO_TARGET_TMPDIR": "CARGO_TARGET_TMPDIR raw target override must be classified",
+        "CARGO_INCREMENTAL": "CARGO_INCREMENTAL raw cache override must be classified",
+        "CARGO_BUILD_RUSTFLAGS": "CARGO_BUILD_RUSTFLAGS raw output override must be classified",
+        "CARGO_ENCODED_RUSTFLAGS": "CARGO_ENCODED_RUSTFLAGS raw output override must be classified",
+        "CARGO_INSTALL_ROOT": "CARGO_INSTALL_ROOT install output override must be classified",
+        "CARGO_HOME": "CARGO_HOME raw cache override must be classified",
+        "RUSTUP_HOME": "RUSTUP_HOME raw toolchain override must be classified",
+        "RUSTFLAGS": "RUSTFLAGS raw output override must be classified",
+        "RUSTC_WRAPPER": "RUSTC_WRAPPER raw compiler wrapper must be classified",
+        "RUSTC_WORKSPACE_WRAPPER": "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified",
         "BOLT_ALLOW_LOCAL_RUST": "BOLT_ALLOW_LOCAL_RUST local Rust break-glass must not be checked in",
         "BOLT_MANAGED_JUST": "BOLT_MANAGED_JUST private just recipe bypass must be classified",
         "GITHUB_ACTIONS": "GITHUB_ACTIONS local CI spoof must not be checked in",
@@ -7307,21 +8419,6 @@ def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> lis
         if command_index is not None and install_index >= command_index:
             errors.append(f"{workflow_name} {job} must install {tool} before {command}")
 
-    build_lines = jobs.get("build")
-    if build_lines is None:
-        return errors
-    build_text = uncommented_text(build_lines)
-    if "archive.sha256" in build_text or "steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256" not in build_text:
-        errors.append(f"{workflow_name} build must use pinned cargo-zigbuild archive sha256")
-    zigbuild_install_index = first_step_containing_literals_in_order(build_lines, ZIGBUILD_PREBUILT_LITERALS)
-    if zigbuild_install_index is None:
-        errors.append(f"{workflow_name} build must install cargo-zigbuild from checksum-verified prebuilt release")
-    else:
-        build_command_index = first_step_running_command(build_lines, "just build")
-        if build_command_index is not None and zigbuild_install_index >= build_command_index:
-            errors.append(f"{workflow_name} build must install cargo-zigbuild before just build")
-    if 'test "$actual" = "$expected"' not in build_text:
-        errors.append(f"{workflow_name} build must verify cargo-zigbuild archive checksum")
     return errors
 
 
@@ -7329,6 +8426,15 @@ def verify_setup_action(action_text: str) -> list[str]:
     errors: list[str] = []
     uncommented_lines = [strip_comment(line) for line in action_text.splitlines()]
     uncommented = "\n".join(uncommented_lines)
+    install_just_step = named_step_block(action_text.splitlines(), "Install just")
+    if (
+        install_just_step is None
+        or not block_uses_pinned_install_action(install_just_step)
+        or not block_has_input(install_just_step, "tool", SETUP_JUST_TOOL)
+    ):
+        errors.append("setup action must install just with pinned taiki-e/install-action")
+    elif not block_has_input(install_just_step, "fallback", "none"):
+        errors.append("setup action just install-action fallback must be none")
     step_lines = [action_step_line(action_text, step) for step in SETUP_ACTION_ORDERED_STEPS]
     if any(line is None for line in step_lines):
         errors.append("setup action missing required ordered steps")
@@ -7515,14 +8621,16 @@ def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config
     errors.extend(raw_rust_storage_errors(action_text))
     errors.extend(verify_setup_action(action_text))
     errors.extend(verify_nextest_config(nextest_config_text))
-    errors.extend(verify_install_action_pin_consistency(workflows))
+    install_action_pin_sources = dict(workflows)
+    install_action_pin_sources[".github/actions/setup-environment/action.yml"] = action_text
+    errors.extend(verify_install_action_pin_consistency(install_action_pin_sources))
     return errors
 
 
-def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str]:
+def verify_install_action_pin_consistency(sources: dict[str, str]) -> list[str]:
     # Dependabot groups action bumps so all taiki-e/install-action pins move
     # together; this guards against half-bumps in human-authored PRs that
-    # leave workflow files referencing inconsistent SHAs. Scan line-by-line
+    # leave workflow/action files referencing inconsistent SHAs. Scan line-by-line
     # after stripping comments so commentary containing the action ref does
     # not produce false positives.
     #
@@ -7538,9 +8646,9 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
     # reference must not phantom-bucket and mask a real drift.
     errors: list[str] = []
     sha_to_files: dict[str, list[str]] = {}
-    for workflow_name, workflow_text in workflows.items():
+    for source_name, source_text in sources.items():
         previous_line_was_bare_uses_key = False
-        for line_index, line in enumerate(workflow_text.splitlines(), start=1):
+        for line_index, line in enumerate(source_text.splitlines(), start=1):
             clean = strip_comment(line)
             mentions_install_action = bool(TAIKI_INSTALL_ACTION_MENTION_RE.search(clean))
             scoped_to_uses_value = (
@@ -7553,12 +8661,12 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
             match = TAIKI_INSTALL_ACTION_RE.match(clean)
             if match is None:
                 errors.append(
-                    f"{workflow_name}:{line_index}: taiki-e/install-action must be referenced as "
+                    f"{source_name}:{line_index}: taiki-e/install-action must be referenced as "
                     f"'uses: taiki-e/install-action@<40-hex-SHA>' on a single line, got: {clean.strip()}"
                 )
                 continue
             sha = match.group(2).lower()
-            sha_to_files.setdefault(sha, []).append(workflow_name)
+            sha_to_files.setdefault(sha, []).append(source_name)
     if len(sha_to_files) > 1:
         parts = sorted(
             f"{sha} in {','.join(sorted(set(files)))}"

@@ -10,6 +10,7 @@ use bolt_v2::{
         RealizedVolatilitySourceClassBlock, RealizedVolatilitySurfaceBlock, ReferenceDataBlock,
         load_bolt_v3_config,
     },
+    bolt_v3_iv::config::IvRootConfig,
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_submit_admission::{
@@ -485,6 +486,12 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
         dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
     > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
+    let execution_controls =
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls {
+            submit_admission: admission.clone(),
+            order_execution_policy:
+                bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+        };
     let mut node = make_bolt_v3_live_node_builder(&empty_loaded)
         .expect("v3 LiveNodeBuilder should construct before strategy registration")
         .build()
@@ -496,8 +503,7 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
             &loaded,
             &resolved,
             TEST_BINDINGS,
-            admission.clone(),
-            bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            execution_controls,
             decision_evidence.clone(),
         )
         .expect("configured strategy should register through matching runtime binding");
@@ -508,6 +514,52 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
         node.kernel().trader().borrow().strategy_ids(),
         vec![StrategyId::from("BOLT-V3-PHASE3-BINDING")]
     );
+}
+
+#[test]
+fn non_runtime_strategy_registration_rejects_iv_enabled_config() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
+        .expect("fixture secrets should resolve");
+    let mut empty_loaded = loaded.clone();
+    empty_loaded.strategies.clear();
+    let mut node = make_bolt_v3_live_node_builder(&empty_loaded)
+        .expect("v3 LiveNodeBuilder should construct before strategy registration")
+        .build()
+        .expect("v3 LiveNode should build before strategy registration");
+    loaded.root.iv = Some(IvRootConfig {
+        schema_version: 1,
+        profiles: Vec::new(),
+    });
+    let decision_evidence: Arc<
+        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
+    let execution_controls =
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls {
+            submit_admission: admission,
+            order_execution_policy:
+                bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+        };
+
+    let error =
+        bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
+            &mut node,
+            &loaded,
+            &resolved,
+            &[],
+            execution_controls,
+            decision_evidence,
+        )
+        .expect_err("IV configs must use runtime-backed strategy registration");
+
+    assert!(matches!(
+        error,
+        bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+            message
+        } if message.contains("runtime-backed")
+    ));
 }
 
 fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {

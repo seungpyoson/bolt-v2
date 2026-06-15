@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
-use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
+use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
 use crate::source_universe_object_gates::{
     SourceUniverseObjectGateMaterialization, SourceUniverseObjectGateRecord,
     SourceUniverseObjectGateStatus,
@@ -288,9 +288,17 @@ pub fn evaluate_source_universe_conversion_run_plan(
     );
 
     let object_gates_path =
-        resolve_existing_path(base_dir, &spec.source_universe_object_gates_path);
+        resolve_existing_path(base_dir, &spec.source_universe_object_gates_path)
+            .canonicalize()
+            .with_context(|| {
+                format!(
+                    "canonicalize source-universe object gates path {}",
+                    spec.source_universe_object_gates_path.display()
+                )
+            })?;
     let object_gates_hash = sha256_file(&object_gates_path)?;
     let gates: SourceUniverseObjectGateMaterialization = read_json(&object_gates_path)?;
+    let portable_object_gates_path = portable_artifact_path(&object_gates_path);
     ensure!(
         gates.status == SourceUniverseObjectGateStatus::Ready,
         "source-universe object gates {} are not ready",
@@ -377,7 +385,7 @@ pub fn evaluate_source_universe_conversion_run_plan(
         source: gates.source,
         family: gates.family,
         table_family: gates.table_family,
-        object_gates_path: object_gates_path.clone(),
+        object_gates_path: portable_object_gates_path.clone(),
         object_gates_hash: object_gates_hash.clone(),
         max_objects_per_run: spec.max_objects_per_run,
         max_source_bytes_per_run: spec.max_source_bytes_per_run,
@@ -390,7 +398,7 @@ pub fn evaluate_source_universe_conversion_run_plan(
         category_summaries: category_summaries(&runs),
         artifact_refs: vec![SourceUniverseConversionRunPlanArtifactRef {
             role: "source_universe_object_gates".to_string(),
-            path: object_gates_path,
+            path: portable_object_gates_path,
             sha256: object_gates_hash,
         }],
         runs,

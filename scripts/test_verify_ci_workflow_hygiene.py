@@ -330,7 +330,7 @@ jobs:
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
@@ -472,7 +472,7 @@ jobs:
           key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
       - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
@@ -547,7 +547,7 @@ jobs:
         run: |
           echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
@@ -616,28 +616,10 @@ jobs:
         run: |
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
       - name: Install cargo-zigbuild
-        run: |
-          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \\
-            --retry 10 \\
-            --retry-delay 3 \\
-            --retry-all-errors \\
-            --fail \\
-            --location \\
-            --show-error \\
-            --silent \\
-            --output "$archive" \\
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild"
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none
       - run: just build
       - name: Stage managed build artifact
         id: managed_artifact
@@ -876,7 +858,7 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
@@ -918,8 +900,6 @@ outputs:
     value: ${{ steps.shared.outputs.zig_version }}
   zigbuild_version:
     value: ${{ steps.shared.outputs.zigbuild_version }}
-  zigbuild_x86_64_unknown_linux_gnu_sha256:
-    value: ${{ steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}
   rust_verification_owner:
     value: ${{ steps.shared.outputs.rust_verification_owner }}
   managed_target_dir:
@@ -930,8 +910,10 @@ runs:
   using: composite
   steps:
     - name: Install just
-      shell: bash
-      run: echo "${{ inputs.just-version }}"
+      uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+      with:
+        tool: just@${{ inputs.just-version }}
+        fallback: none
     - name: Lint workflow contract
       if: ${{ inputs.lint-workflow-contract == 'true' }}
       shell: bash
@@ -952,7 +934,6 @@ runs:
           echo "target=$(just --evaluate target)" >> "$GITHUB_OUTPUT"
           echo "zig_version=$(just --evaluate zig_version)" >> "$GITHUB_OUTPUT"
           echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
-          echo "zigbuild_x86_64_unknown_linux_gnu_sha256=$(just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256)" >> "$GITHUB_OUTPUT"
         fi
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}
@@ -1929,6 +1910,144 @@ def assert_strip_comment_handles_single_quoted_backslash() -> None:
         raise AssertionError(f"single-quoted backslash comment stripping failed: {actual!r}")
 
 
+def assert_workflow_hygiene_reviewer_regressions() -> None:
+    verifier = load_verifier()
+
+    url_fragment_command = "URL=https://example.com/api#fragment ; cargo build --target-dir /tmp/raw"
+    if verifier.strip_comment(url_fragment_command) != url_fragment_command:
+        raise AssertionError("unquoted # inside a shell word must not hide the rest of the command")
+
+    trailing_comment = "run: echo ok # trailing comment"
+    if verifier.strip_comment(trailing_comment) != "run: echo ok":
+        raise AssertionError("whitespace-prefixed trailing comments must still be stripped")
+
+    upload_probe = replace_once(
+        BASE_WORKFLOW,
+        "      - run: just fmt-check",
+        '      - run: echo "actions/upload-artifact@"\n      - run: just fmt-check',
+    )
+    upload_errors = verifier.verify_text(upload_probe, BASE_ACTION, BASE_NEXTEST_CONFIG)
+    if any("actions/upload-artifact must be pinned" in error for error in upload_errors):
+        raise AssertionError(f"action prose must not be treated as an upload-artifact action: {upload_errors!r}")
+
+    rust_cache_probe = replace_once(
+        BASE_WORKFLOW,
+        "      - run: just deny",
+        '      - run: echo "Swatinem/rust-cache@"\n      - run: just deny',
+    )
+    rust_cache_errors = verifier.verify_text(rust_cache_probe, BASE_ACTION, BASE_NEXTEST_CONFIG)
+    if any("shared Cargo registry/git" in error for error in rust_cache_errors):
+        raise AssertionError(f"action prose must not be treated as a rust-cache action: {rust_cache_errors!r}")
+
+    dynamic_env_cases = {
+        "RUSTFLAGS raw output override must be classified": """
+            E=RUSTFLAGS
+            export $E='--out-dir=/tmp/raw-out'
+            cargo build
+        """,
+        "CARGO_BUILD_RUSTFLAGS raw output override must be classified": """
+            E=CARGO_BUILD_RUSTFLAGS
+            export $E='--artifact-dir=/tmp/raw-artifacts'
+            cargo build
+        """,
+        "CARGO_ENCODED_RUSTFLAGS raw output override must be classified": """
+            E=CARGO_ENCODED_RUSTFLAGS
+            export $E='--out-dir=/tmp/raw-out'
+            cargo build
+        """,
+        "CARGO_HOME raw cache override must be classified": """
+            E=CARGO_HOME
+            export $E=/tmp/cargo-home
+            cargo build
+        """,
+        "RUSTUP_HOME raw toolchain override must be classified": """
+            E=RUSTUP_HOME
+            export $E=/tmp/rustup-home
+            cargo build
+        """,
+        "CARGO_INCREMENTAL raw cache override must be classified": """
+            E=CARGO_INCREMENTAL
+            export $E=1
+            cargo build
+        """,
+        "CARGO_INSTALL_ROOT install output override must be classified": """
+            E=CARGO_INSTALL_ROOT
+            export $E=/tmp/install-root
+            cargo install cargo-deny
+        """,
+        "RUSTC_WRAPPER raw compiler wrapper must be classified": """
+            E=RUSTC_WRAPPER
+            export $E=/tmp/wrapper
+            cargo build
+        """,
+        "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified": """
+            E=RUSTC_WORKSPACE_WRAPPER
+            export $E=/tmp/workspace-wrapper
+            cargo build
+        """,
+    }
+    for expected, script in dynamic_env_cases.items():
+        errors = verifier.raw_rust_storage_errors(textwrap.dedent(script))
+        if expected not in errors:
+            raise AssertionError(f"dynamic env alias did not classify {expected!r}: {errors!r}")
+
+    rustflags_expected = "RUSTFLAGS raw output override must be classified"
+    rustflags_variable_cases = [
+        'OUT="--out-dir=/tmp/raw"; RUSTFLAGS="$OUT" cargo build',
+        'OUT="--artifact-dir=/tmp/raw"; env RUSTFLAGS="$OUT" cargo build',
+        'OUT="--out-dir=/tmp/raw"\nRUSTFLAGS="$OUT" cargo build',
+    ]
+    for script in rustflags_variable_cases:
+        errors = verifier.raw_rust_storage_errors(textwrap.dedent(script))
+        if rustflags_expected not in errors:
+            raise AssertionError(f"rustflags variable output override was not rejected: {script!r} -> {errors!r}")
+
+    redirection_expected = "cargo --target-dir raw target override must be classified"
+    advanced_redirection_cases = [
+        "env &> out -u FOO cargo build --target-dir /tmp/raw",
+        "env &>> out -u FOO cargo build --target-dir /tmp/raw",
+        "env >& out -u FOO cargo build --target-dir /tmp/raw",
+        "env <& input -u FOO cargo build --target-dir /tmp/raw",
+        "env <<< input -u FOO cargo build --target-dir /tmp/raw",
+    ]
+    for script in advanced_redirection_cases:
+        errors = verifier.raw_rust_storage_errors(script)
+        if redirection_expected not in errors:
+            raise AssertionError(f"advanced redirection hid raw cargo target override: {script!r} -> {errors!r}")
+
+    s3_expected = "S3 active mutable target cache must be rejected"
+    s3_stdout_cases = {
+        "aws stdout extracted into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | tar -x -C target",
+        "aws stdout extracted into target with traditional tar options": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | tar xf - -C target",
+        "aws stdout piped through cat into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | cat > target/cache.tar",
+        "aws stdout piped through cat with >& redirection into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | cat >& target/cache.tar",
+        "aws stdout redirected into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - > target/cache.tar",
+    }
+    for name, script in s3_stdout_cases.items():
+        errors = verifier.raw_rust_storage_errors(script)
+        if s3_expected not in errors:
+            raise AssertionError(f"{name} was not rejected: {errors!r}")
+
+    env_chdir_cases = [
+        "env -Ctarget aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+        "env -iC target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+        "env -u -C -C target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+    ]
+    for script in env_chdir_cases:
+        errors = verifier.raw_rust_storage_errors(script)
+        if s3_expected not in errors:
+            raise AssertionError(f"env chdir active target context was not rejected: {script!r} -> {errors!r}")
+
+    sudo_chdir_cases = [
+        "sudo -ED target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+        "sudo -u -D -D target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+    ]
+    for script in sudo_chdir_cases:
+        errors = verifier.raw_rust_storage_errors(script)
+        if s3_expected not in errors:
+            raise AssertionError(f"sudo chdir active target context was not rejected: {script!r} -> {errors!r}")
+
+
 def assert_required_job_indentation_is_actionable() -> None:
     assert_error(
         "job clippy must use two-space top-level indentation",
@@ -1992,7 +2111,7 @@ def assert_nextest_live_node_group_covers_bolt_v3_builders() -> None:
 # and BASE_ADVISORY_WORKFLOW; SHA_ALT is a different valid 40-hex SHA used to
 # exercise drift, and SHA_BASE_UPPER is the base SHA in uppercase to exercise
 # normalization.
-PIN_CONSISTENCY_SHA_BASE = "3771e22aa892e03fd35585fae288baad1755695c"
+PIN_CONSISTENCY_SHA_BASE = "e49978b799e49ff429d162b7a30601a569ab6538"
 PIN_CONSISTENCY_SHA_ALT = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 PIN_CONSISTENCY_SHA_BASE_UPPER = PIN_CONSISTENCY_SHA_BASE.upper()
 
@@ -2037,6 +2156,31 @@ def assert_pin_consistency_same_sha_no_error() -> None:
     if drift_errors:
         raise AssertionError(
             f"expected no pin-drift errors for identical SHAs, got: {drift_errors!r}"
+        )
+
+
+def assert_pin_consistency_includes_setup_action() -> None:
+    """The composite setup action must be in the same install-action pin bucket."""
+    verifier = load_verifier()
+    setup_action_alt = BASE_ACTION.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_ALT}",
+        1,
+    )
+    errors = verifier.verify_workflows(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW},
+        setup_action_alt,
+        BASE_NEXTEST_CONFIG,
+    )
+    drift_errors = [e for e in errors if "taiki-e/install-action pin drift" in e]
+    if not drift_errors:
+        raise AssertionError(
+            f"expected setup-action pin drift to be reported, got: {errors!r}"
+        )
+    drift = drift_errors[0]
+    if ".github/actions/setup-environment/action.yml" not in drift:
+        raise AssertionError(
+            f"pin-drift error must include the setup action path, got: {drift!r}"
         )
 
 
@@ -2177,6 +2321,32 @@ def assert_pin_consistency_rejects_multi_line_mutable_tag() -> None:
         raise AssertionError(
             f"expected multi-line @v2 to be flagged with file:line and 40-hex-SHA wording, got: {errors!r}"
         )
+
+
+def assert_pin_consistency_rejects_block_scalar_mutable_tag() -> None:
+    """Gemini follow-up: block-scalar `uses:` with mutable tag must not bypass."""
+    verifier = load_verifier()
+    cases = [
+        "uses: >\n          taiki-e/install-action@v2",
+        "uses: |-\n          taiki-e/install-action@v2",
+        "uses: # bypass\n          taiki-e/install-action@v2",
+    ]
+    for replacement in cases:
+        advisory = _replace_advisory_pin_with(replacement)
+        errors = verifier.verify_install_action_pin_consistency(
+            {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory}
+        )
+        matching = [
+            e
+            for e in errors
+            if "advisory.yml:" in e
+            and "40-hex-SHA" in e
+            and "taiki-e/install-action@v2" in e
+        ]
+        if not matching:
+            raise AssertionError(
+                f"expected block/comment scalar @v2 to be flagged with file:line and 40-hex-SHA wording, got: {errors!r}"
+            )
 
 
 def assert_pin_consistency_rejects_multi_line_valid_sha() -> None:
@@ -2393,6 +2563,129 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         """,
         "active target streamed through fused input redirection": """
             cat <target/debug/libbolt_v2.rmeta | aws s3 cp - s3://bolt-v2-active-cache/cache
+        """,
+        "s3 stdout written to active target through shell group redirection": """
+            { aws s3 cp s3://bolt-v2-active-cache/target.tar - ; } > target/cache.tar
+        """,
+        "s3 stdout written to active target through subshell redirection": """
+            ( aws s3 cp s3://bolt-v2-active-cache/target.tar - ) > target/cache.tar
+        """,
+        "active target moved through local staging before S3 upload": """
+            mv target my_cache
+            aws s3 cp my_cache s3://bolt-v2-active-cache/target.tar
+        """,
+        "s3 download moved from local staging into active target": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar my_cache
+            mv my_cache target
+        """,
+        "active target archived locally before S3 upload": """
+            tar -cf cache.tar target
+            aws s3 cp cache.tar s3://bolt-v2-active-cache/target.tar
+        """,
+        "active target zipped locally before S3 upload": """
+            zip -r cache.zip target
+            aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
+        """,
+        "active target zipped with option argument before S3 upload": """
+            zip -b /tmp cache.zip target
+            aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
+        """,
+        "active target zipped with clustered option argument before S3 upload": """
+            zip -qr0b /tmp cache.zip target
+            aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
+        """,
+        "active target zipped with exclude option argument before S3 upload": """
+            zip -x ignored cache.zip target
+            aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
+        """,
+        "s3 archive downloaded locally before active target extraction": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
+            tar -xf cache.tar -C target
+        """,
+        "s3 archive extraction names active target as operand": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
+            tar xf cache.tar target
+        """,
+        "s3 zip downloaded locally before active target extraction": """
+            aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
+            unzip cache.zip -d target
+        """,
+        "s3 zip extraction names active target as operand": """
+            aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
+            unzip cache.zip target/*
+        """,
+        "s3 zip extraction skips option argument before archive": """
+            aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
+            unzip -x ignored cache.zip -d target
+        """,
+        "s3 zip extraction handles clustered directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
+            unzip -qd target cache.zip
+        """,
+        "s3 download moved to active target through mv target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            mv -t target s3_cache
+        """,
+        "s3 download moved to active target through clustered mv target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            mv -vt target s3_cache
+        """,
+        "s3 download moved to active target through concatenated mv target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            mv -ttarget s3_cache
+        """,
+        "s3 download copied to active target through cp target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            cp --target-directory=target s3_cache
+        """,
+        "s3 download copied to active target through clustered cp target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            cp -vt target s3_cache
+        """,
+        "s3 download copied to active target through concatenated cp target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            cp -ttarget s3_cache
+        """,
+        "s3 tar extraction handles ordered traditional options": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
+            tar xCf target cache.tar
+        """,
+        "s3 tar extraction handles ordered clustered options": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
+            tar -xCf target cache.tar
+        """,
+        "s3 transfer hidden behind su command string": """
+            su -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind su long command string": """
+            su --command="aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind su clustered command string": """
+            su -mc "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind sg command string": """
+            sg docker -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind sg concatenated command string": """
+            sg docker -c"aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind runuser long command string": """
+            runuser --command="aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind runuser user command string": """
+            runuser user -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind flock clustered command string": """
+            flock /tmp/lock -c"aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "env chdir ignores C inside unset option argument": """
+            env -uC -C target aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
+        "sudo chdir ignores D inside user option argument": """
+            sudo -uD -D target aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
+        "s3 transfer hidden behind rustup shell command string": """
+            rustup run nightly sh -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
         """,
     }
     misses: list[str] = []
@@ -3960,6 +4253,8 @@ commands:
   wrapped: command cargo fmt --check
   stdbufwrap: stdbuf -oL cargo build
   catchsegvwrap: catchsegv cargo test
+  chrtbatchwrap: chrt -b cargo build
+  chrtidlewrap: chrt -i cargo build
   nicewrap: nice cargo test
   timeniceadjust: time nice --adjustment 10 cargo test
   timeverbose: A=B time -v cargo test
@@ -3973,6 +4268,8 @@ commands:
   sudoflock: sudo flock -o "$TMPDIR/bolt.lock" cargo test
   sudousercommand: sudo -u bash cargo build
   sudoshell: sudo bash -lc 'cargo test --all'
+  envargv0: env --argv0 cargo cargo build
+  envshortargv0: env -a cargo cargo build
   envshell: env -i bash -lc 'cargo test --all'
   hyphenated: cargo-clippy --workspace
   zigbuild: cargo zigbuild --release
@@ -4078,6 +4375,8 @@ commands: { test: "cargo test" }
         "wrapped",
         "stdbufwrap",
         "catchsegvwrap",
+        "chrtbatchwrap",
+        "chrtidlewrap",
         "nicewrap",
         "timeniceadjust",
         "timeverbose",
@@ -4091,6 +4390,8 @@ commands: { test: "cargo test" }
         "sudoflock",
         "sudousercommand",
         "sudoshell",
+        "envargv0",
+        "envshortargv0",
         "envshell",
         "hyphenated",
         "zigbuild",
@@ -4677,7 +4978,12 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "scripts/raw-substitution-backtick.sh": "#!/usr/bin/env bash\nx=`cargo build`\n",
             "scripts/raw-find-exec.sh": "#!/usr/bin/env bash\nfind . -name Cargo.toml -exec cargo build \\;\n",
             "scripts/raw-su.sh": "#!/usr/bin/env bash\nsu user -c 'cargo build'\n",
+            "scripts/raw-su-shell-arg.sh": "#!/usr/bin/env bash\nsu -s -c user -c 'cargo build'\n",
             "scripts/raw-runuser.sh": "#!/usr/bin/env bash\nrunuser -u user -- cargo build\n",
+            "scripts/raw-flock.sh": "#!/usr/bin/env bash\nflock /tmp/lock -ccargo\\ build\n",
+            "scripts/raw-flock-option-arg.sh": "#!/usr/bin/env bash\nflock -w -c /tmp/lock -c 'cargo build'\n",
+            "scripts/raw-chrt-batch.sh": "#!/usr/bin/env bash\nchrt -b cargo build\n",
+            "scripts/raw-env-argv0.sh": "#!/usr/bin/env bash\nenv --argv0 cargo cargo build\n",
             "scripts/multiline-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo build\"\nbash -c \"$CMD\"\n",
             "scripts/multiline-quoted-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo\nbuild --target-dir /tmp/raw\"\nbash -c \"$CMD\"\n",
             "scripts/comment-blind.sh": "# comment with unbalanced quote '\ncargo build\necho 'closing quote'\n",
@@ -4732,8 +5038,14 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"script find-exec raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-su.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script su raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-su-shell-arg.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script su shell-arg raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-runuser.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script runuser raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-flock.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script flock raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-flock-option-arg.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script flock option-arg raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/multiline-eval.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script multiline eval raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/multiline-quoted-eval.sh" in error and expected in error for error in repo_errors):
@@ -4950,11 +5262,13 @@ def main() -> int:
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
     assert_pin_consistency_cross_file_mismatch_errors()
     assert_pin_consistency_same_sha_no_error()
+    assert_pin_consistency_includes_setup_action()
     assert_pin_consistency_rejects_mutable_tag()
     assert_pin_consistency_ignores_non_uses_mentions()
     assert_pin_consistency_accepts_uppercase_sha()
     assert_pin_consistency_intra_file_mismatch_uses_pin_drift_wording()
     assert_pin_consistency_rejects_multi_line_mutable_tag()
+    assert_pin_consistency_rejects_block_scalar_mutable_tag()
     assert_pin_consistency_rejects_multi_line_valid_sha()
     assert_pin_consistency_accepts_double_quoted_sha()
     assert_pin_consistency_accepts_single_quoted_sha()
@@ -4969,6 +5283,7 @@ def main() -> int:
     assert_v6_red_local_composite_actions_are_scanned()
     assert_v6_red_additional_workflows_are_scanned()
     assert_shell_logical_lines_handles_crlf_continuations()
+    assert_workflow_hygiene_reviewer_regressions()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(
         "concurrency group must split deferred PR runs from full CI runs",
@@ -6048,7 +6363,7 @@ def main() -> int:
             "advisory.yml": replace_once(
                 BASE_ADVISORY_WORKFLOW,
                 """      - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none""",
@@ -6074,7 +6389,7 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none""",
@@ -6095,8 +6410,8 @@ def main() -> int:
         "ci.yml deny must install cargo-deny with pinned taiki-e/install-action",
         replace_once(
             BASE_WORKFLOW,
-            "uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c",
-            "uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c-suffix",
+            "uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538",
+            "uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538-suffix",
         ),
     )
     assert_error(
@@ -6104,14 +6419,14 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
       - run: just deny""",
             """      - run: just deny
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none""",
@@ -6511,7 +6826,7 @@ def main() -> int:
             BASE_WORKFLOW,
             """      - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none""",
@@ -6535,7 +6850,7 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-nextest
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none""",
@@ -6567,45 +6882,55 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-nextest
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
       - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4""",
             """      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none""",
         ),
     )
     assert_error(
-        "ci.yml build must not compile cargo-zigbuild from source",
+        "ci.yml build must install cargo-zigbuild with pinned taiki-e/install-action",
         replace_once(
             BASE_WORKFLOW,
-            """          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \\
-            --retry 10 \\
-            --retry-delay 3 \\
-            --retry-all-errors \\
-            --fail \\
-            --location \\
-            --show-error \\
-            --silent \\
-            --output "$archive" \\
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild\"""",
-            '          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked',
+            """      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none""",
+            """      - name: Install cargo-zigbuild
+        run: |
+          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked""",
+        ),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild with pinned taiki-e/install-action",
+        replace_once(
+            BASE_WORKFLOW,
+            "        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538\n        with:\n          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
+            "        uses: taiki-e/install-action@v2\n        with:\n          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
+        ),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild with pinned taiki-e/install-action",
+        replace_once(
+            BASE_WORKFLOW,
+            "          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
+            "          tool: cargo-zigbuild@${{ env.ZIGBUILD_VERSION }}",
+        ),
+    )
+    assert_error(
+        "ci.yml build install-action fallback must be none",
+        replace_once(
+            BASE_WORKFLOW,
+            "          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}\n          fallback: none",
+            "          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}\n          fallback: cargo-install",
         ),
     )
     assert_error(
@@ -6669,93 +6994,21 @@ def main() -> int:
         ),
     )
     assert_error(
-        "ci.yml build must verify cargo-zigbuild archive checksum",
-        replace_once(BASE_WORKFLOW, '          test "$actual" = "$expected"\n', ""),
-    )
-    assert_error(
-        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
-        replace_once(
-            BASE_WORKFLOW,
-            '          test "$actual" = "$expected"\n          tar --extract --xz --file "$archive"',
-            '          tar --extract --xz --file "$archive"\n          test "$actual" = "$expected"',
-        ),
-    )
-    assert_error(
-        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
-        replace_once(
-            replace_once(BASE_WORKFLOW, '          test "$actual" = "$expected"\n', ""),
-            "      - run: just build",
-            '''      - run: |
-          just build
-          test "$actual" = "$expected"''',
-        ),
-    )
-    assert_error(
-        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
-        replace_once(BASE_WORKFLOW, "          --retry-all-errors \\\n", ""),
-    )
-    assert_error(
-        "ci.yml build must use pinned cargo-zigbuild archive sha256",
-        replace_once(
-            BASE_WORKFLOW,
-            '          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"\n',
-            """          curl --fail --location --show-error --silent --output "$archive.sha256" "$base_url/$archive.sha256"
-          expected="$(awk '{print $1}' "$archive.sha256")"
-""",
-        ),
-    )
-    assert_error(
         "ci.yml build must install cargo-zigbuild before just build",
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-zigbuild
-        run: |
-          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \\
-            --retry 10 \\
-            --retry-delay 3 \\
-            --retry-all-errors \\
-            --fail \\
-            --location \\
-            --show-error \\
-            --silent \\
-            --output "$archive" \\
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild"
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none
       - run: just build""",
             """      - run: just build
       - name: Install cargo-zigbuild
-        run: |
-          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \\
-            --retry 10 \\
-            --retry-delay 3 \\
-            --retry-all-errors \\
-            --fail \\
-            --location \\
-            --show-error \\
-            --silent \\
-            --output "$archive" \\
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild\"""",
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none""",
         ),
     )
     assert_workflows_error(
@@ -6765,7 +7018,7 @@ def main() -> int:
             "advisory.yml": replace_once(
                 BASE_ADVISORY_WORKFLOW,
                 """      - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
@@ -6774,7 +7027,7 @@ def main() -> int:
                 """      - name: Check advisories
         run: just deny-advisories
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none""",
@@ -7015,6 +7268,26 @@ def main() -> int:
     assert_error(
         "setup action missing expected literal 'just --evaluate nextest_version'",
         action=replace_once(BASE_ACTION, "just --evaluate nextest_version", "just --evaluate cargo_nextest_version"),
+    )
+    assert_error(
+        "setup action must install just with pinned taiki-e/install-action",
+        action=replace_once(
+            BASE_ACTION,
+            """    - name: Install just
+      uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+      with:
+        tool: just@${{ inputs.just-version }}
+        fallback: none
+""",
+            """    - name: Install just
+      shell: bash
+      run: echo "${{ inputs.just-version }}"
+""",
+        ),
+    )
+    assert_error(
+        "setup action just install-action fallback must be none",
+        action=replace_once(BASE_ACTION, "        fallback: none\n    - name: Lint workflow contract", "        fallback: cargo-install\n    - name: Lint workflow contract"),
     )
     assert_error(
         "setup action step order drifted",

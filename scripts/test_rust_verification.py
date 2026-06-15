@@ -908,6 +908,39 @@ def assert_ci_logs_command_uses_draft_aware_events() -> None:
             raise AssertionError(emitted)
 
 
+def assert_ci_logs_command_uses_draft_workflow_dispatch_events() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        write_verify_remote_config(repo)
+        harness = VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=True),
+            run_lists=[
+                [
+                    workflow_run(501, event="pull_request", status="completed", conclusion="failure"),
+                    workflow_run(502, event="workflow_dispatch", status="in_progress", conclusion=None),
+                ]
+            ],
+        )
+        emitted: list[int] = []
+        original_emit = owner.emit_failed_job_diagnostics
+        try:
+            with harness:
+                owner.emit_failed_job_diagnostics = lambda **kwargs: emitted.append(int(kwargs["run"]["databaseId"]))
+                args = type("Args", (), {"repo": str(repo)})()
+                result = owner.cmd_ci_logs(args)
+        finally:
+            owner.emit_failed_job_diagnostics = original_emit
+        if result != 0:
+            raise AssertionError(result)
+        if emitted != [502]:
+            raise AssertionError(emitted)
+
+
 def assert_ci_logs_command_fails_when_diagnostics_unavailable() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -956,6 +989,7 @@ def main() -> int:
     assert_verify_remote_preflight_rejects_dirty_or_unpushed_head_before_ci()
     assert_ci_logs_command_uses_exact_head_run()
     assert_ci_logs_command_uses_draft_aware_events()
+    assert_ci_logs_command_uses_draft_workflow_dispatch_events()
     assert_ci_logs_command_fails_when_diagnostics_unavailable()
     print("OK: Rust verification owner self-tests passed.")
     return 0

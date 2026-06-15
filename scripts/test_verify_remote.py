@@ -110,7 +110,8 @@ def assert_diagnostic_excerpt_is_bounded_and_masked() -> None:
         "PASSWORD: correct horse battery staple\n"
         "API_KEY = api-secret\n"
         "PRIVATE_KEY=private-key-value\n"
-        "MY_KEY=my-key-value\n"
+        "WALLET_KEY=wallet-key-value\n"
+        "SIGNING_KEY=signing-key-value\n"
         "SEED_PHRASE=seed phrase words\n"
         "PASSPHRASE: pass phrase value\n"
         "CREDENTIAL=credential value\n"
@@ -133,7 +134,8 @@ def assert_diagnostic_excerpt_is_bounded_and_masked() -> None:
         "correct horse battery staple",
         "api-secret",
         "private-key-value",
-        "my-key-value",
+        "wallet-key-value",
+        "signing-key-value",
         "seed phrase words",
         "pass phrase value",
         "credential value",
@@ -148,11 +150,15 @@ def assert_diagnostic_excerpt_is_bounded_and_masked() -> None:
         raise AssertionError(excerpt)
     if "password: <redacted>" not in excerpt:
         raise AssertionError(excerpt)
+    if "horse battery staple" in excerpt:
+        raise AssertionError(excerpt)
     if "API_KEY = <redacted>" not in excerpt:
         raise AssertionError(excerpt)
     if "PRIVATE_KEY=<redacted>" not in excerpt:
         raise AssertionError(excerpt)
-    if "MY_KEY=<redacted>" not in excerpt:
+    if "WALLET_KEY=<redacted>" not in excerpt:
+        raise AssertionError(excerpt)
+    if "SIGNING_KEY=<redacted>" not in excerpt:
         raise AssertionError(excerpt)
     if "SEED_PHRASE=<redacted>" not in excerpt:
         raise AssertionError(excerpt)
@@ -176,6 +182,25 @@ def assert_diagnostic_excerpt_is_bounded_and_masked() -> None:
     )
     if "\x1b" in ansi_stripped or "ansi-visible" not in ansi_stripped:
         raise AssertionError(ansi_stripped)
+
+
+def assert_secret_redaction_leaves_common_key_labels_readable() -> None:
+    owner = load_owner_module()
+    text = (
+        "primary key: id\n"
+        "FOREIGN_KEY=orders.id\n"
+        "cache_key=account:42\n"
+        "sort_key: ascending\n"
+        "key: value mapping\n"
+        "PUBLIC_KEY=ssh-rsa AAAA\n"
+        "SEEDED=true\n"
+    )
+    excerpt = owner.diagnostic_log_excerpt(text, max_lines=20, max_bytes=1000)
+    for expected in text.strip().splitlines():
+        if expected not in excerpt:
+            raise AssertionError(excerpt)
+    if "<redacted>" in excerpt:
+        raise AssertionError(excerpt)
 
 
 def assert_job_log_failed_treats_ansi_whitespace_as_unavailable() -> None:
@@ -1229,6 +1254,7 @@ def assert_verify_remote_reports_failed_job_while_run_is_in_progress() -> None:
 
 def main() -> int:
     assert_diagnostic_excerpt_is_bounded_and_masked()
+    assert_secret_redaction_leaves_common_key_labels_readable()
     assert_job_log_failed_treats_ansi_whitespace_as_unavailable()
     assert_run_attempt_accepts_positive_ints_only()
     assert_job_database_id_accepts_numeric_database_id_or_id()

@@ -2731,9 +2731,7 @@ WORKFLOW_RUN_FIELDS = "attempt,databaseId,event,headSha,status,conclusion,create
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b("
-    r"[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|SESSION_TOKEN|PRIVATE_KEY|MNEMONIC|SEED(?:_PHRASE)?|WALLET_KEY|SIGNING_KEY|PASSPHRASE|CREDENTIAL)[A-Z0-9_]*"
-    r"|[A-Z0-9_]+_KEY"
-    r"|KEY(?:_[A-Z0-9_]+)?"
+    r"[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|SESSION_TOKEN|PRIVATE_KEY|MNEMONIC|SEED_PHRASE|WALLET_KEY|SIGNING_KEY|PASSPHRASE|CREDENTIAL)[A-Z0-9_]*"
     r")\b(\s*[:=]\s*)\S.*"
 )
 BEARER_RE = re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S+")

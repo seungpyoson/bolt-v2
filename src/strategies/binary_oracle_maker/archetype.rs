@@ -135,7 +135,7 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
     };
     if trade_flow.window_ms().is_none() {
         errors.push(format!(
-            "{context}: parameters.runtime.trade_flow_window_secs ({}) is too large: window_secs × 1000 overflows the u64 millisecond retention window, which would silently saturate instead of meaning the configured window",
+            "{context}: parameters.runtime.trade_flow_window_secs ({}) must be small enough that its second-to-millisecond conversion does not overflow u64 (a larger window silently saturates the retention window instead of meaning the configured value)",
             runtime.trade_flow_window_secs
         ));
     }
@@ -394,7 +394,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|error| error.contains("overflows the u64 millisecond")),
+                .any(|error| error.contains("silently saturates the retention window")),
             "{errors:?}"
         );
     }

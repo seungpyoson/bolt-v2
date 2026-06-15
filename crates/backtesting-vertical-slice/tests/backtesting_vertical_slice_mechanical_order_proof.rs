@@ -311,6 +311,7 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             rust_storage_options: BTreeMap::new(),
             ssm_parameters: None,
         },
+        domain_metrics: Vec::new(),
         start_time: None,
         end_time: None,
     }

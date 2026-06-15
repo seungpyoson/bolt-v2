@@ -1419,6 +1419,7 @@ fn pmxt_l2_manifest(
             rust_storage_options: BTreeMap::new(),
             ssm_parameters: None,
         },
+        domain_metrics: Vec::new(),
         start_time: None,
         end_time: None,
     }

@@ -23,9 +23,10 @@ use backtesting_vertical_slice::{
     },
     operator::RunSpec,
     source_catalog_mapping_readiness::{
-        SourceCatalogMappingReadinessInput, SourceCatalogMappingReadinessReport,
-        SourceCatalogMappingReadinessSpec, SourceCatalogMappingReadinessStatus,
-        SourceCatalogMappingStatusEntry, evaluate_source_catalog_mapping_readiness,
+        SourceCatalogMappingReadinessBlocker, SourceCatalogMappingReadinessInput,
+        SourceCatalogMappingReadinessReport, SourceCatalogMappingReadinessSpec,
+        SourceCatalogMappingReadinessStatus, SourceCatalogMappingStatusEntry,
+        evaluate_source_catalog_mapping_readiness,
     },
     source_proof::{SourceProofReport, SourceProofStatus, SourceProofUsageScope},
 };

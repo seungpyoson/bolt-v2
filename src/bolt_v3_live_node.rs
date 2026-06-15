@@ -85,8 +85,7 @@ use nautilus_model::{
     identifiers::TradeId,
 };
 use nautilus_model::{
-    enums::{BarIntervalType, OrderSide, OrderType, TradingState},
-    identifiers::{ClientId, StrategyId},
+    enums::{OrderSide, OrderType, TradingState},
     orders::{Order, OrderAny},
 };
 use rust_decimal::Decimal;

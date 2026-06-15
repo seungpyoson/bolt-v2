@@ -697,8 +697,17 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
         or "github.event.pull_request.draft == true" not in cancel_text
         or "contains(fromJSON" not in cancel_text
         or "converted_to_draft" not in cancel_text
+        or "github.event_name == 'workflow_dispatch'" not in cancel_text
     ):
-        errors.append("cancel-in-progress must be true only for deferred draft PR runs")
+        errors.append(
+            "cancel-in-progress must cover deferred draft PR runs and workflow_dispatch full CI runs only"
+        )
+    if (
+        "github.event_name == 'push'" in cancel_text
+        or "refs/tags" in cancel_text
+        or "startsWith(github.ref" in cancel_text
+    ):
+        errors.append("cancel-in-progress must not cancel push, tag, or deploy flows")
     return errors
 
 

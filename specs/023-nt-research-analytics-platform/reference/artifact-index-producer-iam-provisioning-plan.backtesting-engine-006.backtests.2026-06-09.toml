@@ -4,5 +4,11 @@ proof_artifact_roots = [
   "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-backtests"
 ]
 ssm_parameter_prefix = "/bolt/artifact-index/producers"
-denied_artifact_kinds = ["research_analytics"]
+denied_artifact_kinds = [
+  "raw",
+  "nt_catalog",
+  "source_proofs",
+  "artifact_index",
+  "research_analytics",
+]
 output_path = "artifact-index-producer-iam-provisioning-plan.backtesting-engine-006.backtests.2026-06-09.json"

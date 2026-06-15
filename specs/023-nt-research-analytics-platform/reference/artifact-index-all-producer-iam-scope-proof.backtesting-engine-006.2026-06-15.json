@@ -1,0 +1,360 @@
+{
+  "schema_version": "artifact-index-all-producer-iam-scope-proof.v1",
+  "task_id": "BACKTESTING_ENGINE-006",
+  "recorded_at_utc": "2026-06-15T07:00:12Z",
+  "run_ts": "20260615T070012Z",
+  "artifact_root": "s3://bolt-parquet/nt-research-analytics",
+  "aws_mutation_performed": true,
+  "credential_values_printed": false,
+  "transient_key_material_removed": true,
+  "provisioned_producer_identities": [
+    {
+      "artifact_kind": "raw",
+      "iam_user": {
+        "user_name": "bolt-artifact-index-producer-raw",
+        "arn": "arn:aws:iam::675819144420:user/bolt-artifact-index-producer-raw",
+        "inline_policy_name": "ArtifactIndexProducerRaw",
+        "user_created": true,
+        "access_key_created": true
+      },
+      "proof_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-raw-20260615T070012Z",
+      "ssm_parameter_paths": {
+        "access_key_id": "/bolt/artifact-index/producers/raw/access-key-id",
+        "secret_access_key": "/bolt/artifact-index/producers/raw/secret-access-key"
+      },
+      "ssm_parameter_types": {
+        "access_key_id": "SecureString",
+        "secret_access_key": "SecureString"
+      }
+    },
+    {
+      "artifact_kind": "nt_catalog",
+      "iam_user": {
+        "user_name": "bolt-artifact-index-producer-nt-catalog",
+        "arn": "arn:aws:iam::675819144420:user/bolt-artifact-index-producer-nt-catalog",
+        "inline_policy_name": "ArtifactIndexProducerNtCatalog",
+        "user_created": true,
+        "access_key_created": true
+      },
+      "proof_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-nt-catalog-20260615T070012Z",
+      "ssm_parameter_paths": {
+        "access_key_id": "/bolt/artifact-index/producers/nt_catalog/access-key-id",
+        "secret_access_key": "/bolt/artifact-index/producers/nt_catalog/secret-access-key"
+      },
+      "ssm_parameter_types": {
+        "access_key_id": "SecureString",
+        "secret_access_key": "SecureString"
+      }
+    },
+    {
+      "artifact_kind": "source_proofs",
+      "iam_user": {
+        "user_name": "bolt-artifact-index-producer-source-proofs",
+        "arn": "arn:aws:iam::675819144420:user/bolt-artifact-index-producer-source-proofs",
+        "inline_policy_name": "ArtifactIndexProducerSourceProofs",
+        "user_created": true,
+        "access_key_created": true
+      },
+      "proof_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-source-proofs-20260615T070012Z",
+      "ssm_parameter_paths": {
+        "access_key_id": "/bolt/artifact-index/producers/source_proofs/access-key-id",
+        "secret_access_key": "/bolt/artifact-index/producers/source_proofs/secret-access-key"
+      },
+      "ssm_parameter_types": {
+        "access_key_id": "SecureString",
+        "secret_access_key": "SecureString"
+      }
+    },
+    {
+      "artifact_kind": "artifact_index",
+      "iam_user": {
+        "user_name": "bolt-artifact-index-producer-artifact-index",
+        "arn": "arn:aws:iam::675819144420:user/bolt-artifact-index-producer-artifact-index",
+        "inline_policy_name": "ArtifactIndexProducerArtifactIndex",
+        "user_created": true,
+        "access_key_created": true
+      },
+      "proof_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-artifact-index-20260615T070012Z",
+      "ssm_parameter_paths": {
+        "access_key_id": "/bolt/artifact-index/producers/artifact_index/access-key-id",
+        "secret_access_key": "/bolt/artifact-index/producers/artifact_index/secret-access-key"
+      },
+      "ssm_parameter_types": {
+        "access_key_id": "SecureString",
+        "secret_access_key": "SecureString"
+      }
+    },
+    {
+      "artifact_kind": "research_analytics",
+      "iam_user": {
+        "user_name": "bolt-artifact-index-producer-research-analytics",
+        "arn": "arn:aws:iam::675819144420:user/bolt-artifact-index-producer-research-analytics",
+        "inline_policy_name": "ArtifactIndexProducerResearchAnalytics",
+        "user_created": true,
+        "access_key_created": true
+      },
+      "proof_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-research-analytics-20260615T070012Z",
+      "ssm_parameter_paths": {
+        "access_key_id": "/bolt/artifact-index/producers/research_analytics/access-key-id",
+        "secret_access_key": "/bolt/artifact-index/producers/research_analytics/secret-access-key"
+      },
+      "ssm_parameter_types": {
+        "access_key_id": "SecureString",
+        "secret_access_key": "SecureString"
+      }
+    }
+  ],
+  "ssm_parameter_metadata": [
+    {
+      "Name": "/bolt/artifact-index/producers/artifact_index/access-key-id",
+      "Type": "SecureString"
+    },
+    {
+      "Name": "/bolt/artifact-index/producers/artifact_index/secret-access-key",
+      "Type": "SecureString"
+    },
+    {
+      "Name": "/bolt/artifact-index/producers/backtests/access-key-id",
+      "Type": "SecureString"
+    },
+    {
+      "Name": "/bolt/artifact-index/producers/backtests/secret-access-key",
+      "Type": "SecureString"
+    },
+    {
+      "Name": "/bolt/artifact-index/producers/nt_catalog/access-key-id",
+      "Type": "SecureString"
+    },
+    {
+      "Name": "/bolt/artifact-index/producers/nt_catalog/secret-access-key",
+      "Type": "SecureString"
+    },
+    {
+      "Name": "/bolt/artifact-index/producers/raw/access-key-id",
+      "Type": "SecureString"
+    },
+    {
+      "Name": "/bolt/artifact-index/producers/raw/secret-access-key",
+      "Type": "SecureString"
+    },
+    {
+      "Name": "/bolt/artifact-index/producers/research_analytics/access-key-id",
+      "Type": "SecureString"
+    },
+    {
+      "Name": "/bolt/artifact-index/producers/research_analytics/secret-access-key",
+      "Type": "SecureString"
+    },
+    {
+      "Name": "/bolt/artifact-index/producers/source_proofs/access-key-id",
+      "Type": "SecureString"
+    },
+    {
+      "Name": "/bolt/artifact-index/producers/source_proofs/secret-access-key",
+      "Type": "SecureString"
+    }
+  ],
+  "scoped_s3_proofs": [
+    {
+      "artifact_kind": "raw",
+      "proof_id": "backtesting-engine-006-iam-scope-raw-complete-cli-20260615T070012Z",
+      "proof_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-raw-20260615T070012Z",
+      "bucket": "bolt-parquet",
+      "root": "nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-raw-20260615T070012Z/artifact-index/v1",
+      "allowed_writes": 6,
+      "allowed_path_kinds": [
+        "event_create_only",
+        "snapshot_a_create_only",
+        "audit_epoch_create_only",
+        "latest_pointer_create_only",
+        "snapshot_b_create_only",
+        "latest_pointer_update_if_match"
+      ],
+      "prior_pointer_etag_observed": true,
+      "final_pointer_etag_observed": true,
+      "latest_pointer_create_only_proven": true,
+      "latest_pointer_update_if_match_proven": true,
+      "stale_etag_update_rejected": true,
+      "denied_artifact_kinds": [
+        "nt_catalog",
+        "source_proofs",
+        "backtests",
+        "artifact_index",
+        "research_analytics"
+      ],
+      "denied_path_kinds_per_artifact_kind": [
+        "event",
+        "snapshot",
+        "latest_pointer"
+      ],
+      "denied_write_attempts": 15,
+      "denied_write_rejections": 15,
+      "violation_count": 0,
+      "producer_iam_scope_proven": true
+    },
+    {
+      "artifact_kind": "nt_catalog",
+      "proof_id": "backtesting-engine-006-iam-scope-nt-catalog-complete-cli-20260615T070012Z",
+      "proof_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-nt-catalog-20260615T070012Z",
+      "bucket": "bolt-parquet",
+      "root": "nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-nt-catalog-20260615T070012Z/artifact-index/v1",
+      "allowed_writes": 6,
+      "allowed_path_kinds": [
+        "event_create_only",
+        "snapshot_a_create_only",
+        "audit_epoch_create_only",
+        "latest_pointer_create_only",
+        "snapshot_b_create_only",
+        "latest_pointer_update_if_match"
+      ],
+      "prior_pointer_etag_observed": true,
+      "final_pointer_etag_observed": true,
+      "latest_pointer_create_only_proven": true,
+      "latest_pointer_update_if_match_proven": true,
+      "stale_etag_update_rejected": true,
+      "denied_artifact_kinds": [
+        "raw",
+        "source_proofs",
+        "backtests",
+        "artifact_index",
+        "research_analytics"
+      ],
+      "denied_path_kinds_per_artifact_kind": [
+        "event",
+        "snapshot",
+        "latest_pointer"
+      ],
+      "denied_write_attempts": 15,
+      "denied_write_rejections": 15,
+      "violation_count": 0,
+      "producer_iam_scope_proven": true
+    },
+    {
+      "artifact_kind": "source_proofs",
+      "proof_id": "backtesting-engine-006-iam-scope-source-proofs-complete-cli-20260615T070012Z",
+      "proof_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-source-proofs-20260615T070012Z",
+      "bucket": "bolt-parquet",
+      "root": "nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-source-proofs-20260615T070012Z/artifact-index/v1",
+      "allowed_writes": 6,
+      "allowed_path_kinds": [
+        "event_create_only",
+        "snapshot_a_create_only",
+        "audit_epoch_create_only",
+        "latest_pointer_create_only",
+        "snapshot_b_create_only",
+        "latest_pointer_update_if_match"
+      ],
+      "prior_pointer_etag_observed": true,
+      "final_pointer_etag_observed": true,
+      "latest_pointer_create_only_proven": true,
+      "latest_pointer_update_if_match_proven": true,
+      "stale_etag_update_rejected": true,
+      "denied_artifact_kinds": [
+        "raw",
+        "nt_catalog",
+        "backtests",
+        "artifact_index",
+        "research_analytics"
+      ],
+      "denied_path_kinds_per_artifact_kind": [
+        "event",
+        "snapshot",
+        "latest_pointer"
+      ],
+      "denied_write_attempts": 15,
+      "denied_write_rejections": 15,
+      "violation_count": 0,
+      "producer_iam_scope_proven": true
+    },
+    {
+      "artifact_kind": "artifact_index",
+      "proof_id": "backtesting-engine-006-iam-scope-artifact-index-complete-cli-20260615T070012Z",
+      "proof_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-artifact-index-20260615T070012Z",
+      "bucket": "bolt-parquet",
+      "root": "nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-artifact-index-20260615T070012Z/artifact-index/v1",
+      "allowed_writes": 6,
+      "allowed_path_kinds": [
+        "event_create_only",
+        "snapshot_a_create_only",
+        "audit_epoch_create_only",
+        "latest_pointer_create_only",
+        "snapshot_b_create_only",
+        "latest_pointer_update_if_match"
+      ],
+      "prior_pointer_etag_observed": true,
+      "final_pointer_etag_observed": true,
+      "latest_pointer_create_only_proven": true,
+      "latest_pointer_update_if_match_proven": true,
+      "stale_etag_update_rejected": true,
+      "denied_artifact_kinds": [
+        "raw",
+        "nt_catalog",
+        "source_proofs",
+        "backtests",
+        "research_analytics"
+      ],
+      "denied_path_kinds_per_artifact_kind": [
+        "event",
+        "snapshot",
+        "latest_pointer"
+      ],
+      "denied_write_attempts": 15,
+      "denied_write_rejections": 15,
+      "violation_count": 0,
+      "producer_iam_scope_proven": true
+    },
+    {
+      "artifact_kind": "research_analytics",
+      "proof_id": "backtesting-engine-006-iam-scope-research-analytics-complete-cli-20260615T070012Z",
+      "proof_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-research-analytics-20260615T070012Z",
+      "bucket": "bolt-parquet",
+      "root": "nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-research-analytics-20260615T070012Z/artifact-index/v1",
+      "allowed_writes": 6,
+      "allowed_path_kinds": [
+        "event_create_only",
+        "snapshot_a_create_only",
+        "audit_epoch_create_only",
+        "latest_pointer_create_only",
+        "snapshot_b_create_only",
+        "latest_pointer_update_if_match"
+      ],
+      "prior_pointer_etag_observed": true,
+      "final_pointer_etag_observed": true,
+      "latest_pointer_create_only_proven": true,
+      "latest_pointer_update_if_match_proven": true,
+      "stale_etag_update_rejected": true,
+      "denied_artifact_kinds": [
+        "raw",
+        "nt_catalog",
+        "source_proofs",
+        "backtests",
+        "artifact_index"
+      ],
+      "denied_path_kinds_per_artifact_kind": [
+        "event",
+        "snapshot",
+        "latest_pointer"
+      ],
+      "denied_write_attempts": 15,
+      "denied_write_rejections": 15,
+      "violation_count": 0,
+      "producer_iam_scope_proven": true
+    }
+  ],
+  "summary": {
+    "new_producer_identity_count": 5,
+    "scoped_s3_proof_count": 5,
+    "additional_artifact_kinds_proven": [
+      "raw",
+      "nt_catalog",
+      "source_proofs",
+      "artifact_index",
+      "research_analytics"
+    ],
+    "denied_write_attempts": 75,
+    "denied_write_rejections": 75,
+    "violation_count": 0,
+    "all_additional_producer_scopes_proven": true
+  },
+  "claim_limit": "This record proves the additional current non-backtests Artifact Index producer identities. Combine with the committed backtests complete proof for all six current ArtifactKind variants."
+}

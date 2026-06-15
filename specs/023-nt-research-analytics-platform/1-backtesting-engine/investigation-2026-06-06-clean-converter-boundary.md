@@ -25,10 +25,10 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - Artifact Index cross-kind parent resolution now requires the child record's manifest lineage id and `sha256` hash to match the parent record, rejecting independently supplied latest-parent records with mismatched hashes
 - Artifact Index event-create planning now models producer-owned immutable events: same URI plus same structured payload hash is idempotent, while a different payload at the same URI is rejected as an overwrite
 - the pinned `object_store = 0.13.2` API exposes `PutMode::Create` and `PutMode::Update(UpdateVersion)` for optimistic-concurrency metadata commits; its AWS backend maps the canonical `conditional_put = "etag"` option to `If-None-Match: *` create-only writes and `If-Match: <etag>` updates, and the manifest now preserves that option while rejecting `conditional_put = "disabled"` for S3 artifact-store commits
-- Artifact Index commit proof now has a bounded runner that writes immutable event, snapshot, and audit epoch objects, creates the first latest pointer with create-only semantics, updates the latest pointer with the observed prior ETag, rejects a stale-ETag update, reads back the pointer and snapshot, and resolves the committed snapshot using a computed canonical snapshot content hash. The real S3 proof used isolated root `s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529`; report `/private/tmp/bte-artifact-index-proof-20260608-3d6b1529/output/artifact-index-commit-proof-report.json`; report content hash `d6461cd67adb48250cd3a5a3642d74f6afa8b9617660fa16c54ab856d662e4a5`; `direct_s3_commit_proven = true`; `producer_iam_scope_proven = false`
+- Artifact Index commit proof now has a bounded runner that writes immutable event, snapshot, and audit epoch objects, creates the first latest pointer with create-only semantics, updates the latest pointer with the observed prior ETag, rejects a stale-ETag update, reads back the pointer and snapshot, and resolves the committed snapshot using a computed canonical snapshot content hash. The real S3 proof used isolated root `s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529`; report `/private/tmp/bte-artifact-index-proof-20260608-3d6b1529/output/artifact-index-commit-proof-report.json`; committed report file SHA256 `091501378ca70ca99b353d2252f040ef6b4d20c3d9b9e6db1dc29cc5d0489bf8`; `direct_s3_commit_proven = true`; `producer_iam_scope_proven = false`
 - Artifact Index IAM-scope probing now attempts configured denied-kind event, snapshot, and latest-pointer create-only writes and records permission rejections versus successful unauthorized writes. The real S3 probe used isolated root `s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca`; report `/private/tmp/bte-artifact-index-iam-proof-20260608-ca7445ca/output/artifact-index-commit-proof-report.json`; report content hash `5aabc1ab2280999f2c3dcac6e734308b06816e4bffd43057efd2a4d1d4339a82`; `producer_iam_scope_denied_write_attempts = 3`; `producer_iam_scope_denied_write_rejections = 0`; `producer_iam_scope_violation_count = 3`. This proves the current generic artifact-store SSM credential is not per-kind scoped.
-- BTE-006 status is now recorded in `reference/artifact-index-commit-proof-status.backtesting-engine-006.2026-06-08.json`: create-only/conditional S3 commit mechanics are proven, but producer IAM scope remains open until denied-kind writes fail under per-kind credentials or an approved coordinator/table format replaces the direct pointer-commit path.
-- AWS read-only inspection found the active operator identity is `arn:aws:iam::675819144420:user/bolt`, attached to broad S3/IAM/SSM policies, and the `bolt-parquet` bucket has no bucket policy. Creating a new per-kind IAM user/access key/SSM parameters was not executed because the approval reviewer rejected that external security mutation without fresh explicit user approval. Safe repo-side progress: `artifact_index_iam_policy` now generates per-kind S3 IAM policy JSON from configured `artifact_root`, `ArtifactKind`, and optional proof roots, with tests rejecting unrelated kind resources and `kind=*` wildcards.
+- BTE-006 status is now recorded in `reference/artifact-index-commit-proof-status.backtesting-engine-006.2026-06-08.json`: create-only/conditional S3 commit mechanics are proven, and the 2026-06-15 scoped-producer proofs reject all 90 denied event, snapshot, and latest-pointer write attempts across the six current Artifact Index kinds with zero violations.
+- AWS read-only inspection initially found only the broad artifact-store credential namespace. After explicit approval for the AWS security mutation, the Artifact Index producer namespace now has per-kind SSM `SecureString` parameter names for `raw`, `nt_catalog`, `source_proofs`, `backtests`, `artifact_index`, and `research_analytics`; credential values were not recorded. Repo-side policy generation remains in `artifact_index_iam_policy`, which generates per-kind S3 IAM policy JSON from configured `artifact_root`, `ArtifactKind`, and optional proof roots, with tests rejecting unrelated kind resources and `kind=*` wildcards.
 - NT dependency selection is now machine-checked by `nt_dependency_proof`: it parses this BTE crate's embedded `Cargo.toml` and `Cargo.lock`, verifies every `nautilus-*` dependency uses the same git revision `6e059dcbb59ac1e582132fc431a581936c216c3c`, verifies Cargo.lock resolves those NT packages to the same revision, and verifies required feature enablement (`nautilus-backtest` has `examples` and `streaming`; `nautilus-persistence` has `cloud`).
 - Artifact lifecycle config now rejects default delete/expiration rules, requires `active`/`archive`/`deep_archive` storage profiles, derives active-to-inactive state from a configured quiet window, and rejects committed discovery when the latest pointer or current snapshot metadata is not active/queryable
 - S3 catalog storage options now fail before NT config construction if generic and Rust-specific maps are both set, or if an S3 option key is not supported by this pinned NT revision
@@ -497,7 +497,7 @@ GREEN checks after implementation:
 - `just bte-test data_config_preserves_configured_object_store_conditional_put artifact_store_preserves_conditional_put_after_ssm_resolution artifact_store_rejects_disabled_conditional_put_for_s3_commit_path`: RED failed because the manifest rejected `conditional_put`; GREEN passed after preserving canonical `conditional_put = "etag"` through NT/object-store options and rejecting `disabled` for S3 Artifact Index commit readiness
 - `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_artifact_index_commit_proof -- --nocapture`: RED failed with missing `artifact_index_commit_proof` module, then GREEN passed after adding the bounded commit proof runner and exercising create-only event/snapshot/audit writes, first pointer creation, ETag pointer update, stale ETag rejection, and pointer/snapshot readback resolution against an in-memory object store
 - `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_artifact_index -- --nocapture`: 17 passed after adding the computed snapshot content-hash helper to the core Artifact Index contract
-- `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin artifact_index_commit_proof -- --spec /private/tmp/bte-artifact-index-proof-20260608-3d6b1529/artifact-index-commit-proof-s3.toml`: real S3 proof passed through SSM-resolved artifact-store credentials without printing secret values; report content hash `d6461cd67adb48250cd3a5a3642d74f6afa8b9617660fa16c54ab856d662e4a5`; event count `2`; snapshot count `2`; audit epoch count `2`; `latest_pointer_update_if_match_proven = true`; `stale_etag_update_rejected = true`; `direct_s3_commit_proven = true`; `producer_iam_scope_proven = false`
+- `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin artifact_index_commit_proof -- --spec /private/tmp/bte-artifact-index-proof-20260608-3d6b1529/artifact-index-commit-proof-s3.toml`: real S3 proof passed through SSM-resolved artifact-store credentials without printing secret values; committed report file SHA256 `091501378ca70ca99b353d2252f040ef6b4d20c3d9b9e6db1dc29cc5d0489bf8`; event count `2`; snapshot count `2`; audit epoch count `2`; `latest_pointer_update_if_match_proven = true`; `stale_etag_update_rejected = true`; `direct_s3_commit_proven = true`; `producer_iam_scope_proven = false`
 - `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_artifact_index_commit_proof -- --nocapture`: RED failed with missing `denied_artifact_kinds` and IAM-scope report fields, then GREEN passed after the proof runner began recording denied-kind probe attempts, permission rejections, and violation counts
 - `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin artifact_index_commit_proof -- --spec /private/tmp/bte-artifact-index-iam-proof-20260608-ca7445ca/artifact-index-commit-proof-s3.toml`: real S3 IAM-scope probe passed as a negative result: the current SSM credential successfully wrote all three configured denied `research_analytics` Artifact Index paths under an isolated proof root, so `producer_iam_scope_proven = false`, `producer_iam_scope_denied_write_attempts = 3`, `producer_iam_scope_denied_write_rejections = 0`, and `producer_iam_scope_violation_count = 3`
 - `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_artifact_index_iam_policy -- --nocapture`: RED failed with missing `artifact_index_iam_policy` module, then GREEN passed after adding a config-driven policy generator whose resources are scoped to the configured artifact kind and do not contain unrelated kind paths or `kind=*`
@@ -3240,3 +3240,98 @@ Current conclusion:
 - This does not close `BACKTESTING_ENGINE-006` or `BACKTESTING_ENGINE-022`, and
   it does not authorize broad PMXT/Polymarket backfill or production
   publish/delete actions.
+## 2026-06-15 BTE-006 backtests producer IAM scope proof
+
+Scope:
+
+- Performed the approved AWS security mutation for the `backtests` Artifact
+  Index producer only.
+- Created IAM user `bolt-artifact-index-producer-backtests` with inline policy
+  `ArtifactIndexProducerBacktests`.
+- Stored the generated access key fields as SSM `SecureString` parameters at
+  `/bolt/artifact-index/producers/backtests/access-key-id` and
+  `/bolt/artifact-index/producers/backtests/secret-access-key`.
+- No credential values were printed or committed; transient local key-material
+  files were removed.
+
+Proof:
+
+- The repo-local Rust proof runner command was attempted through
+  `scripts/rust_verification.py` and refused by policy with
+  `local_compile_disabled`; no break-glass or direct cargo bypass was used.
+- A focused AWS S3 API proof then used the new SSM-backed producer credentials
+  to write three create-only `backtests` Artifact Index proof objects under
+  the policy-approved proof root: event, snapshot, and latest pointer.
+- The same credential attempted three create-only writes under
+  `kind=research_analytics` for event, snapshot, and latest pointer; all three
+  were rejected by AWS permissions.
+- A follow-up scoped AWS S3 API proof used the same backtests producer
+  credential to create a new event, snapshot, and audit epoch object, update
+  the existing latest pointer with `If-Match`, reject a stale `If-Match`
+  update, and reject 15 denied event/snapshot/latest-pointer writes across
+  every other current Artifact Index kind: `raw`, `nt_catalog`,
+  `source_proofs`, `artifact_index`, and `research_analytics`.
+
+Committed evidence:
+
+- `reference/artifact-index-commit-proof.backtesting-engine-006-iam-scope-backtests.2026-06-15.toml`
+- `reference/artifact-index-producer-iam-scope-proof.backtesting-engine-006.backtests.2026-06-15.json`
+- `reference/artifact-index-producer-iam-scope-proof.backtesting-engine-006.backtests-complete.2026-06-15.json`
+- Updated
+  `reference/artifact-index-commit-proof-status.backtesting-engine-006.2026-06-08.json`
+
+Current conclusion:
+
+- Direct S3 Artifact Index commit mechanics were already proven by the
+  2026-06-08 direct S3 report.
+- Backtests producer IAM scope is now proven for event, snapshot, and latest
+  pointer writes against every current non-`backtests` Artifact Index kind, and
+  the same scoped credential has exercised create-only event/snapshot/audit
+  writes plus conditional latest-pointer update/stale-ETag rejection.
+- The earlier 2026-06-08 IAM-scope report remains historical failed evidence:
+  it used the generic `/bolt/artifact-store/s3/*` credential and allowed the
+  denied `research_analytics` writes.
+- This checkpoint does not mark broad `BACKTESTING_ENGINE-006` closed yet. The
+  remaining scope decision is whether BTE-006 needs only the BTE backtests
+  producer credential proven here, or whether separate current/future
+  non-`backtests` producer identities must also be provisioned and proved before
+  checking the task.
+
+## 2026-06-15 BTE-006 all current producer IAM scope proof
+
+Scope:
+
+- Completed the broad path instead of narrowing `BACKTESTING_ENGINE-006`.
+- Provisioned scoped Artifact Index producer identities and SSM `SecureString`
+  credential parameters for every remaining current `ArtifactKind`: `raw`,
+  `nt_catalog`, `source_proofs`, `artifact_index`, and `research_analytics`.
+- Combined with the existing scoped `backtests` producer proof, every current
+  Artifact Index kind now has a per-kind producer credential namespace under
+  `/bolt/artifact-index/producers/<artifact_kind>/`.
+- No credential values were printed or committed; transient local key-material
+  files were removed.
+
+Proof:
+
+- For each newly provisioned non-`backtests` producer, the scoped credential
+  created an event, two snapshots, an audit epoch, an initial latest pointer,
+  and a conditional latest-pointer update under its proof root.
+- Each proof rejected stale latest-pointer `If-Match` reuse.
+- Each proof attempted event, snapshot, and latest-pointer writes against the
+  other five current Artifact Index kinds; all 75 denied writes were rejected,
+  with `violation_count = 0`.
+- The all-producer proof is recorded in
+  `reference/artifact-index-all-producer-iam-scope-proof.backtesting-engine-006.2026-06-15.json`
+  with file SHA256
+  `cc762ae15550340b1f13ca56cc7302dbaa279b6bdc087311fb8464d8dcbf4474`.
+
+Current conclusion:
+
+- Direct S3 Artifact Index commit mechanics remain proven by the 2026-06-08
+  direct S3 report.
+- Producer IAM scope is now proven for all six current Artifact Index kinds:
+  `raw`, `nt_catalog`, `source_proofs`, `backtests`, `artifact_index`, and
+  `research_analytics`.
+- `BACKTESTING_ENGINE-006` is checked complete for the current `ArtifactKind`
+  set. Future Artifact Index kinds or changed path shapes require their own
+  scoped proof before relying on them.

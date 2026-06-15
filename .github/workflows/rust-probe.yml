@@ -1,4 +1,5 @@
 name: Rust Probe
+run-name: Rust Probe ${{ inputs.probe_id }} ${{ inputs.mode }} @ ${{ inputs.ref }}
 
 # Manual-only: run one constrained Rust compile/test probe on an ephemeral runner.
 # This workflow is debugging feedback only and is not merge proof.
@@ -15,10 +16,17 @@ on:
           - heavy
           - light
       ref:
-        description: Git ref to checkout (branch, tag, or SHA)
+        description: Exact pushed Git SHA to checkout
         required: true
         type: string
-        default: main
+      expected_sha:
+        description: Exact pushed Git SHA the runner must verify after checkout
+        required: true
+        type: string
+      probe_id:
+        description: Wrapper-generated probe correlation id
+        required: true
+        type: string
       mode:
         description: Probe mode to run
         required: true
@@ -42,7 +50,7 @@ on:
         default: ""
 
 concurrency:
-  group: rust-probe
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -58,10 +66,12 @@ jobs:
     name: probe-heavy
     if: ${{ inputs.runner_tier == 'heavy' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 1
 
       - name: Setup environment
         id: setup
@@ -85,16 +95,20 @@ jobs:
           RUST_PROBE_MODE: ${{ inputs.mode }}
           RUST_PROBE_TEST_TARGET: ${{ inputs.test_target }}
           RUST_PROBE_TEST_NAME: ${{ inputs.test_name }}
+          RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RUST_PROBE_ID: ${{ inputs.probe_id }}
         run: bash .github/scripts/run-rust-probe.sh
 
   probe-light:
     name: probe-light
     if: ${{ inputs.runner_tier == 'light' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 1
 
       - name: Setup environment
         id: setup
@@ -118,4 +132,6 @@ jobs:
           RUST_PROBE_MODE: ${{ inputs.mode }}
           RUST_PROBE_TEST_TARGET: ${{ inputs.test_target }}
           RUST_PROBE_TEST_NAME: ${{ inputs.test_name }}
+          RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RUST_PROBE_ID: ${{ inputs.probe_id }}
         run: bash .github/scripts/run-rust-probe.sh

@@ -17,7 +17,9 @@ SCRIPT_PATH = REPO_ROOT / ".github" / "scripts" / "run-rust-probe.sh"
 def fake_workspace() -> tempfile.TemporaryDirectory[str]:
     temp = tempfile.TemporaryDirectory(prefix="rust-probe-selftest.")
     scripts_dir = Path(temp.name) / "scripts"
+    bin_dir = Path(temp.name) / "bin"
     scripts_dir.mkdir()
+    bin_dir.mkdir()
     (scripts_dir / "rust_verification.py").write_text(
         "\n".join(
             (
@@ -33,6 +35,18 @@ def fake_workspace() -> tempfile.TemporaryDirectory[str]:
         + "\n",
         encoding="utf-8",
     )
+    (bin_dir / "git").write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "if [ \"$#\" -eq 2 ] && [ \"$1\" = \"rev-parse\" ] && [ \"$2\" = \"HEAD\" ]; then\n"
+        "  printf '%s\\n' \"${RUST_PROBE_FAKE_HEAD:?}\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "echo \"unexpected git args: $*\" >&2\n"
+        "exit 99\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "git").chmod(0o755)
     return temp
 
 
@@ -42,15 +56,22 @@ def run_probe(
     test_target: str,
     test_name: str,
     *script_args: str,
+    expected_sha: str = "a" * 40,
+    actual_sha: str | None = None,
+    probe_id: str = "probe-test",
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     if workspace is None:
         env.pop("GITHUB_WORKSPACE", None)
     else:
         env["GITHUB_WORKSPACE"] = workspace
+        env["PATH"] = f"{Path(workspace) / 'bin'}{os.pathsep}{env['PATH']}"
     env["RUST_PROBE_MODE"] = mode
     env["RUST_PROBE_TEST_TARGET"] = test_target
     env["RUST_PROBE_TEST_NAME"] = test_name
+    env["RUST_PROBE_EXPECTED_SHA"] = expected_sha
+    env["RUST_PROBE_FAKE_HEAD"] = actual_sha or expected_sha
+    env["RUST_PROBE_ID"] = probe_id
     return subprocess.run(
         ["bash", str(SCRIPT_PATH), *script_args],
         check=False,
@@ -79,6 +100,8 @@ def assert_valid(
                 f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             )
         expected_output = (
+            f"Rust Probe id: probe-test\n"
+            f"Rust Probe checkout SHA: {'a' * 40}\n"
             f"Rust Probe mode: {mode}\n"
             f"Rust Probe test_target: {test_target or '<empty>'}\n"
             f"Rust Probe test_name: {test_name or '<empty>'}\n"
@@ -102,8 +125,20 @@ def assert_invalid(
     test_target: str,
     test_name: str,
     *script_args: str,
+    expected_sha: str = "a" * 40,
+    actual_sha: str | None = None,
+    probe_id: str = "probe-test",
 ) -> None:
-    result = run_probe(workspace, mode, test_target, test_name, *script_args)
+    result = run_probe(
+        workspace,
+        mode,
+        test_target,
+        test_name,
+        *script_args,
+        expected_sha=expected_sha,
+        actual_sha=actual_sha,
+        probe_id=probe_id,
+    )
     combined = f"{result.stdout}\n{result.stderr}"
     if result.returncode != 2:
         raise AssertionError(
@@ -329,6 +364,46 @@ def main() -> int:
         "target",
         "::tests",
     )
+    with fake_workspace() as temp:
+        assert_invalid(
+            "missing expected SHA",
+            "RUST_PROBE_EXPECTED_SHA is required",
+            temp,
+            "check-lib",
+            "",
+            "",
+            expected_sha="",
+        )
+    with fake_workspace() as temp:
+        assert_invalid(
+            "invalid expected SHA",
+            "RUST_PROBE_EXPECTED_SHA must be a full 40-character hex SHA",
+            temp,
+            "check-lib",
+            "",
+            "",
+            expected_sha="abc",
+        )
+    with fake_workspace() as temp:
+        assert_invalid(
+            "checkout SHA mismatch",
+            "checked-out SHA does not match RUST_PROBE_EXPECTED_SHA",
+            temp,
+            "check-lib",
+            "",
+            "",
+            actual_sha="b" * 40,
+        )
+    with fake_workspace() as temp:
+        assert_invalid(
+            "missing probe id",
+            "RUST_PROBE_ID is required",
+            temp,
+            "check-lib",
+            "",
+            "",
+            probe_id="",
+        )
 
     print("OK: Rust Probe runner self-tests passed.")
     return 0

@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
-use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
+use crate::path_resolution::{
+    portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
+};
 use crate::source_universe_object_gates::{
     SourceUniverseObjectGateMaterialization, SourceUniverseObjectGateRecord,
     SourceUniverseObjectGateStatus,
@@ -298,7 +300,10 @@ pub fn evaluate_source_universe_conversion_run_plan(
             })?;
     let object_gates_hash = sha256_file(&object_gates_path)?;
     let gates: SourceUniverseObjectGateMaterialization = read_json(&object_gates_path)?;
-    let portable_object_gates_path = portable_artifact_path(&object_gates_path);
+    let portable_object_gates_path = portable_artifact_path_for_spec(
+        &object_gates_path,
+        &spec.source_universe_object_gates_path,
+    )?;
     ensure!(
         gates.status == SourceUniverseObjectGateStatus::Ready,
         "source-universe object gates {} are not ready",

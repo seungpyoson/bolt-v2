@@ -276,6 +276,27 @@ def assert_oversized_policy_fails_closed() -> None:
             raise AssertionError(result.stderr)
 
 
+def assert_remote_diagnostics_policy_loads() -> None:
+    owner = load_owner_module()
+    policy = {
+        "remote_verification": {
+            "poll_interval_seconds": 15,
+            "checks_appear_timeout_seconds": 300,
+            "overall_timeout_seconds": 3600,
+            "diagnostic_log_max_lines": 160,
+            "diagnostic_log_max_bytes": 20000,
+            "diagnostic_unavailable_notice_interval_polls": 4,
+        }
+    }
+    loaded = owner.remote_verification_policy(policy)
+    if loaded["diagnostic_log_max_lines"] != 160:
+        raise AssertionError(loaded)
+    if loaded["diagnostic_log_max_bytes"] != 20000:
+        raise AssertionError(loaded)
+    if loaded["diagnostic_unavailable_notice_interval_polls"] != 4:
+        raise AssertionError(loaded)
+
+
 def write_verify_remote_config(repo: pathlib.Path) -> None:
     (repo / "ci").mkdir(exist_ok=True)
     (repo / "ci" / "github-actions-runners.toml").write_text(
@@ -316,6 +337,7 @@ def workflow_run(
 ) -> dict[str, object]:
     return {
         "databaseId": database_id,
+        "attempt": 1,
         "event": event,
         "headSha": VERIFY_REMOTE_HEAD,
         "status": status,
@@ -382,6 +404,9 @@ class VerifyRemoteHarness:
                 "poll_interval_seconds": 1,
                 "checks_appear_timeout_seconds": 2,
                 "overall_timeout_seconds": 8,
+                "diagnostic_log_max_lines": 160,
+                "diagnostic_log_max_bytes": 20000,
+                "diagnostic_unavailable_notice_interval_polls": 4,
             }
         }
 
@@ -822,11 +847,69 @@ def assert_verify_remote_preflight_rejects_dirty_or_unpushed_head_before_ci() ->
             raise AssertionError(error)
 
 
+def assert_ci_logs_command_uses_exact_head_run() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        write_verify_remote_config(repo)
+        harness = VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=False),
+            run_lists=[[workflow_run(301, status="in_progress", conclusion=None)]],
+        )
+        emitted: list[int] = []
+        original_emit = owner.emit_failed_job_diagnostics
+        try:
+            with harness:
+                owner.emit_failed_job_diagnostics = lambda **kwargs: emitted.append(int(kwargs["run"]["databaseId"]))
+                args = type("Args", (), {"repo": str(repo)})()
+                result = owner.cmd_ci_logs(args)
+        finally:
+            owner.emit_failed_job_diagnostics = original_emit
+        if result != 0:
+            raise AssertionError(result)
+        if emitted != [301]:
+            raise AssertionError(emitted)
+
+
+def assert_ci_logs_command_fails_when_diagnostics_unavailable() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        write_verify_remote_config(repo)
+        harness = VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=False),
+            run_lists=[[workflow_run(302, status="in_progress", conclusion=None)]],
+        )
+        original_jobs = owner.workflow_run_jobs
+        try:
+            with harness:
+                owner.workflow_run_jobs = lambda _repo, _run_id, _attempt: (None, "jobs API unavailable")
+                args = type("Args", (), {"repo": str(repo)})()
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    result = owner.cmd_ci_logs(args)
+        finally:
+            owner.workflow_run_jobs = original_jobs
+        if result != 2:
+            raise AssertionError((result, stderr.getvalue()))
+        if "jobs API unavailable" not in stderr.getvalue():
+            raise AssertionError(stderr.getvalue())
+
+
 def main() -> int:
     assert_repo_local_owner_contract()
     assert_fmt_avoids_managed_cache_lock()
     assert_system_python_contract()
     assert_oversized_policy_fails_closed()
+    assert_remote_diagnostics_policy_loads()
     assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped()
     assert_verify_remote_dispatch_wait_does_not_depend_on_local_clock()
     assert_verify_remote_reuses_existing_matching_full_ci_run()
@@ -838,6 +921,8 @@ def main() -> int:
     assert_repository_owner_requires_owner_separator()
     assert_verify_remote_api_error_fails_closed()
     assert_verify_remote_preflight_rejects_dirty_or_unpushed_head_before_ci()
+    assert_ci_logs_command_uses_exact_head_run()
+    assert_ci_logs_command_fails_when_diagnostics_unavailable()
     print("OK: Rust verification owner self-tests passed.")
     return 0
 

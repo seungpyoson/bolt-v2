@@ -57,6 +57,9 @@ def write_policy(repo: pathlib.Path, *, checks_timeout: int = 300, overall_timeo
             poll_interval_seconds = 1
             checks_appear_timeout_seconds = {checks_timeout}
             overall_timeout_seconds = {overall_timeout}
+            diagnostic_log_max_lines = 160
+            diagnostic_log_max_bytes = 20000
+            diagnostic_unavailable_notice_interval_polls = 4
 
             [commands]
 
@@ -96,6 +99,41 @@ def run_cmd_verify_remote(owner: object, repo: pathlib.Path) -> tuple[int, str]:
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         result = owner.cmd_verify_remote(types.SimpleNamespace(repo=str(repo)))
     return result, stdout.getvalue() + stderr.getvalue()
+
+
+def assert_diagnostic_excerpt_is_bounded_and_masked() -> None:
+    owner = load_owner_module()
+    text = (
+        "\x1b[31mline0\x1b[0m\n"
+        "TOKEN=abc123\n"
+        "AWS_SECRET_ACCESS_KEY=awssecret\n"
+        "Authorization: Bearer secretvalue\n"
+        "line3\n"
+        "line4\n"
+    )
+    excerpt = owner.diagnostic_log_excerpt(
+        text,
+        max_lines=3,
+        max_bytes=200,
+    )
+    if "\x1b" in excerpt:
+        raise AssertionError(excerpt)
+    if "abc123" in excerpt or "awssecret" in excerpt or "secretvalue" in excerpt:
+        raise AssertionError(excerpt)
+    if len(excerpt.splitlines()) > 3:
+        raise AssertionError(excerpt)
+
+
+def assert_run_attempt_accepts_positive_ints_only() -> None:
+    owner = load_owner_module()
+    if owner.run_attempt({"attempt": 2}) != 2:
+        raise AssertionError("integer attempt rejected")
+    if owner.run_attempt({"attempt": "3"}) != 3:
+        raise AssertionError("string attempt rejected")
+    if owner.run_attempt({"attempt": True}) is not None:
+        raise AssertionError("boolean attempt accepted")
+    if owner.run_attempt({"attempt": 0}) is not None:
+        raise AssertionError("zero attempt accepted")
 
 
 def assert_verify_remote_precondition_errors() -> None:
@@ -530,6 +568,88 @@ def assert_verify_remote_rechecks_head_before_reporting_failed_run() -> None:
         raise AssertionError((result, output))
 
 
+def assert_verify_remote_rechecks_head_before_failed_job_diagnostics() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+
+        original_preconditions = owner.ensure_verify_remote_preconditions
+        original_pr = owner.pr_for_current_branch
+        original_run_list = owner.workflow_run_list
+        original_run_view = owner.workflow_run_view
+        original_emit = owner.emit_failed_job_diagnostics
+        original_sleep = owner.time.sleep
+        emitted: list[int] = []
+
+        try:
+            owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
+            pr_calls = iter(
+                [
+                    (
+                        {
+                            "headRefOid": "abc",
+                            "url": "https://example.invalid/pr/1",
+                            "number": 1,
+                            "state": "OPEN",
+                            "isDraft": False,
+                        },
+                        None,
+                    ),
+                    (
+                        {
+                            "headRefOid": "abc",
+                            "url": "https://example.invalid/pr/1",
+                            "number": 1,
+                            "state": "OPEN",
+                            "isDraft": False,
+                        },
+                        None,
+                    ),
+                    (
+                        {
+                            "headRefOid": "def",
+                            "url": "https://example.invalid/pr/1",
+                            "number": 1,
+                            "state": "OPEN",
+                            "isDraft": False,
+                        },
+                        None,
+                    ),
+                ]
+            )
+            owner.pr_for_current_branch = lambda _repo, _branch: next(pr_calls)
+            pending_run = {
+                "databaseId": 701,
+                "attempt": 1,
+                "event": "pull_request",
+                "headSha": "abc",
+                "status": "in_progress",
+                "conclusion": None,
+                "createdAt": "2026-06-13T00:00:00Z",
+                "url": "https://example.invalid/run",
+            }
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: ([pending_run], None)
+            owner.workflow_run_view = lambda _repo, _run_id: (pending_run, None)
+            owner.emit_failed_job_diagnostics = lambda **kwargs: emitted.append(int(kwargs["run"]["databaseId"]))
+            owner.time.sleep = lambda _seconds: None
+
+            result, output = run_cmd_verify_remote(owner, repo)
+        finally:
+            owner.ensure_verify_remote_preconditions = original_preconditions
+            owner.pr_for_current_branch = original_pr
+            owner.workflow_run_list = original_run_list
+            owner.workflow_run_view = original_run_view
+            owner.emit_failed_job_diagnostics = original_emit
+            owner.time.sleep = original_sleep
+
+    if result != 2 or "advanced during watch" not in output:
+        raise AssertionError((result, output))
+    if emitted:
+        raise AssertionError(emitted)
+
+
 def assert_verify_remote_run_list_api_error_fails_closed() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -704,7 +824,209 @@ def assert_verify_remote_rechecks_head_before_overall_timeout() -> None:
         raise AssertionError((result, output))
 
 
+def assert_failed_job_diagnostics_retries_unavailable_and_reports_once() -> None:
+    owner = load_owner_module()
+    original_jobs = owner.workflow_run_jobs
+    original_log = owner.job_log_failed
+    try:
+        owner.workflow_run_jobs = lambda _repo, _run_id, _attempt: (
+            [
+                {
+                    "databaseId": 11,
+                    "name": "nextest shard 1 of 4",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "url": "https://example.invalid/job/11",
+                }
+            ],
+            None,
+        )
+        log_results = iter(
+            [
+                (None, "failed job log is not available yet"),
+                (None, "failed job log is not available yet"),
+                ("line0\nTOKEN=abc123\npanic details\n", None),
+                ("this should not print\n", None),
+            ]
+        )
+        owner.job_log_failed = lambda _repo, _job_id: next(log_results)
+        state = owner.RemoteFailureDiagnosticsState()
+        policy = {
+            "diagnostic_log_max_lines": 20,
+            "diagnostic_log_max_bytes": 2000,
+            "diagnostic_unavailable_notice_interval_polls": 3,
+        }
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(stderr):
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            for _ in range(4):
+                owner.emit_failed_job_diagnostics(
+                    repo=repo,
+                    run={"databaseId": 101, "attempt": 1},
+                    state=state,
+                    remote_policy=policy,
+                )
+        output = stderr.getvalue()
+    finally:
+        owner.workflow_run_jobs = original_jobs
+        owner.job_log_failed = original_log
+
+    if output.count("CI failed job: nextest shard 1 of 4") != 2:
+        raise AssertionError(output)
+    if output.count("job_log=unavailable yet") != 1:
+        raise AssertionError(output)
+    if "panic details" not in output:
+        raise AssertionError(output)
+    if "abc123" in output or "this should not print" in output:
+        raise AssertionError(output)
+
+
+def assert_failed_job_diagnostics_treats_empty_log_as_unavailable() -> None:
+    owner = load_owner_module()
+    original_jobs = owner.workflow_run_jobs
+    original_log = owner.job_log_failed
+    try:
+        owner.workflow_run_jobs = lambda _repo, _run_id, _attempt: (
+            [
+                {
+                    "databaseId": 12,
+                    "name": "nextest shard 2 of 4",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "url": "https://example.invalid/job/12",
+                }
+            ],
+            None,
+        )
+        log_results = iter([("", None), ("panic details\n", None)])
+        owner.job_log_failed = lambda _repo, _job_id: next(log_results)
+        state = owner.RemoteFailureDiagnosticsState()
+        policy = {
+            "diagnostic_log_max_lines": 20,
+            "diagnostic_log_max_bytes": 2000,
+            "diagnostic_unavailable_notice_interval_polls": 3,
+        }
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(stderr):
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            for _ in range(2):
+                owner.emit_failed_job_diagnostics(
+                    repo=repo,
+                    run={"databaseId": 101, "attempt": 1},
+                    state=state,
+                    remote_policy=policy,
+                )
+        output = stderr.getvalue()
+    finally:
+        owner.workflow_run_jobs = original_jobs
+        owner.job_log_failed = original_log
+
+    if "job_log=unavailable yet" not in output:
+        raise AssertionError(output)
+    if "panic details" not in output:
+        raise AssertionError(output)
+    if "<empty failed job log>" in output:
+        raise AssertionError(output)
+
+
+def assert_verify_remote_reports_failed_job_while_run_is_in_progress() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+
+        original_preconditions = owner.ensure_verify_remote_preconditions
+        original_pr = owner.pr_for_current_branch
+        original_run_list = owner.workflow_run_list
+        original_run_view = owner.workflow_run_view
+        original_emit = owner.emit_failed_job_diagnostics
+        original_sleep = owner.time.sleep
+
+        emitted_states: list[str] = []
+
+        try:
+            owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
+            owner.pr_for_current_branch = lambda _repo, _branch: (
+                {
+                    "headRefOid": "abc",
+                    "url": "https://example.invalid/pr/1",
+                    "number": 1,
+                    "state": "OPEN",
+                    "isDraft": False,
+                },
+                None,
+            )
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: (
+                [
+                    {
+                        "databaseId": 101,
+                        "attempt": 1,
+                        "event": "pull_request",
+                        "headSha": "abc",
+                        "status": "in_progress",
+                        "conclusion": None,
+                        "createdAt": "2026-06-13T00:00:00Z",
+                        "url": "https://example.invalid/run",
+                    }
+                ],
+                None,
+            )
+            views = iter(
+                [
+                    {
+                        "databaseId": 101,
+                        "attempt": 1,
+                        "event": "pull_request",
+                        "headSha": "abc",
+                        "status": "in_progress",
+                        "conclusion": None,
+                        "createdAt": "2026-06-13T00:00:00Z",
+                        "url": "https://example.invalid/run",
+                    },
+                    {
+                        "databaseId": 101,
+                        "attempt": 1,
+                        "event": "pull_request",
+                        "headSha": "abc",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "createdAt": "2026-06-13T00:00:00Z",
+                        "url": "https://example.invalid/run",
+                    },
+                ]
+            )
+            owner.workflow_run_view = lambda _repo, _run_id: (next(views), None)
+
+            def fake_emit_failed_job_diagnostics(*, run: dict[str, object], **_kwargs: object) -> None:
+                emitted_states.append(str(run["status"]))
+                print("CI failed job: nextest shard 1 of 4", file=sys.stderr)
+
+            owner.emit_failed_job_diagnostics = fake_emit_failed_job_diagnostics
+            owner.time.sleep = lambda _seconds: None
+
+            result, output = run_cmd_verify_remote(owner, repo)
+        finally:
+            owner.ensure_verify_remote_preconditions = original_preconditions
+            owner.pr_for_current_branch = original_pr
+            owner.workflow_run_list = original_run_list
+            owner.workflow_run_view = original_run_view
+            owner.emit_failed_job_diagnostics = original_emit
+            owner.time.sleep = original_sleep
+
+    if "in_progress" not in emitted_states:
+        raise AssertionError(emitted_states)
+    if "CI failed job: nextest shard 1 of 4" not in output:
+        raise AssertionError(output)
+    if result != 1:
+        raise AssertionError((result, output))
+
+
 def main() -> int:
+    assert_diagnostic_excerpt_is_bounded_and_masked()
+    assert_run_attempt_accepts_positive_ints_only()
     assert_verify_remote_precondition_errors()
     assert_verify_remote_pr_errors()
     assert_pr_lookup_preserves_gh_errors()
@@ -714,10 +1036,14 @@ def main() -> int:
     assert_verify_remote_rejects_branch_advance_during_watch()
     assert_verify_remote_reports_failing_full_ci_run()
     assert_verify_remote_rechecks_head_before_reporting_failed_run()
+    assert_verify_remote_rechecks_head_before_failed_job_diagnostics()
     assert_verify_remote_run_list_api_error_fails_closed()
     assert_verify_remote_no_matching_run_times_out()
     assert_verify_remote_rechecks_head_before_no_matching_run_timeout()
     assert_verify_remote_rechecks_head_before_overall_timeout()
+    assert_failed_job_diagnostics_retries_unavailable_and_reports_once()
+    assert_failed_job_diagnostics_treats_empty_log_as_unavailable()
+    assert_verify_remote_reports_failed_job_while_run_is_in_progress()
     print("OK: remote verification watcher self-tests passed.")
     return 0
 

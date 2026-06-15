@@ -166,6 +166,9 @@ check-aarch64: check-workspace require-rust-verification-owner
 verify-remote: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" verify-remote --repo "{{repo_root}}"
 
+ci-logs: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" ci-logs --repo "{{repo_root}}"
+
 ci-runner-minutes *args:
     python3 scripts/ubicloud_runner_minutes.py {{args}}
 

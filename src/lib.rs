@@ -33,6 +33,7 @@ pub mod bolt_v3_maker_order_plan;
 pub mod bolt_v3_maker_quote_control;
 pub mod bolt_v3_maker_quote_plan;
 pub mod bolt_v3_maker_quote_set;
+pub mod bolt_v3_maker_rate_budget;
 pub mod bolt_v3_maker_reservation;
 pub mod bolt_v3_market_families;
 pub mod bolt_v3_numeric;

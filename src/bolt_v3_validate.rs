@@ -1731,7 +1731,12 @@ const SECONDS_PER_MINUTE: u64 = 60;
 /// Validates an NT `limit/HH:MM:SS` rate-limit string and returns the parsed
 /// `(limit, interval_seconds)` so callers can reconcile the rate against a
 /// venue REST egress ceiling without re-parsing.
-fn validate_rate_limit_string(value: &str) -> Result<(u64, u64), String> {
+///
+/// `pub(crate)` so the maker requote-budget bridge
+/// ([`crate::bolt_v3_maker_rate_budget`]) sources its submit-governor cap and
+/// window from the same single parser the config validator uses, rather than
+/// introducing a second rate-string interpretation.
+pub(crate) fn validate_rate_limit_string(value: &str) -> Result<(u64, u64), String> {
     let (limit, interval) = value
         .split_once('/')
         .ok_or_else(|| "expected `limit/HH:MM:SS`".to_string())?;

@@ -2743,6 +2743,14 @@ reason = "This is a named SI time-unit conversion constant, not an operator runt
 [[allowed]]
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
+literal = '''60_000'''
+context = '''pub(crate) const MILLIS_PER_MINUTE_U64: u64 = 60_000;'''
+classification = "time_unit_conversion"
+reason = "This is a named SI time-unit conversion constant (milliseconds per minute, the per-minute REST-egress window unit), not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
 literal = '''2.0'''
 context = '''pub(crate) const MIDPOINT_DIVISOR_F64: f64 = 2.0;'''
 classification = "strategy_math_invariant"

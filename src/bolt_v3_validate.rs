@@ -48,15 +48,16 @@ use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
-    ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
-    GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, KillSwitchConfigBlock,
-    LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock,
+    CapitalPoolBlock, ClientBlock, DataClientReadinessProbeQuoteTargetSource,
+    GATE_PROVIDER_CAPABILITIES, GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock,
+    KillSwitchConfigBlock, LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock,
     RealizedVolatilityAggregationBlock, RealizedVolatilityJumpPolicyBlock,
     RealizedVolatilityNoiseMethodBlock, RealizedVolatilityPricingComponentBlock,
     RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceClassBlock, RiskBlock,
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
+use crate::bolt_v3_loss_halt_actions::LossGovernorTradingStateAction;
 use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionMode;
 
@@ -173,6 +174,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_risk_block(&root.risk));
     errors.extend(validate_order_rate_within_venue_egress(root));
     errors.extend(validate_persistence_block(&root.persistence));
+    errors.extend(validate_position_sizer_recovery_evidence(root));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_clients_block(&root.clients));
     errors.extend(validate_realized_volatility_surfaces(root));
@@ -1230,6 +1232,132 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
             ));
         }
     }
+    if let Some(loss_governor) = block.loss_governor.as_ref() {
+        if loss_governor.enabled && loss_governor.max_snapshot_age_ns == 0 {
+            errors.push(
+                "risk.loss_governor.max_snapshot_age_ns must be a positive integer".to_string(),
+            );
+        }
+        if loss_governor.enabled && loss_governor.rolling_window_ns == 0 {
+            errors.push(
+                "risk.loss_governor.rolling_window_ns must be a positive integer".to_string(),
+            );
+        }
+        if loss_governor.enabled
+            && loss_governor
+                .active_position_pnl_max_entries
+                .is_none_or(|value| value == 0)
+        {
+            errors.push(
+                "risk.loss_governor.active_position_pnl_max_entries must be a positive integer"
+                    .to_string(),
+            );
+        }
+        if loss_governor.enabled {
+            for (label, threshold) in [
+                (
+                    "risk.loss_governor.max_per_trade_loss",
+                    loss_governor.max_per_trade_loss.as_deref(),
+                ),
+                (
+                    "risk.loss_governor.max_daily_loss",
+                    loss_governor.max_daily_loss.as_deref(),
+                ),
+                (
+                    "risk.loss_governor.max_rolling_loss",
+                    loss_governor.max_rolling_loss.as_deref(),
+                ),
+                (
+                    "risk.loss_governor.max_drawdown",
+                    loss_governor.max_drawdown.as_deref(),
+                ),
+            ] {
+                if threshold.is_none() {
+                    errors.push(format!("{label} must be configured when enabled"));
+                }
+            }
+            for (label, configured) in [
+                (
+                    "risk.loss_governor.on_loss_breach_trading_state",
+                    loss_governor.on_loss_breach_trading_state.is_some(),
+                ),
+                (
+                    "risk.loss_governor.on_untrusted_snapshot_trading_state",
+                    loss_governor.on_untrusted_snapshot_trading_state.is_some(),
+                ),
+                (
+                    "risk.loss_governor.recovery_mode",
+                    loss_governor.recovery_mode.is_some(),
+                ),
+                (
+                    "risk.loss_governor.manual_recovery_evidence_max_path_bytes",
+                    loss_governor
+                        .manual_recovery_evidence_max_path_bytes
+                        .is_some(),
+                ),
+            ] {
+                if !configured {
+                    errors.push(format!("{label} must be configured when enabled"));
+                }
+            }
+            if matches!(
+                loss_governor.on_untrusted_snapshot_trading_state,
+                Some(LossGovernorTradingStateAction::None)
+            ) {
+                errors.push(
+                    "risk.loss_governor.on_untrusted_snapshot_trading_state must be reducing or halted when enabled"
+                        .to_string(),
+                );
+            }
+            if loss_governor
+                .manual_recovery_evidence_max_path_bytes
+                .is_some_and(|limit| limit == usize::MIN)
+            {
+                errors.push(
+                    "risk.loss_governor.manual_recovery_evidence_max_path_bytes must be a positive integer"
+                        .to_string(),
+                );
+            }
+        }
+        for (label, threshold) in [
+            (
+                "risk.loss_governor.max_per_trade_loss",
+                loss_governor.max_per_trade_loss.as_deref(),
+            ),
+            (
+                "risk.loss_governor.max_daily_loss",
+                loss_governor.max_daily_loss.as_deref(),
+            ),
+            (
+                "risk.loss_governor.max_rolling_loss",
+                loss_governor.max_rolling_loss.as_deref(),
+            ),
+            (
+                "risk.loss_governor.max_drawdown",
+                loss_governor.max_drawdown.as_deref(),
+            ),
+        ] {
+            let Some(value) = threshold else {
+                continue;
+            };
+            match parse_decimal_string(value) {
+                Ok(decimal) if decimal <= Decimal::ZERO => {
+                    errors.push(format!(
+                        "{label} must be a positive decimal string: `{value}`"
+                    ));
+                }
+                Ok(_) => {}
+                Err(reason) => {
+                    errors.push(format!(
+                        "{label} is not a valid decimal string ({reason}): `{value}`"
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(capital_pools) = block.capital_pools.as_ref() {
+        errors.extend(validate_capital_pools(capital_pools));
+    }
     if block.nautilus.graceful_shutdown_on_error {
         errors.push(
             "risk.nautilus.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
@@ -1285,6 +1413,178 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
         errors.extend(validate_kill_switch_block(kill_switch));
     }
     errors
+}
+
+fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut pool_ids = HashSet::new();
+    let mut enforced_pool_count = 0usize;
+
+    for pool in pools {
+        let label = format!("risk.capital_pools[{}]", pool.pool_id);
+        if pool.enforce_submit_admission {
+            enforced_pool_count += 1;
+        }
+        if pool.pool_id.trim().is_empty() {
+            errors.push("risk.capital_pools pool_id must be a non-empty string".to_string());
+        } else if !pool_ids.insert(pool.pool_id.as_str()) {
+            errors.push(format!("{label}.pool_id must be unique"));
+        }
+        if pool.venue_id.trim().is_empty() {
+            errors.push(format!("{label}.venue_id must be a non-empty string"));
+        } else if pool.enforce_submit_admission
+            && pool.venue_id != pool.venue_id.to_ascii_uppercase()
+        {
+            errors.push(format!(
+                "{label}.venue_id must be canonical uppercase when submit admission enforcement is enabled"
+            ));
+        }
+        if pool.collateral_currency.trim().is_empty() {
+            errors.push(format!(
+                "{label}.collateral_currency must be a non-empty string"
+            ));
+        }
+        if pool.product_kind != "prediction_market_binary" {
+            errors.push(format!(
+                "{label}.product_kind must be `prediction_market_binary`"
+            ));
+        }
+        validate_prediction_market_binary_product_metadata(pool, &label, &mut errors);
+        validate_positive_decimal(
+            &format!("{label}.max_pool_liability"),
+            &pool.max_pool_liability,
+            &mut errors,
+        );
+        if pool.max_snapshot_age_ns == 0 {
+            errors.push(format!(
+                "{label}.max_snapshot_age_ns must be a positive integer"
+            ));
+        }
+        if pool.dedupe_retention_ns == 0 {
+            errors.push(format!(
+                "{label}.dedupe_retention_ns must be a positive integer"
+            ));
+        }
+        validate_venue_spendability_source_binding(pool, &label, &mut errors);
+        if let Some(min_remaining_pool_balance) =
+            pool.sizing_policy.min_remaining_pool_balance.as_ref()
+        {
+            validate_positive_decimal(
+                &format!("{label}.sizing_policy.min_remaining_pool_balance"),
+                min_remaining_pool_balance,
+                &mut errors,
+            );
+        }
+        validate_positive_decimal(
+            &format!("{label}.sizing_policy.fee_slippage.max_fee_liability"),
+            &pool.sizing_policy.fee_slippage.max_fee_liability,
+            &mut errors,
+        );
+        validate_positive_decimal(
+            &format!("{label}.sizing_policy.fee_slippage.max_slippage_liability"),
+            &pool.sizing_policy.fee_slippage.max_slippage_liability,
+            &mut errors,
+        );
+    }
+
+    if enforced_pool_count > 1 {
+        errors.push(
+            "risk.capital_pools may enable submit admission enforcement for at most one pool"
+                .to_string(),
+        );
+    }
+
+    errors
+}
+
+fn validate_venue_spendability_source_binding(
+    pool: &CapitalPoolBlock,
+    label: &str,
+    errors: &mut Vec<String>,
+) {
+    let has_binding = pool.venue_spendability_source_path.is_some()
+        || pool.venue_spendability_source_sha256.is_some()
+        || pool.venue_spendability_source_max_bytes.is_some();
+    if !has_binding {
+        return;
+    }
+    if !pool.enforce_submit_admission {
+        errors.push(format!(
+            "{label}.venue_spendability_source_path requires enforce_submit_admission = true"
+        ));
+    }
+    match pool.venue_spendability_source_path.as_deref() {
+        Some(path) if !path.trim().is_empty() => {}
+        _ => errors.push(format!(
+            "{label}.venue_spendability_source_path must be a non-empty string"
+        )),
+    }
+    match pool.venue_spendability_source_sha256.as_deref() {
+        Some(sha256) if is_lowercase_sha256_hex(sha256) => {}
+        _ => errors.push(format!(
+            "{label}.venue_spendability_source_sha256 must be a lowercase sha256 hex string"
+        )),
+    }
+    match pool.venue_spendability_source_max_bytes {
+        Some(max_bytes) if max_bytes > 0 => {}
+        _ => errors.push(format!(
+            "{label}.venue_spendability_source_max_bytes must be positive"
+        )),
+    }
+}
+
+fn validate_prediction_market_binary_product_metadata(
+    pool: &CapitalPoolBlock,
+    label: &str,
+    errors: &mut Vec<String>,
+) {
+    let Some(product) = pool.prediction_market_binary.as_ref() else {
+        if pool.enforce_submit_admission && pool.product_kind == "prediction_market_binary" {
+            errors.push(format!(
+                "{label}.prediction_market_binary is required when prediction-market submit admission is enforced"
+            ));
+        }
+        return;
+    };
+
+    if pool.product_kind != "prediction_market_binary" {
+        errors.push(format!(
+            "{label}.prediction_market_binary is only supported for prediction_market_binary pools"
+        ));
+    }
+    if product.yes_instrument_id == product.no_instrument_id {
+        errors.push(format!(
+            "{label}.prediction_market_binary.yes_instrument_id and no_instrument_id must differ"
+        ));
+    }
+    if product.collateral_coupled_group_id.trim().is_empty() {
+        errors.push(format!(
+            "{label}.prediction_market_binary.collateral_coupled_group_id must be a non-empty string"
+        ));
+    }
+}
+
+fn validate_positive_decimal(label: &str, value: &str, errors: &mut Vec<String>) {
+    match parse_decimal_string(value) {
+        Ok(decimal) if decimal <= Decimal::ZERO => {
+            errors.push(format!(
+                "{label} must be a positive decimal string: `{value}`"
+            ));
+        }
+        Ok(_) => {}
+        Err(reason) => {
+            errors.push(format!(
+                "{label} is not a valid decimal string ({reason}): `{value}`"
+            ));
+        }
+    }
+}
+
+fn is_lowercase_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
@@ -1566,6 +1866,38 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
     ) {
         errors.push(message);
     }
+    if block
+        .decision_evidence
+        .recovery_evidence_max_bytes
+        .is_some_and(|max_bytes| max_bytes == 0)
+    {
+        errors.push(
+            "persistence.decision_evidence.recovery_evidence_max_bytes must be a positive integer"
+                .to_string(),
+        );
+    }
+    errors
+}
+
+fn validate_position_sizer_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let enforced_submit_admission = root
+        .risk
+        .capital_pools
+        .as_ref()
+        .is_some_and(|pools| pools.iter().any(|pool| pool.enforce_submit_admission));
+    if enforced_submit_admission
+        && root
+            .persistence
+            .decision_evidence
+            .recovery_evidence_max_bytes
+            .is_none()
+    {
+        errors.push(
+            "persistence.decision_evidence.recovery_evidence_max_bytes must be configured when risk.capital_pools enables submit admission enforcement"
+                .to_string(),
+        );
+    }
     errors
 }
 
@@ -1816,7 +2148,6 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
 
 pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy]) -> Vec<String> {
     let mut errors = Vec::new();
-
     let mut seen_instance_ids: HashSet<&str> = HashSet::new();
     let mut seen_order_id_tags: HashSet<&str> = HashSet::new();
     let mut seen_target_ids: HashSet<String> = HashSet::new();

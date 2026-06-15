@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
-use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
+use crate::path_resolution::{
+    portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
+};
 use crate::source_proof::{
     AcceptanceMode, AcceptanceScope, CONTRACT_VERSION, CheckOutcome, L2ReplayEvidence,
     LicenseScope, NtMappingStatus, RequiredCheck, RequiredChecks, SOURCE_PROOF_SCHEMA_VERSION,
@@ -460,6 +462,7 @@ fn evaluate_and_write_source_universe_source_proofs(
             .with_context(|| format!("serialize source proof {}", proof.source_proof_id))?;
         let proof_path = output_dir.join(format!("{}.json", proof.source_proof_id));
         write_clean_artifact(&proof_path, &proof_bytes, "source proof")?;
+        let proof_artifact_path = portable_artifact_path_for_spec(&proof_path, &spec.output_dir)?;
         summaries.push(SourceUniverseSourceProofSummary {
             source_binding: binding.source_binding.clone(),
             source_proof_id: proof.source_proof_id,
@@ -470,7 +473,7 @@ fn evaluate_and_write_source_universe_source_proofs(
             accepted_bytes: manifest.accepted_bytes,
             first_archive_date: manifest.first_archive_date,
             last_archive_date: manifest.last_archive_date,
-            proof_path,
+            proof_path: proof_artifact_path,
             proof_hash: sha256_hex(&proof_bytes),
         });
     }

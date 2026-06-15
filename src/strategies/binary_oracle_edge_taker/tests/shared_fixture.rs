@@ -201,6 +201,27 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     ) -> Result<()> {
         Ok(())
     }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -228,6 +249,27 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
     ) -> Result<()> {
         anyhow::bail!("admission decision write failed")
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("position sizer rebuild audit write failed")
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("submit reservation metadata write failed")
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("submit reservation fill write failed")
     }
 }
 
@@ -291,6 +333,27 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .push(RecordedDecisionEvidenceEvent::AdmissionDecision(
                 decision.clone(),
             ));
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
         Ok(())
     }
 }

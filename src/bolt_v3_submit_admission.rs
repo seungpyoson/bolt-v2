@@ -1522,9 +1522,7 @@ impl BoltV3SubmitAdmissionState {
             if let (Some(request), Some(evaluation)) =
                 (rejected_request.as_ref(), rejected_evaluation.as_ref())
             {
-                if let Err(error) = Self::admission_result(&inner, request, evaluation) {
-                    return Err(error);
-                }
+                Self::admission_result(&inner, request, evaluation)?;
             }
             return Err(submit_admission_error_from_outcome(
                 outcome,

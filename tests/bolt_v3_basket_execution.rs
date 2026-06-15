@@ -881,6 +881,7 @@ fn sample_submit_request() -> BoltV3SubmitAdmissionRequest {
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
+        position_sizing: None,
     }
 }
 

@@ -353,8 +353,10 @@ mod tests {
     // counter deltas during the conflict-resolution merge.
     // Re-derived after the same merge adapted basket reservation diagnostics to
     // current submit-admission request/proof APIs.
+    // Re-derived after the conflict follow-up simplified basket rejection
+    // propagation for clippy.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "008b012e0cfd447d6c510b273e4caf63c1464b38d5f5f618f00baca508a74f48";
+        "65f8ce214368ab3bf53005376b5d396d7c4bd49aadae27162d3bb4e345b962f1";
     // GOLDEN_OUTCOME_GROUP_DIGEST is introduced by the shared outcome-group
     // substrate source-integrity task after every first-slice source root exists
     // on disk. Re-derived after Task 10 activated the complete-set runtime

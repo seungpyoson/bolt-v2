@@ -341,8 +341,9 @@ mod tests {
     // reservation liability arithmetic.
     // Re-derived after uncommitted submit permits learned to roll back
     // admission counters as well as position-sizer reservations.
+    // Re-derived after final submit-admission rollback and dedupe cleanup.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "04eb7b31a15d19520b30d2c87ca4f6bfbc8efa2e158e5cb0c83b4939f36c5297";
+        "446bce42b400066fa4fcaf73515316f9a82eaba3a613cd08941177fed895352a";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

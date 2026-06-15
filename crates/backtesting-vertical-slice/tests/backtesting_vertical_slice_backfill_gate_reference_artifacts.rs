@@ -1828,6 +1828,11 @@ fn blocked_canonical_source_catalog_mapping_reference_artifact_matches_generic_e
         actual_blocked_readiness.status,
         SourceCatalogMappingReadinessStatus::Blocked
     );
+    assert!(
+        actual_blocked_readiness
+            .blockers
+            .contains(&SourceCatalogMappingReadinessBlocker::RequiredClaimEvidenceMissing)
+    );
     assert!(!actual_blocked_readiness.blockers.is_empty());
 }
 

@@ -44,8 +44,16 @@ impl RequoteBudget {
         }
         self.evict(now_ms);
 
+        // `min_interval_ms` is the floor between DISTINCT requote ticks. Emits that
+        // share the caller's `now_ms` belong to one quote cycle — e.g. both legs of a
+        // binary market co-quoted from a single event drive this budget at the same
+        // clock — and must not throttle each other; the sliding-window cap still
+        // bounds same-tick bursts. Only a strictly-later tick inside the interval is
+        // throttled (the `now_ms < last_ms` out-of-order case is already rejected
+        // above, so here `now_ms >= last_ms`).
         if let Some(last_ms) = self.last_emit_ms
-            && now_ms.saturating_sub(last_ms) < self.min_interval_ms
+            && now_ms > last_ms
+            && now_ms - last_ms < self.min_interval_ms
         {
             return false;
         }
@@ -207,6 +215,25 @@ mod tests {
 
         assert!(budget.try_acquire(1_000, 1));
         assert!(!budget.try_acquire(1_400, 1));
+        assert!(budget.try_acquire(1_500, 1));
+    }
+
+    #[test]
+    fn co_incident_emits_at_the_same_tick_bypass_the_min_interval() {
+        // Two acquisitions at the SAME now_ms belong to one quote cycle (e.g. both
+        // legs of a binary market driven from a single event). With a 500ms interval
+        // the second same-tick acquire MUST still be granted; only a strictly-later
+        // tick inside the interval is throttled. A non-exempting gate would compute
+        // 1_000 - 1_000 = 0 < 500 and wrongly refuse the second leg, so this asserts
+        // the cross-leg fix is load-bearing.
+        let mut budget = RequoteBudget::new(100, ONE_MINUTE_MS, 500);
+
+        assert!(budget.try_acquire(1_000, 1));
+        assert!(budget.try_acquire(1_000, 1), "same-tick co-quote must pass");
+        assert_eq!(budget.in_window(), 2);
+        // A distinct tick inside the interval is still throttled...
+        assert!(!budget.try_acquire(1_100, 1));
+        // ...and a tick at the interval boundary is admitted again.
         assert!(budget.try_acquire(1_500, 1));
     }
 
@@ -439,5 +466,32 @@ mod tests {
         assert!(pair.try_reserve_fresh_submit(1_100));
         assert_eq!(pair.submit_commands_in_window(), 1);
         assert_eq!(pair.rest_cost_in_window(), 1);
+    }
+
+    #[test]
+    fn a_standalone_cancels_rest_call_throttles_a_later_submit_on_the_rest_floor_only() {
+        // The two budgets track their OWN last-activity independently — that is the
+        // point of separating them, not a desync bug. A standalone cancel consumes a
+        // REST call but no submit command, so it advances ONLY the REST budget's
+        // min-interval floor. A fresh submit a short tick later is therefore refused
+        // on the REST floor (the cancel used the venue's REST channel too recently)
+        // while the submit-governor floor stays pristine. Both budgets carry a 500ms
+        // interval; the cancel at 1_000 leaves submit untouched, so the 1_100 submit
+        // is blocked by REST, and once the REST interval clears the submit lands.
+        let mut pair = RequoteBudgetPair::new(
+            RequoteBudget::new(40, ONE_MINUTE_MS, 500),
+            RequoteBudget::new(100, ONE_MINUTE_MS, 500),
+        );
+        assert!(pair.try_reserve_cancel(1_000));
+        assert_eq!(pair.submit_commands_in_window(), 0);
+        assert_eq!(pair.rest_cost_in_window(), 1);
+        // Blocked on the REST floor (1_100 - 1_000 = 100 < 500); neither budget moves.
+        assert!(!pair.try_reserve_fresh_submit(1_100));
+        assert_eq!(pair.submit_commands_in_window(), 0);
+        assert_eq!(pair.rest_cost_in_window(), 1);
+        // Once the REST interval clears, the submit lands and charges both budgets.
+        assert!(pair.try_reserve_fresh_submit(1_500));
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 2);
     }
 }

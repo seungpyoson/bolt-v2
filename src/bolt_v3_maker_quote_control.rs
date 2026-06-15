@@ -101,8 +101,10 @@ pub fn drive_quote_leg(
 ///   submit command — the same cost class as a standalone cancel.
 ///
 /// `on_leg_event` only ever yields a per-leg [`MarketAction::Leg`]; the
-/// market-wide cancel-scope variants come from the governor/drain path. Should
-/// one ever reach here it is charged as a single REST call (fail-closed).
+/// market-wide cancel-scope variants (`CancelAllBothLegs`, `CancelAllOneSide`)
+/// are budgeted by the governor/drain path, never this per-leg gate. They are
+/// structurally unreachable here, so the arm refuses outright (charges nothing,
+/// emits nothing) rather than under-charge a multi-order cancel as one REST call.
 fn reserve_action_budget(
     budget: &mut RequoteBudgetPair,
     now_ms: u64,
@@ -111,7 +113,7 @@ fn reserve_action_budget(
     let lifecycle_action = match action {
         MarketAction::Leg { action, .. } => action,
         MarketAction::CancelAllBothLegs | MarketAction::CancelAllOneSide { .. } => {
-            return budget.try_reserve_cancel(now_ms);
+            return false;
         }
     };
     match lifecycle_action {
@@ -265,5 +267,51 @@ mod tests {
         assert_eq!(budget.submit_commands_in_window(), 0);
         assert_eq!(budget.rest_cost_in_window(), 0);
         assert_eq!(market.leg_state(Leg::Yes), LegState::Resting);
+    }
+
+    #[test]
+    fn the_prepaid_resubmit_token_covers_the_canceled_driven_resubmit_without_a_second_charge() {
+        // The cancel+resubmit cost (1 submit command + 2 REST calls) is reserved
+        // WHOLE when the cancel is emitted. The replacement submit (T5) is driven by
+        // the venue's Canceled confirmation, which the NT handler feeds straight to
+        // the lifecycle via on_leg_event — NOT back through drive_quote_leg — so it
+        // spends the pre-paid token instead of charging the budget a second time.
+        // This pins that contract: a resubmit driven the wrong way (through
+        // drive_quote_leg) would re-enter reserve_action_budget and double-charge.
+        let mut market = resting_market(false, Leg::Yes);
+        let mut budget = pair(4, 8);
+
+        // Cancel leg of the reprice: charges the whole cancel+resubmit up front.
+        let cancel = drive_quote_leg(
+            &mut market,
+            &mut budget,
+            requote_input(Leg::Yes, 0.55, 0.40),
+        );
+        assert_eq!(
+            cancel.action,
+            Some(MarketAction::Leg {
+                leg: Leg::Yes,
+                action: LifecycleAction::Cancel,
+            })
+        );
+        assert_eq!(budget.submit_commands_in_window(), 1);
+        assert_eq!(budget.rest_cost_in_window(), 2);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::RequotePending);
+
+        // The Canceled confirmation drives the replacement submit directly through
+        // the lifecycle (the NT handler's path), bypassing the budget gate entirely.
+        let resubmit = market.on_leg_event(Leg::Yes, LegEvent::Canceled);
+        assert_eq!(
+            resubmit,
+            Some(MarketAction::Leg {
+                leg: Leg::Yes,
+                action: LifecycleAction::Submit,
+            })
+        );
+        assert_eq!(market.leg_state(Leg::Yes), LegState::SubmitPending);
+        // The budget is UNCHANGED — the resubmit spent the pre-paid token, not a
+        // fresh charge: still exactly 1 submit command and 2 REST calls.
+        assert_eq!(budget.submit_commands_in_window(), 1);
+        assert_eq!(budget.rest_cost_in_window(), 2);
     }
 }

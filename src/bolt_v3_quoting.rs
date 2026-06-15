@@ -312,10 +312,32 @@ mod tests {
             )
             .is_none()
         );
-        // A degenerate epsilon collapses the open-interval sanitizer -> fail closed.
+        // A degenerate epsilon collapses the open-interval sanitizer via its eps
+        // COLLAR branch -> fail closed.
         assert!(
             compose_binary_legs(
                 band, ZERO_F64, UNIT_F64, REF_TAU, REF_TAU, WIDEN_CAP, 0.0, 0.5
+            )
+            .is_none()
+        );
+        // A VALID epsilon but a wide band under heavy widening drives a leg strictly
+        // below the open interval, so sanitize_open_probability fails on its VALUE
+        // branch (eps < value < 1-eps), distinct from the collar branch above. This
+        // is the integration-layer guard that a widening/skew bug pushing a leg out
+        // of (0, 1) fails closed through the canonical chain: band (0.05, 0.95) at a
+        // 1/100 horizon widens the half-spread 10x to 4.5, so yes_raw = 0.5 - 4.5 =
+        // -4.0 -> rejected. The downstream sum and straddle guards do NOT catch a
+        // negative leg, so only this value-branch check holds the line.
+        assert!(
+            compose_binary_legs(
+                gm_binary_quote(0.50, 0.9).expect("interior band"),
+                ZERO_F64,
+                UNIT_F64,
+                REF_TAU / 100.0,
+                REF_TAU,
+                WIDEN_CAP,
+                0.0,
+                TEST_EPS,
             )
             .is_none()
         );

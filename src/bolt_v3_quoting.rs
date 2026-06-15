@@ -236,9 +236,18 @@ mod tests {
         )
         .expect("non-degenerate inputs quote");
 
+        // At the reference horizon (widening factor 1), zero floor and zero skew,
+        // the layout is an identity on the band: the YES bid is EXACTLY the band's
+        // bid and the NO bid is EXACTLY 1 - the band's ask. This pins the spread
+        // MAGNITUDE, not just its sign — any half-spread, widening-factor, floor or
+        // skew inflation moves the legs off the band edges and fails here (a
+        // regression a sign-only `< fair` check would silently pass).
+        assert!((legs.yes_price - band.bid()).abs() < EPSILON);
+        assert!((legs.no_price - (UNIT_F64 - band.ask())).abs() < EPSILON);
         // The YES bid sits below the fair; the NO bid sits below (1 - fair).
         assert!(legs.yes_price < band.p_up());
         assert!(legs.no_price < UNIT_F64 - band.p_up());
+        // Both legs stay strictly inside the open probability interval.
         assert!(legs.yes_price > TEST_EPS && legs.yes_price < UNIT_F64 - TEST_EPS);
         assert!(legs.no_price > TEST_EPS && legs.no_price < UNIT_F64 - TEST_EPS);
     }
@@ -265,7 +274,15 @@ mod tests {
         // A shorter horizon widens the defensive spread, pushing both bids down.
         assert!(near.yes_price < calm.yes_price);
         assert!(near.no_price < calm.no_price);
-        // A large inventory skew leans one leg out of the open interval -> pruned.
+        // ...and it widens by EXACTLY the time factor: the YES leg's deviation from
+        // the band mid scales by the factor (itself independently pinned in
+        // time_widening_widens_only_and_respects_cap), so a factor-magnitude bug that
+        // still preserves the `near < calm` direction is caught here too.
+        let factor = time_widening_factor(REF_TAU / 4.0, REF_TAU, WIDEN_CAP).expect("factor");
+        let mid = (band.bid() + band.ask()) / 2.0;
+        assert!(((mid - near.yes_price) - factor * (mid - calm.yes_price)).abs() < EPSILON);
+        // A large inventory skew pushes the implied YES ask (1 - no_price) below the
+        // fair, so the straddle guard (yes_price <= p_up <= yes_ask) fails -> pruned.
         assert!(
             compose_binary_legs(
                 band, ZERO_F64, UNIT_F64, REF_TAU, REF_TAU, WIDEN_CAP, 0.20, TEST_EPS

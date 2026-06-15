@@ -17,7 +17,8 @@ fills, orders, account state, or portfolio state.
 ## Source Roles And Data Status
 
 Keep source role separate from data status. Exact user-facing label names and
-legend text require a cross-project terminology pass before UI implementation.
+legend text come from the canonical cross-project registry in
+`../reference/contracts.md`.
 
 Source roles:
 
@@ -41,6 +42,34 @@ Additional source rules:
 - Strategy state/outlook must be omitted unless an accepted source contract
   exists, or rendered only as exploratory/non-trading-truth. Dashboard must not
   calculate strategy state or outlook as trading truth.
+
+## Dependency Decisions
+
+- #409 / `PortfolioSnapshot`: account state and portfolio equity are complete
+  only when a `PortfolioSnapshot` source is present. Otherwise dashboard must
+  omit the field or render `unavailable`/`partial` with an explicit gap reason.
+- #77 durable trade-history/PnL: historical PnL is complete only when the
+  durable trade-history/PnL source is present. Otherwise dashboard must render a
+  gap label and must not reconstruct independent PnL truth.
+- #36 redemption-realized PnL: excluded from the accepted dashboard read model
+  until the owner explicitly includes it. The field must render `excluded` with
+  a scope-excluded gap reason when present.
+- #369 is non-closure context. A dashboard source contract, read model, or BI
+  choice does not close production readiness, runtime capture, or trading
+  control-plane readiness.
+
+## Read-Only Source Contract Validation
+
+The current implementation surface is a Rust read-model contract validator, not
+a UI. It rejects proof-strength reclassification, accepted proof mutation,
+forbidden-claim weakening, historical-result relabeling after proof
+supersession, RA verdict derivation from BTE metrics, RA verdict/finding review
+mutation, dashboard mutation actions, canonical artifact delete/expire/publish/
+repair actions, cross-root artifact links, and cross-kind bulk lists built from
+independent latest pointers rather than committed Artifact Index snapshots.
+
+Field resolution uses `source_binding_key` values from config/registry data. It
+rejects resolving fields through venue or provider identity.
 
 ## Implementation Gates
 
@@ -100,18 +129,32 @@ selection:
 5. Bespoke UI only after source-contract, security, query-backend, UX, cost, and
    operational burden justify it.
 
+Decision: select Metabase Open Source/self-hosted as the first read-only SQL BI
+surface for dashboard read-model tables, with read-only warehouse credentials
+and disabled mutation actions. Grafana remains an observability companion for
+ops metrics/logs; Preset/Superset remains the managed/open-source BI fallback;
+Retool is not selected until annotation/review write owner/schema/audit rules
+exist; Plotly/Dash and bespoke UI are rejected for now because the required
+first surface is tabular SQL BI plus drill-down, not a custom visual app.
+
+Selected products or UI surfaces must carry a no-mutation-controls reference.
+Non-trading annotation/review writes stay disabled unless a future owner/schema/
+audit reference exists.
+
 ## Product Cost Baselines
 
-These are planning snapshots and must be refreshed before product selection.
+Refreshed on 2026-06-15 from public vendor pricing pages. These are planning
+snapshots; final procurement must re-check price, contract, security, and usage
+limits before purchase or deployment.
 
-| Product path | Known cost | Dashboard implication |
+| Product path | Current public pricing snapshot | Dashboard implication |
 |---|---:|---|
-| Grafana Cloud | Free tier exists; Pro visualization is `$8/active user` plus `$19/month` platform fee, with usage-based observability costs | Strong ops metrics/logs candidate; not trading truth. |
-| Metabase | Open Source `$0`; managed Starter `$100/month + $6/user/month`; Pro `$575/month + $12/user/month`; Enterprise starts at `$20k/year` | Good SQL BI candidate; managed tiers can consume budget quickly. |
-| Preset/Superset | Preset Starter `$0` up to 5 users; Professional `$20/user/month` annually or `$25/user/month` monthly; embedded viewers start at `$500/month`; Superset is open source | Good managed/open-source BI candidate; self-hosting shifts cost to AWS/ops. |
-| Retool | Free, Team, Business, and Enterprise tiers; Business includes stronger controls such as audit logging and permissions | Candidate for internal operator workflows; model builder/user seats, workflow runs, permissions/audit tier, and source-security fit. |
-| Plotly/Dash | Free tier exists; Pro `$29/creator/month`; Enterprise custom | Use only if BI products cannot satisfy visual workflow. |
-| Custom UI | No fixed product fee; engineering and ops cost unestimated | Fallback only after product gate rejects existing tools. |
+| Grafana Cloud | Free `$0`; Pro from `$19/month + usage`; Enterprise starts at `$25k/year` spend commit. Source: https://grafana.com/pricing/ | Strong ops metrics/logs companion; not trading truth and not the first SQL investigation surface. |
+| Metabase | Open Source `$0`; managed Starter `$100/month + $6/user/month`; Pro `$575/month + $12/user/month`; Enterprise starts at `$20k/year`. Source: https://www.metabase.com/pricing/ | Selected first read-only SQL BI path; use read-only DB credentials and no dashboard write actions. |
+| Preset/Superset | Preset Starter `$0` up to 5 users; Professional `$20/user/month` annually or `$25/user/month` monthly; embedded viewer licenses start at `$500/month` for 50 viewers; Enterprise custom. Source: https://preset.io/pricing/ | Fallback BI path if Metabase cannot satisfy SQL/dashboard workflow or Superset compatibility wins. |
+| Retool | Free tier; Team builder `$10/month` and internal user `$5/month`; Business builder `$50/month` and internal user `$15/month`; Business/Enterprise expose stronger controls such as RBAC and audit logs. Source: https://retool.com/pricing/ | Not selected for first dashboard; reconsider only if annotation/review workflow gets owner/schema/audit rules. |
+| Plotly/Dash | Free `$0`; Pro `$29/creator/month` or `$290/year`; extra viewers `$10/seat/month`; Enterprise custom. Source: https://plotly.com/pricing/ | Rejected for first dashboard because current jobs are BI tables/drill-down, not bespoke custom visuals. |
+| Custom UI | No product fee; engineering, security, and ops cost unbounded. | Rejected for now; allowed only by explicit custom-UI exception after product candidates fail with evidence. |
 
 ## Issue Payload
 

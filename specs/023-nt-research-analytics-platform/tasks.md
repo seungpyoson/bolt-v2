@@ -26,7 +26,7 @@ ROOT-009 is intentionally deferred; see Future Cross-Project Tasks below.
 
 ## Future Cross-Project Tasks
 
-- [ ] ROOT-009 Create a cross-project status/label/legend registry before
+- [x] ROOT-009 Create a cross-project status/label/legend registry before
   implementation or UI work. It must define each internal enum/status, plain
   display label, tooltip/legend meaning, owner/source of truth, which vertical
   may set it, and which vertical may only display it. Covered concepts include

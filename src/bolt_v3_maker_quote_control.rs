@@ -68,14 +68,14 @@ pub fn drive_quote_leg(
     let mut candidate = *market;
     let action = candidate.on_leg_event(input.leg, LegEvent::QuoteTrigger { requote_needed });
 
-    if let Some(market_action) = action {
-        if !reserve_action_budget(budget, input.now_ms, market_action) {
-            return QuoteControlDecision {
-                action: None,
-                blocked_by: Some(QuoteControlBlockReason::RequoteBudgetExhausted),
-                requote_needed,
-            };
-        }
+    if let Some(market_action) = action
+        && !reserve_action_budget(budget, input.now_ms, market_action)
+    {
+        return QuoteControlDecision {
+            action: None,
+            blocked_by: Some(QuoteControlBlockReason::RequoteBudgetExhausted),
+            requote_needed,
+        };
     }
 
     *market = candidate;

@@ -429,6 +429,7 @@ TEST_REPRODUCTION_COMMAND = (
     "--partition count:${shard}/4"
 )
 TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"'
+TEST_ARCHIVE_EXTRACT_ROOT_INIT = 'mkdir -p "$RUNNER_TEMP/nextest-archive-extract"'
 TEST_ARCHIVE_PARTITION_LOOP = "for shard in 1 2 3 4; do"
 TEST_ARCHIVE_PARTITION_GROUP = 'echo "::group::nextest archive partition ${shard}/4"'
 TEST_ARCHIVE_PARTITION_STATUS_INIT = "status=0"
@@ -8164,6 +8165,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must log partition diagnostics")
         if TEST_PARTITION_COMMAND not in archive_text:
             errors.append("test-archive must run partitioned nextest from local archive")
+        if TEST_ARCHIVE_EXTRACT_ROOT_INIT not in archive_text:
+            errors.append("test-archive must create nextest archive extract root")
         for fragment in (
             TEST_ARCHIVE_PARTITION_STATUS_INIT,
             TEST_ARCHIVE_PARTITION_STATUS_MARK,

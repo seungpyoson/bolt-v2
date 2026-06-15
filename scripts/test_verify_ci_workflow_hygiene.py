@@ -517,6 +517,7 @@ jobs:
       - name: Run nextest archive partitions
         shell: bash
         run: |
+          mkdir -p "$RUNNER_TEMP/nextest-archive-extract"
           status=0
           for shard in 1 2 3 4; do
             echo "::group::nextest archive partition ${shard}/4"
@@ -5746,6 +5747,10 @@ def main() -> int:
             'just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/4"',
             "just test",
         ),
+    )
+    assert_error(
+        "test-archive must create nextest archive extract root",
+        replace_once(BASE_WORKFLOW, '          mkdir -p "$RUNNER_TEMP/nextest-archive-extract"\n', ""),
     )
     assert_error(
         "test-archive must log partition diagnostics",

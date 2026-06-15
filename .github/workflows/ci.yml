@@ -495,6 +495,7 @@ jobs:
       - name: Run nextest archive partitions
         shell: bash
         run: |
+          mkdir -p "$RUNNER_TEMP/nextest-archive-extract"
           status=0
           for shard in 1 2 3 4; do
             echo "::group::nextest archive partition ${shard}/4"

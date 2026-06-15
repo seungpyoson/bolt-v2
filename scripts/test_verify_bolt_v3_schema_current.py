@@ -111,6 +111,17 @@ def test_validate_docs_accepts_current_terms() -> None:
         raise AssertionError(f"expected no findings, got {findings!r}")
 
 
+def test_validate_docs_checks_decision_evidence_schema_version_source() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        decision_evidence_source="pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 11;",
+    )
+
+    if "schema missing decision-evidence JSONL schema v11 contract" not in findings:
+        raise AssertionError(f"expected decision-evidence schema source drift finding, got {findings!r}")
+
+
 def test_validate_docs_rejects_wrong_active_speckit_context() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA,

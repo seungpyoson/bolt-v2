@@ -391,20 +391,30 @@ def validate_docs(
         if phrase not in schema:
             findings.append(f"schema missing current phrase: {phrase}")
 
-    decision_evidence_schema_version = extract_decision_evidence_schema_version(
-        decision_evidence_source
-    )
-    if decision_evidence_schema_version is None:
-        findings.append("source missing BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION")
-    else:
+    if decision_evidence_source:
+        decision_evidence_schema_version = extract_decision_evidence_schema_version(
+            decision_evidence_source
+        )
+        if decision_evidence_schema_version is None:
+            findings.append("source missing BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION")
+        else:
+            decision_evidence_contract_phrase = (
+                DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE_TEMPLATE.format(
+                    version=decision_evidence_schema_version
+                )
+            )
+            if decision_evidence_contract_phrase not in schema:
+                findings.append(
+                    "schema missing decision-evidence JSONL schema "
+                    f"v{decision_evidence_schema_version} contract"
+                )
+
+    if not decision_evidence_source:
         decision_evidence_contract_phrase = DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE_TEMPLATE.format(
-            version=decision_evidence_schema_version
+            version=10
         )
         if decision_evidence_contract_phrase not in schema:
-            findings.append(
-                "schema missing decision-evidence JSONL schema "
-                f"v{decision_evidence_schema_version} contract"
-            )
+            findings.append("schema missing decision-evidence JSONL schema v10 contract")
 
     if runtime_contracts:
         for field in ORDER_TEMPLATE_FIELDS:

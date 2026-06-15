@@ -161,6 +161,102 @@ fn same_venue_submit_rejects_mismatched_leg_intents_before_mutating_state() {
 }
 
 #[test]
+fn same_venue_submit_rejects_duplicate_client_order_ids_before_mutating_state() {
+    let mut basket = reserved_basket();
+    let mut intents = leg_intents();
+    intents[1].client_order_id = "COID-YES".to_string();
+
+    let error = basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-DUPLICATE-COID",
+            intents,
+        )
+        .expect_err("duplicate client order ids must reject before submit mutation");
+
+    assert!(matches!(
+        error,
+        BoltV3BasketExecutionError::LegShapeMismatch
+    ));
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Reserved);
+    assert_eq!(basket.order_list_id(), None);
+    assert!(basket.client_order_ids().is_empty());
+}
+
+#[test]
+fn same_venue_submit_rejects_empty_client_order_id_before_mutating_state() {
+    let mut basket = reserved_basket();
+    let mut intents = leg_intents();
+    intents[0].client_order_id.clear();
+
+    let error = basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-EMPTY-COID",
+            intents,
+        )
+        .expect_err("empty client order id must reject before submit mutation");
+
+    assert!(matches!(
+        error,
+        BoltV3BasketExecutionError::LegShapeMismatch
+    ));
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Reserved);
+    assert_eq!(basket.order_list_id(), None);
+    assert!(basket.client_order_ids().is_empty());
+}
+
+#[test]
+fn same_venue_submit_rejects_intent_venue_that_disagrees_with_instrument_before_mutating_state() {
+    let mut basket = reserved_basket();
+    let mut intents = leg_intents();
+    for intent in &mut intents {
+        intent.venue = "HYPERLIQUID".to_string();
+    }
+
+    let error = basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-WRONG-VENUE",
+            intents,
+        )
+        .expect_err("intent venue must match the durable basket instrument venue");
+
+    assert!(matches!(
+        error,
+        BoltV3BasketExecutionError::LegShapeMismatch
+    ));
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Reserved);
+    assert_eq!(basket.order_list_id(), None);
+    assert!(basket.client_order_ids().is_empty());
+}
+
+#[test]
+fn same_venue_submit_rejects_empty_venue_before_mutating_state() {
+    let mut basket = reserved_basket();
+    let mut intents = leg_intents();
+    for intent in &mut intents {
+        intent.venue.clear();
+    }
+
+    let error = basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-EMPTY-VENUE",
+            intents,
+        )
+        .expect_err("empty venue must reject before submit mutation");
+
+    assert!(matches!(
+        error,
+        BoltV3BasketExecutionError::LegShapeMismatch
+    ));
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Reserved);
+    assert_eq!(basket.order_list_id(), None);
+    assert!(basket.client_order_ids().is_empty());
+}
+
+#[test]
 fn audited_submit_mode_without_nt_order_list_is_rejected_without_fallback() {
     let mut basket = reserved_basket();
 

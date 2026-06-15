@@ -314,8 +314,11 @@ mod tests {
     // Re-derived after strategy submit-admission tests started committing the
     // permits they use to simulate already-submitted orders.
     // Re-derived after merging current main into the reference-price port.
+    // Re-derived after preserving the active reference-current-price fast-spot
+    // selection through Chainlink reference-source timeouts and refreshing that
+    // selection before exit pricing.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "6274969d8510eb84d8a3f3325453bfcfa7b22d026357ae2c9a811aeefa18e643";
+        "bab289c7b222f1f972c4281392e8cc991956e0a25f3f35d4ac3571cf3794700f";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

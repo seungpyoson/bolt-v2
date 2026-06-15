@@ -49,6 +49,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/ci.yml": "ci",
     "backtester-ci.yml": "backtester_ci",
     ".github/workflows/backtester-ci.yml": "backtester_ci",
+    "dispatch-ci-cancel.yml": "dispatch_ci_cancel",
+    ".github/workflows/dispatch-ci-cancel.yml": "dispatch_ci_cancel",
     "ci-runner-debug.yml": "ci_runner_debug",
     ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
     "rust-probe.yml": "rust_probe",
@@ -8867,6 +8869,24 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
     return ci_provenance
 
 
+def validate_dispatch_cancel_config(data: dict[str, object]) -> dict[str, object]:
+    section = data.get("dispatch_cancel")
+    if not isinstance(section, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [dispatch_cancel]")
+    event = section.get("workflow_event")
+    if event != "workflow_dispatch":
+        raise ValueError("dispatch_cancel.workflow_event must be workflow_dispatch")
+    active_statuses = section.get("active_statuses")
+    required_statuses = {"queued", "requested", "waiting", "pending", "in_progress"}
+    if not isinstance(active_statuses, list) or set(active_statuses) != required_statuses:
+        raise ValueError(
+            "dispatch_cancel.active_statuses must cover queued, requested, waiting, pending, and in_progress"
+        )
+    for key in ("workflow_runs_per_page", "max_pages"):
+        require_config_positive_int(section, key, "dispatch_cancel")
+    return section
+
+
 def load_github_actions_runners_config(
     path: pathlib.Path | None = None,
 ) -> dict[str, object]:
@@ -8883,6 +8903,7 @@ def load_github_actions_runners_config(
     if not isinstance(meter, dict):
         raise ValueError("ci/github-actions-runners.toml must define [meter]")
     ci_provenance = validate_ci_provenance_config(data)
+    dispatch_cancel = validate_dispatch_cancel_config(data)
     meter_workflows = meter.get("included_workflows")
     if not isinstance(meter_workflows, list) or not all(
         isinstance(workflow, str) and workflow for workflow in meter_workflows
@@ -8928,6 +8949,7 @@ def load_github_actions_runners_config(
         "variables": sorted(tier_to_var.values()),
         "workflows": workflows,
         "ci_provenance": ci_provenance,
+        "dispatch_cancel": dispatch_cancel,
     }
 
 
@@ -9015,6 +9037,52 @@ def verify_ci_runner_debug_workflow(workflows: dict[str, str]) -> list[str]:
             errors.append(f"{workflow_name} {job} must reference {expected_secret!r}")
         if not any(expected_wait in line for line in job_lines):
             errors.append(f"{workflow_name} {job} must reference {expected_wait!r}")
+    return errors
+
+
+def verify_dispatch_ci_cancel_workflow(workflows: dict[str, str]) -> list[str]:
+    workflow_name = ".github/workflows/dispatch-ci-cancel.yml"
+    workflow_text = workflows.get(workflow_name)
+    if workflow_text is None:
+        return [f"{workflow_name} must exist to cancel stale branch workflow_dispatch CI runs"]
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"github-actions runner config invalid: {exc}"]
+
+    ci_provenance = config["ci_provenance"]
+    workflow_event = config["dispatch_cancel"]["workflow_event"]
+    expected_ci_name = str(ci_provenance["workflow_name"])
+    jobs = parse_jobs(workflow_text)
+    job = jobs.get("cancel-obsolete-dispatch")
+    errors: list[str] = []
+    if workflow_trigger_keys(workflow_text) != {"workflow_run"}:
+        errors.append(f"{workflow_name} must trigger only on workflow_run")
+    trigger = "\n".join(workflow_trigger_block(workflow_text, "workflow_run"))
+    if f'workflows: ["{expected_ci_name}"]' not in trigger and f"workflows: ['{expected_ci_name}']" not in trigger:
+        errors.append(f"{workflow_name} workflow_run trigger must watch {expected_ci_name!r}")
+    if "types: [requested]" not in trigger:
+        errors.append(f"{workflow_name} workflow_run trigger must use requested only")
+    permissions = "\n".join(top_level_block(workflow_text, "permissions"))
+    if "  actions: write" not in permissions:
+        errors.append(f"{workflow_name} permissions must include actions: write")
+    if "  contents: read" not in permissions:
+        errors.append(f"{workflow_name} permissions must include contents: read")
+    if job is None:
+        errors.append(f"{workflow_name} must define cancel-obsolete-dispatch job")
+        return errors
+    job_if = job_if_value(job)
+    job_text = "\n".join(job)
+    if f"github.event.workflow_run.event == '{workflow_event}'" not in job_if:
+        errors.append(f"{workflow_name} job must filter workflow_dispatch runs")
+    if f"github.event.workflow_run.name == '{expected_ci_name}'" not in job_text:
+        errors.append(f"{workflow_name} job must filter the configured CI workflow")
+    if "python3 scripts/cancel_obsolete_dispatch_runs.py" not in job_text:
+        errors.append(f"{workflow_name} job must run scripts/cancel_obsolete_dispatch_runs.py")
+    if "GITHUB_TOKEN: ${{ github.token }}" not in job_text:
+        errors.append(f"{workflow_name} job must pass github.token without exposing secrets")
     return errors
 
 
@@ -9179,6 +9247,7 @@ def main() -> int:
     errors = verify_workflows(workflow_texts, action_text, nextest_config_text)
     errors.extend(verify_github_actions_runner_contract(workflow_texts))
     errors.extend(verify_ci_runner_debug_workflow(workflow_texts))
+    errors.extend(verify_dispatch_ci_cancel_workflow(workflow_texts))
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())

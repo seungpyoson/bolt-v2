@@ -688,6 +688,11 @@ fn evaluate_universe(
         let path = resolve_existing_path(base_dir, path);
         artifact_refs.push(artifact_ref("source_universe_source_proof_set", &path)?);
         let proof_set: SourceUniverseSourceProofSetSummary = read_json(&path)?;
+        ensure!(
+            proof_set.accepted_proof_count <= proof_set.proof_count,
+            "source-universe source proof set {} accepted proof count exceeds proof count",
+            path.display()
+        );
         if source_object_count > 0 {
             ensure!(
                 source_object_count == proof_set.total_completed_objects,

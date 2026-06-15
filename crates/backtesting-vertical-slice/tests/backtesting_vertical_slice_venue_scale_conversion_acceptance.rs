@@ -724,3 +724,64 @@ selected_conversion_manifest_path = "{manifest_path}"
         "expected missing-catalog-hash rejection, got: {error:#}"
     );
 }
+
+#[test]
+fn source_proof_set_rejects_accepted_count_above_total_count() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_dir = temp_dir.path().join("acceptance-ledger");
+    let source_manifest = temp_dir.path().join("source-manifest.json");
+    let source_proof_set = temp_dir.path().join("source-proof-set.json");
+    fs::write(
+        &source_manifest,
+        r#"{
+  "schema_version": "backfill-source-universe-object-manifest.v1",
+  "manifest_id": "backfill-source-universe-object-manifest-test",
+  "universe_id": "backfill-source-universe-test",
+  "object_count": 1,
+  "accepted_bytes": 10
+}"#,
+    )
+    .expect("write source manifest");
+    fs::write(
+        &source_proof_set,
+        r#"{
+  "schema_version": "source-universe-source-proof-set.v1",
+  "proof_set_id": "source-universe-source-proofs-test",
+  "proof_count": 1,
+  "accepted_proof_count": 2,
+  "total_completed_objects": 1,
+  "total_accepted_bytes": 10
+}"#,
+    )
+    .expect("write source proof set");
+    let spec = temp_dir.path().join("source-proof-set-spec.toml");
+    fs::write(
+        &spec,
+        format!(
+            r#"ledger_id = "venue-scale-conversion-acceptance-ledger-inconsistent-proof-set"
+output_dir = "{}"
+
+[[venue]]
+venue_id = "test-current-reference"
+venue = "test"
+
+[[venue.universe]]
+universe_id = "test-source-only"
+scope_label = "test source-only universe"
+status = "source_only"
+source_universe_manifest_path = "{}"
+source_universe_source_proof_set_path = "{}"
+"#,
+            output_dir.display(),
+            source_manifest.display(),
+            source_proof_set.display(),
+        ),
+    )
+    .expect("write spec");
+    let error = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&spec)
+        .expect_err("accepted proof count above total proof count must be rejected");
+    assert!(
+        format!("{error:#}").contains("accepted proof count exceeds proof count"),
+        "expected proof-count consistency rejection, got: {error:#}"
+    );
+}

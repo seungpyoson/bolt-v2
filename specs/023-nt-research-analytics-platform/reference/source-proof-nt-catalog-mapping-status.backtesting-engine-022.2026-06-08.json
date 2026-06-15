@@ -365,10 +365,12 @@
     "evidence": [
       "RED-GATED crates/backtesting-vertical-slice/src/venue_scale_conversion_acceptance.rs unit regression source_only_status_rejects_unaccepted_source_proof_set documents that a source-only universe with a referenced source proof set but zero accepted proofs must fail validation.",
       "GREEN-GATED venue-scale conversion acceptance validation now receives source_proof_count and source_accepted_proof_count and rejects SourceOnly when source_proof_count > 0 and source_accepted_proof_count == 0.",
+      "REGRESSION crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_venue_scale_conversion_acceptance.rs source_proof_set_rejects_accepted_count_above_total_count documents that source proof sets with accepted_proof_count > proof_count must fail before status accounting.",
       "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml keeps pmxt-polymarket-full-current-data blocked with source_accepted_proof_count=0 evidence preserved on the universe record."
     ],
     "claim_limits": [
       "This proves a venue-scale source-only status cannot be backed by an explicitly unaccepted source proof set.",
+      "This proves source proof set summary counts fail closed when accepted_proof_count exceeds proof_count.",
       "This does not accept any PMXT source proof.",
       "This does not prove expanded PMXT coverage, cost, object gates, conversion run plans, or dynamic tick-size replay.",
       "This does not authorize broad PMXT backfill."

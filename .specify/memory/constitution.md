@@ -10,7 +10,7 @@ Templates reviewed: .specify/templates/plan-template.md - no update needed;
 .specify/templates/tasks-template.md - updated;
 .specify/templates/constitution-template.md - updated;
 .specify/templates/commands - absent in this repo
-Runtime guidance updated: AGENTS.md; CLAUDE.md and GEMINI.md now point to AGENTS.md
+Runtime guidance updated: AGENTS.md is repo governance; CLAUDE.md and GEMINI.md now point to AGENTS.md
 Follow-up items: none
 -->
 
@@ -92,7 +92,11 @@ External data providers are allowed when they avoid rebuilding commodity data in
 
 ## Governance
 
-This constitution supersedes convenience, local habit, and stale branch artifacts. Any PR that violates a MUST rule requires redesign, not waiver-by-documentation. Amendments require an explicit user-approved diff, a migration note for affected specs/plans, and a version bump.
+This constitution is the SpecKit project-principles artifact. `AGENTS.md` is the
+repo governance and agent workflow source. Any PR that violates a MUST rule in
+this artifact requires redesign, not waiver-by-documentation. Amendments require
+an explicit user-approved diff, a migration note for affected specs/plans, and a
+version bump.
 
 Migration note for v2.0.0: affected planning artifacts must replace blanket TDD
 language with evidence-driven verification. Active work under

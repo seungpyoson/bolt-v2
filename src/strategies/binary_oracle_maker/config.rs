@@ -1,11 +1,17 @@
-//! TOML config struct + parse/validate for the inert `binary_oracle_maker` strategy.
+//! TOML config struct + parse/validate for the `binary_oracle_maker` strategy.
 //!
-//! Slice 1 (#488): the maker is registered-but-**inert** — it carries only the
-//! minimal NautilusTrader `StrategyConfig` envelope (`strategy_id`,
-//! `order_id_tag`, `oms_type`) that `StrategyCore::new` consumes. NO trading
-//! parameters live here yet; later slices add quoting/pricing/exposure config.
-//! Mirrors the taker config's parse/validate *shape* structurally — it does not
-//! copy the taker's parameter rows.
+//! This is the **flat NautilusTrader config** the strategy consumes at build:
+//! the `StrategyCore` envelope (`strategy_id`, `order_id_tag`, `oms_type`) plus
+//! the μ-estimator / health-gate runtime knobs the archetype threads in from the
+//! operator `[strategies.<id>.parameters.runtime]` block (Slice 2, #488). It is
+//! built by `archetype::raw_maker_config`, never written by an operator directly.
+//! `deny_unknown_fields` fails loud on any stray key.
+//!
+//! This struct validates only the flat table's **structure** (field presence,
+//! TOML type, unknown keys, `oms_type` parseability). The operator-facing
+//! **bounds** for the μ knobs live solely in `archetype::validate_strategy` (the
+//! bolt-v3 go-live gate), so there is one home for each concern. Mirrors the
+//! taker config's parse/validate *shape* structurally.
 
 use anyhow::{Context, Result};
 use nautilus_model::enums::OmsType;
@@ -14,12 +20,15 @@ use toml::Value;
 
 use crate::strategies::registry::ValidationError;
 
-/// Minimal NautilusTrader config envelope for the inert maker. Only the fields
-/// `BinaryOracleMaker::new` feeds into `StrategyCore::new(StrategyConfig { .. })`
-/// are present; every other `StrategyConfig` field is left at NT's documented
-/// default (see `StrategyConfig::default`). `deny_unknown_fields` fails loud on
-/// any stray key so a typo in the operator TOML cannot be silently ignored.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// Flat NautilusTrader config the maker consumes at build. The `StrategyConfig`
+/// envelope fields `BinaryOracleMaker::new` feeds into `StrategyCore::new` plus
+/// the μ runtime knobs `MakerMuState::new` projects into its estimator,
+/// health-gate, and trade-flow config views. Every other `StrategyConfig` field
+/// is left at NT's documented default (see `StrategyConfig::default`).
+/// `deny_unknown_fields` fails loud on any stray key so a typo in the operator
+/// TOML cannot be silently ignored. `Eq` is intentionally not derived because
+/// `mu_min_floor` is an `f64`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryOracleMakerConfig {
     /// The NautilusTrader strategy id (becomes the running strategy's id).
@@ -28,6 +37,16 @@ pub struct BinaryOracleMakerConfig {
     pub order_id_tag: String,
     /// The order-management-system type, parsed as a NautilusTrader `OmsType`.
     pub oms_type: String,
+    /// Signed-trade-flow retention window in seconds (μ estimator input).
+    pub trade_flow_window_secs: u64,
+    /// Signed-trade-flow retention sample cap (μ estimator input).
+    pub trade_flow_max_samples: u64,
+    /// Minimum classified (`Buyer`/`Seller`) samples before a μ is produced.
+    pub mu_min_classified_samples: u64,
+    /// Maximum age (ms) of the most recent trade before μ is considered stale.
+    pub mu_stale_window_ms: u64,
+    /// Lower bound μ must reach to be healthy (the degenerate-flow floor).
+    pub mu_min_floor: f64,
 }
 
 /// Zero-sized factory the `StrategyBuilder` trait is implemented for (in
@@ -45,6 +64,11 @@ const UNKNOWN_FIELD_CODE: &str = "unknown_field";
 const STRATEGY_ID_FIELD: &str = "strategy_id";
 const ORDER_ID_TAG_FIELD: &str = "order_id_tag";
 const OMS_TYPE_FIELD: &str = "oms_type";
+const TRADE_FLOW_WINDOW_SECS_FIELD: &str = "trade_flow_window_secs";
+const TRADE_FLOW_MAX_SAMPLES_FIELD: &str = "trade_flow_max_samples";
+const MU_MIN_CLASSIFIED_SAMPLES_FIELD: &str = "mu_min_classified_samples";
+const MU_STALE_WINDOW_MS_FIELD: &str = "mu_stale_window_ms";
+const MU_MIN_FLOOR_FIELD: &str = "mu_min_floor";
 
 /// Deserialize the maker config from its TOML table. Fails loud if the table is
 /// missing required envelope fields or carries unknown keys (via
@@ -55,9 +79,14 @@ pub fn parse_config(raw: &Value) -> Result<BinaryOracleMakerConfig> {
         .context("binary_oracle_maker builder requires a valid config table")
 }
 
-/// Push envelope validation errors (missing field / wrong type / unknown key)
-/// for the inert maker into `errors`. No parameter-row rules yet — the maker has
-/// no trading parameters in Slice 1.
+/// Push **structure** validation errors for the flat maker config into `errors`:
+/// unknown keys, plus envelope field presence/type and `oms_type` parseability.
+/// The μ runtime knobs are whitelisted here (so the flat table built by
+/// `archetype::raw_maker_config` is not flagged as carrying stray keys); their
+/// presence and type are guaranteed by that construction and re-enforced by the
+/// typed `deny_unknown_fields` deserialization at `parse_config`, and their
+/// operator-facing **bounds** are validated upstream in
+/// `archetype::validate_strategy` (one home per concern, no dual gate).
 pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<ValidationError>) {
     let Some(table) = raw.as_table() else {
         errors.push(ValidationError {
@@ -71,7 +100,14 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
     for key in table.keys() {
         if !matches!(
             key.as_str(),
-            STRATEGY_ID_FIELD | ORDER_ID_TAG_FIELD | OMS_TYPE_FIELD
+            STRATEGY_ID_FIELD
+                | ORDER_ID_TAG_FIELD
+                | OMS_TYPE_FIELD
+                | TRADE_FLOW_WINDOW_SECS_FIELD
+                | TRADE_FLOW_MAX_SAMPLES_FIELD
+                | MU_MIN_CLASSIFIED_SAMPLES_FIELD
+                | MU_STALE_WINDOW_MS_FIELD
+                | MU_MIN_FLOOR_FIELD
         ) {
             errors.push(ValidationError {
                 field: format!("{field_prefix}.{key}"),
@@ -157,28 +193,59 @@ fn validate_string_field(
 mod tests {
     use super::*;
 
-    fn minimal_raw() -> Value {
+    fn valid_raw() -> Value {
         toml::toml! {
             strategy_id = "BINARY-ORACLE-MAKER-001"
             order_id_tag = "001"
             oms_type = "netting"
+            trade_flow_window_secs = 600
+            trade_flow_max_samples = 1000
+            mu_min_classified_samples = 4
+            mu_stale_window_ms = 60000
+            mu_min_floor = 0.05
         }
         .into()
     }
 
     #[test]
-    fn parse_config_round_trips_minimal_envelope() {
-        let config = parse_config(&minimal_raw()).expect("minimal envelope parses");
+    fn parse_config_round_trips_full_config() {
+        let config = parse_config(&valid_raw()).expect("valid config parses");
         assert_eq!(config.strategy_id, "BINARY-ORACLE-MAKER-001");
         assert_eq!(config.order_id_tag, "001");
         assert_eq!(config.oms_type, "netting");
+        assert_eq!(config.trade_flow_window_secs, 600);
+        assert_eq!(config.trade_flow_max_samples, 1000);
+        assert_eq!(config.mu_min_classified_samples, 4);
+        assert_eq!(config.mu_stale_window_ms, 60_000);
+        assert_eq!(config.mu_min_floor, 0.05);
     }
 
     #[test]
-    fn validate_config_accepts_minimal_envelope() {
+    fn validate_config_accepts_valid_config() {
         let mut errors = Vec::new();
-        validate_config(&minimal_raw(), "strategy", &mut errors);
+        validate_config(&valid_raw(), "strategy", &mut errors);
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn parse_config_rejects_missing_mu_knob() {
+        // The flat config requires every μ knob (non-Option, deny_unknown_fields);
+        // a table missing one fails loud at parse rather than building a maker
+        // with an unspecified μ knob.
+        let raw: Value = toml::toml! {
+            strategy_id = "BINARY-ORACLE-MAKER-001"
+            order_id_tag = "001"
+            oms_type = "netting"
+            trade_flow_window_secs = 600
+            trade_flow_max_samples = 1000
+            mu_min_classified_samples = 4
+            mu_stale_window_ms = 60000
+        }
+        .into();
+        assert!(
+            parse_config(&raw).is_err(),
+            "missing mu_min_floor must fail to parse"
+        );
     }
 
     #[test]
@@ -225,7 +292,7 @@ mod tests {
             "minimal envelope oms_type must parse as an NT OmsType"
         );
         let mut errors = Vec::new();
-        validate_config(&minimal_raw(), "strategy", &mut errors);
+        validate_config(&valid_raw(), "strategy", &mut errors);
         assert!(
             !errors
                 .iter()

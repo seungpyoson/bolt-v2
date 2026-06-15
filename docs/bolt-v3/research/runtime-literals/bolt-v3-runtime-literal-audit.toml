@@ -15594,6 +15594,86 @@ classification = "reference_price_data_contract"
 reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"trade_flow_window_secs"'''
+context = '''const TRADE_FLOW_WINDOW_SECS_FIELD: &str = "trade_flow_window_secs";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the signed-trade-flow retention window (μ estimator input) used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"trade_flow_max_samples"'''
+context = '''const TRADE_FLOW_MAX_SAMPLES_FIELD: &str = "trade_flow_max_samples";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the signed-trade-flow retention sample cap (μ estimator input) used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"mu_min_classified_samples"'''
+context = '''const MU_MIN_CLASSIFIED_SAMPLES_FIELD: &str = "mu_min_classified_samples";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the μ-estimator warmup threshold (minimum classified samples) used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"mu_stale_window_ms"'''
+context = '''const MU_STALE_WINDOW_MS_FIELD: &str = "mu_stale_window_ms";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the μ-health-gate staleness window used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"mu_min_floor"'''
+context = '''const MU_MIN_FLOOR_FIELD: &str = "mu_min_floor";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the μ-health-gate degenerate-flow floor used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"trade_flow_window_secs"'''
+context = '''"trade_flow_window_secs",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name written into the flat NT config table from the operator [parameters.runtime] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"trade_flow_max_samples"'''
+context = '''"trade_flow_max_samples",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name written into the flat NT config table from the operator [parameters.runtime] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"mu_min_classified_samples"'''
+context = '''"mu_min_classified_samples",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name written into the flat NT config table from the operator [parameters.runtime] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"mu_stale_window_ms"'''
+context = '''insert_u64_field(table, "mu_stale_window_ms", runtime.mu_stale_window_ms)?;'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name written into the flat NT config table from the operator [parameters.runtime] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"mu_min_floor"'''
+context = '''"mu_min_floor".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name written into the flat NT config table from the operator [parameters.runtime] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
 path = "src/strategies/binary_oracle_maker/archetype.rs"
 kind = "string"
 literal = '''"strategy_id"'''

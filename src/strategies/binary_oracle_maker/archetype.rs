@@ -1,4 +1,4 @@
-//! Strategy-archetype binding for the inert `binary_oracle_maker` (Slice 1, #488).
+//! Strategy-archetype binding for the `binary_oracle_maker` (Slice 2, #488).
 //!
 //! This module lives under `src/strategies/` (the NON-scanned strategy layer),
 //! so it may freely name both the maker strategy layer
@@ -7,17 +7,24 @@
 //! archetype binding (`crate::bolt_v3_archetypes::binary_oracle_edge_taker`)
 //! *structurally* — it owns:
 //!
-//! 1. `validate_strategy` — the maker's bolt-v3 startup-validation policy. The
-//!    inert maker has no `[parameters]` rows yet, so this is **envelope-only**:
-//!    it accepts the maker archetype key and emits no parameter-row errors.
+//! 1. `validate_strategy` — the maker's bolt-v3 startup-validation policy and
+//!    **go-live gate**. It deserializes the operator
+//!    `[strategies.<id>.parameters]` block into [`ParametersBlock`]
+//!    (`deny_unknown_fields`, mirroring the taker's
+//!    `try_into::<ParametersBlock>()`) and then bounds-checks the μ-estimator /
+//!    health-gate runtime knobs ([`validate_parameter_bounds`]) so a degenerate
+//!    or never-warming μ fails closed at load instead of at the first dead
+//!    trading session.
 //! 2. `register_runtime_strategy` — resolves the configured fee provider and
-//!    execution venue, builds the **minimal** `StrategyBuildContext` + raw config
-//!    table the inert maker consumes, and registers the strategy through the
-//!    shared `production_strategy_registry()`.
+//!    execution venue, builds the `StrategyBuildContext` + flat raw config table
+//!    the maker consumes (the NT envelope plus the μ runtime knobs threaded from
+//!    `[parameters.runtime]`), and registers the strategy through the shared
+//!    `production_strategy_registry()`.
 //! 3. `RUNTIME_BINDING` — the `StrategyRuntimeBinding` the production aggregator
 //!    (`crate::strategy_bindings`) lists alongside the taker binding.
 
 use rust_decimal::Decimal;
+use serde::Deserialize;
 use toml::{Value, map::Map};
 
 use nautilus_model::identifiers::StrategyId;
@@ -40,18 +47,41 @@ pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
     register: register_runtime_strategy,
 };
 
-/// Bolt-v3 startup validation for the inert maker.
+/// Operator `[strategies.<id>.parameters]` block for the maker. Mirrors the
+/// taker's `ParametersBlock` shape: runtime-tuning knobs live in a nested
+/// `[parameters.runtime]` sub-table so the same knob name sits at the same path
+/// across strategies. `deny_unknown_fields` fails loud on any stray key.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct ParametersBlock {
+    runtime: RuntimeParametersBlock,
+}
+
+/// Runtime-tuning knobs for the maker's μ (informed-fraction) estimator and its
+/// fail-closed health gate. Every value is operator-supplied from TOML; nothing
+/// defaults. Unlike the taker's hand-written `Deserialize` (which rejects
+/// migrated fields), the maker has no migration history, so the derived
+/// `deny_unknown_fields` deserialization is the single source of truth.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct RuntimeParametersBlock {
+    trade_flow_window_secs: u64,
+    trade_flow_max_samples: u64,
+    mu_min_classified_samples: u64,
+    mu_stale_window_ms: u64,
+    mu_min_floor: f64,
+}
+
+/// Bolt-v3 startup validation and **go-live gate** for the maker.
 ///
-/// Slice 1 is registered-but-inert: it honors NO trading parameters. So this
-/// validator confirms the archetype key and then fails loud on any non-empty
-/// `[parameters]` table (and on a `[parameters]` block that is not a table at
-/// all) — silently dropping operator parameters the maker cannot honor would be
-/// fail-soft. An empty/absent table is the only accepted shape until later
-/// slices add real parameter rows (mirroring the taker validator's
-/// `strategy.parameters.try_into::<ParametersBlock>()` access). `context` and
-/// `_default_max_notional` mirror the taker validator's signature so the function
-/// is assignable to `ArchetypeValidationBinding::validate_strategy`; the
-/// risk-cap parameter is unused until later slices add notional parameters.
+/// Confirms the archetype key, then deserializes the operator `[parameters]`
+/// block into [`ParametersBlock`] (`deny_unknown_fields`, mirroring the taker's
+/// `strategy.parameters.try_into::<ParametersBlock>()`) and bounds-checks the μ
+/// runtime knobs ([`validate_parameter_bounds`]). A malformed block or an
+/// out-of-bounds knob fails closed at load. `context` and `_default_max_notional`
+/// mirror the taker validator's signature so the function is assignable to
+/// `ArchetypeValidationBinding::validate_strategy`; the risk-cap parameter is
+/// unused until later slices add notional parameters.
 pub fn validate_strategy(
     context: &str,
     strategy: &BoltV3StrategyConfig,
@@ -63,17 +93,66 @@ pub fn validate_strategy(
             strategy.strategy_archetype.as_str()
         )];
     }
+    let parameters = match strategy.parameters.clone().try_into::<ParametersBlock>() {
+        Ok(value) => value,
+        Err(error) => {
+            return vec![format!(
+                "{context}: parameters block is not a valid `{KEY}` [parameters] block: {error}"
+            )];
+        }
+    };
+    validate_parameter_bounds(context, &parameters)
+}
+
+/// Fail-closed bounds for the maker's μ runtime knobs (the go-live gate). Each
+/// rejected shape would otherwise yield a silently degenerate or never-producible
+/// μ at runtime — a fail-soft dead strategy — so it must fail closed at load:
+///
+/// - a zero retention window, sample cap, or classified-sample minimum means the
+///   estimator can never warm or the buffer never retains a trade, so μ is never
+///   produced;
+/// - a classified-sample minimum above the sample cap is unsatisfiable (the
+///   buffer can never hold that many classified samples), so μ is never produced;
+/// - a zero staleness window marks every reading stale, blocking μ permanently;
+/// - a μ floor outside the open interval `(0, 1)` is degenerate: a floor of `0`
+///   admits the constant-0 μ the health gate exists to reject, and a floor `>= 1`
+///   blocks every non-degenerate μ.
+fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec<String> {
+    let runtime = &parameters.runtime;
     let mut errors = Vec::new();
-    match strategy.parameters.as_table() {
-        Some(table) if !table.is_empty() => errors.push(format!(
-            "{context}: [parameters] is not supported (the inert `{KEY}` honors no parameters); remove the {} configured parameter row(s)",
-            table.len()
-        )),
-        Some(_) => {}
-        None => errors.push(format!(
-            "{context}: [parameters] must be a table, got {} value",
-            strategy.parameters.type_str()
-        )),
+    if runtime.trade_flow_window_secs == 0 {
+        errors.push(format!(
+            "{context}: parameters.runtime.trade_flow_window_secs must be > 0 (a zero retention window holds no trades, so a μ can never be produced)"
+        ));
+    }
+    if runtime.trade_flow_max_samples == 0 {
+        errors.push(format!(
+            "{context}: parameters.runtime.trade_flow_max_samples must be > 0 (a zero sample cap retains no trades, so a μ can never be produced)"
+        ));
+    }
+    if runtime.mu_min_classified_samples == 0 {
+        errors.push(format!(
+            "{context}: parameters.runtime.mu_min_classified_samples must be > 0 (a zero warmup threshold would admit a μ from an empty window)"
+        ));
+    }
+    if runtime.mu_min_classified_samples > runtime.trade_flow_max_samples {
+        errors.push(format!(
+            "{context}: parameters.runtime.mu_min_classified_samples ({}) must be <= parameters.runtime.trade_flow_max_samples ({}) (a warmup threshold above the buffer cap is unsatisfiable, so a μ can never be produced)",
+            runtime.mu_min_classified_samples, runtime.trade_flow_max_samples
+        ));
+    }
+    if runtime.mu_stale_window_ms == 0 {
+        errors.push(format!(
+            "{context}: parameters.runtime.mu_stale_window_ms must be > 0 (a zero staleness window marks every reading stale, blocking μ permanently)"
+        ));
+    }
+    if !crate::bolt_v3_numeric::is_positive_finite(runtime.mu_min_floor)
+        || runtime.mu_min_floor >= crate::bolt_v3_numeric::UNIT_F64
+    {
+        errors.push(format!(
+            "{context}: parameters.runtime.mu_min_floor ({}) must be finite and in the open interval (0, 1) (a floor of 0 admits the degenerate constant-0 μ the health gate rejects; a floor >= 1 blocks every non-degenerate μ)",
+            runtime.mu_min_floor
+        ));
     }
     errors
 }
@@ -133,10 +212,12 @@ pub fn register_runtime_strategy(
         .map_err(|error| binding_message(&context, error.to_string()))
 }
 
-/// Build the minimal raw config table the inert maker consumes. The NautilusTrader
+/// Build the flat raw config table the maker consumes. The NautilusTrader
 /// strategy id is `<strategy_archetype>-<order_id_tag>` (validated as an NT
 /// `StrategyId`), mirroring the taker's `nt_strategy_id`; `oms_type` is the
 /// lowercased NT enum display, matching how the maker config deserializes it.
+/// The μ runtime knobs are read from the operator `[parameters.runtime]` block
+/// and threaded in flat under the same names `BinaryOracleMakerConfig` consumes.
 fn raw_maker_config(strategy: &LoadedStrategy) -> Result<Value, String> {
     if strategy.config.strategy_archetype.as_str() != KEY {
         return Err(format!(
@@ -144,6 +225,14 @@ fn raw_maker_config(strategy: &LoadedStrategy) -> Result<Value, String> {
             strategy.config.strategy_archetype.as_str()
         ));
     }
+    let parameters: ParametersBlock = strategy
+        .config
+        .parameters
+        .clone()
+        .try_into()
+        .map_err(|error| format!("invalid [parameters] block: {error}"))?;
+    let runtime = &parameters.runtime;
+
     let mut strategy_id = strategy.config.strategy_archetype.as_str().to_string();
     strategy_id.push('-');
     strategy_id.push_str(&strategy.config.order_id_tag);
@@ -160,7 +249,51 @@ fn raw_maker_config(strategy: &LoadedStrategy) -> Result<Value, String> {
         "oms_type".to_string(),
         Value::String(strategy.config.oms_type.to_string().to_ascii_lowercase()),
     );
+    insert_runtime_knobs(&mut table, runtime)?;
     Ok(Value::Table(table))
+}
+
+/// Thread the μ runtime knobs from the operator `[parameters.runtime]` block into
+/// the flat config table under the exact field names `BinaryOracleMakerConfig`
+/// consumes. Factored out so the operator → flat-table → consumer-config bridge
+/// is unit-testable in isolation (a key-name drift here fails the flat table's
+/// `deny_unknown_fields` deserialization at `parse_config`).
+fn insert_runtime_knobs(
+    table: &mut Map<String, Value>,
+    runtime: &RuntimeParametersBlock,
+) -> Result<(), String> {
+    insert_u64_field(
+        table,
+        "trade_flow_window_secs",
+        runtime.trade_flow_window_secs,
+    )?;
+    insert_u64_field(
+        table,
+        "trade_flow_max_samples",
+        runtime.trade_flow_max_samples,
+    )?;
+    insert_u64_field(
+        table,
+        "mu_min_classified_samples",
+        runtime.mu_min_classified_samples,
+    )?;
+    insert_u64_field(table, "mu_stale_window_ms", runtime.mu_stale_window_ms)?;
+    table.insert(
+        "mu_min_floor".to_string(),
+        Value::Float(runtime.mu_min_floor),
+    );
+    Ok(())
+}
+
+/// Insert a `u64` runtime knob into the flat config table as a TOML integer.
+/// TOML integers are signed 64-bit, so a value above `i64::MAX` cannot round-trip
+/// and fails closed here rather than silently wrapping.
+fn insert_u64_field(table: &mut Map<String, Value>, key: &str, value: u64) -> Result<(), String> {
+    let integer = i64::try_from(value).map_err(|_| {
+        format!("runtime knob `{key}` ({value}) exceeds the supported TOML integer range")
+    })?;
+    table.insert(key.to_string(), Value::Integer(integer));
+    Ok(())
 }
 
 /// Wrap a registration failure message in the shared
@@ -186,6 +319,22 @@ fn binding_message(
 mod tests {
     use super::*;
 
+    const CONTEXT: &str = "strategy `maker-001`";
+
+    fn valid_runtime() -> RuntimeParametersBlock {
+        RuntimeParametersBlock {
+            trade_flow_window_secs: 600,
+            trade_flow_max_samples: 1000,
+            mu_min_classified_samples: 4,
+            mu_stale_window_ms: 60_000,
+            mu_min_floor: 0.05,
+        }
+    }
+
+    fn bounds_errors(runtime: RuntimeParametersBlock) -> Vec<String> {
+        validate_parameter_bounds(CONTEXT, &ParametersBlock { runtime })
+    }
+
     #[test]
     fn runtime_binding_key_is_archetype_key() {
         assert_eq!(RUNTIME_BINDING.key, "binary_oracle_maker");
@@ -195,5 +344,236 @@ mod tests {
     #[test]
     fn runtime_binding_strategy_kind_matches_key() {
         assert_eq!((RUNTIME_BINDING.strategy_kind)(), KEY);
+    }
+
+    #[test]
+    fn validate_parameter_bounds_accepts_valid_runtime() {
+        assert!(
+            bounds_errors(valid_runtime()).is_empty(),
+            "valid runtime knobs must pass the go-live gate"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_zero_window() {
+        let errors = bounds_errors(RuntimeParametersBlock {
+            trade_flow_window_secs: 0,
+            ..valid_runtime()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("trade_flow_window_secs")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_zero_max_samples() {
+        let errors = bounds_errors(RuntimeParametersBlock {
+            trade_flow_max_samples: 0,
+            ..valid_runtime()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("trade_flow_max_samples")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_zero_min_classified() {
+        let errors = bounds_errors(RuntimeParametersBlock {
+            mu_min_classified_samples: 0,
+            ..valid_runtime()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("mu_min_classified_samples")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_min_classified_above_cap() {
+        // A warmup threshold above the buffer cap is unsatisfiable: the buffer can
+        // never hold that many classified samples, so μ is never produced.
+        let errors = bounds_errors(RuntimeParametersBlock {
+            mu_min_classified_samples: 1001,
+            trade_flow_max_samples: 1000,
+            ..valid_runtime()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("must be <= parameters.runtime.trade_flow_max_samples")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_allows_min_classified_equal_to_cap() {
+        // The boundary (threshold == cap) is satisfiable, so it must not be rejected.
+        let errors = bounds_errors(RuntimeParametersBlock {
+            mu_min_classified_samples: 1000,
+            trade_flow_max_samples: 1000,
+            ..valid_runtime()
+        });
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_zero_stale_window() {
+        let errors = bounds_errors(RuntimeParametersBlock {
+            mu_stale_window_ms: 0,
+            ..valid_runtime()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("mu_stale_window_ms")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_floor_at_or_below_zero() {
+        for floor in [0.0, -0.1] {
+            let errors = bounds_errors(RuntimeParametersBlock {
+                mu_min_floor: floor,
+                ..valid_runtime()
+            });
+            assert!(
+                errors.iter().any(|error| error.contains("mu_min_floor")),
+                "floor {floor} must be rejected: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_floor_at_or_above_one() {
+        for floor in [1.0, 1.5] {
+            let errors = bounds_errors(RuntimeParametersBlock {
+                mu_min_floor: floor,
+                ..valid_runtime()
+            });
+            assert!(
+                errors.iter().any(|error| error.contains("mu_min_floor")),
+                "floor {floor} must be rejected: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_non_finite_floor() {
+        for floor in [f64::NAN, f64::INFINITY] {
+            let errors = bounds_errors(RuntimeParametersBlock {
+                mu_min_floor: floor,
+                ..valid_runtime()
+            });
+            assert!(
+                errors.iter().any(|error| error.contains("mu_min_floor")),
+                "non-finite floor must be rejected: {errors:?}"
+            );
+        }
+    }
+
+    fn parameters_from_str(toml: &str) -> Result<ParametersBlock, toml::de::Error> {
+        toml::from_str(toml)
+    }
+
+    #[test]
+    fn parameters_block_deserializes_nested_runtime() {
+        let parsed = parameters_from_str(
+            r#"
+            [runtime]
+            trade_flow_window_secs = 600
+            trade_flow_max_samples = 1000
+            mu_min_classified_samples = 4
+            mu_stale_window_ms = 60000
+            mu_min_floor = 0.05
+            "#,
+        )
+        .expect("valid block deserializes");
+        assert_eq!(parsed.runtime, valid_runtime());
+    }
+
+    #[test]
+    fn parameters_block_rejects_unknown_runtime_key() {
+        assert!(
+            parameters_from_str(
+                r#"
+                [runtime]
+                trade_flow_window_secs = 600
+                trade_flow_max_samples = 1000
+                mu_min_classified_samples = 4
+                mu_stale_window_ms = 60000
+                mu_min_floor = 0.05
+                surprise = 1
+                "#,
+            )
+            .is_err(),
+            "an unknown [parameters.runtime] key must fail loud"
+        );
+    }
+
+    #[test]
+    fn parameters_block_rejects_missing_runtime_table() {
+        assert!(
+            parameters_from_str("decoy = 1").is_err(),
+            "an absent [parameters.runtime] table must fail loud"
+        );
+    }
+
+    #[test]
+    fn parameters_block_rejects_missing_runtime_knob() {
+        assert!(
+            parameters_from_str(
+                r#"
+                [runtime]
+                trade_flow_window_secs = 600
+                trade_flow_max_samples = 1000
+                mu_min_classified_samples = 4
+                mu_stale_window_ms = 60000
+                "#,
+            )
+            .is_err(),
+            "a missing μ knob must fail loud"
+        );
+    }
+
+    #[test]
+    fn runtime_knobs_thread_into_consumer_config() {
+        // The load-bearing bridge test: `insert_runtime_knobs` must write exactly
+        // the field names `BinaryOracleMakerConfig` deserializes. A key-name drift
+        // fails the consumer config's `deny_unknown_fields` parse below; a value
+        // drift fails an assertion.
+        use crate::strategies::binary_oracle_maker::parse_config;
+        let mut table = Map::new();
+        table.insert(
+            "strategy_id".to_string(),
+            Value::String("binary_oracle_maker-001".to_string()),
+        );
+        table.insert("order_id_tag".to_string(), Value::String("001".to_string()));
+        table.insert("oms_type".to_string(), Value::String("netting".to_string()));
+        insert_runtime_knobs(&mut table, &valid_runtime()).expect("knobs thread");
+        let config =
+            parse_config(&Value::Table(table)).expect("flat table parses into the consumer config");
+        assert_eq!(config.trade_flow_window_secs, 600);
+        assert_eq!(config.trade_flow_max_samples, 1000);
+        assert_eq!(config.mu_min_classified_samples, 4);
+        assert_eq!(config.mu_stale_window_ms, 60_000);
+        assert_eq!(config.mu_min_floor, 0.05);
+    }
+
+    #[test]
+    fn insert_u64_field_rejects_value_above_i64_max() {
+        let mut table = Map::new();
+        assert!(
+            insert_u64_field(&mut table, "trade_flow_window_secs", u64::MAX).is_err(),
+            "a u64 above i64::MAX cannot round-trip through TOML and must fail closed"
+        );
     }
 }

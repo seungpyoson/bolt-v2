@@ -266,6 +266,11 @@ mod tests {
     // and entry-evaluation sizing-input observability with the archetype path.
     // Re-derived after adding coverage for the within-tolerance sized
     // re-evaluation acceptance branch.
+    // Re-derived after adding position-sizer submit admission fixture coverage
+    // under the binary oracle edge taker strategy test source set.
+    // Re-derived after merging current main (#618/#623 strategy source-set
+    // state) into the consolidated NT position-sizer branch (#658), unioning the
+    // main-side strategy source set with the position-sizer fixture coverage.
     // Re-derived after adding the TOML-owned shadow-mode submit switch and
     // preserving decision evidence before skipped NT submits.
     // Re-derived after the shadow-submit test started seeding admission
@@ -298,8 +303,19 @@ mod tests {
     // secrets from Chainlink reference-price secrets.
     // Re-derived after restoring selection-retry reference-price failover refresh
     // and aligning split pricing tests with custom-data reference updates.
+    // Re-derived after committing the submit-admission permit only after the
+    // shared order-execution policy's live NT submit succeeds.
+    // Re-derived again after aligning the shared policy test helper with the
+    // consolidated reservation-evidence writer trait.
+    // Re-derived after adding behavioral rollback coverage to the shared
+    // execution policy.
+    // Re-derived after isolating live-node unit-test catalog paths from the
+    // production fixture path.
+    // Re-derived after strategy submit-admission tests started committing the
+    // permits they use to simulate already-submitted orders.
+    // Re-derived after merging current main into the reference-price port.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "9acfa4ad402531e73d04b57c9af7fd1b1814f474b14b34f8949c07b655c5f529";
+        "6274969d8510eb84d8a3f3325453bfcfa7b22d026357ae2c9a811aeefa18e643";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -310,12 +326,32 @@ mod tests {
     // Re-derived again after adding checked fee-inclusive admission arithmetic.
     // Re-derived after moving entry limit-notional guarding into shared submit
     // admission.
+    // Re-derived after adding position-sizer submit admission state and evidence
+    // to the shared submit admission module.
+    // Re-derived after routing replace-submit through configured position
+    // sizing.
+    // Re-derived after runtime order-lifecycle updates learned to re-close the
+    // position-sizer gate on unattributed live open orders.
     // Re-derived again after adding observed admission decisions for shadow
     // submit skips that must not consume live capacity.
     // Re-derived after merging main's shared submit-admission changes into the
     // shadow-mode submit switch.
+    // Re-derived after exposing read-only loss-governor policy/snapshot
+    // accessors for live manual recovery.
+    // Re-derived after removing duplicate NT-owned risk scaffolding from
+    // submit admission.
+    // Re-derived after covered sell reservations were reduced to additive
+    // fee/slippage liability only.
+    // Re-derived after allowing empty terminal NT lifecycle evidence to
+    // re-open a previously re-closed position-sizer gate.
+    // Re-derived after adding bounded fill/order dedupe retention and checked
+    // reservation liability arithmetic.
+    // Re-derived after uncommitted submit permits learned to roll back
+    // admission counters as well as position-sizer reservations.
+    // Re-derived after final submit-admission rollback and dedupe cleanup.
+    // Re-derived after removing structurally unused per-intent admission counters.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "bafab7b0646c9bcf78327a099d819acaad168ef9f2ed29d524e90c3572e91d8e";
+        "88619771c32b874741b5396751cfd28ead044145d1e8d184374a38f7c23802ab";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

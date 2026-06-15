@@ -107,6 +107,44 @@ manage_own_order_books = false
 [risk]
 default_max_notional_per_order = "10.00"
 
+[risk.loss_governor]
+enabled = true
+account_id = "POLYMARKET-001"
+max_snapshot_age_ns = 5000000000
+rolling_window_ns = 300000000000
+active_position_pnl_max_entries = 64
+on_loss_breach_trading_state = "reducing"
+on_untrusted_snapshot_trading_state = "reducing"
+recovery_mode = "manual"
+manual_recovery_evidence_max_path_bytes = 256
+max_per_trade_loss = "2.50"
+max_daily_loss = "7.50"
+max_rolling_loss = "10.00"
+max_drawdown = "15.00"
+
+[[risk.capital_pools]]
+pool_id = "polymarket-prediction-live"
+venue_id = "POLYMARKET"
+account_id = "POLYMARKET-001"
+collateral_currency = "PUSD"
+product_kind = "prediction_market_binary"
+enforce_submit_admission = false
+max_pool_liability = "25.00"
+max_snapshot_age_ns = 5000000000
+dedupe_retention_ns = 60000000000
+
+[risk.capital_pools.prediction_market_binary]
+yes_instrument_id = "condition-fixture-yes.POLYMARKET"
+no_instrument_id = "condition-fixture-no.POLYMARKET"
+collateral_coupled_group_id = "condition-fixture"
+
+[risk.capital_pools.sizing_policy]
+min_remaining_pool_balance = "1.00"
+
+[risk.capital_pools.sizing_policy.fee_slippage]
+max_fee_liability = "0.10"
+max_slippage_liability = "0.20"
+
 [risk.nautilus]
 max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"

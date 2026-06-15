@@ -16,6 +16,8 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use anyhow::{Result, bail};
+
 const REPO_TOP_LEVEL_DIRS: [&str; 4] = ["specs", "crates", "docs", "scripts"];
 const REPO_ROOT_MARKERS: [&str; 2] = ["justfile", "AGENTS.md"];
 
@@ -90,19 +92,69 @@ pub fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
 /// paths pass through unchanged.
 #[must_use]
 pub fn portable_artifact_path(path: &Path) -> PathBuf {
+    candidate_portable_artifact_path(path).unwrap_or_else(|| path.to_path_buf())
+}
+
+/// Rewrite an artifact path for serialization, failing if a repo-relative spec
+/// input/output cannot be represented as a repo-relative committed path.
+pub fn portable_artifact_path_for_spec(path: &Path, spec_path: &Path) -> Result<PathBuf> {
+    let Some(portable) = candidate_portable_artifact_path(path) else {
+        if looks_repo_relative(spec_path) {
+            bail!(
+                "repo-relative artifact path {} resolved to {} but could not be serialized portably",
+                spec_path.display(),
+                path.display()
+            );
+        }
+        return Ok(path.to_path_buf());
+    };
+    Ok(portable)
+}
+
+fn candidate_portable_artifact_path(path: &Path) -> Option<PathBuf> {
     if !path.is_absolute() {
-        return path.to_path_buf();
+        return Some(path.to_path_buf());
     }
+    for repo_root in repo_root_dirs() {
+        if let Ok(candidate) = path.strip_prefix(&repo_root)
+            && is_canonical_repo_relative(candidate)
+        {
+            return Some(candidate.to_path_buf());
+        }
+        if let (Ok(canonical_path), Ok(canonical_root)) =
+            (path.canonicalize(), repo_root.canonicalize())
+            && let Ok(candidate) = canonical_path.strip_prefix(canonical_root)
+            && is_canonical_repo_relative(candidate)
+        {
+            return Some(candidate.to_path_buf());
+        }
+    }
+    None
+}
+
+fn repo_root_dirs() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
     for anchor in anchor_dirs() {
         for ancestor in anchor.ancestors() {
-            if let Ok(candidate) = path.strip_prefix(ancestor)
-                && looks_repo_relative(candidate)
+            if REPO_ROOT_MARKERS
+                .iter()
+                .all(|marker| ancestor.join(marker).exists())
+                && !roots.iter().any(|root| root == ancestor)
             {
-                return candidate.to_path_buf();
+                roots.push(ancestor.to_path_buf());
             }
         }
     }
-    path.to_path_buf()
+    roots
+}
+
+fn has_parent_component(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn is_canonical_repo_relative(path: &Path) -> bool {
+    looks_repo_relative(path) && !has_parent_component(path)
 }
 
 /// Whether `path` starts with one of the repo's top-level directories and
@@ -157,6 +209,7 @@ fn anchor_dirs() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn absolute_paths_pass_through() {
@@ -184,5 +237,62 @@ mod tests {
         let base = std::env::temp_dir();
         let resolved = resolve_output_dir(&base, Path::new("nested/out-dir"));
         assert_eq!(resolved, base.join("nested/out-dir"));
+    }
+
+    #[test]
+    fn repo_relative_spec_paths_fail_when_they_cannot_be_made_portable() {
+        let err = portable_artifact_path_for_spec(
+            Path::new("/not/inside/this/repo/specs/reference/artifact.json"),
+            Path::new("specs/reference/artifact.json"),
+        )
+        .expect_err("repo-relative spec path must fail loud if it stays absolute");
+        assert!(
+            err.to_string().contains("could not be serialized portably"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn markerless_absolute_specs_paths_are_not_misclassified_as_repo_relative() {
+        let temp_root =
+            std::env::temp_dir().join(format!("path-resolution-markerless-{}", std::process::id()));
+        let artifact = temp_root.join("specs/reference/artifact.json");
+        fs::create_dir_all(artifact.parent().expect("artifact parent"))
+            .expect("create markerless specs dir");
+        fs::write(&artifact, "{}").expect("write markerless artifact");
+
+        let err =
+            portable_artifact_path_for_spec(&artifact, Path::new("specs/reference/artifact.json"))
+                .expect_err("markerless /specs path must not be treated as this repo");
+        assert!(
+            err.to_string().contains("could not be serialized portably"),
+            "{err}"
+        );
+
+        fs::remove_dir_all(temp_root).expect("remove markerless specs dir");
+    }
+
+    #[test]
+    fn portable_artifact_paths_canonicalize_parent_components() {
+        let absolute_with_parent_components = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../specs/023-nt-research-analytics-platform/reference");
+        assert_eq!(
+            portable_artifact_path_for_spec(
+                &absolute_with_parent_components,
+                Path::new("specs/023-nt-research-analytics-platform/reference"),
+            )
+            .expect("repo path remains portable"),
+            Path::new("specs/023-nt-research-analytics-platform/reference")
+        );
+    }
+
+    #[test]
+    fn non_repo_temp_paths_can_remain_absolute() {
+        let path = std::env::temp_dir().join("path-resolution-temp-artifact.json");
+        assert_eq!(
+            portable_artifact_path_for_spec(&path, Path::new("temp-artifact.json"))
+                .expect("non-repo temp artifact path may remain absolute"),
+            path
+        );
     }
 }

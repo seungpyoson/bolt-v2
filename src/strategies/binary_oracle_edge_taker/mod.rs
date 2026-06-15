@@ -1609,12 +1609,29 @@ impl BinaryOracleEdgeTaker {
             return;
         }
 
-        self.reference_price_source_health.insert(
-            quote.source_id().to_string(),
-            ReferencePriceSourceHealth::available(&quote),
-        );
-        self.reference_price_quotes
-            .insert(quote.source_id().to_string(), quote.clone());
+        match self
+            .reference_price_source_health
+            .get_mut(quote.source_id())
+        {
+            Some(health) => health.update(
+                ReferencePriceSourceStatus::Available,
+                Some(quote.observed_ts_ms()),
+                Some(quote.received_ts_ms()),
+            ),
+            None => {
+                self.reference_price_source_health.insert(
+                    quote.source_id().to_string(),
+                    ReferencePriceSourceHealth::available(&quote),
+                );
+            }
+        }
+        match self.reference_price_quotes.get_mut(quote.source_id()) {
+            Some(existing) => *existing = quote.clone(),
+            None => {
+                self.reference_price_quotes
+                    .insert(quote.source_id().to_string(), quote.clone());
+            }
+        }
 
         let (Some(interval_start_ms), Some(interval_end_ms)) =
             (self.active.interval_start_ms, self.active.interval_end_ms)
@@ -1840,20 +1857,9 @@ impl BinaryOracleEdgeTaker {
         observed_ts_ms: Option<u64>,
         received_ts_ms: Option<u64>,
     ) {
-        let Some(existing_health) = self.reference_price_source_health.get(source_id) else {
-            return;
-        };
-        let provider = existing_health.provider().clone();
-        self.reference_price_source_health.insert(
-            source_id.to_string(),
-            ReferencePriceSourceHealth::new(
-                source_id,
-                provider,
-                status,
-                observed_ts_ms,
-                received_ts_ms,
-            ),
-        );
+        if let Some(health) = self.reference_price_source_health.get_mut(source_id) {
+            health.update(status, observed_ts_ms, received_ts_ms);
+        }
     }
 
     fn unsubscribe_realized_volatility_sources(&mut self) {

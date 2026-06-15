@@ -103,12 +103,14 @@ impl ReferencePriceUpdate {
         received_ts_ms: u64,
         provenance: ReferenceQuoteProvenance,
     ) -> Result<Self, String> {
-        let asset = valid_reference_identity_field(asset.into(), "asset")?;
-        let source_id = valid_reference_identity_field(source_id.into(), "source_id")?;
+        let asset = asset.into();
+        let source_id = source_id.into();
         let provider = provider.into();
-        let provider = valid_reference_identity_field(provider, "provider")?;
-        let provider_instrument =
-            valid_reference_identity_field(provider_instrument.into(), "provider_instrument")?;
+        let provider_instrument = provider_instrument.into();
+        validate_reference_identity_field(&asset, "asset")?;
+        validate_reference_identity_field(&source_id, "source_id")?;
+        validate_reference_identity_field(&provider, "provider")?;
+        validate_reference_identity_field(&provider_instrument, "provider_instrument")?;
         validate_reference_values(price, bid, ask, observed_ts_ms, received_ts_ms)?;
         let ts_event = reference_timestamp_ms_to_unix_nanos(observed_ts_ms, "observed_ts_ms")?;
         let ts_init = reference_timestamp_ms_to_unix_nanos(received_ts_ms, "received_ts_ms")?;
@@ -129,14 +131,11 @@ impl ReferencePriceUpdate {
         })
     }
 
-    pub fn data_type_for(
-        asset: impl Into<String>,
-        source_id: impl Into<String>,
-        provider: impl Into<String>,
-    ) -> Result<DataType, String> {
-        let asset = valid_reference_identity_field(asset.into(), "asset")?;
-        let source_id = valid_reference_identity_field(source_id.into(), "source_id")?;
-        let provider = valid_reference_identity_field(provider.into(), "provider")?;
+    pub fn data_type_for(asset: &str, source_id: &str, provider: &str) -> Result<DataType, String> {
+        validate_reference_identity_field(asset, "asset")?;
+        validate_reference_identity_field(source_id, "source_id")?;
+        validate_reference_identity_field(provider, "provider")?;
+        let asset = asset.to_string();
         let mut metadata = Params::new();
         metadata.insert(
             REFERENCE_PRICE_ASSET_METADATA_FIELD.to_string(),
@@ -346,6 +345,17 @@ impl ReferencePriceSourceHealth {
             Some(quote.observed_ts_ms),
             Some(quote.received_ts_ms),
         )
+    }
+
+    pub fn update(
+        &mut self,
+        status: ReferencePriceSourceStatus,
+        observed_ts_ms: Option<u64>,
+        received_ts_ms: Option<u64>,
+    ) {
+        self.status = status;
+        self.observed_ts_ms = observed_ts_ms;
+        self.received_ts_ms = received_ts_ms;
     }
 
     pub fn source_id(&self) -> &str {
@@ -702,10 +712,12 @@ impl ReferenceQuote {
         received_ts_ms: u64,
         provenance: ReferenceQuoteProvenance,
     ) -> Result<Self, String> {
-        let asset = valid_reference_identity_field(asset.into(), "asset")?;
-        let source_id = valid_reference_identity_field(source_id.into(), "source_id")?;
-        let provider_instrument =
-            valid_reference_identity_field(provider_instrument.into(), "provider_instrument")?;
+        let asset = asset.into();
+        let source_id = source_id.into();
+        let provider_instrument = provider_instrument.into();
+        validate_reference_identity_field(&asset, "asset")?;
+        validate_reference_identity_field(&source_id, "source_id")?;
+        validate_reference_identity_field(&provider_instrument, "provider_instrument")?;
         validate_reference_values(price, bid, ask, observed_ts_ms, received_ts_ms)?;
 
         Ok(Self {
@@ -767,11 +779,11 @@ fn is_positive_finite(value: f64) -> bool {
     value.is_finite() && value > 0.0
 }
 
-fn valid_reference_identity_field(value: String, field: &'static str) -> Result<String, String> {
+fn validate_reference_identity_field(value: &str, field: &'static str) -> Result<(), String> {
     if value.trim().is_empty() || value.trim() != value || value.chars().any(char::is_whitespace) {
         return Err(format!("reference price {field} is invalid"));
     }
-    Ok(value)
+    Ok(())
 }
 
 fn validate_provenance_component(value: &str, field: &'static str) -> Result<(), String> {

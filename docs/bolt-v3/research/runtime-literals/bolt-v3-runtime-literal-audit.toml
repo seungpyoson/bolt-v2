@@ -11925,30 +11925,6 @@ reason = "Reference-price normalized data/health contract literal; configured so
 [[allowed]]
 path = "src/bolt_v3_reference_price.rs"
 kind = "string"
-literal = '''"asset"'''
-context = '''let asset = valid_reference_identity_field(asset.into(), "asset")?;'''
-classification = "reference_price_data_contract"
-reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price.rs"
-kind = "string"
-literal = '''"asset"'''
-context = '''let asset = valid_reference_identity_field(asset.into(), "asset")?;'''
-classification = "reference_price_data_contract"
-reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price.rs"
-kind = "string"
-literal = '''"asset"'''
-context = '''let asset = valid_reference_identity_field(asset.into(), "asset")?;'''
-classification = "reference_price_data_contract"
-reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price.rs"
-kind = "string"
 literal = '''"auth"'''
 context = '''key_lower == "auth"'''
 classification = "reference_price_secret_redaction_guard"
@@ -12117,38 +12093,6 @@ reason = "Reference-price normalized data/health contract literal; configured so
 [[allowed]]
 path = "src/bolt_v3_reference_price.rs"
 kind = "string"
-literal = '''"provider"'''
-context = '''let provider = valid_reference_identity_field(provider, "provider")?;'''
-classification = "reference_price_data_contract"
-reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price.rs"
-kind = "string"
-literal = '''"provider"'''
-context = '''let provider = valid_reference_identity_field(provider.into(), "provider")?;'''
-classification = "reference_price_data_contract"
-reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price.rs"
-kind = "string"
-literal = '''"provider_instrument"'''
-context = '''valid_reference_identity_field(provider_instrument.into(), "provider_instrument")?;'''
-classification = "reference_price_data_contract"
-reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price.rs"
-kind = "string"
-literal = '''"provider_instrument"'''
-context = '''valid_reference_identity_field(provider_instrument.into(), "provider_instrument")?;'''
-classification = "reference_price_data_contract"
-reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price.rs"
-kind = "string"
 literal = '''"received_ts_ms"'''
 context = '''let ts_init = reference_timestamp_ms_to_unix_nanos(received_ts_ms, "received_ts_ms")?;'''
 classification = "reference_price_data_contract"
@@ -12167,30 +12111,6 @@ path = "src/bolt_v3_reference_price.rs"
 kind = "string"
 literal = '''"silent"'''
 context = '''Self::Silent => "silent",'''
-classification = "reference_price_data_contract"
-reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price.rs"
-kind = "string"
-literal = '''"source_id"'''
-context = '''let source_id = valid_reference_identity_field(source_id.into(), "source_id")?;'''
-classification = "reference_price_data_contract"
-reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price.rs"
-kind = "string"
-literal = '''"source_id"'''
-context = '''let source_id = valid_reference_identity_field(source_id.into(), "source_id")?;'''
-classification = "reference_price_data_contract"
-reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price.rs"
-kind = "string"
-literal = '''"source_id"'''
-context = '''let source_id = valid_reference_identity_field(source_id.into(), "source_id")?;'''
 classification = "reference_price_data_contract"
 reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
 
@@ -12379,9 +12299,113 @@ classification = "strategy_reference_current_price_schema"
 reason = "Strategy runtime config schema key for reference_current_price; values are supplied by validated TOML."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"custom-data subscription references unregistered data client {client_id}"'''
+context = '''"custom-data subscription references unregistered data client {client_id}"'''
+classification = "strategy_free_custom_data_diagnostic"
+reason = "Strategy-free reference health diagnostic for a custom-data subscription whose client id was not registered; the client id comes from validated TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/report.rs"
+kind = "number"
+literal = '''7'''
+context = '''const CHAINLINK_REPORT_V3_BID_PRICE_WORD_INDEX: usize = 7;'''
+classification = "chainlink_report_protocol_layout"
+reason = "Fixed Chainlink Data Streams V3 ABI word index for bid price decoding; the selected feed remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/report.rs"
+kind = "number"
+literal = '''8'''
+context = '''const CHAINLINK_REPORT_V3_ASK_PRICE_WORD_INDEX: usize = 8;'''
+classification = "chainlink_report_protocol_layout"
+reason = "Fixed Chainlink Data Streams V3 ABI word index for ask price decoding; the selected feed remains TOML-owned."
+
+[[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_current_price"'''
 context = '''| "reference_current_price"'''
 classification = "strategy_reference_current_price_schema"
 reason = "Strategy runtime config schema key for reference_current_price; values are supplied by validated TOML."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"asset"'''
+context = '''validate_reference_identity_field(&asset, "asset")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"asset"'''
+context = '''validate_reference_identity_field(&asset, "asset")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"asset"'''
+context = '''validate_reference_identity_field(asset, "asset")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"provider"'''
+context = '''validate_reference_identity_field(&provider, "provider")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"provider"'''
+context = '''validate_reference_identity_field(provider, "provider")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"provider_instrument"'''
+context = '''validate_reference_identity_field(&provider_instrument, "provider_instrument")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"provider_instrument"'''
+context = '''validate_reference_identity_field(&provider_instrument, "provider_instrument")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''validate_reference_identity_field(&source_id, "source_id")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''validate_reference_identity_field(&source_id, "source_id")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''validate_reference_identity_field(source_id, "source_id")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."

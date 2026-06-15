@@ -287,14 +287,15 @@ pub fn evaluate_source_universe_conversion_run_plan(
         "max_source_bytes_per_run must be positive"
     );
 
-    let object_gates_path = resolve_existing_path(base_dir, &spec.source_universe_object_gates_path)
-        .canonicalize()
-        .with_context(|| {
-            format!(
-                "canonicalize source-universe object gates path {}",
-                spec.source_universe_object_gates_path.display()
-            )
-        })?;
+    let object_gates_path =
+        resolve_existing_path(base_dir, &spec.source_universe_object_gates_path)
+            .canonicalize()
+            .with_context(|| {
+                format!(
+                    "canonicalize source-universe object gates path {}",
+                    spec.source_universe_object_gates_path.display()
+                )
+            })?;
     let object_gates_hash = sha256_file(&object_gates_path)?;
     let gates: SourceUniverseObjectGateMaterialization = read_json(&object_gates_path)?;
     let portable_object_gates_path = portable_artifact_path(&object_gates_path);

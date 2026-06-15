@@ -1047,7 +1047,7 @@ instrument_id = "BTC-USD.CHAINLINK"
 }
 
 #[test]
-fn optional_enabled_unsupported_polyresearch_source_rejects_when_quorum_can_be_met() {
+fn optional_enabled_unsupported_polyresearch_source_is_skipped_when_quorum_can_be_met() {
     let messages = validate_reference_current_price(
         r#"
 [reference_current_price]
@@ -1077,13 +1077,20 @@ symbol = "ADA/USD"
     );
 
     assert!(
-        messages.iter().any(|message| {
+        !messages.iter().any(|message| {
             message.contains("reference_current_price.source.polyresearch_backup")
                 && message.contains("ADA")
                 && message.contains("polyresearch_ws")
                 && message.contains("unsupported")
         }),
-        "optional enabled unsupported PRR source should fail validation even when quorum can be met, got: {messages:#?}"
+        "optional enabled unsupported PRR source should not fail validation when quorum can be met, got: {messages:#?}"
+    );
+    assert!(
+        !messages.iter().any(|message| {
+            message.contains("reference_current_price.min_valid_sources")
+                && message.contains("cannot be met")
+        }),
+        "supported source quorum should still be considered met, got: {messages:#?}"
     );
 }
 

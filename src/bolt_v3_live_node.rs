@@ -2908,6 +2908,26 @@ pub fn build_bolt_v3_strategy_free_live_node(
     Ok(runtime)
 }
 
+pub fn build_bolt_v3_strategy_free_live_node_with_summary<F, R, E>(
+    loaded: &LoadedBoltV3Config,
+    env_is_set: F,
+    resolver: R,
+) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError>
+where
+    F: FnMut(&str) -> bool,
+    R: FnMut(&str, &str) -> Result<String, E>,
+    E: std::fmt::Display,
+{
+    let transport_loaded = trade_transport_loaded_config(loaded)?;
+    check_no_forbidden_credential_env_vars_with(&transport_loaded.root, env_is_set)
+        .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
+    let resolved = resolve_bolt_v3_secrets_with(&transport_loaded, resolver)
+        .map_err(BoltV3LiveNodeError::SecretResolution)?;
+    let adapters = strategy_free_transport_adapter_configs(&transport_loaded, &resolved)?;
+    let strategy_free_loaded = strategy_free_transport_loaded_config(&transport_loaded);
+    build_live_node_with_clients(&strategy_free_loaded, &resolved, adapters)
+}
+
 pub fn build_bolt_v3_strategy_free_data_client_probe_live_node(
     loaded: &LoadedBoltV3Config,
     client_key: &str,
@@ -6115,11 +6135,11 @@ configured_source_param = "configured-value"
         let scoped = trade_transport_loaded_config(&loaded)
             .expect("strategy-bound transport scope should be derived from config");
 
-        assert_eq!(scoped.root.clients.len(), 4);
+        assert_eq!(scoped.root.clients.len(), 3);
         assert!(scoped.root.clients.contains_key("polymarket_main"));
         assert!(scoped.root.clients.contains_key("signal_data"));
         assert!(scoped.root.clients.contains_key("chainlink_reference"));
-        assert!(scoped.root.clients.contains_key("polyresearch_reference"));
+        assert!(!scoped.root.clients.contains_key("polyresearch_reference"));
         assert!(
             !scoped.root.clients.contains_key("unrelated_data"),
             "unrelated configured data clients must not block the selected trade path"

@@ -2626,7 +2626,7 @@ fn validate_reference_current_price(
         if unsupported_asset && configured.contains(source_id.as_str()) {
             valid_enabled_sources = valid_enabled_sources.saturating_sub(1);
         }
-        if unsupported_asset {
+        if unsupported_asset && source.required {
             errors.push(format!(
                 "{context}: reference_current_price.source.{source_id} {} asset `{}` is unsupported",
                 source.provider.as_str(),

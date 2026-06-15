@@ -7,8 +7,10 @@ Issue: #728
 This slice owns only the `workflow_dispatch` full-CI rerun lane in
 `.github/workflows/ci.yml`.
 
-It does not change pull-request cancellation, path filters, deploy trust,
-fingerprint reuse, the meaning of `gate`, or any Rust verification lane.
+Relative to current `main`, it preserves existing pull-request cancellation and
+only adds cancellation for the `workflow_dispatch` full-CI lane. It does not
+change path filters, deploy trust, fingerprint reuse, the meaning of `gate`, or
+any Rust verification lane.
 
 ## Baseline Billing Evidence
 
@@ -97,10 +99,7 @@ full-CI lane itself.
 Before:
 
 ```yaml
-cancel-in-progress: >-
-  ${{ github.event_name == 'pull_request'
-      && github.event.pull_request.draft == true
-      && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) }}
+cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 ```
 
 After:
@@ -108,8 +107,6 @@ After:
 ```yaml
 cancel-in-progress: >-
   ${{ github.event_name == 'pull_request'
-      && github.event.pull_request.draft == true
-      && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
       || github.event_name == 'workflow_dispatch' }}
 ```
 
@@ -134,7 +131,7 @@ Static guards:
 - The same verifier rejects `push`, tag, or deploy cancellation terms in
   `cancel-in-progress`.
 - `scripts/test_verify_ci_workflow_hygiene.py` has regression checks for
-  missing dispatch cancellation and accidental push/tag cancellation.
+  missing dispatch cancellation and accidental push, tag, or deploy cancellation.
 
 Local evidence:
 

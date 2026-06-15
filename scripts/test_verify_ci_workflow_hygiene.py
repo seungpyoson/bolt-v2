@@ -1552,6 +1552,22 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
             ),
         ),
         (
+            "cancel-in-progress must not cancel push, tag, or deploy flows",
+            replace_once(
+                workflow,
+                "        || github.event_name == 'workflow_dispatch' }}",
+                "        || github.event_name == 'workflow_dispatch'\n        || github.ref == 'refs/tags/v1.2.3' }}",
+            ),
+        ),
+        (
+            "cancel-in-progress must not cancel push, tag, or deploy flows",
+            replace_once(
+                workflow,
+                "        || github.event_name == 'workflow_dispatch' }}",
+                "        || github.event_name == 'workflow_dispatch'\n        || startsWith(github.ref, 'refs/tags/v') }}",
+            ),
+        ),
+        (
             "workflow-level concurrency must not reference job outputs",
             replace_once(workflow, "github.event.number", "needs.ci-policy.outputs.reason"),
         ),

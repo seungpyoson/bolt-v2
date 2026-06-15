@@ -1302,9 +1302,11 @@ mod tests {
 
     fn fixture_quote_inputs() -> FamilyQuoteInputs {
         FamilyQuoteInputs {
-            fair: 0.60,
-            reservation_bid: 0.58,
-            reservation_ask: 0.62,
+            // The reservation band is mintable only through gm_binary_quote, so the
+            // fixture builds an interior band (fair 0.60, mu 0.10) the same way
+            // production does — there is no bare-literal band.
+            band: crate::bolt_v3_maker_model::gm_binary_quote(0.60, 0.10)
+                .expect("interior fair, valid mu"),
             inventory_skew: 0.0,
             half_spread_floor: 0.0,
             max_half_spread: 1.0,

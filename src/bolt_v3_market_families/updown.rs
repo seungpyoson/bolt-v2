@@ -87,11 +87,10 @@ const METADATA_SOURCE_KIND_FIELD: &str = "source_kind";
 const METADATA_VENUE_FIELD: &str = "venue";
 
 pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
-    let p_up = sanitize_probability(inputs.fair)?;
+    // The band carries an already-sanitized fair (`gm_binary_quote` is the sole
+    // producer and sanitizes `p_up` at mint), so the layout consumes it directly.
     let legs = compose_binary_legs(
-        p_up,
-        inputs.reservation_bid,
-        inputs.reservation_ask,
+        inputs.band,
         inputs.half_spread_floor,
         inputs.max_half_spread,
         inputs.tau,

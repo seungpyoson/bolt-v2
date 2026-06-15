@@ -78,7 +78,7 @@ jobs:
 
   probe-unsupported-job-timeout:
     name: probe-unsupported-job-timeout
-    if: ${{ (inputs.runner_tier == 'heavy' && fromJSON(inputs.job_timeout_minutes) != 60) || (inputs.runner_tier == 'light' && fromJSON(inputs.job_timeout_minutes) != 60) }}
+    if: ${{ (inputs.runner_tier == 'heavy' && inputs.job_timeout_minutes != '60') || (inputs.runner_tier == 'light' && inputs.job_timeout_minutes != '60') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     timeout-minutes: 1
     steps:
@@ -92,7 +92,7 @@ jobs:
 
   probe-heavy:
     name: probe-heavy
-    if: ${{ inputs.runner_tier == 'heavy' && fromJSON(inputs.job_timeout_minutes) == 60 }}
+    if: ${{ inputs.runner_tier == 'heavy' && inputs.job_timeout_minutes == '60' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
     steps:
@@ -129,7 +129,7 @@ jobs:
 
   probe-light:
     name: probe-light
-    if: ${{ inputs.runner_tier == 'light' && fromJSON(inputs.job_timeout_minutes) == 60 }}
+    if: ${{ inputs.runner_tier == 'light' && inputs.job_timeout_minutes == '60' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
     steps:

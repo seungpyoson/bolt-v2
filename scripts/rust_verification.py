@@ -402,6 +402,9 @@ def validate_remote_probe_policy(data: dict[str, Any]) -> None:
         raise PolicyError(f"remote_probe.workflow_timeouts must declare {expected}")
     for job in sorted(expected_timeout_keys):
         require_positive_int(timeouts, job, "remote_probe.workflow_timeouts")
+    max_workflow_timeout_seconds = max(int(timeouts[job]) for job in expected_timeout_keys) * 60
+    if values["overall_timeout_seconds"] <= max_workflow_timeout_seconds:
+        raise PolicyError("remote_probe.overall_timeout_seconds must exceed remote_probe.workflow_timeouts")
 
 
 def status_for_repo(repo: pathlib.Path) -> str:
@@ -2636,6 +2639,15 @@ def live_upstream_head(repo: pathlib.Path, branch: str, *, command_name: str = "
     return None, None
 
 
+def upstream_branch_name(repo: pathlib.Path, branch: str, *, command_name: str) -> tuple[str | None, str | None]:
+    merge_ref, error = git_output(repo, "config", f"branch.{branch}.merge")
+    if error is not None or not merge_ref:
+        return None, f"{command_name} requires pushed HEAD with an upstream"
+    if not merge_ref.startswith("refs/heads/"):
+        return None, f"{command_name} requires upstream to be a branch, got {merge_ref}"
+    return merge_ref.removeprefix("refs/heads/"), None
+
+
 def ensure_clean_pushed_head_preconditions(
     repo: pathlib.Path,
     *,
@@ -2670,7 +2682,13 @@ def ensure_verify_remote_preconditions(repo: pathlib.Path) -> tuple[str | None, 
 
 
 def ensure_rust_probe_preconditions(repo: pathlib.Path) -> tuple[str | None, str | None, str | None]:
-    return ensure_clean_pushed_head_preconditions(repo, command_name="rust-probe")
+    head, branch, error = ensure_clean_pushed_head_preconditions(repo, command_name="rust-probe")
+    if error is not None or head is None or branch is None:
+        return head, branch, error
+    upstream_branch, error = upstream_branch_name(repo, branch, command_name="rust-probe")
+    if error is not None or upstream_branch is None:
+        return None, None, error or "rust-probe requires pushed HEAD with an upstream"
+    return head, upstream_branch, None
 
 
 def pr_create_hint(branch: str) -> str:
@@ -3238,7 +3256,8 @@ def run_display_title(run: dict[str, Any]) -> str:
 
 
 def matching_rust_probe_runs(runs: list[dict[str, Any]], *, probe_id: str) -> list[dict[str, Any]]:
-    matching = [run for run in runs if probe_id in run_display_title(run)]
+    expected_prefix = f"Rust Probe {probe_id} "
+    matching = [run for run in runs if run_display_title(run).startswith(expected_prefix)]
     return sorted(matching, key=run_created_at, reverse=True)
 
 

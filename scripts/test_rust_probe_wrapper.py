@@ -21,6 +21,8 @@ POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
 
 HEAD = "a" * 40
 BRANCH = "codex/rust-probe-wrapper"
+LOCAL_BRANCH = "codex/local-rust-probe-wrapper"
+UPSTREAM_BRANCH = "codex/upstream-rust-probe-wrapper"
 
 
 def load_owner_module() -> object:
@@ -38,7 +40,7 @@ def valid_remote_probe() -> dict:
         "workflow_path": ".github/workflows/rust-probe.yml",
         "poll_interval_seconds": 1,
         "appearance_timeout_seconds": 30,
-        "overall_timeout_seconds": 300,
+        "overall_timeout_seconds": 3900,
         "active_run_limit": 4,
         "workflow_runs_per_page": 20,
         "guard_timeout_minutes": 1,
@@ -97,8 +99,22 @@ def assert_remote_probe_policy_validation() -> None:
     expect_policy_error(owner, bad, "appearance_timeout_seconds")
 
     bad = valid_remote_probe()
+    bad["overall_timeout_seconds"] = 3600
+    expect_policy_error(owner, bad, "overall_timeout_seconds")
+
+    bad = valid_remote_probe()
     bad["guard_timeout_minutes"] = 0
     expect_policy_error(owner, bad, "guard_timeout_minutes")
+
+    for path in (
+        "/.github/workflows/rust-probe.yml",
+        "../rust-probe.yml",
+        ".github/workflows/rust-probe.yaml",
+        ".github/workflows/rust-probe.yml/extra",
+    ):
+        bad = valid_remote_probe()
+        bad["workflow_path"] = path
+        expect_policy_error(owner, bad, "workflow_path")
 
 
 def assert_repo_policy_declares_remote_probe() -> None:
@@ -182,7 +198,7 @@ def assert_workflow_contract() -> None:
     timeout_next_job = text.find("\n  probe-", timeout_start + len(timeout_marker))
     timeout_block = text[timeout_start:] if timeout_next_job < 0 else text[timeout_start:timeout_next_job]
     timeout_refusals = " || ".join(
-        f"(inputs.runner_tier == '{tier}' && fromJSON(inputs.job_timeout_minutes) != {remote_probe['workflow_timeouts'][f'probe-{tier}']})"
+        f"(inputs.runner_tier == '{tier}' && inputs.job_timeout_minutes != '{remote_probe['workflow_timeouts'][f'probe-{tier}']}')"
         for tier in remote_probe["allowed_runner_tiers"]
     )
     if f"if: ${{{{ {timeout_refusals} }}}}" not in timeout_block:
@@ -208,7 +224,7 @@ def assert_workflow_contract() -> None:
         block = text[start:] if next_job < 0 else text[start:next_job]
         tier = job.removeprefix("probe-")
         expected_timeout = remote_probe["workflow_timeouts"][job]
-        expected_if = f"if: ${{{{ inputs.runner_tier == '{tier}' && fromJSON(inputs.job_timeout_minutes) == {expected_timeout} }}}}"
+        expected_if = f"if: ${{{{ inputs.runner_tier == '{tier}' && inputs.job_timeout_minutes == '{expected_timeout}' }}}}"
         if expected_if not in block:
             raise AssertionError(f"{job} must require its TOML-declared timeout before running")
         if "timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}" not in block:
@@ -286,6 +302,18 @@ def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
     if any(call and call[0] == "pr" for call in calls):
         raise AssertionError(calls)
 
+    local_branch_outputs = {
+        ("status", "--porcelain", "--untracked-files=normal"): ("", None),
+        ("rev-parse", "HEAD"): (HEAD, None),
+        ("branch", "--show-current"): (LOCAL_BRANCH, None),
+        ("config", f"branch.{LOCAL_BRANCH}.remote"): ("origin", None),
+        ("config", f"branch.{LOCAL_BRANCH}.merge"): (f"refs/heads/{UPSTREAM_BRANCH}", None),
+        ("ls-remote", "--heads", "origin", UPSTREAM_BRANCH): (f"{HEAD}\trefs/heads/{UPSTREAM_BRANCH}", None),
+    }
+    head, branch, error, _calls = run_with_git_outputs(local_branch_outputs)
+    if (head, branch, error) != (HEAD, UPSTREAM_BRANCH, None):
+        raise AssertionError((head, branch, error))
+
     refusal_cases = [
         (
             "dirty worktree",
@@ -326,7 +354,7 @@ def assert_dispatch_uses_declared_workflow_inputs() -> None:
         error = owner.dispatch_rust_probe(
             REPO_ROOT,
             policy,
-            branch=BRANCH,
+            branch=UPSTREAM_BRANCH,
             head=HEAD,
             mode="nextest-test-target-name",
             test_target="target_name",
@@ -346,7 +374,7 @@ def assert_dispatch_uses_declared_workflow_inputs() -> None:
         "run",
         ".github/workflows/rust-probe.yml",
         "--ref",
-        BRANCH,
+        UPSTREAM_BRANCH,
         "-f",
         "runner_tier=heavy",
         "-f",
@@ -388,6 +416,27 @@ def assert_cancelled_probe_is_superseded_not_code_failure() -> None:
         raise AssertionError(output)
 
 
+def assert_probe_run_matching_is_prefix_anchored() -> None:
+    owner = load_owner_module()
+    runs = [
+        {
+            "displayTitle": "Other Rust Probe probe-123 check-lib",
+            "createdAt": "2026-06-15T00:00:03Z",
+        },
+        {
+            "displayTitle": "Rust Probe xprobe-123 check-lib",
+            "createdAt": "2026-06-15T00:00:02Z",
+        },
+        {
+            "displayTitle": "Rust Probe probe-123 check-lib @ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "createdAt": "2026-06-15T00:00:01Z",
+        },
+    ]
+    matching = owner.matching_rust_probe_runs(runs, probe_id="probe-123")
+    if matching != [runs[2]]:
+        raise AssertionError(matching)
+
+
 def assert_cmd_rust_probe_dispatches_and_reports_not_proof() -> None:
     owner = load_owner_module()
     calls: list[tuple[str, str, str, str, str, str, int, str]] = []
@@ -400,7 +449,7 @@ def assert_cmd_rust_probe_dispatches_and_reports_not_proof() -> None:
     original_probe_id = owner.new_probe_id
     try:
         owner.load_policy = lambda _repo: {"remote_probe": valid_remote_probe()}
-        owner.ensure_rust_probe_preconditions = lambda _repo: (HEAD, BRANCH, None)
+        owner.ensure_rust_probe_preconditions = lambda _repo: (HEAD, UPSTREAM_BRANCH, None)
         owner.rust_probe_active_run_count = lambda _repo, _policy: (0, None)
         owner.new_probe_id = lambda: "probe-123"
 
@@ -444,7 +493,7 @@ def assert_cmd_rust_probe_dispatches_and_reports_not_proof() -> None:
 
     if result != 0:
         raise AssertionError((result, stdout.getvalue(), stderr.getvalue()))
-    if calls != [(BRANCH, HEAD, "check-lib", "", "", "heavy", 60, "probe-123")]:
+    if calls != [(UPSTREAM_BRANCH, HEAD, "check-lib", "", "", "heavy", 60, "probe-123")]:
         raise AssertionError(calls)
     if "NOT MERGE PROOF" not in stdout.getvalue():
         raise AssertionError(stdout.getvalue())
@@ -459,6 +508,7 @@ def main() -> int:
     assert_preconditions_are_pr_free_and_exact_upstream()
     assert_dispatch_uses_declared_workflow_inputs()
     assert_cancelled_probe_is_superseded_not_code_failure()
+    assert_probe_run_matching_is_prefix_anchored()
     assert_cmd_rust_probe_dispatches_and_reports_not_proof()
     print("OK: Rust Probe wrapper self-tests passed.")
     return 0

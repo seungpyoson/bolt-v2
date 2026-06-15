@@ -1304,7 +1304,7 @@ impl BoltV3SubmitAdmissionState {
                 });
                 Ok(BoltV3SubmitAdmissionPermit {
                     inner: self.inner.clone(),
-                    rollback: evaluation.rollback,
+                    rollbacks: evaluation.rollback.into_iter().collect(),
                     counter_rollback,
                     committed: false,
                 })
@@ -1468,6 +1468,8 @@ impl BoltV3SubmitAdmissionState {
             .unwrap_or(BoltV3SubmitIntentKind::Entry);
         let mut rejected_request: Option<BoltV3SubmitAdmissionRequest> = None;
         let mut rejected_evaluation: Option<BoltV3SubmitAdmissionEvaluation> = None;
+        let mut rollbacks = Vec::new();
+        let mut reservation_metadata = Vec::new();
 
         for claim in claims {
             let request = basket_submit_request(&evidence.strategy_id, execution_client_id, claim);
@@ -1478,6 +1480,12 @@ impl BoltV3SubmitAdmissionState {
                 rejected_request = Some(request);
                 rejected_evaluation = Some(evaluation);
                 break;
+            }
+            if let Some(rollback) = evaluation.rollback {
+                rollbacks.push(rollback);
+            }
+            if let Some(metadata) = evaluation.reservation_metadata {
+                reservation_metadata.push(metadata);
             }
         }
 
@@ -1512,13 +1520,31 @@ impl BoltV3SubmitAdmissionState {
 
         let mut evidence = evidence.clone();
         evidence.outcome = basket_outcome_from_submit_outcome(outcome.clone());
-        self.decision_evidence
+        if outcome == BoltV3AdmissionOutcome::Admitted {
+            for metadata in &reservation_metadata {
+                if let Err(err) = self
+                    .decision_evidence
+                    .record_submit_reservation_metadata(metadata)
+                {
+                    rollback_position_sizer_reservations(&mut inner, &rollbacks);
+                    return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                        reason: format!("{err:#}"),
+                    });
+                }
+            }
+        }
+        if let Err(err) = self
+            .decision_evidence
             .record_basket_admission_decision(&evidence)
-            .map_err(|err| BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+        {
+            rollback_position_sizer_reservations(&mut inner, &rollbacks);
+            return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                 reason: format!("{err:#}"),
-            })?;
+            });
+        }
 
         if outcome != BoltV3AdmissionOutcome::Admitted {
+            rollback_position_sizer_reservations(&mut inner, &rollbacks);
             if let (Some(request), Some(evaluation)) =
                 (rejected_request.as_ref(), rejected_evaluation.as_ref())
             {
@@ -1562,7 +1588,7 @@ impl BoltV3SubmitAdmissionState {
 
         Ok(BoltV3SubmitAdmissionPermit {
             inner: self.inner.clone(),
-            rollback: None,
+            rollbacks,
             counter_rollback: Some(BoltV3SubmitAdmissionCounterRollback {
                 execution_client_id: execution_client_id.to_string(),
                 order_count: claim_count,
@@ -1785,7 +1811,7 @@ fn submit_admission_error_from_outcome(
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionPermit {
     inner: Arc<Mutex<BoltV3SubmitAdmissionInner>>,
-    rollback: Option<BoltV3PositionSizerReservationRollback>,
+    rollbacks: Vec<BoltV3PositionSizerReservationRollback>,
     counter_rollback: Option<BoltV3SubmitAdmissionCounterRollback>,
     committed: bool,
 }
@@ -1793,7 +1819,7 @@ pub struct BoltV3SubmitAdmissionPermit {
 impl BoltV3SubmitAdmissionPermit {
     pub fn commit_submitted(mut self) {
         self.committed = true;
-        self.rollback = None;
+        self.rollbacks.clear();
         self.counter_rollback = None;
     }
 }
@@ -1810,9 +1836,7 @@ impl Drop for BoltV3SubmitAdmissionPermit {
         if let Some(counter_rollback) = self.counter_rollback.as_ref() {
             rollback_admission_counters(&mut inner, counter_rollback);
         }
-        if let Some(rollback) = self.rollback.as_ref() {
-            rollback_position_sizer_reservation(&mut inner, rollback);
-        }
+        rollback_position_sizer_reservations(&mut inner, &self.rollbacks);
     }
 }
 
@@ -2194,6 +2218,7 @@ pub struct BoltV3BasketSubmitSlotClaim {
     pub intent_kind: BoltV3SubmitIntentKind,
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
+    pub position_sizing: Option<BoltV3CompiledOrderSizingEvidence>,
 }
 
 fn basket_submit_request(
@@ -2213,7 +2238,7 @@ fn basket_submit_request(
         lifecycle_policy: claim.lifecycle_policy,
         risk_reducing_exit_proof: claim.risk_reducing_exit_proof.clone(),
         kill_switch_forced_reduction: None,
-        position_sizing: None,
+        position_sizing: claim.position_sizing.clone(),
     }
 }
 
@@ -3148,6 +3173,15 @@ fn rollback_position_sizer_reservation(
             .remove(&rollback.client_order_id);
     }
     refresh_position_sizer_reservation_snapshot(position_sizer, rollback.observed_at_ns);
+}
+
+fn rollback_position_sizer_reservations(
+    inner: &mut BoltV3SubmitAdmissionInner,
+    rollbacks: &[BoltV3PositionSizerReservationRollback],
+) {
+    for rollback in rollbacks.iter().rev() {
+        rollback_position_sizer_reservation(inner, rollback);
+    }
 }
 
 fn rollback_admission_counters(

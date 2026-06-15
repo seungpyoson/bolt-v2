@@ -355,8 +355,10 @@ mod tests {
     // current submit-admission request/proof APIs.
     // Re-derived after the conflict follow-up simplified basket rejection
     // propagation for clippy.
+    // Re-derived after basket submit-slot claims started carrying
+    // position-sizing evidence and rollback metadata.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "65f8ce214368ab3bf53005376b5d396d7c4bd49aadae27162d3bb4e345b962f1";
+        "caec8f1796e021430fe93a90668135e00f132f8c99349bdbd8304308f23df794";
     // GOLDEN_OUTCOME_GROUP_DIGEST is introduced by the shared outcome-group
     // substrate source-integrity task after every first-slice source root exists
     // on disk. Re-derived after Task 10 activated the complete-set runtime

@@ -6,6 +6,7 @@ use crate::bolt_v3_decision_evidence::{
     BoltV3DecisionEvidenceWriter,
 };
 use crate::bolt_v3_outcome_group_scanner::OutcomeGroupScanEvidence;
+use crate::bolt_v3_outcome_group_sources::outcome_group_observation_is_fresh;
 use crate::bolt_v3_outcome_groups::{OutcomeGroup, ValidatedOutcomeGroup};
 use crate::bolt_v3_submit_admission::{
     BoltV3BasketSubmitSlotClaim, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState,
@@ -203,16 +204,21 @@ impl BoltV3BasketAdmissionState {
             return Err(BoltV3BasketAdmissionError::EdgeThreshold);
         }
         if request.scanner_evidence.leg_costs.iter().any(|leg| {
-            request.now_unix_ms.saturating_sub(leg.observed_unix_ms)
-                > self.limits.max_scanner_evidence_age_ms
+            !outcome_group_observation_is_fresh(
+                request.now_unix_ms,
+                leg.observed_unix_ms,
+                self.limits.max_scanner_evidence_age_ms,
+                None,
+            )
         }) {
             return Err(BoltV3BasketAdmissionError::StaleScannerEvidence);
         }
-        if request
-            .now_unix_ms
-            .saturating_sub(request.submit_recheck_observed_unix_ms)
-            > self.limits.max_submit_recheck_age_ms
-        {
+        if !outcome_group_observation_is_fresh(
+            request.now_unix_ms,
+            request.submit_recheck_observed_unix_ms,
+            self.limits.max_submit_recheck_age_ms,
+            None,
+        ) {
             return Err(BoltV3BasketAdmissionError::StaleSubmitRecheck);
         }
 

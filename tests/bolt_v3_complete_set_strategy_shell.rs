@@ -251,6 +251,7 @@ manage_gtd_expiry = false
 manage_stop = false
 market_exit_interval_ms = 100
 market_exit_max_attempts = 100
+market_exit_reduce_only = true
 log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true

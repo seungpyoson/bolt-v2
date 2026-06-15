@@ -15,6 +15,7 @@ use crate::{
         OutcomeGroupNonStandardTerminalPayoutBlock, OutcomeGroupRefundConvention,
         OutcomeGroupSettlementSourceKind, OutcomeGroupSourceConfig,
         OutcomeGroupSourceKind as SourceConfigKind, OutcomeGroupVoidPolicy,
+        outcome_group_observation_is_fresh,
     },
     bolt_v3_outcome_groups::{
         AttestedLegRef, AttestedPayoutVector, CanonicalField, GroupingProof,
@@ -176,11 +177,17 @@ pub fn normalize_hyperliquid_hip4_outcome_group(
 fn validate_metadata_freshness(
     input: &HyperliquidHip4OutcomeGroupInput<'_>,
 ) -> Result<(), HyperliquidHip4OutcomeGroupError> {
-    if input
-        .now_unix_ms
-        .saturating_sub(input.metadata_loaded_unix_ms)
-        > input.metadata_ttl_ms
-    {
+    let max_clock_skew_ms = input
+        .source
+        .freshness
+        .as_ref()
+        .and_then(|freshness| freshness.max_clock_skew_ms);
+    if !outcome_group_observation_is_fresh(
+        input.now_unix_ms,
+        input.metadata_loaded_unix_ms,
+        input.metadata_ttl_ms,
+        max_clock_skew_ms,
+    ) {
         return Err(HyperliquidHip4OutcomeGroupError::StaleMetadata);
     }
     Ok(())

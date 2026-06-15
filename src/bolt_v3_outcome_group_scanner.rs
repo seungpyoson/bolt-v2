@@ -21,6 +21,7 @@ use crate::{
         BPS_DENOMINATOR, CENTS_PER_SHARE, NANOS_PER_MILLI_U64, ZERO_F64, is_non_negative_finite,
         is_positive_finite,
     },
+    bolt_v3_outcome_group_sources::outcome_group_observation_is_fresh,
     bolt_v3_outcome_groups::{
         GroupingProof, OutcomeGroup, OutcomeGroupValidationError, PayoutMatrix,
         ValidatedOutcomeGroup,
@@ -263,7 +264,12 @@ fn scan_outcome_group_candidate_inner(
                 return Err((OutcomeGroupScanBlockReason::MissingBookTimestamp, evidence));
             }
         };
-        if input.now_unix_ms.saturating_sub(observed_unix_ms) > input.max_book_age_ms {
+        if !outcome_group_observation_is_fresh(
+            input.now_unix_ms,
+            observed_unix_ms,
+            input.max_book_age_ms,
+            None,
+        ) {
             return Err((OutcomeGroupScanBlockReason::StaleBook, evidence));
         }
         let priced_leg = match price_candidate_leg(input, candidate, book) {

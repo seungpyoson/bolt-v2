@@ -13404,6 +13404,14 @@ reason = "Concrete complete-set raw strategy config field populated from the com
 [[allowed]]
 path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
 kind = "string"
+literal = '''"market_exit_reduce_only"'''
+context = '''"market_exit_reduce_only",'''
+classification = "runtime_config_projection_field"
+reason = "Concrete complete-set raw strategy config field populated from the common TOML strategy envelope."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
 literal = '''"max_open_baskets"'''
 context = '''insert_u32(&mut table, "max_open_baskets", runtime.max_open_baskets);'''
 classification = "runtime_config_projection_field"

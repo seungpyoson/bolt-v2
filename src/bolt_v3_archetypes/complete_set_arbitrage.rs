@@ -131,6 +131,9 @@ pub fn validate_strategy(
             errors.push(format!("{context}: parameters.runtime.{field} is required"));
         }
     }
+    if strategy.config.market_exit_reduce_only.is_none() {
+        errors.push(format!("{context}: market_exit_reduce_only is required"));
+    }
 
     let Ok(parameters) = parse_parameters(&strategy.parameters) else {
         if let Some(submit_mode) = strategy
@@ -357,6 +360,16 @@ pub fn raw_complete_set_config(
         "market_exit_max_attempts",
         strategy.config.market_exit_max_attempts,
     )?;
+    insert_bool(
+        &mut table,
+        "market_exit_reduce_only",
+        strategy.config.market_exit_reduce_only.ok_or_else(|| {
+            CompleteSetArbitrageRuntimeConfigError::Parameters {
+                strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+                message: "market_exit_reduce_only is required".to_string(),
+            }
+        })?,
+    );
     insert_bool(&mut table, "log_events", strategy.config.log_events);
     insert_bool(&mut table, "log_commands", strategy.config.log_commands);
     insert_bool(

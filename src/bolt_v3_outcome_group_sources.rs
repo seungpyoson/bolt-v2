@@ -227,6 +227,22 @@ pub struct OutcomeGroupFreshnessEvidence {
     pub event_time_clock_available: bool,
 }
 
+pub fn outcome_group_observation_is_fresh(
+    now_unix_ms: u64,
+    observed_unix_ms: u64,
+    max_age_ms: u64,
+    max_clock_skew_ms: Option<u64>,
+) -> bool {
+    if observed_unix_ms > now_unix_ms {
+        return match max_clock_skew_ms {
+            Some(max_clock_skew_ms) => observed_unix_ms - now_unix_ms <= max_clock_skew_ms,
+            None => false,
+        };
+    }
+
+    now_unix_ms - observed_unix_ms <= max_age_ms
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CompleteSetArbitrageParametersBlock {

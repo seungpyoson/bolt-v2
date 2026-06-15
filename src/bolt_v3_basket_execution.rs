@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use nautilus_model::enums::OrderSide;
 use rust_decimal::Decimal;
@@ -10,6 +13,7 @@ use crate::{
         transition_kill_switch_state,
     },
     bolt_v3_kill_switch_store::{KillSwitchStore, KillSwitchStoreError},
+    bolt_v3_outcome_group_sources::outcome_group_observation_is_fresh,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
@@ -216,15 +220,36 @@ impl BoltV3BasketExecutionState {
             return Err(BoltV3BasketExecutionError::LegShapeMismatch);
         }
 
+        let mut seen_leg_ids = BTreeSet::new();
+        let mut client_order_ids_by_leg = BTreeMap::new();
         let mut client_order_ids = Vec::with_capacity(leg_intents.len());
-        for intent in leg_intents {
+        for intent in &leg_intents {
+            if !seen_leg_ids.insert(intent.leg_id.as_str()) {
+                return Err(BoltV3BasketExecutionError::LegShapeMismatch);
+            }
             let leg = self
                 .legs
-                .iter_mut()
+                .iter()
                 .find(|leg| leg.leg_id == intent.leg_id)
                 .ok_or(BoltV3BasketExecutionError::LegShapeMismatch)?;
-            leg.client_order_id = Some(intent.client_order_id.clone());
-            client_order_ids.push(intent.client_order_id);
+            if intent.instrument_id != leg.instrument_id
+                || intent.quantity != leg.target_quantity
+                || intent.quantity <= Decimal::ZERO
+                || intent.notional <= Decimal::ZERO
+                || !matches!(intent.side, OrderSide::Buy | OrderSide::Sell)
+            {
+                return Err(BoltV3BasketExecutionError::LegShapeMismatch);
+            }
+            client_order_ids_by_leg.insert(intent.leg_id.clone(), intent.client_order_id.clone());
+            client_order_ids.push(intent.client_order_id.clone());
+        }
+
+        for leg in &mut self.legs {
+            leg.client_order_id = Some(
+                client_order_ids_by_leg
+                    .remove(&leg.leg_id)
+                    .ok_or(BoltV3BasketExecutionError::LegShapeMismatch)?,
+            );
         }
 
         self.order_list_id = Some(order_list_id.to_string());
@@ -673,8 +698,12 @@ fn executable_leg_is_fresh_and_bounded(
     leg: &BoltV3ExecutableRepairLeg,
     policy: &BoltV3BasketRepairPolicy,
 ) -> bool {
-    now_unix_ms.saturating_sub(leg.observed_unix_ms) <= policy.max_book_age_ms
-        && leg.slippage_bps <= policy.max_slippage_bps
+    outcome_group_observation_is_fresh(
+        now_unix_ms,
+        leg.observed_unix_ms,
+        policy.max_book_age_ms,
+        None,
+    ) && leg.slippage_bps <= policy.max_slippage_bps
         && leg.depth_levels <= policy.max_depth_levels
 }
 
@@ -683,8 +712,12 @@ fn executable_unwind_leg_is_fresh_and_bounded(
     leg: &BoltV3ExecutableRepairLeg,
     policy: &BoltV3BasketUnwindPolicy,
 ) -> bool {
-    now_unix_ms.saturating_sub(leg.observed_unix_ms) <= policy.max_book_age_ms
-        && leg.slippage_bps <= policy.max_slippage_bps
+    outcome_group_observation_is_fresh(
+        now_unix_ms,
+        leg.observed_unix_ms,
+        policy.max_book_age_ms,
+        None,
+    ) && leg.slippage_bps <= policy.max_slippage_bps
         && leg.depth_levels <= policy.max_depth_levels
 }
 

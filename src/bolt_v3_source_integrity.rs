@@ -337,7 +337,7 @@ mod tests {
     // Re-derived after shared outcome freshness and basket submit validation
     // moved into shared execution/source modules.
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "10dcb8181ae1972bb2ef4ae2f7f17fc4707ddc3e433bffdc6010178e69f91aea";
+        "e913ca9c229b8a457e9bd30b182c4ac983c1b8125e2341da9770535cae2e4728";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

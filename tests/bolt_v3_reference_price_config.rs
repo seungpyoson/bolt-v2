@@ -25,6 +25,13 @@ fn root_fixture() -> BoltV3RootConfig {
     let fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml");
     let reference_price_fixture_additions = r#"
 [[chainlink_data_streams.feed_bindings]]
+feed_id = "0x00057da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+instrument_id = "BTC-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[[chainlink_data_streams.feed_bindings]]
 feed_id = "0x00047da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
 instrument_id = "ADA-USD.CHAINLINK"
 report_schema_version = 3
@@ -33,6 +40,17 @@ price_precision = 8
 "#;
     toml::from_str(&format!("{fixture}\n{reference_price_fixture_additions}"))
         .expect("root fixture with reference clients should parse")
+}
+
+fn set_target_underlying_asset(strategy: &mut BoltV3StrategyConfig, asset: &str) {
+    strategy
+        .target
+        .as_table_mut()
+        .expect("strategy target should be a table")
+        .insert(
+            "underlying_asset".to_string(),
+            toml::Value::String(asset.to_string()),
+        );
 }
 
 fn loaded_strategy(strategy: BoltV3StrategyConfig) -> Vec<LoadedStrategy> {
@@ -56,10 +74,9 @@ fn try_parse_strategy(
 }
 
 fn validate_reference_current_price(reference_current_price: &str) -> Vec<String> {
-    validate_strategies(
-        &root_fixture(),
-        &loaded_strategy(parse_strategy(reference_current_price)),
-    )
+    let mut strategy = parse_strategy(reference_current_price);
+    set_target_underlying_asset(&mut strategy, "BTC");
+    validate_strategies(&root_fixture(), &loaded_strategy(strategy))
 }
 
 #[test]

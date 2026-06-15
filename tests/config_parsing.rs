@@ -329,10 +329,10 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
         );
         // The OFFLINE `resolution_oracle_primary` gate-provider mapping must stay
         // a single generic placeholder (#551 removes it). The new live
-        // `[clients.chainlink_strike]` source carries the real asset-specific
-        // feeds, so these checks are scoped to the gate-provider binding's
+        // Root `chainlink_data_streams.feed_bindings` carries the real
+        // asset-specific feeds, so these checks are scoped to the gate-provider binding's
         // `feed_id`, not a whole-file substring (which now legitimately contains
-        // the BTC feed under the live client block).
+        // the BTC feed under the root feed catalog).
         let gate_feed_id = feed_bindings[0]
             .get("feed_id")
             .and_then(toml::Value::as_str)
@@ -356,7 +356,7 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
 }
 
 #[test]
-fn shipped_chainlink_strike_client_pins_each_asset_feed_binding() {
+fn shipped_chainlink_data_streams_pins_each_asset_feed_binding() {
     // Drift guard for the LIVE strike feed bindings. The validFrom/feed_id/schema
     // decode checks cannot detect a cross-asset substitution (a feed_id is always
     // internally consistent with its own report), so a copy-paste swap pointing
@@ -378,17 +378,15 @@ fn shipped_chainlink_strike_client_pins_each_asset_feed_binding() {
         .expect("root config should be readable");
     let parsed = toml::from_str::<toml::Value>(&source).expect("root TOML should parse");
     let feed_bindings = parsed
-        .get("clients")
-        .and_then(|value| value.get("chainlink_strike"))
-        .and_then(|value| value.get("data"))
+        .get("chainlink_data_streams")
         .and_then(|value| value.get("feed_bindings"))
         .and_then(toml::Value::as_array)
-        .expect("root config should declare live chainlink_strike feed bindings");
+        .expect("root config should declare live Chainlink Data Streams feed bindings");
 
     assert_eq!(
         feed_bindings.len(),
         expected.len(),
-        "the live chainlink_strike client must ship exactly one feed binding per supported asset"
+        "the live Chainlink Data Streams catalog must ship exactly one feed binding per supported asset"
     );
 
     let mut seen_feed_ids = std::collections::HashSet::new();
@@ -403,7 +401,7 @@ fn shipped_chainlink_strike_client_pins_each_asset_feed_binding() {
             .expect("feed binding should declare feed_id");
         assert_eq!(
             actual_instrument, *instrument_id,
-            "live chainlink_strike feed bindings must stay in the pinned per-asset order"
+            "live Chainlink Data Streams feed bindings must stay in the pinned per-asset order"
         );
         assert_eq!(
             actual_feed, *feed_id,

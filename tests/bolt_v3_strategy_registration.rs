@@ -41,6 +41,29 @@ fn reference_price_client_from_toml(value: &str) -> ClientBlock {
     toml::from_str(value).expect("reference price test client should parse")
 }
 
+fn add_root_chainlink_feed_binding(root: &mut BoltV3RootConfig, instrument_id: &str) {
+    let mut binding = toml::map::Map::new();
+    binding.insert(
+        "feed_id".to_string(),
+        toml::Value::String(
+            "0x00057da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439".to_string(),
+        ),
+    );
+    binding.insert(
+        "instrument_id".to_string(),
+        toml::Value::String(instrument_id.to_string()),
+    );
+    binding.insert("report_schema_version".to_string(), toml::Value::Integer(3));
+    binding.insert("report_decimal_scale".to_string(), toml::Value::Integer(18));
+    binding.insert("price_precision".to_string(), toml::Value::Integer(8));
+
+    root.chainlink_data_streams
+        .as_mut()
+        .expect("fixture root should include chainlink_data_streams")
+        .feed_bindings
+        .push(toml::Value::Table(binding));
+}
+
 impl FeeProvider for NoopFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
         None
@@ -1793,9 +1816,10 @@ fn binary_oracle_runtime_mapping_emits_resolution_data_when_present() {
         .iter()
         .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
-    // Align the target's underlying_asset with the BTC-USD.CHAINLINK feed_binding
-    // so the load-time resolution_data binding validation (asset prefix + feed
-    // binding) passes for this happy-path emit test.
+    add_root_chainlink_feed_binding(&mut loaded.root, "BTC-USD.CHAINLINK");
+    // Align the target's underlying_asset with the BTC-USD.CHAINLINK root
+    // feed_binding so the load-time resolution_data binding validation (asset
+    // prefix + feed binding) passes for this happy-path emit test.
     loaded.strategies[strategy_index]
         .config
         .target

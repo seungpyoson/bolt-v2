@@ -657,6 +657,7 @@ fn single_order_request(client_order_id: &str, notional: Decimal) -> BoltV3Submi
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
+        position_sizing: None,
     }
 }
 

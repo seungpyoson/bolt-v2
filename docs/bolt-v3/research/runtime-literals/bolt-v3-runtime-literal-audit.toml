@@ -727,10 +727,18 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''9'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 9;'''
+literal = '''10'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 10;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v9 adds global realized-volatility runtime and robust-estimator fields, including measured, noise-robust, continuous, jump, forecast-placeholder, and pricing-component evidence; it is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v10 adds position-sizer recovery evidence records and loss-governor/position-sizer admission outcomes; it is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = '''9'''
+context = '''const PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 9;'''
+classification = "decision_evidence_legacy_schema_version"
+reason = "This is the previous decision-evidence JSONL envelope schema version used only to skip pre-position-sizer-recovery non-recovery lines while preserving fail-closed recovery-record parsing; it is a compatibility marker, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -931,6 +939,14 @@ literal = '''"strategy references unconfigured client(s): {}"'''
 context = '''"strategy references unconfigured client(s): {}",'''
 classification = "live_node_fail_closed_diagnostic_template"
 reason = "This is fail-closed diagnostic text for a strategy referencing client ids absent from the loaded TOML; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"nt_open_order_cache"'''
+context = '''evidence_label: "nt_open_order_cache".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels open-order reservation evidence rebuilt from NT cache state; the open orders and account facts come from NT."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/mod.rs"
@@ -1839,22 +1855,6 @@ reason = "The submit admission counter starts empty for each fresh submit-admiss
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
-literal = '''0'''
-context = '''admitted_entry_order_count: 0,'''
-classification = "submit_admission_counter_identity"
-reason = "The exposure-opening admission counter starts empty for each fresh submit-admission runtime state; the operator-provided cap comes from validated live submit approval limits."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''0'''
-context = '''admitted_risk_reducing_exit_order_count: 0,'''
-classification = "submit_admission_counter_identity"
-reason = "The risk-reducing exit admission counter starts empty for each fresh submit-admission runtime state; it is used only to enforce the explicit lifecycle policy."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
 literal = '''1'''
 context = '''inner.admitted_order_count += 1;'''
 classification = "submit_admission_counter_increment"
@@ -1888,17 +1888,25 @@ reason = "A missing per-client live-submit approval counter means no orders have
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''1'''
-context = '''inner.admitted_entry_order_count += 1;'''
-classification = "submit_admission_counter_increment"
-reason = "Each admitted entry or replace-submit increments the exposure-opening counter used by the explicit lifecycle policy."
+context = '''inner.admitted_order_count = inner.admitted_order_count.saturating_sub(1);'''
+classification = "submit_admission_counter_rollback"
+reason = "Dropping an uncommitted submit permit releases exactly one previously consumed order-count slot after NT submit fails before commit."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''1'''
-context = '''inner.admitted_risk_reducing_exit_order_count += 1;'''
-classification = "submit_admission_counter_increment"
-reason = "Each admitted risk-reducing exit increments the lifecycle counter so one configured exit cannot be reused indefinitely."
+context = '''*count = count.saturating_sub(1);'''
+classification = "submit_admission_counter_rollback"
+reason = "Dropping an uncommitted submit permit releases exactly one per-client live-submit approval slot consumed by the matching admission."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''0'''
+context = '''remove_execution_client = *count == 0;'''
+classification = "submit_admission_counter_identity"
+reason = "A per-client counter at zero has no remaining consumed approvals and is removed from the sparse counter map."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -1939,6 +1947,14 @@ literal = '''2'''
 context = '''pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;'''
 classification = "schema_version_gate"
 reason = "The strategy schema version is a structural compatibility gate, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''0'''
+context = '''.is_none_or(|value| value == 0)'''
+classification = "config_validation_zero_rejection"
+reason = "Zero is the invalid lower-bound sentinel for the TOML-owned active position PnL entry cap; runtime capacity is still provided by config and must be positive."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
@@ -3987,6 +4003,14 @@ literal = '''0'''
 context = '''None => 0,'''
 classification = "chainlink_feed_binding_cardinality"
 reason = "This is the zero matching feed-binding count for a TOML-owned Chainlink mapping when no binding key is present."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''0'''
+context = '''.is_some_and(|max_bytes| max_bytes == 0)'''
+classification = "positive_integer_validation_zero_floor"
+reason = "This is the zero floor for the TOML-owned decision-evidence recovery read cap; zero is rejected before startup recovery can use it."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
@@ -6088,14 +6112,6 @@ reason = "This initializes the source-owned no-exchange-mutation proof counter f
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''0'''
-context = '''admitted_replace_submit_order_count: 0,'''
-classification = "submit_admission_counter_zero"
-reason = "Initial value for an internal admission counter; operator limits and admissibility values remain TOML-owned and validated separately."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''0'''
 context = '''cancel: 0,'''
 classification = "strategy_free_mutation_count_none_invariant"
 reason = "This initializes the source-owned no-exchange-mutation proof counter for cancel requests; observed counts come from captured exchange traffic, not operator config."
@@ -6771,14 +6787,6 @@ literal = '''1'''
 context = '''.take(max_bytes.saturating_add(1))'''
 classification = "bounded_artifact_read_overflow_probe"
 reason = "This reads one byte beyond the configured artifact byte cap to detect oversized Hyperliquid approval artifacts without unbounded memory growth."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''1'''
-context = '''inner.admitted_replace_submit_order_count += 1;'''
-classification = "submit_admission_counter_increment"
-reason = "Single-event increment for an internal admission counter; operator limits and admissibility values remain TOML-owned and validated separately."
 
 [[allowed]]
 path = "src/bolt_v3_kill_switch.rs"
@@ -10347,6 +10355,30 @@ classification = "realized_volatility_evidence_label"
 reason = "Stable realized-volatility rejection-reason evidence label emitted from source diagnostics; it records fail-closed provenance and does not configure trading behavior."
 
 [[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"buy"'''
+context = '''const SUBMIT_RESERVATION_METADATA_SIDE_BUY: &str = "buy";'''
+classification = "submit_reservation_metadata_label"
+reason = "Stable side buy metadata string label used to annotate submitted orders in prediction markets; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"prediction_market_binary"'''
+context = '''const SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY: &str = "prediction_market_binary";'''
+classification = "submit_reservation_metadata_label"
+reason = "Stable product kind metadata string label used to annotate submitted orders in prediction markets; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"sell"'''
+context = '''const SUBMIT_RESERVATION_METADATA_SIDE_SELL: &str = "sell";'''
+classification = "submit_reservation_metadata_label"
+reason = "Stable side sell metadata string label used to annotate submitted orders in prediction markets; not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_realized_volatility.rs"
 kind = "number"
 literal = '''1'''
@@ -11307,12 +11339,732 @@ classification = "executable_cost_block_reason_label"
 reason = "Stable structured block-reason label for executable-cost output; it records decision evidence and does not configure runtime behavior."
 
 [[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.position_sizer_rebuild"'''
+context = '''pub const BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";'''
+classification = "decision_evidence_gate_id"
+reason = "Stable gate identifier stamped on position-sizer rebuild audit records; it is part of the evidence contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"position_sizer_rebuild"'''
+context = '''const BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";'''
+classification = "decision_evidence_envelope_kind"
+reason = "JSONL envelope discriminator for position-sizer rebuild audit records; it is a schema tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"position_sizer_rebuild"'''
+context = '''"position_sizer_rebuild" => {'''
+classification = "decision_evidence_envelope_kind"
+reason = "Replay discriminator for position-sizer rebuild audit records; it is a schema tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_metadata"'''
+context = '''const BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND: &str = "submit_reservation_metadata";'''
+classification = "decision_evidence_envelope_kind"
+reason = "JSONL envelope discriminator for submit-reservation metadata records used during startup recovery; it is a schema tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_metadata"'''
+context = '''"submit_reservation_metadata" => {'''
+classification = "decision_evidence_envelope_kind"
+reason = "Replay discriminator for submit-reservation metadata records used during startup recovery; it is a schema tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_fill"'''
+context = '''const BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND: &str = "submit_reservation_fill";'''
+classification = "decision_evidence_envelope_kind"
+reason = "JSONL envelope discriminator for submit-reservation fill records used during recovery replay; it is a schema tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_fill"'''
+context = '''"submit_reservation_fill" => {'''
+classification = "decision_evidence_envelope_kind"
+reason = "Replay discriminator for submit-reservation fill records used during recovery replay; it is a schema tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"prediction_market_binary"'''
+context = '''const SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY: &str = "prediction_market_binary";'''
+classification = "position_sizer_product_kind_tag"
+reason = "Canonical schema tag accepted by the startup recovery evidence reader for binary prediction-market reservation metadata."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"buy"'''
+context = '''const SUBMIT_RESERVATION_METADATA_SIDE_BUY: &str = "buy";'''
+classification = "position_sizer_order_side_tag"
+reason = "Canonical schema tag accepted by the startup recovery evidence reader for buy-side reservation metadata."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"sell"'''
+context = '''const SUBMIT_RESERVATION_METADATA_SIDE_SELL: &str = "sell";'''
+classification = "position_sizer_order_side_tag"
+reason = "Canonical schema tag accepted by the startup recovery evidence reader for sell-side reservation metadata."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"client_order_id"'''
+context = '''("client_order_id", metadata.client_order_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation metadata field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_id"'''
+context = '''"submit_reservation_id",'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation id field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"venue_id"'''
+context = '''("venue_id", metadata.venue_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation metadata venue field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"account_id"'''
+context = '''("account_id", metadata.account_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation metadata account field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"product_kind"'''
+context = '''("product_kind", metadata.product_kind.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation metadata product-kind field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"collateral_currency"'''
+context = '''("collateral_currency", metadata.collateral_currency.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation metadata collateral-currency field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"capital_pool_id"'''
+context = '''("capital_pool_id", metadata.capital_pool_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation metadata capital-pool field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"collateral_group_id"'''
+context = '''("collateral_group_id", metadata.collateral_group_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation metadata collateral-group field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"instrument_id"'''
+context = '''("instrument_id", metadata.instrument_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation metadata instrument field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"side"'''
+context = '''("side", metadata.side.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation metadata side field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"source"'''
+context = '''("source", metadata.source.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation metadata source field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit reservation metadata submitted_quantity"'''
+context = '''"submit reservation metadata submitted_quantity",'''
+classification = "decision_evidence_validation_label"
+reason = "Submit-reservation metadata quantity validation label for recovery replay diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit reservation metadata liability_factor"'''
+context = '''"submit reservation metadata liability_factor",'''
+classification = "decision_evidence_validation_label"
+reason = "Submit-reservation metadata liability-factor validation label for recovery replay diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit reservation metadata additive_liability"'''
+context = '''"submit reservation metadata additive_liability",'''
+classification = "decision_evidence_validation_label"
+reason = "Submit-reservation metadata additive-liability validation label for recovery replay diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit reservation metadata reserved_liability"'''
+context = '''"submit reservation metadata reserved_liability",'''
+classification = "decision_evidence_validation_label"
+reason = "Submit-reservation metadata reserved-liability validation label for recovery replay diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"client_order_id"'''
+context = '''("client_order_id", fill.client_order_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation fill client-order field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_id"'''
+context = '''("submit_reservation_id", fill.submit_reservation_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation fill reservation field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"trade_id"'''
+context = '''("trade_id", fill.trade_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation fill trade field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"instrument_id"'''
+context = '''("instrument_id", fill.instrument_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation fill instrument field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"side"'''
+context = '''("side", fill.side.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation fill side field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"source"'''
+context = '''("source", fill.source.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "Submit-reservation fill source field label used for recovery validation; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit reservation fill fill_quantity"'''
+context = '''require_positive_decimal(&fill.fill_quantity, "submit reservation fill fill_quantity")?;'''
+classification = "decision_evidence_validation_label"
+reason = "Submit-reservation fill quantity validation label for recovery replay diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"daily_loss_limit"'''
+context = '''Self::DailyLossLimit => "daily_loss_limit",'''
+classification = "loss_governor_halt_reason_code"
+reason = "Stable evidence reason code for a TOML-configured loss-governor threshold breach; the threshold remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"max_drawdown_limit"'''
+context = '''Self::MaxDrawdownLimit => "max_drawdown_limit",'''
+classification = "loss_governor_halt_reason_code"
+reason = "Stable evidence reason code for a TOML-configured loss-governor threshold breach; the threshold remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"per_trade_loss_limit"'''
+context = '''Self::PerTradeLossLimit => "per_trade_loss_limit",'''
+classification = "loss_governor_halt_reason_code"
+reason = "Stable evidence reason code for a TOML-configured loss-governor threshold breach; the threshold remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"rolling_loss_limit"'''
+context = '''Self::RollingLossLimit => "rolling_loss_limit",'''
+classification = "loss_governor_halt_reason_code"
+reason = "Stable evidence reason code for a TOML-configured loss-governor threshold breach; the threshold remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"stale_loss_snapshot"'''
+context = '''Self::StaleLossSnapshot => "stale_loss_snapshot",'''
+classification = "loss_governor_halt_reason_code"
+reason = "Stable evidence reason code for fail-closed stale loss-governor state; the freshness bound remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "number"
+literal = '''0'''
+context = '''open_order_count: 0,'''
+classification = "position_sizer_order_lifecycle_identity"
+reason = "Empty live-order count used before NT cache or order-event evidence arrives; it is an internal identity, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_account_cache"'''
+context = '''const NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE: &str = "nt_account_cache";'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence source label for startup account sizing components seeded from NT cache; balances remain NT-owned facts."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_account_free_collateral"'''
+context = '''const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence source label for spendable collateral derived from NT account free collateral; the value remains NT-owned."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_open_order_cache"'''
+context = '''source: "nt_open_order_cache".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence source label for order-lifecycle state seeded from NT cache open orders; the open-order set remains NT-owned."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_order_event"'''
+context = '''source: "nt_order_event".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence source label for order-lifecycle state derived from NT order events; event payloads remain NT-owned."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_order_fill"'''
+context = '''evidence_label: "nt_order_fill".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence source label for authoritative NT fill events before submit admission releases the matching reservation."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_order_fill"'''
+context = '''snapshot.source = "nt_order_fill".to_string();'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence source label for product inventory updated from authoritative NT fill events."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_order_lifecycle_seed"'''
+context = '''source: "nt_order_lifecycle_seed".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence source label for the empty startup lifecycle seed before NT cache or live-order evidence is applied."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_portfolio_snapshot"'''
+context = '''source: "nt_portfolio_snapshot".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence source label for portfolio/account sizing components derived from NT account and portfolio events."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_position_cache"'''
+context = '''snapshot.source = "nt_position_cache".to_string();'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence source label for product inventory seeded from NT cache positions."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_position_sizer_runtime_components"'''
+context = '''source: "nt_position_sizer_runtime_components".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence source label for the composed NT-derived sizing component packet before submit admission adds Bolt reservation state."
+
+[[allowed]]
+path = "src/bolt_v3_sizing_state.rs"
+kind = "number"
+literal = '''1'''
+context = '''pub const VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "venue_spendability_source_schema_version"
+reason = "Schema version for persisted venue-spendability source evidence; it is an evidence contract version, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_sizing_state.rs"
+kind = "number"
+literal = '''1'''
+context = '''.take(max_bytes.saturating_add(1))'''
+classification = "venue_spendability_read_overflow_sentinel"
+reason = "Single-byte sentinel used to detect files larger than the configured maximum read size; the maximum remains caller/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_sizing_state.rs"
+kind = "number"
+literal = '''64'''
+context = '''value.len() == 64'''
+classification = "sha256_hex_length"
+reason = "Canonical SHA-256 hex digest length used while validating evidence identity, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_sizing_state.rs"
+kind = "string"
+literal = '''"bolt_v3.venue_spendability_source.v1"'''
+context = '''pub const VENUE_SPENDABILITY_SOURCE_RECORD_KIND: &str = "bolt_v3.venue_spendability_source.v1";'''
+classification = "venue_spendability_source_record_kind"
+reason = "Stable record-kind tag for persisted venue-spendability source evidence; it is a schema discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_sizing_state.rs"
+kind = "string"
+literal = '''"account_id"'''
+context = '''require_identity("account_id", &source.account_id, expected.account_id)?;'''
+classification = "venue_spendability_validation_field_name"
+reason = "Field label used when validating a spendability source account identity against expected config; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_sizing_state.rs"
+kind = "string"
+literal = '''"account_id"'''
+context = '''require_non_empty("account_id", &source.account_id)?;'''
+classification = "venue_spendability_validation_field_name"
+reason = "Field label used when validating a spendability source account field; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_sizing_state.rs"
+kind = "string"
+literal = '''"collateral_allowance"'''
+context = '''parse_non_negative_decimal("collateral_allowance", &source.collateral_allowance)?;'''
+classification = "venue_spendability_validation_field_name"
+reason = "Field label used when validating a spendability collateral allowance; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_sizing_state.rs"
+kind = "string"
+literal = '''"collateral_currency"'''
+context = '''"collateral_currency",'''
+classification = "venue_spendability_validation_field_name"
+reason = "Field label used when validating spendability collateral currency identity; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_sizing_state.rs"
+kind = "string"
+literal = '''"collateral_currency"'''
+context = '''require_non_empty("collateral_currency", &source.collateral_currency)?;'''
+classification = "venue_spendability_validation_field_name"
+reason = "Field label used when validating a spendability collateral-currency field; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_sizing_state.rs"
+kind = "string"
+literal = '''"source"'''
+context = '''require_non_empty("source", &source.source)?;'''
+classification = "venue_spendability_validation_field_name"
+reason = "Field label used when validating a spendability evidence source; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_sizing_state.rs"
+kind = "string"
+literal = '''"spendable_collateral"'''
+context = '''parse_non_negative_decimal("spendable_collateral", &source.spendable_collateral)?;'''
+classification = "venue_spendability_validation_field_name"
+reason = "Field label used when validating spendable collateral evidence; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_sizing_state.rs"
+kind = "string"
+literal = '''"venue_id"'''
+context = '''require_identity("venue_id", &source.venue_id, expected.venue_id)?;'''
+classification = "venue_spendability_validation_field_name"
+reason = "Field label used when validating a spendability source venue identity against expected config; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_sizing_state.rs"
+kind = "string"
+literal = '''"venue_id"'''
+context = '''require_non_empty("venue_id", &source.venue_id)?;'''
+classification = "venue_spendability_validation_field_name"
+reason = "Field label used when validating a spendability source venue field; it is schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''0'''
+context = '''next_sequence: 0,'''
+classification = "position_sizer_reservation_sequence_identity"
+reason = "Initial value for the in-memory submit-reservation sequence; it is a counter identity, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''0'''
+context = '''&& components.order_lifecycle.open_order_count > 0'''
+classification = "position_sizer_non_empty_order_lifecycle_guard"
+reason = "Non-empty live-order count used to revoke reservation-ledger reconciliation when runtime components report unattributed open orders; it is an internal identity, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''0'''
+context = '''&& components.order_lifecycle.open_order_count == 0'''
+classification = "position_sizer_empty_order_lifecycle_guard"
+reason = "Empty live-order count used to reconcile an empty startup reservation ledger only after runtime components confirm there are no live orders; it is an internal identity, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''position_sizer.next_sequence += 1;'''
+classification = "position_sizer_reservation_sequence_increment"
+reason = "Single-reservation counter increment used to produce unique reservation ids under the configured pool."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''0'''
+context = '''rebuilt_reservation_count: 0,'''
+classification = "position_sizer_rebuild_counter_identity"
+reason = "Initial rebuilt-reservation count for a startup reconciliation audit; it is a counter identity, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''0'''
+context = '''attempted_reservation_count: 0,'''
+classification = "position_sizer_rebuild_counter_identity"
+reason = "Initial attempted-reservation count for a startup reconciliation audit; it is a counter identity, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''attempted_reservation_count: index + 1,'''
+classification = "position_sizer_rebuild_counter_increment"
+reason = "Single-item increment used while reporting attempted reservation rebuild progress; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''let Some(next_observed_at_ns) = metadata.last_lifecycle_observed_at_ns.checked_add(1)'''
+classification = "position_sizer_fill_lifecycle_sequence_increment"
+reason = "One-nanosecond internal sequence advance used to order same-timestamp fill lifecycle observations deterministically."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''","'''
+context = '''.join(",");'''
+classification = "loss_governor_diagnostic_separator"
+reason = "Separator used to join loss-governor reason codes into an error diagnostic; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt-v3 submit admission loss governor halted: {reasons}"'''
+context = '''"bolt-v3 submit admission loss governor halted: {reasons}"'''
+classification = "loss_governor_diagnostic_message"
+reason = "Diagnostic message template for a fail-closed loss-governor halt; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"nt_order_fill_clamped"'''
+context = '''"nt_order_fill_clamped".to_string()'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence label for authoritative NT fill evidence clamped to the original reservation quantity."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt_known_reservation_metadata"'''
+context = '''evidence_label: "bolt_known_reservation_metadata".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence label for startup-recovered reservations attributed through Bolt-owned durable metadata."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt_recovered_open_order_reservations"'''
+context = '''evidence_label: "bolt_recovered_open_order_reservations".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence label for reservations rebuilt from attributed NT open orders during startup reconciliation."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt_reservation_ledger"'''
+context = '''"bolt_reservation_ledger".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence label for the Bolt-owned reservation ledger snapshot composed into position-sizer state."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt_reservation_ledger"'''
+context = '''source: "bolt_reservation_ledger".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence source label for the Bolt-owned reservation ledger snapshot."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"prediction_market_binary"'''
+context = '''BoltV3CompiledProductKind::PredictionMarketBinary => "prediction_market_binary",'''
+classification = "position_sizer_product_kind_tag"
+reason = "Schema tag used when serializing compiled binary prediction-market product metadata into reservation evidence."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"prediction_market_binary"'''
+context = '''ProductKind::PredictionMarketBinary => "prediction_market_binary",'''
+classification = "position_sizer_product_kind_tag"
+reason = "Schema tag used when serializing configured binary prediction-market product metadata into reservation evidence."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"buy"'''
+context = '''BoltV3CompiledOrderSide::Buy => "buy",'''
+classification = "position_sizer_order_side_tag"
+reason = "Schema tag used when serializing compiled buy side into reservation metadata."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"sell"'''
+context = '''BoltV3CompiledOrderSide::Sell => "sell",'''
+classification = "position_sizer_order_side_tag"
+reason = "Schema tag used when serializing compiled sell side into reservation metadata."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"submit_admission"'''
+context = '''source: "submit_admission".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence source label for durable reservation metadata written by submit admission."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"{}#{}"'''
+context = '''"{}#{}",'''
+classification = "position_sizer_reservation_id_template"
+reason = "Internal composite-id formatting template for client order id plus sequence; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''0usize'''
+context = '''let mut enforced_pool_count = 0usize;'''
+classification = "capital_pool_validation_counter_identity"
+reason = "Initial validation count of TOML capital pools that enabled submit-admission enforcement."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''1'''
+context = '''enforced_pool_count += 1;'''
+classification = "capital_pool_validation_counter_increment"
+reason = "Single-pool validation counter increment for TOML capital pools that enabled submit-admission enforcement."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"prediction_market_binary"'''
+context = '''if pool.product_kind != "prediction_market_binary" {'''
+classification = "capital_pool_config_enum_value"
+reason = "Supported TOML product-kind discriminator for capital-pool validation; the pool assignment remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"prediction_market_binary"'''
+context = '''if pool.enforce_submit_admission && pool.product_kind == "prediction_market_binary" {'''
+classification = "capital_pool_config_enum_value"
+reason = "Supported TOML product-kind discriminator that requires binary-product metadata when submit admission is enabled."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''0'''
+context = '''observed_at_ns: 0,'''
+classification = "position_sizer_startup_snapshot_seed"
+reason = "Startup capital-pool snapshot seed before the NT runtime feed publishes an observed snapshot; admission remains fail-closed until configured runtime facts reconcile."
+
+[[allowed]]
 path = "src/bolt_v3_iv/derive.rs"
 kind = "string"
 literal = '''"s,r,b,is_call,k,t,price"'''
 context = '''Self::ImplyVolAndGreeks => "s,r,b,is_call,k,t,price",'''
 classification = "iv_helper_contract_literal"
 reason = "IV derivation validates the configured helper parameter signature against the pinned NT helper ABI; operator helper selection remains policy/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"bolt_configured_binary_product"'''
+context = '''source: "bolt_configured_binary_product".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "Evidence source label for configured binary product metadata used to seed the runtime feed before NT-derived state arrives."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"position sizer venue spendability source configured without runtime feed"'''
+context = '''"position sizer venue spendability source configured without runtime feed"'''
+classification = "position_sizer_source_diagnostic"
+reason = "Fail-closed diagnostic when a TOML-configured venue spendability source has no runtime feed; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''64'''
+context = '''value.len() == 64'''
+classification = "sha256_hex_length"
+reason = "Canonical SHA-256 hex digest length used while validating venue spendability source binding shape, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"

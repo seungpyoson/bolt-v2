@@ -57,6 +57,7 @@ use crate::bolt_v3_config::{
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
+use crate::bolt_v3_loss_halt_actions::LossGovernorTradingStateAction;
 use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionMode;
 
@@ -1298,6 +1299,15 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                 if !configured {
                     errors.push(format!("{label} must be configured when enabled"));
                 }
+            }
+            if matches!(
+                loss_governor.on_untrusted_snapshot_trading_state,
+                Some(LossGovernorTradingStateAction::None)
+            ) {
+                errors.push(
+                    "risk.loss_governor.on_untrusted_snapshot_trading_state must be reducing or halted when enabled"
+                        .to_string(),
+                );
             }
             if loss_governor
                 .manual_recovery_evidence_max_path_bytes

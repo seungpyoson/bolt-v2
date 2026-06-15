@@ -5864,6 +5864,27 @@ fn rejects_enabled_loss_governor_zero_active_position_pnl_cap() {
 }
 
 #[test]
+fn rejects_enabled_loss_governor_untrusted_snapshot_noop_action() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "on_untrusted_snapshot_trading_state = \"reducing\"",
+        "on_untrusted_snapshot_trading_state = \"none\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("untrusted snapshot noop action fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.loss_governor.on_untrusted_snapshot_trading_state")
+                && message.contains("reducing or halted")
+        }),
+        "enabled loss governor should reject no-op untrusted snapshot action: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_enabled_loss_governor_missing_threshold_fields() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

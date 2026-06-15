@@ -294,8 +294,10 @@ mod tests {
     // split-test inventory and shared execution-policy source-set boundary.
     // Re-derived after the shared execution policy made its raw NT mutation
     // sink private and moved the live/shadow sink tests into the gated module.
+    // Re-derived after reference-price fixture tests split Chainlink strike
+    // secrets from Chainlink reference-price secrets.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "0f8a86315a8f5998dc3cc9b40773278c0720c9e112d60a6978606f4533459dbe";
+        "04ccf8f15108502ab8c8b39bf4a2326760a18f4e04e93ca958ed7fed0bad03d1";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

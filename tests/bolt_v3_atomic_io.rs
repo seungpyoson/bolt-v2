@@ -23,6 +23,18 @@ fn atomic_write_creates_parent_writes_exact_bytes_and_renames_temp() {
     assert!(!temp_path.exists(), "temp file should be renamed away");
 }
 
+#[test]
+fn atomic_temp_path_never_collides_with_tmp_suffixed_target() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("state.tmp");
+
+    assert_ne!(
+        private_atomic_temp_path(&path),
+        path,
+        "atomic temp path must not degrade to in-place writes for .tmp targets"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn atomic_write_uses_private_file_mode() {

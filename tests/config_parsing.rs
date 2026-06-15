@@ -5803,6 +5803,16 @@ fn outcome_group_root_validation_fails_closed_on_source_shape_errors() {
         "client_id = \"polymarket_main\"",
         "client_id = \"unknown_client\"",
     );
+    let missing_freshness_max_age =
+        valid_polymarket_event_source_toml().replace("max_age_ms = 500\n", "");
+    let missing_freshness_max_clock_skew =
+        valid_polymarket_event_source_toml().replace("max_clock_skew_ms = 250\n", "");
+    let excessive_freshness_clock_skew = valid_polymarket_event_source_toml()
+        .replace("max_clock_skew_ms = 250", "max_clock_skew_ms = 501");
+    let parent_dir_state_path = outcome_group_basket_execution_toml().replace(
+        "state_path = \"bolt-v3/baskets/state.json\"",
+        "state_path = \"../state.json\"",
+    );
 
     for (case, source, expected) in [
         (
@@ -5865,6 +5875,21 @@ fn outcome_group_root_validation_fails_closed_on_source_shape_errors() {
             unknown_client.as_str(),
             "outcome_group_sources.poly_world_cup.client_id `unknown_client` does not match any [clients.<id>] block",
         ),
+        (
+            "missing freshness max age",
+            missing_freshness_max_age.as_str(),
+            "outcome_group_sources.poly_world_cup.freshness.max_age_ms is required",
+        ),
+        (
+            "missing freshness max clock skew",
+            missing_freshness_max_clock_skew.as_str(),
+            "outcome_group_sources.poly_world_cup.freshness.max_clock_skew_ms is required",
+        ),
+        (
+            "freshness clock skew exceeds max age",
+            excessive_freshness_clock_skew.as_str(),
+            "outcome_group_sources.poly_world_cup.freshness.max_clock_skew_ms must be less than or equal to outcome_group_sources.poly_world_cup.freshness.max_age_ms",
+        ),
     ] {
         let messages = outcome_group_root_validation_messages(source);
         assert!(
@@ -5872,6 +5897,20 @@ fn outcome_group_root_validation_fails_closed_on_source_shape_errors() {
             "{case} should contain `{expected}`, got: {messages:#?}"
         );
     }
+
+    let root_toml = outcome_group_root_toml(&valid_polymarket_event_source_toml(), true).replace(
+        &outcome_group_basket_execution_toml(),
+        &parent_dir_state_path,
+    );
+    let root: bolt_v2::bolt_v3_config::BoltV3RootConfig =
+        toml::from_str(&root_toml).expect("root with parent-dir basket path should parse");
+    let messages = bolt_v2::bolt_v3_validate::validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| message.contains(
+            "risk.basket_execution.state_path must be a non-empty relative path under the configured root"
+        )),
+        "parent-dir basket state path should reject, got: {messages:#?}"
+    );
 }
 
 #[test]

@@ -646,6 +646,22 @@ fn invalid_payout_price_scale_order_constraints_and_assets_reject() {
             .is_err_and(|err| err.is_invalid_price_scale())
     );
 
+    let mut non_unit_price_scale = valid_group();
+    if let Some(leg) = non_unit_price_scale.tradable_legs.get_mut("home-leg") {
+        leg.price_scale = NormalizedPriceScaleEvidence::BinaryOnePayoutEqualsOneSettlementUnit {
+            settlement_asset_id: "USDC".to_string(),
+            payout_per_contract: dec(2),
+            price_units_per_payout: dec(1),
+            assertion_source: PriceScaleAssertionSource::OperatorAttested {
+                attestation_sha256: hash('a'),
+            },
+        };
+    }
+    assert!(
+        ValidatedOutcomeGroup::validate(&non_unit_price_scale)
+            .is_err_and(|err| err.is_invalid_price_scale())
+    );
+
     let mut constraints = valid_group();
     constraints
         .tradable_legs

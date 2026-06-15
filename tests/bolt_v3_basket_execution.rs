@@ -460,6 +460,15 @@ fn polymarket_live_settlement_rejects_until_reachable_signal_and_hip4_synthetic_
         hip4.fill_sources(),
         vec![BoltV3BasketFillSource::Hip4SyntheticSettlement]
     );
+    let persisted = serde_json::to_value(&hip4).expect("basket should serialize");
+    assert_eq!(
+        persisted["legs"][0]["filled_quantity"], "0",
+        "synthetic settlement must not contaminate strategy fill quantity"
+    );
+    assert_eq!(
+        persisted["legs"][0]["filled_cost"], "0",
+        "synthetic settlement must not contaminate strategy fill cost"
+    );
 }
 
 #[test]
@@ -482,6 +491,73 @@ fn cancel_rejection_retry_exhaustion_and_stuck_hold_reservation() {
         .expect("retry exhaustion should be classified");
     assert_eq!(retries.status(), BoltV3BasketExecutionStatus::Stuck);
     assert!(retries.reservation_held());
+}
+
+#[test]
+fn strategy_fill_after_stuck_does_not_clear_unresolved_exposure_or_release_reservation() {
+    let mut basket = reserved_basket();
+    basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-STUCK",
+            leg_intents(),
+        )
+        .expect("same venue command should build");
+    basket
+        .apply_event(BoltV3BasketExecutionEvent::CancelRejected {
+            reason: "venue rejected cancel".to_string(),
+        })
+        .expect("cancel rejection should latch stuck exposure");
+
+    for (client_order_id, venue_order_id, cost) in [
+        ("COID-YES", "VOID-YES", dec("0.44")),
+        ("COID-NO", "VOID-NO", dec("0.46")),
+    ] {
+        basket
+            .apply_event(BoltV3BasketExecutionEvent::LegFill {
+                client_order_id: client_order_id.to_string(),
+                venue_order_id: Some(venue_order_id.to_string()),
+                quantity: dec("1.0"),
+                cost,
+                source: BoltV3BasketFillSource::Strategy,
+            })
+            .expect("late strategy fill should record without un-sticking");
+    }
+
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Stuck);
+    assert!(basket.reservation_held());
+    assert!(basket.unresolved_real_exposure());
+    assert_eq!(
+        basket
+            .apply_event(BoltV3BasketExecutionEvent::TerminalClose)
+            .expect_err("terminal close must not release unresolved stuck exposure"),
+        BoltV3BasketExecutionError::UnresolvedExposure
+    );
+}
+
+#[test]
+fn overfilled_basket_fails_closed_instead_of_marking_complete() {
+    let mut basket = reserved_basket();
+    basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-OVERFILL",
+            leg_intents(),
+        )
+        .expect("same venue command should build");
+    basket
+        .apply_event(BoltV3BasketExecutionEvent::LegFill {
+            client_order_id: "COID-YES".to_string(),
+            venue_order_id: Some("VOID-YES".to_string()),
+            quantity: dec("1.1"),
+            cost: dec("0.48"),
+            source: BoltV3BasketFillSource::Strategy,
+        })
+        .expect("overfill should record");
+
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Stuck);
+    assert!(basket.reservation_held());
+    assert!(basket.unresolved_real_exposure());
 }
 
 #[test]

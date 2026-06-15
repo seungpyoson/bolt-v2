@@ -106,6 +106,39 @@ fn basket_admission_reserves_whole_basket_records_keyed_evidence_and_releases_ex
 }
 
 #[test]
+fn stuck_reason_cannot_release_basket_exposure_reservation() {
+    let writer = Arc::new(RecordingBasketDecisionWriter::default());
+    let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
+    let submit_state = submit_state(writer, 4, dec!(10));
+    let group = fixture_group();
+    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1111.111111), 1_000);
+    let claims = entry_claims(&group, dec!(0.9));
+
+    basket_state
+        .admit(
+            &basket_request("basket-1", &group, &scan, claims.clone()),
+            &submit_state,
+        )
+        .expect("basket should admit");
+
+    assert!(
+        basket_state
+            .release_basket("basket-1", BoltV3BasketAdmissionReleaseReason::Stuck)
+            .is_err(),
+        "stuck exposure must stay reserved"
+    );
+    assert_eq!(
+        basket_state
+            .admit(
+                &basket_request("basket-2", &group, &scan, claims),
+                &submit_state,
+            )
+            .expect_err("stuck exposure should still count against open basket cap"),
+        BoltV3BasketAdmissionError::MaxOpenBasketCapExceeded
+    );
+}
+
+#[test]
 fn basket_admission_rejects_stale_or_non_admissible_scanner_and_group_evidence() {
     let group = fixture_group();
     let scan = scan_evidence(&group, dec!(11), dec!(1), dec!(1000), 1_000);

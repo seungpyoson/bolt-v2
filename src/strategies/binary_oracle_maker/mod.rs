@@ -139,6 +139,7 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bolt_v3_maker_mu_estimator::MuHealthReason;
     use crate::bolt_v3_numeric::NANOS_PER_MILLI_U64;
     use nautilus_core::UnixNanos;
     use nautilus_model::{
@@ -195,16 +196,18 @@ mod tests {
 
     #[test]
     fn build_mu_state_projects_warmup_and_stale_knobs() {
-        // Pins the warmup (`mu_min_classified_samples`) and stale-window mappings:
-        // a one-sided buy flow of exactly the warmup count warms μ to 1.0 and
-        // passes the gate. A mismapped warmup flips μ to None; a mismapped stale
-        // window flips health to Stale. `window_secs`/`max_samples` are non-binding
-        // in this scenario — they are pinned by the two tests below.
+        // Pins the warmup (`mu_min_classified_samples`) and stale-window mappings
+        // through the public gate read: a one-sided buy flow of exactly the warmup
+        // count (newest ~46s before `now`) warms μ to 1.0 and clears the gate, so
+        // `usable_mu_for` is `Ok(1.0)`. A mismapped warmup would starve μ to
+        // `Err(Absent)`; a stale window mismapped below ~46s would flip it to
+        // `Err(Stale)`. `window_secs`/`max_samples` are non-binding here — they are
+        // pinned by the two tests below. The Stale and BelowFloor branches
+        // themselves are exercised directly in `mu`'s own tests.
         let mut state = build_mu_state(&maker_config(600, 1000, 4));
         let instrument = InstrumentId::from("MAKER.SIM");
         observe_sides(&mut state, instrument, &[AggressorSide::Buyer; 4]);
-        assert_eq!(state.mu_for(&instrument, QUERY_NOW_MS), Some(1.0));
-        assert_eq!(state.health_for(&instrument, QUERY_NOW_MS), None);
+        assert_eq!(state.usable_mu_for(&instrument, QUERY_NOW_MS), Ok(1.0));
     }
 
     #[test]
@@ -212,12 +215,16 @@ mod tests {
         // Pins `window_secs`: a 5s retention window ages out trades observed ~46s
         // ago, so `samples_within` is empty and μ is None. Were `build_mu_state`
         // to read the window from `trade_flow_max_samples` (a field swap), the
-        // window would be 1000s, the trades would be retained, and μ would be
-        // Some(1.0) — flipping this assertion.
+        // window would be 1000s, the trades would be retained, and the gate would
+        // return `Ok(1.0)` — flipping this assertion. An empty in-window view makes
+        // both μ and the staleness anchor absent, so the gate fails closed Absent.
         let mut state = build_mu_state(&maker_config(5, 1000, 1));
         let instrument = InstrumentId::from("MAKER.SIM");
         observe_sides(&mut state, instrument, &[AggressorSide::Buyer; 4]);
-        assert_eq!(state.mu_for(&instrument, QUERY_NOW_MS), None);
+        assert_eq!(
+            state.usable_mu_for(&instrument, QUERY_NOW_MS),
+            Err(MuHealthReason::Absent)
+        );
     }
 
     #[test]
@@ -225,9 +232,9 @@ mod tests {
         // Pins `max_samples`: a cap of 2 retains only the last two (buy) trades of
         // a sell,sell,buy,buy flow, so μ = 1.0. Were `build_mu_state` to read the
         // cap from `trade_flow_window_secs` (a field swap → cap 600), the buffer
-        // would keep all four trades, balancing to μ = 0.0 — flipping this
-        // assertion. The wide 600s window keeps all four in-window so only the
-        // cap, not staleness, is exercised.
+        // would keep all four trades, balancing to μ = 0.0 and the gate to
+        // `Err(BelowFloor)` — flipping this assertion. The wide 600s window keeps
+        // all retained trades in-window so only the cap, not staleness, is exercised.
         let mut state = build_mu_state(&maker_config(600, 2, 2));
         let instrument = InstrumentId::from("MAKER.SIM");
         observe_sides(
@@ -240,6 +247,43 @@ mod tests {
                 AggressorSide::Buyer,
             ],
         );
-        assert_eq!(state.mu_for(&instrument, QUERY_NOW_MS), Some(1.0));
+        assert_eq!(state.usable_mu_for(&instrument, QUERY_NOW_MS), Ok(1.0));
+    }
+
+    #[test]
+    fn on_trade_feeds_the_mu_buffer() {
+        // Differential guard for the real `DataActor::on_trade` handler (not just
+        // `MakerMuState::observe`): a no-op `on_trade` would leave the buffer empty
+        // and the gate `Err(Absent)`, so the post-flow `Ok(1.0)` assertion fails on
+        // that buggy variant. Asserts through the μ side-effect channel the handler
+        // is supposed to drive.
+        let mut maker = BinaryOracleMaker::new(maker_config(600, 1000, 4));
+        let instrument = InstrumentId::from("MAKER.SIM");
+        assert_eq!(
+            maker.mu.usable_mu_for(&instrument, QUERY_NOW_MS),
+            Err(MuHealthReason::Absent),
+            "no trade observed yet must fail closed"
+        );
+        for index in 0..4u64 {
+            let ts_ns = (1_000 + index * 1_000) * NANOS_PER_MILLI_U64;
+            let tick = TradeTick::new_checked(
+                instrument,
+                Price::new(0.5, 2),
+                Quantity::new(1.0, 0),
+                AggressorSide::Buyer,
+                TradeId::from(format!("T{ts_ns}").as_str()),
+                UnixNanos::from(ts_ns),
+                UnixNanos::from(ts_ns),
+            )
+            .expect("valid trade tick");
+            maker
+                .on_trade(&tick)
+                .expect("maker on_trade should process");
+        }
+        assert_eq!(
+            maker.mu.usable_mu_for(&instrument, QUERY_NOW_MS),
+            Ok(1.0),
+            "on_trade must route each tick into the per-instrument μ buffer"
+        );
     }
 }

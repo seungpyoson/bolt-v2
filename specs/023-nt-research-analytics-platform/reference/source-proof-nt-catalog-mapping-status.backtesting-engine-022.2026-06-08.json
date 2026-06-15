@@ -367,11 +367,14 @@
       "GREEN-GATED venue-scale conversion acceptance validation now receives source_proof_count and source_accepted_proof_count and rejects SourceOnly when source_proof_count > 0 and source_accepted_proof_count == 0.",
       "REGRESSION crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_venue_scale_conversion_acceptance.rs source_proof_set_rejects_accepted_count_above_total_count documents that source proof sets with accepted_proof_count > proof_count must fail before status accounting.",
       "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml explicitly lists missing_accepted_source_proof on pmxt-polymarket-full-current-data while source_accepted_proof_count remains 0.",
-      "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml keeps pmxt-polymarket-full-current-data blocked with source_accepted_proof_count=0 evidence preserved on the universe record."
+      "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml keeps pmxt-polymarket-full-current-data blocked while repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json pins source_accepted_proof_count=0.",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json records the source-controlled PMXT durable-source guard: one pending proof in the committed TOML spec, zero accepted proofs, generated bulk JSON evicted by policy, and source-fence static coverage via scripts/verify_bte_022_pmxt_durable_source.py.",
+      "STATIC-GATED scripts/verify_bte_022_pmxt_durable_source.py rejects drift from pending/one_off_backfill_data PMXT source proof state, missing pmxt-polymarket-full-current-data blocking issues, BTE-022 close claims, and source-fence wiring gaps."
     ],
     "claim_limits": [
       "This proves a venue-scale source-only status cannot be backed by an explicitly unaccepted source proof set.",
       "This proves source proof set summary counts fail closed when accepted_proof_count exceeds proof_count.",
+      "This proves the PMXT durable-source state has a compact source-fenced guard even though generated PMXT bulk JSON artifacts remain evicted.",
       "This does not accept any PMXT source proof.",
       "This does not prove expanded PMXT coverage, cost, object gates, conversion run plans, or dynamic tick-size replay.",
       "This does not authorize broad PMXT backfill."
@@ -431,7 +434,7 @@
     },
     {
       "blocker": "durable_source_selection_unproven",
-      "required_evidence": "A source-proof acceptance record for any durable Polymarket source. Venue-scale acceptance now rejects source-only status when an explicit source proof set has zero accepted proofs, and the PMXT full-current universe now lists missing_accepted_source_proof while source_accepted_proof_count remains 0; the bounded PMXT sample remains one-off evidence only."
+      "required_evidence": "A source-proof acceptance record for any durable Polymarket source. Venue-scale acceptance rejects source-only status when an explicit source proof set has zero accepted proofs; repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json now source-fences the current PMXT full-current state as one pending proof, zero accepted proofs, generated bulk JSON evicted by policy, and missing_accepted_source_proof still blocking. The bounded PMXT sample remains one-off evidence only."
     },
     {
       "blocker": "broad_backfill_efficiency_unproven",

@@ -144,6 +144,10 @@ verify-023-status-legend-registry: check-workspace
     python3 scripts/test_verify_023_status_legend_registry.py
     python3 scripts/verify_023_status_legend_registry.py
 
+verify-bte-022-pmxt-durable-source: check-workspace
+    python3 scripts/test_verify_bte_022_pmxt_durable_source.py
+    python3 scripts/verify_bte_022_pmxt_durable_source.py
+
 verify-bolt-v3-legacy-default-fence: check-workspace
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
     python3 scripts/verify_bolt_v3_legacy_default_fence.py
@@ -292,6 +296,8 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_ra_bi_surface_and_feature_joins.py
     python3 scripts/test_verify_023_status_legend_registry.py
     python3 scripts/verify_023_status_legend_registry.py
+    python3 scripts/test_verify_bte_022_pmxt_durable_source.py
+    python3 scripts/verify_bte_022_pmxt_durable_source.py
     python3 scripts/test_verify_dashboard_customer_jobs.py
     python3 scripts/verify_dashboard_customer_jobs.py
     python3 scripts/test_verify_dashboard_field_source_matrix.py

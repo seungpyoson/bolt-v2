@@ -9,6 +9,14 @@ use backtesting_vertical_slice::source_universe_conversion_run_plan::{
     write_source_universe_conversion_run_plan_from_spec_file,
 };
 
+fn repo_relative_path(components: &[&str]) -> PathBuf {
+    let mut path = PathBuf::new();
+    for component in components {
+        path.push(component);
+    }
+    path
+}
+
 #[test]
 fn source_universe_conversion_run_plan_covers_every_bybit_object_gate() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -53,9 +61,15 @@ max_source_bytes_per_run = 2000000000
         plan.gate_id,
         "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
     );
-    let expected_object_gates_path = Path::new(
-        "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json",
-    );
+    let expected_object_gates_path = repo_relative_path(&[
+        "specs",
+        "023-nt-research-analytics-platform",
+        "reference",
+        "source-universe-object-gates",
+        "bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+        "gates",
+        "source-universe-object-gates.json",
+    ]);
     assert_eq!(plan.object_gates_path, expected_object_gates_path);
     assert!(
         plan.object_gates_path.is_relative(),
@@ -116,9 +130,12 @@ fn committed_source_universe_conversion_run_plans_record_portable_object_gate_pa
         .join("../..")
         .canonicalize()
         .expect("repo root exists");
-    let expected_object_gates_prefix = Path::new(
-        "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates",
-    );
+    let expected_object_gates_prefix = repo_relative_path(&[
+        "specs",
+        "023-nt-research-analytics-platform",
+        "reference",
+        "source-universe-object-gates",
+    ]);
     let mut checked = 0;
 
     for plan_path in source_universe_conversion_run_plan_json_paths(&repo_root) {

@@ -1328,9 +1328,23 @@ mod tests {
         assert_eq!(targets.leg_b.side, QuoteSide::Buy);
         assert!(targets.leg_a.price < 0.60);
         assert!(targets.leg_b.price < 0.40);
-        // The sizing seam carries a positive, symmetric per-leg notional sized off
-        // the protective half-spread (the band's positive edge survives routing).
-        assert!(targets.leg_a.size_notional > 0.0);
+        // Pin the routed VALUE, not just its sign. The size must be the
+        // half-spread-scaled target (5.0 * band.half_spread() ~= $0.2401 for this
+        // fixture: reference max_half_spread 1.0 makes edge_scale == half_spread,
+        // well below the $5 cap), NOT the raw cap. This is the ONLY test that
+        // exercises the live updown call site, so it must catch both an
+        // edge-ignoring constant-cap sizer ($5.0) and a call-site edge/reference
+        // arg transpose (also $5.0); the primitive's own unit tests call it with a
+        // fixed arg order and structurally cannot detect a transposed call.
+        let expected_size = 5.0
+            * crate::bolt_v3_maker_model::gm_binary_quote(0.60, 0.10)
+                .expect("interior band")
+                .half_spread();
+        assert!((targets.leg_a.size_notional - expected_size).abs() < 1e-12);
+        assert!(
+            targets.leg_a.size_notional < 1.0,
+            "must be the edge-scaled size, not the $5 cap"
+        );
         assert_eq!(targets.leg_a.size_notional, targets.leg_b.size_notional);
     }
 

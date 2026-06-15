@@ -342,9 +342,13 @@ mod tests {
 
     #[test]
     fn maker_robust_size_requires_a_strictly_positive_protective_edge() {
-        // No-edge gate. A sign-flipped or edge-ignoring variant that returned the
-        // cap regardless of `half_spread` would size POSITIVE here and fail; only a
-        // primitive that genuinely gates on a strictly positive, finite edge passes.
+        // No-edge gate. The non-finite rows (NaN, +inf) are the load-bearing ones:
+        // with the `is_positive_finite(half_spread)` gate removed, clamp_probability
+        // passes NaN through (5.0 * NaN -> .min(cap) selects the cap) and maps +inf
+        // to a full-scale 1.0 (-> cap), so those two rows alone catch a dropped gate.
+        // The 0.0/-0.01/-inf rows are independently floored to zero by
+        // clamp_probability(half_spread / reference) and pass with or without the
+        // gate; they are kept as ordinary boundary coverage, not as gate proof.
         for half_spread in [0.0, -0.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert_eq!(
                 maker_robust_size(half_spread, 0.10, 5.0, 10.0),

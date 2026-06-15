@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import pathlib
 import sys
 import tempfile
@@ -44,15 +46,17 @@ class FakeClient:
         return "cancelled"
 
 
-def config(module):
-    return module.DispatchCancelConfig(
-        workflow_name="CI",
-        workflow_path=".github/workflows/ci.yml",
-        workflow_event="workflow_dispatch",
-        active_statuses=frozenset({"queued", "requested", "waiting", "pending", "in_progress"}),
-        workflow_runs_per_page=100,
-        max_pages=2,
-    )
+def config(module, **overrides):
+    values = {
+        "workflow_name": "CI",
+        "workflow_path": ".github/workflows/ci.yml",
+        "workflow_event": "workflow_dispatch",
+        "active_statuses": frozenset({"queued", "requested", "waiting", "pending", "in_progress"}),
+        "workflow_runs_per_page": 100,
+        "max_pages": 2,
+    }
+    values.update(overrides)
+    return module.DispatchCancelConfig(**values)
 
 
 def run_payload(run_id, **overrides):
@@ -96,6 +100,7 @@ def assert_cancels_only_older_active_same_branch_dispatch_runs() -> None:
                     path=".github/workflows/backtester-ci.yml",
                     created_at="2026-06-15T07:59:00Z",
                 ),
+                run_payload(106, path="", created_at="2026-06-15T07:59:00Z"),
                 run_payload(201, created_at="2026-06-15T08:21:00Z"),
                 run_payload(200, created_at="2026-06-15T08:20:42Z"),
             ]
@@ -116,6 +121,23 @@ def assert_cancels_only_older_active_same_branch_dispatch_runs() -> None:
     )
 
 
+def assert_cancels_same_second_lower_id_dispatch_runs() -> None:
+    module = load_script()
+    fake = FakeClient(
+        [
+            [
+                run_payload(199, created_at="2026-06-15T08:20:42Z"),
+                run_payload(200, created_at="2026-06-15T08:20:42Z"),
+                run_payload(201, created_at="2026-06-15T08:20:42Z"),
+            ]
+        ]
+    )
+    summary = module.handle_payload(event_payload(), config=config(module), client=fake, dry_run=False)
+    assert summary["obsolete_run_ids"] == [199], summary
+    assert summary["cancelled_run_ids"] == [199], summary
+    assert fake.cancelled == [199], fake.cancelled
+
+
 def assert_ignores_non_dispatch_and_branchless_runs() -> None:
     module = load_script()
     fake = FakeClient([[run_payload(100)]])
@@ -129,6 +151,12 @@ def assert_ignores_non_dispatch_and_branchless_runs() -> None:
         event_payload(head_branch=""), config=config(module), client=fake, dry_run=False
     )
     assert branchless == {"ignored": True, "reason": "workflow run has no branch"}, branchless
+    assert fake.calls == [], fake.calls
+
+    missing_path = module.handle_payload(
+        event_payload(path=""), config=config(module), client=fake, dry_run=False
+    )
+    assert missing_path == {"ignored": True, "reason": "not configured workflow path"}, missing_path
     assert fake.calls == [], fake.calls
 
 
@@ -147,6 +175,58 @@ def assert_cancel_conflict_is_recorded_not_failed() -> None:
     summary = module.handle_payload(event_payload(), config=config(module), client=fake, dry_run=False)
     assert summary["cancelled_run_ids"] == [], summary
     assert summary["conflict_run_ids"] == [100], summary
+
+
+def assert_terminal_cancel_http_errors_are_conflicts() -> None:
+    module = load_script()
+    for code in (409, 404, 422):
+        client = module.GitHubClient(repo="example/repo", token="token")
+
+        def raise_terminal(_method, _path, *, params):
+            raise module.GitHubApiError(method="POST", path="actions/runs/100/cancel", code=code, body="")
+
+        client._request_json = raise_terminal
+        assert client.cancel_run(100) == "conflict"
+
+
+def assert_paginates_until_partial_page() -> None:
+    module = load_script()
+    fake = FakeClient(
+        [
+            [run_payload(100), run_payload(101)],
+            [run_payload(102)],
+            [run_payload(103)],
+        ]
+    )
+    summary = module.handle_payload(
+        event_payload(),
+        config=config(module, workflow_runs_per_page=2, max_pages=3),
+        client=fake,
+        dry_run=False,
+    )
+    assert summary["obsolete_run_ids"] == [100, 101, 102], summary
+    assert [call[1]["page"] for call in fake.calls] == ["1", "2"], fake.calls
+
+
+def assert_warns_when_pagination_cap_is_full() -> None:
+    module = load_script()
+    fake = FakeClient(
+        [
+            [run_payload(100), run_payload(101)],
+            [run_payload(102), run_payload(103)],
+        ]
+    )
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        summary = module.handle_payload(
+            event_payload(),
+            config=config(module, workflow_runs_per_page=2, max_pages=2),
+            client=fake,
+            dry_run=False,
+        )
+    assert summary["obsolete_run_ids"] == [100, 101, 102, 103], summary
+    assert "max_pages=2" in stderr.getvalue(), stderr.getvalue()
+    assert [call[1]["page"] for call in fake.calls] == ["1", "2"], fake.calls
 
 
 def assert_config_comes_from_toml() -> None:
@@ -228,14 +308,32 @@ def assert_invalid_json_is_domain_error() -> None:
         module.urllib.request.urlopen = original_urlopen
 
 
+def assert_invalid_event_file_json_is_domain_error() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        event_path = pathlib.Path(tmpdir) / "event.json"
+        event_path.write_text("{not-json", encoding="utf-8")
+        try:
+            module.main(["--event-path", str(event_path), "--repo", "example/repo", "--dry-run"])
+        except module.DispatchCancelError as exc:
+            assert "event payload is invalid JSON" in str(exc), exc
+        else:
+            raise AssertionError("expected DispatchCancelError")
+
+
 def main() -> int:
     assert_cancels_only_older_active_same_branch_dispatch_runs()
+    assert_cancels_same_second_lower_id_dispatch_runs()
     assert_ignores_non_dispatch_and_branchless_runs()
     assert_dry_run_reports_without_cancelling()
     assert_cancel_conflict_is_recorded_not_failed()
+    assert_terminal_cancel_http_errors_are_conflicts()
+    assert_paginates_until_partial_page()
+    assert_warns_when_pagination_cap_is_full()
     assert_config_comes_from_toml()
     assert_api_transport_errors_are_domain_errors()
     assert_invalid_json_is_domain_error()
+    assert_invalid_event_file_json_is_domain_error()
     print("ok")
     return 0
 

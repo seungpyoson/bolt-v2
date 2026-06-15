@@ -1632,6 +1632,14 @@ def assert_dispatch_cancel_watchdog_gaps_are_reported() -> None:
             replace_once(workflow, "  actions: write\n", "  actions: read\n"),
         ),
         (
+            "permissions must include contents: read",
+            replace_once(workflow, "  contents: read\n", "  contents: none\n"),
+        ),
+        (
+            "must define cancel-obsolete-dispatch job",
+            replace_once(workflow, "  cancel-obsolete-dispatch:\n", "  cancel-stale-dispatch:\n"),
+        ),
+        (
             "job must filter workflow_dispatch runs",
             replace_once(
                 workflow,
@@ -1648,11 +1656,43 @@ def assert_dispatch_cancel_watchdog_gaps_are_reported() -> None:
             ),
         ),
         (
+            "job must join workflow_dispatch and CI filters with &&",
+            replace_once(
+                workflow,
+                "          && github.event.workflow_run.name == 'CI' }}\n",
+                "          || github.event.workflow_run.name == 'CI' }}\n",
+            ),
+        ),
+        (
             "job must run scripts/cancel_obsolete_dispatch_runs.py",
             replace_once(
                 workflow,
                 "python3 scripts/cancel_obsolete_dispatch_runs.py",
                 "python3 scripts/ci_provenance.py ci-policy",
+            ),
+        ),
+        (
+            "job must pass github.token",
+            replace_once(
+                workflow,
+                "          GITHUB_TOKEN: ${{ github.token }}\n",
+                "",
+            ),
+        ),
+        (
+            "job must pass github.event_path",
+            replace_once(
+                workflow,
+                "          GITHUB_EVENT_PATH: ${{ github.event_path }}\n",
+                "",
+            ),
+        ),
+        (
+            "job must pass github.repository",
+            replace_once(
+                workflow,
+                "          GITHUB_REPOSITORY: ${{ github.repository }}\n",
+                "",
             ),
         ),
     ]
@@ -5271,6 +5311,13 @@ def assert_ci_lint_runs_rust_probe_tests() -> None:
         raise AssertionError("ci-lint-workflow must run Rust Probe runner self-tests")
 
 
+def assert_ci_lint_runs_cancel_obsolete_dispatch_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_cancel_obsolete_dispatch_runs.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run dispatch cancellation self-tests")
+
+
 def assert_github_scripts_are_repo_automation_fenced() -> None:
     verifier = load_verifier()
     expected_glob = (verifier.REPO_ROOT / ".github" / "scripts", "*.sh")
@@ -5384,6 +5431,7 @@ def main() -> int:
     assert_ci_lint_runs_ci_provenance_tests()
     assert_ci_lint_runs_command_understanding_tests()
     assert_ci_lint_runs_rust_probe_tests()
+    assert_ci_lint_runs_cancel_obsolete_dispatch_tests()
     assert_github_scripts_are_repo_automation_fenced()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()

@@ -1272,6 +1272,7 @@ def job_if_value(job_lines: list[str]) -> str:
         match = re.match(r"^    if:\s*(?P<value>.*?)\s*$", clean)
         if match is not None:
             value = match.group("value")
+            child_values: list[str] = []
             for child in job_lines[index + 1 :]:
                 child_clean = strip_comment(child).rstrip()
                 if not child_clean.strip():
@@ -1279,7 +1280,9 @@ def job_if_value(job_lines: list[str]) -> str:
                 indent = len(child_clean) - len(child_clean.lstrip(" "))
                 if indent <= 4:
                     break
-                return f"{value}\n{child_clean.strip()}"
+                child_values.append(child_clean.strip())
+            if child_values:
+                return "\n".join([value, *child_values])
             return value
     return ""
 
@@ -9075,14 +9078,22 @@ def verify_dispatch_ci_cancel_workflow(workflows: dict[str, str]) -> list[str]:
         return errors
     job_if = job_if_value(job)
     job_text = "\n".join(job)
-    if f"github.event.workflow_run.event == '{workflow_event}'" not in job_if:
+    event_guard = f"github.event.workflow_run.event == '{workflow_event}'"
+    name_guard = f"github.event.workflow_run.name == '{expected_ci_name}'"
+    if event_guard not in job_if:
         errors.append(f"{workflow_name} job must filter workflow_dispatch runs")
-    if f"github.event.workflow_run.name == '{expected_ci_name}'" not in job_text:
+    if name_guard not in job_if:
         errors.append(f"{workflow_name} job must filter the configured CI workflow")
+    if re.search(rf"{re.escape(event_guard)}\s*&&\s*{re.escape(name_guard)}", job_if) is None:
+        errors.append(f"{workflow_name} job must join workflow_dispatch and CI filters with &&")
     if "python3 scripts/cancel_obsolete_dispatch_runs.py" not in job_text:
         errors.append(f"{workflow_name} job must run scripts/cancel_obsolete_dispatch_runs.py")
     if "GITHUB_TOKEN: ${{ github.token }}" not in job_text:
         errors.append(f"{workflow_name} job must pass github.token without exposing secrets")
+    if "GITHUB_EVENT_PATH: ${{ github.event_path }}" not in job_text:
+        errors.append(f"{workflow_name} job must pass github.event_path")
+    if "GITHUB_REPOSITORY: ${{ github.repository }}" not in job_text:
+        errors.append(f"{workflow_name} job must pass github.repository")
     return errors
 
 

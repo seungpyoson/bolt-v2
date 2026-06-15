@@ -72,7 +72,7 @@ class GitHubClient:
         try:
             self._request_json("POST", f"actions/runs/{run_id}/cancel", params={})
         except GitHubApiError as exc:
-            if exc.code == 409:
+            if exc.code in (409, 404, 422):
                 return "conflict"
             raise
         return "cancelled"
@@ -175,7 +175,7 @@ def parse_timestamp(value: str, field: str) -> dt.datetime:
 
 def workflow_path_matches(run: dict[str, object], config: DispatchCancelConfig) -> bool:
     path = as_text(run.get("path"))
-    return not path or path == config.workflow_path
+    return path == config.workflow_path
 
 
 def current_run_from_payload(
@@ -194,7 +194,7 @@ def current_run_from_payload(
     if not branch:
         return None, "workflow run has no branch"
     run_id = run.get("id")
-    if not isinstance(run_id, int):
+    if not isinstance(run_id, int) or isinstance(run_id, bool):
         raise DispatchCancelError("workflow_run.id must be an integer")
     created_at = parse_timestamp(as_text(run.get("created_at")), "created_at")
     return CurrentRun(run_id=run_id, branch=branch, created_at=created_at), "selected"
@@ -218,11 +218,19 @@ def candidate_runs(
         runs = payload.get("workflow_runs")
         if not isinstance(runs, list):
             raise DispatchCancelError("actions/runs response missing workflow_runs list")
+        final_page_was_full = len(runs) >= config.workflow_runs_per_page
         for run in runs:
             if isinstance(run, dict):
                 yield run
-        if len(runs) < config.workflow_runs_per_page:
+        if not final_page_was_full:
             break
+        if page == config.max_pages:
+            print(
+                "warning: dispatch cancel scan reached "
+                f"max_pages={config.max_pages} with a full final page; "
+                "older active runs may remain uncancelled",
+                file=sys.stderr,
+            )
 
 
 def obsolete_run_ids(
@@ -234,7 +242,7 @@ def obsolete_run_ids(
     obsolete: list[tuple[dt.datetime, int]] = []
     for run in runs:
         run_id = run.get("id")
-        if not isinstance(run_id, int) or run_id == current.run_id:
+        if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id == current.run_id:
             continue
         if as_text(run.get("event")) != config.workflow_event:
             continue
@@ -249,7 +257,9 @@ def obsolete_run_ids(
         if run.get("conclusion") not in (None, ""):
             continue
         created_at = parse_timestamp(as_text(run.get("created_at")), "created_at")
-        if created_at >= current.created_at:
+        if created_at > current.created_at:
+            continue
+        if created_at == current.created_at and run_id >= current.run_id:
             continue
         obsolete.append((created_at, run_id))
     obsolete.sort()
@@ -312,7 +322,10 @@ def main(argv: list[str] | None = None) -> int:
     if not token and not args.dry_run:
         raise DispatchCancelError(f"{args.token_env} is required")
     config = load_config(args.config)
-    payload = json.loads(args.event_path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(args.event_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise DispatchCancelError("event payload is invalid JSON") from exc
     if not isinstance(payload, dict):
         raise DispatchCancelError("event payload must be a JSON object")
     client = GitHubClient(repo=args.repo, token=token or "")

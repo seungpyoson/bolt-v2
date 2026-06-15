@@ -354,9 +354,8 @@ PR_CONCURRENCY_PULL_REQUEST_BRANCH_RE = re.compile(
 PR_CONCURRENCY_NON_PR_FALLBACK_RE = re.compile(
     r"\|\|\s*format\(\s*['\"]\{0\}-\{1\}['\"]\s*,\s*github\.ref_name\s*,\s*github\.sha\s*\)"
 )
-PR_CONCURRENCY_CANCEL_LINES = (
-    "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
-    'cancel-in-progress: ${{ github.event_name == "pull_request" }}',
+PR_CONCURRENCY_CANCEL_SCOPE_ERROR = (
+    "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only"
 )
 GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
 DEPLOY_IF_RE = re.compile(
@@ -681,7 +680,6 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
 
     group_text = " ".join(line.strip() for line in group_lines if line.strip())
     cancel_text = "\n".join(cancel_lines)
-    cancel_compact = " ".join(line.strip() for line in cancel_lines if line.strip())
     errors: list[str] = []
     if not PR_CONCURRENCY_EVENT_RE.search(group_text):
         errors.append("concurrency group must branch on pull_request event")
@@ -693,8 +691,28 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
         errors.append("workflow_dispatch full CI runs must use a full-CI concurrency group")
     if not PR_CONCURRENCY_NON_PR_FALLBACK_RE.search(group_text):
         errors.append("concurrency group must keep non-PR runs isolated by ref and SHA")
-    if not any(expected in cancel_compact for expected in PR_CONCURRENCY_CANCEL_LINES):
-        errors.append("cancel-in-progress must apply to all pull_request runs")
+    cancel_has_pull_request = (
+        "github.event_name == 'pull_request'" in cancel_text
+        or 'github.event_name == "pull_request"' in cancel_text
+    )
+    cancel_has_dispatch = (
+        "github.event_name == 'workflow_dispatch'" in cancel_text
+        or 'github.event_name == "workflow_dispatch"' in cancel_text
+    )
+    cancel_is_draft_only = (
+        "github.event.pull_request.draft" in cancel_text
+        or "converted_to_draft" in cancel_text
+        or "contains(fromJSON" in cancel_text
+    )
+    if not cancel_has_pull_request or not cancel_has_dispatch or cancel_is_draft_only:
+        errors.append(PR_CONCURRENCY_CANCEL_SCOPE_ERROR)
+    if (
+        "github.event_name == 'push'" in cancel_text
+        or 'github.event_name == "push"' in cancel_text
+        or "refs/tags" in cancel_text
+        or "startsWith(github.ref" in cancel_text
+    ):
+        errors.append("cancel-in-progress must not cancel push, tag, or deploy flows")
     return errors
 
 

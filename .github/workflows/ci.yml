@@ -56,7 +56,9 @@ concurrency:
         || github.event_name == 'workflow_dispatch'
         && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        || github.event_name == 'workflow_dispatch' }}
 
 env:
   JUST_VERSION: "1.49.0"

@@ -1036,7 +1036,22 @@ fn authoritative_reseed_rearms_external_fill_accounting_after_retention_latch() 
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
     let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let _ = feed.on_account_state(&account_state(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        900,
+        100.0,
+    ));
     seed_venue_spendability(&mut feed, 950);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            975,
+            100.0,
+        ))
+        .is_some()
+    );
     assert!(
         feed.seed_cache_snapshot(Vec::<String>::new(), Decimal::ZERO, Decimal::ZERO, 1_000)
             .is_some()

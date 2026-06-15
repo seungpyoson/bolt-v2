@@ -47,14 +47,14 @@ impl FeeProvider for PriceSensitiveEntryFeeProvider {
 }
 
 #[test]
-fn reference_quote_tick_updates_fair_value_without_becoming_signal() {
+fn non_signal_quote_tick_does_not_update_reference_current_price_or_signal() {
     let mut strategy = test_strategy();
 
     strategy
         .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_200))
-        .expect("reference quote should process");
+        .expect("non-signal quote should process without mutating pricing");
 
-    assert_eq!(strategy.pricing.last_reference_current_price, Some(101.0));
+    assert_eq!(strategy.pricing.last_reference_current_price, None);
     assert_eq!(strategy.pricing.fast_spot, None);
     assert!(!strategy.pricing.lead_quality_policy_applied);
 }
@@ -64,8 +64,8 @@ fn signal_quote_tick_updates_pricing_from_configured_signal_data() {
     let mut strategy = test_strategy();
 
     strategy
-        .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_100))
-        .expect("reference quote should process");
+        .pricing
+        .observe_reference_current_price(&fast_spot("chainlink_primary", 101.0, 1_100));
     strategy
         .on_quote(&quote_tick("SIGNAL.SOURCE", 100.5, 102.5, 1_200))
         .expect("signal quote should process");

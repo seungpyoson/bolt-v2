@@ -1114,6 +1114,15 @@ impl BinaryOracleEdgeTaker {
             self.trigger_fee_warm_for_market();
             self.refresh_fee_readiness();
         }
+        if let (Some(interval_start_ms), Some(interval_end_ms)) =
+            (self.active.interval_start_ms, self.active.interval_end_ms)
+        {
+            self.observe_current_reference_price_selection(
+                interval_start_ms,
+                interval_end_ms,
+                now_ms,
+            );
+        }
         self.sync_exposure_context_from_active();
         self.prune_market_lifecycle(now_ms);
         self.refresh_book_subscriptions_for_current_state();

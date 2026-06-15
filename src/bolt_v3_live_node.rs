@@ -6255,6 +6255,7 @@ configured_source_param = "configured-value"
                 binance::ResolvedBoltV3BinanceSecrets, chainlink::ResolvedBoltV3ChainlinkSecrets,
                 chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
                 polymarket::ResolvedBoltV3PolymarketSecrets,
+                polyresearch::ResolvedBoltV3PolyResearchSecrets,
             },
             bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
         };
@@ -6296,6 +6297,12 @@ configured_source_param = "configured-value"
                 api_secret: zeroize::Zeroizing::new(
                     "fixture-chainlink-reference-api-secret".to_string(),
                 ),
+            }),
+        );
+        clients.insert(
+            "polyresearch_reference".to_string(),
+            Arc::new(ResolvedBoltV3PolyResearchSecrets {
+                api_key: zeroize::Zeroizing::new("fixture-polyresearch-api-key".to_string()),
             }),
         );
         let resolved = ResolvedBoltV3Secrets { clients };

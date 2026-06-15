@@ -296,8 +296,10 @@ mod tests {
     // sink private and moved the live/shadow sink tests into the gated module.
     // Re-derived after reference-price fixture tests split Chainlink strike
     // secrets from Chainlink reference-price secrets.
+    // Re-derived after restoring selection-retry reference-price failover refresh
+    // and aligning split pricing tests with custom-data reference updates.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "04ccf8f15108502ab8c8b39bf4a2326760a18f4e04e93ca958ed7fed0bad03d1";
+        "9acfa4ad402531e73d04b57c9af7fd1b1814f474b14b34f8949c07b655c5f529";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

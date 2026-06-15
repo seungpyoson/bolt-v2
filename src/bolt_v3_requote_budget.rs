@@ -106,7 +106,7 @@ const REST_CALL_COST: u64 = 1;
 /// REST cost of a cancel+resubmit reprice cycle: the cancel REST call plus the
 /// resubmit REST call. The venue lacks an in-place modify, so a reprice is always
 /// two REST calls.
-const CANCEL_RESUBMIT_REST_COST: u64 = REST_CALL_COST + REST_CALL_COST;
+pub(crate) const CANCEL_RESUBMIT_REST_COST: u64 = REST_CALL_COST + REST_CALL_COST;
 
 /// The two-budget maker requote admission gate (§16#3, FR-011).
 ///
@@ -114,7 +114,9 @@ const CANCEL_RESUBMIT_REST_COST: u64 = REST_CALL_COST + REST_CALL_COST;
 /// which must not be collapsed into a single "whichever is lower" window:
 /// - `submit_commands` — the NT submit-governor budget (`max_order_submit_rate`,
 ///   e.g. 40/min). Counts submit COMMANDS; a cancel is not a submit command.
-/// - `rest_calls` — the venue CLOB REST budget (`clob_per_minute`, e.g. 100/min).
+/// - `rest_calls` — the venue CLOB REST budget
+///   (`VenueEgressModel::cap_per_minute`, the canonical venue egress-capability
+///   fact the config validator reconciles order rates against; e.g. 100/min).
 ///   Counts REST CALLS; every cancel and every submit is one REST call.
 ///
 /// A cancel+resubmit reprice costs **1 submit command + 2 REST calls**. The gate

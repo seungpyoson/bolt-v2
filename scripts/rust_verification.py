@@ -2730,7 +2730,11 @@ def draft_pr_is_fork(repo: pathlib.Path, pr: dict[str, Any]) -> tuple[bool | Non
 WORKFLOW_RUN_FIELDS = "attempt,databaseId,event,headSha,status,conclusion,createdAt,url"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|SESSION_TOKEN)[A-Z0-9_]*)\b(\s*[:=]\s*)\S+"
+    r"(?i)\b("
+    r"[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|SESSION_TOKEN|PRIVATE_KEY|MNEMONIC|SEED(?:_PHRASE)?|WALLET_KEY|SIGNING_KEY|PASSPHRASE|CREDENTIAL)[A-Z0-9_]*"
+    r"|[A-Z0-9_]+_KEY"
+    r"|KEY(?:_[A-Z0-9_]+)?"
+    r")\b(\s*[:=]\s*)\S.*"
 )
 BEARER_RE = re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S+")
 FULL_CI_READY_EVENTS = {"pull_request"}
@@ -2810,7 +2814,7 @@ def job_log_failed(repo: pathlib.Path, job_id: int) -> tuple[str | None, str | N
         return None, "gh is required for remote verification"
     if result.returncode != 0:
         return None, command_error(argv, result)
-    if not result.stdout.strip():
+    if not ANSI_ESCAPE_RE.sub("", result.stdout).strip():
         return None, "failed job log is not available yet"
     return result.stdout, None
 
@@ -2893,7 +2897,11 @@ def emit_failed_job_diagnostics(
     if run_id is None:
         print("CI failed-job diagnostics unavailable: workflow run databaseId missing", file=sys.stderr)
         return False
-    jobs, error = workflow_run_jobs(repo, run_id, run_attempt(run))
+    attempt = run_attempt(run)
+    if attempt is None:
+        print("CI failed-job diagnostics unavailable: workflow run attempt missing", file=sys.stderr)
+        return False
+    jobs, error = workflow_run_jobs(repo, run_id, attempt)
     if error is not None or jobs is None:
         notice_interval = remote_policy["diagnostic_unavailable_notice_interval_polls"]
         poll_count = state.jobs_unavailable_notice_polls.get(run_id, 0) + 1
@@ -2910,7 +2918,16 @@ def emit_failed_job_diagnostics(
         if job_id is None or job_id in state.reported_job_ids:
             continue
         log_text, log_error = job_log_failed(repo, job_id)
-        if log_text is None or not log_text.strip():
+        excerpt = (
+            diagnostic_log_excerpt(
+                log_text,
+                max_lines=remote_policy["diagnostic_log_max_lines"],
+                max_bytes=remote_policy["diagnostic_log_max_bytes"],
+            )
+            if log_text is not None
+            else ""
+        )
+        if not excerpt:
             poll_count = state.unavailable_notice_polls.get(job_id, 0) + 1
             state.unavailable_notice_polls[job_id] = poll_count
             if poll_count == 1 or poll_count % notice_interval == 0:
@@ -2920,15 +2937,7 @@ def emit_failed_job_diagnostics(
         state.reported_job_ids.add(job_id)
         state.unavailable_notice_polls.pop(job_id, None)
         print(f"CI failed job: {failed_job_summary(job, job_id)}", file=sys.stderr)
-        excerpt = diagnostic_log_excerpt(
-            log_text,
-            max_lines=remote_policy["diagnostic_log_max_lines"],
-            max_bytes=remote_policy["diagnostic_log_max_bytes"],
-        )
-        if excerpt:
-            print(excerpt, file=sys.stderr)
-        else:
-            print("<empty failed job log>", file=sys.stderr)
+        print(excerpt, file=sys.stderr)
     return True
 
 
@@ -3117,10 +3126,11 @@ def cmd_ci_logs(args: argparse.Namespace) -> int:
     runs, error = workflow_run_list(repo, dispatch_config, branch)
     if error is not None or runs is None:
         return verify_remote_fail(error or "unable to inspect workflow runs")
+    events = FULL_CI_DRAFT_EVENTS if bool(pr.get("isDraft")) else FULL_CI_READY_EVENTS
     matching = matching_full_ci_runs(
         runs,
         head=head,
-        events=FULL_CI_READY_EVENTS | FULL_CI_DRAFT_EVENTS,
+        events=events,
     )
     if not matching:
         return verify_remote_fail(f"no matching full-CI workflow run found for {head} on {pr_url}")
@@ -3499,7 +3509,10 @@ def build_parser() -> argparse.ArgumentParser:
     verify_remote.add_argument("--repo", required=True)
     verify_remote.set_defaults(func=cmd_verify_remote)
 
-    ci_logs = subparsers.add_parser("ci-logs")
+    ci_logs = subparsers.add_parser(
+        "ci-logs",
+        description="Print failed-job diagnostics for the matching exact-head full-CI run; not a CI pass/fail gate.",
+    )
     ci_logs.add_argument("--repo", required=True)
     ci_logs.set_defaults(func=cmd_ci_logs)
 

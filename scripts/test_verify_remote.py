@@ -107,7 +107,14 @@ def assert_diagnostic_excerpt_is_bounded_and_masked() -> None:
         "\x1b[31mline0\x1b[0m\n"
         "TOKEN=abc123\n"
         "password: secret-value\n"
+        "PASSWORD: correct horse battery staple\n"
         "API_KEY = api-secret\n"
+        "PRIVATE_KEY=private-key-value\n"
+        "MY_KEY=my-key-value\n"
+        "SEED_PHRASE=seed phrase words\n"
+        "PASSPHRASE: pass phrase value\n"
+        "CREDENTIAL=credential value\n"
+        "MNEMONIC: correct horse battery staple\n"
         "AWS_SECRET_ACCESS_KEY=awssecret\n"
         "Authorization: Bearer secretvalue\n"
         "line3\n"
@@ -115,14 +122,27 @@ def assert_diagnostic_excerpt_is_bounded_and_masked() -> None:
     )
     excerpt = owner.diagnostic_log_excerpt(
         text,
-        max_lines=7,
-        max_bytes=200,
+        max_lines=20,
+        max_bytes=1000,
     )
     if "\x1b" in excerpt:
         raise AssertionError(excerpt)
-    if any(secret in excerpt for secret in ("abc123", "secret-value", "api-secret", "awssecret", "secretvalue")):
+    secrets = (
+        "abc123",
+        "secret-value",
+        "correct horse battery staple",
+        "api-secret",
+        "private-key-value",
+        "my-key-value",
+        "seed phrase words",
+        "pass phrase value",
+        "credential value",
+        "awssecret",
+        "secretvalue",
+    )
+    if any(secret in excerpt for secret in secrets):
         raise AssertionError(excerpt)
-    if len(excerpt.splitlines()) > 7:
+    if len(excerpt.splitlines()) > 20:
         raise AssertionError(excerpt)
     if "TOKEN=<redacted>" not in excerpt:
         raise AssertionError(excerpt)
@@ -130,6 +150,46 @@ def assert_diagnostic_excerpt_is_bounded_and_masked() -> None:
         raise AssertionError(excerpt)
     if "API_KEY = <redacted>" not in excerpt:
         raise AssertionError(excerpt)
+    if "PRIVATE_KEY=<redacted>" not in excerpt:
+        raise AssertionError(excerpt)
+    if "MY_KEY=<redacted>" not in excerpt:
+        raise AssertionError(excerpt)
+    if "SEED_PHRASE=<redacted>" not in excerpt:
+        raise AssertionError(excerpt)
+    if "PASSPHRASE: <redacted>" not in excerpt:
+        raise AssertionError(excerpt)
+    if "CREDENTIAL=<redacted>" not in excerpt:
+        raise AssertionError(excerpt)
+    if "MNEMONIC: <redacted>" not in excerpt:
+        raise AssertionError(excerpt)
+    byte_capped = owner.diagnostic_log_excerpt(
+        "prefix\n" + ("x" * 300),
+        max_lines=10,
+        max_bytes=40,
+    )
+    if len(byte_capped.encode("utf-8")) > 40:
+        raise AssertionError(byte_capped)
+    ansi_stripped = owner.diagnostic_log_excerpt(
+        "\x1b[31mansi-visible\x1b[0m\nplain",
+        max_lines=10,
+        max_bytes=200,
+    )
+    if "\x1b" in ansi_stripped or "ansi-visible" not in ansi_stripped:
+        raise AssertionError(ansi_stripped)
+
+
+def assert_job_log_failed_treats_ansi_whitespace_as_unavailable() -> None:
+    owner = load_owner_module()
+    original_run_capture = owner.run_capture
+    try:
+        owner.run_capture = lambda _argv, repo: types.SimpleNamespace(returncode=0, stdout="\x1b[0m  \n", stderr="")
+        log_text, error = owner.job_log_failed(pathlib.Path("."), 123)
+    finally:
+        owner.run_capture = original_run_capture
+    if log_text is not None:
+        raise AssertionError(log_text)
+    if error != "failed job log is not available yet":
+        raise AssertionError(error)
 
 
 def assert_run_attempt_accepts_positive_ints_only() -> None:
@@ -142,6 +202,28 @@ def assert_run_attempt_accepts_positive_ints_only() -> None:
         raise AssertionError("boolean attempt accepted")
     if owner.run_attempt({"attempt": 0}) is not None:
         raise AssertionError("zero attempt accepted")
+    if owner.run_attempt({"attempt": -1}) is not None:
+        raise AssertionError("negative attempt accepted")
+    if owner.run_attempt({"attempt": "1.0"}) is not None:
+        raise AssertionError("non-decimal attempt accepted")
+
+
+def assert_job_database_id_accepts_numeric_database_id_or_id() -> None:
+    owner = load_owner_module()
+    if owner.job_database_id({"databaseId": 11}) != 11:
+        raise AssertionError("integer databaseId rejected")
+    if owner.job_database_id({"databaseId": "12"}) != 12:
+        raise AssertionError("string databaseId rejected")
+    if owner.job_database_id({"id": 13}) != 13:
+        raise AssertionError("integer id fallback rejected")
+    if owner.job_database_id({"id": "14"}) != 14:
+        raise AssertionError("string id fallback rejected")
+    if owner.job_database_id({"databaseId": True}) is not None:
+        raise AssertionError("boolean databaseId accepted")
+    if owner.job_database_id({"id": True}) is not None:
+        raise AssertionError("boolean id accepted")
+    if owner.job_database_id({"id": "-15"}) is not None:
+        raise AssertionError("negative string id accepted")
 
 
 def assert_verify_remote_precondition_errors() -> None:
@@ -939,6 +1021,119 @@ def assert_failed_job_diagnostics_treats_empty_log_as_unavailable() -> None:
         raise AssertionError(output)
 
 
+def assert_failed_job_diagnostics_treats_ansi_whitespace_log_as_unavailable() -> None:
+    owner = load_owner_module()
+    original_jobs = owner.workflow_run_jobs
+    original_log = owner.job_log_failed
+    try:
+        owner.workflow_run_jobs = lambda _repo, _run_id, _attempt: (
+            [
+                {
+                    "databaseId": 13,
+                    "name": "nextest shard 3 of 4",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "url": "https://example.invalid/job/13",
+                }
+            ],
+            None,
+        )
+        log_results = iter([("\x1b[0m  \n \x1b[31m \n", None), ("REAL_LOG_LINE\n", None)])
+        owner.job_log_failed = lambda _repo, _job_id: next(log_results)
+        state = owner.RemoteFailureDiagnosticsState()
+        policy = {
+            "diagnostic_log_max_lines": 20,
+            "diagnostic_log_max_bytes": 2000,
+            "diagnostic_unavailable_notice_interval_polls": 3,
+        }
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(stderr):
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            for _ in range(2):
+                owner.emit_failed_job_diagnostics(
+                    repo=repo,
+                    run={"databaseId": 101, "attempt": 1},
+                    state=state,
+                    remote_policy=policy,
+                )
+        output = stderr.getvalue()
+    finally:
+        owner.workflow_run_jobs = original_jobs
+        owner.job_log_failed = original_log
+
+    if "job_log=unavailable yet" not in output:
+        raise AssertionError(output)
+    if "REAL_LOG_LINE" not in output:
+        raise AssertionError(output)
+    if "<empty failed job log>" in output:
+        raise AssertionError(output)
+
+
+def assert_failed_job_diagnostics_requires_run_attempt() -> None:
+    owner = load_owner_module()
+    original_jobs = owner.workflow_run_jobs
+    try:
+        def unexpected_jobs(_repo: pathlib.Path, _run_id: int, _attempt: int | None) -> tuple[list[dict[str, object]] | None, str | None]:
+            raise AssertionError("workflow_run_jobs should not be called without a valid attempt")
+
+        owner.workflow_run_jobs = unexpected_jobs
+        state = owner.RemoteFailureDiagnosticsState()
+        policy = {
+            "diagnostic_log_max_lines": 20,
+            "diagnostic_log_max_bytes": 2000,
+            "diagnostic_unavailable_notice_interval_polls": 3,
+        }
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(stderr):
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            result = owner.emit_failed_job_diagnostics(
+                repo=repo,
+                run={"databaseId": 101},
+                state=state,
+                remote_policy=policy,
+            )
+        output = stderr.getvalue()
+    finally:
+        owner.workflow_run_jobs = original_jobs
+
+    if result is not False:
+        raise AssertionError(result)
+    if "workflow run attempt missing" not in output:
+        raise AssertionError(output)
+
+
+def assert_failed_job_diagnostics_throttles_jobs_unavailable_notice() -> None:
+    owner = load_owner_module()
+    original_jobs = owner.workflow_run_jobs
+    try:
+        owner.workflow_run_jobs = lambda _repo, _run_id, _attempt: (None, "jobs unavailable")
+        state = owner.RemoteFailureDiagnosticsState()
+        policy = {
+            "diagnostic_log_max_lines": 20,
+            "diagnostic_log_max_bytes": 2000,
+            "diagnostic_unavailable_notice_interval_polls": 3,
+        }
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(stderr):
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            for _ in range(5):
+                owner.emit_failed_job_diagnostics(
+                    repo=repo,
+                    run={"databaseId": 101, "attempt": 1},
+                    state=state,
+                    remote_policy=policy,
+                )
+        output = stderr.getvalue()
+    finally:
+        owner.workflow_run_jobs = original_jobs
+
+    if output.count("CI failed-job diagnostics unavailable: jobs unavailable") != 2:
+        raise AssertionError(output)
+
+
 def assert_verify_remote_reports_failed_job_while_run_is_in_progress() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1034,7 +1229,9 @@ def assert_verify_remote_reports_failed_job_while_run_is_in_progress() -> None:
 
 def main() -> int:
     assert_diagnostic_excerpt_is_bounded_and_masked()
+    assert_job_log_failed_treats_ansi_whitespace_as_unavailable()
     assert_run_attempt_accepts_positive_ints_only()
+    assert_job_database_id_accepts_numeric_database_id_or_id()
     assert_verify_remote_precondition_errors()
     assert_verify_remote_pr_errors()
     assert_pr_lookup_preserves_gh_errors()
@@ -1051,6 +1248,9 @@ def main() -> int:
     assert_verify_remote_rechecks_head_before_overall_timeout()
     assert_failed_job_diagnostics_retries_unavailable_and_reports_once()
     assert_failed_job_diagnostics_treats_empty_log_as_unavailable()
+    assert_failed_job_diagnostics_treats_ansi_whitespace_log_as_unavailable()
+    assert_failed_job_diagnostics_requires_run_attempt()
+    assert_failed_job_diagnostics_throttles_jobs_unavailable_notice()
     assert_verify_remote_reports_failed_job_while_run_is_in_progress()
     print("OK: remote verification watcher self-tests passed.")
     return 0

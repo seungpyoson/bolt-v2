@@ -191,17 +191,16 @@ transport_backend = "sockudo"
 fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
     // The trade build path (`build_bolt_v3_live_node_with_summary`) registers
     // ONLY strategy-bound clients: the strategy `execution_client_id`, its
-    // `[reference_data].*.data_client_id`, its `[signal_data].*.data_client_id`,
-    // and the proof-policy `execution_client_id`. The fixture strategy
+    // `[signal_data].*.data_client_id`, its enabled
+    // `[reference_current_price].source.*.client_id`, and the proof-policy
+    // `execution_client_id`. The fixture strategy
     // (tests/fixtures/bolt_v3/strategies/binary_oracle.toml) sets
-    // `execution_client_id = "polymarket_main"`, an EMPTY `[reference_data]`
-    // block, and a strategy-bound signal feed at `okx_data`. Because
-    // `[reference_data]` is empty, this fixture registers no live reference
-    // quote client. `decision_reference` is a logical readiness/proof id and is
-    // deliberately not treated as NT reference data. So `binance_reference` is a
-    // broad-readiness PROBE client that is configured but unbound, and the
-    // scoped trade runner correctly EXCLUDES it from both the registration
-    // summary and the NT engines.
+    // `execution_client_id = "polymarket_main"` and a strategy-bound signal
+    // feed at `okx_data`, plus strategy-bound reference-current-price sources
+    // at `chainlink_reference` and `polyresearch_reference`. `binance_reference`
+    // remains an extra configured probe client that is unbound, and the scoped
+    // trade runner correctly EXCLUDES it from both the registration summary and
+    // the NT engines.
     //
     // We keep `fixture_loaded_config_with_binance_reference` so the exclusion is
     // meaningful: an unbound client is present in config yet must NOT register.
@@ -212,7 +211,7 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
     //     `live_node_registration_can_load_all_requested_data_clients_without_extra_execution_clients`,
     //     which exercises
     //     `build_bolt_v3_all_configured_client_mapping_live_node_with_summary`;
-    //   - positive `[reference_data]` scoping (a strategy-bound reference data
+    //   - positive signal-data scoping (a strategy-bound signal data
     //     client IS registered) is covered by the
     //     `trade_transport_config_keeps_only_strategy_bound_clients` unit test.
     let mut loaded = fixture_loaded_config_with_binance_reference();
@@ -223,11 +222,12 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode should build through the registration boundary");
 
-    // The scoped trade runner records exactly the strategy-bound execution/data
-    // client and the strategy-bound signal data client.
+    // The scoped trade runner records exactly the strategy-bound
+    // execution/data client, signal data client, and reference-current-price
+    // clients.
     assert_eq!(
         summary.clients.len(),
-        2,
+        4,
         "scoped trade path registers only strategy-bound clients; got {:?}",
         summary.clients.keys().collect::<Vec<_>>()
     );
@@ -249,9 +249,33 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
         .expect("okx_data (strategy signal_data client) must appear in summary");
     assert!(okx.data, "fixture okx_data has a [data] block");
     assert!(!okx.execution, "fixture okx_data has no [execution] block");
+    let chainlink = summary
+        .clients
+        .get("chainlink_reference")
+        .expect("chainlink_reference (strategy reference_current_price source client) must appear in summary");
+    assert!(
+        chainlink.data,
+        "fixture chainlink_reference has a [data] block"
+    );
+    assert!(
+        !chainlink.execution,
+        "fixture chainlink_reference has no [execution] block"
+    );
+    let polyresearch = summary
+        .clients
+        .get("polyresearch_reference")
+        .expect("polyresearch_reference (strategy reference_current_price source client) must appear in summary");
+    assert!(
+        polyresearch.data,
+        "fixture polyresearch_reference has a [data] block"
+    );
+    assert!(
+        !polyresearch.execution,
+        "fixture polyresearch_reference has no [execution] block"
+    );
     assert!(
         !summary.clients.contains_key("binance_reference"),
-        "binance_reference is unbound (no strategy reference_data binding) and must be excluded from the scoped summary; got {:?}",
+        "binance_reference is unbound (no strategy signal_data or reference_current_price binding) and must be excluded from the scoped summary; got {:?}",
         summary.clients.keys().collect::<Vec<_>>()
     );
 
@@ -268,6 +292,14 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
     assert!(
         registered_data.contains(&ClientId::from("okx_data")),
         "data engine should expose strategy signal data client okx_data; got {registered_data:?}"
+    );
+    assert!(
+        registered_data.contains(&ClientId::from("chainlink_reference")),
+        "data engine should expose strategy reference_current_price source client chainlink_reference; got {registered_data:?}"
+    );
+    assert!(
+        registered_data.contains(&ClientId::from("polyresearch_reference")),
+        "data engine should expose strategy reference_current_price source client polyresearch_reference; got {registered_data:?}"
     );
     assert!(
         !registered_data.contains(&ClientId::from("binance_reference")),

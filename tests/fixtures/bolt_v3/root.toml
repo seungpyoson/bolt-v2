@@ -135,6 +135,17 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-2"
 
+# Shared Chainlink Data Streams catalog. Client transport config consumes these
+# feed bindings; client-local feed catalogs are rejected.
+[chainlink_data_streams]
+
+[[chainlink_data_streams.feed_bindings]]
+feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+instrument_id = "BTC-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
 [gate_providers.resolution_oracle_primary]
 provider_kind = "chainlink_data_streams"
 capabilities = ["resolution_value", "reference_value"]
@@ -219,13 +230,47 @@ rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
 http_timeout_secs = 10
 
-[[clients.chainlink_strike.data.feed_bindings]]
-feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
-instrument_id = "BTC-USD.CHAINLINK"
-report_schema_version = 3
-report_decimal_scale = 18
-price_precision = 8
-
 [clients.chainlink_strike.secrets]
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+[clients.chainlink_reference]
+venue = "CHAINLINK_REFERENCE_PRICE"
+
+[clients.chainlink_reference.data]
+websocket_endpoint = "wss://ws.testnet-dataengine.chain.link"
+websocket_path = "/api/v1/ws"
+transport_backend = "sockudo"
+heartbeat_secs = 5
+heartbeat_message = "ping"
+reconnect_timeout_ms = 5000
+reconnect_delay_initial_ms = 250
+reconnect_delay_max_ms = 5000
+reconnect_backoff_factor = 1.5
+reconnect_jitter_ms = 100
+reconnect_max_attempts = 0
+idle_timeout_ms = 10000
+
+[clients.chainlink_reference.secrets]
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+[clients.polyresearch_reference]
+venue = "POLYRESEARCH_REFERENCE_PRICE"
+
+[clients.polyresearch_reference.data]
+websocket_endpoint = "wss://ws.polynode.dev/ws"
+transport_backend = "sockudo"
+heartbeat_secs = 5
+heartbeat_message = "{\"action\":\"ping\"}"
+reconnect_timeout_ms = 5000
+reconnect_delay_initial_ms = 250
+reconnect_delay_max_ms = 5000
+reconnect_backoff_factor = 1.5
+reconnect_jitter_ms = 100
+reconnect_max_attempts = "unlimited"
+subscribe_ack_timeout_ms = 2000
+idle_timeout_ms = 10000
+
+[clients.polyresearch_reference.secrets]
+api_key_ssm_parameter = "/bolt/polyresearch/api-key"

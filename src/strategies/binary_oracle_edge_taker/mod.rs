@@ -11,7 +11,7 @@ use nautilus_core::{Params, UnixNanos};
 #[cfg(not(test))]
 use nautilus_model::enums::BookType;
 use nautilus_model::{
-    data::{IndexPriceUpdate, QuoteTick, TradeTick},
+    data::{CustomData, DataType, IndexPriceUpdate, QuoteTick, TradeTick},
     enums::PositionSide,
 };
 use nautilus_model::{
@@ -40,6 +40,7 @@ use crate::{
         OutcomeBookState, OutcomeBookSubscriptions, OutcomePreparedBooks,
         should_replace_book_subscriptions,
     },
+    bolt_v3_config::{ReferencePriceBlock, ReferencePriceDriftPolicy},
     bolt_v3_decision_evidence::{
         BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
         BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
@@ -67,6 +68,14 @@ use crate::{
     bolt_v3_providers::{
         STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
+    },
+    bolt_v3_reference_price::{
+        REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
+        REFERENCE_PRICE_PROVIDER_PARAM, REFERENCE_PRICE_SOURCE_KEY_PARAM,
+        REFERENCE_PRICE_SYMBOL_PARAM, ReferencePriceSelection, ReferencePriceSelector,
+        ReferencePriceSourceHealth, ReferencePriceSourceSpec, ReferencePriceSourceStatus,
+        ReferencePriceUpdate, ReferenceQuote, reference_price_source_is_runtime_available,
+        reference_price_source_is_unsupported,
     },
     bolt_v3_sizing::{RobustSizingInputs, choose_robust_size},
     bolt_v3_submit_admission::{
@@ -271,6 +280,10 @@ struct ActiveMarketState {
     selection_published_at_ms: Option<u64>,
     seconds_to_expiry_at_selection: Option<u64>,
     interval_open: Option<f64>,
+    reference_current_price: Option<f64>,
+    reference_current_price_source_id: Option<String>,
+    reference_current_price_failed_over: Option<bool>,
+    reference_current_price_ts_ms: Option<u64>,
     last_reference_ts_ms: Option<u64>,
     last_resolution_ts_ms: Option<u64>,
     /// Observable count of resolution-strike updates rejected because their
@@ -294,6 +307,89 @@ fn signed_trade_flow_config(config: &BinaryOracleEdgeTakerConfig) -> SignedTrade
         window_secs: config.trade_flow_window_secs,
         max_samples: config.trade_flow_max_samples,
     }
+}
+
+fn reference_price_selector_from_config(
+    config: &BinaryOracleEdgeTakerConfig,
+) -> Option<ReferencePriceSelector> {
+    let reference_price = config.reference_current_price.as_ref()?;
+    let source_specs = reference_price
+        .source_order
+        .iter()
+        .filter_map(|source_id| {
+            let source = reference_price.sources.get(source_id)?;
+            reference_price_source_is_runtime_available(reference_price, source).then(|| {
+                if source.required {
+                    ReferencePriceSourceSpec::required(source_id.clone())
+                } else {
+                    ReferencePriceSourceSpec::optional(source_id.clone())
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    if source_specs.is_empty() {
+        return None;
+    }
+    Some(
+        ReferencePriceSelector::new_with_source_specs_and_drift_policy(
+            reference_price.asset.clone(),
+            source_specs,
+            reference_price.min_valid_sources,
+            reference_price.max_source_age_ms,
+            reference_price.max_source_drift_bps,
+            reference_price.drift_policy,
+        )
+        .expect("validated reference_current_price selector config"),
+    )
+}
+
+fn reference_price_source_health_from_config(
+    config: &BinaryOracleEdgeTakerConfig,
+) -> BTreeMap<String, ReferencePriceSourceHealth> {
+    let Some(reference_price) = &config.reference_current_price else {
+        return BTreeMap::new();
+    };
+    reference_price
+        .sources
+        .iter()
+        .map(|(source_id, source)| {
+            let status = if !source.enabled {
+                ReferencePriceSourceStatus::Disabled
+            } else if reference_price_source_is_unsupported(reference_price, source) {
+                ReferencePriceSourceStatus::UnsupportedSymbol
+            } else {
+                ReferencePriceSourceStatus::Silent
+            };
+            (
+                source_id.clone(),
+                ReferencePriceSourceHealth::new(
+                    source_id.clone(),
+                    source.provider.clone(),
+                    status,
+                    None,
+                    None,
+                ),
+            )
+        })
+        .collect()
+}
+
+fn reference_current_price_boundary_changed(
+    previous: &ActiveMarketState,
+    current: &ActiveMarketState,
+) -> bool {
+    previous.market_id != current.market_id
+        || previous.instrument_id != current.instrument_id
+        || previous.interval_start_ms != current.interval_start_ms
+        || previous.interval_end_ms != current.interval_end_ms
+}
+
+fn reference_price_source_provider_identifier<'a>(
+    reference_price: &'a ReferencePriceBlock,
+    source_id: &str,
+) -> Option<&'a str> {
+    let source = reference_price.sources.get(source_id)?;
+    source.instrument_id.as_deref().or(source.symbol.as_deref())
 }
 
 fn order_price_for_side(
@@ -433,6 +529,10 @@ fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingCon
         edge_threshold_basis_points: config.edge_threshold_basis_points,
         pricing_kurtosis: config.pricing_kurtosis,
         rotating_market_family: config.rotating_market_family.as_str(),
+        max_reference_current_price_age_ms: config
+            .reference_current_price
+            .as_ref()
+            .map(|reference_price| reference_price.max_source_age_ms),
     }
 }
 
@@ -444,15 +544,16 @@ impl PricingState {
         min_agreement_corr: f64,
         max_jitter_ms: u64,
     ) {
-        if let Some(fair_value) = snapshot
-            .fair_value
-            .filter(|fair_value| fair_value.is_finite() && *fair_value > 0.0)
+        if let Some(reference_current_price) =
+            snapshot.fair_value.filter(|reference_current_price| {
+                reference_current_price.is_finite() && *reference_current_price > 0.0
+            })
             && self
-                .last_reference_observed_ts_ms
+                .last_reference_current_price_ts_ms
                 .is_none_or(|last| snapshot.ts_ms > last)
         {
-            self.last_reference_observed_ts_ms = Some(snapshot.ts_ms);
-            self.last_reference_fair_value = Some(fair_value);
+            self.last_reference_current_price_ts_ms = Some(snapshot.ts_ms);
+            self.last_reference_current_price = Some(reference_current_price);
         }
 
         let candidates = self.build_lead_venue_signals(snapshot);
@@ -493,7 +594,7 @@ impl PricingState {
 
     #[cfg(test)]
     fn build_lead_venue_signals(&mut self, snapshot: &ReferenceSnapshot) -> Vec<LeadVenueSignal> {
-        let reference_anchor = self.last_reference_fair_value;
+        let reference_anchor = self.last_reference_current_price;
         let agreement_anchor = best_healthy_oracle_price(snapshot).or(reference_anchor);
 
         snapshot
@@ -638,6 +739,10 @@ impl ActiveMarketState {
             selection_published_at_ms: None,
             seconds_to_expiry_at_selection: None,
             interval_open: None,
+            reference_current_price: None,
+            reference_current_price_source_id: None,
+            reference_current_price_failed_over: None,
+            reference_current_price_ts_ms: None,
             last_reference_ts_ms: None,
             last_resolution_ts_ms: None,
             resolution_strike_window_mismatch_count: INITIAL_COUNTER_U64,
@@ -686,6 +791,10 @@ impl ActiveMarketState {
             selection_published_at_ms: None,
             seconds_to_expiry_at_selection: Some(market.seconds_to_end),
             interval_open: None,
+            reference_current_price: None,
+            reference_current_price_source_id: None,
+            reference_current_price_failed_over: None,
+            reference_current_price_ts_ms: None,
             last_reference_ts_ms: None,
             last_resolution_ts_ms: None,
             resolution_strike_window_mismatch_count: INITIAL_COUNTER_U64,
@@ -742,34 +851,56 @@ impl ActiveMarketState {
         Some(seconds_to_expiry_at_selection.saturating_sub(elapsed_seconds))
     }
 
-    fn observe_reference_quote(&mut self, quote: &FastSpotObservation) {
+    fn observe_reference_price_quote(&mut self, quote: &ReferenceQuote, failed_over: bool) -> bool {
         if self.phase == SelectionPhase::Idle {
-            return;
+            return false;
         }
         let Some(interval_start_ms) = self.interval_start_ms else {
-            return;
+            return false;
         };
-        let Some(anchor_price) = self
-            .price_to_beat
-            .filter(|value| is_positive_finite(*value))
-        else {
-            return;
-        };
-        if quote.observed_ts_ms < interval_start_ms {
-            return;
+        if quote.observed_ts_ms() < interval_start_ms {
+            return false;
         }
-        if self
-            .last_reference_ts_ms
-            .is_some_and(|last_ts_ms| quote.observed_ts_ms <= last_ts_ms)
+        let same_reference_source = self
+            .reference_current_price_source_id
+            .as_deref()
+            .is_some_and(|source_id| source_id == quote.source_id());
+        if same_reference_source
+            && self
+                .reference_current_price_ts_ms
+                .is_some_and(|last_ts_ms| quote.observed_ts_ms() <= last_ts_ms)
         {
-            return;
+            return false;
         }
 
-        self.last_reference_ts_ms = Some(quote.observed_ts_ms);
-        if self.interval_open.is_none() {
+        self.reference_current_price = Some(quote.price());
+        self.reference_current_price_source_id = Some(quote.source_id().to_string());
+        self.reference_current_price_failed_over = Some(failed_over);
+        self.reference_current_price_ts_ms = Some(quote.observed_ts_ms());
+        self.last_reference_ts_ms = Some(quote.observed_ts_ms());
+        if self.interval_open.is_none()
+            && let Some(anchor_price) = self
+                .price_to_beat
+                .filter(|value| is_positive_finite(*value))
+        {
             self.interval_open = Some(anchor_price);
         }
-        self.warmup_count += COUNTER_INCREMENT as u64;
+        if self.price_to_beat.is_some_and(is_positive_finite) {
+            self.warmup_count = self.warmup_count.saturating_add(COUNTER_INCREMENT_U64);
+        }
+        true
+    }
+
+    fn clear_reference_price_quote(&mut self) {
+        self.reference_current_price = None;
+        self.reference_current_price_source_id = None;
+        self.reference_current_price_failed_over = None;
+        self.reference_current_price_ts_ms = None;
+    }
+
+    fn reset_reference_price_quote(&mut self) {
+        self.clear_reference_price_quote();
+        self.last_reference_ts_ms = None;
     }
 
     /// Binds the live resolution strike (Chainlink `IndexPriceUpdate`) to the
@@ -853,6 +984,9 @@ pub struct BinaryOracleEdgeTaker {
     exposure: ExposureState,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
     pricing: PricingState,
+    reference_price_selector: Option<ReferencePriceSelector>,
+    reference_price_quotes: BTreeMap<String, ReferenceQuote>,
+    reference_price_source_health: BTreeMap<String, ReferencePriceSourceHealth>,
     selection_missing_since_ms: Option<u64>,
     #[cfg(test)]
     book_subscription_events: Vec<BookSubscriptionEvent>,
@@ -868,11 +1002,15 @@ pub struct BinaryOracleEdgeTaker {
     /// windows/retries.
     #[cfg(test)]
     resolution_strike_subscribe_events: Vec<ResolutionStrikeSubscribeEvent>,
+    #[cfg(test)]
+    reference_price_subscribe_events: Vec<ReferencePriceSubscribeEvent>,
 }
 
 impl BinaryOracleEdgeTaker {
     fn new(config: BinaryOracleEdgeTakerConfig, context: StrategyBuildContext) -> Self {
         let pricing = PricingState::from_config(&taker_pricing_config(&config));
+        let reference_price_selector = reference_price_selector_from_config(&config);
+        let reference_price_source_health = reference_price_source_health_from_config(&config);
         let oms_type = parse_configured_oms_type(CONFIG_FIELD_OMS_TYPE, &config.oms_type)
             .expect("validated binary_oracle_edge_taker oms_type");
         let market_exit_time_in_force = config.forced_exit_order.time_in_force;
@@ -908,11 +1046,16 @@ impl BinaryOracleEdgeTaker {
             exposure: ExposureState::Flat,
             last_reported_exposure_occupancy: Cell::new(None),
             pricing,
+            reference_price_selector,
+            reference_price_quotes: BTreeMap::new(),
+            reference_price_source_health,
             selection_missing_since_ms: None,
             #[cfg(test)]
             book_subscription_events: Vec::new(),
             #[cfg(test)]
             resolution_strike_subscribe_events: Vec::new(),
+            #[cfg(test)]
+            reference_price_subscribe_events: Vec::new(),
         }
     }
 
@@ -930,6 +1073,9 @@ impl BinaryOracleEdgeTaker {
         self.active.books.up.instrument_id = next_selection_books.up_instrument_id;
         self.active.books.down.instrument_id = next_selection_books.down_instrument_id;
         self.active.apply_selection_timing(&snapshot);
+        if reference_current_price_boundary_changed(&previous_active, &self.active) {
+            self.reset_reference_current_price_runtime_state();
+        }
         // Bind the live strike to the market's interval-open boundary.
         //
         // Re-issue the strike subscribe whenever the strike is unresolved
@@ -984,14 +1130,6 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn observe_reference_quote(&mut self, quote: &FastSpotObservation) {
-        self.active.observe_reference_quote(quote);
-        self.pricing.observe_reference_quote(quote);
-        self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
-        self.refresh_fee_readiness();
-        self.sync_exposure_context_from_active();
-    }
-
     fn observe_signal_quote(&mut self, quote: &FastSpotObservation) {
         self.pricing
             .observe_signal_quote(quote, &taker_pricing_config(&self.config));
@@ -1033,25 +1171,6 @@ impl BinaryOracleEdgeTaker {
                 error,
             );
         }
-    }
-
-    fn reference_quote_from_tick(&self, quote: &QuoteTick) -> Option<FastSpotObservation> {
-        let bid = quote.bid_price.as_f64();
-        let ask = quote.ask_price.as_f64();
-        if !is_positive_finite(bid) || !is_positive_finite(ask) {
-            return None;
-        }
-        let midpoint = (bid + ask) / MIDPOINT_DIVISOR_F64;
-        if !is_positive_finite(midpoint) {
-            return None;
-        }
-        let observed_ts_ms = quote.ts_event.as_u64() / NANOS_PER_MILLI_U64;
-        let venue_name = self.config.reference_venue.as_ref()?;
-        Some(FastSpotObservation {
-            venue: venue_name.clone(),
-            price: midpoint,
-            observed_ts_ms,
-        })
     }
 
     fn signal_quote_from_tick(&self, quote: &QuoteTick) -> Option<FastSpotObservation> {
@@ -1193,13 +1312,6 @@ impl BinaryOracleEdgeTaker {
         self.apply_selection_snapshot(snapshot);
     }
 
-    fn reference_instrument_id(&self) -> Option<InstrumentId> {
-        self.config
-            .reference_instrument_id
-            .as_deref()
-            .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
-    }
-
     fn signal_instrument_id(&self) -> Option<InstrumentId> {
         self.config
             .signal_instrument_id
@@ -1234,15 +1346,6 @@ impl BinaryOracleEdgeTaker {
             .split('-')
             .next()
             .is_some_and(|asset| asset.eq_ignore_ascii_case(self.config.underlying_asset.as_str()))
-    }
-
-    fn subscribe_reference_quotes(&mut self) {
-        if let Some(instrument_id) = self.reference_instrument_id() {
-            #[cfg(not(test))]
-            self.subscribe_quotes(instrument_id, None, None);
-            #[cfg(test)]
-            let _ = instrument_id;
-        }
     }
 
     fn subscribe_signal_quotes(&mut self) {
@@ -1284,15 +1387,6 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn unsubscribe_reference_quotes(&mut self) {
-        if let Some(instrument_id) = self.reference_instrument_id() {
-            #[cfg(not(test))]
-            self.unsubscribe_quotes(instrument_id, None, None);
-            #[cfg(test)]
-            let _ = instrument_id;
-        }
-    }
-
     fn unsubscribe_signal_quotes(&mut self) {
         if let Some(instrument_id) = self.signal_instrument_id() {
             #[cfg(not(test))]
@@ -1300,6 +1394,466 @@ impl BinaryOracleEdgeTaker {
             #[cfg(test)]
             let _ = instrument_id;
         }
+    }
+
+    fn subscribe_reference_prices(&mut self) {
+        for subscription in self.reference_price_subscription_requests() {
+            #[cfg(not(test))]
+            self.subscribe_data(
+                subscription.data_type.clone(),
+                Some(subscription.client_id),
+                Some(subscription.params.clone()),
+            );
+            self.record_reference_price_subscribe_event(ReferencePriceSubscribeEvent::subscribe(
+                &subscription,
+            ));
+        }
+    }
+
+    fn unsubscribe_reference_prices(&mut self) {
+        for subscription in self.reference_price_subscription_requests() {
+            #[cfg(not(test))]
+            self.unsubscribe_data(
+                subscription.data_type.clone(),
+                Some(subscription.client_id),
+                Some(subscription.params.clone()),
+            );
+            self.record_reference_price_subscribe_event(ReferencePriceSubscribeEvent::unsubscribe(
+                &subscription,
+            ));
+        }
+    }
+
+    fn reference_price_subscription_requests(&self) -> Vec<ReferencePriceSubscriptionRequest> {
+        let Some(reference_price) = &self.config.reference_current_price else {
+            return Vec::new();
+        };
+        let mut subscriptions = Vec::new();
+        for source_id in &reference_price.source_order {
+            let Some(source) = reference_price.sources.get(source_id) else {
+                continue;
+            };
+            if !reference_price_source_is_runtime_available(reference_price, source) {
+                continue;
+            }
+            let provider = source.provider.as_str();
+            let data_type = match ReferencePriceUpdate::data_type_for(
+                &reference_price.asset,
+                source_id,
+                provider,
+            ) {
+                Ok(data_type) => data_type,
+                Err(error) => {
+                    log::error!(
+                        "binary_oracle_edge_taker invalid reference price data type: {error}; source_id={source_id} strategy_id={}",
+                        self.config.strategy_id,
+                    );
+                    continue;
+                }
+            };
+            let mut params = Params::new();
+            params.insert(
+                REFERENCE_PRICE_ASSET_PARAM.to_string(),
+                serde_json::json!(reference_price.asset),
+            );
+            params.insert(
+                REFERENCE_PRICE_SOURCE_KEY_PARAM.to_string(),
+                serde_json::json!(source_id),
+            );
+            params.insert(
+                REFERENCE_PRICE_PROVIDER_PARAM.to_string(),
+                serde_json::json!(provider),
+            );
+            if let Some(instrument_id) = &source.instrument_id {
+                params.insert(
+                    REFERENCE_PRICE_INSTRUMENT_ID_PARAM.to_string(),
+                    serde_json::json!(instrument_id),
+                );
+            }
+            if let Some(symbol) = &source.symbol {
+                params.insert(
+                    REFERENCE_PRICE_SYMBOL_PARAM.to_string(),
+                    serde_json::json!(symbol),
+                );
+            }
+            subscriptions.push(ReferencePriceSubscriptionRequest {
+                source_id: source_id.clone(),
+                provider: provider.to_string(),
+                client_id: source.client_id,
+                data_type,
+                params,
+            });
+        }
+        subscriptions
+    }
+
+    fn observe_reference_price_update(&mut self, update: &ReferencePriceUpdate) {
+        self.ensure_reference_price_runtime_state();
+        let quote = match update.to_reference_quote() {
+            Ok(quote) => quote,
+            Err(error) => {
+                self.mark_reference_price_source_status(
+                    update.source_id(),
+                    ReferencePriceSourceStatus::MalformedFrame,
+                    Some(update.observed_ts_ms()),
+                    Some(update.received_ts_ms()),
+                );
+                log::warn!(
+                    "binary_oracle_edge_taker malformed reference price update ignored: {error}; source_id={} strategy_id={}",
+                    update.source_id(),
+                    self.config.strategy_id,
+                );
+                return;
+            }
+        };
+        let Some(existing_health) = self.reference_price_source_health.get(quote.source_id())
+        else {
+            return;
+        };
+        if matches!(
+            existing_health.status(),
+            ReferencePriceSourceStatus::Disabled | ReferencePriceSourceStatus::UnsupportedSymbol
+        ) {
+            return;
+        }
+        if existing_health.provider() != quote.provider() {
+            let expected_provider = existing_health.provider().as_str().to_string();
+            self.mark_reference_price_source_status(
+                quote.source_id(),
+                ReferencePriceSourceStatus::MalformedFrame,
+                Some(quote.observed_ts_ms()),
+                Some(quote.received_ts_ms()),
+            );
+            log::warn!(
+                "binary_oracle_edge_taker reference current price provider mismatch ignored: source_id={} expected_provider={} actual_provider={} strategy_id={}",
+                quote.source_id(),
+                expected_provider,
+                quote.provider().as_str(),
+                self.config.strategy_id,
+            );
+            return;
+        }
+        if let Some(expected_provider_instrument) = self
+            .config
+            .reference_current_price
+            .as_ref()
+            .and_then(|reference_price| {
+                reference_price_source_provider_identifier(reference_price, quote.source_id())
+            })
+            .map(ToString::to_string)
+            && quote.provider_instrument() != expected_provider_instrument
+        {
+            self.mark_reference_price_source_status(
+                quote.source_id(),
+                ReferencePriceSourceStatus::MalformedFrame,
+                Some(quote.observed_ts_ms()),
+                Some(quote.received_ts_ms()),
+            );
+            log::warn!(
+                "binary_oracle_edge_taker reference current price provider instrument mismatch ignored: source_id={} expected_provider_instrument={} actual_provider_instrument={} strategy_id={}",
+                quote.source_id(),
+                expected_provider_instrument,
+                quote.provider_instrument(),
+                self.config.strategy_id,
+            );
+            return;
+        }
+
+        let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
+        if let (Some(reference_price), Some(interval_start_ms), Some(interval_end_ms)) = (
+            self.config.reference_current_price.as_ref(),
+            self.active.interval_start_ms,
+            self.active.interval_end_ms,
+        ) && (quote.observed_ts_ms() < interval_start_ms
+            || quote.observed_ts_ms() > interval_end_ms
+            || quote.observed_ts_ms() > now_ms
+            || now_ms.saturating_sub(quote.observed_ts_ms()) > reference_price.max_source_age_ms)
+        {
+            let newer_than_accepted_quote = self
+                .reference_price_quotes
+                .get(quote.source_id())
+                .is_none_or(|existing| existing.observed_ts_ms() < quote.observed_ts_ms());
+            let newer_than_recorded_health = self
+                .reference_price_source_health
+                .get(quote.source_id())
+                .and_then(ReferencePriceSourceHealth::observed_ts_ms)
+                .is_none_or(|observed_ts_ms| observed_ts_ms < quote.observed_ts_ms());
+            if newer_than_accepted_quote && newer_than_recorded_health {
+                self.mark_reference_price_source_status(
+                    quote.source_id(),
+                    ReferencePriceSourceStatus::Stale,
+                    Some(quote.observed_ts_ms()),
+                    Some(quote.received_ts_ms()),
+                );
+            }
+            log::warn!(
+                "binary_oracle_edge_taker stale reference current price ignored: source_id={} observed_ts_ms={} now_ms={} strategy_id={}",
+                quote.source_id(),
+                quote.observed_ts_ms(),
+                now_ms,
+                self.config.strategy_id,
+            );
+            self.observe_current_reference_price_selection(
+                interval_start_ms,
+                interval_end_ms,
+                now_ms,
+            );
+            return;
+        }
+
+        if self
+            .reference_price_quotes
+            .get(quote.source_id())
+            .is_some_and(|existing| existing.observed_ts_ms() >= quote.observed_ts_ms())
+        {
+            return;
+        }
+
+        self.reference_price_source_health.insert(
+            quote.source_id().to_string(),
+            ReferencePriceSourceHealth::available(&quote),
+        );
+        self.reference_price_quotes
+            .insert(quote.source_id().to_string(), quote.clone());
+
+        let (Some(interval_start_ms), Some(interval_end_ms)) =
+            (self.active.interval_start_ms, self.active.interval_end_ms)
+        else {
+            return;
+        };
+        self.observe_current_reference_price_selection(interval_start_ms, interval_end_ms, now_ms);
+    }
+
+    fn select_current_reference_price(
+        &mut self,
+        interval_start_ms: u64,
+        interval_end_ms: u64,
+        now_ms: u64,
+    ) -> Option<ReferencePriceSelection> {
+        let selector = self.reference_price_selector.as_mut()?;
+        let quotes = self
+            .reference_price_quotes
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let selection = selector.select(interval_start_ms, interval_end_ms, now_ms, &quotes);
+        self.refresh_reference_price_source_statuses(interval_start_ms, interval_end_ms, now_ms);
+        if selection.is_none() {
+            self.clear_reference_current_price_selection_state();
+        }
+        selection
+    }
+
+    fn observe_current_reference_price_selection(
+        &mut self,
+        interval_start_ms: u64,
+        interval_end_ms: u64,
+        now_ms: u64,
+    ) {
+        let Some(selection) =
+            self.select_current_reference_price(interval_start_ms, interval_end_ms, now_ms)
+        else {
+            return;
+        };
+        let selected_source_id = selection.source_id().to_string();
+        if let Some(selected_quote) = self.reference_price_quotes.get(&selected_source_id)
+            && self
+                .active
+                .observe_reference_price_quote(selected_quote, selection.failed_over())
+        {
+            self.pricing
+                .observe_reference_current_price(&FastSpotObservation {
+                    venue: selected_quote.source_id().to_string(),
+                    price: selected_quote.price(),
+                    observed_ts_ms: selected_quote.observed_ts_ms(),
+                });
+            self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
+            self.refresh_fee_readiness();
+        }
+    }
+
+    fn refresh_current_reference_price_selection_at(&mut self, now_ms: u64) {
+        self.ensure_reference_price_runtime_state();
+        let (Some(interval_start_ms), Some(interval_end_ms)) =
+            (self.active.interval_start_ms, self.active.interval_end_ms)
+        else {
+            return;
+        };
+        self.observe_current_reference_price_selection(interval_start_ms, interval_end_ms, now_ms);
+        self.sync_exposure_context_from_active();
+    }
+
+    fn refresh_reference_price_source_statuses(
+        &mut self,
+        interval_start_ms: u64,
+        interval_end_ms: u64,
+        now_ms: u64,
+    ) {
+        let Some(reference_price) = &self.config.reference_current_price else {
+            return;
+        };
+        let drift_exceeded = reference_price.drift_policy == ReferencePriceDriftPolicy::Block
+            && self
+                .reference_price_selector
+                .as_ref()
+                .and_then(ReferencePriceSelector::last_cross_source_drift_bps)
+                .is_some_and(|drift_bps| {
+                    drift_bps > f64::from(reference_price.max_source_drift_bps)
+                });
+        let updates = reference_price
+            .source_order
+            .iter()
+            .filter_map(|source_id| {
+                let source = reference_price.sources.get(source_id)?;
+                if !reference_price_source_is_runtime_available(reference_price, source) {
+                    return None;
+                }
+                let (status, observed_ts_ms, received_ts_ms) =
+                    match self.reference_price_quotes.get(source_id) {
+                        Some(quote)
+                            if quote.observed_ts_ms() < interval_start_ms
+                                || quote.observed_ts_ms() > interval_end_ms
+                                || quote.observed_ts_ms() > now_ms
+                                || now_ms.saturating_sub(quote.observed_ts_ms())
+                                    > reference_price.max_source_age_ms =>
+                        {
+                            self.reference_price_source_health
+                                .get(source_id)
+                                .filter(|health| {
+                                    health.status() == ReferencePriceSourceStatus::Stale
+                                        && health.observed_ts_ms().is_some_and(|observed_ts_ms| {
+                                            observed_ts_ms > quote.observed_ts_ms()
+                                        })
+                                })
+                                .map(|health| {
+                                    (
+                                        health.status(),
+                                        health.observed_ts_ms(),
+                                        health.received_ts_ms(),
+                                    )
+                                })
+                                .unwrap_or((
+                                    ReferencePriceSourceStatus::Stale,
+                                    Some(quote.observed_ts_ms()),
+                                    Some(quote.received_ts_ms()),
+                                ))
+                        }
+                        Some(quote) if drift_exceeded => (
+                            ReferencePriceSourceStatus::DriftExceeded,
+                            Some(quote.observed_ts_ms()),
+                            Some(quote.received_ts_ms()),
+                        ),
+                        Some(quote)
+                            if self
+                                .reference_price_source_health
+                                .get(source_id)
+                                .is_some_and(|health| {
+                                    health.status() == ReferencePriceSourceStatus::Stale
+                                        && health.observed_ts_ms().is_some_and(|observed_ts_ms| {
+                                            observed_ts_ms > quote.observed_ts_ms()
+                                        })
+                                }) =>
+                        {
+                            let health = self
+                                .reference_price_source_health
+                                .get(source_id)
+                                .expect("reference price source health checked above");
+                            (
+                                health.status(),
+                                health.observed_ts_ms(),
+                                health.received_ts_ms(),
+                            )
+                        }
+                        Some(quote) => (
+                            ReferencePriceSourceStatus::Available,
+                            Some(quote.observed_ts_ms()),
+                            Some(quote.received_ts_ms()),
+                        ),
+                        None => self
+                            .reference_price_source_health
+                            .get(source_id)
+                            .map(|health| match health.status() {
+                                ReferencePriceSourceStatus::AuthRejected
+                                | ReferencePriceSourceStatus::SubscriptionRejected
+                                | ReferencePriceSourceStatus::Stale
+                                | ReferencePriceSourceStatus::MalformedFrame
+                                | ReferencePriceSourceStatus::Disconnected
+                                | ReferencePriceSourceStatus::DriftExceeded => (
+                                    health.status(),
+                                    health.observed_ts_ms(),
+                                    health.received_ts_ms(),
+                                ),
+                                _ => (ReferencePriceSourceStatus::Silent, None, None),
+                            })
+                            .unwrap_or((ReferencePriceSourceStatus::Silent, None, None)),
+                    };
+                Some((source_id.clone(), status, observed_ts_ms, received_ts_ms))
+            })
+            .collect::<Vec<_>>();
+        for (source_id, status, observed_ts_ms, received_ts_ms) in updates {
+            self.mark_reference_price_source_status(
+                &source_id,
+                status,
+                observed_ts_ms,
+                received_ts_ms,
+            );
+        }
+    }
+
+    fn ensure_reference_price_runtime_state(&mut self) {
+        if self.config.reference_current_price.is_none() {
+            return;
+        }
+        if self.reference_price_selector.is_none() {
+            self.reference_price_selector = reference_price_selector_from_config(&self.config);
+        }
+        if self.reference_price_source_health.is_empty() {
+            self.reference_price_source_health =
+                reference_price_source_health_from_config(&self.config);
+        }
+    }
+
+    fn clear_reference_current_price_selection_state(&mut self) {
+        self.active.clear_reference_price_quote();
+        self.pricing.clear_reference_current_price_state();
+        self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
+    }
+
+    fn reset_reference_current_price_selection_state(&mut self) {
+        self.active.reset_reference_price_quote();
+        self.pricing.clear_reference_current_price_state();
+        self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
+    }
+
+    fn reset_reference_current_price_runtime_state(&mut self) {
+        self.reference_price_quotes.clear();
+        self.reference_price_source_health =
+            reference_price_source_health_from_config(&self.config);
+        self.reference_price_selector = reference_price_selector_from_config(&self.config);
+        self.reset_reference_current_price_selection_state();
+    }
+
+    fn mark_reference_price_source_status(
+        &mut self,
+        source_id: &str,
+        status: ReferencePriceSourceStatus,
+        observed_ts_ms: Option<u64>,
+        received_ts_ms: Option<u64>,
+    ) {
+        let Some(existing_health) = self.reference_price_source_health.get(source_id) else {
+            return;
+        };
+        let provider = existing_health.provider().clone();
+        self.reference_price_source_health.insert(
+            source_id.to_string(),
+            ReferencePriceSourceHealth::new(
+                source_id,
+                provider,
+                status,
+                observed_ts_ms,
+                received_ts_ms,
+            ),
+        );
     }
 
     fn unsubscribe_realized_volatility_sources(&mut self) {
@@ -2000,7 +2554,7 @@ impl BinaryOracleEdgeTaker {
             pricing_blocked_by: evaluation.pricing_blocked_by.clone(),
             spot_price: self.pricing.spot_price(),
             spot_venue_name,
-            reference_fair_value: self.pricing.last_reference_fair_value,
+            reference_current_price: self.pricing.last_reference_current_price,
             interval_open: self.active.interval_open,
             seconds_to_expiry: self.current_seconds_to_expiry_at(now_ms),
             realized_vol: self.current_realized_vol_at(now_ms),
@@ -2100,8 +2654,8 @@ impl BinaryOracleEdgeTaker {
             sized_notional: evaluation.sized_notional,
             selected_side: evaluation.selected_side,
             fast_venue_available,
-            reference_fair_value_available_without_fast_venue: !fast_venue_available
-                && self.pricing.last_reference_fair_value.is_some(),
+            reference_current_price_available_without_fast_venue: !fast_venue_available
+                && self.pricing.last_reference_current_price.is_some(),
             lead_quality_policy_applied: self.pricing.lead_quality_policy_applied,
             lead_quality_reason: if self.pricing.fast_venue_incoherent {
                 EVIDENCE_REASON_NO_FAST_VENUE_CLEARED_LEAD_QUALITY_THRESHOLDS
@@ -2140,7 +2694,7 @@ impl BinaryOracleEdgeTaker {
                 );
             }
             log::warn!(
-                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_fair_value_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
                 fields.phase,
@@ -2148,7 +2702,7 @@ impl BinaryOracleEdgeTaker {
                 fields.pricing_blocked_by,
                 fields.spot_price,
                 fields.spot_venue_name,
-                fields.reference_fair_value,
+                fields.reference_current_price,
                 fields.interval_open,
                 fields.seconds_to_expiry,
                 fields.realized_vol,
@@ -2202,7 +2756,7 @@ impl BinaryOracleEdgeTaker {
                 fields.sized_notional,
                 fields.selected_side,
                 fields.fast_venue_available,
-                fields.reference_fair_value_available_without_fast_venue,
+                fields.reference_current_price_available_without_fast_venue,
                 fields.lead_quality_policy_applied,
                 fields.lead_quality_reason,
                 fields.final_fee_amount_known,
@@ -2216,7 +2770,7 @@ impl BinaryOracleEdgeTaker {
             );
         } else {
             log::info!(
-                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_fair_value_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                "binary_oracle_edge_taker entry evaluation: strategy_id={} market_id={:?} phase={:?} gate_blocked_by={:?} pricing_blocked_by={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} theta_decay_factor={} theta_scaled_min_edge_bps={:?} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} uncertainty_band_live={} uncertainty_band_reason={} lead_agreement_corr={:?} fast_venue_age_ms={:?} fast_venue_jitter_ms={:?} up_fee_bps={:?} down_fee_bps={:?} up_entry_cost={:?} down_entry_cost={:?} up_entry_limit_price={:?} down_entry_limit_price={:?} up_gross_cost_cents={:?} down_gross_cost_cents={:?} up_fee_cost_cents={:?} down_fee_cost_cents={:?} up_slippage_buffer_cents={:?} down_slippage_buffer_cents={:?} up_total_adjusted_cost_cents={:?} down_total_adjusted_cost_cents={:?} up_edge_cents_per_share={:?} down_edge_cents_per_share={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} sized_fee_bps={:?} sized_entry_cost={:?} sized_entry_limit_price={:?} sized_gross_cost_cents={:?} sized_fee_cost_cents={:?} sized_slippage_buffer_cents={:?} sized_total_adjusted_cost_cents={:?} sized_edge_cents_per_share={:?} sized_worst_case_ev_bps={:?} expected_ev_per_notional={:?} order_notional_target={} maximum_position_notional={} risk_lambda={} sizing_ev_reference_bps={} book_impact_cap_bps={} book_impact_cap_notional={:?} sized_notional={:?} selected_side={:?} fast_venue_available={} reference_current_price_available_without_fast_venue={} lead_quality_policy_applied={} lead_quality_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity_value={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
                 fields.phase,
@@ -2224,7 +2778,7 @@ impl BinaryOracleEdgeTaker {
                 fields.pricing_blocked_by,
                 fields.spot_price,
                 fields.spot_venue_name,
-                fields.reference_fair_value,
+                fields.reference_current_price,
                 fields.interval_open,
                 fields.seconds_to_expiry,
                 fields.realized_vol,
@@ -2278,7 +2832,7 @@ impl BinaryOracleEdgeTaker {
                 fields.sized_notional,
                 fields.selected_side,
                 fields.fast_venue_available,
-                fields.reference_fair_value_available_without_fast_venue,
+                fields.reference_current_price_available_without_fast_venue,
                 fields.lead_quality_policy_applied,
                 fields.lead_quality_reason,
                 fields.final_fee_amount_known,
@@ -3255,7 +3809,7 @@ impl BinaryOracleEdgeTaker {
             spot_venue_name: self
                 .current_position_fast_spot()
                 .map(|spot| spot.venue.clone()),
-            reference_fair_value: self.pricing.last_reference_fair_value,
+            reference_current_price: self.pricing.last_reference_current_price,
             interval_open: open_position.and_then(|position| position.interval_open),
             seconds_to_expiry: self.current_position_seconds_to_expiry_at(now_ms),
             realized_vol: self.current_realized_vol_at(now_ms),
@@ -3294,7 +3848,7 @@ impl BinaryOracleEdgeTaker {
         if blocked {
             if should_warn_on_exit_submission_block(fields.submission_blocked_reason) {
                 log::warn!(
-                    "binary_oracle_edge_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                    "binary_oracle_edge_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                     self.config.strategy_id,
                     fields.market_id,
                     fields.phase,
@@ -3306,7 +3860,7 @@ impl BinaryOracleEdgeTaker {
                     fields.forced_flat_reasons,
                     fields.spot_price,
                     fields.spot_venue_name,
-                    fields.reference_fair_value,
+                    fields.reference_current_price,
                     fields.interval_open,
                     fields.seconds_to_expiry,
                     fields.realized_vol,
@@ -3335,7 +3889,7 @@ impl BinaryOracleEdgeTaker {
                 );
             } else {
                 log::debug!(
-                    "binary_oracle_edge_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                    "binary_oracle_edge_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                     self.config.strategy_id,
                     fields.market_id,
                     fields.phase,
@@ -3347,7 +3901,7 @@ impl BinaryOracleEdgeTaker {
                     fields.forced_flat_reasons,
                     fields.spot_price,
                     fields.spot_venue_name,
-                    fields.reference_fair_value,
+                    fields.reference_current_price,
                     fields.interval_open,
                     fields.seconds_to_expiry,
                     fields.realized_vol,
@@ -3377,7 +3931,7 @@ impl BinaryOracleEdgeTaker {
             }
         } else {
             log::info!(
-                "binary_oracle_edge_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_fair_value={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
+                "binary_oracle_edge_taker exit evaluation: strategy_id={} market_id={:?} phase={:?} position_outcome_side={:?} position_id={:?} position_instrument_id={:?} position_quantity={:?} position_avg_px_open={:?} forced_flat_reasons={:?} spot_price={:?} spot_venue_name={:?} reference_current_price={:?} interval_open={:?} seconds_to_expiry={:?} realized_vol={:?} realized_vol_source_venue={:?} realized_vol_source_ts_ms={:?} pricing_kurtosis={} exit_hysteresis_bps={} fair_probability_up={:?} fair_probability_down={:?} uncertainty_band_probability={:?} up_fee_bps={:?} down_fee_bps={:?} hold_ev_bps={:?} exit_ev_bps={:?} exit_decision={:?} historical_entry_fee_rate_known={} historical_entry_fee_rate_reason={} final_fee_amount_known={} final_fee_amount_reason={} submission_instrument_id={:?} submission_order_side={:?} submission_price={:?} submission_quantity={:?} submission_client_order_id={:?} submission_blocked_reason={:?}",
                 self.config.strategy_id,
                 fields.market_id,
                 fields.phase,
@@ -3389,7 +3943,7 @@ impl BinaryOracleEdgeTaker {
                 fields.forced_flat_reasons,
                 fields.spot_price,
                 fields.spot_venue_name,
-                fields.reference_fair_value,
+                fields.reference_current_price,
                 fields.interval_open,
                 fields.seconds_to_expiry,
                 fields.realized_vol,
@@ -3745,7 +4299,15 @@ impl BinaryOracleEdgeTaker {
                 .spot_price()
                 .filter(|value| is_positive_finite(*value))
                 .map_or_else(String::new, evidence_number),
-            reference_fair_value: self.pricing.last_reference_fair_value.map(evidence_number),
+            reference_current_price: self
+                .pricing
+                .last_reference_current_price
+                .map(evidence_number),
+            reference_current_price_source_id: self
+                .active
+                .reference_current_price_source_id
+                .clone(),
+            reference_current_price_failed_over: self.active.reference_current_price_failed_over,
             realized_volatility: String::new(),
             realized_volatility_surface_id: realized_volatility.surface_id,
             realized_volatility_as_of_ms: realized_volatility.as_of_ms,
@@ -3954,7 +4516,15 @@ impl BinaryOracleEdgeTaker {
             price_to_beat_value: evidence_number(price_to_beat),
             reference_quote_ts_event,
             spot_price: evidence_number(spot_price),
-            reference_fair_value: self.pricing.last_reference_fair_value.map(evidence_number),
+            reference_current_price: self
+                .pricing
+                .last_reference_current_price
+                .map(evidence_number),
+            reference_current_price_source_id: self
+                .active
+                .reference_current_price_source_id
+                .clone(),
+            reference_current_price_failed_over: self.active.reference_current_price_failed_over,
             realized_volatility: evidence_number(realized_volatility),
             realized_volatility_surface_id: realized_volatility_fields.surface_id,
             realized_volatility_as_of_ms: realized_volatility_fields.as_of_ms,
@@ -4898,7 +5468,7 @@ impl DataActor for BinaryOracleEdgeTaker {
         let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
         self.refresh_selection_from_cache(now_ms);
         self.register_selection_retry_timer();
-        self.subscribe_reference_quotes();
+        self.subscribe_reference_prices();
         self.subscribe_signal_quotes();
         self.subscribe_realized_volatility_sources();
         Ok(())
@@ -4907,7 +5477,7 @@ impl DataActor for BinaryOracleEdgeTaker {
     fn on_stop(&mut self) -> Result<()> {
         self.unsubscribe_realized_volatility_sources();
         self.unsubscribe_signal_quotes();
-        self.unsubscribe_reference_quotes();
+        self.unsubscribe_reference_prices();
         self.deregister_selection_retry_timer();
         Ok(())
     }
@@ -4920,13 +5490,6 @@ impl DataActor for BinaryOracleEdgeTaker {
     }
 
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
-        if self
-            .reference_instrument_id()
-            .is_some_and(|instrument_id| quote.instrument_id == instrument_id)
-            && let Some(reference_quote) = self.reference_quote_from_tick(quote)
-        {
-            self.observe_reference_quote(&reference_quote);
-        }
         if self
             .signal_instrument_id()
             .is_some_and(|instrument_id| quote.instrument_id == instrument_id)
@@ -4953,6 +5516,14 @@ impl DataActor for BinaryOracleEdgeTaker {
         }
         for snapshot in self.context.observe_realized_volatility_index_price(update) {
             self.pricing.observe_realized_vol_snapshot(snapshot);
+        }
+        Ok(())
+    }
+
+    fn on_data(&mut self, data: &CustomData) -> anyhow::Result<()> {
+        if let Some(update) = ReferencePriceUpdate::from_custom_data(data) {
+            self.observe_reference_price_update(update);
+            self.sync_exposure_context_from_active();
         }
         Ok(())
     }
@@ -5428,6 +5999,61 @@ impl BinaryOracleEdgeTaker {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReferencePriceSubscriptionRequest {
+    source_id: String,
+    provider: String,
+    client_id: ClientId,
+    data_type: DataType,
+    params: Params,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReferencePriceSubscribeEvent {
+    action: &'static str,
+    source_id: String,
+    provider: String,
+    client_id: ClientId,
+    data_type: DataType,
+    params: Params,
+}
+
+const REFERENCE_PRICE_SUBSCRIBE_ACTION: &str = stringify!(subscribe);
+const REFERENCE_PRICE_UNSUBSCRIBE_ACTION: &str = stringify!(unsubscribe);
+
+impl ReferencePriceSubscribeEvent {
+    fn subscribe(subscription: &ReferencePriceSubscriptionRequest) -> Self {
+        Self::from_subscription(REFERENCE_PRICE_SUBSCRIBE_ACTION, subscription)
+    }
+
+    fn unsubscribe(subscription: &ReferencePriceSubscriptionRequest) -> Self {
+        Self::from_subscription(REFERENCE_PRICE_UNSUBSCRIBE_ACTION, subscription)
+    }
+
+    fn from_subscription(
+        action: &'static str,
+        subscription: &ReferencePriceSubscriptionRequest,
+    ) -> Self {
+        Self {
+            action,
+            source_id: subscription.source_id.clone(),
+            provider: subscription.provider.clone(),
+            client_id: subscription.client_id,
+            data_type: subscription.data_type.clone(),
+            params: subscription.params.clone(),
+        }
+    }
+}
+
+impl BinaryOracleEdgeTaker {
+    fn record_reference_price_subscribe_event(&mut self, event: ReferencePriceSubscribeEvent) {
+        #[cfg(test)]
+        self.reference_price_subscribe_events.push(event);
+        #[cfg(not(test))]
+        let _ = event;
+    }
+}
+
 /// One recorded index-price (un)subscribe the resolution-strike re-arm path
 /// issued. Constructed unconditionally so the production ordering is the same
 /// code the test observes; only the storage is test-only (see
@@ -5768,6 +6394,7 @@ struct EntryPricingInputs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum EntryPricingBlockReason {
     SpotPriceMissing,
+    ReferenceCurrentPriceStale,
     StrikePriceMissing,
     SecondsToExpiryMissing,
     RealizedVolNotReady,
@@ -5807,6 +6434,9 @@ fn entry_pricing_block_reason_from_taker(
 ) -> EntryPricingBlockReason {
     match reason {
         TakerPricingBlockReason::SpotPriceMissing => EntryPricingBlockReason::SpotPriceMissing,
+        TakerPricingBlockReason::ReferenceCurrentPriceStale => {
+            EntryPricingBlockReason::ReferenceCurrentPriceStale
+        }
         TakerPricingBlockReason::StrikePriceMissing => EntryPricingBlockReason::StrikePriceMissing,
         TakerPricingBlockReason::SecondsToExpiryMissing => {
             EntryPricingBlockReason::SecondsToExpiryMissing
@@ -5887,7 +6517,7 @@ struct EntryEvaluationLogFields {
     pricing_blocked_by: Vec<EntryPricingBlockReason>,
     spot_price: Option<f64>,
     spot_venue_name: Option<String>,
-    reference_fair_value: Option<f64>,
+    reference_current_price: Option<f64>,
     interval_open: Option<f64>,
     seconds_to_expiry: Option<u64>,
     realized_vol: Option<f64>,
@@ -5941,7 +6571,7 @@ struct EntryEvaluationLogFields {
     sized_notional: Option<f64>,
     selected_side: Option<OutcomeSide>,
     fast_venue_available: bool,
-    reference_fair_value_available_without_fast_venue: bool,
+    reference_current_price_available_without_fast_venue: bool,
     lead_quality_policy_applied: bool,
     lead_quality_reason: &'static str,
     final_fee_amount_known: bool,
@@ -6042,7 +6672,7 @@ struct ExitEvaluationLogFields {
     forced_flat_reasons: Vec<ForcedFlatReason>,
     spot_price: Option<f64>,
     spot_venue_name: Option<String>,
-    reference_fair_value: Option<f64>,
+    reference_current_price: Option<f64>,
     interval_open: Option<f64>,
     seconds_to_expiry: Option<u64>,
     realized_vol: Option<f64>,

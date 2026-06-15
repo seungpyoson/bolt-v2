@@ -295,7 +295,7 @@ pub fn map_adapters(
             let secrets = secrets_for(context.client_key, context.resolved)?;
             Some(BoltV3DataClientAdapterConfig {
                 factory: Box::new(ChainlinkStrikeSourceFactory),
-                config: Box::new(map_data(context.client_key, value, secrets)?),
+                config: Box::new(map_data(context.root, context.client_key, value, secrets)?),
             })
         }
         None => None,
@@ -306,12 +306,30 @@ pub fn map_adapters(
     })
 }
 
+pub fn reference_price_instrument_in_shared_catalog(
+    root: &BoltV3RootConfig,
+    instrument_id: &str,
+) -> Result<bool, String> {
+    let Some(catalog) = root.chainlink_data_streams.as_ref() else {
+        return Ok(false);
+    };
+    for (index, binding) in catalog.feed_bindings.iter().enumerate() {
+        let binding = parse_feed_binding(KEY, index, binding)?;
+        if binding.instrument_id.to_string() == instrument_id {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn map_data(
+    root: &BoltV3RootConfig,
     client_key: &str,
     value: &toml::Value,
     secrets: &ResolvedBoltV3ChainlinkSecrets,
 ) -> Result<ChainlinkStrikeSourceConfig, BoltV3AdapterMappingError> {
-    let cfg: ChainlinkDataConfig = value.clone().try_into().map_err(|error: toml::de::Error| {
+    let value = data_value_with_root_feed_catalog(root, client_key, value)?;
+    let cfg: ChainlinkDataConfig = value.try_into().map_err(|error: toml::de::Error| {
         BoltV3AdapterMappingError::SchemaParse {
             client_key: client_key.to_string(),
             block: "data",
@@ -345,6 +363,45 @@ fn map_data(
         api_key: secrets.api_key.clone(),
         api_secret: secrets.api_secret.clone(),
     })
+}
+
+fn data_value_with_root_feed_catalog(
+    root: &BoltV3RootConfig,
+    client_key: &str,
+    value: &toml::Value,
+) -> Result<toml::Value, BoltV3AdapterMappingError> {
+    let table = value
+        .as_table()
+        .ok_or_else(|| BoltV3AdapterMappingError::SchemaParse {
+            client_key: client_key.to_string(),
+            block: "data",
+            message: "expected a TOML table".to_string(),
+        })?;
+    if table.contains_key("feed_bindings") {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "data.feed_bindings",
+            message: format!(
+                "chainlink_data_streams.feed_bindings is root-owned; clients.{client_key}.data.feed_bindings must be removed"
+            ),
+        });
+    }
+    let catalog = root.chainlink_data_streams.as_ref().ok_or_else(|| {
+        BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "chainlink_data_streams.feed_bindings",
+            message: format!(
+                "chainlink_data_streams.feed_bindings must be configured for clients.{client_key}"
+            ),
+        }
+    })?;
+
+    let mut table = table.clone();
+    table.insert(
+        "feed_bindings".to_string(),
+        toml::Value::Array(catalog.feed_bindings.clone()),
+    );
+    Ok(toml::Value::Table(table))
 }
 
 fn secrets_for<'a>(

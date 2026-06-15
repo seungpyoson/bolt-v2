@@ -28,6 +28,8 @@ pub mod bolt_v3_quoting;
 pub mod bolt_v3_readiness;
 pub mod bolt_v3_realized_volatility;
 pub mod bolt_v3_realized_volatility_runtime;
+pub mod bolt_v3_reference_price;
+pub mod bolt_v3_reference_price_health;
 pub mod bolt_v3_requote_budget;
 pub mod bolt_v3_secrets;
 pub mod bolt_v3_sizing;

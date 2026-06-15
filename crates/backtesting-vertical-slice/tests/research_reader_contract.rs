@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use backtesting_vertical_slice::research_reader::{
-    CatalogQuerySpec, SqlBatchQuerySpec, query_catalog_typed, query_sql_arrow_batches,
+    AnalyticsSourceBinding, CatalogQuerySpec, CustomUiDecision, FeatureJoinSpec,
+    NotebookBiSurfaceSpec, NotebookErgonomics, NotebookQueryEngine, SqlBatchQuerySpec,
+    build_notebook_bi_surface, query_catalog_typed, query_sql_arrow_batches,
+    validate_feature_join_bindings,
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
@@ -194,4 +197,124 @@ fn sql_reader_delegates_to_data_backend_session_for_arrow_batches() {
     let row_count: usize = batches.iter().map(|batch| batch.num_rows()).sum();
 
     assert_eq!(row_count, 2);
+}
+
+#[test]
+fn notebook_bi_surface_exposes_duckdb_and_polars_over_nt_catalog_arrow_without_custom_ui() {
+    let artifact_root = "s3://example-bucket/nt-research-analytics";
+    let surface = build_notebook_bi_surface(NotebookBiSurfaceSpec {
+        artifact_root: artifact_root.to_string(),
+        nt_catalog_arrow_uri:
+            "s3://example-bucket/nt-research-analytics/nt-catalog/v1/projection=research-proof/data/trade_tick/part-0.parquet"
+                .to_string(),
+        query_engines: vec![
+            NotebookQueryEngine {
+                engine_key: "duckdb".to_string(),
+                reads_nt_catalog_arrow: true,
+                read_only: true,
+            },
+            NotebookQueryEngine {
+                engine_key: "polars".to_string(),
+                reads_nt_catalog_arrow: true,
+                read_only: true,
+            },
+        ],
+        dashboard_product_refs: vec![
+            "dashboard-product-gate:sql-bi:v1".to_string(),
+            "dashboard-product-gate:notebook-adjacent:v1".to_string(),
+        ],
+        notebook: NotebookErgonomics {
+            read_only: true,
+            exposes_arrow_batches: true,
+            exposes_sql_examples: true,
+            mutation_actions_enabled: false,
+        },
+        custom_ui: CustomUiDecision::NotSelected,
+    })
+    .expect("BI surface should validate");
+
+    assert_eq!(surface.artifact_root, artifact_root);
+    assert_eq!(
+        surface
+            .query_engines
+            .iter()
+            .map(|engine| engine.engine_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["duckdb", "polars"]
+    );
+    assert_eq!(surface.custom_ui, CustomUiDecision::NotSelected);
+    assert!(!surface.notebook.mutation_actions_enabled);
+}
+
+#[test]
+fn notebook_bi_surface_requires_product_gate_before_custom_ui() {
+    let mut spec = NotebookBiSurfaceSpec {
+        artifact_root: "s3://example-bucket/nt-research-analytics".to_string(),
+        nt_catalog_arrow_uri:
+            "s3://example-bucket/nt-research-analytics/nt-catalog/v1/projection=research-proof/data/trade_tick/part-0.parquet"
+                .to_string(),
+        query_engines: vec![NotebookQueryEngine {
+            engine_key: "duckdb".to_string(),
+            reads_nt_catalog_arrow: true,
+            read_only: true,
+        }],
+        dashboard_product_refs: vec!["dashboard-product-gate:sql-bi:v1".to_string()],
+        notebook: NotebookErgonomics {
+            read_only: true,
+            exposes_arrow_batches: true,
+            exposes_sql_examples: true,
+            mutation_actions_enabled: false,
+        },
+        custom_ui: CustomUiDecision::AllowedAfterProductGate {
+            confirmed_requirement_refs: Vec::new(),
+            rejected_product_refs: vec!["dashboard-product-gate:sql-bi:v1".to_string()],
+        },
+    };
+
+    let err = build_notebook_bi_surface(spec.clone())
+        .expect_err("custom UI needs confirmed requirement evidence");
+    assert!(err.to_string().contains("confirmed requirement"), "{err}");
+
+    spec.custom_ui = CustomUiDecision::AllowedAfterProductGate {
+        confirmed_requirement_refs: vec!["dashboard-requirement:non-tabular-visual:v1".to_string()],
+        rejected_product_refs: Vec::new(),
+    };
+    let err =
+        build_notebook_bi_surface(spec).expect_err("custom UI needs rejected product evidence");
+    assert!(err.to_string().contains("product"), "{err}");
+}
+
+#[test]
+fn analytics_feature_joins_use_source_binding_keys_not_venue_or_provider_literals() {
+    let bindings = vec![
+        AnalyticsSourceBinding {
+            source_binding_key: "primary-market-trades".to_string(),
+            venue_key: "venue-alpha".to_string(),
+            provider_key: "provider-alpha".to_string(),
+        },
+        AnalyticsSourceBinding {
+            source_binding_key: "reference-market-features".to_string(),
+            venue_key: "venue-beta".to_string(),
+            provider_key: "provider-beta".to_string(),
+        },
+    ];
+    let joins = vec![FeatureJoinSpec {
+        left_source_binding_key: "primary-market-trades".to_string(),
+        right_source_binding_key: "reference-market-features".to_string(),
+        as_of_column: "event_time".to_string(),
+        freshness_column: "available_at".to_string(),
+    }];
+
+    validate_feature_join_bindings(&bindings, &joins)
+        .expect("feature joins should resolve through source binding keys");
+
+    let venue_literal_join = vec![FeatureJoinSpec {
+        left_source_binding_key: "venue-alpha".to_string(),
+        right_source_binding_key: "reference-market-features".to_string(),
+        as_of_column: "event_time".to_string(),
+        freshness_column: "available_at".to_string(),
+    }];
+    let err = validate_feature_join_bindings(&bindings, &venue_literal_join)
+        .expect_err("join must not resolve through venue literals");
+    assert!(err.to_string().contains("source_binding_key"), "{err}");
 }

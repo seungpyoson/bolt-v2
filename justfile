@@ -125,6 +125,10 @@ verify-ra-run-pointer-index: check-workspace
     python3 scripts/test_verify_ra_run_pointer_index.py
     python3 scripts/verify_ra_run_pointer_index.py
 
+verify-ra-bi-surface-and-feature-joins: check-workspace
+    python3 scripts/test_verify_ra_bi_surface_and_feature_joins.py
+    python3 scripts/verify_ra_bi_surface_and_feature_joins.py
+
 verify-dashboard-customer-jobs: check-workspace
     python3 scripts/test_verify_dashboard_customer_jobs.py
     python3 scripts/verify_dashboard_customer_jobs.py
@@ -273,6 +277,8 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_ra_artifact_index_commit.py
     python3 scripts/test_verify_ra_run_pointer_index.py
     python3 scripts/verify_ra_run_pointer_index.py
+    python3 scripts/test_verify_ra_bi_surface_and_feature_joins.py
+    python3 scripts/verify_ra_bi_surface_and_feature_joins.py
     python3 scripts/test_verify_dashboard_customer_jobs.py
     python3 scripts/verify_dashboard_customer_jobs.py
     python3 scripts/test_verify_dashboard_field_source_matrix.py

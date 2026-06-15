@@ -371,6 +371,20 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             "every production strategy source root must be covered by gated source integrity",
         )
 
+    def test_maker_strategy_source_root_is_recognized_as_gated(self) -> None:
+        # The maker is sealed by its own digest (`MAKER_SOURCE_ROOTS`), a
+        # separate seal from the taker's `STRATEGY_SOURCE_ROOTS`. The policy
+        # fence must still count it as gated; were the gated set derived from the
+        # taker tuple alone, this root would be wrongly flagged as ungated.
+        self.assertIn(
+            "src/strategies/binary_oracle_maker",
+            VERIFIER.gated_strategy_source_root_names(),
+        )
+        self.assertNotIn(
+            "src/strategies/binary_oracle_maker",
+            VERIFIER.ungated_production_strategy_source_roots(),
+        )
+
 
     def test_shared_policy_does_not_blanket_impl_raw_sink_for_every_strategy(self) -> None:
         source = (VERIFIER.REPO_ROOT / "src/bolt_v3_order_execution.rs").read_text(

@@ -162,6 +162,17 @@ SUBMIT_ADMISSION_SOURCE_ROOT = SUBMIT_ADMISSION_SOURCE_ROOTS[0]
 OUTCOME_GROUP_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[OUTCOME_GROUP_KEY]
 MAKER_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[MAKER_KEY]
 MAKER_SOURCE_ROOT = MAKER_SOURCE_ROOTS[0]
+# Union of every gated source set's roots, mirroring the full
+# `GATED_SOURCE_ROOTS` registry in `src/source_canonicalization.rs`. Gates that
+# reason about the set of gated roots — e.g. the strategy-policy fence's
+# ungated-root check — resolve through this aggregate, so a newly sealed
+# strategy is recognized as gated the moment its roots are registered above and
+# no gate hardcodes a per-strategy subset of the seals.
+ALL_GATED_SOURCE_ROOTS = (
+    *STRATEGY_SOURCE_ROOTS,
+    *SUBMIT_ADMISSION_SOURCE_ROOTS,
+    *MAKER_SOURCE_ROOTS,
+)
 MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024
 
 

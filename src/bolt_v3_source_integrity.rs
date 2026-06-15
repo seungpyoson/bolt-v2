@@ -305,8 +305,10 @@ mod tests {
     // consolidated reservation-evidence writer trait.
     // Re-derived after adding behavioral rollback coverage to the shared
     // execution policy.
+    // Re-derived after isolating live-node unit-test catalog paths from the
+    // production fixture path.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "4096ff5fc33e5a3b47d6494430b46ae75d69aa974ce3e676e538f4d919f140d8";
+        "1babc3befb7021b3f11f7726beeb4af6c75c17756320853b2cc5865515000052";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

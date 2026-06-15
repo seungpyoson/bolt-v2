@@ -298,6 +298,28 @@ fn repair_math_requires_explicit_edge_inequality_and_plans_residual_quantities()
 }
 
 #[test]
+fn repair_costs_only_the_residual_quantity_needed_from_a_larger_quote() {
+    let input = repair_input(
+        vec![
+            ("YES", dec("1.0"), dec("0.40")),
+            ("NO", dec("0.50"), dec("0.20")),
+        ],
+        vec![("NO", dec("1.0"), dec("0.50"))],
+    );
+
+    let outcome = input.plan_repair(&repair_policy());
+
+    assert_eq!(
+        outcome,
+        BoltV3BasketRepairOutcome::Repair {
+            residuals: vec![("NO".to_string(), dec("0.50"))],
+            projected_absolute_edge: dec("0.15"),
+            projected_edge_bps: dec_from_i64(1764),
+        }
+    );
+}
+
+#[test]
 fn repair_denial_transitions_to_unwind_or_stuck_without_live_submit() {
     let mut stale = repair_input(
         vec![("YES", dec("1.0"), dec("0.44"))],
@@ -322,6 +344,38 @@ fn repair_denial_transitions_to_unwind_or_stuck_without_live_submit() {
         expensive.plan_repair(&repair_policy()),
         BoltV3BasketRepairOutcome::Unwind {
             reason: "repair cannot preserve admitted edge floors".to_string()
+        }
+    );
+}
+
+#[test]
+fn unwind_requires_fresh_executable_reductions_for_every_filled_leg() {
+    let input = BoltV3BasketUnwindInput {
+        filled_quantities: vec![
+            ("YES".to_string(), dec("1.0")),
+            ("NO".to_string(), dec("1.0")),
+        ],
+        executable_unwind_legs: vec![repair_leg("YES", dec("1.0"), dec("0.43"), 1_000)],
+        now_unix_ms: 1_100,
+        settled: false,
+        remaining_retry_budget: 1,
+    };
+
+    assert_eq!(
+        input.plan_unwind(&unwind_policy()),
+        BoltV3BasketUnwindOutcome::Stuck {
+            reason: "fresh executable unwind books are required".to_string()
+        }
+    );
+
+    assert_eq!(
+        BoltV3BasketUnwindInput {
+            executable_unwind_legs: Vec::new(),
+            ..input
+        }
+        .plan_unwind(&unwind_policy()),
+        BoltV3BasketUnwindOutcome::Stuck {
+            reason: "fresh executable unwind books are required".to_string()
         }
     );
 }

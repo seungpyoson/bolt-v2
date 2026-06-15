@@ -298,6 +298,7 @@ fn taker_pricing_reports_current_readiness_blockers_without_strategy_order_state
         blocked,
         vec![
             TakerPricingBlockReason::SpotPriceMissing,
+            TakerPricingBlockReason::ReferenceCurrentPriceStale,
             TakerPricingBlockReason::StrikePriceMissing,
             TakerPricingBlockReason::SecondsToExpiryMissing,
             TakerPricingBlockReason::RealizedVolNotReady,

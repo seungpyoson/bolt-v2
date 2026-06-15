@@ -1,804 +1,669 @@
-# CI Failed Job Log Snippets Implementation Plan
+# CI Failed Job Diagnostics Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Surface bounded failed-job log snippets for the exact full-CI run before the whole workflow reaches terminal state.
+**Goal:** While `verify-remote` is waiting on the exact full-CI run for the current PR head, print useful best-effort diagnostics for completed failed jobs before the whole workflow finishes.
 
-**Architecture:** Keep `verify-remote` as the exact-head proof waiter. Add a focused CI log collection module that inspects failed completed jobs for the current full-CI run attempt and returns sanitized snippets; `verify-remote` calls it opportunistically while polling, and a `rust_verification.py ci-logs` subcommand runs the same collector once for the current exact PR head.
+**Architecture:** Keep diagnostics inside `scripts/rust_verification.py`. Reuse the existing exact-head run tracking; once a run id and attempt are known, poll completed failed jobs for that run, fetch `gh run view --job <job-id> --log-failed`, print a bounded excerpt when available, and keep retrying unavailable logs without changing `verify-remote` pass/fail behavior.
 
-**Tech Stack:** Python 3.12+ stdlib, GitHub CLI `gh` for operator authentication, existing TOML configs in `ci/`, existing `just` recipes, GitHub Actions workflow-job REST behavior.
+**Tech Stack:** Python 3.12+ stdlib, GitHub CLI `gh`, existing `ci/rust-verification.toml`, existing `scripts/test_verify_remote.py` and `scripts/test_rust_verification.py` self-test style, existing `just` recipes.
 
 ---
-
-## Investigation Summary
-
-- Clean slice worktree: `/Users/spson/Projects/Claude/bolt-v2/.worktrees/ci-log-collector-plan`
-- Branch: `codex/ci-log-collector-plan`
-- Base: `origin/main` at `532b9ba3623d9bd4fdc87361c10593c593cf6827`
-- Current high-value workflow: `.github/workflows/ci.yml` named `CI`
-- Current shard jobs: `nextest shard ${{ matrix.shard }} of 4` with `strategy.fail-fast: false`
-- Existing job map: `ci/github-actions-runners.toml` already defines `[ci_provenance.full_ci.jobs]`, including the test-shard check-name template and shard count.
-- Existing verifier: `scripts/rust_verification.py` already finds/dispatches exact-head full-CI runs but only watches workflow-run status.
-- Existing config split: `ci/rust-verification.toml` owns `verify-remote` polling; `ci/github-actions-runners.toml` owns GitHub workflow/job identity and API page sizes.
-- GitHub API fact: job metadata can be listed by workflow run attempt, and job logs are fetched by job id through a redirecting endpoint whose link expires quickly. The implementation must reuse the safe redirect behavior already present in `scripts/ci_provenance.py` so authorization headers are not forwarded to non-GitHub storage redirects.
 
 ## Scope
 
-Implement one slice only:
+This is a middle-path diagnostics slice.
 
-- Full-CI workflow only, using `ci_provenance.workflow_name = "CI"` and `workflow_path = ".github/workflows/ci.yml"`.
-- Current branch PR only.
-- Exact pushed HEAD only.
-- Latest matching run/attempt only.
-- Failed completed jobs only.
-- Bounded sanitized snippets only.
-- No workflow YAML changes.
-- No cargo/nextest behavior changes.
-- No persisted full logs by default.
+In scope:
+
+- Exact current PR head only.
+- Full-CI workflow run already selected by `verify-remote`.
+- Completed failed jobs only.
+- Best-effort failed-step log excerpts.
+- Retry when GitHub knows the job failed but has not exposed the log yet.
+- A one-shot `ci-logs` command using the same diagnostics path.
+
+Out of scope:
+
+- Guaranteed failure summaries through new CI artifacts.
+- Workflow YAML changes.
+- A separate log-ingestion module.
+- Enterprise-grade secret scanning.
+- Persisting full logs.
+- Changing whether `verify-remote` passes or fails.
 
 ## File Structure
 
-- Create `scripts/ci_log_collection.py`: pure collection library. It loads log-collection config, lists jobs for a run attempt, fetches failed-job logs through a safe redirect handler, redacts and clips snippets, renders a stable report, and tracks already-reported job ids.
-- Create `scripts/test_ci_log_collection.py`: unit tests for config validation, job filtering, log availability lag, redaction, clipping, and report-once behavior.
-- Modify `ci/github-actions-runners.toml`: add `[ci_log_collection]` values for snippet caps, redaction fragments, API behavior, and output behavior.
-- Modify `scripts/rust_verification.py`: import `ci_log_collection`, include `attempt` in workflow-run JSON fields, add a `ci-logs` subcommand, and call the collector during `wait_for_full_ci_run`.
-- Modify `scripts/test_verify_remote.py`: assert `verify-remote` prints a failed-job snippet for an in-progress run with a failed completed shard, assert `ci-logs` enforces current exact PR head, and assert both commands preserve their exit-code contracts.
-- Modify `scripts/test_rust_verification.py`: update harness payloads to include `attempt` and keep existing remote-verification expectations intact.
-- Modify `justfile`: add `ci-logs` recipe that calls `python3 "{{rust_verification_owner}}" ci-logs --repo "{{repo_root}}"`, and add the new Python self-test to `ci-lint-workflow`.
+- Modify `ci/rust-verification.toml`: add small diagnostics caps under `[remote_verification]`.
+- Modify `scripts/rust_verification.py`: add run-attempt parsing, failed-job diagnostics state, `gh run view --job ... --log-failed` fetching, and `ci-logs` dispatch.
+- Modify `scripts/test_verify_remote.py`: cover diagnostics during an in-progress tracked run, unavailable-log retry behavior, and no duplicate printed logs.
+- Modify `scripts/test_rust_verification.py`: cover policy parsing, command dispatch, and `ci-logs` exact-head behavior.
+- Modify `justfile`: add `ci-logs` recipe that calls `scripts/rust_verification.py ci-logs`.
 
 ## Design Decisions
 
-1. Do not build a generic multi-workflow collector.
-   The first implementation is full-CI only. It binds to the existing `[ci_provenance]` workflow identity instead of adding a new workflow selector.
+1. Do not promise early logs.
+   GitHub can report a failed job before it exposes that job's log. The tool should say "log not available yet" and retry.
 
-2. Do not make log fetching part of pass/fail proof.
-   `verify-remote` still returns based on the workflow run conclusion. Log collection failures are diagnostic warnings, never proof failures.
+2. Keep the implementation local to `scripts/rust_verification.py`.
+   This is diagnostic behavior for the remote verifier, not a reusable log system.
 
-3. Do not add a second long-running poller.
-   `verify-remote` calls the collector inside its existing poll loop. `just ci-logs` is one-shot.
+3. Use `gh run view --job <job-id> --log-failed`.
+   This delegates GitHub's job-log fallback behavior to `gh` and avoids hand-rolling redirect handling.
 
-4. Do not persist logs by default.
-   Output goes to stderr/stdout as bounded snippets. Full-log files are out of scope for this slice.
+4. Keep redaction simple.
+   Clip output by line and byte caps from TOML, strip ANSI escapes, and mask obvious assignment-style secrets such as `TOKEN=...`, `PASSWORD=...`, `SECRET=...`, `API_KEY=...`, and `Authorization: Bearer ...`.
 
-5. Do not change cargo/nextest flags.
-   Current shard `fail-fast: false` already ensures all four shards run. Snippet extraction should first target existing nextest and Rust failure markers.
-
-6. Keep command ownership in `rust_verification.py`.
-   `scripts/ci_log_collection.py` owns collection logic. `scripts/rust_verification.py` owns operator-facing `verify-remote` and `ci-logs` command dispatch so recipes keep the existing verifier entry point.
+5. Keep state per wait loop.
+   Each `verify-remote` wait loop remembers which failed jobs already printed logs and which unavailable notices were recently shown. Nothing is persisted.
 
 ---
 
-## Task 1: Add CI Log Collection Config
+## Task 1: Add Remote Diagnostics Policy
 
 **Files:**
-- Modify: `ci/github-actions-runners.toml`
-- Test: `scripts/test_ci_log_collection.py`
+- Modify: `ci/rust-verification.toml`
+- Modify: `scripts/rust_verification.py`
+- Modify: `scripts/test_verify_remote.py`
+- Modify: `scripts/test_rust_verification.py`
 
-- [ ] **Step 1: Write failing config validation tests**
+- [ ] **Step 1: Write failing policy parsing test**
 
-Add tests that require this table and reject unsafe values:
+Add this test to `scripts/test_rust_verification.py` and call it from `main()` after `assert_oversized_policy_fails_closed()`:
 
 ```python
-def assert_raises(fragment: str, func) -> None:
-    try:
-        func()
-    except CiLogCollectionError as exc:
-        if fragment not in str(exc):
-            raise AssertionError(str(exc))
-        return
-    raise AssertionError(f"expected error containing {fragment!r}")
-
-
-def assert_load_config_requires_positive_snippet_caps() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        config = write_config(
-            pathlib.Path(tmp),
-            """
-            [ci_log_collection]
-            schema_version = 1
-            failed_jobs_only = true
-            snippet_max_lines = 0
-            snippet_context_lines = 20
-            snippet_max_bytes = 20000
-            job_log_max_bytes = 200000
-            api_timeout_seconds = 30
-            unavailable_log_notice_interval_attempts = 3
-            unavailable_log_notice = "failed job log is not available yet"
-            failure_markers = ["panicked at", "error:", "FAIL ["]
-            redacted_key_fragments = ["TOKEN", "SECRET", "PASSWORD", "PRIVATE_KEY", "API_KEY"]
-            redacted_value_patterns = ['gh[pousr]_[A-Za-z0-9_]{20,}', 'github_pat_[A-Za-z0-9_]{20,}']
-            """
-        )
-        assert_raises("snippet_max_lines", lambda: load_ci_log_collection_config(config))
+def assert_remote_diagnostics_policy_loads() -> None:
+    owner = load_owner_module()
+    policy = {
+        "remote_verification": {
+            "poll_interval_seconds": 15,
+            "checks_appear_timeout_seconds": 300,
+            "overall_timeout_seconds": 3600,
+            "diagnostic_log_max_lines": 160,
+            "diagnostic_log_max_bytes": 20000,
+            "diagnostic_unavailable_notice_interval_polls": 4,
+        }
+    }
+    loaded = owner.remote_verification_policy(policy)
+    if loaded["diagnostic_log_max_lines"] != 160:
+        raise AssertionError(loaded)
+    if loaded["diagnostic_log_max_bytes"] != 20000:
+        raise AssertionError(loaded)
+    if loaded["diagnostic_unavailable_notice_interval_polls"] != 4:
+        raise AssertionError(loaded)
 ```
 
-Expected failure before implementation: `NameError` or missing module/function.
+Expected before implementation: `KeyError` or missing returned policy values.
 
 - [ ] **Step 2: Add TOML values**
 
-Append to `ci/github-actions-runners.toml`:
+In `ci/rust-verification.toml`, extend `[remote_verification]`:
 
 ```toml
-[ci_log_collection]
-schema_version = 1
-failed_jobs_only = true
-snippet_max_lines = 120
-snippet_context_lines = 20
-snippet_max_bytes = 20000
-job_log_max_bytes = 200000
-api_timeout_seconds = 30
-unavailable_log_notice_interval_attempts = 3
-unavailable_log_notice = "failed job log is not available yet"
-failure_markers = [
-    "panicked at",
-    "error:",
-    "FAIL [",
-    "FAILED",
-    "test result: FAILED",
-    "thread '",
-    "Caused by:",
-]
-redacted_key_fragments = [
-    "TOKEN",
-    "SECRET",
-    "PASSWORD",
-    "PRIVATE_KEY",
-    "API_KEY",
-    "ACCESS_KEY",
-    "SESSION_TOKEN",
-    "AUTHORIZATION",
-    "BEARER",
-]
-redacted_value_patterns = [
-    'gh[pousr]_[A-Za-z0-9_]{20,}',
-    'github_pat_[A-Za-z0-9_]{20,}',
-    'AKIA[0-9A-Z]{16}',
-    'ASIA[0-9A-Z]{16}',
-    'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}',
-    '-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----',
-    'Bearer\s+[A-Za-z0-9._~+/=-]{20,}',
-    'https?://[^\s/:@]+:[^\s@]+@',
-]
+diagnostic_log_max_lines = 160
+diagnostic_log_max_bytes = 20000
+diagnostic_unavailable_notice_interval_polls = 4
 ```
 
-- [ ] **Step 3: Implement config loader**
+- [ ] **Step 3: Extend policy validation and loading**
 
-In `scripts/ci_log_collection.py`, add:
+In `scripts/rust_verification.py`, add `import dataclasses` and extend `validate_remote_verification_policy` to require the three new positive integer fields:
 
 ```python
-@dataclasses.dataclass(frozen=True)
-class CiLogCollectionConfig:
-    failed_jobs_only: bool
-    snippet_max_lines: int
-    snippet_context_lines: int
-    snippet_max_bytes: int
-    job_log_max_bytes: int
-    api_timeout_seconds: int
-    unavailable_log_notice_interval_attempts: int
-    unavailable_log_notice: str
-    failure_markers: tuple[str, ...]
-    redacted_key_fragments: tuple[str, ...]
-    redacted_value_patterns: tuple[re.Pattern[str], ...]
+for key in (
+    "poll_interval_seconds",
+    "checks_appear_timeout_seconds",
+    "overall_timeout_seconds",
+    "diagnostic_log_max_lines",
+    "diagnostic_log_max_bytes",
+    "diagnostic_unavailable_notice_interval_polls",
+):
+    value = policy.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise PolicyError(f"remote_verification.{key} must be a positive integer")
+    values[key] = value
 ```
 
-Validation rules:
+Return the new fields from `remote_verification_policy`:
 
-- `schema_version` must be `1`.
-- boolean fields must be booleans.
-- caps must be positive integers.
-- `snippet_context_lines <= snippet_max_lines`.
-- `unavailable_log_notice_interval_attempts` and `api_timeout_seconds` must be positive integers.
-- `failure_markers`, `redacted_key_fragments`, and `redacted_value_patterns` must be non-empty string arrays.
-- every `redacted_value_patterns` item must compile with `re.compile`.
+```python
+return {
+    "poll_interval_seconds": int(raw["poll_interval_seconds"]),
+    "checks_appear_timeout_seconds": int(raw["checks_appear_timeout_seconds"]),
+    "overall_timeout_seconds": int(raw["overall_timeout_seconds"]),
+    "diagnostic_log_max_lines": int(raw["diagnostic_log_max_lines"]),
+    "diagnostic_log_max_bytes": int(raw["diagnostic_log_max_bytes"]),
+    "diagnostic_unavailable_notice_interval_polls": int(raw["diagnostic_unavailable_notice_interval_polls"]),
+}
+```
 
-- [ ] **Step 4: Run tests**
+Update `write_policy` in `scripts/test_verify_remote.py` so the generated `[remote_verification]` table includes:
+
+```toml
+diagnostic_log_max_lines = 160
+diagnostic_log_max_bytes = 20000
+diagnostic_unavailable_notice_interval_polls = 4
+```
+
+Update `VerifyRemoteHarness.fake_load_policy` in `scripts/test_rust_verification.py` so its returned `remote_verification` dict includes:
+
+```python
+"diagnostic_log_max_lines": 160,
+"diagnostic_log_max_bytes": 20000,
+"diagnostic_unavailable_notice_interval_polls": 4,
+```
+
+- [ ] **Step 4: Run test**
 
 Run:
 
 ```bash
-python3 scripts/test_ci_log_collection.py
+python3 scripts/test_rust_verification.py
+python3 scripts/test_verify_remote.py
 ```
 
-Expected: config tests pass.
+Expected: pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add ci/github-actions-runners.toml scripts/ci_log_collection.py scripts/test_ci_log_collection.py
-git commit -m "test: add ci log collection config"
+git add ci/rust-verification.toml scripts/rust_verification.py scripts/test_verify_remote.py scripts/test_rust_verification.py
+git commit -m "feat: add remote diagnostic policy"
 ```
 
 ---
 
-## Task 2: Implement Failed-Job Snippet Collection
+## Task 2: Add Failed Job Diagnostics Helpers
 
 **Files:**
-- Modify: `scripts/ci_log_collection.py`
-- Test: `scripts/test_ci_log_collection.py`
+- Modify: `scripts/rust_verification.py`
+- Modify: `scripts/test_verify_remote.py`
 
-- [ ] **Step 1: Write failing tests for failed-job discovery**
+- [ ] **Step 1: Write failing helper tests**
 
-Use a fake client with two jobs:
+Add these tests to `scripts/test_verify_remote.py` and call them from `main()` before the final `print`:
 
 ```python
-def assert_collects_only_completed_failed_jobs() -> None:
-    client = FakeGhApi(
-        jobs=[
-            {"id": 11, "name": "nextest shard 1 of 4", "status": "completed", "conclusion": "failure", "html_url": "https://example.invalid/job/11"},
-            {"id": 12, "name": "nextest shard 2 of 4", "status": "in_progress", "conclusion": None, "html_url": "https://example.invalid/job/12"},
-        ],
-        logs={11: "thread 'case' panicked at src/lib.rs:10\nerror: assertion failed\n"},
+def assert_diagnostic_excerpt_is_bounded_and_masked() -> None:
+    owner = load_owner_module()
+    text = "\x1b[31mline0\x1b[0m\nTOKEN=abc123\nAuthorization: Bearer secretvalue\nline3\nline4\n"
+    excerpt = owner.diagnostic_log_excerpt(
+        text,
+        max_lines=3,
+        max_bytes=200,
     )
-    report = CiLogCollector(client, config(), "seungpyoson/bolt-v2", run_jobs_per_page=100).collect(run_id=101, attempt=2)
-    assert [item.job_id for item in report.items] == [11]
-    assert "nextest shard 1 of 4" in report.rendered
-    assert "panicked at" in report.rendered
+    if "\x1b" in excerpt:
+        raise AssertionError(excerpt)
+    if "abc123" in excerpt or "secretvalue" in excerpt:
+        raise AssertionError(excerpt)
+    if len(excerpt.splitlines()) > 3:
+        raise AssertionError(excerpt)
 
 
-def main() -> int:
-    assert_collects_only_completed_failed_jobs()
-    assert_redacts_pat_aws_jwt_pem_bearer_and_credentialed_urls()
-    assert_unavailable_log_notice_is_throttled_without_stopping_retries()
-    assert_reported_jobs_are_not_repeated()
-    assert_marker_context_and_snippet_limits_are_stable()
-    return 0
+def assert_run_attempt_accepts_positive_ints_only() -> None:
+    owner = load_owner_module()
+    if owner.run_attempt({"attempt": 2}) != 2:
+        raise AssertionError("integer attempt rejected")
+    if owner.run_attempt({"attempt": "3"}) != 3:
+        raise AssertionError("string attempt rejected")
+    if owner.run_attempt({"attempt": True}) is not None:
+        raise AssertionError("boolean attempt accepted")
+    if owner.run_attempt({"attempt": 0}) is not None:
+        raise AssertionError("zero attempt accepted")
 ```
 
-Expected failure before implementation: collector class missing.
+Expected before implementation: helper functions are missing.
 
-- [ ] **Step 2: Implement the collection API**
+- [ ] **Step 2: Implement small data types and helpers**
 
-Public API:
-
-At the top of `scripts/ci_log_collection.py`, import `dataclasses`, `pathlib`, `re`, `subprocess`, `typing`, `urllib.error`, `urllib.request`, and the local `ci_provenance` module.
+In `scripts/rust_verification.py`, add `cast` to the existing `typing` import, then add:
 
 ```python
-class CiLogCollectionError(RuntimeError):
-    """Diagnostic CI log collection failed."""
+@dataclasses.dataclass
+class RemoteFailureDiagnosticsState:
+    reported_job_ids: set[int] = dataclasses.field(default_factory=set)
+    unavailable_notice_polls: dict[int, int] = dataclasses.field(default_factory=dict)
 
 
-class CiLogUnavailable(CiLogCollectionError):
-    """A failed job exists, but GitHub has not made its log downloadable yet."""
-
-
-@dataclasses.dataclass(frozen=True)
-class CiLogSnippetItem:
-    job_id: int
-    job_name: str
-    job_url: str
-    snippet: str
-    unavailable: bool = False
-
-
-@dataclasses.dataclass(frozen=True)
-class CiLogSnippetReport:
-    items: tuple[CiLogSnippetItem, ...]
-    rendered: str
-
-
-class GhActionsClient:
-    @classmethod
-    def from_gh_cli(cls) -> "GhActionsClient":
-        try:
-            result = subprocess.run(
-                ["gh", "auth", "token"],
-                check=True,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-        except FileNotFoundError as exc:
-            raise CiLogCollectionError("gh is required for CI log collection") from exc
-        except subprocess.CalledProcessError as exc:
-            raise CiLogCollectionError("gh auth token failed for CI log collection") from exc
-        token = result.stdout.strip()
-        if not token:
-            raise CiLogCollectionError("gh auth token returned an empty token")
-        return cls(token)
-
-    def __init__(self, token: str) -> None:
-        self._token = token
-
-    def _api_json(self, repo: str, path: str, query: dict[str, str]) -> dict[str, object]:
-        try:
-            return ci_provenance.github_api_json(repo, self._token, path, query)
-        except ci_provenance.ProvenanceError as exc:
-            raise CiLogCollectionError(str(exc)) from exc
-
-    def jobs_for_attempt(self, repo: str, run_id: int, attempt: int, *, per_page: int) -> list[dict[str, object]]:
-        payload = self._api_json(repo, f"actions/runs/{run_id}/attempts/{attempt}/jobs", {"per_page": str(per_page)})
-        jobs = payload.get("jobs")
-        if not isinstance(jobs, list):
-            raise CiLogCollectionError(f"workflow run {run_id} attempt {attempt} jobs payload is malformed")
-        try:
-            ci_provenance.require_complete_first_page(payload, jobs, per_page=per_page, label=f"workflow run {run_id} attempt {attempt} jobs")
-        except ci_provenance.ProvenanceError as exc:
-            raise CiLogCollectionError(str(exc)) from exc
-        if not all(isinstance(job, dict) for job in jobs):
-            raise CiLogCollectionError(f"workflow run {run_id} attempt {attempt} jobs payload contains malformed jobs")
-        return typing.cast(list[dict[str, object]], jobs)
-
-    def job_log_text(self, repo: str, job_id: int, *, timeout: int, max_bytes: int) -> str:
-        url = f"https://api.github.com/repos/{repo}/actions/jobs/{job_id}/logs"
-        request = urllib.request.Request(url, headers={"Authorization": f"Bearer {self._token}", **ci_provenance.GITHUB_API_HEADERS})
-        try:
-            with ci_provenance.open_github_api_request(request, timeout=timeout) as response:
-                payload = response.read(max_bytes + 1)
-        except urllib.error.HTTPError as exc:
-            if exc.code in {404, 410}:
-                raise CiLogUnavailable(str(exc)) from exc
-            raise CiLogCollectionError(f"GitHub job log request failed for job {job_id}: {exc}") from exc
-        except urllib.error.URLError as exc:
-            raise CiLogUnavailable(str(exc)) from exc
-        if len(payload) > max_bytes:
-            payload = payload[:max_bytes]
-        return payload.decode("utf-8", errors="replace")
-
-
-class CiLogCollector:
-    def __init__(self, client: GhActionsClient, config: CiLogCollectionConfig, repo_full_name: str, *, run_jobs_per_page: int) -> None:
-        self.client = client
-        self.config = config
-        self.repo_full_name = repo_full_name
-        self.run_jobs_per_page = run_jobs_per_page
-        self.reported_job_ids: set[int] = set()
-        self.unavailable_notice_attempts: dict[int, int] = {}
-        self.warned_collection_error = False
-
-    def collect(self, *, run_id: int, attempt: int) -> CiLogSnippetReport:
-        items: list[CiLogSnippetItem] = []
-        jobs = self.client.jobs_for_attempt(
-            self.repo_full_name,
-            run_id,
-            attempt,
-            per_page=self.run_jobs_per_page,
-        )
-        for job in completed_failed_jobs(jobs):
-            job_id = require_positive_int(job.get("id"), "job id")
-            if job_id in self.reported_job_ids:
-                continue
-            job_name = require_text(job.get("name"), "job name")
-            job_url = optional_text(job.get("html_url"))
-            try:
-                log_text = self.client.job_log_text(
-                    self.repo_full_name,
-                    job_id,
-                    timeout=self.config.api_timeout_seconds,
-                    max_bytes=self.config.job_log_max_bytes,
-                )
-            except CiLogUnavailable:
-                attempts = self.unavailable_notice_attempts.get(job_id, 0) + 1
-                self.unavailable_notice_attempts[job_id] = attempts
-                if attempts == 1 or attempts % self.config.unavailable_log_notice_interval_attempts == 0:
-                    items.append(CiLogSnippetItem(job_id, job_name, job_url, self.config.unavailable_log_notice, unavailable=True))
-                continue
-            snippet = sanitize_and_clip_snippet(log_text, self.config)
-            items.append(CiLogSnippetItem(job_id, job_name, job_url, snippet))
-            self.reported_job_ids.add(job_id)
-        return render_snippet_report(run_id, attempt, tuple(items))
+def run_attempt(run: dict[str, Any]) -> int | None:
+    attempt = run.get("attempt")
+    if isinstance(attempt, int) and not isinstance(attempt, bool) and attempt > 0:
+        return attempt
+    if isinstance(attempt, str) and attempt.isdecimal() and int(attempt) > 0:
+        return int(attempt)
+    return None
 ```
 
-Implement `completed_failed_jobs`, `require_positive_int`, `require_text`, `optional_text`, `sanitize_and_clip_snippet`, and `render_snippet_report` in `scripts/ci_log_collection.py`; keep them module-private except where tests need direct coverage of redaction and clipping.
+Add log cleanup helpers:
 
-Behavior:
+```python
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|SESSION_TOKEN)\b\s*[:=]\s*\S+"
+)
+BEARER_RE = re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S+")
 
-- Calls `GET repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs`.
-- Uses `per_page` from existing `ci_provenance.api_limits.run_jobs_per_page`.
-- Uses `ci_provenance.require_complete_first_page` so pagination saturation or malformed counts fail closed instead of silently hiding failed jobs.
-- Selects jobs where `status == "completed"` and `conclusion == "failure"`.
-- Skips ids already in `reported_job_ids`.
-- Fetches logs through `GET repos/{owner}/{repo}/actions/jobs/{job_id}/logs`.
-- Reuses `ci_provenance.open_github_api_request` so `Authorization` and other sensitive headers are stripped on cross-host log redirects.
-- Treats `404`, `410`, empty response, or redirect/log failures as unavailable diagnostics, not fatal proof failures.
-- Retries unavailable failed-job logs on every poll until the job is reported, the workflow reaches terminal state, or `verify-remote` times out.
-- Throttles repeated unavailable-log notices with `unavailable_log_notice_interval_attempts` so stderr is bounded without giving up on later log availability.
-- Adds successfully reported failed job ids to `reported_job_ids`.
 
-- [ ] **Step 3: Implement stable rendering, redaction, and clipping**
+def mask_obvious_secrets(line: str) -> str:
+    line = SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}=<redacted>", line)
+    return BEARER_RE.sub("Authorization: Bearer <redacted>", line)
 
-Render one block per job. Use this exact format:
 
-````text
-CI failed job log snippet
-workflow_run=<run_id> attempt=<attempt> job_id=<job_id>
-job=<job_name>
-url=<html_url>
-```text
-<sanitized snippet text>
+def diagnostic_log_excerpt(text: str, *, max_lines: int, max_bytes: int) -> str:
+    cleaned = ANSI_ESCAPE_RE.sub("", text)
+    lines = [mask_obvious_secrets(line) for line in cleaned.splitlines()]
+    excerpt = "\n".join(lines[-max_lines:])
+    encoded = excerpt.encode("utf-8")
+    if len(encoded) > max_bytes:
+        excerpt = encoded[-max_bytes:].decode("utf-8", errors="replace")
+    return excerpt.strip()
 ```
-````
 
-Rules:
-
-- Split log text into lines.
-- Redact assignment-like values when the key contains any configured `redacted_key_fragments`.
-- Redact high-confidence secret values using `redacted_value_patterns`, including GitHub PATs, GitHub fine-grained PATs, AWS access key ids, JWTs, PEM private key blocks, bearer tokens, and credentialed URLs.
-- After redaction, run a safety scan with the same high-confidence patterns; if any still match, emit only `snippet suppressed: unsafe log content matched redaction safety check`.
-- Process `failure_markers` in config order. For the first marker that matches, choose the earliest matching line for that marker.
-- `snippet_context_lines` means lines before and after the marker, so the raw marker window is at most `2 * snippet_context_lines + 1` lines before byte clipping.
-- Fall back to the last `snippet_max_lines` lines.
-- Clip final snippet to `snippet_max_bytes`.
-- Strip ANSI escape sequences before marker matching and output.
-- If marker context produces more than `snippet_max_lines`, clamp the window to `snippet_max_lines` while keeping the marker line inside the retained range.
-
-- [ ] **Step 4: Run tests**
+- [ ] **Step 3: Run test**
 
 Run:
 
 ```bash
-python3 scripts/test_ci_log_collection.py
+python3 scripts/test_verify_remote.py
 ```
 
-Expected: snippet, redaction, unavailable-log, and report-once tests pass.
+Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add scripts/ci_log_collection.py scripts/test_ci_log_collection.py
-git commit -m "feat: collect failed ci job log snippets"
+git add scripts/rust_verification.py scripts/test_verify_remote.py
+git commit -m "feat: add remote failure diagnostic helpers"
 ```
 
 ---
 
-## Task 3: Add One-Shot `rust_verification.py ci-logs`
+## Task 3: Emit Diagnostics During `verify-remote`
 
 **Files:**
 - Modify: `scripts/rust_verification.py`
 - Modify: `scripts/test_verify_remote.py`
 - Modify: `scripts/test_rust_verification.py`
+
+- [ ] **Step 1: Write failing in-progress diagnostics test**
+
+Add this test to `scripts/test_verify_remote.py` and call it from `main()` before the final `print`:
+
+```python
+def assert_verify_remote_reports_failed_job_while_run_is_in_progress() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+
+        original_preconditions = owner.ensure_verify_remote_preconditions
+        original_pr = owner.pr_for_current_branch
+        original_run_list = owner.workflow_run_list
+        original_run_view = owner.workflow_run_view
+        original_emit = owner.emit_failed_job_diagnostics
+        original_sleep = owner.time.sleep
+
+        emitted_states: list[str] = []
+
+        try:
+            owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
+            owner.pr_for_current_branch = lambda _repo, _branch: (
+                {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN", "isDraft": False},
+                None,
+            )
+            owner.workflow_run_list = lambda _repo, _dispatch_config, _branch: (
+                [
+                    {
+                        "databaseId": 101,
+                        "attempt": 1,
+                        "event": "pull_request",
+                        "headSha": "abc",
+                        "status": "in_progress",
+                        "conclusion": None,
+                        "createdAt": "2026-06-13T00:00:00Z",
+                        "url": "https://example.invalid/run",
+                    }
+                ],
+                None,
+            )
+            views = iter(
+                [
+                    {
+                        "databaseId": 101,
+                        "attempt": 1,
+                        "event": "pull_request",
+                        "headSha": "abc",
+                        "status": "in_progress",
+                        "conclusion": None,
+                        "createdAt": "2026-06-13T00:00:00Z",
+                        "url": "https://example.invalid/run",
+                    },
+                    {
+                        "databaseId": 101,
+                        "attempt": 1,
+                        "event": "pull_request",
+                        "headSha": "abc",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "createdAt": "2026-06-13T00:00:00Z",
+                        "url": "https://example.invalid/run",
+                    },
+                ]
+            )
+            owner.workflow_run_view = lambda _repo, _run_id: (next(views), None)
+
+            def fake_emit_failed_job_diagnostics(*, run: dict[str, object], **_kwargs: object) -> None:
+                emitted_states.append(str(run["status"]))
+                print("CI failed job: nextest shard 1 of 4", file=sys.stderr)
+
+            owner.emit_failed_job_diagnostics = fake_emit_failed_job_diagnostics
+            owner.time.sleep = lambda _seconds: None
+
+            result, output = run_cmd_verify_remote(owner, repo)
+        finally:
+            owner.ensure_verify_remote_preconditions = original_preconditions
+            owner.pr_for_current_branch = original_pr
+            owner.workflow_run_list = original_run_list
+            owner.workflow_run_view = original_run_view
+            owner.emit_failed_job_diagnostics = original_emit
+            owner.time.sleep = original_sleep
+
+    if "in_progress" not in emitted_states:
+        raise AssertionError(emitted_states)
+    if "CI failed job: nextest shard 1 of 4" not in output:
+        raise AssertionError(output)
+    if result != 1:
+        raise AssertionError((result, output))
+```
+
+Expected before implementation: `emit_failed_job_diagnostics` is missing or is never called while the run is in progress.
+
+- [ ] **Step 2: Add job listing and log fetch functions**
+
+In `scripts/rust_verification.py`, add:
+
+```python
+def workflow_run_jobs(repo: pathlib.Path, run_id: int, attempt: int) -> tuple[list[dict[str, Any]] | None, str | None]:
+    payload, error = load_json_command(
+        ["gh", "run", "view", str(run_id), "--attempt", str(attempt), "--json", "jobs"],
+        repo=repo,
+    )
+    if error is not None or not isinstance(payload, dict):
+        return None, error or f"verify-remote could not inspect workflow run {run_id} jobs"
+    jobs = payload.get("jobs")
+    if not isinstance(jobs, list) or not all(isinstance(job, dict) for job in jobs):
+        return None, f"verify-remote received malformed jobs for workflow run {run_id}"
+    return cast(list[dict[str, Any]], jobs), None
+
+
+def job_log_failed(repo: pathlib.Path, job_id: int) -> tuple[str | None, str | None]:
+    argv = ["gh", "run", "view", "--job", str(job_id), "--log-failed"]
+    try:
+        result = run_capture(argv, repo=repo)
+    except FileNotFoundError:
+        return None, "gh is required for remote failure diagnostics"
+    if result.returncode != 0:
+        return None, command_error(argv, result)
+    if not result.stdout.strip():
+        return None, "failed job log is not available yet"
+    return result.stdout, None
+```
+
+- [ ] **Step 3: Add emitter**
+
+Add:
+
+```python
+def job_id(job: dict[str, Any]) -> int | None:
+    value = job.get("databaseId", job.get("id"))
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    if isinstance(value, str) and value.isdecimal() and int(value) > 0:
+        return int(value)
+    return None
+
+
+def job_text(job: dict[str, Any], key: str) -> str:
+    value = job.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def emit_failed_job_diagnostics(
+    *,
+    repo: pathlib.Path,
+    run: dict[str, Any],
+    state: RemoteFailureDiagnosticsState,
+    remote_policy: dict[str, int],
+) -> None:
+    run_id = run_database_id(run)
+    attempt = run_attempt(run)
+    if run_id is None or attempt is None:
+        return
+    jobs, error = workflow_run_jobs(repo, run_id, attempt)
+    if error is not None or jobs is None:
+        print(f"CI failed-job diagnostics unavailable: {error}", file=sys.stderr)
+        return
+    for job in jobs:
+        if job_text(job, "status") != "completed" or job_text(job, "conclusion") != "failure":
+            continue
+        current_job_id = job_id(job)
+        if current_job_id is None or current_job_id in state.reported_job_ids:
+            continue
+        name = job_text(job, "name") or f"job {current_job_id}"
+        url = job_text(job, "url") or job_text(job, "html_url")
+        log_text, log_error = job_log_failed(repo, current_job_id)
+        if log_text is None:
+            notices = state.unavailable_notice_polls.get(current_job_id, 0) + 1
+            state.unavailable_notice_polls[current_job_id] = notices
+            if notices == 1 or notices % remote_policy["diagnostic_unavailable_notice_interval_polls"] == 0:
+                print(f"CI failed job: {name}", file=sys.stderr)
+                if url:
+                    print(f"job_url={url}", file=sys.stderr)
+                print(f"job_log=unavailable yet: {log_error}", file=sys.stderr)
+            continue
+        print(f"CI failed job: {name}", file=sys.stderr)
+        if url:
+            print(f"job_url={url}", file=sys.stderr)
+        excerpt = diagnostic_log_excerpt(
+            log_text,
+            max_lines=remote_policy["diagnostic_log_max_lines"],
+            max_bytes=remote_policy["diagnostic_log_max_bytes"],
+        )
+        if excerpt:
+            print("failed_log_excerpt:", file=sys.stderr)
+            print(excerpt, file=sys.stderr)
+        state.reported_job_ids.add(current_job_id)
+```
+
+- [ ] **Step 4: Call emitter from the wait loop**
+
+Inside `wait_for_full_ci_run`, create state once:
+
+```python
+diagnostics_state = RemoteFailureDiagnosticsState()
+```
+
+After `run` is known and before `evaluate_full_ci_run(run, ...)`, call:
+
+```python
+emit_failed_job_diagnostics(
+    repo=repo,
+    run=run,
+    state=diagnostics_state,
+    remote_policy=remote_policy,
+)
+```
+
+Keep this call diagnostic-only. It must not alter `evaluate_full_ci_run` or any head recheck.
+
+- [ ] **Step 5: Update run payloads with attempt**
+
+In `scripts/test_rust_verification.py`, add `"attempt": 1` to the `workflow_run(...)` helper return value so existing remote-verification harness payloads include the field.
+
+- [ ] **Step 6: Run tests**
+
+Run:
+
+```bash
+python3 scripts/test_verify_remote.py
+python3 scripts/test_rust_verification.py
+```
+
+Expected: pass.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add scripts/rust_verification.py scripts/test_verify_remote.py scripts/test_rust_verification.py
+git commit -m "feat: show failed ci job diagnostics while waiting"
+```
+
+---
+
+## Task 4: Add One-Shot `ci-logs`
+
+**Files:**
+- Modify: `scripts/rust_verification.py`
+- Modify: `scripts/test_rust_verification.py`
 - Modify: `justfile`
 
-- [ ] **Step 1: Write failing CLI tests**
+- [ ] **Step 1: Write failing command dispatch test**
 
-Test exit-code contract:
+Add this test to `scripts/test_rust_verification.py` and call it from `main()` after `assert_verify_remote_preflight_rejects_dirty_or_unpushed_head_before_ci()`:
 
 ```python
-def assert_ci_logs_requires_exact_pushed_pr_head() -> None:
+def assert_ci_logs_command_uses_exact_head_run() -> None:
     owner = load_owner_module()
-    result, _stdout, stderr = run_ci_logs_harness(owner, local_head="abc", pr_head="def")
-    if result != 2:
-        raise AssertionError(result)
-    if "does not match local HEAD" not in stderr:
-        raise AssertionError(stderr)
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        write_verify_remote_config(repo)
+        harness = VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=False),
+            run_lists=[[workflow_run(301, status="in_progress", conclusion=None)]],
+        )
+        emitted: list[int] = []
+        original_emit = owner.emit_failed_job_diagnostics
+        try:
+            with harness:
+                owner.emit_failed_job_diagnostics = lambda **kwargs: emitted.append(int(kwargs["run"]["databaseId"]))
+                args = type("Args", (), {"repo": str(repo)})()
+                result = owner.cmd_ci_logs(args)
+        finally:
+            owner.emit_failed_job_diagnostics = original_emit
+        if result != 0:
+            raise AssertionError(result)
+        if emitted != [301]:
+            raise AssertionError(emitted)
 ```
 
-Test one-shot success:
+Expected before implementation: `cmd_ci_logs` or parser entry is missing.
+
+- [ ] **Step 2: Implement `cmd_ci_logs`**
+
+Add a command that reuses `verify-remote` preconditions and PR lookup, but does not dispatch CI and does not wait:
 
 ```python
-def assert_ci_logs_prints_failed_job_snippet_for_latest_attempt() -> None:
-    owner = load_owner_module()
-    result, _stdout, stderr = run_ci_logs_harness(
-        owner,
-        local_head="abc",
-        pr_head="abc",
-        run={"databaseId": 101, "attempt": 3, "status": "in_progress", "conclusion": None},
-        failed_job={"id": 11, "name": "nextest shard 1 of 4", "log": "thread 'case' panicked at src/lib.rs:10"},
+def cmd_ci_logs(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    try:
+        policy = load_policy(repo)
+        remote_policy = remote_verification_policy(policy)
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        return verify_remote_fail(str(exc))
+    head, branch, error = ensure_verify_remote_preconditions(repo)
+    if error is not None or head is None or branch is None:
+        return verify_remote_fail(error or "unable to inspect git state")
+    pr, error = pr_for_exact_head(repo, branch, head, during_watch=False)
+    if error is not None or pr is None:
+        return verify_remote_fail(error or "unable to inspect pull request")
+    dispatch_config, error = ci_provenance_dispatch_config(repo)
+    if error is not None or dispatch_config is None:
+        return verify_remote_fail(error or "unable to inspect CI dispatch config")
+    events = FULL_CI_DRAFT_EVENTS if bool(pr.get("isDraft")) else FULL_CI_READY_EVENTS
+    runs, error = workflow_run_list(repo, dispatch_config, branch)
+    if error is not None or runs is None:
+        return verify_remote_fail(error or "unable to inspect workflow runs")
+    matching = matching_full_ci_runs(runs, head=head, events=events)
+    if not matching:
+        return verify_remote_fail(f"no matching full-CI workflow run found for {head}")
+    emit_failed_job_diagnostics(
+        repo=repo,
+        run=matching[0],
+        state=RemoteFailureDiagnosticsState(),
+        remote_policy=remote_policy,
     )
-    if result != 0:
-        raise AssertionError(result)
-    if "workflow_run=101 attempt=3 job_id=11" not in stderr:
-        raise AssertionError(stderr)
-    if "nextest shard 1 of 4" not in stderr:
-        raise AssertionError(stderr)
-```
-
-Add both new assertions to the explicit runner in `scripts/test_verify_remote.py` before the final `print`:
-
-```python
-def main() -> int:
-    assert_verify_remote_precondition_errors()
-    assert_verify_remote_pr_errors()
-    assert_pr_lookup_preserves_gh_errors()
-    assert_pr_checks_allows_pending_exit_code_with_json()
-    assert_verify_remote_waits_then_passes()
-    assert_verify_remote_uses_latest_full_run_over_stale_deferred_run()
-    assert_verify_remote_rejects_branch_advance_during_watch()
-    assert_verify_remote_reports_failing_full_ci_run()
-    assert_verify_remote_rechecks_head_before_reporting_failed_run()
-    assert_verify_remote_run_list_api_error_fails_closed()
-    assert_verify_remote_no_matching_run_times_out()
-    assert_verify_remote_rechecks_head_before_no_matching_run_timeout()
-    assert_verify_remote_rechecks_head_before_overall_timeout()
-    assert_ci_logs_requires_exact_pushed_pr_head()
-    assert_ci_logs_prints_failed_job_snippet_for_latest_attempt()
-    print("OK: remote verification watcher self-tests passed.")
     return 0
 ```
 
-- [ ] **Step 2: Implement the `ci-logs` subcommand in `scripts/rust_verification.py`**
+- [ ] **Step 3: Add parser and Just recipe**
 
-CLI behavior:
+In `build_parser`, add:
 
-```bash
-python3 scripts/rust_verification.py ci-logs --repo .
+```python
+ci_logs = subparsers.add_parser("ci-logs")
+ci_logs.add_argument("--repo", required=True)
+ci_logs.set_defaults(func=cmd_ci_logs)
 ```
 
-Semantics:
-
-- Requires a clean worktree, pushed branch, and open/draft PR using the same exact-head checks as `verify-remote`.
-- Uses `ci_provenance.workflow_name` and `ci_provenance.workflow_path` to find matching full-CI runs.
-- Selects the newest matching run for the current PR head and allowed event set.
-- Uses that run's latest `attempt`.
-- Extends `ci_provenance_dispatch_config(repo)` to validate and return `ci_provenance.api_limits.run_jobs_per_page`, then constructs `GhActionsClient.from_gh_cli()`, loads `CiLogCollectionConfig` from `repo / CI_RUNNERS_RELATIVE_PATH`, passes `dispatch_config["run_jobs_per_page"]` into `CiLogCollector`, and runs the collector once.
-- Exits `0` if diagnostics were attempted, including no failed completed jobs.
-- Exits `2` for auth, tool, PR, config, or malformed API errors.
-
-- [ ] **Step 3: Add just recipe**
-
-Add:
+In `justfile`, add:
 
 ```make
 ci-logs: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" ci-logs --repo "{{repo_root}}"
 ```
 
-- [ ] **Step 4: Wire the new self-test into `ci-lint-workflow`**
-
-Inside the existing `ci-lint-workflow` bash recipe, after `scripts/test_ci_provenance.py` and before `scripts/test_find_same_sha_main_evidence.py`, add:
-
-```bash
-if ! python3 scripts/test_ci_log_collection.py; then
-    failed=1
-fi
-```
-
-- [ ] **Step 5: Run tests**
+- [ ] **Step 4: Run tests**
 
 Run:
 
 ```bash
-python3 scripts/test_ci_log_collection.py
-python3 scripts/test_verify_remote.py
 python3 scripts/test_rust_verification.py
 ```
 
 Expected: pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add justfile scripts/rust_verification.py scripts/test_verify_remote.py scripts/test_rust_verification.py scripts/ci_log_collection.py scripts/test_ci_log_collection.py
+git add scripts/rust_verification.py scripts/test_rust_verification.py justfile
 git commit -m "feat: add ci log diagnostics command"
 ```
 
 ---
 
-## Task 4: Integrate Snippets Into `verify-remote`
+## Task 5: Verification
 
 **Files:**
-- Modify: `scripts/rust_verification.py`
-- Modify: `scripts/test_verify_remote.py`
-- Modify: `scripts/test_rust_verification.py`
+- Modify only if checks reveal a gap: files from Tasks 1-4.
 
-- [ ] **Step 1: Write failing verify-remote test**
-
-Add a test where a workflow run is still `in_progress`, one job is already completed with `failure`, and another job is still running:
-
-```python
-def assert_verify_remote_reports_failed_job_before_run_completes() -> None:
-    owner = load_owner_module()
-    # Harness returns run 701 as in_progress on first poll and completed failure on the next poll.
-    # Fake collector returns one rendered snippet for job 11.
-    result, stdout, stderr = run_verify_remote_with_failed_job_harness(owner)
-    snippet_index = stderr.find("nextest shard 1 of 4")
-    failure_index = stderr.find("Remote full CI failed")
-    if snippet_index == -1:
-        raise AssertionError(stderr)
-    if failure_index == -1:
-        raise AssertionError(stderr)
-    if snippet_index > failure_index:
-        raise AssertionError(stderr)
-```
-
-Add this new assertion to the explicit runner in `scripts/test_verify_remote.py` before the final `print`, after `assert_verify_remote_rechecks_head_before_overall_timeout()`.
-
-Expected failure before implementation: no failed job snippet appears before final run failure.
-
-- [ ] **Step 2: Include run attempt in workflow-run fields**
-
-Change:
-
-```python
-WORKFLOW_RUN_FIELDS = "databaseId,event,headSha,status,conclusion,createdAt,url"
-```
-
-to:
-
-```python
-WORKFLOW_RUN_FIELDS = "attempt,databaseId,event,headSha,status,conclusion,createdAt,url"
-```
-
-Add helper:
-
-```python
-def run_attempt(run: dict[str, Any]) -> int | None:
-    attempt = run.get("attempt")
-    if isinstance(attempt, int) and not isinstance(attempt, bool) and attempt > 0:
-        return attempt
-    if isinstance(attempt, str) and attempt.isdigit() and int(attempt) > 0:
-        return int(attempt)
-    return None
-```
-
-- [ ] **Step 3: Pass explicit log-collection context into the wait loop**
-
-Extend `ci_provenance_dispatch_config(repo)` so it validates and returns `run_jobs_per_page` from `[ci_provenance.api_limits]` alongside the existing workflow fields:
-
-```python
-raw_job_limit = api_limits.get("run_jobs_per_page") if isinstance(api_limits, dict) else None
-if raw_job_limit is None or not isinstance(raw_job_limit, int) or isinstance(raw_job_limit, bool) or raw_job_limit <= 0:
-    return None, "ci_provenance.api_limits.run_jobs_per_page must be a positive integer"
-
-return {
-    "workflow_name": workflow_name,
-    "workflow_path": workflow_path,
-    "workflow_input": workflow_input,
-    "workflow_runs_per_page": run_limit,
-    "run_jobs_per_page": raw_job_limit,
-}, None
-```
-
-Update `write_verify_remote_config` in `scripts/test_rust_verification.py` so existing remote-verification harness repos include the required page-size table:
-
-```toml
-[ci_provenance.api_limits]
-workflow_runs_per_page = 100
-run_jobs_per_page = 100
-```
-
-Add this assertion to `scripts/test_rust_verification.py` and call it from `main()` before `assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped()`:
-
-```python
-def assert_verify_remote_config_includes_run_jobs_page_size() -> None:
-    owner = load_owner_module()
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
-        write_verify_remote_config(repo)
-        config, error = owner.ci_provenance_dispatch_config(repo)
-        if error is not None or config is None:
-            raise AssertionError(error)
-        if config["run_jobs_per_page"] != 100:
-            raise AssertionError(config)
-```
-
-In `cmd_verify_remote`, compute the repository name once and pass it into every `wait_for_full_ci_run` call:
-
-```python
-identity, error = repository_identity(repo)
-if error is not None or identity is None:
-    return verify_remote_fail(error or "unable to inspect repository identity")
-repo_full_name = f"{identity[0]}/{identity[1]}"
-```
-
-Add these parameters to `wait_for_full_ci_run`:
-
-```python
-    repo_full_name: str,
-    run_jobs_per_page: int,
-```
-
-Each call site passes:
-
-```python
-repo_full_name=repo_full_name,
-run_jobs_per_page=dispatch_config["run_jobs_per_page"],
-```
-
-- [ ] **Step 4: Call collector during existing wait loop**
-
-Add a helper in `scripts/rust_verification.py`:
-
-```python
-def build_ci_log_collector(
-    *,
-    repo: pathlib.Path,
-    repo_full_name: str,
-    run_jobs_per_page: int,
-) -> ci_log_collection.CiLogCollector:
-    return ci_log_collection.CiLogCollector(
-        ci_log_collection.GhActionsClient.from_gh_cli(),
-        ci_log_collection.load_ci_log_collection_config(repo / CI_RUNNERS_RELATIVE_PATH),
-        repo_full_name,
-        run_jobs_per_page=run_jobs_per_page,
-    )
-```
-
-Inside `wait_for_full_ci_run`, create one collector only after `tracked_run_id` is set for the current exact-head full-CI run. Then call it inside the existing poll loop before `evaluate_full_ci_run`:
-
-```python
-log_collector: ci_log_collection.CiLogCollector | None = None
-log_collector_disabled = False
-
-if tracked_run_id is not None and (attempt := run_attempt(run)) is not None and not log_collector_disabled:
-    if log_collector is None:
-        try:
-            log_collector = build_ci_log_collector(
-                repo=repo,
-                repo_full_name=repo_full_name,
-                run_jobs_per_page=run_jobs_per_page,
-            )
-        except ci_log_collection.CiLogCollectionError as exc:
-            log_collector_disabled = True
-            print(f"CI log snippets unavailable: {exc}", file=sys.stderr)
-    if log_collector is not None:
-        try:
-            report = log_collector.collect(run_id=tracked_run_id, attempt=attempt)
-        except ci_log_collection.CiLogCollectionError as exc:
-            if not log_collector.warned_collection_error:
-                log_collector.warned_collection_error = True
-                print(f"CI log snippets unavailable: {exc}", file=sys.stderr)
-        else:
-            if report.rendered:
-                print(report.rendered, file=sys.stderr)
-```
-
-Keep these constraints:
-
-- One collector instance per `wait_for_full_ci_run` call.
-- `reported_job_ids` lives inside that instance.
-- Collector exceptions render at most one bounded warning per wait call and do not change verify-remote's final exit code.
-- Collector construction failures render one bounded warning and disable further log collection for that wait call.
-- The collector runs on the existing poll interval only.
-- Collection starts only after `tracked_run_id` is known, so no logs are fetched from stale deferred-gate runs or wrong-head runs.
-
-- [ ] **Step 5: Run targeted tests**
+- [ ] **Step 1: Run local non-compile checks**
 
 Run:
 
 ```bash
-python3 scripts/test_verify_remote.py
-python3 scripts/test_rust_verification.py
-python3 scripts/test_ci_log_collection.py
-```
-
-Expected: pass.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add scripts/rust_verification.py scripts/test_verify_remote.py scripts/test_rust_verification.py scripts/ci_log_collection.py scripts/test_ci_log_collection.py
-git commit -m "feat: show failed ci job snippets during verify-remote"
-```
-
----
-
-## Task 5: Verification And Review
-
-**Files:**
-- Modify only if tests reveal a gap: files from Tasks 1-4.
-
-- [ ] **Step 1: Run non-compile local checks**
-
-Run:
-
-```bash
-python3 scripts/test_ci_log_collection.py
 python3 scripts/test_verify_remote.py
 python3 scripts/test_rust_verification.py
 just ci-lint-workflow
 ```
 
-Expected: all pass. If `just ci-lint-workflow` queues behind the lane lock, wait for completion or report the exact timeout/termination reason.
+Expected: pass. If `just ci-lint-workflow` queues behind the lane lock or times out, report the exact result.
 
-- [ ] **Step 2: Commit any test-only cleanup**
+- [ ] **Step 2: Commit cleanup if needed**
 
 ```bash
 git status --short
-git add scripts/ci_log_collection.py scripts/rust_verification.py scripts/test_ci_log_collection.py scripts/test_verify_remote.py scripts/test_rust_verification.py ci/github-actions-runners.toml justfile
-git commit -m "test: cover ci log diagnostics"
+git add ci/rust-verification.toml scripts/rust_verification.py scripts/test_verify_remote.py scripts/test_rust_verification.py justfile
+git commit -m "test: cover ci failure diagnostics"
 ```
 
-- [ ] **Step 3: Push and open draft PR**
+- [ ] **Step 3: Remote proof**
 
-```bash
-git push -u origin HEAD
-gh pr create --draft --fill
-```
-
-- [ ] **Step 4: Run remote proof**
-
-Run:
+After implementation commits are pushed to a draft/open PR, run:
 
 ```bash
 just verify-remote
@@ -806,12 +671,26 @@ just verify-remote
 
 Expected:
 
-- If CI passes, `verify-remote` reports the exact-head run pass.
-- If a shard fails while other jobs continue, `verify-remote` prints a bounded failed-job snippet before the workflow reaches terminal state, then still waits for the terminal run conclusion.
+- If CI passes, `verify-remote` behavior is unchanged.
+- If a job fails while the workflow is still running, `verify-remote` prints the failed job name and URL.
+- If `gh` can fetch failed logs, `verify-remote` prints a bounded failed-log excerpt.
+- If GitHub has not exposed logs yet, `verify-remote` prints an unavailable notice and retries on later polls.
+
+## Internal Adversarial Review
+
+Findings from review of this plan:
+
+- **No high findings.**
+- **Medium:** `gh run view --job <job-id> --log-failed` behavior can vary when GitHub cannot map logs to failed steps. The plan accepts this by treating nonzero or empty output as unavailable and retrying; it does not guarantee early logs.
+- **Medium:** `ci-logs` does not dispatch CI. This is intentional. It is a one-shot diagnostics command for an already existing exact-head run.
+- **Low:** The simple secret masking is not comprehensive. This matches the personal-project scope and still avoids obvious credential display.
+- **Resolved during review:** required remote policy fixture updates are now part of Task 1, and unavailable polls no longer print a duplicate failed-job header when the unavailable notice is throttled.
+
+Review conclusion: **APPROVE the plan for implementation** as a best-effort diagnostics slice. It is smaller than the previous plan, keeps exact-head safety, avoids a new module, and has tests for the main failure modes.
 
 ## Self-Review
 
-- Spec coverage: The plan addresses the validated findings by narrowing scope, adding TOML-owned caps, avoiding persistent logs, using existing run selection, handling log unavailability, avoiding duplicate polling, and leaving cargo behavior unchanged.
-- Review coverage: the plan uses repo-native Python self-tests wired into `ci-lint-workflow`, keeps command dispatch in `scripts/rust_verification.py`, reuses safe GitHub redirect behavior, removes the redundant workflow selector, defines output format and marker semantics, broadens redaction, retries unavailable logs until terminal/timeout while throttling notices, passes verifier data explicitly, and starts polling only after `tracked_run_id` is known.
-- Plan-language scan: every task names files, behavior, and commands.
-- Type consistency: `CiLogCollectionConfig`, `GhActionsClient`, `CiLogCollector`, and `CiLogSnippetReport` are introduced before use.
+- Scope: focused on best-effort GitHub job diagnostics only.
+- Placeholder scan: no open placeholders remain; helper names introduced in tests have corresponding implementation steps or are existing local harness helpers.
+- Type consistency: helper and command names are introduced before use.
+- Repo rules: runtime caps live in TOML; no local Rust compile checks are required for this Python/tooling slice.

@@ -520,7 +520,16 @@ impl BoltV3BasketRepairInput {
             };
             repair.insert(leg_id.clone(), residual_quantity);
             residuals.push((leg_id.clone(), residual_quantity));
-            repair_cost += executable_leg.cost;
+            let Some(residual_cost) = proportional_cost(
+                executable_leg.cost,
+                residual_quantity,
+                executable_leg.quantity,
+            ) else {
+                return BoltV3BasketRepairOutcome::Stuck {
+                    reason: "fresh executable repair books are required".to_string(),
+                };
+            };
+            repair_cost += residual_cost;
         }
 
         let projected_quantities =
@@ -614,20 +623,28 @@ impl BoltV3BasketUnwindInput {
                 .map(|leg| (leg.leg_id.clone(), leg.quantity))
                 .collect::<Vec<_>>(),
         );
-        let reductions = self
-            .filled_quantities
-            .iter()
-            .filter_map(|(leg_id, filled_quantity)| {
-                executable.get(leg_id).map(|quantity| {
-                    let reduction = if quantity < filled_quantity {
-                        *quantity
-                    } else {
-                        *filled_quantity
-                    };
-                    (leg_id.clone(), reduction)
-                })
-            })
-            .collect();
+        let mut reductions = Vec::new();
+        for (leg_id, filled_quantity) in &self.filled_quantities {
+            if *filled_quantity <= Decimal::ZERO {
+                continue;
+            }
+            let Some(quantity) = executable.get(leg_id) else {
+                return BoltV3BasketUnwindOutcome::Stuck {
+                    reason: "fresh executable unwind books are required".to_string(),
+                };
+            };
+            if *quantity < *filled_quantity {
+                return BoltV3BasketUnwindOutcome::Stuck {
+                    reason: "fresh executable unwind books are required".to_string(),
+                };
+            }
+            reductions.push((leg_id.clone(), *filled_quantity));
+        }
+        if reductions.is_empty() {
+            return BoltV3BasketUnwindOutcome::Stuck {
+                reason: "fresh executable unwind books are required".to_string(),
+            };
+        }
         BoltV3BasketUnwindOutcome::Unwind { reductions }
     }
 }
@@ -746,6 +763,23 @@ fn executable_unwind_leg_is_fresh_and_bounded(
 
 fn quantity_map(values: &[(String, Decimal)]) -> BTreeMap<String, Decimal> {
     values.iter().cloned().collect()
+}
+
+fn proportional_cost(
+    total_cost: Decimal,
+    requested_quantity: Decimal,
+    total_quantity: Decimal,
+) -> Option<Decimal> {
+    if total_cost <= Decimal::ZERO
+        || requested_quantity <= Decimal::ZERO
+        || total_quantity <= Decimal::ZERO
+        || requested_quantity > total_quantity
+    {
+        return None;
+    }
+    total_cost
+        .checked_mul(requested_quantity)?
+        .checked_div(total_quantity)
 }
 
 fn projected_quantities(

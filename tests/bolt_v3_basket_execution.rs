@@ -371,6 +371,20 @@ fn unwind_requires_fresh_executable_reductions_for_every_filled_leg() {
     assert_eq!(
         BoltV3BasketUnwindInput {
             executable_unwind_legs: Vec::new(),
+            ..input.clone()
+        }
+        .plan_unwind(&unwind_policy()),
+        BoltV3BasketUnwindOutcome::Stuck {
+            reason: "fresh executable unwind books are required".to_string()
+        }
+    );
+
+    assert_eq!(
+        BoltV3BasketUnwindInput {
+            executable_unwind_legs: vec![
+                repair_leg("YES", dec("0.50"), dec("0.21"), 1_000),
+                repair_leg("NO", dec("1.0"), dec("0.43"), 1_000),
+            ],
             ..input
         }
         .plan_unwind(&unwind_policy()),

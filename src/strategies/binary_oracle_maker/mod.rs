@@ -153,31 +153,37 @@ mod tests {
         assert_eq!(BinaryOracleMakerBuilder::kind(), KEY);
     }
 
-    #[test]
-    fn build_mu_state_projects_config_knobs_into_runtime_views() {
-        // Proves the config-field → runtime-view mapping in `build_mu_state`: a
-        // one-sided buy flow of exactly `mu_min_classified_samples` trades must
-        // warm the estimator to μ = 1.0 and pass the health gate (above the
-        // configured floor). A mismapped warmup/floor knob changes this verdict.
-        let config = BinaryOracleMakerConfig {
+    const QUERY_NOW_MS: u64 = 50_000;
+    const TEST_STALE_WINDOW_MS: u64 = 60_000;
+    const TEST_MU_FLOOR: f64 = 0.05;
+
+    fn maker_config(
+        trade_flow_window_secs: u64,
+        trade_flow_max_samples: u64,
+        mu_min_classified_samples: u64,
+    ) -> BinaryOracleMakerConfig {
+        BinaryOracleMakerConfig {
             strategy_id: "binary_oracle_maker-001".to_string(),
             order_id_tag: "001".to_string(),
             oms_type: "netting".to_string(),
-            trade_flow_window_secs: 600,
-            trade_flow_max_samples: 1000,
-            mu_min_classified_samples: 4,
-            mu_stale_window_ms: 60_000,
-            mu_min_floor: 0.05,
-        };
-        let mut state = build_mu_state(&config);
-        let instrument = InstrumentId::from("MAKER.SIM");
-        for index in 0..config.mu_min_classified_samples {
-            let ts_ns = (1_000 + index * 1_000) * NANOS_PER_MILLI_U64;
+            trade_flow_window_secs,
+            trade_flow_max_samples,
+            mu_min_classified_samples,
+            mu_stale_window_ms: TEST_STALE_WINDOW_MS,
+            mu_min_floor: TEST_MU_FLOOR,
+        }
+    }
+
+    // Observe one trade per `side` at ts 1000, 2000, ... ms (so the newest is ~46s
+    // before QUERY_NOW_MS), routing through the maker's own `MakerMuState`.
+    fn observe_sides(state: &mut MakerMuState, instrument: InstrumentId, sides: &[AggressorSide]) {
+        for (index, side) in sides.iter().enumerate() {
+            let ts_ns = (1_000 + index as u64 * 1_000) * NANOS_PER_MILLI_U64;
             let trade = TradeTick::new_checked(
                 instrument,
                 Price::new(0.5, 2),
                 Quantity::new(1.0, 0),
-                AggressorSide::Buyer,
+                *side,
                 TradeId::from(format!("T{ts_ns}").as_str()),
                 UnixNanos::from(ts_ns),
                 UnixNanos::from(ts_ns),
@@ -185,7 +191,55 @@ mod tests {
             .expect("valid trade tick");
             state.observe(&trade);
         }
-        assert_eq!(state.mu_for(&instrument, 50_000), Some(1.0));
-        assert_eq!(state.health_for(&instrument, 50_000), None);
+    }
+
+    #[test]
+    fn build_mu_state_projects_warmup_and_stale_knobs() {
+        // Pins the warmup (`mu_min_classified_samples`) and stale-window mappings:
+        // a one-sided buy flow of exactly the warmup count warms μ to 1.0 and
+        // passes the gate. A mismapped warmup flips μ to None; a mismapped stale
+        // window flips health to Stale. `window_secs`/`max_samples` are non-binding
+        // in this scenario — they are pinned by the two tests below.
+        let mut state = build_mu_state(&maker_config(600, 1000, 4));
+        let instrument = InstrumentId::from("MAKER.SIM");
+        observe_sides(&mut state, instrument, &[AggressorSide::Buyer; 4]);
+        assert_eq!(state.mu_for(&instrument, QUERY_NOW_MS), Some(1.0));
+        assert_eq!(state.health_for(&instrument, QUERY_NOW_MS), None);
+    }
+
+    #[test]
+    fn build_mu_state_maps_trade_flow_window_secs() {
+        // Pins `window_secs`: a 5s retention window ages out trades observed ~46s
+        // ago, so `samples_within` is empty and μ is None. Were `build_mu_state`
+        // to read the window from `trade_flow_max_samples` (a field swap), the
+        // window would be 1000s, the trades would be retained, and μ would be
+        // Some(1.0) — flipping this assertion.
+        let mut state = build_mu_state(&maker_config(5, 1000, 1));
+        let instrument = InstrumentId::from("MAKER.SIM");
+        observe_sides(&mut state, instrument, &[AggressorSide::Buyer; 4]);
+        assert_eq!(state.mu_for(&instrument, QUERY_NOW_MS), None);
+    }
+
+    #[test]
+    fn build_mu_state_maps_trade_flow_max_samples() {
+        // Pins `max_samples`: a cap of 2 retains only the last two (buy) trades of
+        // a sell,sell,buy,buy flow, so μ = 1.0. Were `build_mu_state` to read the
+        // cap from `trade_flow_window_secs` (a field swap → cap 600), the buffer
+        // would keep all four trades, balancing to μ = 0.0 — flipping this
+        // assertion. The wide 600s window keeps all four in-window so only the
+        // cap, not staleness, is exercised.
+        let mut state = build_mu_state(&maker_config(600, 2, 2));
+        let instrument = InstrumentId::from("MAKER.SIM");
+        observe_sides(
+            &mut state,
+            instrument,
+            &[
+                AggressorSide::Seller,
+                AggressorSide::Seller,
+                AggressorSide::Buyer,
+                AggressorSide::Buyer,
+            ],
+        );
+        assert_eq!(state.mu_for(&instrument, QUERY_NOW_MS), Some(1.0));
     }
 }

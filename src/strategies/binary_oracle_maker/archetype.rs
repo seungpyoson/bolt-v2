@@ -157,14 +157,14 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
     errors
 }
 
-/// Register the inert maker on the live node.
+/// Register the maker on the live node.
 ///
 /// Mirrors the taker's `register_runtime_strategy` structurally: resolve the fee
 /// provider and execution venue from the loaded config, build a
-/// `StrategyBuildContext`, then hand the minimal raw config table to the shared
-/// `production_strategy_registry()`. The raw table carries only the
-/// NautilusTrader envelope fields the inert maker config consumes
-/// (`strategy_id`, `order_id_tag`, `oms_type`).
+/// `StrategyBuildContext`, then hand the flat raw config table to the shared
+/// `production_strategy_registry()`. The raw table carries the NautilusTrader
+/// envelope fields (`strategy_id`, `order_id_tag`, `oms_type`) plus the μ runtime
+/// knobs `raw_maker_config` threads from the operator `[parameters.runtime]` block.
 pub fn register_runtime_strategy(
     node: &mut nautilus_live::node::LiveNode,
     context: StrategyRegistrationContext<'_>,

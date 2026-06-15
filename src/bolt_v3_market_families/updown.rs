@@ -68,6 +68,7 @@ use crate::{
     bolt_v3_quoting::{
         FamilyQuoteInputs, QuoteSide, QuoteTargetLeg, QuoteTargets, compose_binary_legs,
     },
+    bolt_v3_sizing::maker_robust_size,
 };
 
 pub const KEY: &str = "updown";
@@ -99,14 +100,30 @@ pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
         inputs.inventory_skew,
         inputs.eps,
     )?;
+    // Size the legs off the protective half-spread the maker captures, NOT off
+    // directional EV (the GM/CG maker is break-even, so the taker EV-gated sizer
+    // would force perpetual zero-size quotes — §16#13). A non-positive edge sizes
+    // to zero, which is a fail-closed no-quote: a priced leg with zero notional
+    // is not a real maker quote.
+    let size_notional = maker_robust_size(
+        inputs.band.half_spread(),
+        inputs.max_half_spread,
+        inputs.order_notional_target,
+        inputs.maximum_position_notional,
+    );
+    if size_notional <= ZERO_F64 {
+        return None;
+    }
     Some(QuoteTargets {
         leg_a: QuoteTargetLeg {
             side: QuoteSide::Buy,
             price: legs.yes_price,
+            size_notional,
         },
         leg_b: QuoteTargetLeg {
             side: QuoteSide::Buy,
             price: legs.no_price,
+            size_notional,
         },
     })
 }

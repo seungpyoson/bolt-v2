@@ -16,7 +16,12 @@ import re
 import sys
 from dataclasses import dataclass
 
-from bolt_v3_source_roots import REPO_ROOT, STRATEGY_SOURCE_ROOTS, source_set_files
+from bolt_v3_source_roots import (
+    ALL_GATED_SOURCE_ROOTS,
+    REPO_ROOT,
+    STRATEGY_SOURCE_ROOTS,
+    source_set_files,
+)
 from verify_bolt_v3_pure_rust_runtime import production_text
 
 
@@ -307,9 +312,13 @@ def source_files_for_mutation_fence() -> list:
 
 
 def gated_strategy_source_root_names() -> set[str]:
+    # A strategy directory under `src/strategies/` is gated if it belongs to ANY
+    # gated source set (taker, maker, or a future seal), not only the taker's
+    # `STRATEGY_SOURCE_ROOTS`. Deriving from the union keeps each newly sealed
+    # strategy recognized as gated without re-listing it here.
     return {
         relative_root
-        for relative_root in STRATEGY_SOURCE_ROOTS
+        for relative_root in ALL_GATED_SOURCE_ROOTS
         if relative_root.startswith("src/strategies/")
     }
 

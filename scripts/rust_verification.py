@@ -377,6 +377,7 @@ def validate_remote_probe_policy(data: dict[str, Any]) -> None:
         "overall_timeout_seconds",
         "active_run_limit",
         "workflow_runs_per_page",
+        "guard_timeout_minutes",
     ):
         values[key] = require_positive_int(policy, key, "remote_probe")
     if values["appearance_timeout_seconds"] >= values["overall_timeout_seconds"]:
@@ -2588,6 +2589,7 @@ def remote_probe_policy(policy: dict[str, Any]) -> dict[str, Any]:
         "overall_timeout_seconds": int(raw["overall_timeout_seconds"]),
         "active_run_limit": int(raw["active_run_limit"]),
         "workflow_runs_per_page": int(raw["workflow_runs_per_page"]),
+        "guard_timeout_minutes": int(raw["guard_timeout_minutes"]),
         "allowed_runner_tiers": list(raw["allowed_runner_tiers"]),
         "mode_runner_tiers": dict(raw["mode_runner_tiers"]),
         "workflow_timeouts": dict(raw["workflow_timeouts"]),

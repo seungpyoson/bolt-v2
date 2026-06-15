@@ -47,6 +47,7 @@ appearance_timeout_seconds = 180
 overall_timeout_seconds = 3600
 active_run_limit = 4
 workflow_runs_per_page = 20
+guard_timeout_minutes = 1
 allowed_runner_tiers = ["heavy", "light"]
 
 [remote_probe.mode_runner_tiers]

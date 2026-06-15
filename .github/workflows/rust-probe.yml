@@ -66,17 +66,33 @@ jobs:
     name: probe-unsupported-runner-tier
     if: ${{ inputs.runner_tier != 'heavy' && inputs.runner_tier != 'light' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
-    timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
+    timeout-minutes: 1
     steps:
       - name: Reject unsupported runner tier
         shell: bash
+        env:
+          RUST_PROBE_RUNNER_TIER: ${{ inputs.runner_tier }}
         run: |
-          echo "Unsupported Rust Probe runner_tier: ${{ inputs.runner_tier }}" >&2
+          printf "Unsupported Rust Probe runner_tier: %s\n" "$RUST_PROBE_RUNNER_TIER" >&2
+          exit 1
+
+  probe-unsupported-job-timeout:
+    name: probe-unsupported-job-timeout
+    if: ${{ (inputs.runner_tier == 'heavy' && fromJSON(inputs.job_timeout_minutes) != 60) || (inputs.runner_tier == 'light' && fromJSON(inputs.job_timeout_minutes) != 60) }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+    timeout-minutes: 1
+    steps:
+      - name: Reject unsupported job timeout
+        shell: bash
+        env:
+          RUST_PROBE_JOB_TIMEOUT_MINUTES: ${{ inputs.job_timeout_minutes }}
+        run: |
+          printf "Unsupported Rust Probe job_timeout_minutes: %s\n" "$RUST_PROBE_JOB_TIMEOUT_MINUTES" >&2
           exit 1
 
   probe-heavy:
     name: probe-heavy
-    if: ${{ inputs.runner_tier == 'heavy' }}
+    if: ${{ inputs.runner_tier == 'heavy' && fromJSON(inputs.job_timeout_minutes) == 60 }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
     steps:
@@ -113,7 +129,7 @@ jobs:
 
   probe-light:
     name: probe-light
-    if: ${{ inputs.runner_tier == 'light' }}
+    if: ${{ inputs.runner_tier == 'light' && fromJSON(inputs.job_timeout_minutes) == 60 }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
     steps:

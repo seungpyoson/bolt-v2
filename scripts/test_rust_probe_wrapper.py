@@ -41,6 +41,7 @@ def valid_remote_probe() -> dict:
         "overall_timeout_seconds": 300,
         "active_run_limit": 4,
         "workflow_runs_per_page": 20,
+        "guard_timeout_minutes": 1,
         "allowed_runner_tiers": ["heavy", "light"],
         "mode_runner_tiers": {
             "check-lib": "heavy",
@@ -74,6 +75,8 @@ def assert_remote_probe_policy_validation() -> None:
         raise AssertionError(loaded)
     if loaded["workflow_timeouts"]["probe-heavy"] != 60:
         raise AssertionError(loaded)
+    if loaded["guard_timeout_minutes"] != 1:
+        raise AssertionError(loaded)
 
     heavy_only = valid_remote_probe()
     heavy_only["allowed_runner_tiers"] = ["heavy"]
@@ -92,6 +95,10 @@ def assert_remote_probe_policy_validation() -> None:
     bad["appearance_timeout_seconds"] = 300
     bad["overall_timeout_seconds"] = 30
     expect_policy_error(owner, bad, "appearance_timeout_seconds")
+
+    bad = valid_remote_probe()
+    bad["guard_timeout_minutes"] = 0
+    expect_policy_error(owner, bad, "guard_timeout_minutes")
 
 
 def assert_repo_policy_declares_remote_probe() -> None:
@@ -145,6 +152,8 @@ def assert_workflow_contract() -> None:
         raise AssertionError("rust-probe run-name must include probe_id")
     if "\n    timeout-minutes: 60" in text:
         raise AssertionError("rust-probe timeout-minutes must come from [remote_probe.workflow_timeouts]")
+    guard_timeout = remote_probe["guard_timeout_minutes"]
+
     unsupported_marker = "  probe-unsupported-runner-tier:\n"
     unsupported_start = text.find(unsupported_marker)
     if unsupported_start < 0:
@@ -154,8 +163,42 @@ def assert_workflow_contract() -> None:
     tier_refusals = " && ".join(f"inputs.runner_tier != '{tier}'" for tier in remote_probe["allowed_runner_tiers"])
     if f"if: ${{{{ {tier_refusals} }}}}" not in unsupported_block:
         raise AssertionError("unsupported runner_tier guard must match [remote_probe].allowed_runner_tiers")
+    if f"timeout-minutes: {guard_timeout}" not in unsupported_block:
+        raise AssertionError("unsupported runner_tier guard must use the bounded guard timeout")
+    if "RUST_PROBE_RUNNER_TIER: ${{ inputs.runner_tier }}" not in unsupported_block:
+        raise AssertionError("unsupported runner_tier guard must pass input through env")
+    unsupported_run_script = unsupported_block.split("run: |\n", 1)[1]
+    if "${{ inputs." in unsupported_run_script:
+        raise AssertionError("unsupported runner_tier guard must not interpolate inputs directly into shell")
+    if 'printf "Unsupported Rust Probe runner_tier: %s\\n" "$RUST_PROBE_RUNNER_TIER" >&2' not in unsupported_run_script:
+        raise AssertionError("unsupported runner_tier guard must print the env value safely")
     if "exit 1" not in unsupported_block:
         raise AssertionError("unsupported runner_tier guard must fail the workflow")
+
+    timeout_marker = "  probe-unsupported-job-timeout:\n"
+    timeout_start = text.find(timeout_marker)
+    if timeout_start < 0:
+        raise AssertionError("rust-probe workflow must fail closed for unsupported job_timeout_minutes")
+    timeout_next_job = text.find("\n  probe-", timeout_start + len(timeout_marker))
+    timeout_block = text[timeout_start:] if timeout_next_job < 0 else text[timeout_start:timeout_next_job]
+    timeout_refusals = " || ".join(
+        f"(inputs.runner_tier == '{tier}' && fromJSON(inputs.job_timeout_minutes) != {remote_probe['workflow_timeouts'][f'probe-{tier}']})"
+        for tier in remote_probe["allowed_runner_tiers"]
+    )
+    if f"if: ${{{{ {timeout_refusals} }}}}" not in timeout_block:
+        raise AssertionError("unsupported job_timeout guard must match [remote_probe.workflow_timeouts]")
+    if f"timeout-minutes: {guard_timeout}" not in timeout_block:
+        raise AssertionError("unsupported job_timeout guard must use the bounded guard timeout")
+    if "RUST_PROBE_JOB_TIMEOUT_MINUTES: ${{ inputs.job_timeout_minutes }}" not in timeout_block:
+        raise AssertionError("unsupported job_timeout guard must pass input through env")
+    timeout_run_script = timeout_block.split("run: |\n", 1)[1]
+    if "${{ inputs." in timeout_run_script:
+        raise AssertionError("unsupported job_timeout guard must not interpolate inputs directly into shell")
+    if 'printf "Unsupported Rust Probe job_timeout_minutes: %s\\n" "$RUST_PROBE_JOB_TIMEOUT_MINUTES" >&2' not in timeout_run_script:
+        raise AssertionError("unsupported job_timeout guard must print the env value safely")
+    if "exit 1" not in timeout_block:
+        raise AssertionError("unsupported job_timeout guard must fail the workflow")
+
     for job in remote_probe["workflow_timeouts"]:
         marker = f"  {job}:\n"
         start = text.find(marker)
@@ -163,6 +206,11 @@ def assert_workflow_contract() -> None:
             raise AssertionError(f"missing job {job}")
         next_job = text.find("\n  probe-", start + len(marker))
         block = text[start:] if next_job < 0 else text[start:next_job]
+        tier = job.removeprefix("probe-")
+        expected_timeout = remote_probe["workflow_timeouts"][job]
+        expected_if = f"if: ${{{{ inputs.runner_tier == '{tier}' && fromJSON(inputs.job_timeout_minutes) == {expected_timeout} }}}}"
+        if expected_if not in block:
+            raise AssertionError(f"{job} must require its TOML-declared timeout before running")
         if "timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}" not in block:
             raise AssertionError(f"{job} timeout-minutes must be wrapper-provided from policy")
         if "fetch-depth: 1" not in block:

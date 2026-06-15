@@ -1,9 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    str::FromStr,
 };
 
-use nautilus_model::enums::OrderSide;
+use nautilus_model::{
+    enums::OrderSide,
+    identifiers::{ClientOrderId, InstrumentId},
+};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +28,17 @@ pub const REPAIR_EDGE_INEQUALITY: &str = "min(M * (filled_qty + repair_qty)) - (
 
 pub fn nt_order_management_contract() -> BoltV3NtOrderManagementContract {
     shared_nt_order_management_contract()
+}
+
+fn client_order_id_is_valid(client_order_id: &str) -> bool {
+    ClientOrderId::new_checked(client_order_id).is_ok()
+}
+
+fn instrument_id_matches_venue(instrument_id: &str, venue: &str) -> bool {
+    match InstrumentId::from_str(instrument_id) {
+        Ok(instrument_id) => instrument_id.venue.as_str() == venue,
+        Err(_) => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,10 +236,16 @@ impl BoltV3BasketExecutionState {
         }
 
         let mut seen_leg_ids = BTreeSet::new();
+        let mut seen_client_order_ids = BTreeSet::new();
         let mut client_order_ids_by_leg = BTreeMap::new();
         let mut client_order_ids = Vec::with_capacity(leg_intents.len());
         for intent in &leg_intents {
             if !seen_leg_ids.insert(intent.leg_id.as_str()) {
+                return Err(BoltV3BasketExecutionError::LegShapeMismatch);
+            }
+            if !client_order_id_is_valid(&intent.client_order_id)
+                || !seen_client_order_ids.insert(intent.client_order_id.as_str())
+            {
                 return Err(BoltV3BasketExecutionError::LegShapeMismatch);
             }
             let leg = self
@@ -233,6 +254,8 @@ impl BoltV3BasketExecutionState {
                 .find(|leg| leg.leg_id == intent.leg_id)
                 .ok_or(BoltV3BasketExecutionError::LegShapeMismatch)?;
             if intent.instrument_id != leg.instrument_id
+                || intent.venue.is_empty()
+                || !instrument_id_matches_venue(&leg.instrument_id, &intent.venue)
                 || intent.quantity != leg.target_quantity
                 || intent.quantity <= Decimal::ZERO
                 || intent.notional <= Decimal::ZERO

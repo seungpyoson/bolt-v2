@@ -106,9 +106,9 @@ REQUIRED_JOBS = (
     "clippy",
     "check-aarch64",
     "source-fence",
+    "nextest-fingerprint",
     "test-archive",
     "nextest-fingerprint-reuse",
-    "test-shards",
     "test",
     "build",
     "ci-provenance-emit",
@@ -145,8 +145,8 @@ CI_PROVENANCE_REQUIRED_JOBS = (
     "clippy",
     "check-aarch64",
     "source-fence",
+    "nextest-fingerprint",
     "test-archive",
-    "test-shards",
     "test",
 )
 CI_PROVENANCE_POLICY_VALUES = {"full", "defer", "tag_reuse"}
@@ -192,13 +192,13 @@ TAG_SKIP_REQUIRED_JOBS = (
     "deny",
     "clippy",
     "source-fence",
+    "nextest-fingerprint",
     "test-archive",
     "nextest-fingerprint-reuse",
-    "test-shards",
     "test",
     "ci-provenance-emit",
 )
-TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-shards", "build")
+TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
 JOB_REQUIRED_JUST_RECIPE = {
     "fmt-check": "fmt-check",
@@ -323,7 +323,7 @@ else
 fi"""
 NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN = """python3 scripts/ci_provenance.py resolve-fingerprint
 --current-run-id "${{ github.run_id }}"
---current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+--current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
 | tee -a "$GITHUB_OUTPUT\""""
 GATE_NEXTEST_FINGERPRINT_REUSE_BRANCH = """if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
   echo "nextest fingerprint reuse resolver did not succeed"
@@ -333,7 +333,7 @@ if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
   echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
   exit 1
 fi
-echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}\""""
+echo "nextest archive reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}\""""
 FINGERPRINT_REUSE_GOVERNANCE_PATHS = (
     ".github/workflows/ci.yml",
     ".github/actions/setup-environment/action.yml",
@@ -418,22 +418,22 @@ SETUP_ACTION_ORDERED_STEPS = (
     "Resolve managed target dir",
     "Setup Rust toolchain",
 )
-TEST_FAIL_FAST_FALSE_RE = re.compile(r"^\s+fail-fast:\s*false\s*$")
-TEST_MATRIX_SHARD_RE = re.compile(r"^\s+shard:\s*\[\s*1\s*,\s*2\s*,\s*3\s*,\s*4\s*\]\s*$")
-TEST_SHARD_NAME_RE = re.compile(r"^\s+name:\s*nextest shard \$\{\{\s*matrix\.shard\s*\}\} of 4\s*$")
 TEST_PARTITION_COMMAND = (
-    'just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" '
-    '"${{ steps.archive-root.outputs.archive_extract_root }}" '
-    "--partition count:${{ matrix.shard }}/4"
+    'just test-archive-run "$NEXTEST_ARCHIVE_PATH" '
+    '"$RUNNER_TEMP/nextest-archive-extract" '
+    '--partition "count:${shard}/4"'
 )
 TEST_REPRODUCTION_COMMAND = (
     "just test-archive-run .nextest-archive/nextest-archive.tar.zst "
-    "<managed-target-parent> "
-    "--partition count:${{ matrix.shard }}/4"
+    "<extract-root> "
+    "--partition count:${shard}/4"
 )
 TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"'
-TEST_ARCHIVE_EXTRACT_ROOT_COMMAND = 'archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"'
-TEST_ARCHIVE_EXTRACT_ROOT_OUTPUT = 'echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"'
+TEST_ARCHIVE_PARTITION_LOOP = "for shard in 1 2 3 4; do"
+TEST_ARCHIVE_PARTITION_GROUP = 'echo "::group::nextest archive partition ${shard}/4"'
+TEST_ARCHIVE_PARTITION_STATUS_INIT = "status=0"
+TEST_ARCHIVE_PARTITION_STATUS_MARK = "status=1"
+TEST_ARCHIVE_PARTITION_STATUS_EXIT = 'exit "$status"'
 TEST_ARCHIVE_KEY_INPUTS = (
     "'Cargo.lock'",
     "'Cargo.toml'",
@@ -463,7 +463,7 @@ TEST_ARCHIVE_KEY_INPUTS = (
 TEST_ARCHIVE_KEY_PREFIX = "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
 TEST_ARCHIVE_FINGERPRINT_PREFIX = "nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
 TEST_ARCHIVE_FINGERPRINT_PATH = ".nextest-archive-fingerprint/cache-key.txt"
-TEST_ARCHIVE_FINGERPRINT_OUTPUT = "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+TEST_ARCHIVE_FINGERPRINT_OUTPUT = "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
 TEST_ARCHIVE_FINGERPRINT_JOB_OUTPUT = (
     "nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}"
 )
@@ -536,7 +536,6 @@ CI_INSTALL_ACTION_TOOLS = {
     "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "test-archive": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
-    "test-shards": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
     "build": ("cargo-zigbuild", "steps.setup.outputs.zigbuild_version"),
 }
 CI_SOURCE_BUILD_TOOLS = ("cargo-deny", "cargo-nextest", "cargo-zigbuild")
@@ -544,7 +543,6 @@ CI_INSTALL_ACTION_COMMANDS = {
     "deny": "just deny",
     "advisories": "just deny-advisories",
     "test-archive": 'just test-archive "$NEXTEST_ARCHIVE_PATH"',
-    "test-shards": TEST_PARTITION_COMMAND,
     "build": "just build",
 }
 # Static-only option consumption keeps this local constant intentionally; the
@@ -1396,14 +1394,14 @@ def nextest_archive_key_identity(text: str) -> str | None:
     return f"{prefix}{marker}{args})"
 
 
-def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
-    blocks = step_blocks(job_lines)
-    job_text = uncommented_text(job_lines)
+def nextest_fingerprint_errors(fingerprint_lines: list[str], archive_lines: list[str]) -> list[str]:
+    blocks = step_blocks(fingerprint_lines)
+    job_text = uncommented_text(fingerprint_lines)
     cache_blocks = [
         block
         for block in (
-            action_blocks(job_lines, "actions/cache/restore@")
-            + action_blocks(job_lines, "actions/cache/save@")
+            action_blocks(archive_lines, "actions/cache/restore@")
+            + action_blocks(archive_lines, "actions/cache/save@")
         )
         if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
     ]
@@ -1427,9 +1425,9 @@ def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
     upload_names = [block_input_value(block, "name") or "" for block in upload_blocks]
 
     if not run_blocks or not upload_blocks:
-        return ["test-archive must publish nextest archive fingerprint"]
+        return ["nextest-fingerprint must publish nextest archive fingerprint"]
     if not any(TEST_ARCHIVE_FINGERPRINT_PREFIX in name for name in upload_names):
-        return ["test-archive must publish nextest archive fingerprint"]
+        return ["nextest-fingerprint must publish nextest archive fingerprint"]
 
     run_text = "\n".join(uncommented_text(block) for block in run_blocks)
     names_text = "\n".join(upload_names)
@@ -1438,9 +1436,9 @@ def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
         or TEST_ARCHIVE_FINGERPRINT_STEP_ID not in run_text
         or TEST_ARCHIVE_FINGERPRINT_OUTPUT_WRITE not in run_text
     ):
-        return ["test-archive must expose secure nextest fingerprint output"]
+        return ["nextest-fingerprint must expose secure nextest fingerprint output"]
     if run_text.count("nextest_fingerprint=") != 1 or run_text.count("$GITHUB_OUTPUT") != 1:
-        return ["test-archive must expose exactly one secure nextest fingerprint output"]
+        return ["nextest-fingerprint must expose exactly one secure nextest fingerprint output"]
     repo_controlled_indices = [
         index
         for index, block in enumerate(blocks)
@@ -1451,11 +1449,11 @@ def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
         min(run_block_indices) >= min(repo_controlled_indices)
         or min(upload_block_indices) >= min(repo_controlled_indices)
     ):
-        return ["test-archive must publish nextest fingerprint before repo-controlled steps"]
+        return ["nextest-fingerprint must publish nextest fingerprint before repo-controlled steps"]
     if not all(fragment in run_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
-        return ["test-archive fingerprint must include Rust and test graph inputs"]
+        return ["nextest-fingerprint must include Rust and test graph inputs"]
     if not all(fragment in names_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
-        return ["test-archive fingerprint must include Rust and test graph inputs"]
+        return ["nextest-fingerprint must include Rust and test graph inputs"]
 
     key_identities = [
         identity
@@ -1468,7 +1466,7 @@ def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
     ]
     expected_key_count = len(cache_blocks) + len(run_blocks) + len(upload_names)
     if len(key_identities) != expected_key_count or len(set(key_identities)) != 1:
-        return ["test-archive cache and fingerprint keys must match"]
+        return ["nextest archive cache and fingerprint keys must match"]
     return []
 
 
@@ -7296,7 +7294,7 @@ def test_accepts_fingerprint_reuse(job_lines: list[str]) -> bool:
         "nextest fingerprint reuse did not expose source_run_id",
         "nextest fingerprint reuse did not expose source_sha",
         "nextest fingerprint reuse did not expose source_artifact_id",
-        "nextest shards reused from run",
+        "nextest archive reused from run",
     )
     return all(item in text for item in required)
 
@@ -7563,7 +7561,7 @@ def gate_checks_nextest_fingerprint_reuse(gate_text: str) -> list[str]:
         '"${{ needs.ci-provenance-emit.result }}" != "skipped"',
     ):
         errors.append("gate must require ci-provenance-emit skipped on nextest fingerprint reuse")
-    if "nextest shards reused from run" not in reuse_body:
+    if "nextest archive reused from run" not in reuse_body:
         errors.append("gate must log nextest fingerprint reuse provenance")
     return errors
 
@@ -8059,10 +8057,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         # serial dep would re-create the fail-fast cost #400 eliminated.
         if "source-fence" in test_archive_needs:
             errors.append("test-archive must not need source-fence")
-    if "test-shards" in jobs and "test-archive" not in extract_needs(jobs["test-shards"]):
-        errors.append("test-shards needs test-archive")
-    if "test-shards" in jobs and "nextest-fingerprint-reuse" not in extract_needs(jobs["test-shards"]):
-        errors.append("test-shards needs nextest-fingerprint-reuse")
+    if "test-shards" in jobs:
+        errors.append("test-shards job must not reintroduce nextest archive artifact fan-out")
 
     if "clippy" in jobs:
         clippy_text = uncommented_text(jobs["clippy"])
@@ -8085,12 +8081,37 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("check-aarch64 must install aarch64 cross compiler packages")
         errors.extend(check_aarch64_standalone_guard_errors(jobs["check-aarch64"]))
 
+    if "nextest-fingerprint" in jobs:
+        fingerprint_needs = extract_needs(jobs["nextest-fingerprint"])
+        if "ci-policy" not in fingerprint_needs:
+            errors.append("nextest-fingerprint needs ci-policy")
+        if "detector" not in fingerprint_needs:
+            errors.append("nextest-fingerprint needs detector")
+        if not job_gates_on_full_ci_required(jobs["nextest-fingerprint"]):
+            errors.append("nextest-fingerprint must gate on full_ci_required")
+        if "test-archive" in jobs:
+            errors.extend(nextest_fingerprint_errors(jobs["nextest-fingerprint"], jobs["test-archive"]))
+
     if "test-archive" in jobs:
         test_archive_needs = extract_needs(jobs["test-archive"])
         if "ci-policy" not in test_archive_needs:
             errors.append("test-archive needs ci-policy")
+        if "detector" not in test_archive_needs:
+            errors.append("test-archive needs detector")
+        if "nextest-fingerprint" not in test_archive_needs:
+            errors.append("test-archive needs nextest-fingerprint")
+        if "nextest-fingerprint-reuse" not in test_archive_needs:
+            errors.append("test-archive needs nextest-fingerprint-reuse")
+        if not job_if_uses_always(jobs["test-archive"]):
+            errors.append("test-archive must use always()")
         if not job_gates_on_full_ci_required(jobs["test-archive"]):
             errors.append("test-archive must gate on full_ci_required")
+        if NEXTEST_REUSE_MISS_EXPR not in uncommented_text(jobs["test-archive"]):
+            errors.append("test-archive must skip on validated nextest fingerprint reuse")
+        if "needs.nextest-fingerprint.result == 'success'" not in uncommented_text(jobs["test-archive"]):
+            errors.append("test-archive must require nextest-fingerprint success")
+        if "needs.detector.result == 'success'" not in uncommented_text(jobs["test-archive"]):
+            errors.append("test-archive must require detector success")
         archive_lines = jobs["test-archive"]
         archive_text = uncommented_text(archive_lines)
         archive_cache_blocks = [
@@ -8125,17 +8146,32 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must restore nextest archive cache")
         if TEST_ARCHIVE_SAVE_ACTION not in archive_text:
             errors.append("test-archive must save nextest archive cache")
-        if not archive_upload_blocks:
-            errors.append("test-archive must upload nextest archive artifact")
+        if archive_upload_blocks:
+            errors.append("test-archive must not upload nextest archive artifact")
         if "restore-keys:" in archive_text:
             errors.append("test-archive cache must not use restore-keys")
         if archive_text.count(TEST_ARCHIVE_CACHE_PATH) < 2:
             errors.append("test-archive cache must use archive path env")
-        if archive_text.count(TEST_ARCHIVE_CACHE_HIT_GUARD) < 3:
+        if archive_text.count(TEST_ARCHIVE_CACHE_HIT_GUARD) < 2:
             errors.append("test-archive build must be skipped on archive cache hit")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
-        errors.extend(test_archive_fingerprint_errors(archive_lines))
+        if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:
+            errors.append("test-archive must not download nextest archive artifact")
+        if TEST_ARCHIVE_PARTITION_LOOP not in archive_text:
+            errors.append("test-archive must run all nextest archive partitions")
+        if TEST_ARCHIVE_PARTITION_GROUP not in archive_text or TEST_REPRODUCTION_ECHO not in archive_text:
+            errors.append("test-archive must log partition diagnostics")
+        if TEST_PARTITION_COMMAND not in archive_text:
+            errors.append("test-archive must run partitioned nextest from local archive")
+        for fragment in (
+            TEST_ARCHIVE_PARTITION_STATUS_INIT,
+            TEST_ARCHIVE_PARTITION_STATUS_MARK,
+            TEST_ARCHIVE_PARTITION_STATUS_EXIT,
+        ):
+            if fragment not in archive_text:
+                errors.append("test-archive must aggregate partition failures")
+                break
 
     if "nextest-fingerprint-reuse" in jobs:
         reuse_lines = jobs["nextest-fingerprint-reuse"]
@@ -8144,8 +8180,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest-fingerprint-reuse needs ci-policy")
         if "detector" not in reuse_needs:
             errors.append("nextest-fingerprint-reuse needs detector")
-        if "test-archive" not in reuse_needs:
-            errors.append("nextest-fingerprint-reuse needs test-archive")
+        if "nextest-fingerprint" not in reuse_needs:
+            errors.append("nextest-fingerprint-reuse needs nextest-fingerprint")
         if not job_if_uses_always(reuse_lines):
             errors.append("nextest-fingerprint-reuse must use always()")
         if not job_gates_on_full_ci_required(reuse_lines):
@@ -8171,40 +8207,6 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if not fingerprint_reuse_resolver_uses_bash(reuse_lines):
             errors.append("nextest-fingerprint-reuse resolver must use bash")
 
-    if "test-shards" in jobs:
-        test_shards_needs = extract_needs(jobs["test-shards"])
-        if "ci-policy" not in test_shards_needs:
-            errors.append("test-shards needs ci-policy")
-        if not job_gates_on_full_ci_required(jobs["test-shards"]):
-            errors.append("test-shards must gate on full_ci_required")
-        if not test_shards_skip_on_fingerprint_reuse(jobs["test-shards"]):
-            errors.append("test-shards must skip on validated nextest fingerprint reuse")
-        test_lines = jobs["test-shards"]
-        test_text = uncommented_text(test_lines)
-        if not has_line_matching(test_lines, TEST_FAIL_FAST_FALSE_RE):
-            errors.append("test-shards matrix must set fail-fast false")
-        if not has_line_matching(test_lines, TEST_MATRIX_SHARD_RE):
-            errors.append("test-shards matrix shard must be [1, 2, 3, 4]")
-        if not has_line_matching(test_lines, TEST_SHARD_NAME_RE):
-            errors.append("test-shards name must describe nextest shard")
-        if not job_has_setup_input(test_lines, "include-managed-target-dir", '"true"'):
-            errors.append("test-shards must resolve managed target dir")
-        if (
-            TEST_ARCHIVE_EXTRACT_ROOT_COMMAND not in test_text
-            or TEST_ARCHIVE_EXTRACT_ROOT_OUTPUT not in test_text
-        ):
-            errors.append("test-shards must extract archive to managed target parent")
-        if not has_run_command(test_lines, TEST_PARTITION_COMMAND):
-            errors.append("test-shards must run partitioned nextest from archive")
-        if test_has_inline_shard_reproduction_command(test_lines):
-            errors.append("test-shards reproduction command must use YAML block scalar")
-        elif not test_has_shard_reproduction_command(test_lines):
-            errors.append("test-shards must log shard reproduction command")
-        if TEST_ARCHIVE_DOWNLOAD_ACTION not in test_text:
-            errors.append("test-shards must download nextest archive artifact")
-        if "Swatinem/rust-cache" in test_text:
-            errors.append("test-shards must not restore a per-shard Rust target cache")
-
     if "test" in jobs:
         test_needs = extract_needs(jobs["test"])
         test_text = uncommented_text(jobs["test"])
@@ -8212,14 +8214,16 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test needs ci-policy")
         if not job_gates_on_full_ci_required(jobs["test"]):
             errors.append("test must gate on full_ci_required")
-        if "test-shards" not in test_needs:
-            errors.append("test needs test-shards")
+        if "nextest-fingerprint" not in test_needs:
+            errors.append("test needs nextest-fingerprint")
         if "test-archive" not in test_needs:
             errors.append("test needs test-archive")
         if "nextest-fingerprint-reuse" not in test_needs:
             errors.append("test needs nextest-fingerprint-reuse")
-        if not gate_checks_lane_success(test_text, "test-shards"):
-            errors.append("test must check needs.test-shards.result")
+        if not gate_checks_lane_success(test_text, "nextest-fingerprint"):
+            errors.append("test must check needs.nextest-fingerprint.result")
+        if not gate_checks_lane_success(test_text, "test-archive"):
+            errors.append("test must check needs.test-archive.result")
         if not test_accepts_fingerprint_reuse(jobs["test"]):
             errors.append("test must accept validated nextest fingerprint reuse")
         if not job_if_uses_always(jobs["test"]):
@@ -8787,32 +8791,7 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
         job_table = jobs[job]
         if not isinstance(job_table, dict):
             raise ValueError(f"ci_provenance.full_ci.jobs.{job} must be a table")
-        if job == "test-shards":
-            template = require_config_string(
-                job_table, "check_name_template", "ci_provenance.full_ci.jobs.test-shards"
-            )
-            shard_count = require_config_positive_int(
-                job_table, "shard_count", "ci_provenance.full_ci.jobs.test-shards"
-            )
-            if shard_count != 4:
-                raise ValueError(
-                    "ci_provenance.full_ci.jobs.test-shards shard_count must match the ci.yml shard matrix"
-                )
-            if "{shard}" not in template:
-                raise ValueError(
-                    "ci_provenance.full_ci.jobs.test-shards check_name_template must include {shard}"
-                )
-            literal_count = re.search(r"\bof\s+(\d+)\b", template)
-            if "{shard_count}" not in template and literal_count is None:
-                raise ValueError(
-                    "ci_provenance.full_ci.jobs.test-shards check_name_template must include shard count"
-                )
-            if literal_count is not None and int(literal_count.group(1)) != shard_count:
-                raise ValueError(
-                    "ci_provenance.full_ci.jobs.test-shards template count must match shard_count"
-                )
-        else:
-            require_config_string(job_table, "check_name", f"ci_provenance.full_ci.jobs.{job}")
+        require_config_string(job_table, "check_name", f"ci_provenance.full_ci.jobs.{job}")
         if job == "build" and job_table.get("conditional") != "detector.build_required":
             raise ValueError(
                 "ci_provenance.full_ci.jobs.build.conditional must be detector.build_required"

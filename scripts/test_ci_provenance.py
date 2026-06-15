@@ -52,8 +52,8 @@ required_jobs = [
   "clippy",
   "check-aarch64",
   "source-fence",
+  "nextest-fingerprint",
   "test-archive",
-  "test-shards",
   "test",
 ]
 conditional_jobs = ["build"]
@@ -77,12 +77,11 @@ check_name = "check-aarch64"
 [ci_provenance.full_ci.jobs.source-fence]
 check_name = "source-fence"
 
+[ci_provenance.full_ci.jobs.nextest-fingerprint]
+check_name = "nextest fingerprint"
+
 [ci_provenance.full_ci.jobs.test-archive]
 check_name = "nextest archive"
-
-[ci_provenance.full_ci.jobs.test-shards]
-check_name_template = "nextest shard {shard} of {shard_count}"
-shard_count = 4
 
 [ci_provenance.full_ci.jobs.test]
 check_name = "test"
@@ -175,12 +174,11 @@ check_name = "build"
 [ci_provenance.full_ci.jobs.test]
 check_name = "test"
 
-[ci_provenance.full_ci.jobs.test-shards]
-shard_count = 4
-check_name_template = "nextest shard {shard} of {shard_count}"
-
 [ci_provenance.full_ci.jobs.test-archive]
 check_name = "nextest archive"
+
+[ci_provenance.full_ci.jobs.nextest-fingerprint]
+check_name = "nextest fingerprint"
 
 [ci_provenance.full_ci.jobs.source-fence]
 check_name = "source-fence"
@@ -210,8 +208,8 @@ required_jobs = [
   "clippy",
   "check-aarch64",
   "source-fence",
+  "nextest-fingerprint",
   "test-archive",
-  "test-shards",
   "test",
 ]
 
@@ -338,8 +336,8 @@ def valid_record(module, config_path: pathlib.Path) -> dict[str, object]:
             "clippy": "success",
             "check-aarch64": "success",
             "source-fence": "success",
+            "nextest-fingerprint": "success",
             "test-archive": "success",
-            "test-shards": "success",
             "test": "success",
         },
         "conditional_jobs": {"build": {"required": True, "result": "success"}},
@@ -429,11 +427,8 @@ def required_job_payloads(build_conclusion: object = "success") -> list[dict[str
         job_payload("clippy"),
         job_payload("check-aarch64"),
         job_payload("source-fence"),
+        job_payload("nextest fingerprint"),
         job_payload("nextest archive"),
-        job_payload("nextest shard 1 of 4"),
-        job_payload("nextest shard 2 of 4"),
-        job_payload("nextest shard 3 of 4"),
-        job_payload("nextest shard 4 of 4"),
         job_payload("test"),
         job_payload("build", conclusion=build_conclusion),
     ]
@@ -506,12 +501,6 @@ def assert_missing_config_table_fails() -> None:
         assert_fails("missing [ci_provenance]", ["emit-full-ci", "--config", str(config)])
 
 
-def assert_invalid_shard_count_fails() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        config = write_config(pathlib.Path(tmp), CONFIG_TOML.replace("shard_count = 4", "shard_count = 0"))
-        assert_fails("shard_count", ["emit-full-ci", "--config", str(config)])
-
-
 def assert_emit_full_ci_records_nextest_fingerprint_argument() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -543,8 +532,8 @@ def assert_emit_full_ci_records_nextest_fingerprint_argument() -> None:
                     "clippy=success",
                     "check-aarch64=success",
                     "source-fence=success",
+                    "nextest-fingerprint=success",
                     "test-archive=success",
-                    "test-shards=success",
                     "test=success",
                 ],
                 conditional_job_values=["build.required=true", "build.result=success"],
@@ -553,26 +542,6 @@ def assert_emit_full_ci_records_nextest_fingerprint_argument() -> None:
             )
         if record["nextest_fingerprint"] != NEXTEST_FINGERPRINT:
             raise AssertionError(record)
-
-
-def assert_literal_shard_count_template_loads() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        config_text = CONFIG_TOML.replace(
-            'check_name_template = "nextest shard {shard} of {shard_count}"',
-            'check_name_template = "nextest shard {shard} of 4"',
-        )
-        config = write_config(pathlib.Path(tmp), config_text)
-        module = load_script()
-        loaded = module.load_config(config)
-        names = module.expanded_check_names(loaded, "test-shards")
-        expected = (
-            "nextest shard 1 of 4",
-            "nextest shard 2 of 4",
-            "nextest shard 3 of 4",
-            "nextest shard 4 of 4",
-        )
-        if names != expected:
-            raise AssertionError(f"unexpected expanded shard names: {names}")
 
 
 def assert_unknown_record_schema_fails() -> None:
@@ -793,7 +762,7 @@ def assert_fingerprint_reuse_malformed_fingerprint_fails_closed() -> None:
             raise AssertionError(result)
 
 
-def assert_fingerprint_reuse_rejects_failed_source_shard_through_resolver() -> None:
+def assert_fingerprint_reuse_rejects_failed_source_archive_through_resolver() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -801,7 +770,7 @@ def assert_fingerprint_reuse_rejects_failed_source_shard_through_resolver() -> N
         record = record_with_fingerprint(module, config)
         failed_jobs = required_job_payloads()
         for job in failed_jobs:
-            if job["name"] == "nextest shard 2 of 4":
+            if job["name"] == "nextest archive":
                 job["conclusion"] = "failure"
                 break
         fake = FakeGitHub(
@@ -815,7 +784,7 @@ def assert_fingerprint_reuse_rejects_failed_source_shard_through_resolver() -> N
         result = resolve_fingerprint_with_fake(module, config, fake)
         if result.reuse_found is not False:
             raise AssertionError(result)
-        if "nextest shard 2 of 4" not in result.reason:
+        if "nextest archive" not in result.reason:
             raise AssertionError(result)
 
 
@@ -1504,34 +1473,34 @@ def assert_job_evidence_success_passes() -> None:
         )
 
 
-def assert_shard_job_failures_rejected() -> None:
+def assert_nextest_archive_job_failures_rejected() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp))
         loaded = module.load_config(config)
         record = valid_record(module, config)
-        missing_shard = [job for job in required_job_payloads() if job["name"] != "nextest shard 4 of 4"]
+        missing_archive = [job for job in required_job_payloads() if job["name"] != "nextest archive"]
         assert_raises(
-            "missing required job nextest shard 4 of 4",
-            lambda: module.validate_job_evidence({"jobs": missing_shard}, loaded, record, deploy_reuse_requested=True),
+            "missing required job nextest archive",
+            lambda: module.validate_job_evidence({"jobs": missing_archive}, loaded, record, deploy_reuse_requested=True),
         )
-        failed_shard = required_job_payloads()
-        failed_shard[8] = job_payload("nextest shard 2 of 4", "failure")
+        failed_archive = required_job_payloads()
+        failed_archive[7] = job_payload("nextest archive", "failure")
         assert_raises(
-            "nextest shard 2 of 4",
-            lambda: module.validate_job_evidence({"jobs": failed_shard}, loaded, record, deploy_reuse_requested=True),
+            "nextest archive",
+            lambda: module.validate_job_evidence({"jobs": failed_archive}, loaded, record, deploy_reuse_requested=True),
         )
-        neutral_shard = required_job_payloads()
-        neutral_shard[8] = job_payload("nextest shard 2 of 4", "neutral")
+        neutral_archive = required_job_payloads()
+        neutral_archive[7] = job_payload("nextest archive", "neutral")
         assert_raises(
             "neutral",
-            lambda: module.validate_job_evidence({"jobs": neutral_shard}, loaded, record, deploy_reuse_requested=True),
+            lambda: module.validate_job_evidence({"jobs": neutral_archive}, loaded, record, deploy_reuse_requested=True),
         )
-        null_shard = required_job_payloads()
-        null_shard[8] = job_payload("nextest shard 2 of 4", None)
+        null_archive = required_job_payloads()
+        null_archive[7] = job_payload("nextest archive", None)
         assert_raises(
             "None",
-            lambda: module.validate_job_evidence({"jobs": null_shard}, loaded, record, deploy_reuse_requested=True),
+            lambda: module.validate_job_evidence({"jobs": null_archive}, loaded, record, deploy_reuse_requested=True),
         )
 
 
@@ -1574,9 +1543,7 @@ def assert_test_archive_and_build_rules() -> None:
 def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
-    assert_invalid_shard_count_fails()
     assert_emit_full_ci_records_nextest_fingerprint_argument()
-    assert_literal_shard_count_template_loads()
     assert_unknown_record_schema_fails()
     assert_fingerprint_reuse_prior_green_returns_reuse()
     assert_fingerprint_reuse_no_prior_run_returns_no_reuse()
@@ -1585,7 +1552,7 @@ def main() -> int:
     assert_fingerprint_reuse_requires_exact_fingerprint_components()
     assert_fingerprint_reuse_rejects_source_workflow_digest_drift()
     assert_fingerprint_reuse_malformed_fingerprint_fails_closed()
-    assert_fingerprint_reuse_rejects_failed_source_shard_through_resolver()
+    assert_fingerprint_reuse_rejects_failed_source_archive_through_resolver()
     assert_fingerprint_reuse_source_run_must_be_trusted_main_push()
     assert_missing_current_fingerprint_arg_fails_closed()
     assert_nextest_fingerprint_path_args_are_rejected()
@@ -1616,7 +1583,7 @@ def main() -> int:
     assert_record_attempt_mismatch_rejected()
     assert_malformed_api_payload_rejected()
     assert_job_evidence_success_passes()
-    assert_shard_job_failures_rejected()
+    assert_nextest_archive_job_failures_rejected()
     assert_test_archive_and_build_rules()
     print("OK: CI provenance self-tests passed.")
     return 0

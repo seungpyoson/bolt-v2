@@ -379,18 +379,16 @@ jobs:
   # adding brittle filter expressions that could hide neighboring tests.
   # #400 decoupled this from source-fence so the two lanes run in parallel.
   # Merge enforcement: `gate.needs` requires `source-fence` and the aggregate
-  # `test` lane (which transitively requires `test-archive` and `test-shards`)
-  # to succeed; see the result checks for `source-fence` and `test` in the
-  # `gate` job below.
-  test-archive:
-    name: nextest archive
+  # `test` lane (which transitively requires `nextest-fingerprint` and
+  # `test-archive`) to succeed; see the result checks for `source-fence` and
+  # `test` in the `gate` job below.
+  nextest-fingerprint:
+    name: nextest fingerprint
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
-    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     outputs:
       nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}
-    env:
-      NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -409,6 +407,45 @@ jobs:
           path: .nextest-archive-fingerprint/cache-key.txt
           if-no-files-found: error
           retention-days: 30
+
+  nextest-fingerprint-reuse:
+    name: nextest fingerprint reuse
+    needs: [ci-policy, detector, nextest-fingerprint]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    outputs:
+      reuse_found: ${{ steps.reuse.outputs.reuse_found }}
+      source_run_id: ${{ steps.reuse.outputs.source_run_id }}
+      source_sha: ${{ steps.reuse.outputs.source_sha }}
+      source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}
+      reason: ${{ steps.reuse.outputs.reason }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Resolve nextest fingerprint reuse
+        id: reuse
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >
+          python3 scripts/ci_provenance.py resolve-fingerprint
+          --current-run-id "${{ github.run_id }}"
+          --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
+          | tee -a "$GITHUB_OUTPUT"
+
+  test-archive:
+    name: nextest archive
+    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.result == 'success' && needs.nextest-fingerprint.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    env:
+      NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup environment
         id: setup
@@ -433,7 +470,6 @@ jobs:
           save-if: ${{ github.job == 'test-archive' }}
 
       - name: Install cargo-nextest
-        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
@@ -456,99 +492,31 @@ jobs:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
 
-      - name: Upload nextest archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: nextest-archive
-          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          if-no-files-found: error
-          retention-days: 1
-
-  nextest-fingerprint-reuse:
-    name: nextest fingerprint reuse
-    needs: [ci-policy, detector, test-archive]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
-    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
-    outputs:
-      reuse_found: ${{ steps.reuse.outputs.reuse_found }}
-      source_run_id: ${{ steps.reuse.outputs.source_run_id }}
-      source_sha: ${{ steps.reuse.outputs.source_sha }}
-      source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}
-      reason: ${{ steps.reuse.outputs.reason }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.12"
-
-      - name: Resolve nextest fingerprint reuse
-        id: reuse
+      - name: Run nextest archive partitions
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: >
-          python3 scripts/ci_provenance.py resolve-fingerprint
-          --current-run-id "${{ github.run_id }}"
-          --current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
-          | tee -a "$GITHUB_OUTPUT"
-
-  test-shards:
-    name: nextest shard ${{ matrix.shard }} of 4
-    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
-    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup environment
-        id: setup
-        uses: ./.github/actions/setup-environment
-        with:
-          just-version: ${{ env.JUST_VERSION }}
-          include-nextest-version: "true"
-          include-managed-target-dir: "true"
-
-      - name: Download nextest archive
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: nextest-archive
-          path: ${{ runner.temp }}/nextest-archive
-
-      - name: Resolve archive extraction root
-        id: archive-root
         run: |
-          archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"
-          echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
-        with:
-          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
-          fallback: none
-
-      - name: Show shard reproduction command
-        run: |
-          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"
-
-      - name: test
-        run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4
+          status=0
+          for shard in 1 2 3 4; do
+            echo "::group::nextest archive partition ${shard}/4"
+            echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <extract-root> --partition count:${shard}/4"
+            if ! just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/4"; then
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"
 
   test:
     name: test
-    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]
+    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
-      - name: Check test shards
+      - name: Check nextest archive tests
         shell: bash
         run: |
-          if [[ "${{ needs.test-archive.result }}" != "success" ]]; then
-            echo "nextest archive did not succeed"
+          if [[ "${{ needs.nextest-fingerprint.result }}" != "success" ]]; then
+            echo "nextest fingerprint did not succeed"
             exit 1
           fi
           reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
@@ -569,11 +537,11 @@ jobs:
               echo "nextest fingerprint reuse did not expose source_artifact_id"
               exit 1
             fi
-            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
+            echo "nextest archive reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
             exit 0
           fi
-          if [[ "${{ needs.test-shards.result }}" != "success" ]]; then
-            echo "test shards did not succeed"
+          if [[ "${{ needs.test-archive.result }}" != "success" ]]; then
+            echo "nextest archive tests did not succeed"
             exit 1
           fi
 
@@ -651,7 +619,7 @@ jobs:
 
   ci-provenance-emit:
     name: ci-provenance-emit
-    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
@@ -675,12 +643,12 @@ jobs:
           --required-job clippy=${{ needs.clippy.result }}
           --required-job check-aarch64=${{ needs.check-aarch64.result }}
           --required-job source-fence=${{ needs.source-fence.result }}
+          --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }}
           --required-job test-archive=${{ needs.test-archive.result }}
-          --required-job test-shards=${{ needs.test-shards.result }}
           --required-job test=${{ needs.test.result }}
           --conditional-job build.required=${{ needs.detector.outputs.build_required }}
           --conditional-job build.result=${{ needs.build.result }}
-          --nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+          --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
 
       - name: Upload CI provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -812,7 +780,7 @@ jobs:
               echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
               exit 1
             fi
-            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
+            echo "nextest archive reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
           else
             if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
               if [[ "$ignore_emit_failure" == "true" ]]; then

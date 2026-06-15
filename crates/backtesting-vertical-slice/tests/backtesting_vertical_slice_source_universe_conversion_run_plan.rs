@@ -150,7 +150,7 @@ fn committed_source_universe_conversion_run_plans_record_portable_object_gate_pa
         );
         assert!(
             plan.object_gates_path
-                .starts_with(expected_object_gates_prefix),
+                .starts_with(&expected_object_gates_prefix),
             "{} object_gates_path must point at committed object gates, got {}",
             plan_path.display(),
             plan.object_gates_path.display()
@@ -170,7 +170,7 @@ fn committed_source_universe_conversion_run_plans_record_portable_object_gate_pa
         assert!(
             object_gates_artifact
                 .path
-                .starts_with(expected_object_gates_prefix),
+                .starts_with(&expected_object_gates_prefix),
             "{} object-gates artifact ref path must point at committed object gates, got {}",
             plan_path.display(),
             object_gates_artifact.path.display()

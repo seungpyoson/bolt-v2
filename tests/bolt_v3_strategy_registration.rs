@@ -428,7 +428,7 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     ) -> Result<StrategyId, bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError>
     {
         assert_eq!(context.strategy_kind, "stub_runtime_strategy");
-        context
+        let permit = context
             .submit_admission
             .admit(&submit_request(Decimal::new(1, 0)))
             .map_err(|error| {
@@ -443,6 +443,7 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
                     message: format!("submit admission admit failed: {error:?}"),
                 }
             })?;
+        permit.commit_submitted();
         let strategy_id = StrategyId::from("BOLT-V3-PHASE3-BINDING");
         node.add_strategy(support::stub_runtime_strategy::StubRuntimeStrategy::new(
             strategy_id.as_str(),

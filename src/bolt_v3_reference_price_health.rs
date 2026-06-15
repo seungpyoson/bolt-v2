@@ -844,8 +844,14 @@ mod tests {
 
     #[test]
     fn reference_current_price_health_prepares_strategy_free_transport_runtime() {
-        let loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
             .expect("fixture config should load");
+        let catalog_directory = std::env::temp_dir().join(format!(
+            "bolt-v3-reference-price-health-{}",
+            std::process::id()
+        ));
+        loaded.root.persistence.catalog_directory =
+            catalog_directory.to_string_lossy().into_owned();
         let plan = reference_current_price_health_plan(&loaded)
             .expect("reference_current_price health plan should build");
         let (runtime, _summary) = build_bolt_v3_strategy_free_live_node_with_summary(

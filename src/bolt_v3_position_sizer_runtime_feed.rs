@@ -59,6 +59,7 @@ pub struct PositionSizerRuntimeFeed {
     component_builder: PositionSizerRuntimeComponentBuilder,
     latest_terminal_observed_at_ns: Option<u64>,
     seen_position_fill_trade_ids: BTreeMap<PositionFillTradeKey, u64>,
+    position_fill_trade_id_retention_exhausted: bool,
 }
 
 pub struct PositionSizerRuntimeFeedSubscription {
@@ -164,6 +165,7 @@ impl PositionSizerRuntimeFeed {
             component_builder,
             latest_terminal_observed_at_ns: None,
             seen_position_fill_trade_ids: BTreeMap::new(),
+            position_fill_trade_id_retention_exhausted: false,
         }
     }
 
@@ -275,6 +277,8 @@ impl PositionSizerRuntimeFeed {
             observed_at_ns,
             self.config.dedupe_retention_ns,
         );
+        self.seen_position_fill_trade_ids.clear();
+        self.position_fill_trade_id_retention_exhausted = false;
         self.publish_components_if_ready()
     }
 
@@ -461,11 +465,7 @@ impl PositionSizerRuntimeFeed {
         key: PositionFillTradeKey,
         observed_at_ns: u64,
     ) {
-        prune_observed_dedupe_entries(
-            &mut self.seen_position_fill_trade_ids,
-            observed_at_ns,
-            self.config.dedupe_retention_ns,
-        );
+        self.prune_seen_position_fill_trade_ids(observed_at_ns);
         self.seen_position_fill_trade_ids
             .insert(key, observed_at_ns);
     }
@@ -475,14 +475,25 @@ impl PositionSizerRuntimeFeed {
         key: PositionFillTradeKey,
         observed_at_ns: u64,
     ) -> bool {
+        self.prune_seen_position_fill_trade_ids(observed_at_ns);
+        if self.position_fill_trade_id_retention_exhausted {
+            return false;
+        }
+        self.seen_position_fill_trade_ids
+            .insert(key, observed_at_ns)
+            .is_none()
+    }
+
+    fn prune_seen_position_fill_trade_ids(&mut self, observed_at_ns: u64) {
+        let len_before = self.seen_position_fill_trade_ids.len();
         prune_observed_dedupe_entries(
             &mut self.seen_position_fill_trade_ids,
             observed_at_ns,
             self.config.dedupe_retention_ns,
         );
-        self.seen_position_fill_trade_ids
-            .insert(key, observed_at_ns)
-            .is_none()
+        if self.seen_position_fill_trade_ids.len() < len_before {
+            self.position_fill_trade_id_retention_exhausted = true;
+        }
     }
 
     fn publish_components_if_ready(&mut self) -> Option<BoltV3SubmitPositionSizingNtComponents> {

@@ -3426,11 +3426,7 @@ pub async fn run_bolt_v3_live_node(
     // metadata, submit admission would start with an unreconciled ledger and
     // could double-allocate capital, so fail closed before entering NT's
     // loop. This is a reconciliation guard, not the removed start gate.
-    if !startup_rebuild.accepted && startup_rebuild.attempted_reservation_count > 0 {
-        return Err(BoltV3LiveNodeError::StartupPositionSizerRebuild(
-            startup_rebuild,
-        ));
-    }
+    fail_closed_on_unreconciled_startup_rebuild(startup_rebuild)?;
     let node_handle = runtime.node.handle();
     let mut capture_guards = {
         let node = &runtime.node;
@@ -3474,6 +3470,17 @@ pub async fn run_bolt_v3_live_node(
         (Ok(()), Err(error)) => Err(error),
         (Ok(()), Ok(())) => Ok(()),
     }
+}
+
+fn fail_closed_on_unreconciled_startup_rebuild(
+    startup_rebuild: BoltV3SubmitPositionSizingRebuildDecision,
+) -> Result<(), BoltV3LiveNodeError> {
+    if !startup_rebuild.accepted && startup_rebuild.attempted_reservation_count > 0 {
+        return Err(BoltV3LiveNodeError::StartupPositionSizerRebuild(
+            startup_rebuild,
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -4592,6 +4599,28 @@ mod tests {
                 .submit_admission
                 .position_sizer_has_live_reservation("startup-unknown-client-order")
         );
+    }
+
+    #[test]
+    fn startup_rebuild_guard_aborts_before_live_node_run_for_unattributed_open_orders() {
+        let rebuild = BoltV3SubmitPositionSizingRebuildDecision {
+            accepted: false,
+            reason: Some(ReservationRejectionReason::MissingEvidence),
+            attempted_reservation_count: 1,
+            rebuilt_reservation_count: 0,
+            live_reserved_liability: Decimal::ZERO,
+            missing_nt_account_cache_balance: None,
+        };
+
+        let error = fail_closed_on_unreconciled_startup_rebuild(rebuild.clone())
+            .expect_err("unattributed startup open orders must abort before NT runner entry");
+
+        match error {
+            BoltV3LiveNodeError::StartupPositionSizerRebuild(decision) => {
+                assert_eq!(decision, rebuild);
+            }
+            other => panic!("unexpected startup rebuild guard error: {other:?}"),
+        }
     }
 
     #[test]

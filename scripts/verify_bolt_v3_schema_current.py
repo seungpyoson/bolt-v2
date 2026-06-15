@@ -27,6 +27,7 @@ MAKER_SCOPE_DATA_MODEL_DOC = REPO_ROOT / "specs/022-nt-maker-order-scope/data-mo
 AGENTS_DOC = REPO_ROOT / "AGENTS.md"
 FEATURE_JSON = REPO_ROOT / ".specify/feature.json"
 VALIDATE_SOURCE = REPO_ROOT / "src/bolt_v3_validate.rs"
+DECISION_EVIDENCE_SOURCE = REPO_ROOT / "src/bolt_v3_decision_evidence.rs"
 ARCHETYPE_BINARY_ORACLE_SOURCE = (
     REPO_ROOT / "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 )
@@ -48,6 +49,9 @@ SCHEMA_FIELD_LINE_PATTERN = re.compile(r"^\s*-\s*(?P<fields>[^:]+):")
 BACKTICKED_FIELD_PATTERN = re.compile(r"`(?P<field>[a-z][a-z0-9_]*)`")
 SUPPORTED_STRATEGY_SCHEMA_VERSION_PATTERN = re.compile(
     r"pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = (?P<version>\d+);"
+)
+DECISION_EVIDENCE_SCHEMA_VERSION_PATTERN = re.compile(
+    r"pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = (?P<version>\d+);"
 )
 STRATEGY_SCHEMA_EXAMPLE_PATTERN = re.compile(
     r"schema_version = (?P<version>\d+)\nstrategy_instance_id = ",
@@ -78,8 +82,8 @@ ORDER_TEMPLATE_FIELDS = (
     "trailing_offset",
     "trailing_offset_type",
 )
-DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE = (
-    "Decision-evidence JSONL records use `schema_version = 10` for `order_intent`, "
+DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE_TEMPLATE = (
+    "Decision-evidence JSONL records use `schema_version = {version}` for `order_intent`, "
     "`admission_decision`, `strategy_input_snapshot`, `position_sizer_rebuild`, "
     "`submit_reservation_metadata`, and `submit_reservation_fill` envelopes."
 )
@@ -252,6 +256,13 @@ def extract_supported_strategy_schema_version(validate_source: str) -> int | Non
     return int(match.group("version"))
 
 
+def extract_decision_evidence_schema_version(decision_evidence_source: str) -> int | None:
+    match = DECISION_EVIDENCE_SCHEMA_VERSION_PATTERN.search(decision_evidence_source)
+    if match is None:
+        return None
+    return int(match.group("version"))
+
+
 def has_rust_function(source: str, name: str) -> bool:
     return re.search(rf"(?m)^\s*(?:pub(?:\(crate\))?\s+)?fn\s+{re.escape(name)}\s*\(", source) is not None
 
@@ -365,6 +376,7 @@ def validate_docs(
     agents_doc: str | None = None,
     feature_json: str | None = None,
     validate_source: str = "",
+    decision_evidence_source: str = "",
     archetype_source: str = "",
     strategy_source: str = "",
     position_contract_source: str = "",
@@ -379,8 +391,20 @@ def validate_docs(
         if phrase not in schema:
             findings.append(f"schema missing current phrase: {phrase}")
 
-    if DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE not in schema:
-        findings.append("schema missing decision-evidence JSONL schema v10 contract")
+    decision_evidence_schema_version = extract_decision_evidence_schema_version(
+        decision_evidence_source
+    )
+    if decision_evidence_schema_version is None:
+        findings.append("source missing BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION")
+    else:
+        decision_evidence_contract_phrase = DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE_TEMPLATE.format(
+            version=decision_evidence_schema_version
+        )
+        if decision_evidence_contract_phrase not in schema:
+            findings.append(
+                "schema missing decision-evidence JSONL schema "
+                f"v{decision_evidence_schema_version} contract"
+            )
 
     if runtime_contracts:
         for field in ORDER_TEMPLATE_FIELDS:
@@ -536,6 +560,7 @@ def main() -> int:
         agents_doc=AGENTS_DOC.read_text(encoding="utf-8"),
         feature_json=FEATURE_JSON.read_text(encoding="utf-8"),
         validate_source=VALIDATE_SOURCE.read_text(encoding="utf-8"),
+        decision_evidence_source=DECISION_EVIDENCE_SOURCE.read_text(encoding="utf-8"),
         archetype_source=ARCHETYPE_BINARY_ORACLE_SOURCE.read_text(encoding="utf-8"),
         strategy_source=module_text(STRATEGY_SOURCE_ROOTS),
         position_contract_source=POSITION_CONTRACT_SOURCE.read_text(encoding="utf-8")

@@ -1506,18 +1506,12 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
 def assert_ci_concurrency_split_gaps_are_reported() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
-    without_dispatch_cancel = re.sub(
-        r"(\n  cancel-in-progress: >-\n    \$\{\{[\s\S]*?)\n        \|\| github\.event_name == 'workflow_dispatch'(?= \}\})",
-        r"\1",
-        workflow,
-        count=1,
-    )
-    push_cancel = re.sub(
-        r"(\n  cancel-in-progress: >-\n    \$\{\{[\s\S]*?) \}\}",
-        r"\1\n        || github.event_name == 'push' }}",
-        workflow,
-        count=1,
-    )
+    cancel_in_progress_with_dispatch = """  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        || github.event_name == 'workflow_dispatch' }}
+"""
     cases = [
         (
             "concurrency group must split deferred PR runs from full CI runs",
@@ -1533,20 +1527,27 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
         ),
         (
             "cancel-in-progress must cover deferred draft PR runs and workflow_dispatch full CI runs only",
-            re.sub(
-                r"  cancel-in-progress: >-\n    \$\{\{ github\.event_name == 'pull_request'\n        && github\.event\.pull_request\.draft == true\n        && contains\(fromJSON\('\[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\"\]'\), github\.event\.action\)\n        \|\| github\.event_name == 'workflow_dispatch' \}\}\n",
-                "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n",
+            replace_once(
                 workflow,
-                count=1,
+                cancel_in_progress_with_dispatch,
+                "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n",
             ),
         ),
         (
             "cancel-in-progress must cover deferred draft PR runs and workflow_dispatch full CI runs only",
-            without_dispatch_cancel,
+            replace_once(
+                workflow,
+                "\n        || github.event_name == 'workflow_dispatch' }}",
+                " }}",
+            ),
         ),
         (
             "cancel-in-progress must not cancel push, tag, or deploy flows",
-            push_cancel,
+            replace_once(
+                workflow,
+                "        || github.event_name == 'workflow_dispatch' }}",
+                "        || github.event_name == 'workflow_dispatch'\n        || github.event_name == 'push' }}",
+            ),
         ),
         (
             "workflow-level concurrency must not reference job outputs",

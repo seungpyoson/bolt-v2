@@ -232,7 +232,7 @@ selected_source_report_path = "{pmxt_selected_source_report}"
 [[venue.universe]]
 universe_id = "pmxt-polymarket-full-current-data"
 scope_label = "Polymarket full current local/archive data"
-status = "source_only"
+status = "blocked"
 source_archive_discovery_seed_path = "{pmxt_archive_seed}"
 source_archive_index_manifest_path = "{pmxt_archive_index_manifest}"
 source_universe_manifest_path = "{pmxt_source_manifest}"
@@ -304,13 +304,13 @@ blocking_issues = [
     assert_eq!(ledger.venue_count, 3);
     assert_eq!(ledger.universe_count, 7);
     assert_eq!(ledger.converted_universes, 3);
-    assert_eq!(ledger.source_only_universes, 3);
-    assert_eq!(ledger.blocked_universes, 1);
+    assert_eq!(ledger.source_only_universes, 2);
+    assert_eq!(ledger.blocked_universes, 2);
     assert_eq!(ledger.total_converted_canonical_rows, 4_602_457);
     assert_eq!(ledger.total_converted_nt_catalog_rows, 4_602_458);
-    assert_eq!(ledger.total_source_only_objects, 9_259);
+    assert_eq!(ledger.total_source_only_objects, 7_908);
     assert_eq!(ledger.total_source_only_object_gates, 7_908);
-    assert_eq!(ledger.total_source_only_accepted_bytes, 579_873_706_038);
+    assert_eq!(ledger.total_source_only_accepted_bytes, 22_057_801_068);
 
     let binance = ledger
         .venues
@@ -530,19 +530,23 @@ blocking_issues = [
         .expect("pmxt venue");
     assert_eq!(
         pmxt.status,
-        VenueScaleConversionAcceptanceStatus::PartiallyConverted
+        VenueScaleConversionAcceptanceStatus::Blocked
     );
     assert_eq!(pmxt.converted_universes, 1);
-    assert_eq!(pmxt.source_only_universes, 1);
-    assert_eq!(pmxt.blocked_universes, 0);
-    assert_eq!(pmxt.total_source_only_objects, 1_351);
+    assert_eq!(pmxt.source_only_universes, 0);
+    assert_eq!(pmxt.blocked_universes, 1);
+    assert_eq!(pmxt.total_source_only_objects, 0);
     assert_eq!(pmxt.total_source_only_object_gates, 0);
-    assert_eq!(pmxt.total_source_only_accepted_bytes, 557_815_904_970);
+    assert_eq!(pmxt.total_source_only_accepted_bytes, 0);
     let pmxt_full = pmxt
         .universes
         .iter()
         .find(|universe| universe.universe_id == "pmxt-polymarket-full-current-data")
         .expect("pmxt full current universe");
+    assert_eq!(
+        pmxt_full.status,
+        VenueScaleConversionAcceptanceStatus::Blocked
+    );
     assert_eq!(
         pmxt_full.blocking_issues,
         vec![

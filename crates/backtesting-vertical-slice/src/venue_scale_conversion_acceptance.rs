@@ -978,6 +978,11 @@ fn validate_status_inputs(
                 "source-only universe {} must not reference converted artifact evidence",
                 spec.universe_id
             );
+            ensure!(
+                spec.blocking_issues.is_empty(),
+                "source-only universe {} must not contain blocking issues",
+                spec.universe_id
+            );
         }
         VenueScaleConversionAcceptanceStatus::Blocked => {
             ensure!(
@@ -1082,6 +1087,12 @@ mod tests {
         }
     }
 
+    fn source_only_universe_spec() -> VenueScaleConversionAcceptanceUniverseSpec {
+        let mut spec = converted_universe_spec();
+        spec.status = VenueScaleConversionAcceptanceStatus::SourceOnly;
+        spec
+    }
+
     #[test]
     fn converted_status_requires_full_planned_object_coverage() {
         let spec = converted_universe_spec();
@@ -1100,6 +1111,18 @@ mod tests {
         let spec = converted_universe_spec();
         validate_status_inputs(&spec, 5, 0, 5, true)
             .expect("converted universe covering every planned object is accepted");
+    }
+
+    #[test]
+    fn source_only_status_rejects_blocking_issues() {
+        let mut spec = source_only_universe_spec();
+        spec.blocking_issues = vec!["missing_object_gates".to_string()];
+        let error = validate_status_inputs(&spec, 0, 1, 0, false)
+            .expect_err("source-only universe with blocking issues must be rejected");
+        assert!(
+            format!("{error:#}").contains("blocking issues"),
+            "expected blocking-issues rejection, got: {error:#}"
+        );
     }
 
     #[test]

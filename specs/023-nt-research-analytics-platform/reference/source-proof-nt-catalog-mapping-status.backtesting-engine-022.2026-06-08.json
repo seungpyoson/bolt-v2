@@ -45,8 +45,8 @@
       "status": "source_proof_id_version_and_data_class_evidence_bound",
       "decision": "Source-catalog mapping readiness now carries and checks source_proof_id/source_proof_version plus per-required-NT-data-class evidence refs, so broad backfill execution readiness cannot reuse a stale or status-only mapping report for the same source binding/table family.",
       "binance_ready_report_hash": "3d7e1a378377c1c0a2cba355a1f0a7f73b2e6018746a7a287ecb0ca0a62bbd9d",
-      "pmxt_blocked_report_hash": "71723a851a61abce3d01b6c544daaf6601af3b5ee43695ac27b622781a777c45",
-      "catalog_mapping_evaluation_hash": "af68803e6c87c124b75a8442bd9493b7fe60de42cac73304bf1d44dee92d1d56"
+      "pmxt_blocked_report_hash": "2ff85429bfe00dfa7a680b16f726e0221afe7ddf96cd4eb9b10b2598e2ef9c6b",
+      "catalog_mapping_evaluation_hash": "f68626462e7d7e5194411573b37ca82042dd39fe3a9231b85c282f34a3224cb9"
     }
   },
   "nt_capability_evidence": [
@@ -440,6 +440,7 @@
   ],
   "next_required_evidence": [
     "Archive or promote only the refreshed one-off PMXT L2+TradeTick artifact if needed; do not generalize PMXT from this bounded sample.",
+    "Use the committed canonical PMXT source-catalog mapping readiness gate as the broad-source guardrail: the gate remains blocked by missing dynamic tick-size replay claim evidence, one-off usage scope, non-accepted BTE status, and non-proven catalog status.",
     "Use the committed PMXT coverage-ledger status only as rejected/current evidence; do not treat it as accepted PMXT coverage.",
     "Use the committed PMXT broad-backfill efficiency status as a guardrail: no broad payload download, full-object hash, conversion, catalog projection, or BacktestNode run before manifest/index-only acceptance and bounded execution budgets are proven.",
     "Use the committed source-agnostic boundary status as the adapter-rule guardrail: new sources that match an existing registered adapter can be registry/source-proof/run-spec additions; new raw formats or NT data families require a registered adapter implementation/runner and proof, not venue branches in generic gates.",

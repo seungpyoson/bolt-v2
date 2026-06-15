@@ -112,14 +112,15 @@
       "dependency_wiring_status": {
         "root_bolt_v2_dependency": "Cargo.toml pins nautilus-polymarket at NT revision 6e059dcbb59ac1e582132fc431a581936c216c3c",
         "backtesting_vertical_slice_dependency": "crates/backtesting-vertical-slice/Cargo.toml uses pinned NT Polymarket parser/provider surfaces for the bounded one-off path, while broad source acceptance remains outside this proof.",
-        "decision": "BTE can claim bounded one-off NT Polymarket parser/provider reuse for the selected PMXT sample only. Broad backfill remains blocked until expanded coverage, throughput, dynamic tick-size replay, and reusable source acceptance are proven."
+        "decision": "BTE can claim bounded one-off NT Polymarket parser/provider reuse for the selected PMXT sample only. The committed canonical PMXT readiness gate keeps this one-off evidence separate from accepted broad source bindings, and broad backfill remains blocked until expanded coverage, throughput, dynamic tick-size replay, and reusable source acceptance are proven."
       },
       "evidence_refs": [
         "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json",
         "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json",
-        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json"
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json",
+        "repo://specs/023-nt-research-analytics-platform/reference/source-catalog-mapping-readiness/polymarket-parquet-archive-index-canonical/source-catalog-mapping-readiness-report.json"
       ],
-      "decision": "Do not build a custom BinaryOption instrument mapper. The selected PMXT sample has bounded one-off NT parser/provider, OrderBookDelta, TradeTick, ParquetDataCatalog read-back, BacktestNode, and result-contract evidence. Do not start broad PMXT backfill until reusable coverage, throughput, dynamic tick-size replay, and acceptance proof are committed."
+      "decision": "Do not build a custom BinaryOption instrument mapper. The selected PMXT sample has bounded one-off NT parser/provider, OrderBookDelta, TradeTick, ParquetDataCatalog read-back, BacktestNode, and result-contract evidence. The canonical PMXT readiness gate is committed and blocked, so this one-off evidence cannot be reused as canonical broad source acceptance. Do not start broad PMXT backfill until reusable coverage, throughput, dynamic tick-size replay, and acceptance proof are committed."
     },
     {
       "source_binding": "kalshi-official-historical-api",
@@ -183,10 +184,9 @@
   ],
   "task_conclusion": {
     "status": "open",
-    "reason": "BTE-022 is proven for the TradeTick perps/spot native-trades path and for one bounded PMXT Polymarket OrderBookDelta/TradeTick selected-source artifact. Broad binary-option L2/bar paths remain pending or not applicable until reusable coverage, source acceptance, and catalog read-back proof are committed.",
+    "reason": "BTE-022 is proven for the TradeTick perps/spot native-trades path and for one bounded PMXT Polymarket OrderBookDelta/TradeTick selected-source artifact. The canonical PMXT readiness gate is committed and remains blocked, keeping one-off PMXT evidence separate from accepted broad source bindings. Broad binary-option L2/bar paths remain pending or not applicable until reusable coverage, source acceptance, dynamic tick-size replay, and catalog read-back proof are committed.",
     "next_required_evidence": [
       "expanded PMXT Polymarket coverage, throughput, dynamic tick-size replay, and reusable source acceptance proof before any broad PMXT backfill",
-      "committed canonical-source readiness gate that keeps PMXT one-off evidence separate from accepted broad source bindings",
       "PMXT Kalshi source-backed BinaryOption instrument mapping, timestamp policy, and OrderBookDelta/OrderBookDepth10 catalog proof before any Kalshi L2 claim",
       "Kalshi lower-fidelity Bar or TradeTick staged catalog proof only if lower-fidelity acceptance is explicitly allowed",
       "HIP-4 exact historical outcome replay coverage and checked BinaryOption field proof before any replay mapping"

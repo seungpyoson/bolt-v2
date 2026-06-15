@@ -293,8 +293,8 @@ fn manifest(run_id: &str, catalog_inputs: Vec<ManifestCatalogInput>) -> Backtest
             ]),
             typed_config_uri: None,
             typed_config_hash: None,
-            promotion_package_uri: None,
-            promotion_package_hash: None,
+            experiment_result_uri: None,
+            experiment_result_hash: None,
         },
         strategy_config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),

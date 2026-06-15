@@ -50,7 +50,6 @@ pub enum ResearchAnalyticsSubfamily {
     Datasets,
     FeatureTables,
     ExperimentResults,
-    PromotionPackages,
 }
 
 impl ResearchAnalyticsSubfamily {
@@ -59,7 +58,6 @@ impl ResearchAnalyticsSubfamily {
             Self::Datasets => "datasets",
             Self::FeatureTables => "feature-tables",
             Self::ExperimentResults => "experiment-results",
-            Self::PromotionPackages => "promotion-packages",
         }
     }
 }

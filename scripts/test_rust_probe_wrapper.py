@@ -75,13 +75,18 @@ def assert_remote_probe_policy_validation() -> None:
     if loaded["workflow_timeouts"]["probe-heavy"] != 60:
         raise AssertionError(loaded)
 
-    bad = valid_remote_probe()
-    bad["allowed_runner_tiers"] = ["heavy"]
-    expect_policy_error(owner, bad, "allowed_runner_tiers")
+    heavy_only = valid_remote_probe()
+    heavy_only["allowed_runner_tiers"] = ["heavy"]
+    del heavy_only["workflow_timeouts"]["probe-light"]
+    owner.validate_remote_probe_policy({"remote_probe": heavy_only})
 
     bad = valid_remote_probe()
     bad["mode_runner_tiers"]["check-lib"] = "turbo"
     expect_policy_error(owner, bad, "mode_runner_tiers.check-lib")
+
+    bad = valid_remote_probe()
+    del bad["workflow_timeouts"]["probe-light"]
+    expect_policy_error(owner, bad, "workflow_timeouts")
 
     bad = valid_remote_probe()
     bad["appearance_timeout_seconds"] = 300
@@ -117,7 +122,16 @@ def assert_workflow_contract() -> None:
     policy = owner.load_policy(REPO_ROOT)
     remote_probe = owner.remote_probe_policy(policy)
     text = WORKFLOW.read_text(encoding="utf-8")
-    expected_inputs = {"runner_tier", "ref", "expected_sha", "probe_id", "mode", "test_target", "test_name"}
+    expected_inputs = {
+        "runner_tier",
+        "job_timeout_minutes",
+        "ref",
+        "expected_sha",
+        "probe_id",
+        "mode",
+        "test_target",
+        "test_name",
+    }
     actual_inputs = workflow_inputs(text)
     if actual_inputs != expected_inputs:
         raise AssertionError((actual_inputs, expected_inputs))
@@ -129,16 +143,28 @@ def assert_workflow_contract() -> None:
         raise AssertionError("rust-probe concurrency must be branch-scoped")
     if "run-name:" not in text or "${{ inputs.probe_id }}" not in text:
         raise AssertionError("rust-probe run-name must include probe_id")
-    for job in ("probe-heavy", "probe-light"):
+    if "\n    timeout-minutes: 60" in text:
+        raise AssertionError("rust-probe timeout-minutes must come from [remote_probe.workflow_timeouts]")
+    unsupported_marker = "  probe-unsupported-runner-tier:\n"
+    unsupported_start = text.find(unsupported_marker)
+    if unsupported_start < 0:
+        raise AssertionError("rust-probe workflow must fail closed for unsupported runner_tier")
+    unsupported_next_job = text.find("\n  probe-", unsupported_start + len(unsupported_marker))
+    unsupported_block = text[unsupported_start:] if unsupported_next_job < 0 else text[unsupported_start:unsupported_next_job]
+    tier_refusals = " && ".join(f"inputs.runner_tier != '{tier}'" for tier in remote_probe["allowed_runner_tiers"])
+    if f"if: ${{{{ {tier_refusals} }}}}" not in unsupported_block:
+        raise AssertionError("unsupported runner_tier guard must match [remote_probe].allowed_runner_tiers")
+    if "exit 1" not in unsupported_block:
+        raise AssertionError("unsupported runner_tier guard must fail the workflow")
+    for job in remote_probe["workflow_timeouts"]:
         marker = f"  {job}:\n"
         start = text.find(marker)
         if start < 0:
             raise AssertionError(f"missing job {job}")
         next_job = text.find("\n  probe-", start + len(marker))
         block = text[start:] if next_job < 0 else text[start:next_job]
-        expected_timeout = remote_probe["workflow_timeouts"][job]
-        if f"timeout-minutes: {expected_timeout}" not in block:
-            raise AssertionError(f"{job} timeout-minutes must match [remote_probe.workflow_timeouts]")
+        if "timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}" not in block:
+            raise AssertionError(f"{job} timeout-minutes must be wrapper-provided from policy")
         if "fetch-depth: 1" not in block:
             raise AssertionError(f"{job} must use shallow checkout")
         if "RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}" not in block:
@@ -169,34 +195,72 @@ def assert_parser_exposes_rust_probe() -> None:
         raise AssertionError(args)
     if args.mode != "nextest-test-target-name" or args.test_target != "target_name" or args.test_name != "test_name":
         raise AssertionError(args)
+    with contextlib.redirect_stderr(io.StringIO()):
+        args = owner.build_parser().parse_args(["rust-probe", "--repo", "/tmp/repo", "--runner-tier", "policy-tier", "check-lib"])
+    if args.runner_tier != "policy-tier":
+        raise AssertionError(args)
 
 
 def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
     owner = load_owner_module()
-    calls: list[tuple[str, ...]] = []
+    pushed_outputs = {
+        ("status", "--porcelain", "--untracked-files=normal"): ("", None),
+        ("rev-parse", "HEAD"): (HEAD, None),
+        ("branch", "--show-current"): (BRANCH, None),
+        ("config", f"branch.{BRANCH}.remote"): ("origin", None),
+        ("config", f"branch.{BRANCH}.merge"): (f"refs/heads/{BRANCH}", None),
+        ("ls-remote", "--heads", "origin", BRANCH): (f"{HEAD}\trefs/heads/{BRANCH}", None),
+    }
 
-    def fake_git_output(_repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
-        calls.append(args)
-        return {
-            ("status", "--porcelain", "--untracked-files=normal"): ("", None),
-            ("rev-parse", "HEAD"): (HEAD, None),
-            ("branch", "--show-current"): (BRANCH, None),
-            ("config", f"branch.{BRANCH}.remote"): ("origin", None),
-            ("config", f"branch.{BRANCH}.merge"): (f"refs/heads/{BRANCH}", None),
-            ("ls-remote", "--heads", "origin", BRANCH): (f"{HEAD}\trefs/heads/{BRANCH}", None),
-        }[args]
+    def run_with_git_outputs(
+        outputs: dict[tuple[str, ...], tuple[str | None, str | None]],
+    ) -> tuple[str | None, str | None, str | None, list[tuple[str, ...]]]:
+        calls: list[tuple[str, ...]] = []
 
-    original_git_output = owner.git_output
-    try:
-        owner.git_output = fake_git_output
-        head, branch, error = owner.ensure_rust_probe_preconditions(REPO_ROOT)
-    finally:
-        owner.git_output = original_git_output
+        def fake_git_output(_repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
+            calls.append(args)
+            if args not in outputs:
+                raise AssertionError(f"unexpected git call: {args}")
+            return outputs[args]
+
+        original_git_output = owner.git_output
+        try:
+            owner.git_output = fake_git_output
+            head, branch, error = owner.ensure_rust_probe_preconditions(REPO_ROOT)
+        finally:
+            owner.git_output = original_git_output
+        return head, branch, error, calls
+
+    head, branch, error, calls = run_with_git_outputs(pushed_outputs)
 
     if (head, branch, error) != (HEAD, BRANCH, None):
         raise AssertionError((head, branch, error))
     if any(call and call[0] == "pr" for call in calls):
         raise AssertionError(calls)
+
+    refusal_cases = [
+        (
+            "dirty worktree",
+            {("status", "--porcelain", "--untracked-files=normal"): ("?? scratch.rs", None)},
+            "rust-probe requires a clean worktree",
+        ),
+        (
+            "missing upstream",
+            {("config", f"branch.{BRANCH}.remote"): ("", None)},
+            "rust-probe requires pushed HEAD with an upstream",
+        ),
+        (
+            "unpushed head",
+            {("ls-remote", "--heads", "origin", BRANCH): (f"{'b' * 40}\trefs/heads/{BRANCH}", None)},
+            "rust-probe requires HEAD to be pushed to the upstream branch",
+        ),
+    ]
+    for label, overrides, fragment in refusal_cases:
+        outputs = dict(pushed_outputs)
+        outputs.update(overrides)
+        head, branch, error, _calls = run_with_git_outputs(outputs)
+        if head is not None or branch is not None or error is None or fragment not in error:
+            raise AssertionError((label, head, branch, error))
 
 
 def assert_dispatch_uses_declared_workflow_inputs() -> None:
@@ -220,6 +284,7 @@ def assert_dispatch_uses_declared_workflow_inputs() -> None:
             test_target="target_name",
             test_name="case_name",
             runner_tier="heavy",
+            job_timeout_minutes=60,
             probe_id="probe-123",
         )
     finally:
@@ -236,6 +301,8 @@ def assert_dispatch_uses_declared_workflow_inputs() -> None:
         BRANCH,
         "-f",
         "runner_tier=heavy",
+        "-f",
+        "job_timeout_minutes=60",
         "-f",
         f"ref={HEAD}",
         "-f",
@@ -275,7 +342,7 @@ def assert_cancelled_probe_is_superseded_not_code_failure() -> None:
 
 def assert_cmd_rust_probe_dispatches_and_reports_not_proof() -> None:
     owner = load_owner_module()
-    calls: list[tuple[str, str, str, str, str, str]] = []
+    calls: list[tuple[str, str, str, str, str, str, int, str]] = []
 
     original_load_policy = owner.load_policy
     original_preconditions = owner.ensure_rust_probe_preconditions
@@ -299,9 +366,10 @@ def assert_cmd_rust_probe_dispatches_and_reports_not_proof() -> None:
             test_target: str,
             test_name: str,
             runner_tier: str,
+            job_timeout_minutes: int,
             probe_id: str,
         ) -> str | None:
-            calls.append((branch, head, mode, test_target, test_name, runner_tier, probe_id))
+            calls.append((branch, head, mode, test_target, test_name, runner_tier, job_timeout_minutes, probe_id))
             return None
 
         owner.dispatch_rust_probe = fake_dispatch
@@ -328,7 +396,7 @@ def assert_cmd_rust_probe_dispatches_and_reports_not_proof() -> None:
 
     if result != 0:
         raise AssertionError((result, stdout.getvalue(), stderr.getvalue()))
-    if calls != [(BRANCH, HEAD, "check-lib", "", "", "heavy", "probe-123")]:
+    if calls != [(BRANCH, HEAD, "check-lib", "", "", "heavy", 60, "probe-123")]:
         raise AssertionError(calls)
     if "NOT MERGE PROOF" not in stdout.getvalue():
         raise AssertionError(stdout.getvalue())

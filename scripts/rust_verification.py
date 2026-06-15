@@ -60,6 +60,7 @@ RUST_PROBE_MODES = (
 )
 RUST_PROBE_INPUT_KEYS = (
     "runner_tier",
+    "job_timeout_minutes",
     "ref",
     "expected_sha",
     "probe_id",
@@ -381,8 +382,8 @@ def validate_remote_probe_policy(data: dict[str, Any]) -> None:
     if values["appearance_timeout_seconds"] >= values["overall_timeout_seconds"]:
         raise PolicyError("remote_probe.appearance_timeout_seconds must be less than overall_timeout_seconds")
     allowed = string_array_policy_value(policy, "allowed_runner_tiers")
-    if set(allowed) != {"heavy", "light"}:
-        raise PolicyError("remote_probe.allowed_runner_tiers must be heavy/light")
+    if len(set(allowed)) != len(allowed):
+        raise PolicyError("remote_probe.allowed_runner_tiers must not contain duplicates")
     mode_tiers = policy.get("mode_runner_tiers")
     if not isinstance(mode_tiers, dict):
         raise PolicyError("remote_probe.mode_runner_tiers table is required")
@@ -394,9 +395,11 @@ def validate_remote_probe_policy(data: dict[str, Any]) -> None:
     timeouts = policy.get("workflow_timeouts")
     if not isinstance(timeouts, dict):
         raise PolicyError("remote_probe.workflow_timeouts table is required")
-    if set(timeouts) != {"probe-heavy", "probe-light"}:
-        raise PolicyError("remote_probe.workflow_timeouts must declare probe-heavy/probe-light")
-    for job in ("probe-heavy", "probe-light"):
+    expected_timeout_keys = {f"probe-{tier}" for tier in allowed}
+    if set(timeouts) != expected_timeout_keys:
+        expected = ", ".join(sorted(expected_timeout_keys))
+        raise PolicyError(f"remote_probe.workflow_timeouts must declare {expected}")
+    for job in sorted(expected_timeout_keys):
         require_positive_int(timeouts, job, "remote_probe.workflow_timeouts")
 
 
@@ -3163,10 +3166,12 @@ def dispatch_rust_probe(
     test_target: str,
     test_name: str,
     runner_tier: str,
+    job_timeout_minutes: int,
     probe_id: str,
 ) -> str | None:
     fields = {
         "runner_tier": runner_tier,
+        "job_timeout_minutes": str(job_timeout_minutes),
         "ref": head,
         "expected_sha": head,
         "probe_id": probe_id,
@@ -3426,6 +3431,10 @@ def cmd_rust_probe(args: argparse.Namespace) -> int:
     runner_tier = args.runner_tier or probe_policy["mode_runner_tiers"][args.mode]
     if runner_tier not in probe_policy["allowed_runner_tiers"]:
         return verify_remote_fail(f"rust-probe runner tier {runner_tier!r} is not allowed by policy")
+    timeout_key = f"probe-{runner_tier}"
+    job_timeout_minutes = probe_policy["workflow_timeouts"].get(timeout_key)
+    if not isinstance(job_timeout_minutes, int):
+        return verify_remote_fail(f"rust-probe runner tier {runner_tier!r} has no workflow timeout in policy")
     probe_id = new_probe_id()
     error = dispatch_rust_probe(
         repo,
@@ -3436,6 +3445,7 @@ def cmd_rust_probe(args: argparse.Namespace) -> int:
         test_target=test_target,
         test_name=test_name,
         runner_tier=runner_tier,
+        job_timeout_minutes=job_timeout_minutes,
         probe_id=probe_id,
     )
     if error is not None:
@@ -3868,7 +3878,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Dispatch a bounded remote Rust Probe for debugging feedback; not merge proof.",
     )
     rust_probe.add_argument("--repo", required=True)
-    rust_probe.add_argument("--runner-tier", choices=("heavy", "light"))
+    rust_probe.add_argument("--runner-tier")
     rust_probe.add_argument("mode", choices=RUST_PROBE_MODES)
     rust_probe.add_argument("test_target", nargs="?")
     rust_probe.add_argument("test_name", nargs="?")

@@ -8,13 +8,13 @@ on:
   workflow_dispatch:
     inputs:
       runner_tier:
-        description: Ubicloud runner tier to use
+        description: Wrapper-selected Ubicloud runner tier from policy
         required: true
-        type: choice
-        default: heavy
-        options:
-          - heavy
-          - light
+        type: string
+      job_timeout_minutes:
+        description: Wrapper-selected job timeout from policy
+        required: true
+        type: string
       ref:
         description: Exact pushed Git SHA to checkout
         required: true
@@ -62,11 +62,23 @@ permissions:
   contents: read
 
 jobs:
+  probe-unsupported-runner-tier:
+    name: probe-unsupported-runner-tier
+    if: ${{ inputs.runner_tier != 'heavy' && inputs.runner_tier != 'light' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+    timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
+    steps:
+      - name: Reject unsupported runner tier
+        shell: bash
+        run: |
+          echo "Unsupported Rust Probe runner_tier: ${{ inputs.runner_tier }}" >&2
+          exit 1
+
   probe-heavy:
     name: probe-heavy
     if: ${{ inputs.runner_tier == 'heavy' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -103,7 +115,7 @@ jobs:
     name: probe-light
     if: ${{ inputs.runner_tier == 'light' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

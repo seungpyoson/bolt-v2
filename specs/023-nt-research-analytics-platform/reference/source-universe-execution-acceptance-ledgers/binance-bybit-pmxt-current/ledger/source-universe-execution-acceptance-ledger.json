@@ -49,17 +49,17 @@
         {
           "role": "source_universe_conversion_run_plan",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/binance-data-vision-trades-2026-03-01-all-instruments/run-plan/source-universe-conversion-run-plan.json",
-          "sha256": "753650cc74c10cbbfbb349f816fb0c4202e1d17a98621ee84172f6742913a898"
+          "sha256": "8b4169e92b939b17f9d9d081e2d5f5e59135dbd052930d0757dc66cdc06c6981"
         },
         {
           "role": "source_universe_operator_inputs",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments/operator-inputs/source-universe-operator-inputs.json",
-          "sha256": "349a0208481e2bfdcfb93cc276a720ba351b7c7b608fac94f71b6c2de782c36d"
+          "sha256": "0ef5cfcd19e1dc39fc6305db41aee95de0a1d2c82f554d29e7b0b6c6587c3710"
         },
         {
           "role": "source_universe_execution_pack",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/execution-pack/source-universe-execution-pack.json",
-          "sha256": "69bd2c31e3a3797d3331dc96d6b6817a7b1400faf9ba1dd4ecbd080969d13c1e"
+          "sha256": "ef278faa300061bb4ac3ba359d5fc718a900826cbf8636ad97542ad583db8e59"
         }
       ],
       "blocking_reasons": [

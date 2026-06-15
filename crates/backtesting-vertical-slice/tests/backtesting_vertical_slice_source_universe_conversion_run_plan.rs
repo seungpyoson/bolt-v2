@@ -1,4 +1,8 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use backtesting_vertical_slice::source_universe_conversion_run_plan::{
     SourceUniverseConversionRunPlan, SourceUniverseConversionRunPlanStatus,
@@ -104,6 +108,63 @@ max_source_bytes_per_run = 2000000000
     assert_eq!(plan.category_summaries[1].object_count, 1_851);
     assert_eq!(plan.category_summaries[2].category, "spot");
     assert_eq!(plan.category_summaries[2].object_count, 3_304);
+}
+
+#[test]
+fn committed_source_universe_conversion_run_plans_record_portable_object_gate_paths() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("repo root exists");
+    let expected_object_gates_prefix = Path::new(
+        "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates",
+    );
+    let mut checked = 0;
+
+    for plan_path in source_universe_conversion_run_plan_json_paths(&repo_root) {
+        let plan: SourceUniverseConversionRunPlan =
+            serde_json::from_slice(&fs::read(&plan_path).expect("read committed run plan"))
+                .expect("committed run plan parses");
+        assert!(
+            plan.object_gates_path.is_relative(),
+            "{} object_gates_path must be repo-relative, got {}",
+            plan_path.display(),
+            plan.object_gates_path.display()
+        );
+        assert!(
+            plan.object_gates_path
+                .starts_with(expected_object_gates_prefix),
+            "{} object_gates_path must point at committed object gates, got {}",
+            plan_path.display(),
+            plan.object_gates_path.display()
+        );
+
+        let object_gates_artifact = plan
+            .artifact_refs
+            .iter()
+            .find(|artifact_ref| artifact_ref.role == "source_universe_object_gates")
+            .expect("run plan records the source-universe object-gates artifact");
+        assert!(
+            object_gates_artifact.path.is_relative(),
+            "{} object-gates artifact ref path must be repo-relative, got {}",
+            plan_path.display(),
+            object_gates_artifact.path.display()
+        );
+        assert!(
+            object_gates_artifact
+                .path
+                .starts_with(expected_object_gates_prefix),
+            "{} object-gates artifact ref path must point at committed object gates, got {}",
+            plan_path.display(),
+            object_gates_artifact.path.display()
+        );
+        checked += 1;
+    }
+
+    assert!(
+        checked > 0,
+        "expected at least one committed source-universe conversion run-plan fixture"
+    );
 }
 
 #[test]
@@ -254,6 +315,30 @@ max_source_bytes_per_run = 60
     assert_eq!(plan.runs[1].source_bytes, 60);
     assert_eq!(plan.runs[2].work_item_ids, vec!["item-4"]);
     assert_eq!(plan.runs[2].source_bytes, 1);
+}
+
+fn source_universe_conversion_run_plan_json_paths(root: &Path) -> Vec<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("ls-files")
+        .arg("specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans")
+        .output()
+        .expect("run git ls-files for committed source-universe conversion run-plan fixtures");
+    assert!(
+        output.status.success(),
+        "git ls-files failed: status={:?}, stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("git ls-files output is UTF-8");
+    let mut paths = stdout
+        .lines()
+        .filter(|path| path.ends_with("/run-plan/source-universe-conversion-run-plan.json"))
+        .map(|path| root.join(path))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
 }
 
 #[test]

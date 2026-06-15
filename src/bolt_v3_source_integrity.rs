@@ -309,8 +309,10 @@ mod tests {
     // production fixture path.
     // Re-derived after strategy submit-admission tests started committing the
     // permits they use to simulate already-submitted orders.
+    // Re-derived after adding World Cup static binary-event config projection
+    // and selection binding to the binary-oracle edge taker strategy source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "546d637cc2daa7c5936f5ef86dc737ae39791489ce9b9c12643c2e208111c292";
+        "11d408298da32cada8f5d94a4b5780fd442fac0532d1a63b13679d51891fa4b5";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

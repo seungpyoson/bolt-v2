@@ -238,6 +238,30 @@ mod tests {
     }
 
     #[test]
+    fn same_tick_bursts_are_still_bounded_by_the_window_cap() {
+        // The same-tick exemption skips the min-interval throttle but NOT the window
+        // cap. With cap 2 and a 500ms interval, two co-incident acquires at one tick
+        // are admitted (the exemption lets the second through), but a THIRD at the same
+        // tick must be refused by the capacity guard (next_cost 3 > cap 2), never by
+        // the interval. This pins that the exemption cannot be abused to burst past the
+        // rate cap inside a single millisecond. The second acquire also fails against
+        // the pre-fix saturating_sub gate (0 < 500), so this is load-bearing too.
+        let mut budget = RequoteBudget::new(2, ONE_MINUTE_MS, 500);
+
+        assert!(budget.try_acquire(1_000, 1));
+        assert!(
+            budget.try_acquire(1_000, 1),
+            "second same-tick emit fits under the cap"
+        );
+        assert!(
+            !budget.try_acquire(1_000, 1),
+            "third same-tick emit must be refused by the window cap, not the interval"
+        );
+        assert_eq!(budget.in_window(), 2);
+        assert_eq!(budget.cost_in_window(), 2);
+    }
+
+    #[test]
     fn tokens_replenish_as_the_window_slides() {
         let mut budget = RequoteBudget::new(2, ONE_MINUTE_MS, 0);
 
@@ -492,6 +516,34 @@ mod tests {
         // Once the REST interval clears, the submit lands and charges both budgets.
         assert!(pair.try_reserve_fresh_submit(1_500));
         assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 2);
+    }
+
+    #[test]
+    fn asymmetric_min_intervals_still_exempt_co_incident_reservations() {
+        // RequoteBudgetPair composes two budgets that each carry their OWN interval.
+        // A future config may derive the submit floor (from max_order_submit_rate) and
+        // the REST floor (from clob_per_minute) independently, so the two intervals can
+        // differ. The same-tick exemption is per-budget and interval-value-agnostic:
+        // both co-incident sub-reservations are exempt regardless of which interval is
+        // longer. Two fresh submits at one tick must both land; a strictly-later tick
+        // inside the longer (submit) interval is still throttled, and the atomic gate
+        // leaves neither budget advanced when it refuses.
+        let mut pair = RequoteBudgetPair::new(
+            RequoteBudget::new(40, ONE_MINUTE_MS, 500),
+            RequoteBudget::new(100, ONE_MINUTE_MS, 250),
+        );
+        assert!(pair.try_reserve_fresh_submit(1_000));
+        assert!(
+            pair.try_reserve_fresh_submit(1_000),
+            "co-incident reservation must pass under asymmetric intervals"
+        );
+        assert_eq!(pair.submit_commands_in_window(), 2);
+        assert_eq!(pair.rest_cost_in_window(), 2);
+        // 1_100 is inside BOTH intervals (100 < 250 < 500): refused on the submit floor,
+        // and being atomic it leaves both budgets exactly where they were.
+        assert!(!pair.try_reserve_fresh_submit(1_100));
+        assert_eq!(pair.submit_commands_in_window(), 2);
         assert_eq!(pair.rest_cost_in_window(), 2);
     }
 }

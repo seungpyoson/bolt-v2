@@ -322,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn standalone_cancel_charges_one_rest_call_and_no_submit_command() {
+    fn standalone_cancel_charges_one_rest_call_and_zero_submit_commands() {
         let mut pair = fresh_pair(40, 100);
         assert!(pair.try_reserve_cancel(1_000));
         assert_eq!(pair.submit_commands_in_window(), 0);

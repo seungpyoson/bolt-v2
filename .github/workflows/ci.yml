@@ -58,8 +58,6 @@ concurrency:
         || format('{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
-        && github.event.pull_request.draft == true
-        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
         || github.event_name == 'workflow_dispatch' }}
 
 env:

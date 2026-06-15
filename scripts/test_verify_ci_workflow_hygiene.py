@@ -204,8 +204,6 @@ concurrency:
         || format('{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
-        && github.event.pull_request.draft == true
-        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
         || github.event_name == 'workflow_dispatch' }}
 
 permissions:
@@ -1506,7 +1504,11 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
 def assert_ci_concurrency_split_gaps_are_reported() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
-    cancel_in_progress_with_dispatch = """  cancel-in-progress: >-
+    cancel_in_progress_for_pr_and_dispatch = """  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        || github.event_name == 'workflow_dispatch' }}
+"""
+    cancel_in_progress_for_draft_pr_and_dispatch = """  cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
@@ -1526,19 +1528,19 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
             ),
         ),
         (
-            "cancel-in-progress must cover deferred draft PR runs and workflow_dispatch full CI runs only",
+            "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only",
             replace_once(
                 workflow,
-                cancel_in_progress_with_dispatch,
+                cancel_in_progress_for_pr_and_dispatch,
                 "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n",
             ),
         ),
         (
-            "cancel-in-progress must cover deferred draft PR runs and workflow_dispatch full CI runs only",
+            "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only",
             replace_once(
                 workflow,
-                "\n        || github.event_name == 'workflow_dispatch' }}",
-                " }}",
+                cancel_in_progress_for_pr_and_dispatch,
+                cancel_in_progress_for_draft_pr_and_dispatch,
             ),
         ),
         (
@@ -1881,8 +1883,6 @@ def without_pr_concurrency(workflow: str) -> str:
         || format('{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
-        && github.event.pull_request.draft == true
-        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
         || github.event_name == 'workflow_dispatch' }}
 
 """,
@@ -5317,15 +5317,27 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, "format('{0}-{1}', github.ref_name, github.sha)", "github.ref_name"),
     )
     assert_error(
-        "cancel-in-progress must cover deferred draft PR runs and workflow_dispatch full CI runs only",
+        "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only",
         replace_once(
             BASE_WORKFLOW,
+            """cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        || github.event_name == 'workflow_dispatch' }}""",
+            "cancel-in-progress: true",
+        ),
+    )
+    assert_error(
+        "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only",
+        replace_once(
+            BASE_WORKFLOW,
+            """cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        || github.event_name == 'workflow_dispatch' }}""",
             """cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
         || github.event_name == 'workflow_dispatch' }}""",
-            "cancel-in-progress: true",
         ),
     )
     assert_error(

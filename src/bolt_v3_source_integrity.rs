@@ -336,8 +336,10 @@ mod tests {
     // order-execution policy context.
     // Re-derived after shared outcome freshness and basket submit validation
     // moved into shared execution/source modules.
+    // Re-derived after basket execution repair/unwind planning tightened partial
+    // quantity handling.
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "e913ca9c229b8a457e9bd30b182c4ac983c1b8125e2341da9770535cae2e4728";
+        "cd8d0a804ee9f49372477af79f04afead36af8406e52cbb684efc784ef4927b7";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

@@ -340,7 +340,8 @@ fn basket_submit_slots_share_single_order_gate_and_count_cap_arithmetic() {
     let submit_gate = submit_state(writer.clone(), 2, dec!(10));
     submit_gate
         .admit(&single_order_request("seed-order", dec!(1)))
-        .expect("seed single order should consume one slot");
+        .expect("seed single order should consume one slot")
+        .commit_submitted();
     let exhausted = submit_gate
         .reserve_basket_submit_slots(
             "polymarket_main",

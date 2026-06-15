@@ -681,6 +681,7 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
 
     group_text = " ".join(line.strip() for line in group_lines if line.strip())
     cancel_text = "\n".join(cancel_lines)
+    cancel_compact = " ".join(line.strip() for line in cancel_lines if line.strip())
     errors: list[str] = []
     if not PR_CONCURRENCY_EVENT_RE.search(group_text):
         errors.append("concurrency group must branch on pull_request event")
@@ -692,13 +693,8 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
         errors.append("workflow_dispatch full CI runs must use a full-CI concurrency group")
     if not PR_CONCURRENCY_NON_PR_FALLBACK_RE.search(group_text):
         errors.append("concurrency group must keep non-PR runs isolated by ref and SHA")
-    if (
-        "github.event_name == 'pull_request'" not in cancel_text
-        or "github.event.pull_request.draft == true" not in cancel_text
-        or "contains(fromJSON" not in cancel_text
-        or "converted_to_draft" not in cancel_text
-    ):
-        errors.append("cancel-in-progress must be true only for deferred draft PR runs")
+    if not any(expected in cancel_compact for expected in PR_CONCURRENCY_CANCEL_LINES):
+        errors.append("cancel-in-progress must apply to all pull_request runs")
     return errors
 
 

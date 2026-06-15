@@ -105,7 +105,7 @@ After checkout, `.github/scripts/run-rust-probe.sh` must:
 - fail if the actual checkout SHA differs from `expected_sha`;
 - print the actual SHA and probe scope for auditability.
 
-Use `fetch-depth: 0` or an equivalent fetch strategy so an exact SHA checkout is reliable.
+Use a shallow fetch strategy for the pushed branch tip, such as `fetch-depth: 1` or a small bounded depth, or an equivalent fetch strategy that keeps exact SHA checkout reliable without cloning full history.
 
 ### Configuration
 

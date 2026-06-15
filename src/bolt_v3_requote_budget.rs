@@ -402,4 +402,42 @@ mod tests {
         assert_eq!(pair.submit_commands_in_window(), 1);
         assert_eq!(pair.rest_cost_in_window(), 2);
     }
+
+    #[test]
+    fn two_granted_cancel_resubmits_drive_the_budgets_to_different_levels() {
+        // The decisive independence check: this is the ONLY pair test where both
+        // budgets bind at once AND both are GRANTED. With submit cap 2 and REST cap
+        // 100, two cancel+resubmits cost 2 submit commands but 4 REST calls, so the
+        // two windows MUST reach DIFFERENT fill levels (2 vs 4) while both succeed.
+        // No single collapsed "whichever is lower" window can reproduce this: a
+        // min-cap-2 window charging 2 per reprice would reject the second reprice,
+        // failing the grant assertion below. The grant/deny tests above max out one
+        // budget to force a DENY; only this test pins both-bind-and-both-grant.
+        let mut pair = fresh_pair(2, 100);
+        assert!(pair.try_reserve_cancel_resubmit(1_000));
+        assert!(pair.try_reserve_cancel_resubmit(1_100));
+        assert_eq!(pair.submit_commands_in_window(), 2);
+        assert_eq!(pair.rest_cost_in_window(), 4);
+    }
+
+    #[test]
+    fn a_failed_reservation_does_not_poison_the_submit_min_interval() {
+        // last_emit_ms atomicity. The submit budget carries a 500ms minimum spacing.
+        // A cancel+resubmit needs 2 REST but REST caps at 1, so the reservation
+        // fails and commits NOTHING. A non-atomic gate that touched the live submit
+        // budget's last_emit_ms before the REST check failed — then rolled back only
+        // the cost, not the timestamp — would wrongly throttle the very next submit.
+        // The atomic clone-and-commit gate leaves the submit budget pristine
+        // (last_emit_ms still None), so a fresh submit only 100ms later (well inside
+        // the 500ms interval) is still admitted. A poisoned-timestamp variant would
+        // see 1_100 - 1_000 = 100 < 500 and return false here.
+        let mut pair = RequoteBudgetPair::new(
+            RequoteBudget::new(40, ONE_MINUTE_MS, 500),
+            RequoteBudget::new(1, ONE_MINUTE_MS, 500),
+        );
+        assert!(!pair.try_reserve_cancel_resubmit(1_000));
+        assert!(pair.try_reserve_fresh_submit(1_100));
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 1);
+    }
 }

@@ -208,6 +208,20 @@ fn assert_nt_mapping_evidence_is_bounded(path: &PathBuf, report: &SourceProofRep
                         evidence.contains("ParquetDataCatalog"),
                         "accepted L2 fixture report {path:?} must bind NT catalog readback evidence"
                     );
+                    let has_tick_size_policy_evidence = report
+                        .l2_replay_evidence
+                        .no_tick_size_change_universe_ref
+                        .as_ref()
+                        .is_some_and(|value| !value.trim().is_empty())
+                        || report
+                            .l2_replay_evidence
+                            .timed_instrument_epoch_replay_ref
+                            .as_ref()
+                            .is_some_and(|value| !value.trim().is_empty());
+                    assert!(
+                        has_tick_size_policy_evidence,
+                        "accepted L2 fixture report {path:?} must bind source-proof tick-size policy evidence"
+                    );
                 }
                 NtMappingStatus::Pending => {
                     assert_eq!(

@@ -307,8 +307,10 @@ mod tests {
     // execution policy.
     // Re-derived after isolating live-node unit-test catalog paths from the
     // production fixture path.
+    // Re-derived after strategy submit-admission tests started committing the
+    // permits they use to simulate already-submitted orders.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "1babc3befb7021b3f11f7726beeb4af6c75c17756320853b2cc5865515000052";
+        "546d637cc2daa7c5936f5ef86dc737ae39791489ce9b9c12643c2e208111c292";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

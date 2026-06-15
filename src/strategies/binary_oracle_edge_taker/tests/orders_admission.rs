@@ -1244,7 +1244,8 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
                 position_sizing: None,
             },
         )
-        .expect("first admission should consume the only slot");
+        .expect("first admission should consume the only slot")
+        .commit_submitted();
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee keeps the 0.50 notional under the 1.0 cap so the rejection is
     // the count-exhausted check, not the notional cap.

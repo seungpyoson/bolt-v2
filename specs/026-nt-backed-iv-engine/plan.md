@@ -27,7 +27,7 @@ Build a live-integrated IV engine that uses every IV/options capability exposed 
 - **Generic Core, Concrete Edges**: PASS. The IV engine core is strategy-, venue-, market-, asset-, and cadence-agnostic. Concrete data clients and selectors are TOML-owned.
 - **Single Path And Config-Controlled Runtime**: PASS. One IV engine owns live IV subscriptions, NT helper-backed IV derivation, and strategy IV access. Strategies do not create parallel NT IV subscriptions or strategy-local IV derivation paths.
 - **Group By Change**: PASS. One IV profile owns source lifecycle, source policies, strategy authorization, enabled products, and query policies.
-- **Test-First Safety Gates**: PASS. Each workstream starts with failing tests and source-fence checks.
+- **Evidence-Driven Verification Gates**: PASS. Each workstream maps requirements to the smallest sufficient evidence class, including behavior tests, source-fence checks, static checks, remote CI, or review artifacts as appropriate.
 - **Evidence Before Claims**: PASS. NT capability scope is proven by an inventory ledger generated from the Cargo-pinned checkout.
 - **Minimal Slice Discipline**: PASS with explicit scope. This feature is broad within IV because the user requested all NT IV/options capabilities; it still excludes FV/RV and submit/admission behavior.
 - **Research And Analytics Stay NT-First**: PASS. Derived IV uses NT helpers; raw NT data is preserved.
@@ -136,7 +136,7 @@ tests/
 
 ## Workstreams
 
-Each workstream follows `/Users/spson/Downloads/prompts/practice.md`: fetch/prune and record repository truth, produce a requirement evidence ledger, inspect pinned NT source before local helpers, name the TDD tests before implementation, run RED/GREEN/REFACTOR for behavior changes, and request external review only after exact-head local and CI evidence is green.
+Each workstream follows `AGENTS.md` evidence-driven verification policy: fetch/prune and record repository truth, produce a requirement evidence ledger, inspect pinned NT source before local helpers, name the selected evidence class before implementation, use TDD when behavior tests are the smallest reliable proof, record exact command/artifact outcomes, and request external review only after allowed local checks and exact-head CI evidence are green.
 
 **W1 - NT capability ledger.** Build the source-backed inventory of NT IV/options surfaces at the Cargo-pinned revision. The test resolves the locked dependency graph with `cargo metadata --locked`, cross-checks NT package source revisions in `Cargo.lock`, locates the Cargo git checkout for that revision, scans model types, greeks helpers, msgbus APIs, data actor methods, data engine publish paths, option-chain manager, adapter support reachable through Rust, and custom implied-volatility data reachable through NT custom data as seed families. It also sweeps the full resolved NT checkout for public Rust symbols, modules, topics, and data definitions whose path, symbol, doc comment, or enclosing module matches IV/options terms. Gate: unclassified NT IV/options surfaces, unclassified whole-checkout sweep candidates, or unresolved Cargo evidence fail tests.
 
@@ -188,7 +188,7 @@ Produce:
 
 ### Phase 2: Implementation Tasks
 
-Generate `tasks.md` for this plan. Tasks must be TDD, dependency-ordered, independently reviewable by user story, and explicit about evidence collection from `practice.md`. No runtime code is written from this planning branch.
+Generate `tasks.md` for this plan. Tasks must be dependency-ordered, independently reviewable by user story, and explicit about requirement-to-evidence mapping under `AGENTS.md`. No runtime code is written from this planning branch.
 
 ## Complexity Tracking
 

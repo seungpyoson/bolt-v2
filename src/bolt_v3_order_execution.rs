@@ -100,8 +100,9 @@ impl BoltV3OrderExecutionPolicy {
             .record_order_intent(&routing.intent)?;
         match self.mode {
             BoltV3OrderExecutionMode::Live => {
-                let _permit = routing.submit_admission.admit(&routing.request)?;
+                let permit = routing.submit_admission.admit(&routing.request)?;
                 sink.submit_order_via_nt(order, context)?;
+                permit.commit_submitted();
                 Ok(BoltV3SubmitRoutingOutcome::Submitted)
             }
             BoltV3OrderExecutionMode::Shadow => {
@@ -286,13 +287,27 @@ mod tests {
         BoltV3SubmitRoutingRequest,
     };
     use crate::{
+        bolt_v3_capital_reservation::CapitalPoolSnapshot,
         bolt_v3_decision_evidence::{
             BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
-            BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot,
+            BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+            BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+            BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+        },
+        bolt_v3_position_sizer::{
+            FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
+            SizingPolicy,
+        },
+        bolt_v3_sizing_state::{
+            OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot, VenueSpendabilitySnapshot,
         },
         bolt_v3_submit_admission::{
+            BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
+            BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind,
             BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionRequest,
             BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+            BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingNtComponents,
+            PredictionMarketOutcomeSide,
         },
     };
 
@@ -344,12 +359,34 @@ mod tests {
                 .push(decision.clone());
             Ok(())
         }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &BoltV3SubmitReservationMetadataEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &BoltV3SubmitReservationFillEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[derive(Debug, Default)]
     struct RecordingVenueMutationSink {
         submit_calls: usize,
         cancel_calls: usize,
+        fail_submits: bool,
     }
 
     impl BoltV3NtVenueMutationSink for RecordingVenueMutationSink {
@@ -359,6 +396,9 @@ mod tests {
             _context: BoltV3SubmitContext,
         ) -> Result<()> {
             self.submit_calls += 1;
+            if self.fail_submits {
+                anyhow::bail!("synthetic NT submit failure");
+            }
             Ok(())
         }
 
@@ -409,6 +449,43 @@ mod tests {
             BoltV3AdmissionOutcome::Admitted
         );
         assert_eq!(admission.admitted_order_count(), 1);
+    }
+
+    #[test]
+    fn live_submit_failure_rolls_back_position_sizer_reservation() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_position_sizer(
+            writer.clone(),
+            position_sizer_config(),
+        ));
+        admission.update_position_sizing_nt_components(position_sizing_components());
+        let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1);
+        assert!(rebuild.accepted);
+
+        let mut sink = RecordingVenueMutationSink {
+            fail_submits: true,
+            ..RecordingVenueMutationSink::default()
+        };
+        let order = limit_order("O-19700101-000000-001-ROLLBACK-1");
+        let intent = intent_for_order(&order);
+        let request = sized_submit_request_for_order(&order);
+        let policy = BoltV3OrderExecutionPolicy::from_mode(BoltV3OrderExecutionMode::Live);
+
+        let result = policy.route_submit_with_sink(
+            BoltV3SubmitRoutingRequest::new(writer.as_ref(), admission.as_ref(), intent, request),
+            &mut sink,
+            order,
+            BoltV3SubmitContext::with_client_id(ClientId::from("polymarket_main")),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(sink.submit_calls, 1);
+        assert_eq!(
+            admission.position_sizer_live_reserved_liability(),
+            Some(Decimal::ZERO)
+        );
+        assert_eq!(admission.admitted_order_count(), 0);
+        assert!(!admission.position_sizer_has_live_reservation("O-19700101-000000-001-ROLLBACK-1"));
     }
 
     #[test]
@@ -512,6 +589,95 @@ mod tests {
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_proof: None,
             kill_switch_forced_reduction: None,
+            position_sizing: None,
+        }
+    }
+
+    fn sized_submit_request_for_order(order: &OrderAny) -> BoltV3SubmitAdmissionRequest {
+        let mut request = submit_request_for_order(order, Decimal::new(4, 0));
+        request.position_sizing = Some(BoltV3CompiledOrderSizingEvidence {
+            venue_id: "VENUE-A".to_string(),
+            product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
+            side: BoltV3CompiledOrderSide::Buy,
+            quantity: Decimal::new(10, 0),
+            effective_price: Decimal::new(40, 2),
+            order_kind: BoltV3CompiledOrderKind::Limit,
+            liquidity: BoltV3CompiledOrderLiquidity::Taker,
+            quote_set_id: None,
+            prediction_market_outcome: Some(PredictionMarketOutcomeSide::Yes),
+        });
+        request.instrument_id = "instrument-yes.VENUE-A".to_string();
+        request.execution_client_id = "execution-client-a".to_string();
+        request
+    }
+
+    fn position_sizer_config() -> BoltV3SubmitPositionSizerConfig {
+        BoltV3SubmitPositionSizerConfig {
+            venue_id: "VENUE-A".to_string(),
+            account_id: "ACCOUNT-001".to_string(),
+            product_kind: ProductKind::PredictionMarketBinary,
+            collateral_currency: "USD".to_string(),
+            capital_pool: CapitalPoolSnapshot {
+                source: "test-capital-pool".to_string(),
+                observed_at_ns: 0,
+                pool_id: "pool-1".to_string(),
+                max_pool_liability: Decimal::new(10, 0),
+                committed_liability: Decimal::ZERO,
+                max_snapshot_age_ns: u64::MAX,
+            },
+            policy: SizingPolicy {
+                min_remaining_pool_balance: None,
+                fee_slippage_policy: Some(FeeSlippagePolicy {
+                    max_fee_liability: Decimal::new(10, 2),
+                    max_slippage_liability: Decimal::new(20, 2),
+                }),
+            },
+            dedupe_retention_ns: u64::MAX,
+        }
+    }
+
+    fn position_sizing_components() -> BoltV3SubmitPositionSizingNtComponents {
+        BoltV3SubmitPositionSizingNtComponents {
+            source: "nt_sizing_state".to_string(),
+            observed_at_ns: 0,
+            portfolio: PortfolioSizingSnapshot {
+                source: "nt_portfolio_snapshot".to_string(),
+                observed_at_ns: 0,
+                venue_id: "VENUE-A".to_string(),
+                account_id: "ACCOUNT-001".to_string(),
+                collateral_currency: "USD".to_string(),
+                free_collateral: Decimal::new(100, 0),
+                total_equity: Decimal::new(100, 0),
+            },
+            venue_spendability: VenueSpendabilitySnapshot {
+                source: "nt_account_free_collateral".to_string(),
+                observed_at_ns: 0,
+                venue_id: "VENUE-A".to_string(),
+                account_id: "ACCOUNT-001".to_string(),
+                collateral_currency: "USD".to_string(),
+                spendable_collateral: Decimal::new(100, 0),
+                collateral_allowance: Decimal::new(100, 0),
+            },
+            order_lifecycle: OrderLifecycleSizingSnapshot {
+                source: "nt_open_order_cache".to_string(),
+                observed_at_ns: 0,
+                open_order_count: 0,
+                all_open_orders_attributed: true,
+            },
+            product_state: ProductSizingSnapshot::PredictionMarketBinary(
+                PredictionMarketSizingSnapshot {
+                    source: "nt_prediction_market_snapshot".to_string(),
+                    observed_at_ns: 0,
+                    yes_instrument_id: "instrument-yes.VENUE-A".to_string(),
+                    no_instrument_id: "instrument-no.VENUE-A".to_string(),
+                    yes_position: Decimal::ZERO,
+                    no_position: Decimal::ZERO,
+                    collateral_allowance: Decimal::new(100, 0),
+                    conditional_token_allowance: Decimal::new(100, 0),
+                    collateral_coupled_group_id: "group-1".to_string(),
+                },
+            ),
+            loss_snapshot: None,
         }
     }
 

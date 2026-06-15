@@ -939,4 +939,25 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 }

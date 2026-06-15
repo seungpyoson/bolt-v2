@@ -161,6 +161,12 @@ fn committed_source_universe_conversion_run_plans_record_portable_object_gate_pa
             .iter()
             .find(|artifact_ref| artifact_ref.role == "source_universe_object_gates")
             .expect("run plan records the source-universe object-gates artifact");
+        assert_eq!(
+            object_gates_artifact.path,
+            plan.object_gates_path,
+            "{} object-gates artifact ref must match object_gates_path",
+            plan_path.display()
+        );
         assert!(
             object_gates_artifact.path.is_relative(),
             "{} object-gates artifact ref path must be repo-relative, got {}",

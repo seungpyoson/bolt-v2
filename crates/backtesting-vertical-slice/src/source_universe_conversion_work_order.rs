@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
-use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
+use crate::path_resolution::{
+    portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
+};
 use crate::{
     canonical_trades::RawPayloadContainer,
     source_universe_operator_inputs::{
@@ -312,7 +314,10 @@ pub fn evaluate_source_universe_conversion_work_order(
         withheld_source_bytes,
         artifact_refs: vec![SourceUniverseConversionWorkOrderArtifactRef {
             role: "source_universe_operator_inputs".to_string(),
-            path: portable_artifact_path(&inputs_path),
+            path: portable_artifact_path_for_spec(
+                &inputs_path,
+                &spec.source_universe_operator_inputs_path,
+            )?,
             sha256: inputs_hash,
         }],
         records,

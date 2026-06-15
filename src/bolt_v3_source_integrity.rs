@@ -266,6 +266,11 @@ mod tests {
     // and entry-evaluation sizing-input observability with the archetype path.
     // Re-derived after adding coverage for the within-tolerance sized
     // re-evaluation acceptance branch.
+    // Re-derived after adding position-sizer submit admission fixture coverage
+    // under the binary oracle edge taker strategy test source set.
+    // Re-derived after merging current main (#618/#623 strategy source-set
+    // state) into the consolidated NT position-sizer branch (#658), unioning the
+    // main-side strategy source set with the position-sizer fixture coverage.
     // Re-derived after adding the TOML-owned shadow-mode submit switch and
     // preserving decision evidence before skipped NT submits.
     // Re-derived after the shadow-submit test started seeding admission
@@ -294,21 +299,20 @@ mod tests {
     // split-test inventory and shared execution-policy source-set boundary.
     // Re-derived after the shared execution policy made its raw NT mutation
     // sink private and moved the live/shadow sink tests into the gated module.
-    // Re-derived after merging main into the shared outcome-group substrate
-    // branch.
-    // Re-derived after adding the production complete-set strategy shell to the
-    // strategy policy source set and moving NT command type evidence under the
-    // shared order-execution boundary.
-    // Re-derived after fixing complete-set registration for main's shared
-    // order-execution policy context.
-    // Re-derived after shared outcome freshness and basket submit validation
-    // moved into shared execution/source modules.
-    // Re-derived after adversarial review fixes clarified complete-set shell
-    // event forwarding and settlement gating.
-    // Re-derived after complete-set submit-mode parsing was consolidated under
-    // the archetype-owned mode contract.
+    // Re-derived after committing the submit-admission permit only after the
+    // shared order-execution policy's live NT submit succeeds.
+    // Re-derived again after aligning the shared policy test helper with the
+    // consolidated reservation-evidence writer trait.
+    // Re-derived after adding behavioral rollback coverage to the shared
+    // execution policy.
+    // Re-derived after isolating live-node unit-test catalog paths from the
+    // production fixture path.
+    // Re-derived after strategy submit-admission tests started committing the
+    // permits they use to simulate already-submitted orders.
+    // Re-derived after merging the shared outcome-group substrate over current
+    // main's submit-admission rollback and position-sizer changes.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "a1953f8969ec93a0996da60014468cd6d7ee55362bc3d89c87e7365fec3eaf6e";
+        "b1d16510c4137f112841ffd0038d291a199fe485e4154ac476b2b292c35e327f";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -319,13 +323,36 @@ mod tests {
     // Re-derived again after adding checked fee-inclusive admission arithmetic.
     // Re-derived after moving entry limit-notional guarding into shared submit
     // admission.
+    // Re-derived after adding position-sizer submit admission state and evidence
+    // to the shared submit admission module.
+    // Re-derived after routing replace-submit through configured position
+    // sizing.
+    // Re-derived after runtime order-lifecycle updates learned to re-close the
+    // position-sizer gate on unattributed live open orders.
     // Re-derived again after adding observed admission decisions for shadow
     // submit skips that must not consume live capacity.
     // Re-derived after merging main's shared submit-admission changes into the
     // shadow-mode submit switch.
-    // Re-derived again after fixing complete-set shell merge fallout.
+    // Re-derived after exposing read-only loss-governor policy/snapshot
+    // accessors for live manual recovery.
+    // Re-derived after removing duplicate NT-owned risk scaffolding from
+    // submit admission.
+    // Re-derived after covered sell reservations were reduced to additive
+    // fee/slippage liability only.
+    // Re-derived after allowing empty terminal NT lifecycle evidence to
+    // re-open a previously re-closed position-sizer gate.
+    // Re-derived after adding bounded fill/order dedupe retention and checked
+    // reservation liability arithmetic.
+    // Re-derived after uncommitted submit permits learned to roll back
+    // admission counters as well as position-sizer reservations.
+    // Re-derived after final submit-admission rollback and dedupe cleanup.
+    // Re-derived after removing structurally unused per-intent admission counters.
+    // Re-derived after merging basket submit-slot reservation into current
+    // main's rollback-aware submit admission.
+    // Re-derived after submit-admission rollback counts became explicit
+    // counter deltas during the conflict-resolution merge.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "7907bb8dd14ced00b3a7bd0adb3ea3c49063d57facecfdb6f5f455ebba893471";
+        "01cba650c8d44b9d256ac09bdf272449f06b266df05549679d1aa603013ec837";
     // GOLDEN_OUTCOME_GROUP_DIGEST is introduced by the shared outcome-group
     // substrate source-integrity task after every first-slice source root exists
     // on disk. Re-derived after Task 10 activated the complete-set runtime
@@ -357,6 +384,8 @@ mod tests {
     // provider-neutral exports for the provider-leak fence.
     // Re-derived again after exposing indexed canonical fields to sibling
     // outcome-group normalizers without changing the fingerprint framing.
+    // Re-derived after resolving current main conflicts in the shared
+    // outcome-group substrate.
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
         "4c820cfa4959f249dc6b0012f5e9e04aac5e39e49d5e946c987c65957be23348";
 

@@ -69,10 +69,11 @@ Entry `is_quote_quantity = true` is supported by sizing the entry quantity as qu
 Exit `is_quote_quantity = true` is rejected because exits are sized from held base position quantity.
 Forced-flat exits use the configured `forced_exit_order` template.
 When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders.
-Decision-evidence JSONL records use `schema_version = 6` for `order_intent`, `admission_decision`, and `strategy_input_snapshot` envelopes.
-Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent`, `decision`, or `snapshot`.
-The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.
+Decision-evidence JSONL records use `schema_version = 10` for `order_intent`, `admission_decision`, `strategy_input_snapshot`, `position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` envelopes.
+Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, or `fill`.
+The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `position_sizer_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, and `submit_reservation_fill` for fill metadata.
 `strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
+`position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-10 reservation records.
 
 ### `[parameters]`
 """
@@ -108,6 +109,17 @@ def test_validate_docs_accepts_current_terms() -> None:
     findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP)
     if findings:
         raise AssertionError(f"expected no findings, got {findings!r}")
+
+
+def test_validate_docs_checks_decision_evidence_schema_version_source() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        decision_evidence_source="pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 11;",
+    )
+
+    if "schema missing decision-evidence JSONL schema v11 contract" not in findings:
+        raise AssertionError(f"expected decision-evidence schema source drift finding, got {findings!r}")
 
 
 def test_validate_docs_rejects_wrong_active_speckit_context() -> None:
@@ -625,7 +637,7 @@ def test_validate_docs_requires_all_enabled_and_factory_gap_order_types() -> Non
 
 
 def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> None:
-    stale_schema = CURRENT_SCHEMA.replace("schema_version = 6", "schema_version = 5")
+    stale_schema = CURRENT_SCHEMA.replace("schema_version = 10", "schema_version = 9")
     stale_runtime_contracts = CURRENT_RUNTIME_CONTRACTS.replace("`activation_price`, ", "")
     stale_status_map = CURRENT_STATUS_MAP.replace("forced_exit_order", "exit_order")
     stale_maker_contract = (
@@ -648,7 +660,7 @@ def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> 
     )
 
     expected_fragments = [
-        "schema missing decision-evidence JSONL schema v6 contract",
+        "schema missing decision-evidence JSONL schema v10 contract",
         "runtime contracts missing order-template evidence field",
         "status map missing current phrase: Order construction uses",
         "maker scope contract still contains stale phrase",

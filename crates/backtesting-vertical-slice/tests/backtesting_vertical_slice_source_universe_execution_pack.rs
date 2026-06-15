@@ -395,6 +395,7 @@ fn committed_bybit_and_binance_source_universe_execution_packs_track_materialize
 fn assert_first_record_artifacts_parse(pack: &SourceUniverseExecutionPack) {
     let first = pack.records.first().expect("first execution-pack record");
     let run_spec_path = resolve_repo_relative(&first.run_spec_path);
+    assert_eq!(sha256_file(&run_spec_path), first.run_spec_sha256);
     let run_spec_text = fs::read_to_string(&run_spec_path).expect("read first run spec");
     let run_spec: RunSpec = toml::from_str(&run_spec_text).expect("first run spec parses");
     assert_eq!(run_spec.manifest.run_id, first.operator_run_id);
@@ -403,10 +404,20 @@ fn assert_first_record_artifacts_parse(pack: &SourceUniverseExecutionPack) {
         first.selected_object_sha256
     );
 
-    let execution_plan: BackfillExecutionPlan = serde_json::from_slice(
-        &fs::read(resolve_repo_relative(&first.execution_plan_path)).expect("read first plan"),
-    )
-    .expect("first execution plan parses");
+    let accepted_tranche_path = resolve_repo_relative(&first.accepted_tranche_path);
+    assert_eq!(
+        sha256_file(&accepted_tranche_path),
+        first.accepted_tranche_sha256
+    );
+
+    let execution_plan_path = resolve_repo_relative(&first.execution_plan_path);
+    assert_eq!(
+        sha256_file(&execution_plan_path),
+        first.execution_plan_sha256
+    );
+    let execution_plan: BackfillExecutionPlan =
+        serde_json::from_slice(&fs::read(execution_plan_path).expect("read first plan"))
+            .expect("first execution plan parses");
     assert_eq!(execution_plan.status, BackfillExecutionPlanStatus::Ready);
     assert_eq!(execution_plan.operator_run_id, first.operator_run_id);
     assert_eq!(

@@ -10,9 +10,11 @@ use bolt_v2::{
         BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
         BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
-        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind, decision_evidence_path,
-        read_latest_entry_decision_evidence_chain,
+        BoltV3OrderIntentOrderFields, BoltV3PositionSizerRebuildAuditEvidence,
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitIntentKind, BoltV3SubmitReservationFillEvidence,
+        BoltV3SubmitReservationMetadataEvidence, decision_evidence_path,
+        read_latest_entry_decision_evidence_chain, read_submit_reservation_recovery_evidence,
     },
     bolt_v3_realized_volatility::{
         RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
@@ -28,6 +30,9 @@ use rust_decimal::Decimal;
 
 struct NoopFeeProvider;
 
+const EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 10;
+const PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 9;
+
 impl FeeProvider for NoopFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
         None
@@ -36,6 +41,14 @@ impl FeeProvider for NoopFeeProvider {
     fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
         async { Ok(()) }.boxed()
     }
+}
+
+#[test]
+fn decision_evidence_schema_version_tracks_position_sizer_recovery_records() {
+    assert_eq!(
+        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION
+    );
 }
 
 #[test]
@@ -320,7 +333,7 @@ fn latest_entry_decision_evidence_chain_rejects_cross_record_field_mismatches() 
 }
 
 #[test]
-fn latest_entry_decision_evidence_chain_rejects_stale_v5_before_admission_payload_parse() {
+fn latest_entry_decision_evidence_chain_rejects_legacy_schema_before_admission_payload_parse() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("decision-evidence.jsonl");
     let mut lines = sample_entry_decision_evidence_lines();
@@ -332,15 +345,102 @@ fn latest_entry_decision_evidence_chain_rejects_stale_v5_before_admission_payloa
     write_decision_evidence_lines(&evidence_path, &lines);
 
     let error = read_latest_entry_decision_evidence_chain(&evidence_path, 100_000)
-        .expect_err("stale v5 decision evidence should fail closed before payload parsing");
+        .expect_err("legacy decision evidence should fail closed before payload parsing");
     let rendered = format!("{error:#}");
     assert!(
         rendered.contains("schema_version mismatch"),
-        "stale v5 should fail on envelope schema, got: {rendered}"
+        "legacy schema should fail on envelope schema, got: {rendered}"
     );
     assert!(
         !rendered.contains("execution_client_id"),
-        "stale v5 should not reach current admission payload parsing, got: {rendered}"
+        "legacy schema should not reach current admission payload parsing, got: {rendered}"
+    );
+}
+
+#[test]
+fn submit_reservation_recovery_rejects_noncanonical_metadata_encodings() {
+    for (field, value) in [("side", "Buy"), ("product_kind", "PredictionMarketBinary")] {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let evidence_path = temp.path().join("decision-evidence.jsonl");
+        let mut metadata = sample_submit_reservation_metadata();
+        match field {
+            "side" => metadata.side = value.to_string(),
+            "product_kind" => metadata.product_kind = value.to_string(),
+            _ => unreachable!("test only mutates known fields"),
+        }
+        write_decision_evidence_lines(
+            &evidence_path,
+            &[serde_json::json!({
+                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "recorded_at_utc_ns": 1_i64,
+                "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+                "kind": "submit_reservation_metadata",
+                "metadata": metadata,
+            })],
+        );
+
+        let error = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+            .expect_err("non-canonical submit reservation metadata must fail at read time");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains(field) && rendered.contains("canonical"),
+            "expected canonical {field} diagnostic, got: {rendered}"
+        );
+    }
+}
+
+#[test]
+fn submit_reservation_recovery_skips_legacy_v9_non_recovery_lines() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut lines = sample_entry_decision_evidence_lines().to_vec();
+    for line in &mut lines {
+        line["schema_version"] = serde_json::json!(PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION);
+    }
+    lines.push(serde_json::json!({
+        "schema_version": EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 4_i64,
+        "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": "submit_reservation_metadata",
+        "metadata": sample_submit_reservation_metadata(),
+    }));
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let recovery = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+        .expect("legacy v9 non-recovery lines must not block reservation recovery");
+
+    assert!(
+        recovery
+            .metadata_by_client_order_id
+            .contains_key("client-order-one"),
+        "current reservation metadata should recover despite legacy non-recovery lines"
+    );
+}
+
+#[test]
+fn submit_reservation_recovery_rejects_legacy_v9_reservation_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[serde_json::json!({
+            "schema_version": PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION,
+            "recorded_at_utc_ns": 1_i64,
+            "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+            "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+            "kind": "submit_reservation_metadata",
+            "metadata": sample_submit_reservation_metadata(),
+        })],
+    );
+
+    let error = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+        .expect_err("legacy v9 reservation metadata must fail closed");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("schema_version mismatch"),
+        "expected schema mismatch for legacy reservation metadata, got: {rendered}"
     );
 }
 
@@ -430,6 +530,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         notional: "0.50".to_string(),
         intent_kind: BoltV3SubmitIntentKind::Entry,
         outcome: BoltV3AdmissionOutcome::Admitted,
+        loss_halt_reasons: Vec::new(),
     };
     [
         serde_json::json!({
@@ -459,6 +560,27 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
     ]
 }
 
+fn sample_submit_reservation_metadata() -> BoltV3SubmitReservationMetadataEvidence {
+    BoltV3SubmitReservationMetadataEvidence {
+        client_order_id: "client-order-one".to_string(),
+        submit_reservation_id: "client-order-one#1".to_string(),
+        venue_id: "POLYMARKET".to_string(),
+        account_id: "POLYMARKET-001".to_string(),
+        product_kind: "prediction_market_binary".to_string(),
+        collateral_currency: "PUSD".to_string(),
+        capital_pool_id: "polymarket-prediction-live".to_string(),
+        collateral_group_id: "condition-one".to_string(),
+        instrument_id: "condition-one-yes.POLYMARKET".to_string(),
+        side: "buy".to_string(),
+        submitted_quantity: "10".to_string(),
+        liability_factor: "0.4".to_string(),
+        additive_liability: "0.3".to_string(),
+        reserved_liability: "4.3".to_string(),
+        observed_at_ns: 1_000,
+        source: "submit_admission".to_string(),
+    }
+}
+
 fn write_decision_evidence_lines(path: &std::path::Path, lines: &[serde_json::Value]) {
     let mut body = String::new();
     for line in lines {
@@ -484,6 +606,27 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     }
 
     fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
         Ok(())
     }
 }

@@ -321,8 +321,10 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
                 exit_quantity,
             }),
             kill_switch_forced_reduction: None,
+            position_sizing: None,
         })
-        .expect("test setup should consume the only risk-reducing exit slot");
+        .expect("test setup should consume the only risk-reducing exit slot")
+        .commit_submitted();
 
     let result = strategy.on_book_deltas(&book_deltas(
         instrument_id,

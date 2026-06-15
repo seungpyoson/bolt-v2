@@ -13,7 +13,8 @@ use bolt_v2::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
         BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
-        BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
     },
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
     bolt_v3_outcome_group_scanner::{OutcomeGroupLegScanEvidence, OutcomeGroupScanEvidence},
@@ -505,6 +506,27 @@ impl BoltV3DecisionEvidenceWriter for RecordingBasketDecisionWriter {
             .lock()
             .expect("basket admission decisions mutex should not be poisoned")
             .push(decision.clone());
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 }

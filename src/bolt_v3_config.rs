@@ -15,13 +15,14 @@ use std::{
 use nautilus_common::enums::{Environment, LogLevel};
 use nautilus_model::{
     enums::OmsType,
-    identifiers::{ClientId, InstrumentId, TraderId, Venue},
+    identifiers::{AccountId, ClientId, InstrumentId, TraderId, Venue},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_iv::config::IvRootConfig,
+    bolt_v3_loss_halt_actions::{LossGovernorRecoveryMode, LossGovernorTradingStateAction},
     bolt_v3_outcome_group_sources::{BasketExecutionRiskBlock, OutcomeGroupSourceConfig},
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolCoarserGridPolicy, RealizedVolEngineConfig,
@@ -182,9 +183,70 @@ pub struct NautilusExecEngineBlock {
 #[serde(deny_unknown_fields)]
 pub struct RiskBlock {
     pub default_max_notional_per_order: String,
+    pub loss_governor: Option<LossGovernorBlock>,
+    pub capital_pools: Option<Vec<CapitalPoolBlock>>,
     pub nautilus: NautilusRiskBlock,
     pub kill_switch: Option<KillSwitchConfigBlock>,
     pub basket_execution: Option<BasketExecutionRiskBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LossGovernorBlock {
+    pub enabled: bool,
+    pub account_id: AccountId,
+    pub max_snapshot_age_ns: u64,
+    pub rolling_window_ns: u64,
+    pub active_position_pnl_max_entries: Option<usize>,
+    pub on_loss_breach_trading_state: Option<LossGovernorTradingStateAction>,
+    pub on_untrusted_snapshot_trading_state: Option<LossGovernorTradingStateAction>,
+    pub recovery_mode: Option<LossGovernorRecoveryMode>,
+    pub manual_recovery_evidence_max_path_bytes: Option<usize>,
+    pub max_per_trade_loss: Option<String>,
+    pub max_daily_loss: Option<String>,
+    pub max_rolling_loss: Option<String>,
+    pub max_drawdown: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CapitalPoolBlock {
+    pub pool_id: String,
+    pub venue_id: String,
+    pub account_id: AccountId,
+    pub collateral_currency: String,
+    pub product_kind: String,
+    pub enforce_submit_admission: bool,
+    pub max_pool_liability: String,
+    pub max_snapshot_age_ns: u64,
+    pub dedupe_retention_ns: u64,
+    pub venue_spendability_source_path: Option<String>,
+    pub venue_spendability_source_sha256: Option<String>,
+    pub venue_spendability_source_max_bytes: Option<u64>,
+    pub prediction_market_binary: Option<PredictionMarketBinaryProductBlock>,
+    pub sizing_policy: CapitalPoolSizingPolicyBlock,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PredictionMarketBinaryProductBlock {
+    pub yes_instrument_id: InstrumentId,
+    pub no_instrument_id: InstrumentId,
+    pub collateral_coupled_group_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CapitalPoolSizingPolicyBlock {
+    pub min_remaining_pool_balance: Option<String>,
+    pub fee_slippage: FeeSlippagePolicyBlock,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FeeSlippagePolicyBlock {
+    pub max_fee_liability: String,
+    pub max_slippage_liability: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -236,6 +298,14 @@ pub struct PersistenceBlock {
 #[serde(deny_unknown_fields)]
 pub struct DecisionEvidenceBlock {
     pub order_intents_relative_path: String,
+    /// Byte cap applied when the live-node startup driver reads this same
+    /// decision-evidence file to recover known submit-reservation metadata
+    /// after a restart. The path is owned by this block
+    /// (`order_intents_relative_path` via `decision_evidence_path`), so its
+    /// read bound lives here too. `None` opts startup reservation recovery
+    /// out: the position sizer then fails closed if any open orders exist at
+    /// boot (it cannot attribute them without recovered metadata).
+    pub recovery_evidence_max_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

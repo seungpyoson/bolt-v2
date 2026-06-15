@@ -427,7 +427,9 @@ fn empty_clients_root_config_registers_zero_clients() {
     // must succeed but produce an empty summary, and the resulting
     // node must expose no registered NT clients.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-empty-client-registration");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
     let empty_root = BoltV3RootConfig {
         clients: BTreeMap::new(),
         ..loaded.root.clone()

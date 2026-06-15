@@ -16775,6 +16775,7 @@ literal = '''"settlement signal remains gated by Task 0 disposition"'''
 context = '''.expect_err("settlement signal remains gated by Task 0 disposition");'''
 classification = "strategy_test_diagnostic"
 reason = "Strategy-local shell unit-test assertion message; not runtime behavior."
+
 [[allowed]]
 path = "src/source_canonicalization.rs"
 kind = "string"
@@ -16790,3 +16791,35 @@ literal = '''"/gated_source_roots.rs"'''
 context = '''include!(concat!(env!("OUT_DIR"), "/gated_source_roots.rs"));'''
 classification = "source_canonicalization_codegen_include"
 reason = "Build-time include path literal: the build.rs-generated GATED_SOURCE_ROOTS file name under OUT_DIR; a compile-time codegen reference, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_requote_budget.rs"
+kind = "number"
+literal = '''1'''
+context = '''const SUBMIT_COMMAND_COST: u64 = 1;'''
+classification = "requote_budget_structural_unit_cost"
+reason = "One NT submit command costs exactly one token against the submit-governor budget. A structural protocol unit (a submit is one submit command), not an operator-tunable value; the tunable cap (max_order_submit_rate) is TOML-owned and passed into RequoteBudget::new by callers."
+
+[[allowed]]
+path = "src/bolt_v3_requote_budget.rs"
+kind = "number"
+literal = '''1'''
+context = '''const REST_CALL_COST: u64 = 1;'''
+classification = "requote_budget_structural_unit_cost"
+reason = "One venue CLOB REST call costs exactly one token against the REST budget. A structural protocol unit (a cancel or submit is one REST call), not an operator-tunable value; the tunable cap (venue clob_per_minute) is TOML/venue-contract-owned and passed into RequoteBudget::new by callers."
+
+[[allowed]]
+path = "src/bolt_v3_requote_budget.rs"
+kind = "number"
+literal = '''0'''
+context = '''self.try_reserve(now_ms, 0, REST_CALL_COST)'''
+classification = "requote_budget_standalone_cancel_zero_submit_cost"
+reason = "A standalone cancel issues zero submit commands (a cancel is not a submit), so it charges the submit-governor budget nothing. A structural protocol fact, not a tunable value."
+
+[[allowed]]
+path = "src/bolt_v3_requote_budget.rs"
+kind = "number"
+literal = '''0'''
+context = '''let submit_ok = submit_cost == 0 || submit_trial.try_acquire(now_ms, submit_cost);'''
+classification = "requote_budget_zero_submit_cost_skip_guard"
+reason = "A zero submit cost (a standalone cancel) skips the submit-governor acquisition entirely, leaving the submit budget untouched. A structural sentinel guard, not a tunable value."

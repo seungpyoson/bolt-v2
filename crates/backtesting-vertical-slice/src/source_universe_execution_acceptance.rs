@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
-use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
+use crate::path_resolution::{
+    portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
+};
 use crate::{
     backfill_conversion_completion::{
         BackfillConversionCompletionLedger, BackfillConversionCompletionStatus,
@@ -850,7 +852,7 @@ where
         .with_context(|| format!("read {role} artifact {}", resolved.display()))?;
     artifact_refs.push(SourceUniverseExecutionAcceptanceArtifactRef {
         role: role.to_string(),
-        path: portable_artifact_path(&resolved),
+        path: portable_artifact_path_for_spec(&resolved, path)?,
         sha256: sha256_hex(&bytes),
     });
     serde_json::from_slice(&bytes)
@@ -872,7 +874,7 @@ fn push_optional_ref(
         .with_context(|| format!("read {role} artifact {}", resolved.display()))?;
     artifact_refs.push(SourceUniverseExecutionAcceptanceArtifactRef {
         role: role.to_string(),
-        path: portable_artifact_path(&resolved),
+        path: portable_artifact_path_for_spec(&resolved, path)?,
         sha256: sha256_hex(&bytes),
     });
     Ok(())

@@ -18,7 +18,9 @@ use toml::Value;
 
 use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
-use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
+use crate::path_resolution::{
+    portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
+};
 use crate::{
     backfill_accepted_tranche::{
         BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE, BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
@@ -419,11 +421,17 @@ pub fn write_source_universe_execution_pack(
             source_proof_version: record.source_proof_version,
             accepted_tranche_id: record.accepted_tranche_id.clone(),
             output_prefix: run_spec.manifest.output_prefix.clone(),
-            run_spec_path: portable_artifact_path(&run_spec_path),
+            run_spec_path: portable_artifact_path_for_spec(&run_spec_path, &spec.output_dir)?,
             run_spec_sha256: run_spec_hash,
-            accepted_tranche_path: portable_artifact_path(&accepted_tranche_path),
+            accepted_tranche_path: portable_artifact_path_for_spec(
+                &accepted_tranche_path,
+                &spec.output_dir,
+            )?,
             accepted_tranche_sha256: accepted_tranche_hash,
-            execution_plan_path: portable_artifact_path(&execution_plan_artifact.path),
+            execution_plan_path: portable_artifact_path_for_spec(
+                &execution_plan_artifact.path,
+                &spec.output_dir,
+            )?,
             execution_plan_sha256: execution_plan_artifact.content_hash,
         });
     }
@@ -453,22 +461,28 @@ pub fn write_source_universe_execution_pack(
     let mut artifact_refs = vec![
         SourceUniverseExecutionPackArtifactRef {
             role: "source_universe_conversion_work_order".to_string(),
-            path: portable_artifact_path(&work_order_path),
+            path: portable_artifact_path_for_spec(
+                &work_order_path,
+                &spec.source_universe_conversion_work_order_path,
+            )?,
             sha256: work_order_hash,
         },
         SourceUniverseExecutionPackArtifactRef {
             role: "source_universe_operator_inputs".to_string(),
-            path: portable_artifact_path(&operator_inputs_path),
+            path: portable_artifact_path_for_spec(
+                &operator_inputs_path,
+                &operator_inputs_ref.path,
+            )?,
             sha256: operator_inputs_hash,
         },
         SourceUniverseExecutionPackArtifactRef {
             role: "source_universe_object_gates".to_string(),
-            path: portable_artifact_path(&object_gates_path),
+            path: portable_artifact_path_for_spec(&object_gates_path, &object_gates_ref.path)?,
             sha256: object_gates_hash,
         },
         SourceUniverseExecutionPackArtifactRef {
             role: "run_spec_template".to_string(),
-            path: portable_artifact_path(&template_path),
+            path: portable_artifact_path_for_spec(&template_path, &spec.run_spec_template_path)?,
             sha256: template_hash,
         },
     ];
@@ -483,7 +497,10 @@ pub fn write_source_universe_execution_pack(
             .artifact_ref;
         artifact_refs.push(SourceUniverseExecutionPackArtifactRef {
             role: "source_proof".to_string(),
-            path: portable_artifact_path(&resolve_existing_path(base_dir, &proof_ref.path)),
+            path: portable_artifact_path_for_spec(
+                &resolve_existing_path(base_dir, &proof_ref.path),
+                &proof_ref.path,
+            )?,
             sha256: proof_ref.sha256.clone(),
         });
     }

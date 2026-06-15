@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
-use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
+use crate::path_resolution::{
+    portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
+};
 use crate::{
     source_proof::{SourceBindingRegistry, SourceProofReport},
     source_universe_conversion_queue::{
@@ -167,9 +169,11 @@ struct BindingContext {
     source_proof: SourceProofReport,
     source_proof_hash: String,
     source_proof_path: PathBuf,
+    source_proof_artifact_path: PathBuf,
     category_manifest: CategoryObjectManifest,
     category_manifest_hash: String,
     category_manifest_path: PathBuf,
+    category_manifest_artifact_path: PathBuf,
     records_by_uri: BTreeMap<String, CategoryObjectManifestRecord>,
 }
 
@@ -316,15 +320,22 @@ pub fn evaluate_source_universe_object_gate_materialization(
                 )
             })?;
     let contexts = binding_contexts(base_dir, &spec.source_bindings, &registry)?;
+    let queue_artifact_path = portable_artifact_path_for_spec(&queue_path, &spec.queue_path)?;
     let mut artifact_refs = vec![artifact_ref(
         "source_universe_conversion_queue",
         &queue_path,
+        queue_artifact_path.clone(),
     )?];
     for context in contexts.values() {
-        artifact_refs.push(artifact_ref("source_proof", &context.source_proof_path)?);
+        artifact_refs.push(artifact_ref(
+            "source_proof",
+            &context.source_proof_path,
+            context.source_proof_artifact_path.clone(),
+        )?);
         artifact_refs.push(artifact_ref(
             "category_manifest",
             &context.category_manifest_path,
+            context.category_manifest_artifact_path.clone(),
         )?);
     }
 
@@ -381,7 +392,7 @@ pub fn evaluate_source_universe_object_gate_materialization(
         source: queue.source,
         family: queue.family,
         table_family: queue.table_family,
-        queue_path,
+        queue_path: queue_artifact_path,
         queue_hash,
         work_item_count: records.len() as u64,
         accepted_gate_count: records.len() as u64,
@@ -415,6 +426,10 @@ fn binding_contexts(
         );
         let source_proof_path = resolve_existing_path(base_dir, &spec.source_proof_path);
         let category_manifest_path = resolve_existing_path(base_dir, &spec.category_manifest_path);
+        let source_proof_artifact_path =
+            portable_artifact_path_for_spec(&source_proof_path, &spec.source_proof_path)?;
+        let category_manifest_artifact_path =
+            portable_artifact_path_for_spec(&category_manifest_path, &spec.category_manifest_path)?;
         let source_proof_hash = sha256_file(&source_proof_path)?;
         let category_manifest_hash = sha256_file(&category_manifest_path)?;
         let source_proof: SourceProofReport = read_json(&source_proof_path)?;
@@ -457,9 +472,11 @@ fn binding_contexts(
                 source_proof,
                 source_proof_hash,
                 source_proof_path,
+                source_proof_artifact_path,
                 category_manifest,
                 category_manifest_hash,
                 category_manifest_path,
+                category_manifest_artifact_path,
                 records_by_uri,
             },
         );
@@ -742,10 +759,14 @@ fn object_gate_record(
     })
 }
 
-fn artifact_ref(role: &str, path: &Path) -> Result<SourceUniverseObjectGateArtifactRef> {
+fn artifact_ref(
+    role: &str,
+    path: &Path,
+    artifact_path: PathBuf,
+) -> Result<SourceUniverseObjectGateArtifactRef> {
     Ok(SourceUniverseObjectGateArtifactRef {
         role: role.to_string(),
-        path: path.to_path_buf(),
+        path: artifact_path,
         sha256: sha256_file(path)?,
     })
 }

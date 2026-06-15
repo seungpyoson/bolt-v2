@@ -1410,6 +1410,42 @@ fn nt_catalog_event(
     }
 }
 
+fn research_analytics_event(
+    root: &ResolvedArtifactRoot,
+    subfamily: &str,
+    event_id: &str,
+    artifact_id: &str,
+    content_hash_char: char,
+) -> ArtifactIndexEvent {
+    ArtifactIndexEvent {
+        schema_version: "artifact-index-event-v1".to_string(),
+        created_at: "2026-06-13T00:00:00Z".to_string(),
+        event_id: event_id.to_string(),
+        artifact_kind: ArtifactKind::ResearchAnalytics,
+        artifact_id: artifact_id.to_string(),
+        artifact_uri: format!(
+            "{}/{subfamily}/{artifact_id}/artifact.json",
+            root.typed_root(ArtifactKind::ResearchAnalytics)
+        ),
+        manifest_uri: format!(
+            "{}/{subfamily}/{artifact_id}/manifest.json",
+            root.typed_root(ArtifactKind::ResearchAnalytics)
+        ),
+        producer_project: "research-analytics".to_string(),
+        owner_project: "research-analytics".to_string(),
+        content_sha256: sha256(content_hash_char),
+        lifecycle_state: ArtifactLifecycleState::Active,
+        storage_profile: ArtifactStorageProfile::Active,
+        parent_lineage: vec![ArtifactLineageRef {
+            artifact_kind: ArtifactKind::Backtests,
+            artifact_id: "backtest-result-001".to_string(),
+            version: Some("v1".to_string()),
+            sha256: sha256('b'),
+        }],
+        commit_state: ArtifactIndexCommitState::Staged,
+    }
+}
+
 fn commit_plan(
     event: ArtifactIndexEvent,
     snapshot_ids: &[&str],
@@ -1654,6 +1690,180 @@ async fn artifact_index_reader_rejects_hash_invalid_latest_pointer() {
         .await
         .expect_err("hash-invalid latest pointer must fail closed");
     assert!(err.to_string().contains("snapshot hash"), "{err}");
+}
+
+#[tokio::test]
+async fn research_analytics_writer_commits_all_owned_families_to_one_kind_snapshot() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let authority = ArtifactIndexWriteAuthority::new(
+        "research-analytics-writer",
+        [ArtifactKind::ResearchAnalytics],
+    )
+    .expect("authority config is valid");
+    let writer = ArtifactIndexWriter::with_authority(&store, authority);
+    let dataset = research_analytics_event(&root, "datasets", "ra-event-001", "dataset-001", 'a');
+    let feature_table = research_analytics_event(
+        &root,
+        "feature-tables",
+        "ra-event-002",
+        "feature-table-001",
+        'c',
+    );
+    let experiment_result = research_analytics_event(
+        &root,
+        "experiment-results",
+        "ra-event-003",
+        "experiment-result-001",
+        'd',
+    );
+
+    writer
+        .commit_event(
+            &root,
+            commit_plan_with_writer(
+                dataset,
+                &["snapshot-ra-001"],
+                "2026-06-13T00:00:11Z",
+                "research-analytics-writer",
+            ),
+        )
+        .await
+        .expect("dataset commit succeeds");
+    writer
+        .commit_event(
+            &root,
+            commit_plan_with_writer(
+                feature_table,
+                &["snapshot-ra-002"],
+                "2026-06-13T00:00:12Z",
+                "research-analytics-writer",
+            ),
+        )
+        .await
+        .expect("feature-table commit succeeds");
+    writer
+        .commit_event(
+            &root,
+            commit_plan_with_writer(
+                experiment_result,
+                &["snapshot-ra-003"],
+                "2026-06-13T00:00:13Z",
+                "research-analytics-writer",
+            ),
+        )
+        .await
+        .expect("experiment-results commit succeeds");
+
+    let snapshot = writer
+        .read_verified_latest_snapshot(&root, ArtifactKind::ResearchAnalytics)
+        .await
+        .expect("research analytics latest snapshot verifies");
+
+    assert_eq!(snapshot.artifact_kind, ArtifactKind::ResearchAnalytics);
+    assert_eq!(snapshot.rows.len(), 3);
+    assert_eq!(
+        root.latest_pointer(ArtifactKind::ResearchAnalytics),
+        "s3://bolt-ra-artifacts/prod/artifact-index/v1/pointers/kind=research-analytics/latest.json"
+    );
+    for row in &snapshot.rows {
+        assert_eq!(row.artifact_kind, ArtifactKind::ResearchAnalytics);
+        assert_eq!(row.producer_project, "research-analytics");
+        assert_eq!(row.owner_project, "research-analytics");
+        assert_eq!(row.lifecycle_state, ArtifactLifecycleState::Active);
+        assert_eq!(row.commit_state, ArtifactIndexCommitState::Committed);
+        assert!(
+            row.manifest_uri
+                .contains("/research-analytics/v1/datasets/")
+                || row
+                    .manifest_uri
+                    .contains("/research-analytics/v1/feature-tables/")
+                || row
+                    .manifest_uri
+                    .contains("/research-analytics/v1/experiment-results/"),
+            "{}",
+            row.manifest_uri
+        );
+    }
+
+    let experiment_row = writer
+        .read_committed_row(
+            &root,
+            ArtifactKind::ResearchAnalytics,
+            "experiment-result-001",
+        )
+        .await
+        .expect("committed experiment-results row lookup succeeds")
+        .expect("committed experiment-results row exists");
+    assert_eq!(
+        experiment_row.lifecycle_state,
+        ArtifactLifecycleState::Active
+    );
+    assert!(
+        experiment_row
+            .manifest_uri
+            .contains("/research-analytics/v1/experiment-results/")
+    );
+}
+
+#[tokio::test]
+async fn artifact_index_writer_rejects_consumer_mutation_of_research_analytics_records() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let authority = ArtifactIndexWriteAuthority::new("dashboard-writer", [ArtifactKind::Backtests])
+        .expect("authority config is valid");
+    let writer = ArtifactIndexWriter::with_authority(&store, authority);
+    let event = research_analytics_event(
+        &root,
+        "experiment-results",
+        "ra-event-consumer",
+        "experiment-result-consumer",
+        'e',
+    );
+
+    let err = writer
+        .commit_event(
+            &root,
+            commit_plan_with_writer(
+                event,
+                &["snapshot-ra-consumer"],
+                "2026-06-13T00:00:14Z",
+                "dashboard-writer",
+            ),
+        )
+        .await
+        .expect_err("consumer writer must not mutate RA index records");
+
+    assert!(err.to_string().contains("not authorized"), "{err}");
+    assert!(
+        writer
+            .read_latest_pointer(&root, ArtifactKind::ResearchAnalytics)
+            .await
+            .expect("latest pointer read succeeds")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn research_analytics_index_rejects_promotion_package_family() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let writer = ArtifactIndexWriter::new(&store);
+    let event = research_analytics_event(
+        &root,
+        "promotion-packages",
+        "ra-event-promotion-package",
+        "promotion-package-001",
+        'f',
+    );
+
+    let err = writer
+        .put_event(&root, &event)
+        .await
+        .expect_err("promotion-packages is not an RA artifact family");
+
+    assert!(err.to_string().contains("research analytics"), "{err}");
+    assert!(err.to_string().contains("experiment-results"), "{err}");
 }
 
 #[tokio::test]

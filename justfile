@@ -117,6 +117,10 @@ verify-ra-findings-promotion: check-workspace
     python3 scripts/test_verify_ra_findings_promotion.py
     python3 scripts/verify_ra_findings_promotion.py
 
+verify-ra-artifact-index-commit: check-workspace
+    python3 scripts/test_verify_ra_artifact_index_commit.py
+    python3 scripts/verify_ra_artifact_index_commit.py
+
 verify-dashboard-customer-jobs: check-workspace
     python3 scripts/test_verify_dashboard_customer_jobs.py
     python3 scripts/verify_dashboard_customer_jobs.py
@@ -261,6 +265,8 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_ra_domain_metrics.py
     python3 scripts/test_verify_ra_findings_promotion.py
     python3 scripts/verify_ra_findings_promotion.py
+    python3 scripts/test_verify_ra_artifact_index_commit.py
+    python3 scripts/verify_ra_artifact_index_commit.py
     python3 scripts/test_verify_dashboard_customer_jobs.py
     python3 scripts/verify_dashboard_customer_jobs.py
     python3 scripts/test_verify_dashboard_field_source_matrix.py

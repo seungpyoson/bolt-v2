@@ -135,6 +135,15 @@ pub enum ArtifactKind {
     ResearchAnalytics,
 }
 
+const RESEARCH_ANALYTICS_DATASETS_SUBFAMILY: &str = "datasets";
+const RESEARCH_ANALYTICS_FEATURE_TABLES_SUBFAMILY: &str = "feature-tables";
+const RESEARCH_ANALYTICS_EXPERIMENT_RESULTS_SUBFAMILY: &str = "experiment-results";
+const RESEARCH_ANALYTICS_ARTIFACT_FAMILIES: &[&str] = &[
+    RESEARCH_ANALYTICS_DATASETS_SUBFAMILY,
+    RESEARCH_ANALYTICS_FEATURE_TABLES_SUBFAMILY,
+    RESEARCH_ANALYTICS_EXPERIMENT_RESULTS_SUBFAMILY,
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedArtifactRoot {
     artifact_root: String,
@@ -1120,8 +1129,18 @@ impl ArtifactIndexEvent {
         validate_artifact_id(&self.artifact_id)?;
         validate_artifact_id(&self.producer_project)?;
         validate_artifact_id(&self.owner_project)?;
-        artifact_root.object_path_for_uri(&self.artifact_uri)?;
-        artifact_root.object_path_for_uri(&self.manifest_uri)?;
+        validate_artifact_uri_for_kind(
+            artifact_root,
+            self.artifact_kind,
+            "artifact_uri",
+            &self.artifact_uri,
+        )?;
+        validate_artifact_uri_for_kind(
+            artifact_root,
+            self.artifact_kind,
+            "manifest_uri",
+            &self.manifest_uri,
+        )?;
         ensure_sha256("content_sha256", &self.content_sha256)?;
         ensure!(
             !self.parent_lineage.is_empty(),
@@ -1206,8 +1225,18 @@ impl ArtifactIndexSnapshotRow {
         validate_artifact_id(&self.artifact_id)?;
         validate_artifact_id(&self.producer_project)?;
         validate_artifact_id(&self.owner_project)?;
-        artifact_root.object_path_for_uri(&self.artifact_uri)?;
-        artifact_root.object_path_for_uri(&self.manifest_uri)?;
+        validate_artifact_uri_for_kind(
+            artifact_root,
+            self.artifact_kind,
+            "artifact_uri",
+            &self.artifact_uri,
+        )?;
+        validate_artifact_uri_for_kind(
+            artifact_root,
+            self.artifact_kind,
+            "manifest_uri",
+            &self.manifest_uri,
+        )?;
         ensure_sha256("content_sha256", &self.content_sha256)?;
         ensure!(
             !self.parent_lineage.is_empty(),
@@ -1922,6 +1951,29 @@ fn latest_pointer_path(
     kind: ArtifactKind,
 ) -> Result<ObjectPath> {
     artifact_root.object_path_for_uri(&artifact_root.latest_pointer(kind))
+}
+
+fn validate_artifact_uri_for_kind(
+    artifact_root: &ResolvedArtifactRoot,
+    kind: ArtifactKind,
+    field: &str,
+    uri: &str,
+) -> Result<()> {
+    artifact_root.object_path_for_uri(uri)?;
+    if kind != ArtifactKind::ResearchAnalytics {
+        return Ok(());
+    }
+
+    let typed_root = artifact_root.typed_root(ArtifactKind::ResearchAnalytics);
+    let in_ra_family = RESEARCH_ANALYTICS_ARTIFACT_FAMILIES
+        .iter()
+        .any(|family| uri.starts_with(&format!("{typed_root}/{family}/")));
+    ensure!(
+        in_ra_family,
+        "{field} for research analytics artifact must live under {typed_root}/<{}>/",
+        RESEARCH_ANALYTICS_ARTIFACT_FAMILIES.join("|")
+    );
+    Ok(())
 }
 
 fn build_rebased_snapshot(

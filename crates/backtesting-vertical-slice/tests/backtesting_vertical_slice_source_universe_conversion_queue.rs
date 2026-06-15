@@ -1,4 +1,7 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Component, Path},
+};
 
 use backtesting_vertical_slice::source_universe_conversion_queue::{
     SourceUniverseConversionQueue, SourceUniverseConversionQueueStatus,
@@ -22,6 +25,36 @@ fn copy_spec_with_output_dir(source_spec: &Path, target_spec: &Path, output_dir:
         .join("\n");
     assert!(replaced, "committed source-universe spec has output_dir");
     fs::write(target_spec, format!("{updated}\n")).expect("write temp source-universe spec");
+}
+
+fn assert_source_manifest_path_is_portable(
+    queue: &SourceUniverseConversionQueue,
+    expected_manifest_path: &Path,
+) {
+    assert_eq!(queue.source_manifest_path.as_path(), expected_manifest_path);
+    assert!(queue.source_manifest_path.is_relative());
+    assert!(
+        !queue
+            .source_manifest_path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir)),
+        "source_manifest_path must be canonical repo-relative form"
+    );
+
+    let manifest_ref = queue
+        .artifact_refs
+        .iter()
+        .find(|artifact_ref| artifact_ref.role == "source_universe_manifest")
+        .expect("queue records source-universe manifest artifact ref");
+    assert_eq!(manifest_ref.path.as_path(), expected_manifest_path);
+    assert!(manifest_ref.path.is_relative());
+    assert!(
+        !manifest_ref
+            .path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir)),
+        "manifest artifact ref path must be canonical repo-relative form"
+    );
 }
 
 #[test]
@@ -74,6 +107,12 @@ output_prefix_template = "s3://bolt-parquet/nt-research-analytics/backtests/sour
     assert_eq!(
         queue.universe_id,
         "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
+    );
+    assert_source_manifest_path_is_portable(
+        &queue,
+        Path::new(
+            "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json",
+        ),
     );
     assert_eq!(queue.work_item_count, 5_857);
     assert_eq!(queue.total_source_bytes, 20_309_079_098);
@@ -158,6 +197,12 @@ output_prefix_template = "source-universe={universe_id}/category={category}/symb
     assert_eq!(
         queue.manifest_id,
         "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments"
+    );
+    assert_source_manifest_path_is_portable(
+        &queue,
+        Path::new(
+            "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/binance-data-vision-trades-object-manifest.json",
+        ),
     );
     assert_eq!(
         queue.universe_id,

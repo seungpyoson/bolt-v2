@@ -11,7 +11,7 @@
   "family": "native_trades",
   "table_family": "trades",
   "object_gates_path": "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json",
-  "object_gates_hash": "5949a7375a3e6c87d9718b9ac49b814e7887a13bbcd916d2c770d8fc757e8a2a",
+  "object_gates_hash": "8e5f68118c05e12f5f533305694fdd071140748b5aeb7db6afaa67937e2c148e",
   "max_objects_per_run": 500,
   "max_source_bytes_per_run": 2000000000,
   "source_binding_count": 5,
@@ -71,7 +71,7 @@
     {
       "role": "source_universe_object_gates",
       "path": "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json",
-      "sha256": "5949a7375a3e6c87d9718b9ac49b814e7887a13bbcd916d2c770d8fc757e8a2a"
+      "sha256": "8e5f68118c05e12f5f533305694fdd071140748b5aeb7db6afaa67937e2c148e"
     }
   ],
   "runs": [

@@ -17,7 +17,9 @@ use serde_json::Value;
 
 use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
-use crate::path_resolution::{portable_artifact_path, resolve_existing_path, resolve_output_dir};
+use crate::path_resolution::{
+    portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
+};
 use crate::{
     canonical_trades::{CsvTradeMappingConfig, RawPayloadContainer},
     catalog_projection::{
@@ -509,18 +511,30 @@ pub fn evaluate_source_universe_operator_inputs(
         ready_input_count,
         blocked_input_count,
         artifact_refs: vec![
-            artifact_ref("source_universe_object_gates", gates_path, gates_hash),
+            artifact_ref(
+                "source_universe_object_gates",
+                gates_path,
+                &spec.source_universe_object_gates_path,
+                gates_hash,
+            )?,
             artifact_ref(
                 "source_universe_conversion_run_plan",
                 run_plan_path,
+                &spec.source_universe_conversion_run_plan_path,
                 run_plan_hash,
-            ),
+            )?,
             artifact_ref(
                 "source_universe_conversion_plan",
                 conversion_plan_path,
+                &spec.source_universe_conversion_plan_path,
                 conversion_plan_hash,
-            ),
-            artifact_ref("instrument_metadata_snapshot", metadata_path, metadata_hash),
+            )?,
+            artifact_ref(
+                "instrument_metadata_snapshot",
+                metadata_path,
+                &spec.instrument_metadata_snapshot_path,
+                metadata_hash,
+            )?,
         ],
         converter_mappings,
         instrument_specs: instrument_specs.into_values().collect(),
@@ -799,13 +813,14 @@ fn zip_member_for_source_url(
 fn artifact_ref(
     role: &str,
     path: PathBuf,
+    spec_path: &Path,
     sha256: String,
-) -> SourceUniverseOperatorInputsArtifactRef {
-    SourceUniverseOperatorInputsArtifactRef {
+) -> Result<SourceUniverseOperatorInputsArtifactRef> {
+    Ok(SourceUniverseOperatorInputsArtifactRef {
         role: role.to_string(),
-        path: portable_artifact_path(&path),
+        path: portable_artifact_path_for_spec(&path, spec_path)?,
         sha256,
-    }
+    })
 }
 fn read_json_artifact<T>(base_dir: &Path, path: &Path, role: &str) -> Result<(PathBuf, String, T)>
 where

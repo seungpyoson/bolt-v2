@@ -11,7 +11,9 @@ use std::{
 
 use crate::atomic_artifact_write::atomic_write;
 use crate::hashing::sha256_hex;
-use crate::path_resolution::{resolve_existing_path, resolve_output_dir};
+use crate::path_resolution::{
+    portable_artifact_path_for_spec, resolve_existing_path, resolve_output_dir,
+};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
@@ -242,6 +244,10 @@ pub fn evaluate_source_universe_conversion_queue(
 
     let source_manifest_path = resolve_existing_path(base_dir, &spec.source_universe_manifest_path);
     let source_manifest_hash = sha256_file(&source_manifest_path)?;
+    let source_manifest_artifact_path = portable_artifact_path_for_spec(
+        &source_manifest_path,
+        &spec.source_universe_manifest_path,
+    )?;
     let manifest: SourceUniverseManifest = read_json(&source_manifest_path)?;
     ensure!(
         manifest.object_count as usize == manifest.payload_records.len(),
@@ -287,9 +293,7 @@ pub fn evaluate_source_universe_conversion_queue(
         source: manifest.source,
         family: manifest.family,
         table_family,
-        // Committed queues must be reproducible from any checkout: echo the
-        // spec-authored manifest path verbatim; resolution stays read-time.
-        source_manifest_path: spec.source_universe_manifest_path.clone(),
+        source_manifest_path: source_manifest_artifact_path.clone(),
         source_manifest_hash: source_manifest_hash.clone(),
         output_prefix_template: spec.output_prefix_template.clone(),
         work_item_count: work_items.len() as u64,
@@ -298,7 +302,7 @@ pub fn evaluate_source_universe_conversion_queue(
         category_summaries,
         artifact_refs: vec![SourceUniverseConversionQueueArtifactRef {
             role: "source_universe_manifest".to_string(),
-            path: spec.source_universe_manifest_path.clone(),
+            path: source_manifest_artifact_path,
             sha256: source_manifest_hash.clone(),
         }],
         work_items,

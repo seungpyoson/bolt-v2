@@ -23,6 +23,7 @@ fn source_catalog_mapping_readiness_accepts_configured_nt_catalog_statuses() {
         source_binding: "synthetic-native-trades",
         required_table_family: "trades",
         required_nt_data_types: vec!["TradeTick".to_string()],
+        required_claim_evidence_refs: Vec::new(),
         allowed_current_bte_statuses: vec!["accepted".to_string()],
         allowed_parquet_catalog_statuses: vec!["proven".to_string()],
         allowed_usage_scopes: vec![SourceProofUsageScope::CanonicalBackfillInput],
@@ -53,6 +54,7 @@ fn source_catalog_mapping_readiness_blocks_status_only_mapping_without_data_clas
         table_family: "trades".to_string(),
         candidate_nt_data_classes: vec!["TradeTick".to_string()],
         nt_data_class_evidence_refs: BTreeMap::new(),
+        claim_evidence_refs: BTreeMap::new(),
         current_bte_status: "accepted".to_string(),
         parquet_catalog_status: "proven".to_string(),
     }];
@@ -66,6 +68,7 @@ fn source_catalog_mapping_readiness_blocks_status_only_mapping_without_data_clas
         source_binding: "synthetic-native-trades",
         required_table_family: "trades",
         required_nt_data_types: vec!["TradeTick".to_string()],
+        required_claim_evidence_refs: Vec::new(),
         allowed_current_bte_statuses: vec!["accepted".to_string()],
         allowed_parquet_catalog_statuses: vec!["proven".to_string()],
         allowed_usage_scopes: vec![SourceProofUsageScope::CanonicalBackfillInput],
@@ -93,6 +96,7 @@ fn source_catalog_mapping_readiness_blocks_unaccepted_mapping_statuses() {
             "OrderBookDelta",
             "repo://synthetic/order-book-delta-catalog-proof.json",
         )]),
+        claim_evidence_refs: BTreeMap::new(),
         current_bte_status: "pending".to_string(),
         parquet_catalog_status: "prototype_only_not_accepted".to_string(),
     }];
@@ -106,6 +110,7 @@ fn source_catalog_mapping_readiness_blocks_unaccepted_mapping_statuses() {
         source_binding: "synthetic-book-deltas",
         required_table_family: "order_book_snapshot_deltas",
         required_nt_data_types: vec!["OrderBookDelta".to_string()],
+        required_claim_evidence_refs: Vec::new(),
         allowed_current_bte_statuses: vec!["accepted".to_string()],
         allowed_parquet_catalog_statuses: vec!["proven".to_string()],
         allowed_usage_scopes: vec![SourceProofUsageScope::CanonicalBackfillInput],
@@ -138,6 +143,7 @@ fn source_catalog_mapping_readiness_blocks_source_proof_mismatches() {
             "TradeTick",
             "repo://synthetic/trade-tick-catalog-proof.json",
         )]),
+        claim_evidence_refs: BTreeMap::new(),
         current_bte_status: "accepted".to_string(),
         parquet_catalog_status: "proven".to_string(),
     }];
@@ -151,6 +157,7 @@ fn source_catalog_mapping_readiness_blocks_source_proof_mismatches() {
         source_binding: "synthetic-native-trades",
         required_table_family: "trades",
         required_nt_data_types: vec!["TradeTick".to_string()],
+        required_claim_evidence_refs: Vec::new(),
         allowed_current_bte_statuses: vec!["accepted".to_string()],
         allowed_parquet_catalog_statuses: vec!["proven".to_string()],
         allowed_usage_scopes: vec![SourceProofUsageScope::CanonicalBackfillInput],
@@ -178,6 +185,7 @@ fn source_catalog_mapping_readiness_blocks_one_off_usage_scope_for_canonical_gat
             "OrderBookDelta",
             "repo://synthetic/order-book-delta-catalog-proof.json",
         )]),
+        claim_evidence_refs: BTreeMap::new(),
         current_bte_status: "accepted".to_string(),
         parquet_catalog_status: "proven".to_string(),
     }];
@@ -191,6 +199,7 @@ fn source_catalog_mapping_readiness_blocks_one_off_usage_scope_for_canonical_gat
         source_binding: "synthetic-book-deltas",
         required_table_family: "order_book_snapshot_deltas",
         required_nt_data_types: vec!["OrderBookDelta".to_string()],
+        required_claim_evidence_refs: Vec::new(),
         allowed_current_bte_statuses: vec!["accepted".to_string()],
         allowed_parquet_catalog_statuses: vec!["proven".to_string()],
         allowed_usage_scopes: vec![SourceProofUsageScope::CanonicalBackfillInput],
@@ -206,6 +215,100 @@ fn source_catalog_mapping_readiness_blocks_one_off_usage_scope_for_canonical_gat
         report
             .blockers
             .contains(&SourceCatalogMappingReadinessBlocker::UsageScopeNotAllowed)
+    );
+}
+
+#[test]
+fn source_catalog_mapping_readiness_blocks_missing_required_claim_evidence() {
+    let entries = vec![SourceCatalogMappingStatusEntry {
+        source_proof_id: Some("source-proof-synthetic-book-deltas".to_string()),
+        source_proof_version: Some(1),
+        source_binding: "synthetic-book-deltas".to_string(),
+        usage_scope: Some(SourceProofUsageScope::CanonicalBackfillInput),
+        table_family: "order_book_snapshot_deltas".to_string(),
+        candidate_nt_data_classes: vec!["OrderBookDelta".to_string()],
+        nt_data_class_evidence_refs: nt_data_class_evidence_refs([(
+            "OrderBookDelta",
+            "repo://synthetic/order-book-delta-catalog-proof.json",
+        )]),
+        claim_evidence_refs: BTreeMap::new(),
+        current_bte_status: "accepted".to_string(),
+        parquet_catalog_status: "proven".to_string(),
+    }];
+
+    let report = evaluate_source_catalog_mapping_readiness(SourceCatalogMappingReadinessInput {
+        readiness_id: "synthetic-catalog-mapping",
+        catalog_mapping_evaluation_hash: "synthetic-evaluation-hash",
+        source_sample_mapping_status: &entries,
+        source_proof_id: "source-proof-synthetic-book-deltas",
+        source_proof_version: 1,
+        source_binding: "synthetic-book-deltas",
+        required_table_family: "order_book_snapshot_deltas",
+        required_nt_data_types: vec!["OrderBookDelta".to_string()],
+        required_claim_evidence_refs: vec![
+            "repo://synthetic/dynamic-replay-policy.json".to_string(),
+        ],
+        allowed_current_bte_statuses: vec!["accepted".to_string()],
+        allowed_parquet_catalog_statuses: vec!["proven".to_string()],
+        allowed_usage_scopes: vec![SourceProofUsageScope::CanonicalBackfillInput],
+    });
+
+    assert_eq!(report.status, SourceCatalogMappingReadinessStatus::Blocked);
+    assert!(!report.nt_catalog_mapping_proven);
+    assert!(
+        report
+            .blockers
+            .contains(&SourceCatalogMappingReadinessBlocker::RequiredClaimEvidenceMissing)
+    );
+}
+
+#[test]
+fn source_catalog_mapping_readiness_accepts_required_claim_evidence_from_mapping() {
+    let entries = vec![SourceCatalogMappingStatusEntry {
+        source_proof_id: Some("source-proof-synthetic-book-deltas".to_string()),
+        source_proof_version: Some(1),
+        source_binding: "synthetic-book-deltas".to_string(),
+        usage_scope: Some(SourceProofUsageScope::CanonicalBackfillInput),
+        table_family: "order_book_snapshot_deltas".to_string(),
+        candidate_nt_data_classes: vec!["OrderBookDelta".to_string()],
+        nt_data_class_evidence_refs: nt_data_class_evidence_refs([(
+            "OrderBookDelta",
+            "repo://synthetic/order-book-delta-catalog-proof.json",
+        )]),
+        claim_evidence_refs: claim_evidence_refs([(
+            "dynamic_replay_policy",
+            "repo://synthetic/dynamic-replay-policy.json",
+        )]),
+        current_bte_status: "accepted".to_string(),
+        parquet_catalog_status: "proven".to_string(),
+    }];
+
+    let report = evaluate_source_catalog_mapping_readiness(SourceCatalogMappingReadinessInput {
+        readiness_id: "synthetic-catalog-mapping",
+        catalog_mapping_evaluation_hash: "synthetic-evaluation-hash",
+        source_sample_mapping_status: &entries,
+        source_proof_id: "source-proof-synthetic-book-deltas",
+        source_proof_version: 1,
+        source_binding: "synthetic-book-deltas",
+        required_table_family: "order_book_snapshot_deltas",
+        required_nt_data_types: vec!["OrderBookDelta".to_string()],
+        required_claim_evidence_refs: vec![
+            "repo://synthetic/dynamic-replay-policy.json".to_string(),
+        ],
+        allowed_current_bte_statuses: vec!["accepted".to_string()],
+        allowed_parquet_catalog_statuses: vec!["proven".to_string()],
+        allowed_usage_scopes: vec![SourceProofUsageScope::CanonicalBackfillInput],
+    });
+
+    assert_eq!(report.status, SourceCatalogMappingReadinessStatus::Ready);
+    assert!(report.nt_catalog_mapping_proven);
+    assert_eq!(
+        report
+            .observed_claim_evidence_refs
+            .get("dynamic_replay_policy"),
+        Some(&vec![
+            "repo://synthetic/dynamic-replay-policy.json".to_string()
+        ])
     );
 }
 
@@ -232,6 +335,9 @@ fn source_catalog_mapping_readiness_writer_reads_evaluation_and_writes_idempoten
       "nt_data_class_evidence_refs": {
         "TradeTick": ["repo://synthetic/trade-tick-catalog-proof.json"]
       },
+      "claim_evidence_refs": {
+        "no_dynamic_replay_required": ["repo://synthetic/no-dynamic-replay-required.json"]
+      },
       "current_bte_status": "accepted",
       "parquet_catalog_status": "proven",
       "decision": "synthetic evidence"
@@ -251,6 +357,7 @@ source_proof_version = 1
 source_binding = "synthetic-native-trades"
 required_table_family = "trades"
 required_nt_data_types = ["TradeTick"]
+required_claim_evidence_refs = ["repo://synthetic/no-dynamic-replay-required.json"]
 allowed_current_bte_statuses = ["accepted"]
 allowed_parquet_catalog_statuses = ["proven"]
 allowed_usage_scopes = ["canonical_backfill_input"]
@@ -285,6 +392,7 @@ fn accepted_mapping_entry() -> SourceCatalogMappingStatusEntry {
             "TradeTick",
             "repo://synthetic/trade-tick-catalog-proof.json",
         )]),
+        claim_evidence_refs: BTreeMap::new(),
         current_bte_status: "accepted".to_string(),
         parquet_catalog_status: "proven".to_string(),
     }
@@ -296,5 +404,14 @@ fn nt_data_class_evidence_refs<const N: usize>(
     entries
         .into_iter()
         .map(|(data_type, evidence_ref)| (data_type.to_string(), vec![evidence_ref.to_string()]))
+        .collect()
+}
+
+fn claim_evidence_refs<const N: usize>(
+    entries: [(&str, &str); N],
+) -> BTreeMap<String, Vec<String>> {
+    entries
+        .into_iter()
+        .map(|(claim_key, evidence_ref)| (claim_key.to_string(), vec![evidence_ref.to_string()]))
         .collect()
 }

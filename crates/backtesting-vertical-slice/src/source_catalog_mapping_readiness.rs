@@ -34,6 +34,8 @@ pub struct SourceCatalogMappingReadinessSpec {
     pub source_binding: String,
     pub required_table_family: String,
     pub required_nt_data_types: Vec<String>,
+    #[serde(default)]
+    pub required_claim_evidence_refs: Vec<String>,
     pub allowed_current_bte_statuses: Vec<String>,
     pub allowed_parquet_catalog_statuses: Vec<String>,
     pub allowed_usage_scopes: Vec<SourceProofUsageScope>,
@@ -62,6 +64,7 @@ pub enum SourceCatalogMappingReadinessBlocker {
     TableFamilyMismatch,
     RequiredNtDataTypeMissing,
     RequiredNtDataTypeEvidenceMissing,
+    RequiredClaimEvidenceMissing,
     SourceProofMismatch,
     UsageScopeMissing,
     UsageScopeNotAllowed,
@@ -81,6 +84,8 @@ pub struct SourceCatalogMappingReadinessReport {
     pub source_binding: String,
     pub required_table_family: String,
     pub required_nt_data_types: Vec<String>,
+    #[serde(default)]
+    pub required_claim_evidence_refs: Vec<String>,
     pub allowed_current_bte_statuses: Vec<String>,
     pub allowed_parquet_catalog_statuses: Vec<String>,
     pub allowed_usage_scopes: Vec<SourceProofUsageScope>,
@@ -91,6 +96,8 @@ pub struct SourceCatalogMappingReadinessReport {
     pub observed_usage_scope: Option<SourceProofUsageScope>,
     pub observed_nt_data_types: Vec<String>,
     pub observed_nt_data_type_evidence_refs: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub observed_claim_evidence_refs: BTreeMap<String, Vec<String>>,
     pub observed_current_bte_status: Option<String>,
     pub observed_parquet_catalog_status: Option<String>,
     pub nt_catalog_mapping_proven: bool,
@@ -110,6 +117,8 @@ pub struct SourceCatalogMappingStatusEntry {
     pub candidate_nt_data_classes: Vec<String>,
     #[serde(default)]
     pub nt_data_class_evidence_refs: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub claim_evidence_refs: BTreeMap<String, Vec<String>>,
     pub current_bte_status: String,
     pub parquet_catalog_status: String,
 }
@@ -130,6 +139,7 @@ pub struct SourceCatalogMappingReadinessInput<'a> {
     pub source_binding: &'a str,
     pub required_table_family: &'a str,
     pub required_nt_data_types: Vec<String>,
+    pub required_claim_evidence_refs: Vec<String>,
     pub allowed_current_bte_statuses: Vec<String>,
     pub allowed_parquet_catalog_statuses: Vec<String>,
     pub allowed_usage_scopes: Vec<SourceProofUsageScope>,
@@ -204,6 +214,7 @@ pub fn evaluate_source_catalog_mapping_readiness(
     let source_binding = input.source_binding.to_string();
     let required_table_family = input.required_table_family.to_string();
     let required_nt_data_types = input.required_nt_data_types;
+    let required_claim_evidence_refs = input.required_claim_evidence_refs;
     let allowed_current_bte_statuses = input.allowed_current_bte_statuses;
     let allowed_parquet_catalog_statuses = input.allowed_parquet_catalog_statuses;
     let allowed_usage_scopes = input.allowed_usage_scopes;
@@ -212,6 +223,11 @@ pub fn evaluate_source_catalog_mapping_readiness(
     let source_binding_trimmed = source_binding.trim();
     let required_table_family_trimmed = required_table_family.trim();
     let required_nt_data_type_values = required_nt_data_types
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let required_claim_evidence_ref_values = required_claim_evidence_refs
         .iter()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
@@ -250,6 +266,9 @@ pub fn evaluate_source_catalog_mapping_readiness(
     }
     if required_nt_data_types.is_empty() {
         blockers.push(SourceCatalogMappingReadinessBlocker::EmptyRequiredNtDataTypes);
+    }
+    if required_claim_evidence_ref_values.len() != required_claim_evidence_refs.len() {
+        blockers.push(SourceCatalogMappingReadinessBlocker::RequiredClaimEvidenceMissing);
     }
     if allowed_current_bte_statuses
         .iter()
@@ -319,6 +338,16 @@ pub fn evaluate_source_catalog_mapping_readiness(
         }) {
             blockers.push(SourceCatalogMappingReadinessBlocker::RequiredNtDataTypeEvidenceMissing);
         }
+        if required_claim_evidence_ref_values.iter().any(|required| {
+            !entry
+                .claim_evidence_refs
+                .values()
+                .flat_map(|refs| refs.iter())
+                .map(|evidence_ref| evidence_ref.trim())
+                .any(|evidence_ref| evidence_ref == *required)
+        }) {
+            blockers.push(SourceCatalogMappingReadinessBlocker::RequiredClaimEvidenceMissing);
+        }
         if entry.source_proof_id.as_deref().map(str::trim) != Some(source_proof_id_trimmed)
             || entry.source_proof_version != Some(source_proof_version)
         {
@@ -362,6 +391,7 @@ pub fn evaluate_source_catalog_mapping_readiness(
         source_binding,
         required_table_family,
         required_nt_data_types,
+        required_claim_evidence_refs,
         allowed_current_bte_statuses,
         allowed_parquet_catalog_statuses,
         allowed_usage_scopes,
@@ -375,6 +405,9 @@ pub fn evaluate_source_catalog_mapping_readiness(
             .unwrap_or_default(),
         observed_nt_data_type_evidence_refs: observed_entry
             .map(|entry| entry.nt_data_class_evidence_refs.clone())
+            .unwrap_or_default(),
+        observed_claim_evidence_refs: observed_entry
+            .map(|entry| entry.claim_evidence_refs.clone())
             .unwrap_or_default(),
         observed_current_bte_status: observed_entry.map(|entry| entry.current_bte_status.clone()),
         observed_parquet_catalog_status: observed_entry
@@ -425,6 +458,7 @@ pub fn write_source_catalog_mapping_readiness_report_from_spec_file(
         source_binding: &spec.source_binding,
         required_table_family: &spec.required_table_family,
         required_nt_data_types: spec.required_nt_data_types,
+        required_claim_evidence_refs: spec.required_claim_evidence_refs,
         allowed_current_bte_statuses: spec.allowed_current_bte_statuses,
         allowed_parquet_catalog_statuses: spec.allowed_parquet_catalog_statuses,
         allowed_usage_scopes: spec.allowed_usage_scopes,

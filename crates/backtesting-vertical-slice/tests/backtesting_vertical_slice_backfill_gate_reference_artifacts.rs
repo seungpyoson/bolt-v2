@@ -926,6 +926,9 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
             required_nt_data_types: expected_catalog_mapping_readiness
                 .required_nt_data_types
                 .clone(),
+            required_claim_evidence_refs: expected_catalog_mapping_readiness
+                .required_claim_evidence_refs
+                .clone(),
             allowed_current_bte_statuses: expected_catalog_mapping_readiness
                 .allowed_current_bte_statuses
                 .clone(),
@@ -1802,6 +1805,9 @@ fn blocked_canonical_source_catalog_mapping_reference_artifact_matches_generic_e
             source_binding: &expected_blocked_readiness.source_binding,
             required_table_family: &expected_blocked_readiness.required_table_family,
             required_nt_data_types: expected_blocked_readiness.required_nt_data_types.clone(),
+            required_claim_evidence_refs: expected_blocked_readiness
+                .required_claim_evidence_refs
+                .clone(),
             allowed_current_bte_statuses: expected_blocked_readiness
                 .allowed_current_bte_statuses
                 .clone(),
@@ -3381,6 +3387,9 @@ fn assert_binance_gate_matches_generic_evaluators(gate_root: &Path, source_proof
             required_table_family: &expected_catalog_mapping_readiness.required_table_family,
             required_nt_data_types: expected_catalog_mapping_readiness
                 .required_nt_data_types
+                .clone(),
+            required_claim_evidence_refs: expected_catalog_mapping_readiness
+                .required_claim_evidence_refs
                 .clone(),
             allowed_current_bte_statuses: expected_catalog_mapping_readiness
                 .allowed_current_bte_statuses

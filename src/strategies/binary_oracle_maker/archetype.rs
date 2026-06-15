@@ -34,6 +34,7 @@ use crate::bolt_v3_providers::resolve_fee_provider;
 use crate::bolt_v3_strategy_registration::{
     BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
 };
+use crate::bolt_v3_trade_flow::SignedTradeFlowConfig;
 use crate::strategies::binary_oracle_maker::{BinaryOracleMakerBuilder, KEY};
 use crate::strategies::production_strategy_registry;
 use crate::strategies::registry::StrategyBuilder;
@@ -111,6 +112,9 @@ pub fn validate_strategy(
 /// - a zero retention window, sample cap, or classified-sample minimum means the
 ///   estimator can never warm or the buffer never retains a trade, so μ is never
 ///   produced;
+/// - a retention window so large its millisecond conversion (`window_secs × 1000`)
+///   overflows `u64` would silently saturate to a near-infinite window instead of
+///   the value the operator wrote;
 /// - a classified-sample minimum above the sample cap is unsatisfiable (the
 ///   buffer can never hold that many classified samples), so μ is never produced;
 /// - a zero staleness window marks every reading stale, blocking μ permanently;
@@ -123,6 +127,16 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
     if runtime.trade_flow_window_secs == 0 {
         errors.push(format!(
             "{context}: parameters.runtime.trade_flow_window_secs must be > 0 (a zero retention window holds no trades, so a μ can never be produced)"
+        ));
+    }
+    let trade_flow = SignedTradeFlowConfig {
+        window_secs: runtime.trade_flow_window_secs,
+        max_samples: runtime.trade_flow_max_samples,
+    };
+    if trade_flow.window_ms().is_none() {
+        errors.push(format!(
+            "{context}: parameters.runtime.trade_flow_window_secs ({}) is too large: window_secs × 1000 overflows the u64 millisecond retention window, which would silently saturate instead of meaning the configured window",
+            runtime.trade_flow_window_secs
         ));
     }
     if runtime.trade_flow_max_samples == 0 {
@@ -364,6 +378,23 @@ mod tests {
             errors
                 .iter()
                 .any(|error| error.contains("trade_flow_window_secs")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_window_secs_that_overflows_millis() {
+        // A window_secs whose × 1000 millisecond conversion overflows u64 would
+        // silently saturate the retention window instead of meaning the configured
+        // value; the go-live gate must reject it loud.
+        let errors = bounds_errors(RuntimeParametersBlock {
+            trade_flow_window_secs: u64::MAX,
+            ..valid_runtime()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("overflows the u64 millisecond")),
             "{errors:?}"
         );
     }

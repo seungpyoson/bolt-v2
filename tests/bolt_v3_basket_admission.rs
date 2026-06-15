@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bolt_v2::{
@@ -664,6 +665,7 @@ fn submit_state(
 fn position_sized_submit_state(
     writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> BoltV3SubmitAdmissionState {
+    let observed_at_ns = position_sizing_fixture_observed_at_ns();
     BoltV3SubmitAdmissionState::new_with_position_sizer(
         writer,
         BoltV3SubmitPositionSizerConfig {
@@ -673,11 +675,11 @@ fn position_sized_submit_state(
             collateral_currency: "USDC".to_string(),
             capital_pool: CapitalPoolSnapshot {
                 source: "basket-admission-test".to_string(),
-                observed_at_ns: 1_000,
+                observed_at_ns,
                 pool_id: "polymarket-pool".to_string(),
                 max_pool_liability: dec!(10),
                 committed_liability: Decimal::ZERO,
-                max_snapshot_age_ns: 1_000,
+                max_snapshot_age_ns: position_sizing_fixture_max_snapshot_age_ns(),
             },
             policy: SizingPolicy {
                 min_remaining_pool_balance: None,
@@ -695,13 +697,29 @@ fn seed_position_sizer_for_claims(
     submit_gate: &BoltV3SubmitAdmissionState,
     claims: &[BoltV3BasketSubmitSlotClaim],
 ) {
-    submit_gate.update_position_sizing_nt_components(position_sizing_components(claims, 1_000));
-    let rebuild = submit_gate.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+    let observed_at_ns = position_sizing_fixture_observed_at_ns();
+    submit_gate
+        .update_position_sizing_nt_components(position_sizing_components(claims, observed_at_ns));
+    let rebuild =
+        submit_gate.rebuild_position_sizing_open_order_reservations(Vec::new(), observed_at_ns);
     assert!(
         rebuild.accepted,
         "empty open-order rebuild should reconcile the test position sizer"
     );
     assert_eq!(submit_gate.position_sizer_reconciled(), Some(true));
+}
+
+fn position_sizing_fixture_observed_at_ns() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test system time should be after UNIX_EPOCH")
+        .as_nanos();
+    u64::try_from(nanos).expect("test UNIX timestamp should fit in u64")
+}
+
+fn position_sizing_fixture_max_snapshot_age_ns() -> u64 {
+    u64::try_from(Duration::from_secs(60).as_nanos())
+        .expect("fixture freshness horizon should fit in u64")
 }
 
 fn basket_request<'a>(

@@ -1,40 +1,24 @@
-# Verification Feedback Lanes Plan
+# Rust Probe Agent Debug Lane Plan
 
 Date: 2026-06-15
 
-## Problem Map
+Tracking issue: #741
 
-The current verification workflow has four separate problems. They must stay separate because they have different root causes and fixes.
+Epic: #333
 
-Tracking:
+## Scope
 
-- Epic: #333, CI wall-time and topology cleanup.
-- Problem 1: #739, local source-fence verifier lanes serialize independent checks.
-- Problem 2: #740, add a lane-aware scheduler for local verification commands.
-- Problem 3: #741, harden Rust Probe into a safe agent-facing remote debug lane.
-- Problem 4: #742, clarify agent-facing verification lane routing.
+This plan is only for #741: harden the existing manual Rust Probe into a safe agent-facing remote Rust debugging command.
 
-### Problem 1: Local verifier gates are over-serialized
+It does not solve:
 
-Symptom:
+- #739, local source-fence verifier lane over-serialization;
+- #740, missing lane-aware local verification scheduler;
+- #742, verification lane routing and guidance.
 
-```text
-local lane lock is currently held by another verifier
-verify_bolt_v3_runtime_literals.py
-checks are queued rather than running concurrently
-```
+Those issues are related, but this PR should stay scoped to the Rust Probe implementation plan.
 
-Root cause: every governed `scripts/verify_*.py` and `scripts/test_*.py` entry point acquires one repo-wide machine lock through `[local_lane_policy]`. `just source-fence-static` runs many of those governed scripts in sequence, so separate agent sessions can queue behind unrelated local verifier work.
-
-This is not a Rust compile problem. Rust Probe does not fix this.
-
-### Problem 2: Agents have no lane-aware local verification scheduler
-
-Agents can launch overlapping local checks such as `just fmt-check`, `just source-fence-static`, and `just ci-lint-workflow` at the same time. The repo only serializes them after they start competing for the same lane lock.
-
-Root cause: the repo has a lane lock, but no top-level scheduler that turns overlapping local verification requests into one ordered, deduplicated plan.
-
-### Problem 3: Rust compile/test feedback lacks a safe agent-facing remote command
+## Current State
 
 The repo already has the manual Rust Probe primitive:
 
@@ -42,30 +26,14 @@ The repo already has the manual Rust Probe primitive:
 - `.github/scripts/run-rust-probe.sh`
 - `scripts/test_run_rust_probe.py`
 
-But it is not yet a safe agent-facing lane:
+But it is not yet safe as an agent-facing command:
 
-- no `just rust-probe` recipe;
-- no `scripts/rust_verification.py rust-probe` subcommand;
+- there is no `just rust-probe` recipe;
+- there is no `scripts/rust_verification.py rust-probe` subcommand;
 - probe workflow concurrency is still global;
 - `ref` defaults to `main`;
 - the runner does not assert the checked-out SHA;
 - there is no wrapper-owned run correlation, active-run cap, timeout policy, or refusal-text integration.
-
-### Problem 4: Agent-facing verification lane routing is unclear
-
-Agents do not have a clear routing decision tree for verification symptoms. Local compile-heavy Rust refusals point directly toward `just verify-remote`, while local lane-lock symptoms and Rust compile/test debugging need different middle lanes. This makes agents confuse local Python/source-fence queues with Rust compile/test feedback, launch competing local gates, or use full CI as a discovery mechanism.
-
-Expected routing:
-
-- local source-fence/Python verifier queueing -> local verifier scheduler work;
-- targeted Rust compile/test debugging -> hardened Rust Probe wrapper;
-- merge-proof evidence -> `just verify-remote`.
-
-## Scope Of This Plan
-
-This plan fixes Problem 3 only: turn the existing manual Rust Probe into a safe remote Rust debugging command for agents.
-
-It does not fix Problem 1 or Problem 2. Those require a separate local verifier orchestrator plan. It enables part of the eventual Problem 4 routing fix by creating the Rust debug lane that guidance can safely point to.
 
 ## Invariants
 
@@ -75,7 +43,7 @@ It does not fix Problem 1 or Problem 2. Those require a separate local verifier 
 - Keep Rust Probe debugging-only. A green probe must never satisfy `gate`, `verify-remote`, branch protection, or merge readiness.
 - Do not create a second Rust feedback workflow for v0.
 
-## Reviewed Rust Probe v0 Design
+## Reviewed v0 Design
 
 ### Reuse The Existing Workflow
 

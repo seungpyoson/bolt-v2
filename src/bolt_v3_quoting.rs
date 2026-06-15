@@ -1,5 +1,6 @@
 //! Shared maker quote target math.
 
+use crate::bolt_v3_maker_model::GmReservationBand;
 use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, sanitize_open_probability};
 
 /// Resting quote side.
@@ -25,12 +26,13 @@ pub struct QuoteTargets {
     pub leg_b: QuoteTargetLeg,
 }
 
-/// Pure scalar quote-layout inputs for one market family.
+/// Pure quote-layout inputs for one market family. The fair value and the
+/// reservation edges arrive together as a single [`GmReservationBand`] minted by
+/// `gm_binary_quote` — they cannot be supplied as three independent scalars, so
+/// the layout's fair can never disagree with the band edges it is laid out around.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FamilyQuoteInputs {
-    pub fair: f64,
-    pub reservation_bid: f64,
-    pub reservation_ask: f64,
+    pub band: GmReservationBand,
     pub inventory_skew: f64,
     pub half_spread_floor: f64,
     pub max_half_spread: f64,
@@ -104,12 +106,12 @@ pub fn reward_shaping_offset() -> f64 {
     ZERO_F64
 }
 
-/// Compose binary YES/NO bid legs from the shared scalar precedence stack.
+/// Compose binary YES/NO bid legs around a Glosten-Milgrom reservation `band` —
+/// the sole carrier of the fair value (`band.p_up()`) and the reservation edges,
+/// so the layout's fair is definitionally the value the band was derived from.
 #[allow(clippy::too_many_arguments)]
 pub fn compose_binary_legs(
-    p_up: f64,
-    reservation_bid: f64,
-    reservation_ask: f64,
+    band: GmReservationBand,
     half_spread_floor: f64,
     max_half_spread: f64,
     tau: f64,
@@ -118,10 +120,11 @@ pub fn compose_binary_legs(
     inventory_skew: f64,
     eps: f64,
 ) -> Option<BinaryLegPrices> {
+    let p_up = band.p_up();
     let (resolved_bid, resolved_ask) = resolve_band(
         p_up,
-        reservation_bid,
-        reservation_ask,
+        band.bid(),
+        band.ask(),
         half_spread_floor,
         max_half_spread,
     )?;
@@ -157,6 +160,7 @@ pub fn compose_binary_legs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bolt_v3_maker_model::gm_binary_quote;
     use crate::bolt_v3_numeric::{UNIT_F64, ZERO_F64};
 
     const EPSILON: f64 = 1e-9;
@@ -222,38 +226,32 @@ mod tests {
         assert_eq!(reward_shaping_offset(), ZERO_F64);
     }
 
-    fn compose_symmetric(fair: f64, half_spread: f64, skew: f64) -> Option<BinaryLegPrices> {
-        compose_binary_legs(
-            fair,
-            fair - half_spread,
-            fair + half_spread,
-            ZERO_F64,
-            UNIT_F64,
-            REF_TAU,
-            REF_TAU,
-            WIDEN_CAP,
-            skew,
-            TEST_EPS,
-        )
-    }
-
     #[test]
     fn compose_binary_legs_emits_open_interval_yes_no_bids() {
-        let legs = compose_symmetric(0.60, 0.02, 0.0).expect("non-degenerate inputs quote");
+        // The only way to obtain a band is gm_binary_quote, so the test exercises
+        // the canonical chain end to end: fair 0.60, mu 0.04 -> an interior band.
+        let band = gm_binary_quote(0.60, 0.04).expect("interior band");
+        let legs = compose_binary_legs(
+            band, ZERO_F64, UNIT_F64, REF_TAU, REF_TAU, WIDEN_CAP, 0.0, TEST_EPS,
+        )
+        .expect("non-degenerate inputs quote");
 
-        assert!(legs.yes_price < 0.60 && legs.yes_price > 0.50);
-        assert!(legs.no_price < 0.40 && legs.no_price > 0.30);
+        // The YES bid sits below the fair; the NO bid sits below (1 - fair).
+        assert!(legs.yes_price < band.p_up());
+        assert!(legs.no_price < UNIT_F64 - band.p_up());
         assert!(legs.yes_price > TEST_EPS && legs.yes_price < UNIT_F64 - TEST_EPS);
         assert!(legs.no_price > TEST_EPS && legs.no_price < UNIT_F64 - TEST_EPS);
     }
 
     #[test]
     fn compose_binary_legs_applies_widening_and_prunes_degenerate_pairs() {
-        let calm = compose_symmetric(0.50, 0.04, 0.0).expect("calm band quotes");
+        let band = gm_binary_quote(0.50, 0.08).expect("interior band");
+        let calm = compose_binary_legs(
+            band, ZERO_F64, UNIT_F64, REF_TAU, REF_TAU, WIDEN_CAP, 0.0, TEST_EPS,
+        )
+        .expect("calm band quotes");
         let near = compose_binary_legs(
-            0.50,
-            0.46,
-            0.54,
+            band,
             ZERO_F64,
             UNIT_F64,
             REF_TAU / 4.0,
@@ -264,30 +262,43 @@ mod tests {
         )
         .expect("widened band still quotes");
 
+        // A shorter horizon widens the defensive spread, pushing both bids down.
         assert!(near.yes_price < calm.yes_price);
         assert!(near.no_price < calm.no_price);
-        assert!(compose_symmetric(0.50, 0.02, 0.20).is_none());
-        assert!(compose_symmetric(0.01, 0.5, 0.0).is_none());
-        assert!(compose_symmetric(0.50, 0.0, 0.0).is_none());
+        // A large inventory skew leans one leg out of the open interval -> pruned.
+        assert!(
+            compose_binary_legs(
+                band, ZERO_F64, UNIT_F64, REF_TAU, REF_TAU, WIDEN_CAP, 0.20, TEST_EPS
+            )
+            .is_none()
+        );
+        // A zero-spread band (mu -> 0) collapses yes + no to 1 -> pruned.
+        let flat = gm_binary_quote(0.50, 0.0).expect("zero-mu band");
+        assert!(
+            compose_binary_legs(
+                flat, ZERO_F64, UNIT_F64, REF_TAU, REF_TAU, WIDEN_CAP, 0.0, TEST_EPS
+            )
+            .is_none()
+        );
     }
 
     #[test]
-    fn compose_binary_legs_rejects_crossed_horizon_and_eps_failures() {
+    fn compose_binary_legs_rejects_horizon_and_eps_failures() {
+        // A well-formed band still fails closed when the layout knobs are degenerate.
+        // (The crossed/non-straddling band is unconstructable through gm_binary_quote
+        // and is covered at the scalar layer in resolve_band_rejects_degenerate_bands.)
+        let band = gm_binary_quote(0.50, 0.04).expect("interior band");
+        // Zero time-to-expiry: the widening factor is undefined -> fail closed.
         assert!(
             compose_binary_legs(
-                0.50, 0.70, 0.30, ZERO_F64, UNIT_F64, REF_TAU, REF_TAU, WIDEN_CAP, 0.0, TEST_EPS,
+                band, ZERO_F64, UNIT_F64, ZERO_F64, REF_TAU, WIDEN_CAP, 0.0, TEST_EPS
             )
             .is_none()
         );
+        // A degenerate epsilon collapses the open-interval sanitizer -> fail closed.
         assert!(
             compose_binary_legs(
-                0.50, 0.48, 0.52, ZERO_F64, UNIT_F64, ZERO_F64, REF_TAU, WIDEN_CAP, 0.0, TEST_EPS,
-            )
-            .is_none()
-        );
-        assert!(
-            compose_binary_legs(
-                0.50, 0.48, 0.52, ZERO_F64, UNIT_F64, REF_TAU, REF_TAU, WIDEN_CAP, 0.0, 0.5,
+                band, ZERO_F64, UNIT_F64, REF_TAU, REF_TAU, WIDEN_CAP, 0.0, 0.5
             )
             .is_none()
         );

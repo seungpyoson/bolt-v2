@@ -203,9 +203,17 @@ mod tests {
     const NOW: u64 = 1_000;
 
     fn pair(submit_cap: u64, rest_cap: u64) -> RequoteBudgetPair {
+        pair_with_interval(submit_cap, rest_cap, 0)
+    }
+
+    fn pair_with_interval(
+        submit_cap: u64,
+        rest_cap: u64,
+        min_interval_ms: u64,
+    ) -> RequoteBudgetPair {
         RequoteBudgetPair::new(
-            RequoteBudget::new(submit_cap, WINDOW_MS, 0),
-            RequoteBudget::new(rest_cap, WINDOW_MS, 0),
+            RequoteBudget::new(submit_cap, WINDOW_MS, min_interval_ms),
+            RequoteBudget::new(rest_cap, WINDOW_MS, min_interval_ms),
         )
     }
 
@@ -257,6 +265,38 @@ mod tests {
         );
         assert_eq!(budget.submit_commands_in_window(), 2);
         assert_eq!(budget.rest_cost_in_window(), 2);
+    }
+
+    #[test]
+    fn both_binary_legs_quote_in_one_cycle_under_a_nonzero_min_interval() {
+        // Both legs are driven at the SAME now_ms through the SAME shared budget. A
+        // budget whose min-interval throttle did not exempt co-incident ticks would
+        // admit the YES leg's submit, advance last_emit to now, then refuse the NO
+        // leg's submit at the same now (delta 0 < interval) — quoting only one side
+        // of the binary market every cycle. With the same-tick exemption both legs
+        // must submit. This is the driver-level differential guard for that fix.
+        let mut market = MarketQuote::new(false);
+        let mut budget = pair_with_interval(4, 8, 500);
+        let decision = drive_binary_quote_set(&mut market, &mut budget, fresh_input(1_000.0));
+        assert_eq!(
+            decision.yes.control.action,
+            Some(MarketAction::Leg {
+                leg: Leg::Yes,
+                action: LifecycleAction::Submit,
+            })
+        );
+        assert_eq!(
+            decision.no.control.action,
+            Some(MarketAction::Leg {
+                leg: Leg::No,
+                action: LifecycleAction::Submit,
+            }),
+            "the second binary leg must not be throttled by the first leg's same-tick emit"
+        );
+        assert_eq!(budget.submit_commands_in_window(), 2);
+        assert_eq!(budget.rest_cost_in_window(), 2);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::SubmitPending);
+        assert_eq!(market.leg_state(Leg::No), LegState::SubmitPending);
     }
 
     #[test]

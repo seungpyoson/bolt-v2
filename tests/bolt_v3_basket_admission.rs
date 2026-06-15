@@ -133,6 +133,18 @@ fn basket_admission_rejects_stale_or_non_admissible_scanner_and_group_evidence()
         BoltV3BasketAdmissionError::StaleScannerEvidence,
     );
 
+    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 2_001);
+    assert_basket_rejects(
+        "future scanner evidence",
+        basket_request(
+            "basket-future-scan",
+            &group,
+            &scan,
+            entry_claims(&group, dec!(0.9)),
+        ),
+        BoltV3BasketAdmissionError::StaleScannerEvidence,
+    );
+
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
     assert_basket_rejects(
         "stale submit recheck",
@@ -143,6 +155,19 @@ fn basket_admission_rejects_stale_or_non_admissible_scanner_and_group_evidence()
             entry_claims(&group, dec!(0.9)),
         )
         .with_submit_recheck_observed_unix_ms(1_499),
+        BoltV3BasketAdmissionError::StaleSubmitRecheck,
+    );
+
+    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
+    assert_basket_rejects(
+        "future submit recheck",
+        basket_request(
+            "basket-future-submit",
+            &group,
+            &scan,
+            entry_claims(&group, dec!(0.9)),
+        )
+        .with_submit_recheck_observed_unix_ms(2_001),
         BoltV3BasketAdmissionError::StaleSubmitRecheck,
     );
 

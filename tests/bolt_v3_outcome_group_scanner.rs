@@ -187,6 +187,24 @@ fn scanner_blocks_insufficient_depth_stale_books_and_missing_timestamps() {
         Some(OutcomeGroupScanBlockReason::StaleBook)
     );
 
+    let future_timestamp = scan_outcome_group_candidate(scan_input(
+        &group,
+        fees(&group, dec!(0)),
+        vec![candidate("home-positive", dec!(0.4))],
+        books([book(
+            "home-positive",
+            "0.39",
+            "20",
+            "0.40",
+            "20",
+            Some(1_251),
+        )]),
+    ));
+    assert_eq!(
+        future_timestamp.block_reason,
+        Some(OutcomeGroupScanBlockReason::StaleBook)
+    );
+
     let missing_timestamp = scan_outcome_group_candidate(scan_input(
         &group,
         fees(&group, dec!(0)),

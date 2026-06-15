@@ -114,6 +114,47 @@ fn same_venue_submit_uses_nt_order_list_contract_and_persists_client_ids_before_
 }
 
 #[test]
+fn same_venue_submit_rejects_duplicate_leg_intents_before_mutating_state() {
+    let mut basket = reserved_basket();
+    let mut intents = leg_intents();
+    intents[1].leg_id = "YES".to_string();
+    intents[1].client_order_id = "COID-YES-DUPLICATE".to_string();
+
+    let error = basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-DUPLICATE",
+            intents,
+        )
+        .expect_err("duplicate leg intents must reject before submit mutation");
+
+    assert_eq!(error.to_string(), "basket execution leg shape mismatch");
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Reserved);
+    assert_eq!(basket.order_list_id(), None);
+    assert!(basket.client_order_ids().is_empty());
+}
+
+#[test]
+fn same_venue_submit_rejects_mismatched_leg_intents_before_mutating_state() {
+    let mut basket = reserved_basket();
+    let mut intents = leg_intents();
+    intents[0].instrument_id = "WRONG.POLYMARKET".to_string();
+
+    let error = basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-MISMATCH",
+            intents,
+        )
+        .expect_err("intent instrument must match the reserved basket leg");
+
+    assert_eq!(error.to_string(), "basket execution leg shape mismatch");
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Reserved);
+    assert_eq!(basket.order_list_id(), None);
+    assert!(basket.client_order_ids().is_empty());
+}
+
+#[test]
 fn audited_submit_mode_without_nt_order_list_is_rejected_without_fallback() {
     let mut basket = reserved_basket();
 

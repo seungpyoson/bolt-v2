@@ -643,6 +643,12 @@ fn complete_set_runtime_mapping_produces_strategy_shell_raw_config() {
     );
     assert_eq!(
         table
+            .get("market_exit_reduce_only")
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        table
             .get("max_open_baskets")
             .and_then(|value| value.as_integer()),
         Some(1)
@@ -743,6 +749,7 @@ manage_gtd_expiry = false
 manage_stop = false
 market_exit_interval_ms = 100
 market_exit_max_attempts = 100
+market_exit_reduce_only = true
 log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true

@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use bolt_v2::{
     bolt_v3_config::GateProviderFreshnessBlock,
     bolt_v3_outcome_group_hyperliquid::{
-        HyperliquidHip4OutcomeGroupInput, normalize_hyperliquid_hip4_outcome_group,
+        HyperliquidHip4OutcomeGroupError, HyperliquidHip4OutcomeGroupInput,
+        normalize_hyperliquid_hip4_outcome_group,
     },
     bolt_v3_outcome_group_sources::{
         OutcomeGroupNonStandardPayoutLegBlock, OutcomeGroupNonStandardTerminalPayoutBlock,
@@ -147,6 +148,17 @@ fn hyperliquid_normalizer_rejects_standalone_outcomes_without_parent_question() 
     .expect_err("HIP-4 source needs structured OutcomeQuestion metadata");
 
     assert!(error.is_missing_parent_question());
+}
+
+#[test]
+fn hyperliquid_normalizer_rejects_future_metadata_beyond_configured_clock_skew() {
+    let source = hip4_source();
+    let mut input = valid_input(&source);
+    input.metadata_loaded_unix_ms = 2_251;
+    let error = normalize_hyperliquid_hip4_outcome_group(input)
+        .expect_err("HIP-4 metadata beyond configured clock skew must reject");
+
+    assert_eq!(error, HyperliquidHip4OutcomeGroupError::StaleMetadata);
 }
 
 #[test]

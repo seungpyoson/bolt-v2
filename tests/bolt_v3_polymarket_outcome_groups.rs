@@ -213,6 +213,12 @@ fn polymarket_normalizer_rejects_missing_void_policy_and_stale_metadata() {
     let error = normalize_polymarket_outcome_group(stale)
         .expect_err("Gamma metadata older than metadata TTL must reject");
     assert!(error.is_stale_metadata());
+
+    let mut future = valid_input(&source);
+    future.metadata_loaded_unix_ms = 2_251;
+    let error = normalize_polymarket_outcome_group(future)
+        .expect_err("Gamma metadata beyond configured clock skew must reject");
+    assert!(error.is_stale_metadata());
 }
 
 fn valid_input(source: &OutcomeGroupSourceConfig) -> PolymarketOutcomeGroupInput<'_> {

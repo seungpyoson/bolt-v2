@@ -49,6 +49,16 @@ pub struct QuoteSetDecision {
     pub no: QuoteSetLegDecision,
 }
 
+/// Drive both binary legs from ONE market event.
+///
+/// Both legs are co-quoted at a single `input.now_ms` — one logical quote tick.
+/// That single timestamp is the precondition for the requote budget's same-tick
+/// min-interval exemption: the two legs reserve from the shared budget at the
+/// same clock, so the budget must not throttle the second leg as if it were a
+/// distinct later tick. The single `now_ms` field structurally enforces the
+/// contract — there is no per-leg timestamp, so a caller cannot drive the two
+/// legs from two clocks through this driver. A strategy shell wiring this driver
+/// MUST preserve that contract: one market event in, one `now_ms`, both legs out.
 pub fn drive_binary_quote_set(
     market: &mut MarketQuote,
     budget: &mut RequoteBudgetPair,
@@ -196,7 +206,7 @@ fn no_control_action() -> QuoteControlDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bolt_v3_quote_lifecycle::LegState;
+    use crate::bolt_v3_quote_lifecycle::{LegEvent, LegState};
     use crate::bolt_v3_requote_budget::RequoteBudget;
 
     const WINDOW_MS: u64 = 60_000;
@@ -322,5 +332,69 @@ mod tests {
         assert_eq!(budget.rest_cost_in_window(), 0);
         assert_eq!(market.leg_state(Leg::Yes), LegState::Idle);
         assert_eq!(market.leg_state(Leg::No), LegState::Idle);
+    }
+
+    #[test]
+    fn a_repricing_leg_and_a_fresh_leg_co_quote_at_one_tick_with_distinct_costs() {
+        // The steady-state cross-class same-tick path the fix must protect: the YES
+        // leg is already Resting and must reprice (cancel+resubmit = 1 submit + 2
+        // REST), while the NO leg is Idle and submits fresh (1 submit + 1 REST) —
+        // BOTH driven at the same now_ms through the SHARED pair. The YES cancel
+        // commits first and advances last_emit on both sub-budgets to now; the
+        // same-tick exemption is the only thing that then lets the NO submit through
+        // at the same tick. The asymmetric REST cost must accumulate to 3 in-window
+        // (2 from the reprice + 1 from the fresh submit) at one tick. A non-exempting
+        // gate would throttle the NO leg and strand one side of the binary market, so
+        // this is the driver-level differential guard for the cross-cost-class case.
+        let mut market = MarketQuote::new(false);
+        market.on_leg_event(
+            Leg::Yes,
+            LegEvent::QuoteTrigger {
+                requote_needed: true,
+            },
+        );
+        market.on_leg_event(Leg::Yes, LegEvent::Accepted);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::Resting);
+
+        let mut budget = pair_with_interval(4, 8, 500);
+        let input = QuoteSetInput {
+            targets: QuoteTargets {
+                leg_a: buy_leg(0.55),
+                leg_b: buy_leg(0.45),
+            },
+            yes_quantity: 1.0,
+            no_quantity: 1.0,
+            yes_resting_price: Some(0.40),
+            no_resting_price: None,
+            open_commitments: &[],
+            max_fee_bps: 0.0,
+            available_collateral: 1_000.0,
+            requote_threshold: 0.01,
+            eps: 1e-9,
+            now_ms: NOW,
+        };
+        let decision = drive_binary_quote_set(&mut market, &mut budget, input);
+
+        assert_eq!(
+            decision.yes.control.action,
+            Some(MarketAction::Leg {
+                leg: Leg::Yes,
+                action: LifecycleAction::Cancel,
+            })
+        );
+        assert_eq!(
+            decision.no.control.action,
+            Some(MarketAction::Leg {
+                leg: Leg::No,
+                action: LifecycleAction::Submit,
+            }),
+            "the fresh NO leg must not be throttled by the YES reprice's same-tick emit"
+        );
+        // 1 submit (reprice) + 1 submit (fresh) = 2 submit commands; 2 REST (reprice)
+        // + 1 REST (fresh) = 3 REST calls, all charged at a single tick.
+        assert_eq!(budget.submit_commands_in_window(), 2);
+        assert_eq!(budget.rest_cost_in_window(), 3);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::RequotePending);
+        assert_eq!(market.leg_state(Leg::No), LegState::SubmitPending);
     }
 }

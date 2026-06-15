@@ -314,4 +314,30 @@ mod tests {
         assert_eq!(budget.submit_commands_in_window(), 1);
         assert_eq!(budget.rest_cost_in_window(), 2);
     }
+
+    #[test]
+    fn the_market_wide_cancel_arm_fails_closed_and_charges_nothing() {
+        // reserve_action_budget's match is exhaustive over MarketAction, but the
+        // market-wide cancel variants never arrive here: on_leg_event only ever yields
+        // MarketAction::Leg, and CancelAllBothLegs / CancelAllOneSide originate in
+        // drain()/cancel_one_side(), outside this per-leg gate. The arm is therefore
+        // structurally unreachable; this pins its fail-closed contract so a future
+        // refactor that accidentally routed a market-wide cancel through this gate is
+        // REFUSED (charging and emitting nothing) rather than silently under-charging
+        // a multi-order cancel as a single REST call. The prior behavior charged one
+        // REST and allowed, so this test also fails against that pre-fix variant.
+        let mut budget = pair(8, 8);
+        assert!(!reserve_action_budget(
+            &mut budget,
+            NOW,
+            MarketAction::CancelAllBothLegs
+        ));
+        assert!(!reserve_action_budget(
+            &mut budget,
+            NOW,
+            MarketAction::CancelAllOneSide { leg: Leg::Yes }
+        ));
+        assert_eq!(budget.submit_commands_in_window(), 0);
+        assert_eq!(budget.rest_cost_in_window(), 0);
+    }
 }

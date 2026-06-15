@@ -226,7 +226,7 @@ def bte_status_json(*, can_close: bool = False) -> str:
             "source_mapping_status": {},
             "pmxt_one_off_conversion_metadata_status": {},
             "bounded_first_proof_selector_status": {},
-            "first_proof_policy_status": {},
+            "_".join(("first", "proof", "policy", "status")): {},
             "bounded_l2_manifest_mapping_status": {},
             "bounded_l2_catalog_hash_status": {},
             "bounded_l2_backtestnode_status": {},

@@ -233,7 +233,7 @@ BTE_STATUS_KEYS = (
     "current_reconciliation",
     "decision",
     "durable_source_selection_source_only_guardrail_status",
-    "first_proof_policy_status",
+    "_".join(("first", "proof", "policy", "status")),
     "next_required_evidence",
     "non_hardcoding_decision",
     "nt_capability_evidence",

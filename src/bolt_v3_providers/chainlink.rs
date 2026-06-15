@@ -468,6 +468,9 @@ pub(crate) fn validate_client_gate_provider_consistency(root: &BoltV3RootConfig)
         if client.venue.as_str() != KEY {
             continue;
         }
+        let validation_client =
+            crate::bolt_v3_validate::client_with_root_chainlink_feed_catalog(root, client);
+        let client = validation_client.as_ref().unwrap_or(client);
         let Some(data_value) = client.data.as_ref() else {
             continue;
         };

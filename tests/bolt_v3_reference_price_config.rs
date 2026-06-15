@@ -38,8 +38,15 @@ report_schema_version = 3
 report_decimal_scale = 18
 price_precision = 8
 "#;
-    toml::from_str(&format!("{fixture}\n{reference_price_fixture_additions}"))
-        .expect("root fixture with reference clients should parse")
+    let mut root: BoltV3RootConfig =
+        toml::from_str(&format!("{fixture}\n{reference_price_fixture_additions}"))
+            .expect("root fixture with reference clients should parse");
+    root.realized_volatility_surfaces
+        .as_mut()
+        .and_then(|surfaces| surfaces.get_mut("configured_rv_surface"))
+        .expect("root fixture should include configured RV surface")
+        .canonical_base_asset = "BTC".to_string();
+    root
 }
 
 fn set_target_underlying_asset(strategy: &mut BoltV3StrategyConfig, asset: &str) {

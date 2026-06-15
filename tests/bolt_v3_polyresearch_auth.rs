@@ -14,7 +14,7 @@ fn builds_polyresearch_websocket_url_from_clean_endpoint_and_api_key() {
 
     assert_eq!(
         url.as_str(),
-        "wss://stream.example.test/feed?apiKey=test-prr-api-key"
+        "wss://stream.example.test/feed?key=test-prr-api-key"
     );
 }
 

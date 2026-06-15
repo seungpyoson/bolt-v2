@@ -1965,7 +1965,7 @@ fn uses_root_owned_chainlink_feed_catalog(client: &ClientBlock) -> bool {
     client.venue.as_str() == crate::bolt_v3_providers::RESOLUTION_ORACLE_VENUE_KEY
 }
 
-fn client_with_root_chainlink_feed_catalog(
+pub(crate) fn client_with_root_chainlink_feed_catalog(
     root: &BoltV3RootConfig,
     client: &ClientBlock,
 ) -> Option<ClientBlock> {

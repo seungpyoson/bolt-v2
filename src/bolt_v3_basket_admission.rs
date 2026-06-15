@@ -152,14 +152,18 @@ impl BoltV3BasketAdmissionState {
         }
 
         let evidence = basket_decision_evidence(request, BoltV3BasketAdmissionOutcome::Admitted)?;
-        if let Err(error) = submit_admission.reserve_basket_submit_slots(
+        let submit_permit = match submit_admission.reserve_basket_submit_slots(
             request.execution_client_id,
             &request.submit_claims,
             &evidence,
         ) {
-            self.release_reserved_basket_after_failed_submit(request.basket_id);
-            return Err(BoltV3BasketAdmissionError::SubmitAdmissionFailed(error));
-        }
+            Ok(permit) => permit,
+            Err(error) => {
+                self.release_reserved_basket_after_failed_submit(request.basket_id);
+                return Err(BoltV3BasketAdmissionError::SubmitAdmissionFailed(error));
+            }
+        };
+        submit_permit.commit_submitted();
         Ok(BoltV3BasketAdmissionPermit(()))
     }
 

@@ -332,7 +332,8 @@ fn basket_submit_slots_share_single_order_gate_and_count_cap_arithmetic() {
             &entry_claims(&fixture_group(), dec!(0.9)),
             &basket_slot_evidence("exact-cap", &fixture_group()),
         )
-        .expect("two-leg basket should exactly consume a two-order cap");
+        .expect("two-leg basket should exactly consume a two-order cap")
+        .commit_submitted();
     assert_eq!(submit_gate.admitted_order_count(), 2);
 
     let writer = Arc::new(RecordingBasketDecisionWriter::default());

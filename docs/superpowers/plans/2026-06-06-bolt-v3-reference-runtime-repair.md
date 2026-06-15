@@ -19,7 +19,7 @@
 - `cargo test --locked --test config_parsing shipped_polymarket_secrets_use_eu_west_2_registry_paths -- --nocapture` passes.
 - `cargo test --locked --test bolt_v3_client_registration -- --nocapture` passes after fake SSM resolvers and stale assertions were updated to `/bolt/polymarket/*`.
 - Current Chainlink provider is a point-in-time strike source only, documented in `src/bolt_v3_providers/chainlink.rs`; it is not a continuous reference-price stream.
-- Shipped strategies now use strategy-owned `[reference_current_price]`; `target.gate_subscriptions.decision_reference` remains limited to source-gate identity and must not synthesize an NT quote feed.
+- Shipped strategies still have empty `[reference_data]` and still declare `target.gate_subscriptions.decision_reference`.
 - Nautilus Rust supports typed custom streams: `DataActor::subscribe_data(DataType, Some(ClientId), params)` sends `SubscribeCustomData`, provider `DataClient::subscribe(SubscribeCustomData)` receives it, providers can emit `Data::Custom(CustomData)`, and strategies can override `on_data(&CustomData)`.
 - Nautilus Rust already includes a reusable `nautilus_network::websocket::WebSocketClient` with custom handshake headers, reconnect, heartbeat, and transport-backend support. Do not add a separate WebSocket dependency for PRR or Chainlink reference streaming unless this API proves insufficient in implementation.
 - Adjacent PRR/Chainlink probe docs prove PRR message schema and limits: text frames with `symbol`, `price`, `ts`; supported symbols are BTC, ETH, SOL, XRP; PRR cannot supply boundary `price_to_beat`.
@@ -36,7 +36,7 @@
 
 - Slice A: finish #581 current branch only. Scope: eu-west-2 path parity, fail-loud reference parsing, and stale test/comment cleanup. No new provider architecture.
 - Slice B: #579 gate deletion from fresh `main`. Scope: remove dead readiness/operator gate identity. No reference-price provider work.
-- Slice C: proper reference-price architecture from fresh `main` after Slice A/B decisions. Scope: TOML-owned active reference source and comparator providers. No source-race execution and no PRR `price_to_beat`.
+- Slice C: proper reference-price architecture from fresh `main` after Slice A/B decisions. Scope: TOML-owned active reference source and comparator providers. No fastest-wins execution and no PRR `price_to_beat`.
 
 ---
 
@@ -135,8 +135,9 @@ Expected: all named tests pass and no output exposes secret values.
 In `tests/bolt_v3_client_registration.rs`, remove wording that says the fixture reference comes from `decision_reference`. Replace it with:
 
 ```rust
-// decision_reference is a logical gate identity and must not be treated as an
-// NT data client or strategy current-price feed.
+// The fixture has an empty [reference_data] block, so the scoped trade runner
+// registers no live reference quote client. decision_reference is a logical
+// gate identity and must not be treated as an NT data client.
 ```
 
 - [x] **Step 2: Preserve malformed flat instrument rejection**
@@ -152,7 +153,7 @@ assert!(
 
 - [x] **Step 3: Preserve decision_reference separation**
 
-Keep the regression that `raw_taker_config` omits `reference_venue` and `reference_instrument_id` when `decision_reference` exists. The expected table assertions are:
+Keep the regression that `raw_taker_config` omits `reference_venue` and `reference_instrument_id` when `[reference_data]` is empty and `decision_reference` exists. The expected table assertions are:
 
 ```rust
 assert!(!table.contains_key("reference_venue"));
@@ -161,7 +162,15 @@ assert!(!table.contains_key("reference_instrument_id"));
 
 - [x] **Step 4: Do not add an interim hardcoded reference**
 
-Do not reconstruct the retired quote-reference block from `underlying_asset` in Rust code. The forward architecture is TOML-owned `[reference_current_price]`, not an inferred fallback.
+Do not set `reference_data` from `underlying_asset` in Rust code. If an emergency config-only unblock is explicitly approved later, it must be TOML-only per strategy, for example:
+
+```toml
+[reference_data.primary]
+data_client_id = "okx_data"
+instrument_id = "BTC-USDT.OKX"
+```
+
+That emergency unblock must also remove `target.gate_subscriptions.decision_reference` from the same strategy file. It is not the proper forward architecture.
 
 - [x] **Step 5: Verify #581 branch**
 
@@ -447,7 +456,7 @@ Expected:
 - PRR cannot bind `price_to_beat`.
 - PRR is rejected for BNB/DOGE.
 - No non-SSM secret source exists.
-- No source-race behavior exists.
+- No fastest-wins behavior exists.
 
 ---
 
@@ -494,6 +503,6 @@ no persistent debug override left behind
 Expected live evidence:
 
 - reference provider connects and subscribes,
-- active reference quote updates `spot_price` / `reference_current_price`,
+- active reference quote updates `spot_price` / `reference_fair_value`,
 - interval open warms only after source-bound `price_to_beat`,
 - entry blocks clear or report a new concrete blocker.

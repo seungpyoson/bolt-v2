@@ -14,9 +14,6 @@ use bolt_v2::{
         ProviderProductSubmitProofArtifactRequest, binding_for_provider_key,
         sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
-    bolt_v3_reference_price_health::{
-        prepare_reference_current_price_health_run, run_prepared_reference_current_price_health,
-    },
     bolt_v3_secrets::{
         check_no_forbidden_credential_env_vars, resolve_bolt_v3_client_secrets,
         resolve_bolt_v3_secrets,
@@ -40,10 +37,6 @@ struct Cli {
 #[derive(clap::Subcommand)]
 enum Command {
     Run {
-        #[arg(short, long)]
-        config: PathBuf,
-    },
-    ReferenceCurrentPriceHealth {
         #[arg(short, long)]
         config: PathBuf,
     },
@@ -135,9 +128,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Command::Run { config } => run_live_node(config),
-        Command::ReferenceCurrentPriceHealth { config } => {
-            run_reference_current_price_health_command(config)
-        }
         Command::Secrets { command } => run_secrets_command(command),
         Command::ProviderArtifacts { command } => run_provider_artifacts_command(*command),
     }
@@ -155,30 +145,6 @@ fn run_live_node(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     };
     runtime.block_on(local.run_until(app))
-}
-
-fn run_reference_current_price_health_command(
-    config: PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let loaded = load_bolt_v3_config(&config)?;
-    check_no_forbidden_credential_env_vars(&loaded.root)?;
-    let mut health_run = prepare_reference_current_price_health_run(&loaded)?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    let local = tokio::task::LocalSet::new();
-    let report = runtime
-        .block_on(local.run_until(run_prepared_reference_current_price_health(&mut health_run)))?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::to_value(&report)?)?
-    );
-    if !report.all_sources_observed() {
-        return Err(
-            "reference_current_price health did not observe every configured source".into(),
-        );
-    }
-    Ok(())
 }
 
 fn run_provider_artifacts_command(

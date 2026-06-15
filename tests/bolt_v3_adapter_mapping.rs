@@ -24,10 +24,8 @@ use bolt_v2::{
         ProviderRuntimeApprovals,
         binance::ResolvedBoltV3BinanceSecrets,
         chainlink::ResolvedBoltV3ChainlinkSecrets,
-        chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
         hyperliquid::{HyperliquidProductSurface, ResolvedBoltV3HyperliquidSecrets},
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
-        polyresearch::ResolvedBoltV3PolyResearchSecrets,
     },
     bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
 };
@@ -83,21 +81,6 @@ fn fixture_chainlink_secrets() -> ResolvedBoltV3ChainlinkSecrets {
     }
 }
 
-fn fixture_chainlink_reference_secrets() -> ResolvedBoltV3ChainlinkReferenceSecrets {
-    ResolvedBoltV3ChainlinkReferenceSecrets {
-        api_key: zeroize::Zeroizing::new("regression-chainlink-reference-api-key".to_string()),
-        api_secret: zeroize::Zeroizing::new(
-            "regression-chainlink-reference-api-secret".to_string(),
-        ),
-    }
-}
-
-fn fixture_polyresearch_secrets() -> ResolvedBoltV3PolyResearchSecrets {
-    ResolvedBoltV3PolyResearchSecrets {
-        api_key: zeroize::Zeroizing::new("regression-polyresearch-api-key".to_string()),
-    }
-}
-
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
     clients.insert(
@@ -111,14 +94,6 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     clients.insert(
         "chainlink_strike".to_string(),
         Arc::new(fixture_chainlink_secrets()),
-    );
-    clients.insert(
-        "chainlink_reference".to_string(),
-        Arc::new(fixture_chainlink_reference_secrets()),
-    );
-    clients.insert(
-        "polyresearch_reference".to_string(),
-        Arc::new(fixture_polyresearch_secrets()),
     );
     ResolvedBoltV3Secrets { clients }
 }
@@ -1055,6 +1030,7 @@ strategy_files = ["strategies/binary_oracle.toml"]
 
 [runtime]
 mode = "Live"
+order_execution_mode = "live"
 
 [nautilus]
 load_state = true

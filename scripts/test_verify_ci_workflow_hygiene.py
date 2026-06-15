@@ -8,6 +8,7 @@ import io
 import importlib.util
 import pathlib
 import re
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -15,7 +16,27 @@ import textwrap
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
-GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]"
+SYNC_CI_DEBUG_SSH_PATH = REPO_ROOT / "scripts" / "sync_ci_debug_ssh_secret.py"
+DEBUG_WORKFLOW_PATH = ".github/workflows/ci-runner-debug.yml"
+SSH_RUNNER_ACTION = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
+GATE_NEEDS = "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]"
+GATE_NAME = """name: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == true
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && 'gate-deferred'
+          || 'gate' }}"""
+GATE_DEFER_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}\""""
+GATE_DEFER_CONTEXT_GUARD = """            if [[ "$defer_run_context" != "true" ]]; then
+              echo "deferred CI policy outside deferred draft PR context"
+              exit 1
+            fi
+"""
+GATE_DEFER_BLOCK = f"""          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
+{GATE_DEFER_CONTEXT_GUARD}            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
+            exit 0
+          fi
+"""
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
@@ -23,6 +44,98 @@ EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.no-mistakes.yaml'",
     "'scripts/command_understanding.py'",
 )
+
+CI_PROVENANCE_TOML = """
+[ci_provenance]
+schema_version = 1
+artifact_name_template = "ci-provenance-attempt-{run_attempt}"
+workflow_key = "ci"
+workflow_name = "CI"
+workflow_path = ".github/workflows/ci.yml"
+fingerprint_source = "meter"
+
+[ci_provenance.full_ci]
+required_jobs = [
+  "detector",
+  "fmt-check",
+  "deny",
+  "clippy",
+  "check-aarch64",
+  "source-fence",
+  "test-archive",
+  "test-shards",
+  "test",
+]
+conditional_jobs = ["build"]
+conditional_job_outputs = { build = "detector.build_required" }
+
+[ci_provenance.full_ci.jobs.detector]
+check_name = "detector"
+
+[ci_provenance.full_ci.jobs.fmt-check]
+check_name = "fmt-check"
+
+[ci_provenance.full_ci.jobs.deny]
+check_name = "deny"
+
+[ci_provenance.full_ci.jobs.clippy]
+check_name = "clippy"
+
+[ci_provenance.full_ci.jobs.check-aarch64]
+check_name = "check-aarch64"
+
+[ci_provenance.full_ci.jobs.source-fence]
+check_name = "source-fence"
+
+[ci_provenance.full_ci.jobs.test-archive]
+check_name = "nextest archive"
+
+[ci_provenance.full_ci.jobs.test-shards]
+check_name_template = "nextest shard {shard} of {shard_count}"
+shard_count = 4
+
+[ci_provenance.full_ci.jobs.test]
+check_name = "test"
+
+[ci_provenance.full_ci.jobs.build]
+check_name = "build"
+conditional = "detector.build_required"
+
+[ci_provenance.deploy]
+artifact_name = "bolt-v2-binary"
+require_source_event = "push"
+require_source_branch = "main"
+require_gate_check = true
+
+[ci_provenance.dispatch]
+workflow_input = "full_ci"
+
+[ci_provenance.api_limits]
+workflow_runs_per_page = 100
+run_jobs_per_page = 100
+run_artifacts_per_page = 100
+max_lookback_pages = 10
+max_lookback_age_seconds = 2592000
+
+[ci_provenance.artifacts]
+retention_days = 30
+
+[ci_provenance.policy]
+draft_pr_synchronize = "defer"
+draft_pr_opened = "defer"
+draft_pr_reopened = "defer"
+converted_to_draft = "defer"
+ready_pr = "full"
+ready_for_review = "full"
+workflow_dispatch = "full"
+main_push = "full"
+tag = "tag_reuse"
+unknown_event = "full"
+
+[ci_provenance.policy.override]
+force_full_ci = false
+ignore_emit_failure = false
+"""
 
 
 def load_verifier(
@@ -36,12 +149,24 @@ def load_verifier(
     return module
 
 
+def load_sync_ci_debug_ssh_script(
+    path: pathlib.Path = SYNC_CI_DEBUG_SSH_PATH, module_name: str = "sync_ci_debug_ssh_secret"
+):
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load sync_ci_debug_ssh_secret.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 BASE_WORKFLOW = """
 name: CI
 
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
     paths-ignore:
       - 'AGENTS.md'
       - 'CLAUDE.md'
@@ -59,24 +184,119 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      full_ci:
+        description: "Run full CI for the selected ref"
+        required: false
+        default: "true"
 
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && format('pr-{0}-deferred', github.event.number)
+        || github.event_name == 'pull_request'
+        && format('pr-{0}-full', github.event.number)
+        || github.event_name == 'workflow_dispatch'
+        && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        || github.event_name == 'workflow_dispatch' }}
 
 permissions:
   contents: read
   actions: read
 
 jobs:
+  ci-policy:
+    name: ci-policy
+    outputs:
+      ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
+      full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
+      full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}
+      reason: ${{ steps.policy.outputs.reason }}
+      ignore_emit_failure: ${{ steps.policy.outputs.ignore_emit_failure }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Compute CI policy
+        id: policy
+        shell: bash
+        run: >
+          python3 scripts/ci_provenance.py ci-policy
+          --event-name "${{ github.event_name }}"
+          --event-action "${{ github.event.action || '' }}"
+          --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --ref "${{ github.ref }}"
+          | tee -a "$GITHUB_OUTPUT"
+
   detector:
     name: detector
+    outputs:
+      build_required: ${{ steps.build_required.outputs.value }}
+      fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}
     runs-on: ubuntu-latest
     steps:
-      - run: echo detector
+      # detector probe insertion point
+      - name: Detect build-affecting changes
+        id: build_inputs_changed
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: echo "any_changed=false" >> "$GITHUB_OUTPUT"
+
+      - name: Detect fingerprint-reuse governance changes
+        id: fingerprint_reuse_inputs_changed
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
+          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin \
+            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
+            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
+            .github/workflows/ci.yml \
+            .github/actions/setup-environment/action.yml \
+            ci/github-actions-runners.toml \
+            scripts/ci_provenance.py \
+            scripts/test_ci_provenance.py \
+            scripts/verify_ci_workflow_hygiene.py \
+            scripts/test_verify_ci_workflow_hygiene.py)"
+          if [[ -n "$changed" ]]; then
+            echo "any_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine build requirement
+        id: build_required
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ steps.build_inputs_changed.outputs.any_changed }}" == "true" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine fingerprint reuse allowance
+        id: fingerprint_reuse_allowed
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          fi
 
   fmt-check:
     name: fmt-check
@@ -109,7 +329,7 @@ jobs:
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
@@ -143,7 +363,8 @@ jobs:
 
   check-aarch64:
     name: check-aarch64
-    needs: detector
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'tag_reuse' }}
     runs-on: ubuntu-latest
     steps:
       - name: Resolve aarch64 coverage owner
@@ -183,8 +404,8 @@ jobs:
 
   source-fence:
     name: source-fence
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -208,12 +429,28 @@ jobs:
 
   test-archive:
     name: nextest archive
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
+    outputs:
+      nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
     steps:
+      - name: Publish nextest archive fingerprint
+        id: nextest-fingerprint
+        run: |
+          fingerprint="nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}"
+          mkdir -p .nextest-archive-fingerprint
+          printf '%s\\n' "$fingerprint" > .nextest-archive-fingerprint/cache-key.txt
+          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+      - name: Upload nextest archive fingerprint
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          path: .nextest-archive-fingerprint/cache-key.txt
+          if-no-files-found: error
+          retention-days: 30
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
@@ -231,10 +468,10 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
       - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
@@ -248,7 +485,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -256,11 +493,33 @@ jobs:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           if-no-files-found: error
           retention-days: 1
+  nextest-fingerprint-reuse:
+    name: nextest fingerprint reuse
+    needs: [ci-policy, detector, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    outputs:
+      reuse_found: ${{ steps.reuse.outputs.reuse_found }}
+      source_run_id: ${{ steps.reuse.outputs.source_run_id }}
+      source_sha: ${{ steps.reuse.outputs.source_sha }}
+      source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}
+      reason: ${{ steps.reuse.outputs.reason }}
+    steps:
+      - name: Resolve nextest fingerprint reuse
+        id: reuse
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >
+          python3 scripts/ci_provenance.py resolve-fingerprint
+          --current-run-id "${{ github.run_id }}"
+          --current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+          | tee -a "$GITHUB_OUTPUT"
 
   test-shards:
     name: nextest shard ${{ matrix.shard }} of 4
-    needs: test-archive
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -287,7 +546,7 @@ jobs:
         run: |
           echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
@@ -295,19 +554,42 @@ jobs:
 
   test:
     name: test
-    needs: test-shards
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}
+    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - run: |
+          if [[ "${{ needs.test-archive.result }}" != "success" ]]; then
+            exit 1
+          fi
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
+          if [[ "$reuse_found" == "true" ]]; then
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_run_id"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_sha"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_artifact_id }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_artifact_id"
+              exit 1
+            fi
+            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}"
+            exit 0
+          fi
           if [[ "${{ needs.test-shards.result }}" != "success" ]]; then
             exit 1
           fi
 
   build:
     name: build
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.outputs.build_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -333,28 +615,10 @@ jobs:
         run: |
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
       - name: Install cargo-zigbuild
-        run: |
-          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \\
-            --retry 10 \\
-            --retry-delay 3 \\
-            --retry-all-errors \\
-            --fail \\
-            --location \\
-            --show-error \\
-            --silent \\
-            --output "$archive" \\
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild"
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none
       - run: just build
       - name: Stage managed build artifact
         id: managed_artifact
@@ -370,12 +634,42 @@ jobs:
           )
           echo "stage_dir=$stage_dir" >> "$GITHUB_OUTPUT"
       - name: Upload artifact
-        uses: actions/upload-artifact@example
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bolt-v2-binary
           path: |
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
+
+  ci-provenance-emit:
+    name: ci-provenance-emit
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Emit CI provenance
+        run: >
+          python3 scripts/ci_provenance.py emit-full-ci
+          --output ci-provenance.json
+          --required-job detector=${{ needs.detector.result }}
+          --required-job fmt-check=${{ needs.fmt-check.result }}
+          --required-job deny=${{ needs.deny.result }}
+          --required-job clippy=${{ needs.clippy.result }}
+          --required-job check-aarch64=${{ needs.check-aarch64.result }}
+          --required-job source-fence=${{ needs.source-fence.result }}
+          --required-job test-archive=${{ needs.test-archive.result }}
+          --required-job test-shards=${{ needs.test-shards.result }}
+          --required-job test=${{ needs.test.result }}
+          --conditional-job build.required=${{ needs.detector.outputs.build_required }}
+          --conditional-job build.result=${{ needs.build.result }}
+          --nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+      - name: Upload CI provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-provenance-attempt-${{ github.run_attempt }}
+          path: ci-provenance.json
+          if-no-files-found: error
+          retention-days: 30
 
   same-sha-main-evidence:
     name: same-sha-main-evidence
@@ -393,17 +687,28 @@ jobs:
         run: python3 scripts/find_same_sha_main_evidence.py
 
   gate:
-    name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]
+    name: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == true
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && 'gate-deferred'
+          || 'gate' }}
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - run: |
-          tag_ref="${{ startsWith(github.ref, 'refs/tags/v') }}"
+          policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
+          full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
+          ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
+          if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
+            exit 1
+          fi
           if [[ "${{ needs.detector.result }}" != "success" ]]; then
             exit 1
           fi
-          if [[ "$tag_ref" == "true" ]]; then
+          if [[ "$policy_path" == "tag_reuse" ]]; then
             if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
               exit 1
             fi
@@ -425,13 +730,52 @@ jobs:
             if [[ "${{ needs.test.result }}" != "skipped" ]]; then
               exit 1
             fi
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "skipped" ]]; then
+              exit 1
+            fi
             if [[ "${{ needs.build.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
               exit 1
             fi
             exit 0
           fi
           if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
             exit 1
+          fi
+          defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}"
+          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
+            if [[ "$defer_run_context" != "true" ]]; then
+              echo "deferred CI policy outside deferred draft PR context"
+              exit 1
+            fi
+            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
+            exit 0
+          fi
+          if [[ "$policy_path" == "full" ]]; then
+            echo "full CI required"
+          else
+            exit 1
+          fi
+          if [[ "$reuse_found" == "true" ]]; then
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
+              exit 1
+            fi
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+              echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
+              exit 1
+            fi
+            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
+          else
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
+              if [[ "$ignore_emit_failure" == "true" ]]; then
+                echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
+              else
+                exit 1
+              fi
+            fi
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
             exit 1
@@ -491,6 +835,39 @@ jobs:
 """
 
 
+BASE_DISPATCH_CI_CANCEL_WORKFLOW = """
+name: Dispatch CI Cancel
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [requested]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  cancel-obsolete-dispatch:
+    name: cancel-obsolete-dispatch
+    if: >-
+      ${{ github.event.workflow_run.event == 'workflow_dispatch'
+          && github.event.workflow_run.name == 'CI' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Cancel older same-branch dispatch runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/cancel_obsolete_dispatch_runs.py
+"""
+
+
 BASE_ADVISORY_WORKFLOW = """
 name: Advisory Check
 
@@ -513,7 +890,7 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
@@ -555,8 +932,6 @@ outputs:
     value: ${{ steps.shared.outputs.zig_version }}
   zigbuild_version:
     value: ${{ steps.shared.outputs.zigbuild_version }}
-  zigbuild_x86_64_unknown_linux_gnu_sha256:
-    value: ${{ steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}
   rust_verification_owner:
     value: ${{ steps.shared.outputs.rust_verification_owner }}
   managed_target_dir:
@@ -567,8 +942,10 @@ runs:
   using: composite
   steps:
     - name: Install just
-      shell: bash
-      run: echo "${{ inputs.just-version }}"
+      uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+      with:
+        tool: just@${{ inputs.just-version }}
+        fallback: none
     - name: Lint workflow contract
       if: ${{ inputs.lint-workflow-contract == 'true' }}
       shell: bash
@@ -589,7 +966,6 @@ runs:
           echo "target=$(just --evaluate target)" >> "$GITHUB_OUTPUT"
           echo "zig_version=$(just --evaluate zig_version)" >> "$GITHUB_OUTPUT"
           echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
-          echo "zigbuild_x86_64_unknown_linux_gnu_sha256=$(just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256)" >> "$GITHUB_OUTPUT"
         fi
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}
@@ -618,6 +994,60 @@ test-group = 'live-node'
 filter = 'binary(=bolt_v3_adapter_mapping) | binary(=bolt_v3_client_registration) | binary(=bolt_v3_controlled_connect) | binary(=bolt_v3_credential_log_suppression) | binary(=bolt_v3_readiness) | binary(=bolt_v3_strategy_registration) | binary(=bolt_v3_submit_admission) | binary(=config_parsing) | binary(=lake_batch) | binary(=nt_runtime_capture) | binary(=venue_contract)'
 test-group = 'live-node'
 """
+
+LOCAL_COMPILE_POLICY_TOML = """
+[local_compile_policy]
+enabled = true
+allowed_ci_env = "GITHUB_ACTIONS"
+break_glass_env = "BOLT_ALLOW_LOCAL_RUST"
+refused_managed_commands = ["test", "clippy", "build"]
+refused_cargo_subcommands = ["b", "bench", "build", "c", "check", "clippy", "d", "doc", "fetch", "install", "nextest", "r", "run", "rustc", "t", "test", "zigbuild"]
+"""
+
+LOCAL_LANE_POLICY_TOML = """
+[local_lane_policy]
+enabled = true
+allowed_ci_env = "GITHUB_ACTIONS"
+lock_dir = "/tmp/rust-verification-lanes"
+acquire_timeout_seconds = 1800
+heartbeat_seconds = 15
+poll_interval_seconds = 1
+"""
+
+BASE_RUST_VERIFICATION_POLICY = f"""
+schema_version = 2
+project_id = "bolt-v2"
+target_namespace = "bolt-v2"
+
+{LOCAL_COMPILE_POLICY_TOML}
+{LOCAL_LANE_POLICY_TOML}
+
+[remote_verification]
+poll_interval_seconds = 15
+checks_appear_timeout_seconds = 300
+overall_timeout_seconds = 3600
+diagnostic_log_max_lines = 160
+diagnostic_log_max_bytes = 20000
+diagnostic_unavailable_notice_interval_polls = 4
+"""
+
+BASE_BVS_RUST_VERIFICATION_POLICY = f"""
+schema_version = 2
+project_id = "backtesting-vertical-slice"
+target_namespace = "backtesting-vertical-slice"
+
+{LOCAL_COMPILE_POLICY_TOML}
+{LOCAL_LANE_POLICY_TOML}
+"""
+
+
+def write_rust_verification_policy_fixtures(root: pathlib.Path) -> None:
+    root_policy = root / "ci" / "rust-verification.toml"
+    root_policy.parent.mkdir(parents=True, exist_ok=True)
+    root_policy.write_text(BASE_RUST_VERIFICATION_POLICY, encoding="utf-8")
+    bvs_policy = root / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
+    bvs_policy.parent.mkdir(parents=True, exist_ok=True)
+    bvs_policy.write_text(BASE_BVS_RUST_VERIFICATION_POLICY, encoding="utf-8")
 
 
 def assert_clean(
@@ -683,15 +1113,922 @@ def replace_once(text: str, old: str, new: str) -> str:
     return text.replace(old, new, 1)
 
 
+def replace_once_after(text: str, anchor: str, old: str, new: str) -> str:
+    index = text.find(anchor)
+    if index == -1:
+        raise AssertionError(f"fixture anchor not found: {anchor!r}")
+    before = text[:index]
+    after = text[index:]
+    return before + replace_once(after, old, new)
+
+
+def without_once_after(text: str, anchor: str, old: str) -> str:
+    index = text.find(anchor)
+    if index == -1:
+        raise AssertionError(f"fixture anchor not found: {anchor!r}")
+    before = text[:index]
+    after = text[index:]
+    return before + after.replace(old, "", 1)
+
+
+def repo_workflow_text(path: str) -> str:
+    return (REPO_ROOT / path).read_text().replace("\r\n", "\n")
+
+
+def strip_ci_provenance_config(config_text: str) -> str:
+    lines = config_text.splitlines()
+    kept: list[str] = []
+    skip = False
+    for line in lines:
+        if line.startswith("[ci_provenance"):
+            skip = True
+            continue
+        if skip and line.startswith("["):
+            skip = False
+        if not skip:
+            kept.append(line)
+    return "\n".join(kept).rstrip() + "\n"
+
+
+def ci_provenance_config_fixture() -> str:
+    config_text = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text()
+    return strip_ci_provenance_config(config_text) + "\n" + CI_PROVENANCE_TOML
+
+
+def runner_config_load_error(config_text: str) -> str:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
+        config_path.write_text(config_text, encoding="utf-8")
+        try:
+            verifier.load_github_actions_runners_config(config_path)
+        except Exception as exc:  # noqa: BLE001 - loader raises domain errors.
+            return str(exc)
+    return ""
+
+
+def assert_ci_provenance_config_contract() -> None:
+    valid = ci_provenance_config_fixture()
+    if runner_config_load_error(valid):
+        raise AssertionError("valid ci_provenance fixture must load")
+
+    cases = [
+        (
+            "ci/github-actions-runners.toml must define [ci_provenance]",
+            strip_ci_provenance_config(valid),
+        ),
+        (
+            "ci_provenance.full_ci.jobs.test missing",
+            valid.replace(
+                """
+[ci_provenance.full_ci.jobs.test]
+check_name = "test"
+""",
+                "",
+            ),
+        ),
+        (
+            "ci_provenance.full_ci.jobs.test-shards shard_count",
+            valid.replace("shard_count = 4", "shard_count = 3"),
+        ),
+        (
+            "ci_provenance.full_ci.jobs.test-shards template count",
+            valid.replace(
+                'check_name_template = "nextest shard {shard} of {shard_count}"',
+                'check_name_template = "nextest shard {shard} of 3"',
+            ),
+        ),
+        (
+            "must reference [meter] fingerprint keys",
+            valid.replace(
+                'fingerprint_source = "meter"',
+                'fingerprint_source = "meter"\nfingerprint_artifact_prefix = "nextest-archive-fingerprint-"',
+            ),
+        ),
+        (
+            "ci_provenance.policy.override.force_full_ci must default to false",
+            valid.replace("force_full_ci = false\n", ""),
+        ),
+        (
+            "ci_provenance.policy.override.ignore_emit_failure must default to false",
+            valid.replace("ignore_emit_failure = false\n", ""),
+        ),
+        (
+            "ci_provenance.policy.ready_pr must be full",
+            valid.replace('ready_pr = "full"', 'ready_pr = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.ready_for_review must be full",
+            valid.replace('ready_for_review = "full"', 'ready_for_review = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.workflow_dispatch must be full",
+            valid.replace('workflow_dispatch = "full"', 'workflow_dispatch = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.main_push must be full",
+            valid.replace('main_push = "full"', 'main_push = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.draft_pr_synchronize must be defer",
+            valid.replace('draft_pr_synchronize = "defer"', 'draft_pr_synchronize = "full"'),
+        ),
+        (
+            "ci_provenance.policy.draft_pr_opened must be defer",
+            valid.replace('draft_pr_opened = "defer"', 'draft_pr_opened = "full"'),
+        ),
+        (
+            "ci_provenance.policy.draft_pr_reopened must be defer",
+            valid.replace('draft_pr_reopened = "defer"', 'draft_pr_reopened = "full"'),
+        ),
+        (
+            "ci_provenance.policy.converted_to_draft must be defer",
+            valid.replace('converted_to_draft = "defer"', 'converted_to_draft = "full"'),
+        ),
+        (
+            "ci_provenance.policy.tag must be tag_reuse",
+            valid.replace('tag = "tag_reuse"', 'tag = "full"'),
+        ),
+        (
+            "ci_provenance.policy.unknown_event must be full",
+            valid.replace('unknown_event = "full"', 'unknown_event = "defer"'),
+        ),
+        (
+            "ci_provenance.policy has unexpected keys",
+            valid.replace(
+                "[ci_provenance.policy.override]",
+                'unexpected_policy_row = "defer"\n\n[ci_provenance.policy.override]',
+            ),
+        ),
+    ]
+    for fragment, config_text in cases:
+        error = runner_config_load_error(config_text)
+        if fragment not in error:
+            raise AssertionError(f"expected {fragment!r}, got {error!r}")
+
+
+def assert_ci_policy_matrix() -> None:
+    verifier = load_verifier()
+    config = verifier.validate_ci_provenance_config(
+        verifier.tomllib.loads(ci_provenance_config_fixture())
+    )
+    policy = config["policy"]
+    cases = [
+        ("push", "", False, "refs/heads/main", "full"),
+        ("push", "", False, "refs/tags/v1.2.3", "tag_reuse"),
+        ("pull_request", "opened", True, "refs/pull/1/merge", "defer"),
+        ("pull_request", "synchronize", True, "refs/pull/1/merge", "defer"),
+        ("pull_request", "reopened", True, "refs/pull/1/merge", "defer"),
+        ("pull_request", "converted_to_draft", True, "refs/pull/1/merge", "defer"),
+        ("pull_request", "opened", False, "refs/pull/1/merge", "full"),
+        ("pull_request", "ready_for_review", True, "refs/pull/1/merge", "full"),
+        ("workflow_dispatch", "", True, "refs/heads/codex/branch", "full"),
+        ("unknown_event", "", True, "refs/heads/codex/branch", "full"),
+    ]
+    for event_name, action, draft, ref, expected in cases:
+        result = verifier.evaluate_ci_policy(
+            policy,
+            event_name=event_name,
+            action=action,
+            pull_request_draft=draft,
+            ref=ref,
+        )
+        if result.ci_policy_path != expected:
+            raise AssertionError((event_name, action, draft, ref, expected, result))
+        if result.full_ci_required != (expected == "full"):
+            raise AssertionError(f"full_ci_required must derive from {expected}: {result}")
+        if result.full_ci_deferred != (expected == "defer"):
+            raise AssertionError(f"full_ci_deferred must derive from {expected}: {result}")
+
+    forced = dict(policy)
+    forced["override"] = dict(policy["override"])
+    forced["override"]["force_full_ci"] = True
+    forced_result = verifier.evaluate_ci_policy(
+        forced,
+        event_name="pull_request",
+        action="synchronize",
+        pull_request_draft=True,
+        ref="refs/pull/1/merge",
+    )
+    if forced_result.ci_policy_path != "full":
+        raise AssertionError(f"force_full_ci must force PR events to full, got {forced_result}")
+
+
+def assert_pull_request_type_parser_accepts_block_list_indentation() -> None:
+    verifier = load_verifier()
+    workflow = """\
+name: CI
+
+on:
+  pull_request:
+    types:
+    - opened
+    - synchronize
+    - ready_for_review
+    - converted_to_draft
+  push:
+    branches: [main]
+"""
+    errors = verifier.workflow_pull_request_type_errors(workflow)
+    if errors:
+        raise AssertionError(errors)
+
+
+def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "workflow must define workflow_dispatch",
+            re.sub(r"\n  workflow_dispatch:\n(?:    .+\n)+", "\n", workflow, count=1),
+        ),
+        (
+            "workflow_dispatch must define configured full CI input",
+            replace_once(workflow, "      full_ci:\n", "      not_full_ci:\n"),
+        ),
+        (
+            "pull_request types must include ready_for_review",
+            replace_once(
+                workflow,
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
+                "types: [opened, synchronize, reopened, converted_to_draft]",
+            ),
+        ),
+        (
+            "pull_request types must include converted_to_draft",
+            replace_once(
+                workflow,
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
+                "types: [opened, synchronize, reopened, ready_for_review]",
+            ),
+        ),
+        ("missing required job ci-policy", without_job(workflow, "ci-policy")),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
+    # Negative test: removing workflow_dispatch from the combined if-arm must trigger the guard.
+    # The production shape is: if [[ "..." == "push" || "..." == "workflow_dispatch" ]]; then
+    # Stripping the || clause leaves only push coverage and breaks the workflow_dispatch invariant.
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    dispatch_clause = ' || "${{ github.event_name }}" == "workflow_dispatch"'
+    mutated = workflow.replace(dispatch_clause, "", 1)
+    errors = verifier.verify_workflow(mutated)
+    if not any("detector must force build_required=true for workflow_dispatch full CI" in error for error in errors):
+        raise AssertionError(f"expected workflow_dispatch detector guard error, got: {errors}")
+
+
+def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "source-fence needs ci-policy",
+            replace_once(
+                workflow,
+                "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]",
+                "  source-fence:\n    name: source-fence\n    needs: detector",
+            ),
+        ),
+        (
+            "source-fence must gate on full_ci_required",
+            replace_once(
+                workflow,
+                "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+                "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}",
+            ),
+        ),
+        (
+            "test-archive needs ci-policy",
+            replace_once(
+                workflow,
+                "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector]",
+                "  test-archive:\n    name: nextest archive\n    needs: detector",
+            ),
+        ),
+        (
+            "test-shards needs ci-policy",
+            replace_once(
+                workflow,
+                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]",
+                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [test-archive, nextest-fingerprint-reuse]",
+            ),
+        ),
+        (
+            "test needs ci-policy",
+            replace_once(
+                workflow,
+                "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]",
+                "  test:\n    name: test\n    needs: [test-archive, nextest-fingerprint-reuse, test-shards]",
+            ),
+        ),
+        (
+            "build needs ci-policy",
+            replace_once(
+                workflow,
+                "  build:\n    name: build\n    needs: [ci-policy, detector]",
+                "  build:\n    name: build\n    needs: detector",
+            ),
+        ),
+        (
+            "ci-provenance-emit needs ci-policy",
+            replace_once(
+                workflow,
+                "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
+                "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
+            ),
+        ),
+        (
+            "ci-provenance-emit must gate on full_ci_required",
+            replace_once(
+                workflow,
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
+            ),
+        ),
+        (
+            "check-aarch64 needs ci-policy",
+            replace_once(
+                workflow,
+                "  check-aarch64:\n    name: check-aarch64\n    needs: [ci-policy, detector]",
+                "  check-aarch64:\n    name: check-aarch64\n    needs: detector",
+            ),
+        ),
+        (
+            "check-aarch64 must run on full CI or tag reuse",
+            replace_once(
+                workflow,
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'tag_reuse' }}",
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            ),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_gate_policy_truth_table_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "gate needs ci-policy",
+            replace_once(workflow, GATE_NEEDS, without_inline_need(GATE_NEEDS, "ci-policy")),
+        ),
+        (
+            "gate must publish gate-deferred for deferred draft PR runs",
+            replace_once(workflow, GATE_NAME, "name: gate"),
+        ),
+        (
+            "gate must publish gate-deferred for deferred draft PR runs",
+            replace_once(workflow, "'gate-deferred'", "'gate'"),
+        ),
+        (
+            "gate must check needs.ci-policy.result",
+            replace_once(
+                workflow,
+                '"${{ needs.ci-policy.result }}" != "success"',
+                '"${{ omitted.ci-policy.result }}" != "success"',
+            ),
+        ),
+        (
+            "gate must pass deferred full CI without failing stale draft checks",
+            replace_once(workflow, GATE_DEFER_BLOCK, ""),
+        ),
+        (
+            "gate must pass deferred full CI without failing stale draft checks",
+            replace_once(workflow, GATE_DEFER_BLOCK, GATE_DEFER_BLOCK.replace("            exit 0\n", "            exit 1\n")),
+        ),
+        (
+            "gate must compute deferred draft PR run context",
+            replace_once(workflow, f"          {GATE_DEFER_CONTEXT_ASSIGNMENT}\n", ""),
+        ),
+        (
+            "gate must fail deferred policy outside deferred draft PR context",
+            replace_once(workflow, GATE_DEFER_CONTEXT_GUARD, ""),
+        ),
+        (
+            "gate must fail deferred policy outside deferred draft PR context",
+            replace_once(workflow, '"$defer_run_context" != "true"', '"$defer_run_context" == "true"'),
+        ),
+        (
+            "gate must branch on ci_policy_path full",
+            replace_once(workflow, 'if [[ "$policy_path" == "full" ]]; then', 'if [[ "$policy_path" != "defer" ]]; then'),
+        ),
+        (
+            "gate must branch on ci_policy_path tag_reuse",
+            replace_once(workflow, 'if [[ "$policy_path" == "tag_reuse" ]]; then', 'if [[ "$tag_ref" == "true" ]]; then'),
+        ),
+        (
+            "gate must read ignore_emit_failure only for ci-provenance-emit",
+            replace_once(workflow, '            if [[ "$ignore_emit_failure" == "true" ]]; then\n', ""),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_ci_concurrency_split_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cancel_in_progress_for_pr_and_dispatch = """  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        || github.event_name == 'workflow_dispatch' }}
+"""
+    cancel_in_progress_for_draft_pr_and_dispatch = """  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        || github.event_name == 'workflow_dispatch' }}
+"""
+    cases = [
+        (
+            "concurrency group must split deferred PR runs from full CI runs",
+            replace_once(workflow, "pr-{0}-deferred", "pr-{0}"),
+        ),
+        (
+            "workflow_dispatch full CI runs must use a full-CI concurrency group",
+            replace_once(
+                workflow,
+                "        || github.event_name == 'workflow_dispatch'\n        && format('{0}-full-ci', github.ref_name)\n",
+                "",
+            ),
+        ),
+        (
+            "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only",
+            replace_once(
+                workflow,
+                cancel_in_progress_for_pr_and_dispatch,
+                "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n",
+            ),
+        ),
+        (
+            "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only",
+            replace_once(
+                workflow,
+                cancel_in_progress_for_pr_and_dispatch,
+                cancel_in_progress_for_draft_pr_and_dispatch,
+            ),
+        ),
+        (
+            "cancel-in-progress must not cancel push, tag, or deploy flows",
+            replace_once(
+                workflow,
+                "        || github.event_name == 'workflow_dispatch' }}",
+                "        || github.event_name == 'workflow_dispatch'\n        || github.event_name == 'push' }}",
+            ),
+        ),
+        (
+            "cancel-in-progress must not cancel push, tag, or deploy flows",
+            replace_once(
+                workflow,
+                "        || github.event_name == 'workflow_dispatch' }}",
+                "        || github.event_name == 'workflow_dispatch'\n        || github.ref == 'refs/tags/v1.2.3' }}",
+            ),
+        ),
+        (
+            "cancel-in-progress must not cancel push, tag, or deploy flows",
+            replace_once(
+                workflow,
+                "        || github.event_name == 'workflow_dispatch' }}",
+                "        || github.event_name == 'workflow_dispatch'\n        || startsWith(github.ref, 'refs/tags/v') }}",
+            ),
+        ),
+        (
+            "workflow-level concurrency must not reference job outputs",
+            replace_once(workflow, "github.event.number", "needs.ci-policy.outputs.reason"),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_dispatch_cancel_watchdog_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/dispatch-ci-cancel.yml")
+    cases = [
+        (
+            "must trigger only on workflow_run",
+            replace_once(workflow, "  workflow_run:\n", "  pull_request:\n"),
+        ),
+        (
+            "workflow_run trigger must watch",
+            replace_once(workflow, '    workflows: ["CI"]\n', '    workflows: ["Backtester CI"]\n'),
+        ),
+        (
+            "workflow_run trigger must use requested only",
+            replace_once(workflow, "    types: [requested]\n", "    types: [completed]\n"),
+        ),
+        (
+            "permissions must include actions: write",
+            replace_once(workflow, "  actions: write\n", "  actions: read\n"),
+        ),
+        (
+            "permissions must include contents: read",
+            replace_once(workflow, "  contents: read\n", "  contents: none\n"),
+        ),
+        (
+            "must define cancel-obsolete-dispatch job",
+            replace_once(workflow, "  cancel-obsolete-dispatch:\n", "  cancel-stale-dispatch:\n"),
+        ),
+        (
+            "job must filter workflow_dispatch runs",
+            replace_once(
+                workflow,
+                "github.event.workflow_run.event == 'workflow_dispatch'",
+                "github.event.workflow_run.event == 'pull_request'",
+            ),
+        ),
+        (
+            "job must filter the configured CI workflow",
+            replace_once(
+                workflow,
+                "github.event.workflow_run.name == 'CI'",
+                "github.event.workflow_run.name == 'Backtester CI'",
+            ),
+        ),
+        (
+            "job must join workflow_dispatch and CI filters with &&",
+            replace_once(
+                workflow,
+                "          && github.event.workflow_run.name == 'CI' }}\n",
+                "          || github.event.workflow_run.name == 'CI' }}\n",
+            ),
+        ),
+        (
+            "job must run scripts/cancel_obsolete_dispatch_runs.py",
+            replace_once(
+                workflow,
+                "python3 scripts/cancel_obsolete_dispatch_runs.py",
+                "python3 scripts/ci_provenance.py ci-policy",
+            ),
+        ),
+        (
+            "job must pass github.token",
+            replace_once(
+                workflow,
+                "          GITHUB_TOKEN: ${{ github.token }}\n",
+                "",
+            ),
+        ),
+        (
+            "job must pass github.event_path",
+            replace_once(
+                workflow,
+                "          GITHUB_EVENT_PATH: ${{ github.event_path }}\n",
+                "",
+            ),
+        ),
+        (
+            "job must pass github.repository",
+            replace_once(
+                workflow,
+                "          GITHUB_REPOSITORY: ${{ github.repository }}\n",
+                "",
+            ),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_dispatch_ci_cancel_workflow(
+            {".github/workflows/dispatch-ci-cancel.yml": mutated_workflow}
+        )
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_runner_contract_rejects_missing_and_extra_jobs() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/ci.yml"
+    workflow = repo_workflow_text(workflow_name)
+    renamed = replace_once(workflow, "  fmt-check:\n", "  fmt-renamed:\n")
+    errors = verifier.verify_github_actions_runner_contract({workflow_name: renamed})
+    if not any("fmt-check" in error and "missing from workflow" in error for error in errors):
+        raise AssertionError(f"runner contract must reject TOML job without workflow job, got: {errors}")
+    if not any(
+        "fmt-renamed" in error and "ci/github-actions-runners.toml" in error
+        for error in errors
+    ):
+        raise AssertionError(f"runner contract must reject workflow job without TOML mapping, got: {errors}")
+
+
+def assert_runner_contract_rejects_unmapped_workflow_jobs() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/actionlint.yml"
+    workflow = repo_workflow_text(workflow_name)
+    rogue = replace_once(
+        workflow,
+        "jobs:\n",
+        """jobs:
+  rogue:
+    name: rogue
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo rogue
+
+""",
+    )
+    errors = verifier.verify_github_actions_runner_contract({workflow_name: rogue})
+    if not any("rogue" in error and "ci/github-actions-runners.toml" in error for error in errors):
+        raise AssertionError(f"runner contract must reject unmapped workflow jobs, got: {errors}")
+
+
+def assert_runner_contract_requires_meter_workflows_for_managed_workflows() -> None:
+    verifier = load_verifier()
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
+        config_text = original_config.read_text()
+        config_path.write_text(
+            config_text.replace(
+                'included_workflows = ["ci", "backtester_ci", "ci_runner_debug", "rust_probe"]',
+                'included_workflows = ["ci", "ci_runner_debug", "rust_probe"]',
+            ),
+            encoding="utf-8",
+        )
+        verifier.DEFAULT_RUNNERS_CONFIG = config_path
+        try:
+            errors = verifier.verify_github_actions_runner_contract(
+                {".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml")}
+            )
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    if not any("meter.included_workflows" in error and "backtester_ci" in error for error in errors):
+        raise AssertionError(f"runner contract must reject unmanaged meter workflow drift, got: {errors}")
+
+
+def assert_runner_contract_requires_meter_api_limits() -> None:
+    verifier = load_verifier()
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
+        config_text = original_config.read_text()
+        config_path.write_text(
+            config_text.replace(
+                """
+[meter.api_limits]
+workflow_runs_per_page = 100
+run_jobs_per_page = 100
+run_artifacts_per_page = 100
+branch_pull_requests_per_page = 20
+draft_timeline_items = 100
+""",
+                "",
+            ),
+            encoding="utf-8",
+        )
+        verifier.DEFAULT_RUNNERS_CONFIG = config_path
+        try:
+            errors = verifier.verify_github_actions_runner_contract(
+                {".github/workflows/ci.yml": repo_workflow_text(".github/workflows/ci.yml")}
+            )
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    if not any("meter.api_limits" in error for error in errors):
+        raise AssertionError(f"runner contract must reject missing meter api limits, got: {errors}")
+
+
+def assert_debug_workflow_rejects_non_manual_trigger() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(DEBUG_WORKFLOW_PATH)
+    with_push = replace_once(
+        workflow,
+        "on:\n  workflow_dispatch:\n",
+        "on:\n  push:\n    branches: [main]\n  workflow_dispatch:\n",
+    )
+    errors = verifier.verify_ci_runner_debug_workflow({DEBUG_WORKFLOW_PATH: with_push})
+    if not any("manual-only" in error and "workflow_dispatch" in error for error in errors):
+        raise AssertionError(f"debug workflow must reject non-manual triggers, got: {errors}")
+
+
+def assert_debug_workflow_checks_each_ssh_runner_step() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(DEBUG_WORKFLOW_PATH)
+    unpinned_first_job = replace_once(
+        workflow,
+        f"uses: {SSH_RUNNER_ACTION} # v2.0",
+        "uses: ubicloud/ssh-runner@v2",
+    )
+    errors = verifier.verify_ci_runner_debug_workflow({DEBUG_WORKFLOW_PATH: unpinned_first_job})
+    if not any("debug-heavy" in error and SSH_RUNNER_ACTION in error for error in errors):
+        raise AssertionError(f"debug verifier must check each SSH runner step, got: {errors}")
+
+
+def assert_bootstrap_uses_onepassword_key_generation() -> None:
+    sync_script = load_sync_ci_debug_ssh_script()
+    commands: list[tuple[list[str], str | None]] = []
+    private_key = "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----"
+
+    def fake_run_checked(
+        command: list[str], *, input_text: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append((command, input_text))
+        if command and command[0] == "ssh-keygen":
+            key_path = pathlib.Path(command[command.index("-f") + 1])
+            key_path.write_text(private_key, encoding="utf-8")
+            key_path.with_suffix(".pub").write_text("ssh-ed25519 AAAATEST test\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    sync_script.run_checked = fake_run_checked
+    sync_script.onepassword_item_exists = lambda config: False
+    config = {
+        "ssh_public_key_secret": "SSH_PUBLIC_KEY",
+        "onepassword_vault": "Private",
+        "onepassword_item_title": "bolt-v2 CI runner debug SSH",
+        "onepassword_public_key_field": "public key",
+        "onepassword_private_key_field": "private key",
+    }
+    with contextlib.redirect_stdout(io.StringIO()):
+        sync_script.bootstrap_onepassword_item(config)
+    if any(command and command[0] == "ssh-keygen" for command, _ in commands):
+        raise AssertionError("bootstrap must let 1Password generate the SSH key, not local ssh-keygen")
+    create_commands = [command for command, _ in commands if command[:3] == ["op", "item", "create"]]
+    if not create_commands or not any(
+        arg == "--ssh-generate-key" or arg.startswith("--ssh-generate-key=")
+        for arg in create_commands[0]
+    ):
+        raise AssertionError(f"bootstrap must use op item create --ssh-generate-key, got: {commands}")
+    if any(private_key in arg for command, _ in commands for arg in command):
+        raise AssertionError(f"bootstrap must not pass private key material on argv, got: {commands}")
+
+
+def assert_sync_errors_redact_command_arguments() -> None:
+    sync_script = load_sync_ci_debug_ssh_script()
+    secret_arg = "-----BEGIN OPENSSH PRIVATE KEY-----private-----END OPENSSH PRIVATE KEY-----"
+    exc = subprocess.CalledProcessError(
+        1,
+        ["op", "item", "create", f"private key[password]={secret_arg}"],
+        output="",
+        stderr="",
+    )
+    message = sync_script.called_process_error_message(exc)
+    if secret_arg in message or "private key[password]" in message or "op item create" in message:
+        raise AssertionError(f"CalledProcessError message must redact command arguments, got: {message!r}")
+    if "exit 1" not in message:
+        raise AssertionError(f"CalledProcessError message must include exit status, got: {message!r}")
+
+
+def assert_sync_public_key_uses_stdin() -> None:
+    sync_script = load_sync_ci_debug_ssh_script()
+    public_key = "ssh-ed25519 AAAATEST operator@example"
+    commands: list[tuple[list[str], str | None]] = []
+
+    def fake_run_checked(
+        command: list[str], *, input_text: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append((command, input_text))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    sync_script.read_onepassword_field = lambda config, field: public_key
+    sync_script.github_repository = lambda: "seungpyoson/bolt-v2"
+    sync_script.run_checked = fake_run_checked
+    config = {
+        "ssh_public_key_secret": "SSH_PUBLIC_KEY",
+        "onepassword_vault": "Private",
+        "onepassword_item_title": "bolt-v2 CI runner debug SSH",
+        "onepassword_public_key_field": "public key",
+    }
+    with contextlib.redirect_stdout(io.StringIO()):
+        sync_script.sync_public_key_to_github(config)
+
+    if len(commands) != 1:
+        raise AssertionError(f"sync must run exactly one gh command, got: {commands}")
+    command, input_text = commands[0]
+    if "--body" in command or public_key in command:
+        raise AssertionError(f"sync must not pass public key on argv, got: {command}")
+    if input_text != public_key:
+        raise AssertionError(f"sync must pass public key on stdin, got: {input_text!r}")
+
+
+def assert_security_key_public_prefix_is_validated() -> None:
+    sync_script = load_sync_ci_debug_ssh_script()
+    sync_script.validate_public_key("sk-ssh-ed25519@openssh.com AAAATEST")
+    try:
+        sync_script.validate_public_key("ssh-ed25519-sk@openssh.com AAAATEST")
+    except RuntimeError:
+        return
+    raise AssertionError("validate_public_key must reject the invalid ssh-ed25519-sk@ prefix")
+
+
+def assert_backtester_detect_includes_runner_config() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    if "            ci/github-actions-runners.toml \\\n" not in workflow:
+        workflow = replace_once(
+            workflow,
+            "            rust-toolchain.toml \\\n",
+            "            rust-toolchain.toml \\\n            ci/github-actions-runners.toml \\\n",
+        )
+    bad = workflow.replace("            ci/github-actions-runners.toml \\\n", "")
+    bad_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
+    if not any("backtester detect paths must include ci/github-actions-runners.toml" in error for error in bad_errors):
+        raise AssertionError(f"backtester detector must reject missing runner config path, got: {bad_errors}")
+    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": workflow})
+    if any("backtester detect paths must include ci/github-actions-runners.toml" in error for error in good_errors):
+        raise AssertionError(f"backtester detector path check must pass when present, got: {good_errors}")
+
+
+def assert_actionlint_rejects_stale_config_variables() -> None:
+    verifier = load_verifier()
+    actionlint = (REPO_ROOT / ".github" / "actionlint.yaml").read_text(encoding="utf-8")
+    stale_actionlint = replace_once(
+        actionlint,
+        "\nconfig-secrets:\n",
+        "\n  - CI_RUNNER_REMOVED\n\nconfig-secrets:\n",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        actionlint_path = pathlib.Path(tmp) / "actionlint.yaml"
+        actionlint_path.write_text(stale_actionlint, encoding="utf-8")
+        errors = verifier.verify_actionlint_runner_contract(
+            verifier.repo_workflow_texts(),
+            actionlint_path=actionlint_path,
+        )
+    if not any("stale config variable 'CI_RUNNER_REMOVED'" in error for error in errors):
+        raise AssertionError(f"actionlint contract must reject stale config variables, got: {errors}")
+
+
+def assert_source_fence_static_ignores_comments() -> None:
+    verifier = load_verifier()
+    justfile_text = """
+source-fence-static:
+    # cargo fetch and scripts/verify_runtime_capture_yaml.py stay in source-fence
+    # python3 scripts/rust_verification.py cargo --repo . -- test stays remote-only
+    python3 scripts/test_verify_runtime_capture_yaml.py
+    python3 scripts/test_lane_governor.py
+    python3 scripts/test_verify_lane_governance.py
+    python3 scripts/verify_lane_governance.py
+
+source-fence: source-fence-static
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
+    python3 scripts/verify_runtime_capture_yaml.py
+"""
+    errors = verifier.verify_source_fence_static_recipe(justfile_text)
+    if errors:
+        raise AssertionError(f"source-fence-static comments must not trigger compile-heavy errors, got: {errors}")
+
+    active_bad = justfile_text.replace(
+        "    # python3 scripts/rust_verification.py cargo --repo . -- test stays remote-only",
+        "    python3 scripts/rust_verification.py cargo --repo . -- test",
+    )
+    bad_errors = verifier.verify_source_fence_static_recipe(active_bad)
+    if not any("must not invoke wrapper-routed Cargo" in error for error in bad_errors):
+        raise AssertionError(f"source-fence-static active wrapper cargo must still fail, got: {bad_errors}")
+
+    missing_lane_check = justfile_text.replace("    python3 scripts/verify_lane_governance.py\n", "")
+    missing_errors = verifier.verify_source_fence_static_recipe(missing_lane_check)
+    if not any("must run python3 scripts/verify_lane_governance.py" in error for error in missing_errors):
+        raise AssertionError(f"source-fence-static must require lane governance meta-check, got: {missing_errors}")
+
+    commented_lane_test = justfile_text.replace(
+        "    python3 scripts/test_lane_governor.py",
+        "    # python3 scripts/test_lane_governor.py",
+    )
+    commented_errors = verifier.verify_source_fence_static_recipe(commented_lane_test)
+    if not any("must run python3 scripts/test_lane_governor.py" in error for error in commented_errors):
+        raise AssertionError(f"source-fence-static comments must not satisfy lane test wiring, got: {commented_errors}")
+
+
+def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        policy_path = pathlib.Path(tmp) / "rust-verification.toml"
+        policy_path.write_text("schema_version = [\n", encoding="utf-8")
+        try:
+            verifier.load_rust_verification_policy_toml(policy_path, "ci/rust-verification.toml")
+        except verifier.PolicyError as exc:
+            if "ci/rust-verification.toml is invalid TOML" not in str(exc):
+                raise AssertionError(str(exc)) from exc
+            return
+    raise AssertionError("invalid rust-verification TOML must raise PolicyError")
+
+
 def without_pr_concurrency(workflow: str) -> str:
     return replace_once(
         workflow,
         """concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && format('pr-{0}-deferred', github.event.number)
+        || github.event_name == 'pull_request'
+        && format('pr-{0}-full', github.event.number)
+        || github.event_name == 'workflow_dispatch'
+        && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        || github.event_name == 'workflow_dispatch' }}
 
 """,
         "",
@@ -739,6 +2076,144 @@ def assert_strip_comment_handles_single_quoted_backslash() -> None:
     actual = verifier.strip_comment(line)
     if actual != expected:
         raise AssertionError(f"single-quoted backslash comment stripping failed: {actual!r}")
+
+
+def assert_workflow_hygiene_reviewer_regressions() -> None:
+    verifier = load_verifier()
+
+    url_fragment_command = "URL=https://example.com/api#fragment ; cargo build --target-dir /tmp/raw"
+    if verifier.strip_comment(url_fragment_command) != url_fragment_command:
+        raise AssertionError("unquoted # inside a shell word must not hide the rest of the command")
+
+    trailing_comment = "run: echo ok # trailing comment"
+    if verifier.strip_comment(trailing_comment) != "run: echo ok":
+        raise AssertionError("whitespace-prefixed trailing comments must still be stripped")
+
+    upload_probe = replace_once(
+        BASE_WORKFLOW,
+        "      - run: just fmt-check",
+        '      - run: echo "actions/upload-artifact@"\n      - run: just fmt-check',
+    )
+    upload_errors = verifier.verify_text(upload_probe, BASE_ACTION, BASE_NEXTEST_CONFIG)
+    if any("actions/upload-artifact must be pinned" in error for error in upload_errors):
+        raise AssertionError(f"action prose must not be treated as an upload-artifact action: {upload_errors!r}")
+
+    rust_cache_probe = replace_once(
+        BASE_WORKFLOW,
+        "      - run: just deny",
+        '      - run: echo "Swatinem/rust-cache@"\n      - run: just deny',
+    )
+    rust_cache_errors = verifier.verify_text(rust_cache_probe, BASE_ACTION, BASE_NEXTEST_CONFIG)
+    if any("shared Cargo registry/git" in error for error in rust_cache_errors):
+        raise AssertionError(f"action prose must not be treated as a rust-cache action: {rust_cache_errors!r}")
+
+    dynamic_env_cases = {
+        "RUSTFLAGS raw output override must be classified": """
+            E=RUSTFLAGS
+            export $E='--out-dir=/tmp/raw-out'
+            cargo build
+        """,
+        "CARGO_BUILD_RUSTFLAGS raw output override must be classified": """
+            E=CARGO_BUILD_RUSTFLAGS
+            export $E='--artifact-dir=/tmp/raw-artifacts'
+            cargo build
+        """,
+        "CARGO_ENCODED_RUSTFLAGS raw output override must be classified": """
+            E=CARGO_ENCODED_RUSTFLAGS
+            export $E='--out-dir=/tmp/raw-out'
+            cargo build
+        """,
+        "CARGO_HOME raw cache override must be classified": """
+            E=CARGO_HOME
+            export $E=/tmp/cargo-home
+            cargo build
+        """,
+        "RUSTUP_HOME raw toolchain override must be classified": """
+            E=RUSTUP_HOME
+            export $E=/tmp/rustup-home
+            cargo build
+        """,
+        "CARGO_INCREMENTAL raw cache override must be classified": """
+            E=CARGO_INCREMENTAL
+            export $E=1
+            cargo build
+        """,
+        "CARGO_INSTALL_ROOT install output override must be classified": """
+            E=CARGO_INSTALL_ROOT
+            export $E=/tmp/install-root
+            cargo install cargo-deny
+        """,
+        "RUSTC_WRAPPER raw compiler wrapper must be classified": """
+            E=RUSTC_WRAPPER
+            export $E=/tmp/wrapper
+            cargo build
+        """,
+        "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified": """
+            E=RUSTC_WORKSPACE_WRAPPER
+            export $E=/tmp/workspace-wrapper
+            cargo build
+        """,
+    }
+    for expected, script in dynamic_env_cases.items():
+        errors = verifier.raw_rust_storage_errors(textwrap.dedent(script))
+        if expected not in errors:
+            raise AssertionError(f"dynamic env alias did not classify {expected!r}: {errors!r}")
+
+    rustflags_expected = "RUSTFLAGS raw output override must be classified"
+    rustflags_variable_cases = [
+        'OUT="--out-dir=/tmp/raw"; RUSTFLAGS="$OUT" cargo build',
+        'OUT="--artifact-dir=/tmp/raw"; env RUSTFLAGS="$OUT" cargo build',
+        'OUT="--out-dir=/tmp/raw"\nRUSTFLAGS="$OUT" cargo build',
+    ]
+    for script in rustflags_variable_cases:
+        errors = verifier.raw_rust_storage_errors(textwrap.dedent(script))
+        if rustflags_expected not in errors:
+            raise AssertionError(f"rustflags variable output override was not rejected: {script!r} -> {errors!r}")
+
+    redirection_expected = "cargo --target-dir raw target override must be classified"
+    advanced_redirection_cases = [
+        "env &> out -u FOO cargo build --target-dir /tmp/raw",
+        "env &>> out -u FOO cargo build --target-dir /tmp/raw",
+        "env >& out -u FOO cargo build --target-dir /tmp/raw",
+        "env <& input -u FOO cargo build --target-dir /tmp/raw",
+        "env <<< input -u FOO cargo build --target-dir /tmp/raw",
+    ]
+    for script in advanced_redirection_cases:
+        errors = verifier.raw_rust_storage_errors(script)
+        if redirection_expected not in errors:
+            raise AssertionError(f"advanced redirection hid raw cargo target override: {script!r} -> {errors!r}")
+
+    s3_expected = "S3 active mutable target cache must be rejected"
+    s3_stdout_cases = {
+        "aws stdout extracted into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | tar -x -C target",
+        "aws stdout extracted into target with traditional tar options": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | tar xf - -C target",
+        "aws stdout piped through cat into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | cat > target/cache.tar",
+        "aws stdout piped through cat with >& redirection into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - | cat >& target/cache.tar",
+        "aws stdout redirected into target": "aws s3 cp s3://bolt-v2-active-cache/target.tar - > target/cache.tar",
+    }
+    for name, script in s3_stdout_cases.items():
+        errors = verifier.raw_rust_storage_errors(script)
+        if s3_expected not in errors:
+            raise AssertionError(f"{name} was not rejected: {errors!r}")
+
+    env_chdir_cases = [
+        "env -Ctarget aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+        "env -iC target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+        "env -u -C -C target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+    ]
+    for script in env_chdir_cases:
+        errors = verifier.raw_rust_storage_errors(script)
+        if s3_expected not in errors:
+            raise AssertionError(f"env chdir active target context was not rejected: {script!r} -> {errors!r}")
+
+    sudo_chdir_cases = [
+        "sudo -ED target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+        "sudo -u -D -D target aws s3 sync debug s3://bolt-v2-active-cache/target/debug",
+    ]
+    for script in sudo_chdir_cases:
+        errors = verifier.raw_rust_storage_errors(script)
+        if s3_expected not in errors:
+            raise AssertionError(f"sudo chdir active target context was not rejected: {script!r} -> {errors!r}")
 
 
 def assert_required_job_indentation_is_actionable() -> None:
@@ -804,7 +2279,7 @@ def assert_nextest_live_node_group_covers_bolt_v3_builders() -> None:
 # and BASE_ADVISORY_WORKFLOW; SHA_ALT is a different valid 40-hex SHA used to
 # exercise drift, and SHA_BASE_UPPER is the base SHA in uppercase to exercise
 # normalization.
-PIN_CONSISTENCY_SHA_BASE = "3771e22aa892e03fd35585fae288baad1755695c"
+PIN_CONSISTENCY_SHA_BASE = "e49978b799e49ff429d162b7a30601a569ab6538"
 PIN_CONSISTENCY_SHA_ALT = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 PIN_CONSISTENCY_SHA_BASE_UPPER = PIN_CONSISTENCY_SHA_BASE.upper()
 
@@ -849,6 +2324,31 @@ def assert_pin_consistency_same_sha_no_error() -> None:
     if drift_errors:
         raise AssertionError(
             f"expected no pin-drift errors for identical SHAs, got: {drift_errors!r}"
+        )
+
+
+def assert_pin_consistency_includes_setup_action() -> None:
+    """The composite setup action must be in the same install-action pin bucket."""
+    verifier = load_verifier()
+    setup_action_alt = BASE_ACTION.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_ALT}",
+        1,
+    )
+    errors = verifier.verify_workflows(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW},
+        setup_action_alt,
+        BASE_NEXTEST_CONFIG,
+    )
+    drift_errors = [e for e in errors if "taiki-e/install-action pin drift" in e]
+    if not drift_errors:
+        raise AssertionError(
+            f"expected setup-action pin drift to be reported, got: {errors!r}"
+        )
+    drift = drift_errors[0]
+    if ".github/actions/setup-environment/action.yml" not in drift:
+        raise AssertionError(
+            f"pin-drift error must include the setup action path, got: {drift!r}"
         )
 
 
@@ -991,6 +2491,32 @@ def assert_pin_consistency_rejects_multi_line_mutable_tag() -> None:
         )
 
 
+def assert_pin_consistency_rejects_block_scalar_mutable_tag() -> None:
+    """Gemini follow-up: block-scalar `uses:` with mutable tag must not bypass."""
+    verifier = load_verifier()
+    cases = [
+        "uses: >\n          taiki-e/install-action@v2",
+        "uses: |-\n          taiki-e/install-action@v2",
+        "uses: # bypass\n          taiki-e/install-action@v2",
+    ]
+    for replacement in cases:
+        advisory = _replace_advisory_pin_with(replacement)
+        errors = verifier.verify_install_action_pin_consistency(
+            {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory}
+        )
+        matching = [
+            e
+            for e in errors
+            if "advisory.yml:" in e
+            and "40-hex-SHA" in e
+            and "taiki-e/install-action@v2" in e
+        ]
+        if not matching:
+            raise AssertionError(
+                f"expected block/comment scalar @v2 to be flagged with file:line and 40-hex-SHA wording, got: {errors!r}"
+            )
+
+
 def assert_pin_consistency_rejects_multi_line_valid_sha() -> None:
     """BLOCK 1: multi-line `uses:` with valid SHA still emits error AND does not bucket."""
     verifier = load_verifier()
@@ -1101,7 +2627,7 @@ def assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action() -> N
 def workflow_with_detector_probe(script: str) -> str:
     return replace_once(
         BASE_WORKFLOW,
-        "      - run: echo detector",
+        "      # detector probe insertion point",
         "      - name: V6 raw Rust storage policy probe\n        run: |\n"
         + textwrap.indent(script.strip(), "          "),
     )
@@ -1205,6 +2731,129 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         """,
         "active target streamed through fused input redirection": """
             cat <target/debug/libbolt_v2.rmeta | aws s3 cp - s3://bolt-v2-active-cache/cache
+        """,
+        "s3 stdout written to active target through shell group redirection": """
+            { aws s3 cp s3://bolt-v2-active-cache/target.tar - ; } > target/cache.tar
+        """,
+        "s3 stdout written to active target through subshell redirection": """
+            ( aws s3 cp s3://bolt-v2-active-cache/target.tar - ) > target/cache.tar
+        """,
+        "active target moved through local staging before S3 upload": """
+            mv target my_cache
+            aws s3 cp my_cache s3://bolt-v2-active-cache/target.tar
+        """,
+        "s3 download moved from local staging into active target": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar my_cache
+            mv my_cache target
+        """,
+        "active target archived locally before S3 upload": """
+            tar -cf cache.tar target
+            aws s3 cp cache.tar s3://bolt-v2-active-cache/target.tar
+        """,
+        "active target zipped locally before S3 upload": """
+            zip -r cache.zip target
+            aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
+        """,
+        "active target zipped with option argument before S3 upload": """
+            zip -b /tmp cache.zip target
+            aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
+        """,
+        "active target zipped with clustered option argument before S3 upload": """
+            zip -qr0b /tmp cache.zip target
+            aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
+        """,
+        "active target zipped with exclude option argument before S3 upload": """
+            zip -x ignored cache.zip target
+            aws s3 cp cache.zip s3://bolt-v2-active-cache/target.zip
+        """,
+        "s3 archive downloaded locally before active target extraction": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
+            tar -xf cache.tar -C target
+        """,
+        "s3 archive extraction names active target as operand": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
+            tar xf cache.tar target
+        """,
+        "s3 zip downloaded locally before active target extraction": """
+            aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
+            unzip cache.zip -d target
+        """,
+        "s3 zip extraction names active target as operand": """
+            aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
+            unzip cache.zip target/*
+        """,
+        "s3 zip extraction skips option argument before archive": """
+            aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
+            unzip -x ignored cache.zip -d target
+        """,
+        "s3 zip extraction handles clustered directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.zip cache.zip
+            unzip -qd target cache.zip
+        """,
+        "s3 download moved to active target through mv target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            mv -t target s3_cache
+        """,
+        "s3 download moved to active target through clustered mv target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            mv -vt target s3_cache
+        """,
+        "s3 download moved to active target through concatenated mv target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            mv -ttarget s3_cache
+        """,
+        "s3 download copied to active target through cp target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            cp --target-directory=target s3_cache
+        """,
+        "s3 download copied to active target through clustered cp target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            cp -vt target s3_cache
+        """,
+        "s3 download copied to active target through concatenated cp target-directory option": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar s3_cache
+            cp -ttarget s3_cache
+        """,
+        "s3 tar extraction handles ordered traditional options": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
+            tar xCf target cache.tar
+        """,
+        "s3 tar extraction handles ordered clustered options": """
+            aws s3 cp s3://bolt-v2-active-cache/target.tar cache.tar
+            tar -xCf target cache.tar
+        """,
+        "s3 transfer hidden behind su command string": """
+            su -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind su long command string": """
+            su --command="aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind su clustered command string": """
+            su -mc "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind sg command string": """
+            sg docker -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind sg concatenated command string": """
+            sg docker -c"aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind runuser long command string": """
+            runuser --command="aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind runuser user command string": """
+            runuser user -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "s3 transfer hidden behind flock clustered command string": """
+            flock /tmp/lock -c"aws s3 cp s3://bolt-v2-active-cache/target.tar target"
+        """,
+        "env chdir ignores C inside unset option argument": """
+            env -uC -C target aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
+        "sudo chdir ignores D inside user option argument": """
+            sudo -uD -D target aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
+        "s3 transfer hidden behind rustup shell command string": """
+            rustup run nightly sh -c "aws s3 cp s3://bolt-v2-active-cache/target.tar target"
         """,
     }
     misses: list[str] = []
@@ -2488,6 +4137,12 @@ def workflow_with_exact_head_governance_cache_inputs(workflow: str) -> str:
     )
 
 
+def write_base_workflows(workflow_dir: pathlib.Path) -> None:
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+    (workflow_dir / "dispatch-ci-cancel.yml").write_text(BASE_DISPATCH_CI_CANCEL_WORKFLOW)
+
+
 def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -2496,8 +4151,7 @@ def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]
         verifier_path.write_text(VERIFIER_PATH.read_text())
 
         workflow_dir = tmp_path / ".github" / "workflows"
-        workflow_dir.mkdir(parents=True)
-        (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+        write_base_workflows(workflow_dir)
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
         action_path.parent.mkdir(parents=True)
@@ -2508,6 +4162,7 @@ def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
 
         (tmp_path / ".no-mistakes.yaml").write_text(no_mistakes_text)
+        write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")
         stdout = io.StringIO()
@@ -2525,8 +4180,7 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         verifier_path.write_text(VERIFIER_PATH.read_text())
 
         workflow_dir = tmp_path / ".github" / "workflows"
-        workflow_dir.mkdir(parents=True)
-        (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+        write_base_workflows(workflow_dir)
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
         action_path.parent.mkdir(parents=True)
@@ -2539,6 +4193,7 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         nextest_path = tmp_path / ".config" / "nextest.toml"
         nextest_path.parent.mkdir(parents=True)
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
+        write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_action_entrypoint")
         stdout = io.StringIO()
@@ -2556,8 +4211,7 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         verifier_path.write_text(VERIFIER_PATH.read_text())
 
         workflow_dir = tmp_path / ".github" / "workflows"
-        workflow_dir.mkdir(parents=True)
-        (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+        write_base_workflows(workflow_dir)
         (workflow_dir / workflow_name).write_text(workflow_text)
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
@@ -2567,6 +4221,7 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         nextest_path = tmp_path / ".config" / "nextest.toml"
         nextest_path.parent.mkdir(parents=True)
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
+        write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_workflow_entrypoint")
         stdout = io.StringIO()
@@ -2769,6 +4424,8 @@ commands:
   wrapped: command cargo fmt --check
   stdbufwrap: stdbuf -oL cargo build
   catchsegvwrap: catchsegv cargo test
+  chrtbatchwrap: chrt -b cargo build
+  chrtidlewrap: chrt -i cargo build
   nicewrap: nice cargo test
   timeniceadjust: time nice --adjustment 10 cargo test
   timeverbose: A=B time -v cargo test
@@ -2782,8 +4439,11 @@ commands:
   sudoflock: sudo flock -o "$TMPDIR/bolt.lock" cargo test
   sudousercommand: sudo -u bash cargo build
   sudoshell: sudo bash -lc 'cargo test --all'
+  envargv0: env --argv0 cargo cargo build
+  envshortargv0: env -a cargo cargo build
   envshell: env -i bash -lc 'cargo test --all'
   hyphenated: cargo-clippy --workspace
+  zigbuild: cargo zigbuild --release
   rustup: rustup run stable cargo test
   pyinline: python -c 'import os; os.system("cargo test")'
   timeout: timeout 30 cargo test
@@ -2806,6 +4466,10 @@ commands:
   managedencodedrustflags: CARGO_ENCODED_RUSTFLAGS='--out-dir\\x1f/tmp/raw-out' python3 scripts/rust_verification.py cargo --repo . -- check
   managedinstallroot: python3 scripts/rust_verification.py cargo --repo . -- install ripgrep --root /tmp/install-root
   managedrustcwrapper: RUSTC_WRAPPER=/tmp/wrapper python3 scripts/rust_verification.py cargo --repo . -- test
+  managedtimeout: timeout 30 python3 scripts/rust_verification.py cargo --repo . -- test
+  managedenvci: GITHUB_ACTIONS=true python3 scripts/rust_verification.py cargo --repo . -- test
+  managedenvcmdci: env GITHUB_ACTIONS=true python3 scripts/rust_verification.py cargo --repo . -- test
+  managedpythonflag: python3 -W ignore scripts/rust_verification.py cargo --repo . -- test
   no-mistakes-clippy-command: no-mistakes run -- clippy
   no-mistakes-nextest-command: no-mistakes run -- nextest run
   s3cache: aws s3 sync target s3://bolt-v2-active-cache/target
@@ -2813,11 +4477,9 @@ commands:
 """
     allowed_fixture = """
 commands:
-  test: python3 scripts/rust_verification.py cargo --repo . -- test
-  lint: python3 scripts/rust_verification.py cargo --repo . -- clippy --all-targets -- -D warnings
+  test: just source-fence-static
+  lint: just fmt-check
   format: python3 scripts/rust_verification.py cargo --repo . -- fmt --check
-  test-binary-arg: python3 scripts/rust_verification.py cargo --repo . -- test -- --target-dir /tmp/test-binary-arg
-  run-test-binary-arg: python3 scripts/rust_verification.py run --repo . test -- --target-dir /tmp/test-binary-arg
   exact-head-ci: gh run view --repo seungpyoson/bolt-v2 --commit "$GITHUB_SHA" --json conclusion
   sudouserarg: timeout 30 sudo -u cargo echo hello
 """
@@ -2884,6 +4546,8 @@ commands: { test: "cargo test" }
         "wrapped",
         "stdbufwrap",
         "catchsegvwrap",
+        "chrtbatchwrap",
+        "chrtidlewrap",
         "nicewrap",
         "timeniceadjust",
         "timeverbose",
@@ -2897,8 +4561,11 @@ commands: { test: "cargo test" }
         "sudoflock",
         "sudousercommand",
         "sudoshell",
+        "envargv0",
+        "envshortargv0",
         "envshell",
         "hyphenated",
+        "zigbuild",
         "rustup",
         "pyinline",
         "timeout",
@@ -2928,10 +4595,19 @@ commands: { test: "cargo test" }
     expected_s3 = ".no-mistakes.yaml commands.s3cache S3 active mutable target cache must be rejected"
     expected_storage = [
         ".no-mistakes.yaml commands.managedrustcwrapper RUSTC_WRAPPER raw compiler wrapper must be classified",
+        ".no-mistakes.yaml commands.managedenvci GITHUB_ACTIONS local CI spoof must not be checked in",
+        ".no-mistakes.yaml commands.managedenvcmdci GITHUB_ACTIONS local CI spoof must not be checked in",
+    ]
+    expected_wrapper = [
+        ".no-mistakes.yaml commands.managedtimeout wrapper-routed local compile-heavy Rust must be remote-first",
+        ".no-mistakes.yaml commands.managedenvci wrapper-routed local compile-heavy Rust must be remote-first",
+        ".no-mistakes.yaml commands.managedenvcmdci wrapper-routed local compile-heavy Rust must be remote-first",
+        ".no-mistakes.yaml commands.managedpythonflag wrapper-routed local compile-heavy Rust must be remote-first",
     ]
     fixture_result, fixture_errors = run_verifier_main_with_no_mistakes(raw_fixture)
     missing_fixture = [fragment for fragment in expected if fragment not in fixture_errors]
     missing_storage = [fragment for fragment in expected_storage if fragment not in fixture_errors]
+    missing_wrapper = [fragment for fragment in expected_wrapper if fragment not in fixture_errors]
     false_fixture = ".no-mistakes.yaml commands.docs raw Cargo drift must be classified" in fixture_errors
     allowed_result, allowed_errors = run_verifier_main_with_no_mistakes(allowed_fixture)
     false_allowed = [
@@ -2947,6 +4623,7 @@ commands: { test: "cargo test" }
         fixture_result == 0
         or missing_fixture
         or missing_storage
+        or missing_wrapper
         or expected_s3 not in fixture_errors
         or false_fixture
         or allowed_result != 0
@@ -2960,7 +4637,7 @@ commands: { test: "cargo test" }
             "no-mistakes raw-Cargo drift must fail through verifier main() while managed-wrapper "
             "and exact-head CI evidence commands stay allowed: "
             f"fixture_result={fixture_result} missing_fixture={missing_fixture!r} "
-            f"missing_storage={missing_storage!r} "
+            f"missing_storage={missing_storage!r} missing_wrapper={missing_wrapper!r} "
             f"expected_s3={expected_s3!r} false_fixture={false_fixture} fixture_errors={fixture_errors!r} "
             f"fixture_expected_raw_keys={fixture_expected_raw_keys!r} "
             f"allowed_result={allowed_result} false_allowed={false_allowed!r} "
@@ -3067,6 +4744,378 @@ def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
     ], good_errors
 
 
+def remove_fragment_if_present(text: str, fragment: str) -> str:
+    return text.replace(fragment, "", 1) if fragment in text else text
+
+
+def remove_all_fragments_if_present(text: str, fragment: str) -> str:
+    return text.replace(fragment, "") if fragment in text else text
+
+
+def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
+    for cache_input in (
+        "'config/**'",
+        "'contracts/**'",
+        "'docs/bolt-v3/**'",
+        "'.config/**'",
+        "'.github/**'",
+        "'scripts/**'",
+        "'specs/023-nt-order-intent-layer/**'",
+        "'specs/023-nt-research-analytics-platform/reference/**'",
+    ):
+        assert_error(
+            "test-archive fingerprint must include Rust and test graph inputs",
+            remove_all_fragments_if_present(BASE_WORKFLOW, f", {cache_input}"),
+        )
+
+    assert_error(
+        "nextest-fingerprint-reuse must be PR-only",
+        remove_fragment_if_present(BASE_WORKFLOW, " && github.event_name == 'pull_request'"),
+    )
+    assert_error(
+        "detector must deny fingerprint reuse outside pull_request",
+        remove_fragment_if_present(
+            BASE_WORKFLOW,
+            """          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          elif """,
+        ),
+    )
+
+    assert_error(
+        "detector must map fingerprint-reuse governance changes to any_changed=true",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            """          if [[ -n "$changed" ]]; then
+            echo "any_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          fi""",
+            """          if [[ -n "$changed" ]]; then
+            echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "any_changed=true" >> "$GITHUB_OUTPUT"
+          fi""",
+        ),
+    )
+    assert_error(
+        "detector must map fingerprint-reuse governance changes to any_changed=true",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            """          if [[ -n "$changed" ]]; then
+            echo "any_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          fi""",
+            """          if [[ -n "$changed" ]]; then
+            echo "any_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "any_changed=false" >> "$GITHUB_OUTPUT\"""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical script",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            """          if [[ -n "$changed" ]]; then""",
+            """          changed=""
+          if [[ -n "$changed" ]]; then""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical script",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            """          fi""",
+            """          fi
+          printf 'any_changed=false\\n' >> "$GITHUB_OUTPUT\"""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        if: github.event_name == 'pull_request'",
+            "        if: false",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        without_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        if: github.event_name == 'pull_request'\n",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        shell: bash\n",
+            """        shell: bash
+        working-directory: /tmp
+        continue-on-error: true
+""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        shell: bash\n",
+            """        shell: bash
+        "working-directory" : /tmp
+        "continue-on-error" : true
+""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        shell: bash\n",
+            """        shell: bash
+        "working-directory": /tmp
+        "continue-on-error": true
+""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse governance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "        if: github.event_name == 'pull_request'\n",
+            """        if: github.event_name == 'pull_request'
+        if: false
+""",
+        ),
+    )
+
+    narrowed_pathspec = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Detect fingerprint-reuse governance changes",
+        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/github-actions-runners.toml             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/workflows/ci.yml)
+          echo "decoy paths: .github/actions/setup-environment/action.yml ci/github-actions-runners.toml scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py\"""",
+    )
+    assert_error(
+        "detector must detect fingerprint-reuse governance changes",
+        narrowed_pathspec,
+    )
+    git_diff_decoy_pathspec = replace_once_after(
+        BASE_WORKFLOW,
+        "      - name: Detect fingerprint-reuse governance changes",
+        """          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
+        """          echo "$(git diff --name-only "${base_ref}...${head_ref}" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/github-actions-runners.toml scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
+          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
+    )
+    git_diff_decoy_pathspec = replace_once_after(
+        git_diff_decoy_pathspec,
+        "      - name: Detect fingerprint-reuse governance changes",
+        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/github-actions-runners.toml             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/workflows/ci.yml)""",
+    )
+    assert_error("detector must detect fingerprint-reuse governance changes", git_diff_decoy_pathspec)
+
+    relocated_job_if = replace_once(
+        BASE_WORKFLOW,
+        " && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main'",
+        "",
+    )
+    relocated_job_if = replace_once_after(
+        relocated_job_if,
+        "  nextest-fingerprint-reuse:",
+        "      - name: Resolve nextest fingerprint reuse",
+        """      - name: decoy needs.detector.outputs.fingerprint_reuse_allowed == 'true' github.ref != 'refs/heads/main'
+        run: echo "job-if decoy"
+
+      - name: Resolve nextest fingerprint reuse""",
+    )
+    assert_error("nextest-fingerprint-reuse must skip main branch", relocated_job_if)
+    assert_error("nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed", relocated_job_if)
+    folded_job_if = replace_once(
+        BASE_WORKFLOW,
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main'\n      || github.event_name == 'pull_request' }}",
+    )
+    assert_error("nextest-fingerprint-reuse must use the canonical job if", folded_job_if)
+    folded_job_if_with_canonical_first_line = replace_once(
+        BASE_WORKFLOW,
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}",
+        "    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}\n      || github.event_name == 'pull_request'",
+    )
+    assert_error("nextest-fingerprint-reuse must use the canonical job if", folded_job_if_with_canonical_first_line)
+
+    decoy_step = replace_once_after(
+        narrowed_pathspec,
+        "      - name: Determine build requirement",
+        "      - name: Determine build requirement",
+        """      - name: Decoy fingerprint reuse inputs
+        run: |
+          echo "id: fingerprint_reuse_inputs_changed"
+          echo ".github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/github-actions-runners.toml scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py"
+
+      - name: Determine build requirement""",
+    )
+    assert_error("detector must detect fingerprint-reuse governance changes", decoy_step)
+
+    stale_fingerprint_with_decoy = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        '          --current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
+        '          --current-fingerprint "stale-fingerprint"',
+    )
+    stale_fingerprint_with_decoy = replace_once_after(
+        stale_fingerprint_with_decoy,
+        "  nextest-fingerprint-reuse:",
+        "      - name: Resolve nextest fingerprint reuse",
+        f"""      - name: Decoy resolver command
+        run: |
+          echo 'python3 scripts/ci_provenance.py resolve-fingerprint --current-run-id "${{{{ github.run_id }}}}" --current-fingerprint "${{{{ needs.test-archive.outputs.nextest_fingerprint }}}}" | tee -a "$GITHUB_OUTPUT"'
+
+      - name: Resolve nextest fingerprint reuse""",
+    )
+    assert_error("nextest-fingerprint-reuse must use secure current nextest fingerprint output", stale_fingerprint_with_decoy)
+    assert_error("nextest-fingerprint-reuse must run ci_provenance.py resolve-fingerprint", stale_fingerprint_with_decoy)
+    resolver_pipe_scalar = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        "        run: >",
+        "        run: |",
+    )
+    assert_error("nextest-fingerprint-reuse resolver step must match canonical envelope", resolver_pipe_scalar)
+    resolver_extra_workdir = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        "        shell: bash\n",
+        """        shell: bash
+        working-directory: /tmp
+""",
+    )
+    assert_error("nextest-fingerprint-reuse resolver step must match canonical envelope", resolver_extra_workdir)
+    resolver_extra_quoted_env = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        "          GITHUB_TOKEN: ${{ github.token }}\n",
+        """          GITHUB_TOKEN: ${{ github.token }}
+          "EXTRA": injected
+""",
+    )
+    assert_error("nextest-fingerprint-reuse resolver step must match canonical envelope", resolver_extra_quoted_env)
+    resolver_extra_quoted_env_spaced_colon = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        "          GITHUB_TOKEN: ${{ github.token }}\n",
+        """          GITHUB_TOKEN: ${{ github.token }}
+          "EXTRA" : injected
+""",
+    )
+    assert_error(
+        "nextest-fingerprint-reuse resolver step must match canonical envelope",
+        resolver_extra_quoted_env_spaced_colon,
+    )
+    fabricated_reuse_outputs = replace_once_after(
+        BASE_WORKFLOW,
+        "  nextest-fingerprint-reuse:",
+        """          | tee -a "$GITHUB_OUTPUT\"""",
+        """          | tee -a "$GITHUB_OUTPUT"
+          ; echo "reuse_found=true" >> "$GITHUB_OUTPUT"
+          ; echo "source_run_id=1" >> "$GITHUB_OUTPUT"
+          ; echo "source_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >> "$GITHUB_OUTPUT"
+          ; echo "source_artifact_id=1" >> "$GITHUB_OUTPUT\"""",
+    )
+    assert_error("nextest-fingerprint-reuse resolver step must match canonical script", fabricated_reuse_outputs)
+
+    assert_error(
+        "detector must determine fingerprint_reuse_allowed",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Determine fingerprint reuse allowance",
+            """          else
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          fi""",
+            """          else
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "value=true" >> "$GITHUB_OUTPUT\"""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse allowance step must match canonical script",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Determine fingerprint reuse allowance",
+            """          fi""",
+            """          fi
+          printf 'value=true\\n' >> "$GITHUB_OUTPUT\"""",
+        ),
+    )
+    assert_error(
+        "detector fingerprint-reuse allowance step must match canonical envelope",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Determine fingerprint reuse allowance",
+            "        shell: bash\n",
+            """        shell: bash
+        continue-on-error: true
+""",
+        ),
+    )
+
+    assert_error(
+        "gate must require nextest fingerprint reuse resolver success",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "  gate:",
+            """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
+              exit 1
+            fi""",
+            """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+            fi""",
+        ),
+    )
+    assert_error(
+        "gate must require nextest fingerprint reuse resolver success",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "  gate:",
+            """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
+              exit 1
+            fi""",
+            """            false || exit 0
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
+              exit 1
+            fi""",
+        ),
+    )
+    assert_error(
+        "gate must use canonical nextest fingerprint reuse branch",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "  gate:",
+            """          if [[ "$reuse_found" == "true" ]]; then
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then""",
+            """          if [[ "$reuse_found" == "true" ]]; then
+            eval 'exit 0'
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then""",
+        ),
+    )
+
+
 def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
     verifier = load_verifier()
     advisory = BASE_ADVISORY_WORKFLOW.replace(
@@ -3100,7 +5149,12 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "scripts/raw-substitution-backtick.sh": "#!/usr/bin/env bash\nx=`cargo build`\n",
             "scripts/raw-find-exec.sh": "#!/usr/bin/env bash\nfind . -name Cargo.toml -exec cargo build \\;\n",
             "scripts/raw-su.sh": "#!/usr/bin/env bash\nsu user -c 'cargo build'\n",
+            "scripts/raw-su-shell-arg.sh": "#!/usr/bin/env bash\nsu -s -c user -c 'cargo build'\n",
             "scripts/raw-runuser.sh": "#!/usr/bin/env bash\nrunuser -u user -- cargo build\n",
+            "scripts/raw-flock.sh": "#!/usr/bin/env bash\nflock /tmp/lock -ccargo\\ build\n",
+            "scripts/raw-flock-option-arg.sh": "#!/usr/bin/env bash\nflock -w -c /tmp/lock -c 'cargo build'\n",
+            "scripts/raw-chrt-batch.sh": "#!/usr/bin/env bash\nchrt -b cargo build\n",
+            "scripts/raw-env-argv0.sh": "#!/usr/bin/env bash\nenv --argv0 cargo cargo build\n",
             "scripts/multiline-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo build\"\nbash -c \"$CMD\"\n",
             "scripts/multiline-quoted-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo\nbuild --target-dir /tmp/raw\"\nbash -c \"$CMD\"\n",
             "scripts/comment-blind.sh": "# comment with unbalanced quote '\ncargo build\necho 'closing quote'\n",
@@ -3155,8 +5209,14 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"script find-exec raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-su.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script su raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-su-shell-arg.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script su shell-arg raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-runuser.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script runuser raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-flock.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script flock raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-flock-option-arg.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script flock option-arg raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/multiline-eval.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script multiline eval raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/multiline-quoted-eval.sh" in error and expected in error for error in repo_errors):
@@ -3204,6 +5264,21 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"s3api get-object raw-storage drift was silent: {repo_errors!r}")
 
 
+def assert_cargo_named_just_recipe_headers_are_not_raw_cargo_commands() -> None:
+    verifier = load_verifier()
+    errors = verifier.verify_repo_automation_texts(
+        {
+            "justfile": (
+                "cargo-shim-tests:\n"
+                "    python3 -m pytest scripts/test_cargo_shim.py -q\n"
+            )
+        }
+    )
+    expected = "repo automation raw Cargo must use managed rust_verification wrapper"
+    if any(expected in error for error in errors):
+        raise AssertionError(f"cargo-named just recipe header was treated as raw cargo: {errors!r}")
+
+
 def assert_ci_lint_runs_rust_verification_cache_retention_tests() -> None:
     justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     expected = "python3 scripts/test_rust_verification_cache_retention.py"
@@ -3211,11 +5286,139 @@ def assert_ci_lint_runs_rust_verification_cache_retention_tests() -> None:
         raise AssertionError("ci-lint-workflow must run rust verification cache retention self-tests")
 
 
+def assert_ci_lint_runs_verify_remote_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_verify_remote.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run remote verification watcher self-tests")
+
+
+def assert_ci_lint_runs_ci_provenance_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_ci_provenance.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run CI provenance self-tests")
+
+
 def assert_ci_lint_runs_command_understanding_tests() -> None:
     justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     expected = "python3 scripts/test_command_understanding.py"
     if expected not in justfile:
         raise AssertionError("ci-lint-workflow must run command understanding self-tests")
+
+
+def assert_ci_lint_runs_rust_probe_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_run_rust_probe.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run Rust Probe runner self-tests")
+
+
+def assert_ci_lint_runs_cancel_obsolete_dispatch_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_cancel_obsolete_dispatch_runs.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run dispatch cancellation self-tests")
+
+
+def assert_github_scripts_are_repo_automation_fenced() -> None:
+    verifier = load_verifier()
+    expected_glob = (verifier.REPO_ROOT / ".github" / "scripts", "*.sh")
+    if expected_glob not in verifier.DEFAULT_REPO_AUTOMATION_GLOBS:
+        raise AssertionError(".github/scripts/*.sh must be covered by repo automation globs")
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    if ".github/scripts/*.sh" not in justfile:
+        raise AssertionError("ci-lint-workflow must scan .github/scripts/*.sh")
+
+    raw_cargo_message = "repo automation raw Cargo must use managed rust_verification wrapper"
+    probe_script = (REPO_ROOT / ".github" / "scripts" / "run-rust-probe.sh").read_text(encoding="utf-8")
+    clean_errors = verifier.verify_repo_automation_texts({".github/scripts/run-rust-probe.sh": probe_script})
+    if any(raw_cargo_message in error for error in clean_errors):
+        raise AssertionError(f"Rust Probe wrapper argv arrays must not be treated as raw cargo: {clean_errors!r}")
+
+    raw_errors = verifier.verify_repo_automation_texts(
+        {".github/scripts/future-sibling.sh": "#!/usr/bin/env bash\ncargo build\n"}
+    )
+    if not any(raw_cargo_message in error for error in raw_errors):
+        raise AssertionError(f".github/scripts raw cargo drift was silent: {raw_errors!r}")
+
+    array_errors = verifier.verify_repo_automation_texts(
+        {".github/scripts/argv-array.sh": "#!/usr/bin/env bash\nprobe_args=(nextest run --locked --test target)\n"}
+    )
+    if any(raw_cargo_message in error for error in array_errors):
+        raise AssertionError(f"plain argv array data must not be treated as a launch: {array_errors!r}")
+
+    wrapper_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/wrapper-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(nextest run --locked --test target)\n"
+                'python3 scripts/rust_verification.py cargo --repo . -- "${probe_args[@]}"\n'
+            )
+        }
+    )
+    if any(raw_cargo_message in error for error in wrapper_array_errors):
+        raise AssertionError(f"wrapper-routed argv array data must stay allowed: {wrapper_array_errors!r}")
+
+    wrapper_star_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/wrapper-star-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(nextest run --locked --test target)\n"
+                'python3 scripts/rust_verification.py cargo --repo . -- "${probe_args[*]}"\n'
+            )
+        }
+    )
+    if any(raw_cargo_message in error for error in wrapper_star_array_errors):
+        raise AssertionError(f"wrapper-routed star argv array data must stay allowed: {wrapper_star_array_errors!r}")
+
+    cargo_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/cargo-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(cargo build --release)\n"
+                '"${probe_args[@]}"\n'
+            )
+        }
+    )
+    if not any(raw_cargo_message in error for error in cargo_array_errors):
+        raise AssertionError(f"cargo array execution raw cargo drift was silent: {cargo_array_errors!r}")
+
+    nextest_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/nextest-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(nextest run --locked --test target)\n"
+                '"${probe_args[@]}"\n'
+            )
+        }
+    )
+    if not any(raw_cargo_message in error for error in nextest_array_errors):
+        raise AssertionError(f"nextest array execution raw cargo drift was silent: {nextest_array_errors!r}")
+
+    star_array_errors = verifier.verify_repo_automation_texts(
+        {
+            ".github/scripts/star-array.sh": (
+                "#!/usr/bin/env bash\n"
+                "probe_args=(nextest run --locked --test target)\n"
+                '"${probe_args[*]}"\n'
+            )
+        }
+    )
+    if not any(raw_cargo_message in error for error in star_array_errors):
+        raise AssertionError(f"star array execution raw cargo drift was silent: {star_array_errors!r}")
+
+    cargo_array_data_errors = verifier.verify_repo_automation_texts(
+        {".github/scripts/cargo-array-data.sh": "#!/usr/bin/env bash\nprobe_args=(cargo install --git https://example.invalid/tool.git)\n"}
+    )
+    if not any(raw_cargo_message in error for error in cargo_array_data_errors):
+        raise AssertionError(f"cargo-led argv array data raw cargo drift was silent: {cargo_array_data_errors!r}")
+
+    substitution_errors = verifier.verify_repo_automation_texts(
+        {".github/scripts/array-substitution.sh": "#!/usr/bin/env bash\nprobe_args=($(cargo build))\n"}
+    )
+    if not any(raw_cargo_message in error for error in substitution_errors):
+        raise AssertionError(f"array command substitution raw cargo drift was silent: {substitution_errors!r}")
 
 
 def assert_cargo_zigbuild_probe_has_no_redundant_true() -> None:
@@ -3227,23 +5430,31 @@ def assert_cargo_zigbuild_probe_has_no_redundant_true() -> None:
 
 def main() -> int:
     assert_ci_lint_runs_rust_verification_cache_retention_tests()
+    assert_ci_lint_runs_verify_remote_tests()
+    assert_ci_lint_runs_ci_provenance_tests()
     assert_ci_lint_runs_command_understanding_tests()
+    assert_ci_lint_runs_rust_probe_tests()
+    assert_ci_lint_runs_cancel_obsolete_dispatch_tests()
+    assert_github_scripts_are_repo_automation_fenced()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
     assert_pin_consistency_cross_file_mismatch_errors()
     assert_pin_consistency_same_sha_no_error()
+    assert_pin_consistency_includes_setup_action()
     assert_pin_consistency_rejects_mutable_tag()
     assert_pin_consistency_ignores_non_uses_mentions()
     assert_pin_consistency_accepts_uppercase_sha()
     assert_pin_consistency_intra_file_mismatch_uses_pin_drift_wording()
     assert_pin_consistency_rejects_multi_line_mutable_tag()
+    assert_pin_consistency_rejects_block_scalar_mutable_tag()
     assert_pin_consistency_rejects_multi_line_valid_sha()
     assert_pin_consistency_accepts_double_quoted_sha()
     assert_pin_consistency_accepts_single_quoted_sha()
     assert_pin_consistency_rejects_mismatched_quotes()
     assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action()
     assert_v6_red_raw_storage_checks_all_ci_automation()
+    assert_cargo_named_just_recipe_headers_are_not_raw_cargo_commands()
     assert_v6_red_yaml_anchor_jobs_do_not_hide_raw_storage()
     assert_v6_red_yaml_anchor_steps_do_not_hide_raw_storage()
     assert_v6_red_yaml_steps_aliases_are_rejected()
@@ -3251,21 +5462,38 @@ def main() -> int:
     assert_v6_red_local_composite_actions_are_scanned()
     assert_v6_red_additional_workflows_are_scanned()
     assert_shell_logical_lines_handles_crlf_continuations()
+    assert_workflow_hygiene_reviewer_regressions()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(
-        "concurrency group must key pull_request runs by PR number",
-        replace_once(BASE_WORKFLOW, "format('pr-{0}', github.event.number)", "github.ref_name"),
+        "concurrency group must split deferred PR runs from full CI runs",
+        replace_once(BASE_WORKFLOW, "format('pr-{0}-deferred', github.event.number)", "github.ref_name"),
     )
     assert_error(
         "concurrency group must keep non-PR runs isolated by ref and SHA",
         replace_once(BASE_WORKFLOW, "format('{0}-{1}', github.ref_name, github.sha)", "github.ref_name"),
     )
     assert_error(
-        "cancel-in-progress must be limited to pull_request events",
+        "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only",
         replace_once(
             BASE_WORKFLOW,
-            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+            """cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        || github.event_name == 'workflow_dispatch' }}""",
             "cancel-in-progress: true",
+        ),
+    )
+    assert_error(
+        "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only",
+        replace_once(
+            BASE_WORKFLOW,
+            """cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        || github.event_name == 'workflow_dispatch' }}""",
+            """cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        || github.event_name == 'workflow_dispatch' }}""",
         ),
     )
     assert_error(
@@ -3274,31 +5502,27 @@ def main() -> int:
             BASE_WORKFLOW,
             """  group: >-
     ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && format('pr-{0}-deferred', github.event.number)
+        || github.event_name == 'pull_request'
+        && format('pr-{0}-full', github.event.number)
+        || github.event_name == 'workflow_dispatch'
+        && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}""",
             "  group: format('pr-{0}', github.event.number)",
         ),
     )
     assert_error(
         "concurrency group must branch on pull_request event",
-        replace_once(
-            BASE_WORKFLOW,
-            "github.event_name == 'pull_request'\n        &&",
-            "github.event_name != 'pull_request'\n        &&",
-        ),
+        BASE_WORKFLOW.replace("github.event_name == 'pull_request'", "github.event_name != 'pull_request'"),
     )
     assert_error(
-        "concurrency group must key pull_request runs by PR number",
+        "workflow_dispatch full CI runs must use a full-CI concurrency group",
         replace_once(
             BASE_WORKFLOW,
-            """  group: >-
-    ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
-        || format('{0}-{1}', github.ref_name, github.sha) }}""",
-            """  group: >-
-    ${{ github.event_name == 'pull_request'
-        && format('{0}-{1}', github.ref_name, github.sha)
-        || format('pr-{0}', github.event.number) }}""",
+            "        || github.event_name == 'workflow_dispatch'\n        && format('{0}-full-ci', github.ref_name)\n",
+            "",
         ),
     )
     assert_parse_jobs_strips_comments()
@@ -3361,8 +5585,8 @@ def main() -> int:
         "check-aarch64 needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  check-aarch64:\n    name: check-aarch64\n    needs: detector",
-            "  check-aarch64:\n    name: check-aarch64",
+            "  check-aarch64:\n    name: check-aarch64\n    needs: [ci-policy, detector]",
+            "  check-aarch64:\n    name: check-aarch64\n    needs: ci-policy",
         ),
     )
     assert_error(
@@ -3379,14 +5603,6 @@ def main() -> int:
             BASE_WORKFLOW,
             "        run: sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross",
             "        run: sudo apt-get install -y gcc-aarch64-linux-gnu",
-        ),
-    )
-    assert_error(
-        "check-aarch64 must have no job-level if condition",
-        replace_once(
-            BASE_WORKFLOW,
-            "  check-aarch64:\n    name: check-aarch64\n    needs: detector\n    runs-on: ubuntu-latest",
-            "  check-aarch64:\n    name: check-aarch64\n    needs: detector\n    if: needs.detector.outputs.build_required != 'true'\n    runs-on: ubuntu-latest",
         ),
     )
     assert_error(
@@ -3653,19 +5869,19 @@ def main() -> int:
         replace_once(
             replace_once(
                 BASE_WORKFLOW,
-                "'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md'",
-                "'tests/**'",
+                "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+                "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
             ),
-            "'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md'",
-            "'tests/**'",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
         ),
     )
     assert_error(
         "test-archive cache must not use restore-keys",
         replace_once(
             BASE_WORKFLOW,
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - name: Install cargo-nextest",
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
         ),
     )
     # #400: every managed-target cache must declare a restore-keys prefix fallback.
@@ -3784,6 +6000,99 @@ def main() -> int:
         ),
     )
     assert_error(
+        "actions/upload-artifact must be pinned to a 40-character SHA",
+        replace_once(
+            BASE_WORKFLOW,
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "uses: actions/upload-artifact@v7",
+        ),
+    )
+    assert_error(
+        "actions/upload-artifact must be pinned to a 40-character SHA",
+        replace_once(
+            BASE_WORKFLOW,
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "uses: actions/upload-artifact@v7",
+        )
+        .replace(
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "PINNED_UPLOAD_ARTIFACT_PLACEHOLDER",
+            1,
+        )
+        .replace(
+            "uses: actions/upload-artifact@v7",
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            1,
+        )
+        .replace(
+            "PINNED_UPLOAD_ARTIFACT_PLACEHOLDER",
+            "uses: actions/upload-artifact@v7",
+            1,
+        ),
+    )
+    assert_error(
+        "actions/upload-artifact must be pinned to a 40-character SHA",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Upload artifact\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "      - name: Upload artifact\n        uses: actions/upload-artifact@v7",
+        ),
+    )
+    assert_error(
+        "test-archive must publish nextest archive fingerprint",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Publish nextest archive fingerprint
+        id: nextest-fingerprint
+        run: |
+          fingerprint="nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}"
+          mkdir -p .nextest-archive-fingerprint
+          printf '%s\\n' "$fingerprint" > .nextest-archive-fingerprint/cache-key.txt
+          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+      - name: Upload nextest archive fingerprint
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          path: .nextest-archive-fingerprint/cache-key.txt
+          if-no-files-found: error
+          retention-days: 30
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must expose secure nextest fingerprint output",
+        replace_once(
+            BASE_WORKFLOW,
+            "    outputs:\n      nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must expose exactly one secure nextest fingerprint output",
+        replace_once(
+            BASE_WORKFLOW,
+            '          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"',
+            '          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"\n'
+            '          echo "nextest_fingerprint=stale" >> "$GITHUB_OUTPUT"',
+        ),
+    )
+    assert_error(
+        "test-archive must publish nextest fingerprint before repo-controlled steps",
+        replace_once(
+            BASE_WORKFLOW,
+            "    steps:\n      - name: Publish nextest archive fingerprint",
+            "    steps:\n      - uses: ./.github/actions/setup-environment\n      - name: Publish nextest archive fingerprint",
+        ),
+    )
+    assert_error(
+        "test-archive cache and fingerprint keys must match",
+        BASE_WORKFLOW.replace(
+            "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock'",
+            "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('extra-input.txt', 'Cargo.lock'",
+        ),
+    )
+    assert_error(
         "test-shards must download nextest archive artifact",
         replace_once(
             BASE_WORKFLOW,
@@ -3803,32 +6112,91 @@ def main() -> int:
         "test-archive needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: detector",
-            "  test-archive:\n    name: nextest archive\n    needs: fmt-check",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector]",
+            "  test-archive:\n    name: nextest archive\n    needs: ci-policy",
         ),
     )
     assert_error(
         "test-archive must not need source-fence",
         replace_once(
             BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: detector",
-            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector]",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector, source-fence]",
         ),
+    )
+    assert_error(
+        "detector must expose fingerprint_reuse_allowed",
+        replace_once(
+            BASE_WORKFLOW,
+            "      fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}\n",
+            "",
+        ),
+    )
+    assert_error(
+        "detector must detect fingerprint-reuse governance changes",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Detect fingerprint-reuse governance changes",
+            "scripts/ci_provenance.py",
+            "scripts/not_ci_provenance.py",
+        ),
+    )
+    for governed_path, replacement in (
+        (".github/actions/setup-environment/action.yml", ".github/actions/not-setup-environment/action.yml"),
+        ("ci/github-actions-runners.toml", "ci/not-github-actions-runners.toml"),
+    ):
+        assert_error(
+            "detector must detect fingerprint-reuse governance changes",
+            replace_once_after(
+                BASE_WORKFLOW,
+                "      - name: Detect fingerprint-reuse governance changes",
+                governed_path,
+                replacement,
+            ),
+        )
+    assert_error(
+        "detector must determine fingerprint_reuse_allowed",
+        replace_once_after(
+            BASE_WORKFLOW,
+            "      - name: Determine fingerprint reuse allowance",
+            '            echo "value=true" >> "$GITHUB_OUTPUT"\n',
+            "",
+        ),
+    )
+    assert_error(
+        "nextest-fingerprint-reuse needs detector",
+        replace_once(
+            BASE_WORKFLOW,
+            "  nextest-fingerprint-reuse:\n    name: nextest fingerprint reuse\n    needs: [ci-policy, detector, test-archive]",
+            "  nextest-fingerprint-reuse:\n    name: nextest fingerprint reuse\n    needs: [ci-policy, test-archive]",
+        ),
+    )
+    assert_error(
+        "nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed",
+        replace_once(BASE_WORKFLOW, " && needs.detector.outputs.fingerprint_reuse_allowed == 'true'", ""),
     )
     assert_error(
         "test-shards needs test-archive",
         replace_once(
             BASE_WORKFLOW,
-            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: test-archive",
-            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: detector",
+            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]",
+            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: ci-policy",
         ),
     )
     assert_error(
         "test needs test-shards",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: test-shards",
-            "  test:\n    name: test\n    needs: detector",
+            "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]",
+            "  test:\n    name: test\n    needs: ci-policy",
+        ),
+    )
+    assert_error(
+        "nextest-fingerprint-reuse resolver must use bash",
+        without_once_after(
+            BASE_WORKFLOW,
+            "      - name: Resolve nextest fingerprint reuse",
+            "        shell: bash\n",
         ),
     )
     assert_error(
@@ -3839,8 +6207,8 @@ def main() -> int:
         "test must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: test-shards\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}",
-            "  test:\n    name: test\n    needs: test-shards",
+            "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]",
         ),
     )
     assert_error(
@@ -3867,16 +6235,28 @@ def main() -> int:
         "source-fence needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  source-fence:\n    name: source-fence\n    needs: detector",
-            "  source-fence:\n    name: source-fence",
+            "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]",
+            "  source-fence:\n    name: source-fence\n    needs: ci-policy",
         ),
     )
     assert_error(
         "source-fence must run just source-fence",
         replace_once(BASE_WORKFLOW, "- run: just source-fence", "- run: echo source-fence"),
     )
-    for job in ("fmt-check", "deny", "clippy", "source-fence", "test-archive", "test-shards", "test"):
+    for job in ("fmt-check", "deny", "clippy", "source-fence", "test-archive", "nextest-fingerprint-reuse", "test-shards", "test"):
         assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))
+    assert_error(
+        "nextest-fingerprint-reuse must skip main branch",
+        replace_once(BASE_WORKFLOW, " && github.ref != 'refs/heads/main'", ""),
+    )
+    assert_error(
+        "nextest-fingerprint-reuse must use secure current nextest fingerprint output",
+        replace_once(
+            BASE_WORKFLOW,
+            '--current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
+            "--current-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
+        ),
+    )
     assert_error(
         "fmt-check must run just fmt-check",
         replace_once(BASE_WORKFLOW, "- run: just fmt-check", "- run: echo skip fmt-check"),
@@ -3913,8 +6293,8 @@ def main() -> int:
         "pull_request paths-ignore must match baseline",
         replace_once(
             BASE_WORKFLOW,
-            "    branches: [main]\n    paths-ignore:\n",
-            "    branches: [main]\n    # paths-ignore:\n",
+            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]\n    paths-ignore:\n",
+            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]\n    # paths-ignore:\n",
         ),
     )
     assert_error(
@@ -3929,15 +6309,15 @@ def main() -> int:
         "build needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  build:\n    name: build\n    needs: detector",
-            "  build:\n    name: build",
+            "  build:\n    name: build\n    needs: [ci-policy, detector]",
+            "  build:\n    name: build\n    needs: ci-policy",
         ),
     )
     assert_error(
         "build must gate on needs.detector.outputs.build_required",
         replace_once(
             BASE_WORKFLOW,
-            "if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}",
+            "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.outputs.build_required == 'true' }}",
             "if: ${{ needs.detector.outputs.build_required != 'true' }}",
         ),
     )
@@ -3946,11 +6326,91 @@ def main() -> int:
         replace_once(
             replace_once(
                 BASE_WORKFLOW,
-                "    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}\n",
+                "    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.outputs.build_required == 'true' }}\n",
                 "",
             ),
             "      - uses: ./.github/actions/setup-environment",
             "      - if: needs.detector.outputs.build_required == 'true'\n        uses: ./.github/actions/setup-environment",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit needs source-fence",
+        replace_once(
+            BASE_WORKFLOW,
+            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
+            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must use always()",
+        replace_once(
+            BASE_WORKFLOW,
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must pass detector result from needs.detector.result",
+        replace_once(
+            BASE_WORKFLOW,
+            "--required-job detector=${{ needs.detector.result }}",
+            "--required-job detector=success\n          printf '%s\\n' '${{ needs.detector.result }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must pass build.required from needs.detector.outputs.build_required",
+        replace_once(
+            BASE_WORKFLOW,
+            "--conditional-job build.required=${{ needs.detector.outputs.build_required }}",
+            "--conditional-job build.required=true\n          printf '%s\\n' '${{ needs.detector.outputs.build_required }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must pass build.result from needs.build.result",
+        replace_once(
+            BASE_WORKFLOW,
+            "--conditional-job build.result=${{ needs.build.result }}",
+            "--conditional-job build.result=success\n          printf '%s\\n' '${{ needs.build.result }}'",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must record nextest fingerprint when present",
+        replace_once(
+            BASE_WORKFLOW,
+            '--nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
+            '--nextest-fingerprint ""',
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must use secure nextest fingerprint output",
+        replace_once(
+            BASE_WORKFLOW,
+            '--nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
+            "--nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
+        ),
+    )
+    assert_error(
+        "actions/upload-artifact must be pinned to a 40-character SHA",
+        replace_once(
+            BASE_WORKFLOW,
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "uses: actions/upload-artifact@v7",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit retention-days must match TOML",
+        replace_once(
+            BASE_WORKFLOW,
+            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 30",
+            "          name: ci-provenance-attempt-${{ github.run_attempt }}\n          path: ci-provenance.json\n          if-no-files-found: error\n          retention-days: 7",
+        ),
+    )
+    assert_error(
+        "gate must not read nextest_fingerprint",
+        replace_once(
+            BASE_WORKFLOW,
+            '          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then\n',
+            '          if [[ "${{ needs.ci-provenance-emit.outputs.nextest_fingerprint }}" != "" ]]; then\n',
         ),
     )
     assert_error("same-sha-main-evidence needs detector", replace_once(BASE_WORKFLOW, "    needs: detector\n    if: startsWith(github.ref, 'refs/tags/v')", "    if: startsWith(github.ref, 'refs/tags/v')"))
@@ -3987,8 +6447,8 @@ def main() -> int:
         "gate must check same-sha-main-evidence success",
         replace_once(
             BASE_WORKFLOW,
-            '          if [[ "$tag_ref" == "true" ]]; then\n',
-            '          if [[ "$tag_ref" == "true" ]]; then\n            exit 0\n',
+            '          if [[ "$policy_path" == "tag_reuse" ]]; then\n',
+            '          if [[ "$policy_path" == "tag_reuse" ]]; then\n            exit 0\n',
         ),
     )
     assert_error(
@@ -4095,7 +6555,7 @@ def main() -> int:
             "advisory.yml": replace_once(
                 BASE_ADVISORY_WORKFLOW,
                 """      - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none""",
@@ -4121,7 +6581,7 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none""",
@@ -4142,8 +6602,8 @@ def main() -> int:
         "ci.yml deny must install cargo-deny with pinned taiki-e/install-action",
         replace_once(
             BASE_WORKFLOW,
-            "uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c",
-            "uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c-suffix",
+            "uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538",
+            "uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538-suffix",
         ),
     )
     assert_error(
@@ -4151,14 +6611,14 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
       - run: just deny""",
             """      - run: just deny
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none""",
@@ -4558,7 +7018,7 @@ def main() -> int:
             BASE_WORKFLOW,
             """      - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none""",
@@ -4582,7 +7042,7 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-nextest
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none""",
@@ -4614,45 +7074,55 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-nextest
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
       - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4""",
             """      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none""",
         ),
     )
     assert_error(
-        "ci.yml build must not compile cargo-zigbuild from source",
+        "ci.yml build must install cargo-zigbuild with pinned taiki-e/install-action",
         replace_once(
             BASE_WORKFLOW,
-            """          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \\
-            --retry 10 \\
-            --retry-delay 3 \\
-            --retry-all-errors \\
-            --fail \\
-            --location \\
-            --show-error \\
-            --silent \\
-            --output "$archive" \\
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild\"""",
-            '          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked',
+            """      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none""",
+            """      - name: Install cargo-zigbuild
+        run: |
+          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked""",
+        ),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild with pinned taiki-e/install-action",
+        replace_once(
+            BASE_WORKFLOW,
+            "        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538\n        with:\n          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
+            "        uses: taiki-e/install-action@v2\n        with:\n          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
+        ),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild with pinned taiki-e/install-action",
+        replace_once(
+            BASE_WORKFLOW,
+            "          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
+            "          tool: cargo-zigbuild@${{ env.ZIGBUILD_VERSION }}",
+        ),
+    )
+    assert_error(
+        "ci.yml build install-action fallback must be none",
+        replace_once(
+            BASE_WORKFLOW,
+            "          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}\n          fallback: none",
+            "          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}\n          fallback: cargo-install",
         ),
     )
     assert_error(
@@ -4716,93 +7186,21 @@ def main() -> int:
         ),
     )
     assert_error(
-        "ci.yml build must verify cargo-zigbuild archive checksum",
-        replace_once(BASE_WORKFLOW, '          test "$actual" = "$expected"\n', ""),
-    )
-    assert_error(
-        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
-        replace_once(
-            BASE_WORKFLOW,
-            '          test "$actual" = "$expected"\n          tar --extract --xz --file "$archive"',
-            '          tar --extract --xz --file "$archive"\n          test "$actual" = "$expected"',
-        ),
-    )
-    assert_error(
-        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
-        replace_once(
-            replace_once(BASE_WORKFLOW, '          test "$actual" = "$expected"\n', ""),
-            "      - run: just build",
-            '''      - run: |
-          just build
-          test "$actual" = "$expected"''',
-        ),
-    )
-    assert_error(
-        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
-        replace_once(BASE_WORKFLOW, "          --retry-all-errors \\\n", ""),
-    )
-    assert_error(
-        "ci.yml build must use pinned cargo-zigbuild archive sha256",
-        replace_once(
-            BASE_WORKFLOW,
-            '          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"\n',
-            """          curl --fail --location --show-error --silent --output "$archive.sha256" "$base_url/$archive.sha256"
-          expected="$(awk '{print $1}' "$archive.sha256")"
-""",
-        ),
-    )
-    assert_error(
         "ci.yml build must install cargo-zigbuild before just build",
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-zigbuild
-        run: |
-          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \\
-            --retry 10 \\
-            --retry-delay 3 \\
-            --retry-all-errors \\
-            --fail \\
-            --location \\
-            --show-error \\
-            --silent \\
-            --output "$archive" \\
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild"
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none
       - run: just build""",
             """      - run: just build
       - name: Install cargo-zigbuild
-        run: |
-          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \\
-            --retry 10 \\
-            --retry-delay 3 \\
-            --retry-all-errors \\
-            --fail \\
-            --location \\
-            --show-error \\
-            --silent \\
-            --output "$archive" \\
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild\"""",
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none""",
         ),
     )
     assert_workflows_error(
@@ -4812,7 +7210,7 @@ def main() -> int:
             "advisory.yml": replace_once(
                 BASE_ADVISORY_WORKFLOW,
                 """      - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
@@ -4821,7 +7219,7 @@ def main() -> int:
                 """      - name: Check advisories
         run: just deny-advisories
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none""",
@@ -4832,8 +7230,8 @@ def main() -> int:
         "gate must use always()",
         replace_once(
             BASE_WORKFLOW,
-            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}",
-            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    if: ${{{{ always() && false }}}}",
+            f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}",
+            f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    if: ${{{{ always() && false }}}}",
         ),
     )
     assert_error(
@@ -4841,11 +7239,11 @@ def main() -> int:
         replace_once(
             replace_once(
                 BASE_WORKFLOW,
-                f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}\n",
-                f"  gate:\n    name: gate\n    {GATE_NEEDS}\n",
+                f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}\n",
+                f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n",
             ),
-            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - run: |",
-            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - if: ${{{{ always() }}}}\n        run: |",
+            f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - run: |",
+            f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - if: ${{{{ always() }}}}\n        run: |",
         ),
     )
     assert_error(
@@ -5064,6 +7462,26 @@ def main() -> int:
         action=replace_once(BASE_ACTION, "just --evaluate nextest_version", "just --evaluate cargo_nextest_version"),
     )
     assert_error(
+        "setup action must install just with pinned taiki-e/install-action",
+        action=replace_once(
+            BASE_ACTION,
+            """    - name: Install just
+      uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+      with:
+        tool: just@${{ inputs.just-version }}
+        fallback: none
+""",
+            """    - name: Install just
+      shell: bash
+      run: echo "${{ inputs.just-version }}"
+""",
+        ),
+    )
+    assert_error(
+        "setup action just install-action fallback must be none",
+        action=replace_once(BASE_ACTION, "        fallback: none\n    - name: Lint workflow contract", "        fallback: cargo-install\n    - name: Lint workflow contract"),
+    )
+    assert_error(
         "setup action step order drifted",
         action=replace_once(
             replace_once(
@@ -5164,9 +7582,48 @@ def main() -> int:
     )
     assert_v6_deploy_artifact_s3_stays_allowed()
     assert_v6_red_workflow_policy_gaps()
+    assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported()
+    assert_ci_provenance_config_contract()
+    assert_runner_contract_rejects_missing_and_extra_jobs()
+    assert_runner_contract_rejects_unmapped_workflow_jobs()
+    assert_runner_contract_requires_meter_workflows_for_managed_workflows()
+    assert_runner_contract_requires_meter_api_limits()
+    assert_debug_workflow_rejects_non_manual_trigger()
+    assert_debug_workflow_checks_each_ssh_runner_step()
+    assert_bootstrap_uses_onepassword_key_generation()
+    assert_sync_errors_redact_command_arguments()
+    assert_sync_public_key_uses_stdin()
+    assert_security_key_public_prefix_is_validated()
+    assert_backtester_detect_includes_runner_config()
+    assert_actionlint_rejects_stale_config_variables()
+    assert_source_fence_static_ignores_comments()
+    assert_rust_verification_policy_parse_errors_are_domain_specific()
+    assert_ci_policy_matrix()
+    assert_pull_request_type_parser_accepts_block_list_indentation()
+    assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
+    assert_ci_detector_forces_build_on_workflow_dispatch()
+    assert_ci_policy_heavy_lane_gaps_are_reported()
+    assert_gate_policy_truth_table_gaps_are_reported()
+    assert_ci_concurrency_split_gaps_are_reported()
+    assert_dispatch_cancel_watchdog_gaps_are_reported()
+
+    verifier = load_verifier()
+    runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"
+    assert runner_config.exists(), "ci/github-actions-runners.toml must exist"
+    real_workflows = verifier.repo_workflow_texts()
+    runner_errors = verifier.verify_github_actions_runner_contract(real_workflows)
+    assert not runner_errors, runner_errors
+    actionlint_errors = verifier.verify_actionlint_runner_contract(real_workflows)
+    assert not actionlint_errors, actionlint_errors
+    dispatch_cancel_errors = verifier.verify_dispatch_ci_cancel_workflow(real_workflows)
+    assert not dispatch_cancel_errors, dispatch_cancel_errors
+
     print("OK: CI workflow hygiene verifier self-tests passed.")
     return 0
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     sys.exit(main())

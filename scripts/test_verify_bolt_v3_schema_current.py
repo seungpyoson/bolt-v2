@@ -69,42 +69,11 @@ Entry `is_quote_quantity = true` is supported by sizing the entry quantity as qu
 Exit `is_quote_quantity = true` is rejected because exits are sized from held base position quantity.
 Forced-flat exits use the configured `forced_exit_order` template.
 When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders.
-Decision-evidence JSONL records use `schema_version = 6` for `order_intent`, `admission_decision`, and `strategy_input_snapshot` envelopes.
-Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent`, `decision`, or `snapshot`.
-The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.
+Decision-evidence JSONL records use `schema_version = 10` for `order_intent`, `admission_decision`, `strategy_input_snapshot`, `position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` envelopes.
+Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, or `fill`.
+The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `position_sizer_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, and `submit_reservation_fill` for fill metadata.
 `strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
-
-### `[chainlink_data_streams]`
-
-#### `[[chainlink_data_streams.feed_bindings]]`
-
-- `feed_id`
-- `instrument_id`
-- `report_schema_version`
-- `report_decimal_scale`
-- `price_precision`
-
-#### Chainlink reference-price data fields
-
-- `reconnect_max_attempts`: required; must be `0` so Chainlink reference WebSocket auth headers are regenerated only on DataClient connect
-
-Secrets must be SSM-only fields `api_key_ssm_parameter` and `api_secret_ssm_parameter`.
-
-#### PolyResearch reference-price data fields
-
-- `reconnect_max_attempts`: required, either `"unlimited"` or a positive integer
-
-Secrets must be the SSM-only field `api_key_ssm_parameter`.
-
-schema_version = 2
-strategy_instance_id = "configured_updown_main"
-
-[reference_current_price.source.chainlink_primary]
-provider = "chainlink_ws"
-client_id = "chainlink_reference"
-instrument_id = "BTC-USD.CHAINLINK"
-enabled = true
-required = false
+`position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-10 reservation records.
 
 ### `[parameters]`
 """
@@ -119,10 +88,6 @@ CURRENT_RUNTIME_CONTRACTS = """
 Order-submission and pre-submit rejection events map compiled NT order-template fields through
 `order_fields`: `expire_time_unix_nanos`, `trigger_price`, `activation_price`, `trigger_type`,
 `trigger_instrument_id`, `trailing_offset`, and `trailing_offset_type`.
-"""
-
-CURRENT_REFERENCE_CURRENT_PRICE_DOC = """
-Chainlink current-price and strike clients resolve feed ids from the root-owned `[chainlink_data_streams]` catalog by convention; clients do not declare a `feed_catalog` pointer.
 """
 
 
@@ -144,6 +109,17 @@ def test_validate_docs_accepts_current_terms() -> None:
     findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP)
     if findings:
         raise AssertionError(f"expected no findings, got {findings!r}")
+
+
+def test_validate_docs_checks_decision_evidence_schema_version_source() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        decision_evidence_source="pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 11;",
+    )
+
+    if "schema missing decision-evidence JSONL schema v11 contract" not in findings:
+        raise AssertionError(f"expected decision-evidence schema source drift finding, got {findings!r}")
 
 
 def test_validate_docs_rejects_wrong_active_speckit_context() -> None:
@@ -661,7 +637,7 @@ def test_validate_docs_requires_all_enabled_and_factory_gap_order_types() -> Non
 
 
 def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> None:
-    stale_schema = CURRENT_SCHEMA.replace("schema_version = 6", "schema_version = 5")
+    stale_schema = CURRENT_SCHEMA.replace("schema_version = 10", "schema_version = 9")
     stale_runtime_contracts = CURRENT_RUNTIME_CONTRACTS.replace("`activation_price`, ", "")
     stale_status_map = CURRENT_STATUS_MAP.replace("forced_exit_order", "exit_order")
     stale_maker_contract = (
@@ -684,110 +660,11 @@ def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> 
     )
 
     expected_fragments = [
-        "schema missing decision-evidence JSONL schema v6 contract",
+        "schema missing decision-evidence JSONL schema v10 contract",
         "runtime contracts missing order-template evidence field",
         "status map missing current phrase: Order construction uses",
         "maker scope contract still contains stale phrase",
         "maker scope data model still contains stale phrase",
-    ]
-    for fragment in expected_fragments:
-        if not any(fragment in finding for finding in findings):
-            raise AssertionError(f"expected {fragment!r} in findings, got {findings!r}")
-
-
-def test_validate_docs_rejects_reference_current_price_schema_drift() -> None:
-    missing_enabled = CURRENT_SCHEMA.replace("enabled = true\nrequired = false", "required = true")
-    missing_catalog = CURRENT_SCHEMA.replace("### `[chainlink_data_streams]`", "### `[clients.foo]`")
-    missing_prr_reconnect = CURRENT_SCHEMA.replace(
-        '`reconnect_max_attempts`: required, either `"unlimited"` or a positive integer',
-        '`reconnect_max_attempts`: optional',
-    )
-    stale_schema = (
-        CURRENT_SCHEMA
-        + """
-### `[reference_data]`
-
-Legacy reference_data path.
-
-[[clients.chainlink_strike.data.feed_bindings]]
-feed_catalog = "chainlink_data_streams"
-"""
-    )
-
-    enabled_findings = VERIFIER.validate_docs(missing_enabled, CURRENT_STATUS_MAP)
-    if not any("missing `enabled = true`" in finding for finding in enabled_findings):
-        raise AssertionError(f"expected missing enabled finding, got {enabled_findings!r}")
-    if not any("required = false" in finding for finding in enabled_findings):
-        raise AssertionError(f"expected required=false finding, got {enabled_findings!r}")
-
-    catalog_findings = VERIFIER.validate_docs(missing_catalog, CURRENT_STATUS_MAP)
-    if not any("chainlink_data_streams" in finding for finding in catalog_findings):
-        raise AssertionError(f"expected missing catalog finding, got {catalog_findings!r}")
-
-    reconnect_findings = VERIFIER.validate_docs(missing_prr_reconnect, CURRENT_STATUS_MAP)
-    if not any("PolyResearch" in finding or '"unlimited"' in finding for finding in reconnect_findings):
-        raise AssertionError(
-            f"expected missing PolyResearch reconnect_max_attempts finding, got {reconnect_findings!r}"
-        )
-
-    stale_findings = VERIFIER.validate_docs(stale_schema, CURRENT_STATUS_MAP)
-    expected_fragments = [
-        "schema still contains stale reference-current-price phrase",
-        "[reference_data]",
-        "clients.chainlink_strike.data.feed_bindings",
-        'feed_catalog = "chainlink_data_streams"',
-    ]
-    for fragment in expected_fragments:
-        if not any(fragment in finding for finding in stale_findings):
-            raise AssertionError(f"expected {fragment!r} in findings, got {stale_findings!r}")
-
-
-def test_validate_docs_rejects_reference_current_price_plan_spec_drift() -> None:
-    stale_doc = """
-[clients.chainlink_reference.data]
-feed_catalog = "chainlink_data_streams"
-"""
-
-    stale_findings = VERIFIER.validate_docs(
-        CURRENT_SCHEMA,
-        CURRENT_STATUS_MAP,
-        reference_current_price_plan=stale_doc,
-        reference_current_price_spec=stale_doc,
-    )
-    expected_fragments = [
-        "reference_current_price plan still contains stale phrase",
-        "reference_current_price design spec still contains stale phrase",
-        "missing current phrase",
-    ]
-    for fragment in expected_fragments:
-        if not any(fragment in finding for finding in stale_findings):
-            raise AssertionError(f"expected {fragment!r} in findings, got {stale_findings!r}")
-
-    current_findings = VERIFIER.validate_docs(
-        CURRENT_SCHEMA,
-        CURRENT_STATUS_MAP,
-        reference_current_price_plan=CURRENT_REFERENCE_CURRENT_PRICE_DOC,
-        reference_current_price_spec=CURRENT_REFERENCE_CURRENT_PRICE_DOC,
-    )
-    if current_findings:
-        raise AssertionError(f"expected current reference-current-price docs to pass, got {current_findings!r}")
-
-
-def test_validate_docs_rejects_retired_reference_readiness_trace() -> None:
-    stale_trace = """
-Reference readiness required configured quote evidence from the strategy-free reference quote probe.
-Cache-only instrument-ID membership remained fail-closed and was not treated as live reference-data freshness.
-"""
-
-    findings = VERIFIER.validate_docs(
-        CURRENT_SCHEMA,
-        CURRENT_STATUS_MAP,
-        production_readiness_trace=stale_trace,
-    )
-
-    expected_fragments = [
-        "production readiness trace still contains stale phrase",
-        "reference_current_price health subscribes to configured custom-data sources",
     ]
     for fragment in expected_fragments:
         if not any(fragment in finding for finding in findings):
@@ -906,9 +783,6 @@ def main() -> int:
         test_validate_docs_allows_spec_architecture_risk_context,
         test_validate_docs_requires_all_enabled_and_factory_gap_order_types,
         test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift,
-        test_validate_docs_rejects_reference_current_price_schema_drift,
-        test_validate_docs_rejects_reference_current_price_plan_spec_drift,
-        test_validate_docs_rejects_retired_reference_readiness_trace,
         test_validate_docs_rejects_stale_strategy_schema_version_examples,
         test_validate_docs_rejects_stale_decision_evidence_record_type_wording,
         test_validate_docs_rejects_retired_financial_envelope_schema_section,
@@ -921,4 +795,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     raise SystemExit(main())

@@ -10,9 +10,11 @@ use bolt_v2::{
         BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
         BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
-        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind, decision_evidence_path,
-        read_latest_entry_decision_evidence_chain,
+        BoltV3OrderIntentOrderFields, BoltV3PositionSizerRebuildAuditEvidence,
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitIntentKind, BoltV3SubmitReservationFillEvidence,
+        BoltV3SubmitReservationMetadataEvidence, decision_evidence_path,
+        read_latest_entry_decision_evidence_chain, read_submit_reservation_recovery_evidence,
     },
     bolt_v3_realized_volatility::{
         RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
@@ -28,6 +30,9 @@ use rust_decimal::Decimal;
 
 struct NoopFeeProvider;
 
+const EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 10;
+const PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 9;
+
 impl FeeProvider for NoopFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
         None
@@ -36,6 +41,14 @@ impl FeeProvider for NoopFeeProvider {
     fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
         async { Ok(()) }.boxed()
     }
+}
+
+#[test]
+fn decision_evidence_schema_version_tracks_position_sizer_recovery_records() {
+    assert_eq!(
+        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION
+    );
 }
 
 #[test]
@@ -111,9 +124,7 @@ fn strategy_input_snapshot_with_realized_volatility_snapshot() -> BoltV3Strategy
         price_to_beat_value: "3100".to_string(),
         reference_quote_ts_event: 1200,
         spot_price: "3100.5".to_string(),
-        reference_current_price: Some("3100.5".to_string()),
-        reference_current_price_source_id: Some("chainlink_primary".to_string()),
-        reference_current_price_failed_over: Some(false),
+        reference_fair_value: Some("3100.5".to_string()),
         realized_volatility: "2.5".to_string(),
         realized_volatility_surface_id: "<surface_id>".to_string(),
         realized_volatility_as_of_ms: Some(1200),
@@ -160,43 +171,10 @@ fn latest_entry_decision_evidence_chain_binds_snapshot_order_intent_and_admissio
         .expect("complete entry decision evidence chain should parse");
 
     assert_eq!(chain.snapshot.client_order_id, "client-order-one");
-    let snapshot = &lines[0]["snapshot"];
-    assert_eq!(snapshot["reference_current_price"], "3100.5");
-    let forbidden_reference_price_key = ["reference", "fair", "value"].join("_");
-    assert!(
-        snapshot.get(&forbidden_reference_price_key).is_none(),
-        "strategy input evidence must not expose the old fair-value name"
-    );
     assert_eq!(chain.intent.client_order_id, chain.snapshot.client_order_id);
     assert_eq!(
         chain.admission.client_order_id,
         chain.snapshot.client_order_id
-    );
-}
-
-#[test]
-fn latest_entry_decision_evidence_chain_skips_older_schema_lines() {
-    let temp = tempfile::tempdir().expect("tempdir should create");
-    let evidence_path = temp.path().join("decision-evidence.jsonl");
-    let mut lines = Vec::new();
-    lines.push(serde_json::json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION - 1,
-        "recorded_at_utc_ns": 1_i64,
-        "gate_id": BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
-        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        "kind": "strategy_input_snapshot",
-        "snapshot": {"reference_fair_value": "3100.5"}
-    }));
-    lines.extend(sample_entry_decision_evidence_lines());
-    write_decision_evidence_lines(&evidence_path, &lines);
-
-    let chain = read_latest_entry_decision_evidence_chain(&evidence_path, 100_000)
-        .expect("latest supported evidence chain should parse past old schema records");
-
-    assert_eq!(chain.snapshot.client_order_id, "client-order-one");
-    assert_eq!(
-        chain.snapshot.reference_current_price.as_deref(),
-        Some("3100.5")
     );
 }
 
@@ -355,7 +333,7 @@ fn latest_entry_decision_evidence_chain_rejects_cross_record_field_mismatches() 
 }
 
 #[test]
-fn latest_entry_decision_evidence_chain_rejects_stale_v5_before_admission_payload_parse() {
+fn latest_entry_decision_evidence_chain_rejects_legacy_schema_before_admission_payload_parse() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("decision-evidence.jsonl");
     let mut lines = sample_entry_decision_evidence_lines();
@@ -367,15 +345,102 @@ fn latest_entry_decision_evidence_chain_rejects_stale_v5_before_admission_payloa
     write_decision_evidence_lines(&evidence_path, &lines);
 
     let error = read_latest_entry_decision_evidence_chain(&evidence_path, 100_000)
-        .expect_err("stale v5 decision evidence should fail closed before payload parsing");
+        .expect_err("legacy decision evidence should fail closed before payload parsing");
     let rendered = format!("{error:#}");
     assert!(
         rendered.contains("schema_version mismatch"),
-        "stale v5 should fail on envelope schema, got: {rendered}"
+        "legacy schema should fail on envelope schema, got: {rendered}"
     );
     assert!(
         !rendered.contains("execution_client_id"),
-        "stale v5 should not reach current admission payload parsing, got: {rendered}"
+        "legacy schema should not reach current admission payload parsing, got: {rendered}"
+    );
+}
+
+#[test]
+fn submit_reservation_recovery_rejects_noncanonical_metadata_encodings() {
+    for (field, value) in [("side", "Buy"), ("product_kind", "PredictionMarketBinary")] {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let evidence_path = temp.path().join("decision-evidence.jsonl");
+        let mut metadata = sample_submit_reservation_metadata();
+        match field {
+            "side" => metadata.side = value.to_string(),
+            "product_kind" => metadata.product_kind = value.to_string(),
+            _ => unreachable!("test only mutates known fields"),
+        }
+        write_decision_evidence_lines(
+            &evidence_path,
+            &[serde_json::json!({
+                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "recorded_at_utc_ns": 1_i64,
+                "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+                "kind": "submit_reservation_metadata",
+                "metadata": metadata,
+            })],
+        );
+
+        let error = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+            .expect_err("non-canonical submit reservation metadata must fail at read time");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains(field) && rendered.contains("canonical"),
+            "expected canonical {field} diagnostic, got: {rendered}"
+        );
+    }
+}
+
+#[test]
+fn submit_reservation_recovery_skips_legacy_v9_non_recovery_lines() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut lines = sample_entry_decision_evidence_lines().to_vec();
+    for line in &mut lines {
+        line["schema_version"] = serde_json::json!(PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION);
+    }
+    lines.push(serde_json::json!({
+        "schema_version": EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 4_i64,
+        "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": "submit_reservation_metadata",
+        "metadata": sample_submit_reservation_metadata(),
+    }));
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let recovery = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+        .expect("legacy v9 non-recovery lines must not block reservation recovery");
+
+    assert!(
+        recovery
+            .metadata_by_client_order_id
+            .contains_key("client-order-one"),
+        "current reservation metadata should recover despite legacy non-recovery lines"
+    );
+}
+
+#[test]
+fn submit_reservation_recovery_rejects_legacy_v9_reservation_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[serde_json::json!({
+            "schema_version": PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION,
+            "recorded_at_utc_ns": 1_i64,
+            "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+            "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+            "kind": "submit_reservation_metadata",
+            "metadata": sample_submit_reservation_metadata(),
+        })],
+    );
+
+    let error = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+        .expect_err("legacy v9 reservation metadata must fail closed");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("schema_version mismatch"),
+        "expected schema mismatch for legacy reservation metadata, got: {rendered}"
     );
 }
 
@@ -399,9 +464,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         price_to_beat_value: "3100".to_string(),
         reference_quote_ts_event: 1200,
         spot_price: "3100.5".to_string(),
-        reference_current_price: Some("3100.5".to_string()),
-        reference_current_price_source_id: Some("chainlink_primary".to_string()),
-        reference_current_price_failed_over: Some(false),
+        reference_fair_value: Some("3100.5".to_string()),
         realized_volatility: "1.5".to_string(),
         realized_volatility_surface_id: String::new(),
         realized_volatility_as_of_ms: None,
@@ -467,6 +530,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         notional: "0.50".to_string(),
         intent_kind: BoltV3SubmitIntentKind::Entry,
         outcome: BoltV3AdmissionOutcome::Admitted,
+        loss_halt_reasons: Vec::new(),
     };
     [
         serde_json::json!({
@@ -496,6 +560,27 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
     ]
 }
 
+fn sample_submit_reservation_metadata() -> BoltV3SubmitReservationMetadataEvidence {
+    BoltV3SubmitReservationMetadataEvidence {
+        client_order_id: "client-order-one".to_string(),
+        submit_reservation_id: "client-order-one#1".to_string(),
+        venue_id: "POLYMARKET".to_string(),
+        account_id: "POLYMARKET-001".to_string(),
+        product_kind: "prediction_market_binary".to_string(),
+        collateral_currency: "PUSD".to_string(),
+        capital_pool_id: "polymarket-prediction-live".to_string(),
+        collateral_group_id: "condition-one".to_string(),
+        instrument_id: "condition-one-yes.POLYMARKET".to_string(),
+        side: "buy".to_string(),
+        submitted_quantity: "10".to_string(),
+        liability_factor: "0.4".to_string(),
+        additive_liability: "0.3".to_string(),
+        reserved_liability: "4.3".to_string(),
+        observed_at_ns: 1_000,
+        source: "submit_admission".to_string(),
+    }
+}
+
 fn write_decision_evidence_lines(path: &std::path::Path, lines: &[serde_json::Value]) {
     let mut body = String::new();
     for line in lines {
@@ -521,6 +606,27 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     }
 
     fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -564,59 +670,63 @@ fn decision_evidence_path_rejects_absolute_or_parent_traversal() {
 }
 
 #[test]
-fn binary_oracle_edge_taker_records_evidence_then_admission_before_only_direct_submit_call() {
+fn binary_oracle_edge_taker_routes_evidence_admission_and_submit_through_shared_policy() {
     // Whole-module text via the A0 source-integrity owner (single canonical
     // order across digest + text). At A0 the single-file identity case
     // reproduces the prior `include_str!` text byte-for-byte, so the
     // intra-file `.find()` ordering below stays valid. The migrating split
     // slice (A3/A6/A7) discharges the forward order-sensitivity constraint.
-    let source = support::module_source_text(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
-    let source = source.as_str();
-    let evidence_index = source
-        .find(".record_order_intent(&intent)")
-        .expect("strategy must record decision evidence");
-    let admission_index = source
-        .find(".submit_admission().admit(&request)")
-        .expect("strategy wrapper must submit through admission");
-    let submit_index = source
-        .find(
-            "self.submit_order(\n            order,\n            submit_context.position_id,\n            submit_context.client_id,\n            submit_context.params,\n        )",
-        )
-        .expect("strategy wrapper must thread submit context into the only direct NT submit call");
+    let strategy_source =
+        support::module_source_text(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
+    let strategy_source = strategy_source.as_str();
+    let execution_source = include_str!("../src/bolt_v3_order_execution.rs");
+    let evidence_index = execution_source
+        .find(".record_order_intent(&routing.intent)")
+        .expect("shared execution policy must record decision evidence");
+    let admission_index = execution_source
+        .find("routing.submit_admission.admit(&routing.request)")
+        .expect("shared execution policy must submit through admission");
+    let submit_index = execution_source
+        .find("sink.submit_order_via_nt(order, context)")
+        .expect("shared execution policy must delegate to the NT mutation sink");
 
     assert!(
         evidence_index < admission_index && admission_index < submit_index,
         "decision evidence must be recorded before submit admission before NT submit"
     );
-    let strategy_input_index = source
+    let strategy_input_index = strategy_source
         .find(".record_strategy_input_snapshot(&strategy_input_snapshot)")
         .expect("entry strategy input snapshot must be recorded");
-    let evidence_wrapper_call_after_strategy_input = source[strategy_input_index..]
-        .find("self.submit_order_with_decision_evidence(\n                    intent,\n                    order,\n                    SubmitContext::with_client_id(client_id),\n                )")
+    let evidence_wrapper_call_after_strategy_input = strategy_source[strategy_input_index..]
+        .find("self.submit_order_with_decision_evidence(\n                    intent,\n                    order,\n                    BoltV3SubmitContext::with_client_id(client_id),\n                )")
         .expect("entry path must submit through evidence wrapper");
     assert!(
         evidence_wrapper_call_after_strategy_input > 0,
         "entry strategy input snapshot must be recorded before order-intent evidence wrapper"
     );
-    // This intentionally scans the whole strategy source, including in-file
-    // tests, because no code path should bypass the evidence wrapper.
+    // This intentionally scans the strategy source set, including in-file tests,
+    // but excludes the shared NT mutation sink itself because the sink is the
+    // approved policy boundary verified above.
+    let strategy_source_without_execution_sink = strategy_source.replace(execution_source, "");
     assert_eq!(
-        source.matches("self.submit_order(").count(),
-        1,
-        "direct NT submit calls must stay inside evidence wrapper only"
+        strategy_source_without_execution_sink
+            .matches("self.submit_order(")
+            .count(),
+        0,
+        "strategy code must not call NT submit directly"
     );
 }
 
 #[test]
-fn binary_oracle_edge_taker_exit_submit_threads_managed_position_id_to_nt() {
+fn binary_oracle_edge_taker_exit_submit_threads_managed_position_id_to_shared_policy() {
     let source = support::module_source_text(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
     let source = source.as_str();
 
     assert!(
         source.contains(
-            "SubmitContext::with_client_id_and_position_id(\n                client_id,\n                managed_position.position.position_id,\n            )"
+            "BoltV3SubmitContext::with_client_id_and_position_id(\n                client_id,\n                managed_position.position.position_id,\n            )"
         ),
-        "exit submits must pass the managed PositionId into NT submit_order"
+        "exit submits must pass the managed PositionId into shared execution policy"
     );
 }
 
@@ -630,6 +740,7 @@ fn strategy_build_context_requires_decision_evidence_value() {
                 NoopDecisionEvidenceWriter,
             )),
         ),
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
 

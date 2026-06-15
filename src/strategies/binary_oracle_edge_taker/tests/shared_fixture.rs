@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use nautilus_trading::Strategy;
 
 pub(super) const TEST_TRADE_PRICE_PRECISION: u8 = 2;
 pub(super) const TEST_TRADE_SIZE_PRECISION: u8 = 0;
@@ -32,6 +33,8 @@ pub(super) fn valid_raw_config() -> Value {
         market_selection_rule = "active_or_next"
         retry_interval_seconds = 5
         blocked_after_seconds = 60
+        reference_venue = "reference_data_client"
+        reference_instrument_id = "REFERENCE.SOURCE"
         signal_venue = "signal_data_client"
         signal_instrument_id = "SIGNAL.SOURCE"
         use_uuid_client_order_ids = true
@@ -53,6 +56,7 @@ pub(super) fn valid_raw_config() -> Value {
         vwap_depth_limit_bps = 15
         slippage_buffer_bps = 15
         risk_lambda = 0.5
+        sizing_ev_reference_bps = 500
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
         realized_volatility_surface_id = "<surface_id>"
@@ -197,6 +201,27 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     ) -> Result<()> {
         Ok(())
     }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -224,6 +249,27 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
     ) -> Result<()> {
         anyhow::bail!("admission decision write failed")
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("position sizer rebuild audit write failed")
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("submit reservation metadata write failed")
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("submit reservation fill write failed")
     }
 }
 
@@ -289,6 +335,27 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             ));
         Ok(())
     }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Execution venue of the binary-option market fixtures these tests trade against (their
@@ -307,18 +374,10 @@ pub(super) fn test_strategy() -> BinaryOracleEdgeTaker {
 }
 
 pub(super) fn register_test_strategy(strategy: &mut BinaryOracleEdgeTaker) -> Rc<RefCell<Cache>> {
-    let (cache, _clock) = register_test_strategy_with_clock(strategy);
-    cache
-}
-
-pub(super) fn register_test_strategy_with_clock(
-    strategy: &mut BinaryOracleEdgeTaker,
-) -> (Rc<RefCell<Cache>>, Rc<RefCell<TestClock>>) {
     let clock = Rc::new(RefCell::new(TestClock::new()));
     clock
         .borrow_mut()
         .set_time(UnixNanos::from(1_200_u64 * NANOS_PER_MILLI_U64));
-    let clock_handle = clock.clone();
     let cache = Rc::new(RefCell::new(Cache::default()));
     let cache_handle = cache.clone();
     let portfolio = Rc::new(RefCell::new(Portfolio::new(
@@ -330,7 +389,7 @@ pub(super) fn register_test_strategy_with_clock(
         .core
         .register(TraderId::from("TRADER-001"), clock, cache, portfolio)
         .expect("test strategy should register with NT core");
-    (cache_handle, clock_handle)
+    cache_handle
 }
 
 pub(super) fn register_test_strategy_with_active_instruments(strategy: &mut BinaryOracleEdgeTaker) {
@@ -446,6 +505,8 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             market_selection_rule: "active_or_next".to_string(),
             retry_interval_seconds: 5,
             blocked_after_seconds: 60,
+            reference_venue: Some("reference_data_client".to_string()),
+            reference_instrument_id: Some("REFERENCE.SOURCE".to_string()),
             signal_venue: Some("signal_data_client".to_string()),
             signal_instrument_id: Some("SIGNAL.SOURCE".to_string()),
             resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
@@ -514,7 +575,6 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
                 is_reduce_only: false,
                 is_quote_quantity: false,
             },
-            maker_quote: None,
             warmup_tick_count: 20,
             reentry_cooldown_secs: 30,
             order_notional_target: 1000.0,
@@ -523,6 +583,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             vwap_depth_limit_bps: 15,
             slippage_buffer_bps: 15,
             risk_lambda: 0.5,
+            sizing_ev_reference_bps: 500,
             edge_threshold_basis_points: -20,
             exit_hysteresis_bps: 5,
             trade_flow_window_secs: 30,
@@ -536,12 +597,12 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             forced_flat_thin_book_min_liquidity: 100.0,
             lead_agreement_min_corr: 0.8,
             lead_jitter_max_ms: 250,
-            reference_current_price: None,
         },
         StrategyBuildContext::new(
             fee_provider,
             decision_evidence,
             submit_admission,
+            crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         ),
     )
@@ -769,11 +830,18 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
         fee_provider,
         decision_evidence,
         submit_admission,
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     );
     strategy.config.edge_threshold_basis_points = 1;
     strategy.active.price_to_beat = Some(3_100.0);
     strategy
+}
+
+pub(super) fn set_shadow_order_execution_policy(strategy: &mut BinaryOracleEdgeTaker) {
+    strategy.context = strategy.context.clone().with_order_execution_policy(
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::shadow(),
+    );
 }
 
 pub(super) fn selected_entry_instrument(strategy: &BinaryOracleEdgeTaker) -> InstrumentId {
@@ -1225,7 +1293,7 @@ pub(super) fn reference_tick(timestamp_ms: u64, price: f64) -> ReferenceSnapshot
     ReferenceSnapshot {
         ts_ms: timestamp_ms,
         topic: "platform.reference.test.spot".to_string(),
-        reference_current_price: Some(price),
+        fair_value: Some(price),
         confidence: 1.0,
         venues: Vec::new(),
     }

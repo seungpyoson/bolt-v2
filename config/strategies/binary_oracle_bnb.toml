@@ -58,38 +58,25 @@ resolution_identity = "configured-reference-price"
 value_kind = "price"
 provider_id = "resolution_oracle_primary"
 
+[reference_data]
+
 [signal_data.primary]
 data_client_id = "okx_data"
 instrument_id = "BNB-USDT.OKX"
-
-[reference_current_price]
-asset = "BNB"
-sources = ["chainlink_primary"]
-min_valid_sources = 1
-selection_policy = "first_valid_per_interval"
-max_source_age_ms = 2000
-max_source_drift_bps = 25
-drift_policy = "observe"
-stale_policy = "block"
-
-[reference_current_price.source.chainlink_primary]
-provider = "chainlink_ws"
-client_id = "chainlink_reference"
-instrument_id = "BNB-USD.CHAINLINK"
-enabled = true
-required = false
 
 [resolution_data]
 data_client_id = "chainlink_strike"
 instrument_id = "BNB-USD.CHAINLINK"
 
 [parameters.runtime]
+reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-004"
 warmup_tick_count = 20
 reentry_cooldown_secs = 30
 book_impact_cap_bps = 50
 vwap_depth_limit_bps = 50
 slippage_buffer_bps = 50
 risk_lambda = 0.5
+sizing_ev_reference_bps = 500
 exit_hysteresis_bps = 25
 trade_flow_window_secs = 60
 trade_flow_max_samples = 2000

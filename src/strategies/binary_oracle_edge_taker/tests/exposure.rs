@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use nautilus_trading::Strategy;
 
 #[test]
 fn position_events_update_live_position_state() {
@@ -893,6 +894,7 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
             fee_provider,
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission,
+            crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         );
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -1268,6 +1270,166 @@ fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
         .expect("entry cancel should clear retained pending-entry context");
     assert!(matches!(strategy.exposure, ExposureState::Flat));
     assert!(strategy.pending_entry().is_none());
+}
+
+#[test]
+fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
+    let configured_instruments = configured_outcome_instruments(
+        &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
+    );
+    for instrument_id in configured_instruments {
+        let submit_admission = submit_admission_with_provider_cap(
+            Decimal::new(10_000, 0),
+            Arc::new(RecordingDecisionEvidenceWriter),
+        );
+        let (mut strategy, fee_provider) =
+            ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.context = StrategyBuildContext::new(
+            fee_provider,
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission,
+            crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            fixture_execution_venue(),
+        );
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.is_post_only = true;
+        set_shadow_order_execution_policy(&mut strategy);
+        strategy.active.phase = SelectionPhase::Freeze;
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        let (risk_handler, risk_messages) =
+            get_typed_into_message_saving_handler::<TradingCommand>(None);
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::risk_engine_queue_execute(),
+            risk_handler,
+        );
+        let (exec_handler, exec_messages) =
+            get_typed_into_message_saving_handler::<TradingCommand>(None);
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::exec_engine_queue_execute(),
+            exec_handler,
+        );
+        let position_id =
+            PositionId::from(format!("POSITION-SHADOW-FORCED-{instrument_id}").as_str());
+        let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+        let (instrument_id, entry_client_order_id) =
+            materialize_managed_position_with_resting_pending_entry(
+                &mut strategy,
+                instrument_id,
+                position_id,
+                position_quantity,
+            );
+        let entry_price = configured_book_for_instrument(&mut strategy, instrument_id)
+            .best_ask
+            .expect("ready-to-trade fixture should expose an ask");
+        let entry_order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                strategy
+                    .configured_entry_order_side()
+                    .expect("test config should carry entry order side"),
+                position_quantity,
+                Price::new(entry_price, 2),
+                entry_client_order_id,
+            )
+            .expect("resting entry order should build through NT factory");
+        cache
+            .borrow_mut()
+            .add_order(
+                entry_order,
+                None,
+                Some(ClientId::from(strategy.config.client_id.as_str())),
+                true,
+            )
+            .expect("test cache should accept resting entry order");
+
+        strategy
+            .try_submit_exit_order(1_200)
+            .expect("forced-flat exit must not error in shadow mode");
+
+        let exec_messages = exec_messages.get_messages();
+        assert!(
+            !exec_messages
+                .iter()
+                .any(|message| matches!(message, TradingCommand::CancelOrder(_))),
+            "shadow mode must not emit a venue CancelOrder on forced-flat exit: {instrument_id}"
+        );
+        let risk_messages = risk_messages.get_messages();
+        assert!(
+            !risk_messages
+                .iter()
+                .any(|message| matches!(message, TradingCommand::SubmitOrder(_))),
+            "shadow mode must not emit a venue SubmitOrder on forced-flat exit: {instrument_id}"
+        );
+    }
+}
+
+#[test]
+fn position_closed_in_shadow_mode_suppresses_resting_entry_cancel() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+    strategy.config.entry_order.is_post_only = true;
+    set_shadow_order_execution_policy(&mut strategy);
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    let (exec_handler, exec_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::exec_engine_queue_execute(),
+        exec_handler,
+    );
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("POSITION-SHADOW-CLOSED-ENTRY");
+    let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+    let (instrument_id, entry_client_order_id) =
+        materialize_managed_position_with_resting_pending_entry(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            position_quantity,
+        );
+    let entry_price = configured_book_for_instrument(&mut strategy, instrument_id)
+        .best_ask
+        .expect("ready-to-trade fixture should expose an ask");
+    let entry_order = strategy
+        .build_configured_entry_order(
+            instrument_id,
+            strategy
+                .configured_entry_order_side()
+                .expect("test config should carry entry order side"),
+            position_quantity,
+            Price::new(entry_price, 2),
+            entry_client_order_id,
+        )
+        .expect("resting entry order should build through NT factory");
+    cache
+        .borrow_mut()
+        .add_order(
+            entry_order,
+            None,
+            Some(ClientId::from(strategy.config.client_id.as_str())),
+            true,
+        )
+        .expect("test cache should accept resting entry order");
+
+    strategy.on_position_closed(position_closed_event(instrument_id, position_id));
+
+    let exec_messages = exec_messages.get_messages();
+    assert!(
+        !exec_messages
+            .iter()
+            .any(|message| matches!(message, TradingCommand::CancelOrder(_))),
+        "shadow mode must not emit a venue CancelOrder on external position close"
+    );
+    // The exposure still transitions to retain the pending-entry context; only
+    // the venue cancel is suppressed in shadow mode.
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::PendingEntry(PendingEntryState {
+            client_order_id,
+            ..
+        }) if client_order_id == entry_client_order_id
+    ));
 }
 
 #[test]

@@ -47,14 +47,14 @@ impl FeeProvider for PriceSensitiveEntryFeeProvider {
 }
 
 #[test]
-fn non_signal_quote_tick_does_not_update_reference_current_price_or_signal() {
+fn reference_quote_tick_updates_fair_value_without_becoming_signal() {
     let mut strategy = test_strategy();
 
     strategy
         .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_200))
-        .expect("non-signal quote should process without mutating pricing");
+        .expect("reference quote should process");
 
-    assert_eq!(strategy.pricing.last_reference_current_price, None);
+    assert_eq!(strategy.pricing.last_reference_fair_value, Some(101.0));
     assert_eq!(strategy.pricing.fast_spot, None);
     assert!(!strategy.pricing.lead_quality_policy_applied);
 }
@@ -64,13 +64,13 @@ fn signal_quote_tick_updates_pricing_from_configured_signal_data() {
     let mut strategy = test_strategy();
 
     strategy
-        .pricing
-        .observe_reference_current_price(&fast_spot("chainlink_primary", 101.0, 1_100));
+        .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_100))
+        .expect("reference quote should process");
     strategy
         .on_quote(&quote_tick("SIGNAL.SOURCE", 100.5, 102.5, 1_200))
         .expect("signal quote should process");
 
-    assert_eq!(strategy.pricing.last_reference_current_price, Some(101.0));
+    assert_eq!(strategy.pricing.last_reference_fair_value, Some(101.0));
     assert_eq!(
         strategy.pricing.fast_spot,
         Some(fast_spot("signal_data_client", 101.5, 1_200))
@@ -84,7 +84,7 @@ fn signal_quote_tick_does_not_warm_active_reference_state() {
     let mut market = candidate_market("market-1", 1_000);
     market.price_to_beat = Some(3_100.0);
     strategy.apply_selection_snapshot(selection_snapshot(1_000, SelectionState::Active { market }));
-    strategy.pricing.last_reference_current_price = Some(3_101.0);
+    strategy.pricing.last_reference_fair_value = Some(3_101.0);
 
     strategy
         .on_quote(&quote_tick("SIGNAL.SOURCE", 3_102.0, 3_104.0, 1_200))
@@ -107,7 +107,7 @@ fn non_reference_quote_tick_does_not_update_pricing() {
         .on_quote(&quote_tick("OTHER.SOURCE", 100.0, 102.0, 1_200))
         .expect("non-reference quote should be ignored");
 
-    assert_eq!(strategy.pricing.last_reference_current_price, None);
+    assert_eq!(strategy.pricing.last_reference_fair_value, None);
     assert_eq!(strategy.pricing.fast_spot, None);
 }
 
@@ -122,12 +122,12 @@ fn pricing_state_requires_fast_spot_for_pricing_and_keeps_reference_separate() {
         config.lead_jitter_max_ms,
     );
     assert_eq!(pricing.spot_price(), None);
-    assert_eq!(pricing.last_reference_current_price, Some(3_100.0));
+    assert_eq!(pricing.last_reference_fair_value, Some(3_100.0));
 
     let snapshot = ReferenceSnapshot {
         ts_ms: 1_100,
         topic: "platform.reference.test.spot".to_string(),
-        reference_current_price: Some(3_101.0),
+        fair_value: Some(3_101.0),
         confidence: 1.0,
         venues: vec![
             oracle_venue("reference", 1.0, 3_101.0, 1_100),
@@ -143,7 +143,7 @@ fn pricing_state_requires_fast_spot_for_pricing_and_keeps_reference_separate() {
 }
 
 #[test]
-fn pricing_state_reference_snapshot_rejects_stale_reference_current_price() {
+fn pricing_state_reference_snapshot_rejects_stale_fair_value() {
     let config = test_strategy().config.clone();
     let mut pricing = PricingState::from_config(&taker_pricing_config(&config));
 
@@ -165,17 +165,17 @@ fn pricing_state_reference_snapshot_rejects_stale_reference_current_price() {
     );
 
     assert_eq!(
-        pricing.last_reference_current_price,
+        pricing.last_reference_fair_value,
         Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE)
     );
     assert_eq!(
-        pricing.last_reference_current_price_ts_ms,
+        pricing.last_reference_observed_ts_ms,
         Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS)
     );
 }
 
 #[test]
-fn stale_reference_current_price_still_processes_signal_candidates() {
+fn pricing_state_reference_snapshot_processes_signal_candidates_when_fair_value_is_stale() {
     let config = test_strategy().config.clone();
     let mut pricing = PricingState::from_config(&taker_pricing_config(&config));
     let signal_venue = std::any::type_name::<PricingState>();
@@ -192,7 +192,7 @@ fn stale_reference_current_price_still_processes_signal_candidates() {
         &ReferenceSnapshot {
             ts_ms: TEST_PRICING_SNAPSHOT_STALE_REFERENCE_TS_MS,
             topic: std::any::type_name::<ReferenceSnapshot>().to_string(),
-            reference_current_price: Some(TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE),
+            fair_value: Some(TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE),
             confidence: 1.0,
             venues: vec![orderbook_venue(
                 signal_venue,
@@ -206,11 +206,11 @@ fn stale_reference_current_price_still_processes_signal_candidates() {
     );
 
     assert_eq!(
-        pricing.last_reference_current_price,
+        pricing.last_reference_fair_value,
         Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE)
     );
     assert_eq!(
-        pricing.last_reference_current_price_ts_ms,
+        pricing.last_reference_observed_ts_ms,
         Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS)
     );
     assert_eq!(
@@ -233,7 +233,7 @@ fn pricing_state_requires_reference_anchor_for_fast_spot_selection() {
         &ReferenceSnapshot {
             ts_ms: 1_000,
             topic: "platform.reference.test.spot".to_string(),
-            reference_current_price: None,
+            fair_value: None,
             confidence: 1.0,
             venues: vec![orderbook_venue("bybit", 0.9, 3_102.0, 1_000)],
         },
@@ -256,7 +256,7 @@ fn pricing_state_applies_lead_quality_thresholds() {
     let snapshot = ReferenceSnapshot {
         ts_ms: 1_000,
         topic: "platform.reference.test.spot".to_string(),
-        reference_current_price: Some(3_100.0),
+        fair_value: Some(3_100.0),
         confidence: 1.0,
         venues: vec![
             oracle_venue("reference", 1.0, 3_100.0, 1_000),
@@ -273,7 +273,7 @@ fn pricing_state_applies_lead_quality_thresholds() {
     assert!(pricing.fast_spot.is_none());
     assert!(pricing.fast_venue_incoherent);
     assert_eq!(pricing.spot_price(), None);
-    assert_eq!(pricing.last_reference_current_price, Some(3_100.0));
+    assert_eq!(pricing.last_reference_fair_value, Some(3_100.0));
 }
 
 #[test]
@@ -285,7 +285,7 @@ fn pricing_state_clears_fast_spot_when_no_fast_venue_remains() {
         &ReferenceSnapshot {
             ts_ms: 1_000,
             topic: "platform.reference.test.spot".to_string(),
-            reference_current_price: Some(3_100.0),
+            fair_value: Some(3_100.0),
             confidence: 1.0,
             venues: vec![
                 oracle_venue("reference", 1.0, 3_100.0, 1_000),
@@ -301,7 +301,7 @@ fn pricing_state_clears_fast_spot_when_no_fast_venue_remains() {
         &ReferenceSnapshot {
             ts_ms: 1_100,
             topic: "platform.reference.test.spot".to_string(),
-            reference_current_price: Some(3_101.0),
+            fair_value: Some(3_101.0),
             confidence: 1.0,
             venues: vec![oracle_venue("reference", 1.0, 3_101.0, 1_100)],
         },
@@ -311,14 +311,14 @@ fn pricing_state_clears_fast_spot_when_no_fast_venue_remains() {
 
     assert!(pricing.fast_spot.is_none());
     assert_eq!(pricing.spot_price(), None);
-    assert_eq!(pricing.last_reference_current_price, Some(3_101.0));
+    assert_eq!(pricing.last_reference_fair_value, Some(3_101.0));
 }
 
 #[test]
 fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.pricing.fast_spot = None;
-    strategy.pricing.last_reference_current_price = Some(3_101.0);
+    strategy.pricing.last_reference_fair_value = Some(3_101.0);
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -357,7 +357,7 @@ fn live_fair_probability_is_computed_from_strategy_state_once_vol_warms() {
     let mut strategy = ready_to_trade_strategy();
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
-    for (ts_ms, reference_current_price, fast_spot_price) in [
+    for (ts_ms, fair_value, fast_spot_price) in [
         (1_000, 3_100.0, 3_100.0),
         (2_000, 3_101.0, 3_101.5),
         (3_000, 3_102.0, 3_103.0),
@@ -366,7 +366,7 @@ fn live_fair_probability_is_computed_from_strategy_state_once_vol_warms() {
         strategy.observe_reference_snapshot(&ReferenceSnapshot {
             ts_ms,
             topic: "platform.reference.test.spot".to_string(),
-            reference_current_price: Some(reference_current_price),
+            fair_value: Some(fair_value),
             confidence: 1.0,
             venues: vec![orderbook_venue("bybit", 0.9, fast_spot_price, ts_ms)],
         });
@@ -382,48 +382,6 @@ fn live_fair_probability_is_computed_from_strategy_state_once_vol_warms() {
 
     let decision = strategy.entry_evaluation_at(4_000);
     assert!(decision.pricing_blocked_by.is_empty());
-}
-
-#[test]
-fn static_binary_event_uses_reference_current_price_as_configured_fair_probability() {
-    let mut strategy = test_strategy();
-    strategy.config.rotating_market_family =
-        crate::bolt_v3_market_families::static_binary_event::KEY.to_string();
-    strategy.config.static_fair_probability_source = Some("reference_current_price".to_string());
-    strategy.config.reference_current_price =
-        Some(reference_price_block_with_max_source_age_ms(100));
-    strategy.pricing.last_reference_current_price = Some(0.64);
-    strategy.pricing.last_reference_current_price_ts_ms = Some(4_000);
-
-    assert_eq!(strategy.current_fair_probability_up_at(4_000), Some(0.64));
-
-    strategy.pricing.last_reference_current_price = Some(1.01);
-    assert_eq!(strategy.current_fair_probability_up_at(4_000), None);
-
-    strategy.pricing.last_reference_current_price = Some(0.64);
-    strategy.pricing.last_reference_current_price_ts_ms = Some(3_899);
-    assert_eq!(strategy.current_fair_probability_up_at(4_000), None);
-
-    strategy.config.reference_current_price = None;
-    strategy.pricing.last_reference_current_price_ts_ms = Some(4_000);
-    assert_eq!(strategy.current_fair_probability_up_at(4_000), None);
-}
-
-fn reference_price_block_with_max_source_age_ms(
-    max_source_age_ms: u64,
-) -> crate::bolt_v3_config::ReferencePriceBlock {
-    crate::bolt_v3_config::ReferencePriceBlock {
-        asset: "WORLD_CUP_STATIC_FAIR".to_string(),
-        source_order: Vec::new(),
-        min_valid_sources: 0,
-        selection_policy:
-            crate::bolt_v3_config::ReferencePriceSelectionPolicy::FirstValidPerInterval,
-        max_source_age_ms,
-        max_source_drift_bps: 0,
-        drift_policy: crate::bolt_v3_config::ReferencePriceDriftPolicy::Observe,
-        stale_policy: crate::bolt_v3_config::ReferencePriceStalePolicy::Block,
-        sources: std::collections::BTreeMap::new(),
-    }
 }
 
 #[test]
@@ -444,28 +402,14 @@ fn live_scaled_min_edge_uses_theta_scaler_near_expiry() {
 }
 
 #[test]
-fn reference_current_price_does_not_open_interval_without_source_bound_price_to_beat() {
+fn interval_open_requires_source_bound_price_to_beat_before_reference_quote_warms_market() {
     let mut strategy = test_strategy();
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
 
-    let quote = ReferenceQuote::try_new(
-        "BTC",
-        "reference",
-        crate::bolt_v3_config::ReferencePriceProvider::new("chainlink_ws")
-            .expect("test provider should be valid"),
-        "BTC-USD.CHAINLINK_REFERENCE",
-        3_101.0,
-        None,
-        None,
-        1_000,
-        1_000,
-    )
-    .expect("reference current price quote should construct");
-    assert!(strategy.active.observe_reference_price_quote(&quote, false));
+    strategy.observe_reference_quote(&fast_spot("reference", 3_101.0, 1_000));
 
     assert_eq!(strategy.active.interval_open, None);
-    assert_eq!(strategy.active.reference_current_price, Some(3_101.0));
-    assert_eq!(strategy.active.last_reference_ts_ms, Some(1_000));
+    assert_eq!(strategy.active.last_reference_ts_ms, None);
     assert_eq!(strategy.active.warmup_count, INITIAL_COUNTER_U64);
 }
 
@@ -733,6 +677,30 @@ fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
     );
     assert!(decision.sized_notional.is_some_and(|value| value > 0.0));
     assert_eq!(decision.selected_side, Some(OutcomeSide::Up));
+    // #618 regression pin on the LIVE evaluation path (not just the sizing
+    // unit tests): the accepted notional must be the dollar-anchored robust
+    // size of the final evaluated edge, never the EV fraction reinterpreted
+    // as dollars.
+    let sized_notional = decision
+        .sized_notional
+        .expect("sized notional asserted above");
+    let supported_notional = choose_robust_size(&RobustSizingInputs {
+        expected_ev_per_notional: decision
+            .expected_ev_per_notional
+            .expect("expected EV asserted above"),
+        ev_reference_per_notional: strategy.config.sizing_ev_reference_bps as f64 / BPS_DENOMINATOR,
+        risk_lambda: strategy.config.risk_lambda,
+        order_notional_target: strategy.config.order_notional_target,
+        maximum_position_notional: strategy.config.maximum_position_notional,
+        impact_cap_notional: decision
+            .book_impact_cap_notional
+            .expect("impact cap asserted above"),
+    });
+    assert!(
+        (sized_notional - supported_notional).abs() <= notional_float_tolerance(supported_notional),
+        "live-path sized notional {sized_notional} must equal the robust size \
+         {supported_notional} of the final evaluated edge: {decision:#?}"
+    );
 }
 
 #[test]
@@ -851,7 +819,11 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
     let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
     strategy.config.order_notional_target = 10.0;
     strategy.config.maximum_position_notional = 100.0;
-    strategy.config.risk_lambda = 0.10;
+    strategy.config.risk_lambda = 1.0;
+    // A deliberately high EV reference scales the sized notional below the
+    // 0.50-level depth so the sized probe's limit price drops into the
+    // punitive <= 0.55 fee region and forces the sized re-evaluation block.
+    strategy.config.sizing_ev_reference_bps = 10_000;
     strategy.config.book_impact_cap_bps = 5_000;
     strategy.config.vwap_depth_limit_bps = 5_000;
     strategy.config.edge_threshold_basis_points = i64::default();
@@ -927,6 +899,245 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
             .uncertainty_band_probability
             .is_some_and(|band| (band - 0.5).abs() < 1e-9),
         "final selected-side band should be recomputed from the sized fee: {evaluation:#?}"
+    );
+}
+
+/// PR #623 review reproduction: a cliff-shaped ask book (thin cheap level,
+/// expensive depth behind it) makes the sized re-evaluation oscillate — the
+/// small first-pass size fills entirely at the cheap level, the EV jumps, the
+/// resize saturates to the full target, and the final re-priced edge at the
+/// full target is thin again. Acceptance must never keep a notional larger
+/// than the robust size supported by the final re-priced edge.
+#[test]
+fn sized_acceptance_rejects_notional_unsupported_by_final_repriced_edge() {
+    fn cliff_strategy() -> BinaryOracleEdgeTaker {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.config.order_notional_target = 10.0;
+        strategy.config.maximum_position_notional = 10.0;
+        strategy.config.risk_lambda = 0.5;
+        strategy.config.sizing_ev_reference_bps = 500;
+        strategy.config.vwap_depth_limit_bps = 5_000;
+        strategy.config.book_impact_cap_bps = 5_000;
+        strategy.config.edge_threshold_basis_points = 0;
+        strategy.config.slippage_buffer_bps = 0;
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+        strategy
+            .pricing
+            .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+        strategy
+    }
+    fn set_side_books(strategy: &mut BinaryOracleEdgeTaker, up_asks: &[(f64, f64)], up_bid: f64) {
+        let up_instrument_id = strategy
+            .instrument_id_for_side(OutcomeSide::Up)
+            .expect("UP instrument should be configured");
+        let down_instrument_id = strategy
+            .instrument_id_for_side(OutcomeSide::Down)
+            .expect("DOWN instrument should be configured");
+        let mut up_deltas = vec![
+            (BookAction::Clear, OrderSide::Buy, up_bid, 100.0),
+            (BookAction::Add, OrderSide::Buy, up_bid, 100.0),
+        ];
+        for (price, shares) in up_asks {
+            up_deltas.push((BookAction::Add, OrderSide::Sell, *price, *shares));
+        }
+        assert!(
+            strategy
+                .active
+                .books
+                .update_from_deltas(&book_deltas(up_instrument_id, &up_deltas))
+        );
+        assert!(strategy.active.books.update_from_deltas(&book_deltas(
+            down_instrument_id,
+            &[
+                (BookAction::Clear, OrderSide::Buy, 0.48, 100.0),
+                (BookAction::Add, OrderSide::Buy, 0.48, 100.0),
+                (BookAction::Add, OrderSide::Sell, 0.90, 100.0),
+            ],
+        )));
+    }
+
+    // Phase A — calibrate the worst-case success probability this fixture's
+    // pricing model produces, from a uniform tradeable book.
+    let mut calibration = cliff_strategy();
+    set_side_books(&mut calibration, &[(0.50, 100.0)], 0.49);
+    let calibration_evaluation = calibration.entry_evaluation_at(1_200);
+    assert_eq!(
+        calibration_evaluation.selected_side,
+        Some(OutcomeSide::Up),
+        "calibration book must trade: {calibration_evaluation:#?}"
+    );
+    let fair_probability = calibration_evaluation
+        .fair_probability_up
+        .expect("calibration must expose the fair probability");
+    let band_probability = calibration_evaluation
+        .uncertainty_band_probability
+        .expect("calibration must expose the uncertainty band");
+    let worst_case_probability = fair_probability - band_probability;
+    assert!(
+        (0.52..=0.97).contains(&worst_case_probability),
+        "calibration produced an unusable worst-case probability \
+         {worst_case_probability}: {calibration_evaluation:#?}"
+    );
+
+    // Phase B — build the cliff: a thin cheap ask the first-pass size fills
+    // entirely, and a deep level priced so the full-target VWAP keeps a small
+    // positive edge that supports far less than the full target.
+    let target_notional = 10.0;
+    let thin_notional = 2.0;
+    let cheap_cents = ((worst_case_probability - 0.10) * 100.0).floor();
+    let cheap = cheap_cents / 100.0;
+    let mut deep = None;
+    for cents in (cheap_cents as i64 + 1)..=99 {
+        let price = cents as f64 / 100.0;
+        let full_vwap =
+            target_notional / (thin_notional / cheap + (target_notional - thin_notional) / price);
+        let preliminary_ev = (worst_case_probability - full_vwap) / full_vwap;
+        if preliminary_ev > 0.0005 && preliminary_ev < 0.0100 {
+            deep = Some(price);
+            break;
+        }
+    }
+    let deep = deep.expect("a 2-decimal deep level must express the sizing cliff");
+
+    let mut strategy = cliff_strategy();
+    set_side_books(
+        &mut strategy,
+        &[(cheap, thin_notional / cheap), (deep, 100.0)],
+        cheap - 0.01,
+    );
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert!(
+        evaluation.sized_executable_edge.is_some(),
+        "scenario must engage the sized re-evaluation loop: {evaluation:#?}"
+    );
+    if let (Some(sized_notional), Some(final_ev_per_notional), Some(impact_cap_notional)) = (
+        evaluation.sized_notional,
+        evaluation.expected_ev_per_notional,
+        evaluation.book_impact_cap_notional,
+    ) {
+        let supported_notional = choose_robust_size(&RobustSizingInputs {
+            expected_ev_per_notional: final_ev_per_notional,
+            ev_reference_per_notional: strategy.config.sizing_ev_reference_bps as f64
+                / BPS_DENOMINATOR,
+            risk_lambda: strategy.config.risk_lambda,
+            order_notional_target: strategy.config.order_notional_target,
+            maximum_position_notional: strategy.config.maximum_position_notional,
+            impact_cap_notional,
+        });
+        assert!(
+            sized_notional <= supported_notional + notional_float_tolerance(supported_notional),
+            "accepted sized_notional {sized_notional} exceeds the robust size \
+             {supported_notional} supported by the final re-priced edge: {evaluation:#?}"
+        );
+    }
+    assert_eq!(
+        evaluation.selected_side, None,
+        "the cliff book oscillates, so the entry must fail closed: {evaluation:#?}"
+    );
+    assert!(
+        evaluation
+            .pricing_blocked_by
+            .contains(&EntryPricingBlockReason::SizedNotionalUnsupported(
+                OutcomeSide::Up
+            )),
+        "the fail-closed outcome must be evidenced as a pricing block: {evaluation:#?}"
+    );
+}
+
+#[test]
+fn sized_acceptance_keeps_first_pass_size_when_repriced_resize_is_within_tolerance() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.order_notional_target = 10.0;
+    strategy.config.maximum_position_notional = 10.0;
+    strategy.config.risk_lambda = 0.5;
+    strategy.config.sizing_ev_reference_bps = 500;
+    strategy.config.vwap_depth_limit_bps = 5_000;
+    strategy.config.book_impact_cap_bps = 5_000;
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+
+    let up_instrument_id = strategy
+        .instrument_id_for_side(OutcomeSide::Up)
+        .expect("UP instrument should be configured");
+    let down_instrument_id = strategy
+        .instrument_id_for_side(OutcomeSide::Down)
+        .expect("DOWN instrument should be configured");
+    assert!(strategy.active.books.update_from_deltas(&book_deltas(
+        up_instrument_id,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 100.0),
+        ],
+    )));
+    assert!(strategy.active.books.update_from_deltas(&book_deltas(
+        down_instrument_id,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.48, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.48, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.90, 100.0),
+        ],
+    )));
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert!(
+        evaluation.pricing_blocked_by.is_empty(),
+        "fixed-point sized re-evaluation should remain executable: {evaluation:#?}"
+    );
+    assert_eq!(evaluation.selected_side, Some(OutcomeSide::Up));
+    assert!(
+        evaluation
+            .sized_executable_edge
+            .as_ref()
+            .is_some_and(|edge| edge.trade_allowed),
+        "accepted entry must include tradeable sized edge evidence: {evaluation:#?}"
+    );
+    let sized_notional = evaluation
+        .sized_notional
+        .expect("fixed-point acceptance should retain sized notional");
+    let impact_cap_notional = evaluation
+        .book_impact_cap_notional
+        .expect("fixed-point acceptance should expose the impact cap");
+    let preliminary_ev_per_notional = evaluation
+        .up_worst_case_ev_bps
+        .expect("selected side should expose preliminary EV")
+        / BPS_DENOMINATOR;
+    let preliminary_supported_notional = choose_robust_size(&RobustSizingInputs {
+        expected_ev_per_notional: preliminary_ev_per_notional,
+        ev_reference_per_notional: strategy.config.sizing_ev_reference_bps as f64 / BPS_DENOMINATOR,
+        risk_lambda: strategy.config.risk_lambda,
+        order_notional_target: strategy.config.order_notional_target,
+        maximum_position_notional: strategy.config.maximum_position_notional,
+        impact_cap_notional,
+    });
+    assert!(
+        (sized_notional - preliminary_supported_notional).abs()
+            <= notional_float_tolerance(preliminary_supported_notional),
+        "accepted notional should keep the first-pass robust size when repricing converges: {evaluation:#?}"
+    );
+    let final_ev_per_notional = evaluation
+        .expected_ev_per_notional
+        .expect("accepted entry should expose final EV");
+    let final_supported_notional = choose_robust_size(&RobustSizingInputs {
+        expected_ev_per_notional: final_ev_per_notional,
+        ev_reference_per_notional: strategy.config.sizing_ev_reference_bps as f64 / BPS_DENOMINATOR,
+        risk_lambda: strategy.config.risk_lambda,
+        order_notional_target: strategy.config.order_notional_target,
+        maximum_position_notional: strategy.config.maximum_position_notional,
+        impact_cap_notional,
+    });
+    assert!(
+        (final_supported_notional - sized_notional).abs()
+            <= notional_float_tolerance(sized_notional),
+        "final re-priced EV should support the retained first-pass notional within tolerance: {evaluation:#?}"
     );
 }
 
@@ -1263,7 +1474,7 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
     strategy.observe_reference_snapshot(&ReferenceSnapshot {
         ts_ms: 1_200,
         topic: "platform.reference.test.spot".to_string(),
-        reference_current_price: Some(3_100.5),
+        fair_value: Some(3_100.5),
         confidence: 1.0,
         venues: vec![
             oracle_venue("reference", 1.0, 3_100.5, 1_200),
@@ -1282,7 +1493,7 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
     assert_eq!(fields.phase, SelectionPhase::Active);
     assert_eq!(fields.spot_venue_name.as_deref(), Some("bybit"));
     assert_eq!(fields.spot_price, Some(3_101.0));
-    assert_eq!(fields.reference_current_price, Some(3_100.5));
+    assert_eq!(fields.reference_fair_value, Some(3_100.5));
     assert_eq!(fields.interval_open, Some(3_100.0));
     assert_eq!(fields.realized_vol, Some(2.5));
     assert_eq!(fields.realized_vol_source_venue, None);
@@ -1318,6 +1529,23 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
         strategy.config.maximum_position_notional
     );
     assert_eq!(fields.risk_lambda, strategy.config.risk_lambda);
+    assert_eq!(
+        fields.order_notional_target,
+        strategy.config.order_notional_target
+    );
+    assert_eq!(
+        fields.sizing_ev_reference_bps,
+        strategy.config.sizing_ev_reference_bps
+    );
+    let rendered_fields = format!("{fields:?}");
+    assert!(
+        rendered_fields.contains("order_notional_target"),
+        "entry-evaluation log fields must expose target dollars: {rendered_fields}"
+    );
+    assert!(
+        rendered_fields.contains("sizing_ev_reference_bps"),
+        "entry-evaluation log fields must expose the EV sizing reference: {rendered_fields}"
+    );
     assert_eq!(
         fields.book_impact_cap_bps,
         strategy.config.book_impact_cap_bps

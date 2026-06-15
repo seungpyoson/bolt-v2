@@ -156,9 +156,7 @@ mod tests {
         bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
         bolt_v3_providers::{
             binance::ResolvedBoltV3BinanceSecrets, chainlink::ResolvedBoltV3ChainlinkSecrets,
-            chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
             polymarket::ResolvedBoltV3PolymarketSecrets,
-            polyresearch::ResolvedBoltV3PolyResearchSecrets,
         },
         bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
     };
@@ -218,21 +216,6 @@ mod tests {
         }
     }
 
-    fn fixture_chainlink_reference_secrets() -> ResolvedBoltV3ChainlinkReferenceSecrets {
-        ResolvedBoltV3ChainlinkReferenceSecrets {
-            api_key: zeroize::Zeroizing::new("fixture-chainlink-reference-api-key".to_string()),
-            api_secret: zeroize::Zeroizing::new(
-                "fixture-chainlink-reference-api-secret".to_string(),
-            ),
-        }
-    }
-
-    fn fixture_polyresearch_secrets() -> ResolvedBoltV3PolyResearchSecrets {
-        ResolvedBoltV3PolyResearchSecrets {
-            api_key: zeroize::Zeroizing::new("fixture-polyresearch-api-key".to_string()),
-        }
-    }
-
     fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
         clients.insert(
@@ -246,14 +229,6 @@ mod tests {
         clients.insert(
             "chainlink_strike".to_string(),
             Arc::new(fixture_chainlink_secrets()),
-        );
-        clients.insert(
-            "chainlink_reference".to_string(),
-            Arc::new(fixture_chainlink_reference_secrets()),
-        );
-        clients.insert(
-            "polyresearch_reference".to_string(),
-            Arc::new(fixture_polyresearch_secrets()),
         );
         ResolvedBoltV3Secrets { clients }
     }
@@ -282,9 +257,8 @@ mod tests {
         let (_builder, summary) = register_bolt_v3_clients(fresh_builder(), adapters)
             .expect("registration should succeed");
 
-        // polymarket_main + binance_reference + okx_data + chainlink_strike
-        // + chainlink_reference + polyresearch_reference.
-        assert_eq!(summary.clients.len(), 6);
+        // polymarket_main + binance_reference + okx_data + chainlink_strike.
+        assert_eq!(summary.clients.len(), 4);
         let chainlink = summary
             .clients
             .get("chainlink_strike")
@@ -296,30 +270,6 @@ mod tests {
         assert!(
             !chainlink.execution,
             "chainlink_strike has no [execution] block in the fixture"
-        );
-        let chainlink_reference = summary
-            .clients
-            .get("chainlink_reference")
-            .expect("chainlink_reference must appear in summary");
-        assert!(
-            chainlink_reference.data,
-            "chainlink_reference has a [data] block in the fixture"
-        );
-        assert!(
-            !chainlink_reference.execution,
-            "chainlink_reference has no [execution] block in the fixture"
-        );
-        let polyresearch_reference = summary
-            .clients
-            .get("polyresearch_reference")
-            .expect("polyresearch_reference must appear in summary");
-        assert!(
-            polyresearch_reference.data,
-            "polyresearch_reference has a [data] block in the fixture"
-        );
-        assert!(
-            !polyresearch_reference.execution,
-            "polyresearch_reference has no [execution] block in the fixture"
         );
         let polymarket = summary
             .clients

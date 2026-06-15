@@ -20,9 +20,10 @@ use toml::Value;
 
 use crate::{
     bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
-    bolt_v3_submit_admission::BoltV3SubmitAdmissionState, venue_contract::VenueContract,
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,9 +65,9 @@ pub struct StrategyBuildContext {
     fee_provider: Arc<dyn FeeProvider>,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    order_execution_policy: BoltV3OrderExecutionPolicy,
     execution_venue: Venue,
     realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
-    venue_contract: Option<Arc<VenueContract>>,
 }
 
 impl StrategyBuildContext {
@@ -80,15 +81,16 @@ impl StrategyBuildContext {
         fee_provider: Arc<dyn FeeProvider>,
         decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
+        order_execution_policy: BoltV3OrderExecutionPolicy,
         execution_venue: Venue,
     ) -> Self {
         Self {
             fee_provider,
             decision_evidence,
             submit_admission,
+            order_execution_policy,
             execution_venue,
             realized_volatility_runtime: Arc::new(Mutex::new(RealizedVolSurfaceRuntime::empty())),
-            venue_contract: None,
         }
     }
 
@@ -115,11 +117,6 @@ impl StrategyBuildContext {
         self
     }
 
-    pub fn with_venue_contract(mut self, contract: Arc<VenueContract>) -> Self {
-        self.venue_contract = Some(contract);
-        self
-    }
-
     pub fn fee_provider(&self) -> &dyn FeeProvider {
         self.fee_provider.as_ref()
     }
@@ -132,6 +129,10 @@ impl StrategyBuildContext {
         self.decision_evidence.as_ref()
     }
 
+    pub fn decision_evidence_arc(&self) -> Arc<dyn BoltV3DecisionEvidenceWriter> {
+        self.decision_evidence.clone()
+    }
+
     pub fn submit_admission(&self) -> &BoltV3SubmitAdmissionState {
         self.submit_admission.as_ref()
     }
@@ -140,14 +141,20 @@ impl StrategyBuildContext {
         self.submit_admission.clone()
     }
 
+    pub fn order_execution_policy(&self) -> BoltV3OrderExecutionPolicy {
+        self.order_execution_policy
+    }
+
+    #[cfg(test)]
+    pub fn with_order_execution_policy(mut self, policy: BoltV3OrderExecutionPolicy) -> Self {
+        self.order_execution_policy = policy;
+        self
+    }
+
     /// Venue of the configured execution client. Market selection must be scoped to this venue so a
     /// real order can only ever fire against an instrument on the venue it routes to.
     pub fn execution_venue(&self) -> Venue {
         self.execution_venue
-    }
-
-    pub fn venue_contract(&self) -> Option<&VenueContract> {
-        self.venue_contract.as_deref()
     }
 
     pub fn realized_volatility_quote_subscription_requests(
@@ -389,6 +396,27 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[derive(Debug)]
@@ -481,6 +509,7 @@ mod tests {
             Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
                 NoopDecisionEvidenceWriter,
             ))),
+            crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             // Fixture venue for registry tests. These exercise strategy registration, not
             // venue-scoped market selection, so the value is inert here; production resolves the
             // execution venue from `root.clients[execution_client_id].venue` (venue-agnostic).

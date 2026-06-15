@@ -17,7 +17,6 @@
 
 pub mod binance;
 pub mod chainlink;
-pub mod chainlink_reference;
 pub mod hyperliquid;
 pub mod hyperliquid_artifacts;
 pub mod market_data;
@@ -33,7 +32,6 @@ pub mod polyresearch;
 pub use chainlink::KEY as RESOLUTION_ORACLE_VENUE_KEY;
 pub use chainlink::PROVIDER_KIND as RESOLUTION_ORACLE_PROVIDER_KIND;
 pub(crate) use chainlink::STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM;
-pub use chainlink_reference::KEY as REFERENCE_CATALOG_VENUE_KEY;
 
 use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, sync::Arc};
 
@@ -533,65 +531,6 @@ pub struct ProviderBinding {
     pub build_fee_provider: Option<FeeProviderBuilder>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReferencePriceIdentifierKind {
-    InstrumentId,
-    Symbol,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReferencePriceProviderMetadata {
-    pub provider_key: &'static str,
-    pub client_venue_key: &'static str,
-    pub identifier_kind: ReferencePriceIdentifierKind,
-    pub supported_assets: &'static [&'static str],
-}
-
-pub fn reference_price_provider_metadata(
-    provider_key: &str,
-) -> Option<ReferencePriceProviderMetadata> {
-    if provider_key == chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY {
-        return Some(ReferencePriceProviderMetadata {
-            provider_key: chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY,
-            client_venue_key: chainlink_reference::KEY,
-            identifier_kind: ReferencePriceIdentifierKind::InstrumentId,
-            supported_assets: &[],
-        });
-    }
-    if provider_key == polyresearch::REFERENCE_PRICE_PROVIDER_KEY {
-        return Some(ReferencePriceProviderMetadata {
-            provider_key: polyresearch::REFERENCE_PRICE_PROVIDER_KEY,
-            client_venue_key: polyresearch::KEY,
-            identifier_kind: ReferencePriceIdentifierKind::Symbol,
-            supported_assets: polyresearch::POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS,
-        });
-    }
-    None
-}
-
-pub fn reference_price_provider_supports_asset(provider_key: &str, asset: &str) -> bool {
-    let Some(metadata) = reference_price_provider_metadata(provider_key) else {
-        return false;
-    };
-    metadata.supported_assets.is_empty() || metadata.supported_assets.contains(&asset)
-}
-
-pub fn reference_price_provider_identifier_is_configured(
-    root: &BoltV3RootConfig,
-    provider_key: &str,
-    identifier: &str,
-) -> Result<bool, String> {
-    if provider_key == chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY {
-        return chainlink::reference_price_instrument_in_shared_catalog(root, identifier);
-    }
-    if provider_key == polyresearch::REFERENCE_PRICE_PROVIDER_KEY {
-        return Ok(true);
-    }
-    Err(format!(
-        "reference price provider `{provider_key}` is unsupported"
-    ))
-}
-
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
@@ -759,40 +698,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: chainlink::resolve_secrets,
         configured_secret_paths: chainlink::configured_secret_paths,
         map_adapters: chainlink::map_adapters,
-        load_live_submit_approval: None,
-        preflight_live_submit_arming: None,
-        write_live_submit_approval_artifact: None,
-        write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
-    },
-    ProviderBinding {
-        key: chainlink_reference::KEY,
-        validate_client: chainlink_reference::validate_client,
-        supported_market_families: chainlink_reference::SUPPORTED_MARKET_FAMILIES,
-        required_secret_blocks: chainlink_reference::REQUIRED_SECRET_BLOCKS,
-        secret_field_names: chainlink_reference::SECRET_FIELD_NAMES,
-        credential_log_modules: chainlink_reference::CREDENTIAL_LOG_MODULES,
-        forbidden_env_vars: chainlink_reference::FORBIDDEN_ENV_VARS,
-        resolve_secrets: chainlink_reference::resolve_secrets,
-        configured_secret_paths: chainlink_reference::configured_secret_paths,
-        map_adapters: chainlink_reference::map_adapters,
-        load_live_submit_approval: None,
-        preflight_live_submit_arming: None,
-        write_live_submit_approval_artifact: None,
-        write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
-    },
-    ProviderBinding {
-        key: polyresearch::KEY,
-        validate_client: polyresearch::validate_client,
-        supported_market_families: polyresearch::SUPPORTED_MARKET_FAMILIES,
-        required_secret_blocks: polyresearch::REQUIRED_SECRET_BLOCKS,
-        secret_field_names: polyresearch::SECRET_FIELD_NAMES,
-        credential_log_modules: polyresearch::CREDENTIAL_LOG_MODULES,
-        forbidden_env_vars: polyresearch::FORBIDDEN_ENV_VARS,
-        resolve_secrets: polyresearch::resolve_secrets,
-        configured_secret_paths: polyresearch::configured_secret_paths,
-        map_adapters: polyresearch::map_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
@@ -1200,19 +1105,6 @@ mod tests {
         assert_eq!(
             binance.credential_log_modules,
             binance::CREDENTIAL_LOG_MODULES
-        );
-
-        let polyresearch = binding_for_provider_key(polyresearch::KEY)
-            .expect("PolyResearch binding must be registered");
-        assert_eq!(
-            polyresearch.credential_log_modules,
-            polyresearch::CREDENTIAL_LOG_MODULES
-        );
-        assert!(
-            polyresearch
-                .credential_log_modules
-                .contains(&"nautilus_network::websocket::client"),
-            "PolyResearch carries its API key in the WebSocket URL query; the NT WebSocket client module must stay credential-sensitive"
         );
     }
 

@@ -6,7 +6,7 @@ strategy_files = [
 ]
 
 [realized_volatility_surfaces.configured_rv_surface]
-canonical_base_asset = "BTC"
+canonical_base_asset = "CONFIGURED_ASSET"
 canonical_quote_asset = "USDT"
 
 [realized_volatility_surfaces.configured_rv_surface.policy]
@@ -25,7 +25,7 @@ upper_quantile = 1.0
 [[realized_volatility_surfaces.configured_rv_surface.sources]]
 source_id = "configured_rv_okx_midpoint"
 data_client_id = "okx_data"
-instrument_id = "BTC-USDT.OKX"
+instrument_id = "CONFIGURED_ASSET-USDT.OKX"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
@@ -34,6 +34,7 @@ canonical_quote_asset = "USDT"
 
 [runtime]
 mode = "Live"
+order_execution_mode = "live"
 
 [nautilus]
 load_state = true
@@ -106,6 +107,44 @@ manage_own_order_books = false
 [risk]
 default_max_notional_per_order = "10.00"
 
+[risk.loss_governor]
+enabled = true
+account_id = "POLYMARKET-001"
+max_snapshot_age_ns = 5000000000
+rolling_window_ns = 300000000000
+active_position_pnl_max_entries = 64
+on_loss_breach_trading_state = "reducing"
+on_untrusted_snapshot_trading_state = "reducing"
+recovery_mode = "manual"
+manual_recovery_evidence_max_path_bytes = 256
+max_per_trade_loss = "2.50"
+max_daily_loss = "7.50"
+max_rolling_loss = "10.00"
+max_drawdown = "15.00"
+
+[[risk.capital_pools]]
+pool_id = "polymarket-prediction-live"
+venue_id = "POLYMARKET"
+account_id = "POLYMARKET-001"
+collateral_currency = "PUSD"
+product_kind = "prediction_market_binary"
+enforce_submit_admission = false
+max_pool_liability = "25.00"
+max_snapshot_age_ns = 5000000000
+dedupe_retention_ns = 60000000000
+
+[risk.capital_pools.prediction_market_binary]
+yes_instrument_id = "condition-fixture-yes.POLYMARKET"
+no_instrument_id = "condition-fixture-no.POLYMARKET"
+collateral_coupled_group_id = "condition-fixture"
+
+[risk.capital_pools.sizing_policy]
+min_remaining_pool_balance = "1.00"
+
+[risk.capital_pools.sizing_policy.fee_slippage]
+max_fee_liability = "0.10"
+max_slippage_liability = "0.20"
+
 [risk.nautilus]
 max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
@@ -133,17 +172,6 @@ rotation_kind = "none"
 
 [aws]
 region = "eu-west-2"
-
-# Shared Chainlink Data Streams catalog. Client transport config consumes these
-# feed bindings; client-local feed catalogs are rejected.
-[chainlink_data_streams]
-
-[[chainlink_data_streams.feed_bindings]]
-feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
-instrument_id = "BTC-USD.CHAINLINK"
-report_schema_version = 3
-report_decimal_scale = 18
-price_precision = 8
 
 [gate_providers.resolution_oracle_primary]
 provider_kind = "chainlink_data_streams"
@@ -229,47 +257,13 @@ rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
 http_timeout_secs = 10
 
+[[clients.chainlink_strike.data.feed_bindings]]
+feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+instrument_id = "BTC-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
 [clients.chainlink_strike.secrets]
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
-
-[clients.chainlink_reference]
-venue = "CHAINLINK_REFERENCE_PRICE"
-
-[clients.chainlink_reference.data]
-websocket_endpoint = "wss://ws.testnet-dataengine.chain.link"
-websocket_path = "/api/v1/ws"
-transport_backend = "sockudo"
-heartbeat_secs = 5
-heartbeat_message = "ping"
-reconnect_timeout_ms = 5000
-reconnect_delay_initial_ms = 250
-reconnect_delay_max_ms = 5000
-reconnect_backoff_factor = 1.5
-reconnect_jitter_ms = 100
-reconnect_max_attempts = 0
-idle_timeout_ms = 10000
-
-[clients.chainlink_reference.secrets]
-api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
-api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
-
-[clients.polyresearch_reference]
-venue = "POLYRESEARCH_REFERENCE_PRICE"
-
-[clients.polyresearch_reference.data]
-websocket_endpoint = "wss://ws.polynode.dev/ws"
-transport_backend = "sockudo"
-heartbeat_secs = 5
-heartbeat_message = "{\"action\":\"ping\"}"
-reconnect_timeout_ms = 5000
-reconnect_delay_initial_ms = 250
-reconnect_delay_max_ms = 5000
-reconnect_backoff_factor = 1.5
-reconnect_jitter_ms = 100
-reconnect_max_attempts = "unlimited"
-subscribe_ack_timeout_ms = 2000
-idle_timeout_ms = 10000
-
-[clients.polyresearch_reference.secrets]
-api_key_ssm_parameter = "/bolt/polyresearch/api-key"

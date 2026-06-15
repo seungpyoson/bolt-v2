@@ -170,14 +170,6 @@ def alternation(names: tuple[str, ...]) -> str:
 
 def rules_for_root(root: Path) -> list[Rule]:
     core_files = discovered_core_files(root)
-    reference_provider_files = tuple(
-        rel
-        for rel in (
-            "src/bolt_v3_providers/chainlink_reference.rs",
-            "src/bolt_v3_providers/polyresearch.rs",
-        )
-        if (root / rel).exists()
-    )
     provider_names = discovered_binding_names(root, "bolt_v3_providers")
     family_names = discovered_binding_names(root, "bolt_v3_market_families")
     provider_alt = alternation(provider_names)
@@ -305,16 +297,6 @@ def rules_for_root(root: Path) -> list[Rule]:
             "src/bolt_v3_client_registration.rs",
             re.compile(rf"\bBoltV3VenueAdapterConfig::(?:{provider_type_alt})\b"),
             "client registration dispatches on concrete adapter variant",
-        ),
-        *rules_for(
-            reference_provider_files,
-            re.compile(r"\bIndexPriceUpdate\b"),
-            "reference provider must not use IndexPriceUpdate",
-        ),
-        *rules_for(
-            reference_provider_files,
-            re.compile(r"\bprice_to_beat\b"),
-            "reference provider must not touch price_to_beat",
         ),
     ]
 
@@ -948,4 +930,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     raise SystemExit(main())

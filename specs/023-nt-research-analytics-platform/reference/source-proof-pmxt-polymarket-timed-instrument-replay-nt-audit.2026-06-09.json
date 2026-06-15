@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "artifact": "source-proof-pmxt-polymarket-timed-instrument-replay-nt-audit",
+  "task": "BACKTESTING_ENGINE-022",
+  "created_utc": "2026-06-09T00:00:00Z",
+  "nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+  "question": "Can the pinned NautilusTrader BacktestNode/ParquetDataCatalog path replay PMXT Polymarket tick_size_change rows as timed InstrumentAny instrument-definition epochs without Bolt-owned simulation behavior?",
+  "answer": "No. Pinned NT can store multiple InstrumentAny snapshots in ParquetDataCatalog and its live Polymarket adapter rebuilds BinaryOption instruments on tick_size_change, but standard BacktestNode catalog replay schedules only Data enum rows through BacktestDataConfig. InstrumentAny is loaded up front through query_instruments/add_instrument and is not a NautilusDataType or Data variant, so tick-size-changing PMXT L2 assets cannot be accepted through ordinary BacktestNode catalog replay.",
+  "audited_sources": [
+    {
+      "source": "repo://Cargo.toml",
+      "evidence": "All nautilus-* dependencies pin rev 6e059dcbb59ac1e582132fc431a581936c216c3c."
+    },
+    {
+      "source": "repo://crates/backtesting-vertical-slice/Cargo.toml",
+      "evidence": "The backtesting proof crate pins nautilus-backtest, nautilus-persistence, nautilus-polymarket, nautilus-model, and nautilus-trading to rev 6e059dcbb59ac1e582132fc431a581936c216c3c."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/backtest/src/config.rs:52",
+      "evidence": "NautilusDataType variants are QuoteTick, TradeTick, Bar, OrderBookDelta, OrderBookDepth10, MarkPriceUpdate, IndexPriceUpdate, InstrumentStatus, and InstrumentClose. There is no InstrumentAny replay data type."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/backtest/src/config.rs:595",
+      "evidence": "BacktestDataConfig selects a NautilusDataType plus catalog path, instrument ids, time bounds, filter expression, client id, and bar query fields. It has no field for timed instrument-definition replay."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/backtest/src/node.rs:154",
+      "evidence": "BacktestNode queries catalog instruments for each BacktestDataConfig during engine setup and calls engine.add_instrument before loading market data."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/backtest/src/node.rs:515",
+      "evidence": "BacktestNode load_data dispatches BacktestDataConfig to ParquetDataCatalog query calls for the NautilusDataType variants only; InstrumentAny is not dispatched."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/model/src/data/mod.rs:100",
+      "evidence": "The Data enum includes Delta, Deltas, Depth10, Quote, Trade, Bar, MarkPriceUpdate, IndexPriceUpdate, InstrumentStatus, InstrumentClose, and Custom. It does not include InstrumentAny."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/backtest/src/engine.rs:326",
+      "evidence": "BacktestEngine.add_instrument can apply an InstrumentAny directly, but it is a direct setup call, not a BacktestDataConfig replay stream."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/backtest/src/engine.rs:374",
+      "evidence": "BacktestEngine.add_data accepts Vec<Data>; scheduled replay batches cannot contain InstrumentAny."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/backtest/src/engine.rs:685",
+      "evidence": "The backtest run loop advances through BacktestDataIterator Data rows and calls DataEngine.process_data for each scheduled row."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/data/src/engine/mod.rs:1616",
+      "evidence": "DataEngine.process can handle dynamically typed InstrumentAny, but this is outside the Data enum replay path used by BacktestDataConfig."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/data/src/engine/mod.rs:1661",
+      "evidence": "DataEngine.process_data handles Data::InstrumentStatus and Data::InstrumentClose, but there is no Data::InstrumentAny branch."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/persistence/src/backend/catalog.rs:827",
+      "evidence": "ParquetDataCatalog.query_instruments calls query_instruments_filtered with no start/end time bounds, so BacktestNode's instrument loading does not select a timed instrument epoch."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/persistence/tests/test_catalog.rs:4631",
+      "evidence": "NT tests prove ParquetDataCatalog can write/read multiple timestamped InstrumentAny versions for the same instrument id, confirming storage support but not BacktestNode replay support."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/adapters/polymarket/src/data.rs:892",
+      "evidence": "The live Polymarket adapter handles tick_size_change by rebuilding the instrument and sending DataEvent::Instrument."
+    },
+    {
+      "source": "upstream://nautilus_trader@6e059dc/crates/adapters/polymarket/src/data.rs:2003",
+      "evidence": "The live tick-size-change test asserts that a rebuilt instrument event is emitted and no Data event is emitted for the tick-size change."
+    }
+  ],
+  "root_cause": {
+    "not_the_issue": [
+      "NT Polymarket parser support",
+      "BinaryOption rebuild semantics",
+      "ParquetDataCatalog ability to store multiple InstrumentAny snapshots"
+    ],
+    "actual_blocker": "Standard BacktestNode catalog replay separates up-front InstrumentAny loading from scheduled Data replay. PMXT tick_size_change semantics require a timed instrument-definition epoch, but the pinned NT BacktestDataConfig/Data path has no InstrumentAny stream."
+  },
+  "decisions": {
+    "standard_backtestnode_catalog_replay_has_timed_instrument_any": false,
+    "instrument_status_or_close_can_substitute_for_tick_size_change": false,
+    "pmxt_full_l2_with_tick_size_change_can_be_accepted_now": false,
+    "bounded_no_tick_size_change_pmxt_first_proof_can_continue": true,
+    "bte_022_can_close": false
+  },
+  "approved_next_paths": [
+    {
+      "path": "bounded_pmxt_no_tick_size_change_universe",
+      "allowed": true,
+      "claim_limit": "Can prove PMXT OrderBookDelta/TradeTick catalog read-back and BacktestNode execution only for source-proof-selected assets/windows with tick_size_change_rows == 0. It cannot prove full PMXT L2 acceptance."
+    },
+    {
+      "path": "separate_timed_instrument_epoch_replay",
+      "allowed": "only_after_explicit_design_and_approval",
+      "claim_limit": "Would be outside ordinary BacktestDataConfig catalog replay and must prove no custom simulator behavior, correct timestamp ordering, cache/exchange state transitions, result provenance, and CI coverage."
+    },
+    {
+      "path": "move_to_non_tick_size_changing_source_or_data_family",
+      "allowed": true,
+      "claim_limit": "Can advance BTE-022 by proving another accepted source/data family maps cleanly to NT catalog classes and BacktestNode input without the timed InstrumentAny blocker."
+    }
+  ],
+  "rejected_paths": [
+    {
+      "path": "ignore_tick_size_change_rows",
+      "reason": "This would silently drop required instrument epoch semantics and overclaim L2 replay correctness."
+    },
+    {
+      "path": "use_final_tick_size_for_entire_window",
+      "reason": "This rewrites historical book price precision and can change admissibility/fill semantics before the tick-size-change event."
+    },
+    {
+      "path": "treat_instrument_status_or_close_as_tick_size_change",
+      "reason": "InstrumentStatus and InstrumentClose are replayable Data variants but do not update price_increment or price_precision on InstrumentAny."
+    }
+  ],
+  "next_required_evidence": [
+    "For PMXT first proof, bind the source proof to a selected instrument/window with tick_size_change_rows == 0 and explicit claim limits.",
+    "For full PMXT L2 acceptance, design and prove a timed InstrumentAny replay mechanism or wait for an NT BacktestDataConfig/Data surface that supports instrument-definition epochs.",
+    "For BTE-022 closure, prove at least one accepted source sample maps to NT-compatible catalog classes and BacktestNode input without unresolved source semantics."
+  ]
+}

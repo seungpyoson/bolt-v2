@@ -1,0 +1,47 @@
+{
+  "schema_version": "source-proof-policy-hardcode-audit.v1",
+  "task_ids": [
+    "BACKTESTING_ENGINE-022"
+  ],
+  "created_at_utc": "2026-06-09T06:05:00Z",
+  "status": "generic_source_proof_policy_literals_guarded",
+  "decision": "Source-proof cross-market component role requirements are config-owned source-binding policy. Generic production Rust must not carry sample source-family or component-role literals.",
+  "audited_surface": {
+    "path": "repo://crates/backtesting-vertical-slice/src/source_proof.rs",
+    "production_region_rule": "Only Rust before #[cfg(test)] mod tests is treated as production for this audit; concrete sample source-family values may remain in unit fixtures."
+  },
+  "guard": {
+    "path": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_sample_venue_guard.rs",
+    "added_forbidden_generic_production_literals": [
+      "kimchi",
+      "korean_spot",
+      "reference_price",
+      "fx_quote",
+      "token_mapping"
+    ],
+    "allowed_locations": [
+      "TOML reference source-binding rows",
+      "source-proof evidence artifacts",
+      "unit/integration test fixtures"
+    ]
+  },
+  "static_scan_evidence": {
+    "command": "awk '/^#\\\\[cfg\\\\(test\\\\)\\\\]/{exit} {print}' crates/backtesting-vertical-slice/src/source_proof.rs | rg -n \"kimchi|korean_spot|reference_price|fx_quote|token_mapping\"",
+    "result": "no production-region matches"
+  },
+  "accepted_claims": [
+    "The source-proof validator reads required_cross_market_component_roles from the matched source-binding registry row.",
+    "The generic production source-proof code no longer embeds the former Kimchi/cross-market role names even in comments.",
+    "CI will fail if those sample source-family or role literals reappear in generic production Rust outside explicit allowed one-off/proof modules."
+  ],
+  "rejected_claims": [
+    "This makes the accepted-object operator a general adapter runner.",
+    "This authorizes broad PMXT/Polymarket backfill.",
+    "This closes BACKTESTING_ENGINE-022 by itself."
+  ],
+  "remaining_before_bte_022_close": [
+    "Durable non-trade-CSV adapter contract if a selected source cannot reuse the native-trade CSV adapter.",
+    "Broad PMXT/Polymarket source proof, coverage, storage, cost, and dynamic tick-size replay or accepted exclusion-policy evidence.",
+    "BacktestNode consumption proof for any newly selected durable NT data class/source combination."
+  ]
+}

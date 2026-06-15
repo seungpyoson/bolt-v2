@@ -1,0 +1,75 @@
+{
+  "schema_version": "source-universe-source-proof-set.v1",
+  "proof_set_id": "source-universe-source-proofs-binance-data-vision-trades-2026-03-01-all-instruments",
+  "proof_count": 5,
+  "accepted_proof_count": 5,
+  "total_completed_objects": 2051,
+  "total_accepted_bytes": 1748721970,
+  "proofs": [
+    {
+      "source_binding": "binance-spot-native-trades",
+      "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+      "source_proof_version": 1,
+      "category_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-spot",
+      "category": "spot",
+      "object_count": 1416,
+      "accepted_bytes": 406812965,
+      "first_archive_date": "2026-03-01",
+      "last_archive_date": "2026-03-01",
+      "proof_path": "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-spot-native-trades-2026-03-01-all-instruments.json",
+      "proof_hash": "f3743f31c7c66e72f9d4956dcb4d92f9de07f1cc962f3b282d99a3b1b4e7bc77"
+    },
+    {
+      "source_binding": "binance-usd-m-perpetual-native-trades",
+      "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",
+      "source_proof_version": 1,
+      "category_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-usd_m_perpetual",
+      "category": "usd_m_perpetual",
+      "object_count": 593,
+      "accepted_bytes": 1316489815,
+      "first_archive_date": "2026-03-01",
+      "last_archive_date": "2026-03-01",
+      "proof_path": "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments.json",
+      "proof_hash": "a3d2187fca4473f4c9816385ca13a0943bbae40008d1f60952447f29125b45cb"
+    },
+    {
+      "source_binding": "binance-usd-m-delivery-native-trades",
+      "source_proof_id": "source-proof-binance-usd-m-delivery-native-trades-2026-03-01-all-instruments",
+      "source_proof_version": 1,
+      "category_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-usd_m_delivery",
+      "category": "usd_m_delivery",
+      "object_count": 4,
+      "accepted_bytes": 891154,
+      "first_archive_date": "2026-03-01",
+      "last_archive_date": "2026-03-01",
+      "proof_path": "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-usd-m-delivery-native-trades-2026-03-01-all-instruments.json",
+      "proof_hash": "9455f176a78ae3fe0aa9b344ea14fc2bdb40f65f34a06ab99046720ef08eef93"
+    },
+    {
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "source_proof_id": "source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments",
+      "source_proof_version": 1,
+      "category_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-coin_m_perpetual",
+      "category": "coin_m_perpetual",
+      "object_count": 28,
+      "accepted_bytes": 23588863,
+      "first_archive_date": "2026-03-01",
+      "last_archive_date": "2026-03-01",
+      "proof_path": "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments.json",
+      "proof_hash": "7cbb60f8f44e8268663a2d1850133aa8267ed68e34b476e0ae00d362a99f1c41"
+    },
+    {
+      "source_binding": "binance-coin-m-delivery-native-trades",
+      "source_proof_id": "source-proof-binance-coin-m-delivery-native-trades-2026-03-01-all-instruments",
+      "source_proof_version": 1,
+      "category_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-coin_m_delivery",
+      "category": "coin_m_delivery",
+      "object_count": 10,
+      "accepted_bytes": 939173,
+      "first_archive_date": "2026-03-01",
+      "last_archive_date": "2026-03-01",
+      "proof_path": "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-coin-m-delivery-native-trades-2026-03-01-all-instruments.json",
+      "proof_hash": "ed9b3cc93764f8881c510d53ce2b3381ce06e248e6d150ad549313a7a4656a3b"
+    }
+  ]
+}

@@ -86,7 +86,7 @@ fn decision_evidence_failure_rejects_before_nt_submit() {
         .submit_order_with_decision_evidence(
             intent,
             order,
-            SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
         .expect_err("evidence failure must reject before NT submit");
 
@@ -321,8 +321,10 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
                 exit_quantity,
             }),
             kill_switch_forced_reduction: None,
+            position_sizing: None,
         })
-        .expect("test setup should consume the only risk-reducing exit slot");
+        .expect("test setup should consume the only risk-reducing exit slot")
+        .commit_submitted();
 
     let result = strategy.on_book_deltas(&book_deltas(
         instrument_id,
@@ -417,6 +419,7 @@ fn book_delta_refreshes_fee_readiness_after_warm_populates_provider() {
                 RecordingDecisionEvidenceWriter,
             )),
         ),
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     );
     strategy.active.outcome_fees.up_ready = false;

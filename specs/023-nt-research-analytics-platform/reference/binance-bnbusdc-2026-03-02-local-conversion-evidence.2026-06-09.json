@@ -1,0 +1,110 @@
+{
+  "schema_version": "backtesting-local-conversion-evidence.v1",
+  "evidence_id": "binance-bnbusdc-2026-03-02-local-conversion-2026-06-09",
+  "created_at_utc": "2026-06-09T12:38:40Z",
+  "scope": {
+    "status": "local_technical_conversion_only",
+    "source_binding": "binance-spot-native-trades",
+    "instrument_id": "BNBUSDC",
+    "nt_instrument_id": "BNBUSDC.BINANCE",
+    "table_family": "trades",
+    "nt_data_type": "TradeTick",
+    "archive_date": "2026-03-02",
+    "accepted_reference_gate_committed": false,
+    "published_to_s3": false,
+    "promotion_blocker": "The 2026-03-02 raw object and source-proof evidence have not been staged to the accepted S3 proof/object prefixes, so this run is not an accepted backfill gate or publication."
+  },
+  "public_object_verification": {
+    "source_url": "https://data.binance.vision/data/spot/daily/trades/BNBUSDC/BNBUSDC-trades-2026-03-02.zip",
+    "checksum_url": "https://data.binance.vision/data/spot/daily/trades/BNBUSDC/BNBUSDC-trades-2026-03-02.zip.CHECKSUM",
+    "head_status": 200,
+    "head_content_length_bytes": 1378676,
+    "head_last_modified": "Tue, 03 Mar 2026 02:29:50 GMT",
+    "head_etag": "\"5901f0c27bbb0e2849335b859e5c4e09\"",
+    "checksum_head_status": 200,
+    "checksum_file_sha256": "237782e4c8e29a77f2f258124851133ca5d89bfc41aedda0d44fd4b28bf1fbdd",
+    "checksum_sidecar_value": "26bc715698646d88b2748af5fe19e051d18d8e6b70eacf78e53822eac81d2fb5",
+    "downloaded_object_path": "/private/tmp/bte-binance-bnbusdc-2026-03-02.zip",
+    "downloaded_object_sha256": "26bc715698646d88b2748af5fe19e051d18d8e6b70eacf78e53822eac81d2fb5",
+    "downloaded_object_bytes": 1378676,
+    "zip_member": "BNBUSDC-trades-2026-03-02.csv",
+    "decoded_csv_bytes": 6858290,
+    "decoded_csv_rows": 92660,
+    "first_trade_row": "101806824,618.01000000,0.08500000,52.53085000,1772409605219614,False,True",
+    "last_trade_row": "101899483,637.72000000,1.25400000,799.70088000,1772495998173918,False,True"
+  },
+  "scratch_inputs": {
+    "scratch_root": "/private/tmp/bte-binance-local-proof-20260609-0302",
+    "run_spec_path": "/private/tmp/bte-binance-local-proof-20260609-0302/run.toml",
+    "run_spec_sha256": "ffc13d82a807428c072a68789e69258d7b6737d30e35cd9834851fb31f02d5d0",
+    "execution_plan_path": "/private/tmp/bte-binance-local-proof-20260609-0302/execution-plan.json",
+    "execution_plan_sha256": "0a9dcf22e14fd322c0be3510027185e1658bed58d5dfdeb5e2536e82ad58cf47",
+    "operator_run_id": "backtesting-vertical-slice-binance-bnbusdc-2026-03-02-local",
+    "source_proof_id": "source-proof-binance-spot-native-trades-bnbusdc-2026-03-02",
+    "source_proof_version": 1,
+    "converter_identity": "csv-native-trades-to-canonical-trades.v1",
+    "converter_version": "1",
+    "converter_config_hash": "2164011ab40b48b8edf6988038ea55824575712940c56a3df5ccdb2e7c6854c1",
+    "max_object_bytes": 1378676,
+    "max_decoded_bytes": 6858290,
+    "max_source_rows": 100000
+  },
+  "commands": [
+    {
+      "purpose": "download_raw_object",
+      "command": "curl -fsSL -o /private/tmp/bte-binance-bnbusdc-2026-03-02.zip https://data.binance.vision/data/spot/daily/trades/BNBUSDC/BNBUSDC-trades-2026-03-02.zip",
+      "exit_code": 0
+    },
+    {
+      "purpose": "download_checksum",
+      "command": "curl -fsSL -o /private/tmp/bte-binance-bnbusdc-2026-03-02.zip.CHECKSUM https://data.binance.vision/data/spot/daily/trades/BNBUSDC/BNBUSDC-trades-2026-03-02.zip.CHECKSUM",
+      "exit_code": 0
+    },
+    {
+      "purpose": "local_conversion_and_backtest",
+      "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin backtesting-vertical-slice -- --run-spec /private/tmp/bte-binance-local-proof-20260609-0302/run.toml --execution-plan /private/tmp/bte-binance-local-proof-20260609-0302/execution-plan.json --object /private/tmp/bte-binance-bnbusdc-2026-03-02.zip --output-dir /private/tmp/bte-binance-local-proof-20260609-0302/output",
+      "exit_code": 0
+    },
+    {
+      "purpose": "completed_output_rerun",
+      "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin backtesting-vertical-slice -- --run-spec /private/tmp/bte-binance-local-proof-20260609-0302/run.toml --execution-plan /private/tmp/bte-binance-local-proof-20260609-0302/execution-plan.json --object /private/tmp/bte-binance-bnbusdc-2026-03-02.zip --output-dir /private/tmp/bte-binance-local-proof-20260609-0302/output",
+      "exit_code": 0
+    }
+  ],
+  "local_result": {
+    "output_dir": "/private/tmp/bte-binance-local-proof-20260609-0302/output",
+    "output_size": "6.9M",
+    "canonical_rows": 92660,
+    "catalog_rows_by_nt_data_type": {
+      "TradeTick": 92660
+    },
+    "catalog_hash": "65071a67588b9238f0b9d133c9df8b20eed52a6dcea75a842d856c538195ed3e",
+    "catalog_read_back_trade_ticks": 92660,
+    "nt_version": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+    "strategy_config_hash": "31aff2fb41be2576afbace153b27362ce53aadf7efe6ef245233fae2a4797851",
+    "nt_iterations": 92660,
+    "nt_backtest_start_unix_nanos": 1772409605219614000,
+    "nt_backtest_end_unix_nanos": 1772495998173918000,
+    "nt_total_events": 0,
+    "nt_total_orders": 0,
+    "nt_total_positions": 0,
+    "fidelity_class": "TRADE_REPLAY"
+  },
+  "output_artifacts": {
+    "accepted-source-proof.json": "9d79db2840712d36034c47456c8b0f59781b301374cda29dae43e3db5bcab7d7",
+    "backtest-result-contract.json": "d227377dafd96df27b1d6ad08255c1a405c30dbc925608cedc0e02287c0fa0b6",
+    "backtest-run-manifest.json": "a8aeae11eba109108923d6e5e8fba16f8d753369b8e73ea8f65fd4ef191a8d49",
+    "canonical-trades.parquet": "b532ae59ca53ed37ef68b2ad73ce6513281ce709bff381eb23a9315449981a99",
+    "catalog-metadata.json": "851500cd787e26faafd1acf347639d75208f0559012921808745c9fbf1adf556",
+    "conversion-checkpoint.json": "a397488fe01c6fe4c5518f9b7f742f8d7fd7882e7561ad8dbf1aab4731fc9ab2",
+    "conversion-manifest.json": "8e3f8fbeba90080b2e28cf35cc25d2291310b15626735e0ade11019341488eab",
+    "nt-catalog/data/instruments/BNBUSDC.BINANCE/1970-01-01T00-00-00-000000000Z_1970-01-01T00-00-00-000000000Z.parquet": "33e26534179a535b859a544718614f784aa926bd5817a83969efcf90798c749f",
+    "nt-catalog/data/trades/BNBUSDC.BINANCE/2026-03-02T00-00-05-219614000Z_2026-03-02T23-59-58-173918000Z.parquet": "82a65e1e7a7665be5abe1217318aa570d2b34197418c92b30b21fd41ad7cd1ed"
+  },
+  "promotion_requirements": [
+    "Stage the 2026-03-02 raw object under the accepted raw S3 prefix with create-only semantics.",
+    "Stage or reuse valid source-proof evidence under the matching source-proofs/v1 prefix.",
+    "Generate committed source-proof, source-proof-scope, accepted-tranche, materialized run-spec, execution-plan, catalog-mapping readiness, and execution-readiness artifacts for the 2026-03-02 gate.",
+    "Run the accepted materialized run-spec against the staged proof path, then publish and prove direct S3 catalog consumption only after readiness is clean."
+  ]
+}

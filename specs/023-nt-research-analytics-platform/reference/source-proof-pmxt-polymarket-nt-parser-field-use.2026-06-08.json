@@ -1,0 +1,46 @@
+{
+  "schema_version": "source-proof-pmxt-polymarket-nt-parser-field-use.v1",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "source_binding": "polymarket-parquet-archive-index",
+  "status": "quote_hash_field_not_semantic_for_pinned_nt_parse_surfaces",
+  "recorded_at_utc": "2026-06-08T00:00:00Z",
+  "scope": {
+    "question": "Can PMXT price_change rows reuse pinned NT Polymarket quote parsing even though PMXT rows do not expose PolymarketQuote.hash?",
+    "answer": "Yes for the checked pinned NT parse surfaces: hash is a required transport struct field, but parse_book_deltas and parse_quote_from_price_change do not read it, and NT tests construct price-change messages with hash as an empty string.",
+    "not_implementation": true,
+    "not_catalog_readback_proof": true,
+    "not_source_selection": true
+  },
+  "pinned_nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+  "evidence": [
+    {
+      "source": "nt://crates/adapters/polymarket/src/websocket/messages.rs:102",
+      "finding": "PolymarketQuote declares hash as a String field alongside asset_id, price, side, size, best_bid, and best_ask."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/websocket/parse.rs:137",
+      "finding": "parse_book_deltas iterates price_changes and reads price, size, side, and quotes.timestamp; it does not read change.hash."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/websocket/parse.rs:265",
+      "finding": "parse_quote_from_price_change reads best_bid, best_ask, price, size, side, last_quote, ts_event, and ts_init; it does not read quote.hash."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/data.rs:1989",
+      "finding": "Pinned NT data tests construct PolymarketQuote for price_change with hash set to String::new()."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/data.rs:2348",
+      "finding": "Pinned NT tests also construct best_bid/best_ask price_change quotes with hash set to String::new()."
+    }
+  ],
+  "contract_effect": {
+    "resolved_unresolved_item": "PMXT does not expose the PolymarketQuote hash field required by the NT websocket message struct.",
+    "resolved_policy": "For price_change OrderBookDelta and QuoteTick parse reuse, construct PolymarketQuote.hash as an empty string and bind this policy in converter provenance. If a future pinned NT revision starts reading hash, this proof must fail and the mapping contract must be revisited.",
+    "current_bounded_one_off_evidence": "The PMXT one-off projection now reuses pinned NT Polymarket parser/provider surfaces, writes OrderBookDelta and TradeTick rows to ParquetDataCatalog, reads them back, and runs BacktestNode for the selected one-off artifact."
+  },
+  "still_unresolved": [
+    "tick_size_change catalog representation remains unresolved.",
+    "Broad PMXT backfill remains blocked because the current proof is usage_scope=one_off_backfill_data, not accepted durable source proof with expanded coverage, throughput/cost, and dynamic tick-size replay evidence."
+  ]
+}

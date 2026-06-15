@@ -760,8 +760,6 @@ mod tests {
             valid_from_timestamp_ms: u64::MAX,
             observations_timestamp_ms: u64::MAX,
             benchmark_price: TEST_BENCHMARK_PRICE,
-            bid_price: TEST_BENCHMARK_PRICE,
-            ask_price: TEST_BENCHMARK_PRICE,
         };
         build_strike_index_price(
             instrument_id,

@@ -1,0 +1,191 @@
+schema_version = 1
+
+# Repository Actions variables (Settings → Secrets and variables → Actions)
+# must match [runners.*.label]. Workflows reference runners only via vars.<variable>.
+
+[runners.github_hosted]
+variable = "CI_RUNNER_GITHUB_HOSTED"
+label = "ubuntu-latest"
+
+[runners.managed_heavy]
+variable = "CI_RUNNER_MANAGED_HEAVY"
+label = "ubicloud-standard-4"
+
+[runners.managed_light]
+variable = "CI_RUNNER_MANAGED_LIGHT"
+label = "ubicloud-standard-2"
+
+[workflows.ci]
+ci-policy = "github_hosted"
+detector = "github_hosted"
+fmt-check = "managed_light"
+deny = "github_hosted"
+clippy = "managed_light"
+check-aarch64 = "managed_heavy"
+source-fence = "managed_heavy"
+test-archive = "managed_heavy"
+nextest-fingerprint-reuse = "github_hosted"
+test-shards = "managed_heavy"
+test = "github_hosted"
+build = "managed_heavy"
+ci-provenance-emit = "github_hosted"
+same-sha-main-evidence = "github_hosted"
+gate = "github_hosted"
+deploy = "github_hosted"
+
+[workflows.backtester_ci]
+detect = "github_hosted"
+fmt = "managed_light"
+# clippy compiles the full NT-heavy crate (same footprint as test) and rides above the disk-pressure
+# floor only on the heavy tier; on managed_light (ubicloud-standard-2) the preflight refused at
+# free_bytes=10,622,885,888 < min_free_bytes=10,737,418,240. Kept consistent with the test lane,
+# which already compiles this crate on managed_heavy.
+clippy = "managed_heavy"
+test = "managed_heavy"
+gate = "github_hosted"
+
+[workflows.ci_runner_debug]
+debug-heavy = "managed_heavy"
+debug-light = "managed_light"
+
+[workflows.rust_probe]
+probe-heavy = "managed_heavy"
+probe-light = "managed_light"
+
+[workflows.actionlint]
+actionlint = "github_hosted"
+
+[workflows.dispatch_ci_cancel]
+cancel-obsolete-dispatch = "github_hosted"
+
+[workflows.advisory]
+advisories = "github_hosted"
+
+[workflows.summary]
+summary = "github_hosted"
+
+[workflows.stale]
+stale = "github_hosted"
+
+[workflows.ci_docs_pass_stub]
+build = "github_hosted"
+clippy = "github_hosted"
+test = "github_hosted"
+gate = "github_hosted"
+
+[meter]
+fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
+fingerprint_workflow = "ci"
+debug_workflow = "ci_runner_debug"
+included_workflows = ["ci", "backtester_ci", "ci_runner_debug", "rust_probe"]
+
+[meter.api_limits]
+workflow_runs_per_page = 100
+run_jobs_per_page = 100
+run_artifacts_per_page = 100
+branch_pull_requests_per_page = 20
+draft_timeline_items = 100
+
+[ci_provenance]
+schema_version = 1
+artifact_name_template = "ci-provenance-attempt-{run_attempt}"
+workflow_key = "ci"
+workflow_name = "CI"
+workflow_path = ".github/workflows/ci.yml"
+fingerprint_source = "meter"
+
+[ci_provenance.full_ci]
+required_jobs = [
+  "detector",
+  "fmt-check",
+  "deny",
+  "clippy",
+  "check-aarch64",
+  "source-fence",
+  "test-archive",
+  "test-shards",
+  "test",
+]
+conditional_jobs = ["build"]
+conditional_job_outputs = { build = "detector.build_required" }
+
+[ci_provenance.full_ci.jobs.detector]
+check_name = "detector"
+
+[ci_provenance.full_ci.jobs.fmt-check]
+check_name = "fmt-check"
+
+[ci_provenance.full_ci.jobs.deny]
+check_name = "deny"
+
+[ci_provenance.full_ci.jobs.clippy]
+check_name = "clippy"
+
+[ci_provenance.full_ci.jobs.check-aarch64]
+check_name = "check-aarch64"
+
+[ci_provenance.full_ci.jobs.source-fence]
+check_name = "source-fence"
+
+[ci_provenance.full_ci.jobs.test-archive]
+check_name = "nextest archive"
+
+[ci_provenance.full_ci.jobs.test-shards]
+check_name_template = "nextest shard {shard} of {shard_count}"
+shard_count = 4
+
+[ci_provenance.full_ci.jobs.test]
+check_name = "test"
+
+[ci_provenance.full_ci.jobs.build]
+check_name = "build"
+conditional = "detector.build_required"
+
+[ci_provenance.deploy]
+artifact_name = "bolt-v2-binary"
+require_source_event = "push"
+require_source_branch = "main"
+require_gate_check = true
+
+[ci_provenance.dispatch]
+workflow_input = "full_ci"
+
+[ci_provenance.api_limits]
+workflow_runs_per_page = 100
+run_jobs_per_page = 100
+run_artifacts_per_page = 100
+max_lookback_pages = 10
+max_lookback_age_seconds = 2592000
+
+[ci_provenance.artifacts]
+retention_days = 30
+
+[ci_provenance.policy]
+draft_pr_synchronize = "defer"
+draft_pr_opened = "defer"
+draft_pr_reopened = "defer"
+converted_to_draft = "defer"
+ready_pr = "full"
+ready_for_review = "full"
+workflow_dispatch = "full"
+main_push = "full"
+tag = "tag_reuse"
+unknown_event = "full"
+
+[ci_provenance.policy.override]
+force_full_ci = false
+ignore_emit_failure = false
+
+[dispatch_cancel]
+workflow_event = "workflow_dispatch"
+active_statuses = ["queued", "requested", "waiting", "pending", "in_progress"]
+workflow_runs_per_page = 100
+max_pages = 3
+
+[ci_runner_debug]
+ssh_wait_minutes_variable = "CI_DEBUG_SSH_WAIT_MINUTES"
+ssh_public_key_secret = "SSH_PUBLIC_KEY"
+ssh_runner_action = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
+onepassword_vault = "Private"
+onepassword_item_title = "bolt-v2 CI runner debug SSH"
+onepassword_public_key_field = "public key"

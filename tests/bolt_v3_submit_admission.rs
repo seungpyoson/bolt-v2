@@ -1,18 +1,23 @@
 mod support;
 
+use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
-    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot,
+    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3PositionSizerRebuildAuditEvidence,
+    BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
+    BoltV3SubmitReservationMetadataEvidence,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
+use bolt_v2::bolt_v3_position_sizer::{FeeSlippagePolicy, ProductKind, SizingPolicy};
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
-    BoltV3LiveSubmitApprovalLimits, BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput,
-    BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
-    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState,
-    BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, build_submit_admission_request_from_order,
+    BoltV3LiveSubmitApprovalLimits, BoltV3OrderLifecycleIntent, BoltV3PositionSizerRejectReason,
+    BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof,
+    BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput,
+    BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+    BoltV3SubmitPositionSizerConfig, build_submit_admission_request_from_order,
     conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
     market_style_admission_ceiling_notional, rounded_order_admission_notional,
 };
@@ -133,65 +138,6 @@ fn build_submit_admission_request_from_order_maps_base_limit_order() {
         Decimal::from_str_exact("2.00").expect("expected decimal should parse")
     );
     assert_eq!(request.intent_kind, BoltV3SubmitIntentKind::Entry);
-}
-
-#[test]
-fn build_submit_admission_request_from_order_preserves_maker_quote_intent() {
-    let price = Price::new(0.50, 2);
-    let quantity = Quantity::new(2.0, 2);
-    let order = OrderAny::Limit(
-        LimitOrder::new_checked(
-            TraderId::from("TRADER-001"),
-            StrategyId::from("strategy-a"),
-            InstrumentId::from("INSTRUMENT.SOURCE"),
-            ClientOrderId::from("O-19700101-000000-001-A9-2"),
-            OrderSide::Buy,
-            quantity,
-            price,
-            TimeInForce::Gtc,
-            None,
-            false,
-            false,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            nautilus_core::UUID4::new(),
-            nautilus_core::UnixNanos::from(1_u64),
-        )
-        .expect("limit order should be valid"),
-    );
-    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
-        "strategy-a".to_string(),
-        BoltV3OrderIntentKind::MakerQuote,
-        price.to_string(),
-        &order,
-    );
-
-    let request = build_submit_admission_request_from_order(
-        BoltV3SubmitAdmissionRequestInput {
-            execution_client_id: "polymarket_main",
-            intent: &intent,
-            order: &order,
-            instrument: None,
-            quote_quantity_last_price: None,
-            quote_quantity_reference_price: None,
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
-            risk_reducing_exit_position: None,
-        },
-        |_| Ok(Decimal::ZERO),
-    )
-    .expect("maker quote admission request should build in shared admission module");
-
-    assert_eq!(request.intent_kind, BoltV3SubmitIntentKind::MakerQuote);
 }
 
 #[test]
@@ -317,7 +263,9 @@ fn ungated_submit_admission_allows_production_submit() {
     let result = admission.admit(&request);
     let nt_submit_called = result.is_ok();
 
-    result.expect("ungated production admission should allow a valid submit");
+    result
+        .expect("ungated production admission should allow a valid submit")
+        .commit_submitted();
     assert!(nt_submit_called, "NT submit may be reached after admission");
     assert_eq!(admission.admitted_order_count(), 1);
 }
@@ -331,7 +279,8 @@ fn limited_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
 
     admission
         .admit(&request)
-        .expect("first within-cap submit should admit");
+        .expect("first within-cap submit should admit")
+        .commit_submitted();
     nt_submit_calls += 1;
 
     let second = admission.admit(&request);
@@ -346,6 +295,26 @@ fn limited_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
     ));
     assert_eq!(admission.admitted_order_count(), 1);
     assert_eq!(nt_submit_calls, 1, "second NT submit must not be reached");
+}
+
+#[test]
+fn dropped_uncommitted_permit_rolls_back_live_submit_count_slot() {
+    let admission = limited_admission(1, Decimal::new(1, 0));
+    let request = submit_request(Decimal::new(1, 0));
+
+    {
+        let _permit = admission
+            .admit(&request)
+            .expect("within-cap submit should reserve a count slot");
+        assert_eq!(admission.admitted_order_count(), 1);
+    }
+
+    assert_eq!(admission.admitted_order_count(), 0);
+    admission
+        .admit(&request)
+        .expect("dropped permit should release the count slot for retry")
+        .commit_submitted();
+    assert_eq!(admission.admitted_order_count(), 1);
 }
 
 #[test]
@@ -378,7 +347,8 @@ fn live_submit_approval_limits_bound_provider_submit_before_nt_submit() {
             "hyperliquid_perps",
             Decimal::new(25, 0),
         ))
-        .expect("first order within provider approval limits should admit");
+        .expect("first order within provider approval limits should admit")
+        .commit_submitted();
 
     let exhausted = admission.admit(&submit_request_for_execution_client(
         "hyperliquid_perps",
@@ -414,7 +384,8 @@ fn notional_equal_to_cap_is_admitted() {
 
     admission
         .admit(&submit_request(Decimal::new(1, 0)))
-        .expect("notional equal to cap should admit");
+        .expect("notional equal to cap should admit")
+        .commit_submitted();
 
     assert_eq!(admission.admitted_order_count(), 1);
 }
@@ -465,7 +436,8 @@ fn fee_inclusive_notional_admits_same_base_when_fee_is_zero() {
     );
     admission
         .admit(&submit_request(admission_notional))
-        .expect("within-cap zero-fee admission notional must be admitted");
+        .expect("within-cap zero-fee admission notional must be admitted")
+        .commit_submitted();
     assert_eq!(admission.admitted_order_count(), 1);
 }
 
@@ -481,7 +453,8 @@ fn fee_inclusive_notional_cannot_exceed_operator_cap() {
     // never let a fee push the cash debit past the operator cap.
     let cap = Decimal::new(5, 0);
     let positive_fee_bps = Decimal::new(700, 0);
-    let fee_inclusive_notional = fee_inclusive_admission_notional(cap, positive_fee_bps);
+    let fee_inclusive_notional = fee_inclusive_admission_notional(cap, positive_fee_bps)
+        .expect("fee-inclusive notional should fit for the fixture cap");
     assert!(
         fee_inclusive_notional > cap,
         "a positive fee must push the fee-inclusive notional strictly above the cap"
@@ -499,6 +472,17 @@ fn fee_inclusive_notional_cannot_exceed_operator_cap() {
     ));
     assert_eq!(admission.admitted_order_count(), 0);
     assert!(!nt_submit_called, "NT submit must not be reached");
+}
+
+#[test]
+fn fee_inclusive_notional_overflow_returns_admission_error() {
+    let error = fee_inclusive_admission_notional(Decimal::MAX, Decimal::new(1, 0))
+        .expect_err("overflowing fee-inclusive notional must fail closed");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::NotionalArithmeticOverflow
+    ));
 }
 
 #[test]
@@ -798,6 +782,7 @@ fn strategy_build_context_carries_shared_submit_admission_handle() {
         Arc::new(NoopFeeProvider),
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         admission.clone(),
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
 
@@ -805,7 +790,8 @@ fn strategy_build_context_carries_shared_submit_admission_handle() {
     context
         .submit_admission()
         .admit(&submit_request(Decimal::new(1, 0)))
-        .expect("shared context admission should allow ungated production submits");
+        .expect("shared context admission should allow ungated production submits")
+        .commit_submitted();
     assert_eq!(admission.admitted_order_count(), 1);
 }
 
@@ -876,9 +862,9 @@ fn submit_request_with_kind_policy_and_exit_proof(
 ) -> BoltV3SubmitAdmissionRequest {
     let (order_side, order_quantity) = match intent_kind {
         BoltV3SubmitIntentKind::RiskReducingExit => (OrderSide::Sell, Decimal::new(264, 2)),
-        BoltV3SubmitIntentKind::Entry
-        | BoltV3SubmitIntentKind::MakerQuote
-        | BoltV3SubmitIntentKind::ReplaceSubmit => (OrderSide::Buy, Decimal::new(1, 0)),
+        BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit => {
+            (OrderSide::Buy, Decimal::new(1, 0))
+        }
         BoltV3SubmitIntentKind::KillSwitchForcedReduction => (OrderSide::Sell, Decimal::new(1, 0)),
     };
     BoltV3SubmitAdmissionRequest {
@@ -893,6 +879,7 @@ fn submit_request_with_kind_policy_and_exit_proof(
         lifecycle_policy,
         risk_reducing_exit_proof,
         kill_switch_forced_reduction: None,
+        position_sizing: None,
     }
 }
 
@@ -929,6 +916,36 @@ fn limited_admission_with_writer(
                 max_order_notional: max_notional,
             },
         )]),
+    )
+}
+
+fn position_sized_admission_with_writer(
+    writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
+) -> BoltV3SubmitAdmissionState {
+    BoltV3SubmitAdmissionState::new_with_position_sizer(
+        writer,
+        BoltV3SubmitPositionSizerConfig {
+            venue_id: "POLYMARKET".to_string(),
+            account_id: "POLYMARKET-001".to_string(),
+            product_kind: ProductKind::PredictionMarketBinary,
+            collateral_currency: "PUSD".to_string(),
+            capital_pool: CapitalPoolSnapshot {
+                source: "bolt-submit-admission-test".to_string(),
+                observed_at_ns: 1_000,
+                pool_id: "polymarket-prediction-live".to_string(),
+                max_pool_liability: Decimal::new(10, 0),
+                committed_liability: Decimal::ZERO,
+                max_snapshot_age_ns: 1_000,
+            },
+            policy: SizingPolicy {
+                min_remaining_pool_balance: None,
+                fee_slippage_policy: Some(FeeSlippagePolicy {
+                    max_fee_liability: Decimal::new(10, 2),
+                    max_slippage_liability: Decimal::new(20, 2),
+                }),
+            },
+            dedupe_retention_ns: 1_000,
+        },
     )
 }
 
@@ -1034,6 +1051,27 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
             "synthetic admission-decision write failure"
         ))
     }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1115,6 +1153,27 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
         state.admission_decisions.push(decision.clone());
         Ok(())
     }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[test]
@@ -1189,7 +1248,8 @@ fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("entry at the configured cap should consume the entry slot");
+        .expect("entry at the configured cap should consume the entry slot")
+        .commit_submitted();
 
     admission
         .admit(&submit_request_with_kind_and_exit_proof(
@@ -1197,7 +1257,8 @@ fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_
             BoltV3SubmitIntentKind::RiskReducingExit,
             Some(valid_risk_reducing_exit_proof()),
         ))
-        .expect("verified risk-reducing exit should admit within provider limits");
+        .expect("verified risk-reducing exit should admit within provider limits")
+        .commit_submitted();
     let outcomes: Vec<BoltV3AdmissionOutcome> = writer
         .admission_decisions()
         .into_iter()
@@ -1223,7 +1284,8 @@ fn unproven_risk_reducing_exit_fails_closed_before_notional_bypass() {
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("entry at the configured cap should admit");
+        .expect("entry at the configured cap should admit")
+        .commit_submitted();
 
     let exit = admission
         .admit(&submit_request_with_kind(
@@ -1360,7 +1422,8 @@ fn second_entry_exhausts_entry_slot_even_when_exit_slot_is_unused() {
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("first entry should admit");
+        .expect("first entry should admit")
+        .commit_submitted();
 
     let second_entry = admission
         .admit(&submit_request_with_kind(
@@ -1398,14 +1461,16 @@ fn second_verified_risk_reducing_exit_exhausts_exit_slot() {
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("entry should admit");
+        .expect("entry should admit")
+        .commit_submitted();
     admission
         .admit(&submit_request_with_kind_and_exit_proof(
             Decimal::new(264, 2),
             BoltV3SubmitIntentKind::RiskReducingExit,
             Some(valid_risk_reducing_exit_proof()),
         ))
-        .expect("first verified risk-reducing exit should admit");
+        .expect("first verified risk-reducing exit should admit")
+        .commit_submitted();
 
     let second_exit = admission
         .admit(&submit_request_with_kind_and_exit_proof(
@@ -1445,23 +1510,57 @@ fn replace_submit_uses_replace_slot_after_entry_and_exit_slots_are_consumed() {
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("entry should admit");
+        .expect("entry should admit")
+        .commit_submitted();
     admission
         .admit(&submit_request_with_kind_and_exit_proof(
             Decimal::new(264, 2),
             BoltV3SubmitIntentKind::RiskReducingExit,
             Some(valid_risk_reducing_exit_proof()),
         ))
-        .expect("risk-reducing exit should admit");
+        .expect("risk-reducing exit should admit")
+        .commit_submitted();
 
     admission
         .admit(&submit_request_with_kind(
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::ReplaceSubmit,
         ))
-        .expect("replace-submit must use the independent replace slot");
+        .expect("replace-submit must use the independent replace slot")
+        .commit_submitted();
 
     assert_eq!(admission.admitted_order_count(), 3);
+}
+
+#[test]
+fn configured_position_sizer_rejects_replace_submit_before_admission() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = position_sized_admission_with_writer(writer.clone());
+
+    let error = admission
+        .admit(&submit_request_with_kind(
+            Decimal::new(1, 0),
+            BoltV3SubmitIntentKind::ReplaceSubmit,
+        ))
+        .expect_err("replace-submit must enter the position-sizer reject path");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::PositionSizingRejected {
+            reason: BoltV3PositionSizerRejectReason::ReplaceSubmitUnsupported
+        }
+    ));
+    assert_eq!(admission.admitted_order_count(), 0);
+    let decisions = writer.admission_decisions();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(
+        decisions[0].outcome,
+        BoltV3AdmissionOutcome::RejectedPositionSizing
+    );
+    assert_eq!(
+        decisions[0].intent_kind,
+        BoltV3SubmitIntentKind::ReplaceSubmit
+    );
 }
 
 #[test]
@@ -1506,7 +1605,8 @@ fn armed_kill_switch_preserves_existing_entry_admission_behavior() {
             Decimal::new(1, 0),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("armed kill switch must preserve normal entry admission");
+        .expect("armed kill switch must preserve normal entry admission")
+        .commit_submitted();
 
     assert_eq!(admission.admitted_order_count(), 1);
 }
@@ -1568,14 +1668,16 @@ fn ordinary_risk_reducing_exit_while_latched_still_obeys_normal_count_cap() {
             Decimal::new(1, 1),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("entry submit should consume the only entry slot");
+        .expect("entry submit should consume the only entry slot")
+        .commit_submitted();
     admission
         .admit(&submit_request_with_kind_and_exit_proof(
             Decimal::new(264, 2),
             BoltV3SubmitIntentKind::RiskReducingExit,
             Some(valid_risk_reducing_exit_proof()),
         ))
-        .expect("verified exit should consume the only ordinary exit slot");
+        .expect("verified exit should consume the only ordinary exit slot")
+        .commit_submitted();
     admission.replace_kill_switch_state(halted_kill_switch_state());
 
     let exit = admission
@@ -1656,7 +1758,8 @@ fn valid_forced_reduction_while_latched_bypasses_normal_count_and_notional_caps(
             Decimal::new(1, 1),
             BoltV3SubmitIntentKind::Entry,
         ))
-        .expect("entry submit should consume the only normal count slot");
+        .expect("entry submit should consume the only normal count slot")
+        .commit_submitted();
     admission.replace_kill_switch_state(halted_kill_switch_state());
     admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
 
@@ -1665,7 +1768,8 @@ fn valid_forced_reduction_while_latched_bypasses_normal_count_and_notional_caps(
             Decimal::new(10, 0),
             forced_reduction_claim("halt-1"),
         ))
-        .expect("valid forced reduction should bypass normal count and notional caps");
+        .expect("valid forced reduction should bypass normal count and notional caps")
+        .commit_submitted();
 
     let decisions = writer.admission_decisions();
     assert_eq!(
@@ -1690,7 +1794,8 @@ fn forced_reduction_live_count_releases_terminal_order_before_next_admission() {
             Decimal::new(10, 0),
             forced_reduction_claim("halt-1"),
         ))
-        .expect("first live forced reduction should be admitted");
+        .expect("first live forced reduction should be admitted")
+        .commit_submitted();
 
     let capped = admission
         .admit(&forced_reduction_request(
@@ -1710,7 +1815,42 @@ fn forced_reduction_live_count_releases_terminal_order_before_next_admission() {
             Decimal::new(10, 0),
             forced_reduction_claim("halt-1"),
         ))
-        .expect("terminal forced reduction should release the live cap");
+        .expect("terminal forced reduction should release the live cap")
+        .commit_submitted();
+}
+
+#[test]
+fn dropped_uncommitted_forced_reduction_permit_rolls_back_live_cap() {
+    let admission = limited_admission(1, Decimal::new(1, 0));
+    admission.replace_kill_switch_state(halted_kill_switch_state());
+    admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
+
+    {
+        let _permit = admission
+            .admit(&forced_reduction_request(
+                Decimal::new(10, 0),
+                forced_reduction_claim("halt-1"),
+            ))
+            .expect("valid forced reduction should reserve the live cap");
+        let capped = admission
+            .admit(&forced_reduction_request(
+                Decimal::new(10, 0),
+                forced_reduction_claim("halt-1"),
+            ))
+            .expect_err("uncommitted forced reduction should hold the live cap");
+        assert!(matches!(
+            capped,
+            BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
+        ));
+    }
+
+    admission
+        .admit(&forced_reduction_request(
+            Decimal::new(10, 0),
+            forced_reduction_claim("halt-1"),
+        ))
+        .expect("dropped forced-reduction permit should release the live cap")
+        .commit_submitted();
 }
 
 #[test]
@@ -1731,7 +1871,8 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
 
     admission
         .admit(&submit_request(Decimal::new(1, 0)))
-        .expect("first valid submit should admit");
+        .expect("first valid submit should admit")
+        .commit_submitted();
     admission
         .admit(&submit_request(Decimal::ZERO))
         .expect_err("zero notional must reject");
@@ -1740,7 +1881,8 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
         .expect_err("over-cap notional must reject");
     admission
         .admit(&submit_request(Decimal::new(1, 0)))
-        .expect("first within-cap submit should admit");
+        .expect("first within-cap submit should admit")
+        .commit_submitted();
     admission
         .admit(&submit_request(Decimal::new(1, 0)))
         .expect_err("second submit must exhaust count cap");
@@ -1830,7 +1972,8 @@ fn admit_serializes_while_admission_evidence_is_in_flight() {
     first_handle
         .join()
         .expect("first admission thread should not panic")
-        .expect("first admission should pass");
+        .expect("first admission should pass")
+        .commit_submitted();
     let second = second_result_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("second admission should complete after first evidence write is released");

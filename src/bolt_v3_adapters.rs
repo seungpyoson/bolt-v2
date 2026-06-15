@@ -415,9 +415,7 @@ mod tests {
         ProviderAdapterMapContext, ProviderBinding, ProviderResolvedSecrets,
         ProviderSecretResolveContext, ResolvedClientSecrets, SsmSecretResolver,
         binance::{self, ResolvedBoltV3BinanceSecrets},
-        chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
-        polyresearch::ResolvedBoltV3PolyResearchSecrets,
     };
     use crate::bolt_v3_secrets::{
         BoltV3SecretError, ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets,
@@ -587,21 +585,6 @@ mod tests {
         }
     }
 
-    fn fixture_chainlink_reference_secrets() -> ResolvedBoltV3ChainlinkReferenceSecrets {
-        ResolvedBoltV3ChainlinkReferenceSecrets {
-            api_key: zeroize::Zeroizing::new("fixture-chainlink-reference-api-key".to_string()),
-            api_secret: zeroize::Zeroizing::new(
-                "fixture-chainlink-reference-api-secret".to_string(),
-            ),
-        }
-    }
-
-    fn fixture_polyresearch_secrets() -> ResolvedBoltV3PolyResearchSecrets {
-        ResolvedBoltV3PolyResearchSecrets {
-            api_key: zeroize::Zeroizing::new("fixture-polyresearch-api-key".to_string()),
-        }
-    }
-
     fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
         clients.insert(
@@ -615,14 +598,6 @@ mod tests {
         clients.insert(
             "chainlink_strike".to_string(),
             Arc::new(fixture_chainlink_secrets()),
-        );
-        clients.insert(
-            "chainlink_reference".to_string(),
-            Arc::new(fixture_chainlink_reference_secrets()),
-        );
-        clients.insert(
-            "polyresearch_reference".to_string(),
-            Arc::new(fixture_polyresearch_secrets()),
         );
         ResolvedBoltV3Secrets { clients }
     }
@@ -921,22 +896,13 @@ mod tests {
         let loaded = fixture_loaded_config();
         // Provide secrets for every other secret-requiring client so the mapper
         // reaches `polymarket_main` and fails specifically there. The fixture
-        // also ships Chainlink data clients (alphabetically before
-        // polymarket_main in the BTreeMap iteration), so their secrets
-        // must be present or the error would otherwise surface for Chainlink
-        // first.
+        // also ships `chainlink_strike` (alphabetically before polymarket_main in
+        // the BTreeMap iteration), so its secrets must be present or the error
+        // would otherwise surface for chainlink first.
         let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
         clients.insert(
             "chainlink_strike".to_string(),
             Arc::new(fixture_chainlink_secrets()),
-        );
-        clients.insert(
-            "chainlink_reference".to_string(),
-            Arc::new(fixture_chainlink_reference_secrets()),
-        );
-        clients.insert(
-            "polyresearch_reference".to_string(),
-            Arc::new(fixture_polyresearch_secrets()),
         );
         let resolved = ResolvedBoltV3Secrets { clients };
 
@@ -1002,21 +968,12 @@ mod tests {
             "binance_reference".to_string(),
             Arc::new(fixture_binance_secrets()),
         );
-        // The fixture ships Chainlink data clients (iterated before
-        // polymarket_main); supply their matching secrets so the mapper
-        // reaches polymarket_main and surfaces the provider MISMATCH there
-        // rather than a Chainlink miss.
+        // The fixture ships `chainlink_strike` (iterated before polymarket_main);
+        // supply its matching secrets so the mapper reaches polymarket_main and
+        // surfaces the provider MISMATCH there rather than a chainlink miss.
         clients.insert(
             "chainlink_strike".to_string(),
             Arc::new(fixture_chainlink_secrets()),
-        );
-        clients.insert(
-            "chainlink_reference".to_string(),
-            Arc::new(fixture_chainlink_reference_secrets()),
-        );
-        clients.insert(
-            "polyresearch_reference".to_string(),
-            Arc::new(fixture_polyresearch_secrets()),
         );
         let resolved = ResolvedBoltV3Secrets { clients };
 

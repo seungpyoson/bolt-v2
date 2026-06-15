@@ -10,6 +10,10 @@ use nautilus_system::trader::Trader;
 use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
 use toml::Value;
 
+thread_local! {
+    static MARKET_EXIT_CALLS: RefCell<Vec<StrategyId>> = const { RefCell::new(Vec::new()) };
+}
+
 #[derive(Debug)]
 pub(crate) struct StubRuntimeStrategy {
     core: StrategyCore,
@@ -28,7 +32,16 @@ impl StubRuntimeStrategy {
 
 impl DataActor for StubRuntimeStrategy {}
 
-nautilus_strategy!(StubRuntimeStrategy);
+nautilus_strategy!(StubRuntimeStrategy, core, {
+    fn on_market_exit(&mut self) {
+        let strategy_id = StrategyId::from(self.core.actor_id().inner().as_str());
+        MARKET_EXIT_CALLS.with(|calls| calls.borrow_mut().push(strategy_id));
+    }
+});
+
+pub(crate) fn take_market_exit_calls() -> Vec<StrategyId> {
+    MARKET_EXIT_CALLS.with(|calls| std::mem::take(&mut *calls.borrow_mut()))
+}
 
 #[derive(Debug)]
 pub(crate) struct StubRuntimeStrategyBuilder;

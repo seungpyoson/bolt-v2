@@ -561,9 +561,19 @@ pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
         key: STRATEGY_KEY,
         relative_roots: &[
             "src/strategies/binary_oracle_edge_taker",
+            // The archetype translates operator TOML into the runtime config
+            // table that carries the NautilusTrader-managed venue-action knobs.
+            // It is the sole producer of that table, so it belongs under the same
+            // tamper-evidence as the consumer (`config.rs`) that validates them.
+            "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+            // The shared policy is the only approved Bolt-v3 strategy-originated
+            // NT submit/cancel mutation boundary.
+            "src/bolt_v3_order_execution.rs",
             "src/bolt_v3_book_sizing.rs",
             "src/bolt_v3_binary_outcome_edge.rs",
             "src/bolt_v3_executable_cost.rs",
+            "src/bolt_v3_sizing.rs",
+            "src/bolt_v3_taker_updown_signal.rs",
         ],
     },
     GatedSourceRoot {

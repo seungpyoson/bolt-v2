@@ -15,9 +15,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-schema.md"
 RUNTIME_CONTRACTS_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
 STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
-PRODUCTION_READINESS_TRACE_DOC = (
-    REPO_ROOT / "docs/bolt-v3/2026-05-20-production-readiness-end-to-end-trace.md"
-)
 RESEARCH_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/research.md"
 TASKS_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/tasks.md"
 CONTRACT_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/contracts/order-intent-layer.md"
@@ -27,21 +24,21 @@ MAKER_SCOPE_CONTRACT_DOC = (
     REPO_ROOT / "specs/022-nt-maker-order-scope/contracts/maker-order-config.md"
 )
 MAKER_SCOPE_DATA_MODEL_DOC = REPO_ROOT / "specs/022-nt-maker-order-scope/data-model.md"
-REFERENCE_CURRENT_PRICE_PLAN_DOC = (
-    REPO_ROOT / "docs/superpowers/plans/2026-06-08-reference-current-price-provider-ingestion.md"
-)
-REFERENCE_CURRENT_PRICE_SPEC_DOC = (
-    REPO_ROOT / "docs/superpowers/specs/2026-06-08-reference-current-price-provider-ingestion-design.md"
-)
 AGENTS_DOC = REPO_ROOT / "AGENTS.md"
 FEATURE_JSON = REPO_ROOT / ".specify/feature.json"
 VALIDATE_SOURCE = REPO_ROOT / "src/bolt_v3_validate.rs"
+DECISION_EVIDENCE_SOURCE = REPO_ROOT / "src/bolt_v3_decision_evidence.rs"
 ARCHETYPE_BINARY_ORACLE_SOURCE = (
     REPO_ROOT / "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 )
 POSITION_CONTRACT_SOURCE = REPO_ROOT / "src/bolt_v3_position_contract.rs"
 ORDER_INTENT_FEATURE_DIR = "specs/023-nt-order-intent-layer"
 ORDER_INTENT_PLAN = f"{ORDER_INTENT_FEATURE_DIR}/plan.md"
+ACTIVE_SPECKIT_FEATURE_DIRS = (
+    ORDER_INTENT_FEATURE_DIR,
+    "specs/026-nt-backed-iv-engine",
+)
+ACTIVE_SPECKIT_PLANS = tuple(f"{feature_dir}/plan.md" for feature_dir in ACTIVE_SPECKIT_FEATURE_DIRS)
 SPECKIT_BLOCK_PATTERN = re.compile(
     r"<!-- SPECKIT START -->(?P<body>.*?)<!-- SPECKIT END -->",
     re.DOTALL,
@@ -53,52 +50,17 @@ BACKTICKED_FIELD_PATTERN = re.compile(r"`(?P<field>[a-z][a-z0-9_]*)`")
 SUPPORTED_STRATEGY_SCHEMA_VERSION_PATTERN = re.compile(
     r"pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = (?P<version>\d+);"
 )
+DECISION_EVIDENCE_SCHEMA_VERSION_PATTERN = re.compile(
+    r"pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = (?P<version>\d+);"
+)
 STRATEGY_SCHEMA_EXAMPLE_PATTERN = re.compile(
     r"schema_version = (?P<version>\d+)\nstrategy_instance_id = ",
     re.MULTILINE,
-)
-REFERENCE_CURRENT_PRICE_SOURCE_EXAMPLE_PATTERN = re.compile(
-    r"(?ms)^\[reference_current_price\.source\.chainlink_primary\]\n(?P<body>.*?)(?=^\[|\Z)"
 )
 POSITION_CONTRACT_HELPER_NAMES = (
     "expected_position_side_for_entry_order",
     "expected_exit_order_side_for_position",
     "is_observed_open_side",
-)
-ROOT_CHAINLINK_CATALOG_FIELDS = (
-    "`feed_id`",
-    "`instrument_id`",
-    "`report_schema_version`",
-    "`report_decimal_scale`",
-    "`price_precision`",
-)
-REFERENCE_CURRENT_PRICE_STALE_DOC_PHRASES = (
-    'feed_catalog = "chainlink_data_streams"',
-)
-REFERENCE_CURRENT_PRICE_STALE_SCHEMA_PHRASES = (
-    "[reference_data]",
-    "reference_data",
-    "reference_venue",
-    "reference_instrument_id",
-    'feed_catalog = "chainlink_data_streams"',
-    "clients.chainlink_strike.data.feed_bindings",
-    "clients.chainlink_reference.data.feed_bindings",
-)
-REFERENCE_CURRENT_PRICE_REQUIRED_SCHEMA_PHRASES = (
-    '`reconnect_max_attempts`: required; must be `0` so Chainlink reference WebSocket auth headers are regenerated only on DataClient connect',
-    '`reconnect_max_attempts`: required, either `"unlimited"` or a positive integer',
-    "Secrets must be SSM-only fields `api_key_ssm_parameter` and `api_secret_ssm_parameter`.",
-    "Secrets must be the SSM-only field `api_key_ssm_parameter`.",
-)
-REFERENCE_CURRENT_PRICE_REQUIRED_DOC_PHRASES = (
-    "Chainlink current-price and strike clients resolve feed ids from the root-owned `[chainlink_data_streams]` catalog by convention; clients do not declare a `feed_catalog` pointer.",
-)
-PRODUCTION_READINESS_TRACE_STALE_PHRASES = (
-    "strategy-free reference quote probe",
-    "live reference-data freshness",
-)
-PRODUCTION_READINESS_TRACE_REQUIRED_PHRASES = (
-    "reference_current_price health subscribes to configured custom-data sources",
 )
 
 ENABLED_ORDER_TYPES = (
@@ -120,9 +82,10 @@ ORDER_TEMPLATE_FIELDS = (
     "trailing_offset",
     "trailing_offset_type",
 )
-DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE = (
-    "Decision-evidence JSONL records use `schema_version = 6` for `order_intent`, "
-    "`admission_decision`, and `strategy_input_snapshot` envelopes."
+DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE_TEMPLATE = (
+    "Decision-evidence JSONL records use `schema_version = {version}` for `order_intent`, "
+    "`admission_decision`, `strategy_input_snapshot`, `position_sizer_rebuild`, "
+    "`submit_reservation_metadata`, and `submit_reservation_fill` envelopes."
 )
 STATUS_MAP_FORCED_EXIT_BUILDER_PHRASE = (
     "Order construction uses the shared `src/bolt_v3_order_intent.rs` builder for "
@@ -154,8 +117,9 @@ REQUIRED_SCHEMA_PHRASES = (
     "When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders",
     "`trigger_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TriggerType::Default`",
     "`trailing_offset_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TrailingOffsetType::Price`",
-    "Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent`, `decision`, or `snapshot`.",
-    "The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.",
+    "Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, or `fill`.",
+    "The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `position_sizer_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, and `submit_reservation_fill` for fill metadata.",
+    "`position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-10 reservation records.",
 )
 STALE_STATUS_MAP_PHRASES = (
     "Single-value enums (`RuntimeMode::Live`, `OmsType::Netting`, `CatalogFsProtocol::File`, `RotationKind::None`)",
@@ -292,6 +256,13 @@ def extract_supported_strategy_schema_version(validate_source: str) -> int | Non
     return int(match.group("version"))
 
 
+def extract_decision_evidence_schema_version(decision_evidence_source: str) -> int | None:
+    match = DECISION_EVIDENCE_SCHEMA_VERSION_PATTERN.search(decision_evidence_source)
+    if match is None:
+        return None
+    return int(match.group("version"))
+
+
 def has_rust_function(source: str, name: str) -> bool:
     return re.search(rf"(?m)^\s*(?:pub(?:\(crate\))?\s+)?fn\s+{re.escape(name)}\s*\(", source) is not None
 
@@ -359,10 +330,10 @@ def validate_speckit_context(agents_doc: str | None, feature_json: str | None) -
                 plan_paths = [
                     plan_match.group("path") for plan_match in BACKTICKED_PLAN_PATTERN.finditer(speckit_block)
                 ]
-                if plan_paths != [ORDER_INTENT_PLAN]:
+                if len(plan_paths) != 1 or plan_paths[0] not in ACTIVE_SPECKIT_PLANS:
                     findings.append(
                         "AGENTS.md active Speckit block must contain exactly "
-                        f"`{ORDER_INTENT_PLAN}` as its plan pointer, got {plan_paths!r}"
+                        f"one current plan pointer from {ACTIVE_SPECKIT_PLANS!r}, got {plan_paths!r}"
                     )
                 if "specs/023-nt-research-analytics-platform/plan.md" in speckit_block:
                     findings.append(
@@ -382,89 +353,11 @@ def validate_speckit_context(agents_doc: str | None, feature_json: str | None) -
                 findings.append(".specify/feature.json must be a JSON object")
                 return findings
             feature_directory = parsed.get("feature_directory")
-            if feature_directory != ORDER_INTENT_FEATURE_DIR:
+            if feature_directory not in ACTIVE_SPECKIT_FEATURE_DIRS:
                 findings.append(
                     ".specify/feature.json points to "
-                    f"{feature_directory!r}, expected {ORDER_INTENT_FEATURE_DIR!r}"
+                    f"{feature_directory!r}, expected one of {ACTIVE_SPECKIT_FEATURE_DIRS!r}"
                 )
-
-    return findings
-
-
-def validate_reference_current_price_schema(schema: str) -> list[str]:
-    findings: list[str] = []
-
-    for phrase in REFERENCE_CURRENT_PRICE_STALE_SCHEMA_PHRASES:
-        if phrase in schema:
-            findings.append(
-                f"schema still contains stale reference-current-price phrase: {phrase}"
-            )
-    for phrase in REFERENCE_CURRENT_PRICE_REQUIRED_SCHEMA_PHRASES:
-        if phrase not in schema:
-            findings.append(f"schema missing reference-current-price phrase: {phrase}")
-
-    source_examples = list(REFERENCE_CURRENT_PRICE_SOURCE_EXAMPLE_PATTERN.finditer(schema))
-    if not source_examples:
-        findings.append("schema missing reference_current_price source example")
-    for index, match in enumerate(source_examples, start=1):
-        body = match.group("body")
-        if "enabled = true" not in body:
-            findings.append(
-                f"reference_current_price source example {index} missing `enabled = true`"
-            )
-        if "required = false" not in body:
-            findings.append(
-                f"reference_current_price source example {index} must use `required = false` to match shipped quorum policy"
-            )
-
-    catalog_section = extract_section(
-        schema,
-        "`[chainlink_data_streams]`",
-        next_heading_prefix="### ",
-    )
-    if not catalog_section:
-        findings.append("schema missing root-owned `[chainlink_data_streams]` catalog section")
-    else:
-        if "`[[chainlink_data_streams.feed_bindings]]`" not in catalog_section:
-            findings.append("schema chainlink_data_streams section missing feed_bindings array")
-        for field in ROOT_CHAINLINK_CATALOG_FIELDS:
-            if field not in catalog_section:
-                findings.append(f"schema chainlink_data_streams section missing {field}")
-
-    return findings
-
-
-def validate_reference_current_price_design_docs(plan: str, design_spec: str) -> list[str]:
-    findings: list[str] = []
-    docs = (
-        ("reference_current_price plan", plan),
-        ("reference_current_price design spec", design_spec),
-    )
-
-    for label, text in docs:
-        if not text:
-            continue
-        for phrase in REFERENCE_CURRENT_PRICE_STALE_DOC_PHRASES:
-            if phrase in text:
-                findings.append(f"{label} still contains stale phrase: {phrase}")
-        for phrase in REFERENCE_CURRENT_PRICE_REQUIRED_DOC_PHRASES:
-            if phrase not in text:
-                findings.append(f"{label} missing current phrase: {phrase}")
-
-    return findings
-
-
-def validate_production_readiness_trace(production_readiness_trace: str) -> list[str]:
-    findings: list[str] = []
-    if not production_readiness_trace:
-        return findings
-
-    for phrase in PRODUCTION_READINESS_TRACE_STALE_PHRASES:
-        if phrase in production_readiness_trace:
-            findings.append(f"production readiness trace still contains stale phrase: {phrase}")
-    for phrase in PRODUCTION_READINESS_TRACE_REQUIRED_PHRASES:
-        if phrase not in production_readiness_trace:
-            findings.append(f"production readiness trace missing current phrase: {phrase}")
 
     return findings
 
@@ -480,12 +373,10 @@ def validate_docs(
     runtime_contracts: str = "",
     maker_scope_contract: str = "",
     maker_scope_data_model: str = "",
-    reference_current_price_plan: str = "",
-    reference_current_price_spec: str = "",
-    production_readiness_trace: str = "",
     agents_doc: str | None = None,
     feature_json: str | None = None,
     validate_source: str = "",
+    decision_evidence_source: str = "",
     archetype_source: str = "",
     strategy_source: str = "",
     position_contract_source: str = "",
@@ -500,17 +391,30 @@ def validate_docs(
         if phrase not in schema:
             findings.append(f"schema missing current phrase: {phrase}")
 
-    if DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE not in schema:
-        findings.append("schema missing decision-evidence JSONL schema v6 contract")
-
-    findings.extend(validate_reference_current_price_schema(schema))
-    findings.extend(
-        validate_reference_current_price_design_docs(
-            reference_current_price_plan,
-            reference_current_price_spec,
+    if decision_evidence_source:
+        decision_evidence_schema_version = extract_decision_evidence_schema_version(
+            decision_evidence_source
         )
-    )
-    findings.extend(validate_production_readiness_trace(production_readiness_trace))
+        if decision_evidence_schema_version is None:
+            findings.append("source missing BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION")
+        else:
+            decision_evidence_contract_phrase = (
+                DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE_TEMPLATE.format(
+                    version=decision_evidence_schema_version
+                )
+            )
+            if decision_evidence_contract_phrase not in schema:
+                findings.append(
+                    "schema missing decision-evidence JSONL schema "
+                    f"v{decision_evidence_schema_version} contract"
+                )
+
+    if not decision_evidence_source:
+        decision_evidence_contract_phrase = DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE_TEMPLATE.format(
+            version=10
+        )
+        if decision_evidence_contract_phrase not in schema:
+            findings.append("schema missing decision-evidence JSONL schema v10 contract")
 
     if runtime_contracts:
         for field in ORDER_TEMPLATE_FIELDS:
@@ -661,14 +565,12 @@ def main() -> int:
         spec=SPEC_DOC.read_text(encoding="utf-8"),
         data_model=DATA_MODEL_DOC.read_text(encoding="utf-8"),
         runtime_contracts=RUNTIME_CONTRACTS_DOC.read_text(encoding="utf-8"),
-        production_readiness_trace=PRODUCTION_READINESS_TRACE_DOC.read_text(encoding="utf-8"),
         maker_scope_contract=MAKER_SCOPE_CONTRACT_DOC.read_text(encoding="utf-8"),
         maker_scope_data_model=MAKER_SCOPE_DATA_MODEL_DOC.read_text(encoding="utf-8"),
-        reference_current_price_plan=REFERENCE_CURRENT_PRICE_PLAN_DOC.read_text(encoding="utf-8"),
-        reference_current_price_spec=REFERENCE_CURRENT_PRICE_SPEC_DOC.read_text(encoding="utf-8"),
         agents_doc=AGENTS_DOC.read_text(encoding="utf-8"),
         feature_json=FEATURE_JSON.read_text(encoding="utf-8"),
         validate_source=VALIDATE_SOURCE.read_text(encoding="utf-8"),
+        decision_evidence_source=DECISION_EVIDENCE_SOURCE.read_text(encoding="utf-8"),
         archetype_source=ARCHETYPE_BINARY_ORACLE_SOURCE.read_text(encoding="utf-8"),
         strategy_source=module_text(STRATEGY_SOURCE_ROOTS),
         position_contract_source=POSITION_CONTRACT_SOURCE.read_text(encoding="utf-8")
@@ -685,4 +587,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     raise SystemExit(main())

@@ -1,16 +1,18 @@
 # World Cup MM Static Event Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** `AGENTS.md` governs implementation and verification. Use evidence-driven checks, local non-compile gates, and exact-head PR CI for Rust compile/test proof.
 
 **Goal:** Add config-driven static binary-event market selection and Polymarket slug filtering as the first World Cup MM implementation slice.
 
-**Architecture:** Introduce a `static_binary_event` market-family binding parallel to `updown`, reusing the existing `MarketFamilyValidationBinding` registry. Polymarket adapter mapping will collect slug filters from both rotating `updown` targets and static event targets. The strategy runtime config gains optional static-event fields for configured condition and YES/NO outcome labels.
+**Architecture:** Introduce a `static_binary_event` market-family binding parallel to `updown`, reusing the existing `MarketFamilyValidationBinding` registry. Polymarket adapter mapping will collect slug filters from both rotating `updown` targets and static event targets. The strategy runtime config gains optional static-event fields for configured condition and YES/NO outcome labels. The shared maker quote/order pipeline remains PR 716 scope; this slice only binds the static family to the existing registry hook surface.
 
 **Tech Stack:** Rust, NautilusTrader model types, TOML config parsing, existing bolt-v3 market-family registry and Polymarket provider mapping.
 
 ---
 
 ### Task 1: Static Event Family Registration And Selection
+
+**Evidence class:** Production behavior must be proven by automated Rust tests on exact-head PR CI; local static proof comes from formatting, source-fence, and targeted scope/leakage scans.
 
 **Files:**
 - Create: `src/bolt_v3_market_families/static_binary_event.rs`
@@ -39,17 +41,11 @@ blocked_after_secs = 30
 
 The positive test must assert selected `market_id`, `up_instrument_id`, `down_instrument_id`, `source_identity.market_slug`, and `seconds_to_end`.
 
-When `fair_probability_source = "reference_current_price"` is configured, the strategy config must also include a strategy-owned `[reference_current_price]` source table so the fair probability comes from the existing reference-price path.
+When `fair_probability_source = "reference_current_price"` is configured, this slice only preserves the static-event fair-probability source token and runtime projection. The reference-current-price source table and provider runtime are owned by PR 730.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [ ] **Step 2: Record the focused regression target**
 
-Run:
-
-```bash
-cargo test --lib static_binary_event -- --nocapture
-```
-
-Expected: fail because `static_binary_event` module and binding do not exist.
+The focused regression target is `static_binary_event` family selection. Under repo verification policy, Rust compile/test proof is collected from exact-head PR CI rather than default local compile-heavy commands.
 
 - [ ] **Step 3: Implement the family module**
 
@@ -99,15 +95,11 @@ maker_binary_fee_curve: static_binary_event::maker_binary_fee_curve,
 
 - [ ] **Step 5: Verify GREEN**
 
-Run:
-
-```bash
-cargo test --lib static_binary_event -- --nocapture
-```
-
-Expected: tests pass.
+Expected exact-head PR CI evidence: static event family tests pass with the production registry binding included.
 
 ### Task 2: Strategy Config And Selection Dispatch
+
+**Evidence class:** Production behavior must be proven by automated Rust tests on exact-head PR CI; fail-closed config validation is covered by targeted builder tests.
 
 **Files:**
 - Modify: `src/strategies/binary_oracle_edge_taker/tests/config.rs`
@@ -121,15 +113,9 @@ Add a test proving `BinaryOracleEdgeTakerBuilder::validate_config` accepts `rota
 
 Add a test proving `selection_snapshot_from_instruments` selects a configured static event from NT `BinaryOption` metadata when the strategy config uses `static_binary_event`.
 
-- [ ] **Step 3: Run focused tests and verify RED or existing GREEN**
+- [ ] **Step 3: Record focused strategy regression targets**
 
-Run:
-
-```bash
-cargo test --lib builder_accepts_static_binary_event_market_family strategy_selects_configured_static_binary_event_target_from_nt_binary_option_metadata -- --nocapture
-```
-
-Expected before Task 1 GREEN: fail. Expected after Task 1 GREEN: pass or expose missing runtime projection.
+The focused regression targets are `builder_accepts_static_binary_event_market_family` and `strategy_selects_configured_static_binary_event_target_from_nt_binary_option_metadata`.
 
 - [ ] **Step 4: Adjust only projection gaps**
 
@@ -151,15 +137,11 @@ If runtime projection is missing, make `static_binary_event::target_runtime_fiel
 
 - [ ] **Step 5: Verify GREEN**
 
-Run:
-
-```bash
-cargo test --lib builder_accepts_static_binary_event_market_family strategy_selects_configured_static_binary_event_target_from_nt_binary_option_metadata -- --nocapture
-```
-
-Expected: tests pass.
+Expected exact-head PR CI evidence: static-event config validation and strategy selection tests pass.
 
 ### Task 3: Polymarket Static Slug Filters
+
+**Evidence class:** Production behavior must be proven by automated Rust tests on exact-head PR CI; behavior is the data-client slug filter generated from TOML-owned static targets.
 
 **Files:**
 - Modify: `src/bolt_v3_providers/polymarket.rs`
@@ -168,15 +150,9 @@ Expected: tests pass.
 
 Add a test proving Polymarket data config installs a market-slug filter that includes configured static event slugs for the matching execution client.
 
-- [ ] **Step 2: Run focused test and verify RED**
+- [ ] **Step 2: Record the focused provider regression target**
 
-Run:
-
-```bash
-cargo test --lib market_slug_filters_include_static_binary_event_targets_for_matching_client -- --nocapture
-```
-
-Expected: fail because the provider currently builds filters only from `updown::target_plans`.
+The focused regression target is `market_slug_filters_include_static_binary_event_targets_for_matching_client`.
 
 - [ ] **Step 3: Implement static target filter collection**
 
@@ -184,25 +160,21 @@ Update `build_market_slug_filters_for_client` to append filters from `static_bin
 
 - [ ] **Step 4: Verify GREEN**
 
-Run:
-
-```bash
-cargo test --lib market_slug_filters_include_static_binary_event_targets_for_matching_client -- --nocapture
-```
-
-Expected: tests pass.
+Expected exact-head PR CI evidence: Polymarket slug-filter tests pass.
 
 ### Task 4: Focused Verification
 
 **Files:**
 - No code changes unless verification exposes a regression.
 
+**Evidence class:** Refactor/scope safety is proven by static checks and exact-head PR CI; no live operation is part of this slice.
+
 - [ ] **Step 1: Format**
 
 Run:
 
 ```bash
-cargo fmt --check
+just fmt-check
 ```
 
 Expected: pass.
@@ -212,19 +184,28 @@ Expected: pass.
 Run:
 
 ```bash
-just source-fence
+just source-fence-static
 ```
 
 Expected: pass.
 
-- [ ] **Step 3: Focused test set**
+- [ ] **Step 3: Scope and leakage scans**
 
 Run:
 
 ```bash
-cargo test --lib static_binary_event -- --nocapture
-cargo test --lib market_slug_filters_include_static_binary_event_targets_for_matching_client -- --nocapture
-cargo test --lib static_binary_event -- --nocapture
+git diff origin/main --name-status
+rg -n "bolt_v3_reference_price|chainlink_reference|bolt_v3_maker_order|bolt_v3_maker_quote|maker_runtime" <changed-files>
 ```
 
-Expected: pass.
+Expected: the diff contains only World Cup static-event selection/filtering/docs and no PR 730 or PR 716 implementation leakage.
+
+- [ ] **Step 4: Exact-head CI**
+
+Run after commit and push:
+
+```bash
+just verify-remote
+```
+
+Expected: exact-head PR CI is green.

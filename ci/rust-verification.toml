@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 project_id = "bolt-v2"
 target_namespace = "bolt-v2"
 
@@ -15,6 +15,29 @@ recipe = "managed-build"
 artifact_layout = "cargo"
 profile = "release"
 target = "aarch64-unknown-linux-gnu"
+
+[local_compile_policy]
+enabled = true
+allowed_ci_env = "GITHUB_ACTIONS"
+break_glass_env = "BOLT_ALLOW_LOCAL_RUST"
+refused_managed_commands = ["test", "clippy", "build"]
+refused_cargo_subcommands = ["b", "bench", "build", "c", "check", "clippy", "d", "doc", "fetch", "install", "nextest", "r", "run", "rustc", "t", "test", "zigbuild"]
+
+[local_lane_policy]
+enabled = true
+allowed_ci_env = "GITHUB_ACTIONS"
+lock_dir = "/tmp/rust-verification-lanes"
+acquire_timeout_seconds = 1800
+heartbeat_seconds = 15
+poll_interval_seconds = 1
+
+[remote_verification]
+poll_interval_seconds = 15
+checks_appear_timeout_seconds = 300
+overall_timeout_seconds = 3600
+diagnostic_log_max_lines = 160
+diagnostic_log_max_bytes = 20000
+diagnostic_unavailable_notice_interval_polls = 4
 
 [cache]
 min_free_bytes = 10737418240

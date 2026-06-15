@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
@@ -8,8 +8,10 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use nautilus_model::orders::{Order, OrderAny};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
+use crate::bolt_v3_capital_reservation::ReservationRejectionReason;
 use crate::bolt_v3_config::LoadedBoltV3Config;
 use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
 use crate::bolt_v3_realized_volatility::{
@@ -18,14 +20,22 @@ use crate::bolt_v3_realized_volatility::{
     RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 11;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 10;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
+pub const BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
 pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID: &str = "bolt_v3.strategy_input_snapshot";
-const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";
-const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";
-const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
+pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";
+pub const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";
+pub const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
+const BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";
+const BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND: &str = "submit_reservation_metadata";
+const BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND: &str = "submit_reservation_fill";
+const PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 9;
+const SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY: &str = "prediction_market_binary";
+const SUBMIT_RESERVATION_METADATA_SIDE_BUY: &str = "buy";
+const SUBMIT_RESERVATION_METADATA_SIDE_SELL: &str = "sell";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
 
@@ -37,6 +47,18 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
 
     fn record_order_intent(&self, intent: &BoltV3OrderIntentEvidence) -> Result<()>;
     fn record_admission_decision(&self, decision: &BoltV3AdmissionDecisionEvidence) -> Result<()>;
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()>;
+    fn record_submit_reservation_metadata(
+        &self,
+        metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()>;
+    fn record_submit_reservation_fill(
+        &self,
+        fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,14 +66,12 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
 pub enum BoltV3OrderIntentKind {
     Entry,
     Exit,
-    MakerQuote,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3SubmitIntentKind {
     Entry,
-    MakerQuote,
     RiskReducingExit,
     ReplaceSubmit,
     KillSwitchForcedReduction,
@@ -349,9 +369,7 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub price_to_beat_value: String,
     pub reference_quote_ts_event: u64,
     pub spot_price: String,
-    pub reference_current_price: Option<String>,
-    pub reference_current_price_source_id: Option<String>,
-    pub reference_current_price_failed_over: Option<bool>,
+    pub reference_fair_value: Option<String>,
     pub realized_volatility: String,
     pub realized_volatility_surface_id: String,
     pub realized_volatility_as_of_ms: Option<u64>,
@@ -393,12 +411,14 @@ pub enum BoltV3AdmissionOutcome {
     Admitted,
     RejectedKillSwitchLatched,
     RejectedSubmitLifecycleDisallowed,
+    RejectedLossGovernorHalted,
     RejectedNonPositiveNotional,
     RejectedNotionalCapExceeded,
     RejectedInvalidRiskReducingExitProof,
     RejectedCountCapExhausted,
     RejectedKillSwitchForcedReductionProofInvalid,
     RejectedKillSwitchForcedReductionCapExceeded,
+    RejectedPositionSizing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -410,6 +430,53 @@ pub struct BoltV3AdmissionDecisionEvidence {
     pub notional: String,
     pub intent_kind: BoltV3SubmitIntentKind,
     pub outcome: BoltV3AdmissionOutcome,
+    pub loss_halt_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3PositionSizerRebuildAuditEvidence {
+    pub observed_at_ns: u64,
+    pub source: String,
+    pub observed_open_order_count: usize,
+    pub all_open_orders_attributed: bool,
+    pub accepted: bool,
+    pub reason: Option<ReservationRejectionReason>,
+    pub attempted_reservation_count: usize,
+    pub recovered_reservation_count: usize,
+    pub live_reserved_liability: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3SubmitReservationMetadataEvidence {
+    pub client_order_id: String,
+    pub submit_reservation_id: String,
+    pub venue_id: String,
+    pub account_id: String,
+    pub product_kind: String,
+    pub collateral_currency: String,
+    pub capital_pool_id: String,
+    pub collateral_group_id: String,
+    pub instrument_id: String,
+    pub side: String,
+    pub submitted_quantity: String,
+    pub liability_factor: String,
+    pub additive_liability: String,
+    pub reserved_liability: String,
+    pub observed_at_ns: u64,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3SubmitReservationFillEvidence {
+    pub client_order_id: String,
+    pub submit_reservation_id: String,
+    pub trade_id: String,
+    pub instrument_id: String,
+    pub side: String,
+    pub fill_quantity: String,
+    pub observed_at_ns: u64,
+    pub reconciliation: bool,
+    pub source: String,
 }
 
 #[derive(Debug)]
@@ -467,6 +534,30 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
         let line = encode_admission_decision_line(decision)?;
         self.append_line(&line)
     }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        let line = encode_position_sizer_rebuild_audit_line(audit)?;
+        self.append_line(&line)
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        let line = encode_submit_reservation_metadata_line(metadata)?;
+        self.append_line(&line)
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
+        let line = encode_submit_reservation_fill_line(fill)?;
+        self.append_line(&line)
+    }
 }
 
 /// Validates `persistence.decision_evidence.order_intents_relative_path` as the
@@ -507,6 +598,17 @@ pub struct BoltV3EntryDecisionEvidenceChain {
     pub admission: BoltV3AdmissionDecisionEvidence,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3SubmitReservationRecoveryEvidence {
+    pub metadata_by_client_order_id: BTreeMap<String, BoltV3RecoveredSubmitReservationEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3RecoveredSubmitReservationEvidence {
+    pub metadata: BoltV3SubmitReservationMetadataEvidence,
+    pub fill_trade_ids: BTreeSet<String>,
+}
+
 pub fn read_latest_entry_decision_evidence_chain(
     path: impl AsRef<Path>,
     max_bytes: u64,
@@ -529,7 +631,6 @@ pub fn read_latest_entry_decision_evidence_chain(
     let mut intents = BTreeMap::<String, BoltV3OrderIntentEvidence>::new();
     let mut admissions = BTreeMap::<String, BoltV3AdmissionDecisionEvidence>::new();
     let mut latest = None;
-    let mut first_older_schema_index = None;
     for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
         if line.is_empty() {
             continue;
@@ -538,10 +639,6 @@ pub fn read_latest_entry_decision_evidence_chain(
             serde_json::from_slice(line).with_context(|| {
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
-        if header.schema_version < BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION {
-            first_older_schema_index.get_or_insert(index);
-            continue;
-        }
         match header.kind.as_str() {
             "strategy_input_snapshot" => {
                 header.validate(
@@ -608,6 +705,60 @@ pub fn read_latest_entry_decision_evidence_chain(
                     }
                 }
             }
+            "position_sizer_rebuild" => {
+                header.validate(
+                    BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND,
+                    BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+                    index,
+                )?;
+                let decoded: PositionSizerRebuildAuditLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 position sizer rebuild audit line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND,
+                    BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+                    index,
+                )?;
+            }
+            "submit_reservation_metadata" => {
+                header.validate(
+                    BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                let decoded: SubmitReservationMetadataLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 submit reservation metadata line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+            }
+            "submit_reservation_fill" => {
+                header.validate(
+                    BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                let decoded: SubmitReservationFillLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 submit reservation fill line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+            }
             other => {
                 return Err(anyhow!(
                     "unsupported bolt-v3 decision evidence kind `{other}` at line index {index}"
@@ -615,20 +766,204 @@ pub fn read_latest_entry_decision_evidence_chain(
             }
         }
     }
-    match latest {
-        Some(chain) => Ok(chain),
-        None => {
-            if let Some(index) = first_older_schema_index {
-                Err(anyhow!(
-                    "bolt-v3 decision evidence schema_version mismatch at line index {index}"
-                ))
-            } else {
-                Err(anyhow!(
-                    "bolt-v3 decision evidence has no complete entry decision chain"
-                ))
+    latest.ok_or_else(|| anyhow!("bolt-v3 decision evidence has no complete entry decision chain"))
+}
+
+pub fn read_submit_reservation_recovery_evidence(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+) -> Result<BoltV3SubmitReservationRecoveryEvidence> {
+    let path = path.as_ref();
+    let mut file = open_regular_decision_evidence_file(path)
+        .context("failed to open regular file bolt-v3 decision evidence")?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .context("failed to read bolt-v3 decision evidence file")?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(anyhow!(
+            "bolt-v3 decision evidence file exceeds max_bytes={max_bytes}"
+        ));
+    }
+
+    let mut metadata_by_client_order_id =
+        BTreeMap::<String, BoltV3SubmitReservationMetadataEvidence>::new();
+    let mut fills = Vec::<BoltV3SubmitReservationFillEvidence>::new();
+    for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let header: DecisionEvidenceEnvelopeHeader =
+            serde_json::from_slice(line).with_context(|| {
+                format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
+            })?;
+        if is_pre_position_sizer_recovery_non_recovery_record(&header) {
+            continue;
+        }
+        match header.kind.as_str() {
+            "strategy_input_snapshot" => {
+                header.validate(
+                    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
+                    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+                    index,
+                )?;
+                let decoded: StrategyInputSnapshotLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 strategy input snapshot line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
+                    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+                    index,
+                )?;
+            }
+            "order_intent" => {
+                header.validate(
+                    BOLT_V3_ORDER_INTENT_RECORD_KIND,
+                    BOLT_V3_ORDER_INTENT_GATE_ID,
+                    index,
+                )?;
+                let decoded: OrderIntentLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 order intent line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_ORDER_INTENT_RECORD_KIND,
+                    BOLT_V3_ORDER_INTENT_GATE_ID,
+                    index,
+                )?;
+            }
+            "admission_decision" => {
+                header.validate(
+                    BOLT_V3_ADMISSION_DECISION_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                let decoded: AdmissionDecisionLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!("failed to parse bolt-v3 admission decision line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_ADMISSION_DECISION_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+            }
+            "position_sizer_rebuild" => {
+                header.validate(
+                    BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND,
+                    BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+                    index,
+                )?;
+                let decoded: PositionSizerRebuildAuditLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 position sizer rebuild audit line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND,
+                    BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+                    index,
+                )?;
+            }
+            "submit_reservation_metadata" => {
+                header.validate(
+                    BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                let decoded: SubmitReservationMetadataLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 submit reservation metadata line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                validate_submit_reservation_metadata(&decoded.metadata).with_context(|| {
+                    format!("invalid submit reservation metadata at line index {index}")
+                })?;
+                let replace = metadata_by_client_order_id
+                    .get(&decoded.metadata.client_order_id)
+                    .map(|existing| decoded.metadata.observed_at_ns > existing.observed_at_ns)
+                    .unwrap_or(true);
+                if replace {
+                    metadata_by_client_order_id
+                        .insert(decoded.metadata.client_order_id.clone(), decoded.metadata);
+                }
+            }
+            "submit_reservation_fill" => {
+                header.validate(
+                    BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                let decoded: SubmitReservationFillLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 submit reservation fill line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                validate_submit_reservation_fill(&decoded.fill).with_context(|| {
+                    format!("invalid submit reservation fill at line index {index}")
+                })?;
+                fills.push(decoded.fill);
+            }
+            other => {
+                return Err(anyhow!(
+                    "unsupported bolt-v3 decision evidence kind `{other}` at line index {index}"
+                ));
             }
         }
     }
+
+    let mut recovered = BTreeMap::new();
+    for (client_order_id, metadata) in metadata_by_client_order_id {
+        let fill_trade_ids = fills
+            .iter()
+            .filter(|fill| {
+                fill.client_order_id == client_order_id
+                    && fill.submit_reservation_id == metadata.submit_reservation_id
+            })
+            .map(|fill| fill.trade_id.clone())
+            .collect::<BTreeSet<_>>();
+        recovered.insert(
+            client_order_id,
+            BoltV3RecoveredSubmitReservationEvidence {
+                metadata,
+                fill_trade_ids,
+            },
+        );
+    }
+
+    Ok(BoltV3SubmitReservationRecoveryEvidence {
+        metadata_by_client_order_id: recovered,
+    })
+}
+
+fn is_pre_position_sizer_recovery_non_recovery_record(
+    header: &DecisionEvidenceEnvelopeHeader,
+) -> bool {
+    header.schema_version == PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION
+        && matches!(
+            header.kind.as_str(),
+            BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND
+                | BOLT_V3_ORDER_INTENT_RECORD_KIND
+                | BOLT_V3_ADMISSION_DECISION_RECORD_KIND
+                | BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND
+        )
 }
 
 fn open_regular_decision_evidence_file(path: &Path) -> std::io::Result<fs::File> {
@@ -780,6 +1115,115 @@ fn validate_entry_decision_chain(
     })
 }
 
+fn validate_submit_reservation_metadata(
+    metadata: &BoltV3SubmitReservationMetadataEvidence,
+) -> Result<()> {
+    for (field, value) in [
+        ("client_order_id", metadata.client_order_id.as_str()),
+        (
+            "submit_reservation_id",
+            metadata.submit_reservation_id.as_str(),
+        ),
+        ("venue_id", metadata.venue_id.as_str()),
+        ("account_id", metadata.account_id.as_str()),
+        ("product_kind", metadata.product_kind.as_str()),
+        ("collateral_currency", metadata.collateral_currency.as_str()),
+        ("capital_pool_id", metadata.capital_pool_id.as_str()),
+        ("collateral_group_id", metadata.collateral_group_id.as_str()),
+        ("instrument_id", metadata.instrument_id.as_str()),
+        ("side", metadata.side.as_str()),
+        ("source", metadata.source.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(anyhow!(
+                "submit reservation metadata {field} must be non-empty"
+            ));
+        }
+    }
+    if metadata.observed_at_ns == 0 {
+        return Err(anyhow!(
+            "submit reservation metadata observed_at_ns must be positive"
+        ));
+    }
+    if metadata.product_kind != SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY {
+        return Err(anyhow!(
+            "submit reservation metadata product_kind must use canonical `{}` encoding",
+            SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY
+        ));
+    }
+    if !matches!(
+        metadata.side.as_str(),
+        SUBMIT_RESERVATION_METADATA_SIDE_BUY | SUBMIT_RESERVATION_METADATA_SIDE_SELL
+    ) {
+        return Err(anyhow!(
+            "submit reservation metadata side must use canonical `{}` or `{}` encoding",
+            SUBMIT_RESERVATION_METADATA_SIDE_BUY,
+            SUBMIT_RESERVATION_METADATA_SIDE_SELL
+        ));
+    }
+    require_positive_decimal(
+        &metadata.submitted_quantity,
+        "submit reservation metadata submitted_quantity",
+    )?;
+    require_non_negative_decimal(
+        &metadata.liability_factor,
+        "submit reservation metadata liability_factor",
+    )?;
+    require_non_negative_decimal(
+        &metadata.additive_liability,
+        "submit reservation metadata additive_liability",
+    )?;
+    require_positive_decimal(
+        &metadata.reserved_liability,
+        "submit reservation metadata reserved_liability",
+    )?;
+    Ok(())
+}
+
+fn validate_submit_reservation_fill(fill: &BoltV3SubmitReservationFillEvidence) -> Result<()> {
+    for (field, value) in [
+        ("client_order_id", fill.client_order_id.as_str()),
+        ("submit_reservation_id", fill.submit_reservation_id.as_str()),
+        ("trade_id", fill.trade_id.as_str()),
+        ("instrument_id", fill.instrument_id.as_str()),
+        ("side", fill.side.as_str()),
+        ("source", fill.source.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(anyhow!("submit reservation fill {field} must be non-empty"));
+        }
+    }
+    if fill.observed_at_ns == 0 {
+        return Err(anyhow!(
+            "submit reservation fill observed_at_ns must be positive"
+        ));
+    }
+    require_positive_decimal(&fill.fill_quantity, "submit reservation fill fill_quantity")?;
+    Ok(())
+}
+
+fn require_positive_decimal(value: &str, field: &str) -> Result<Decimal> {
+    let decimal = parse_decimal(value, field)?;
+    if decimal <= Decimal::ZERO {
+        return Err(anyhow!("{field} must be positive"));
+    }
+    Ok(decimal)
+}
+
+fn require_non_negative_decimal(value: &str, field: &str) -> Result<Decimal> {
+    let decimal = parse_decimal(value, field)?;
+    if decimal < Decimal::ZERO {
+        return Err(anyhow!("{field} must be non-negative"));
+    }
+    Ok(decimal)
+}
+
+fn parse_decimal(value: &str, field: &str) -> Result<Decimal> {
+    value
+        .parse::<Decimal>()
+        .with_context(|| format!("{field} must parse as decimal"))
+}
+
 #[derive(Deserialize)]
 struct DecisionEvidenceEnvelopeHeader {
     schema_version: u32,
@@ -863,6 +1307,27 @@ struct AdmissionDecisionLineOwned {
     decision: BoltV3AdmissionDecisionEvidence,
 }
 
+#[derive(Deserialize)]
+struct PositionSizerRebuildAuditLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    audit: BoltV3PositionSizerRebuildAuditEvidence,
+}
+
+#[derive(Deserialize)]
+struct SubmitReservationMetadataLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    metadata: BoltV3SubmitReservationMetadataEvidence,
+}
+
+#[derive(Deserialize)]
+struct SubmitReservationFillLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    fill: BoltV3SubmitReservationFillEvidence,
+}
+
 impl AdmissionDecisionLineOwned {
     fn validate_header(
         &self,
@@ -870,6 +1335,42 @@ impl AdmissionDecisionLineOwned {
         expected_gate_id: &str,
         index: usize,
     ) -> Result<()> {
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+impl PositionSizerRebuildAuditLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.audit;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+impl SubmitReservationMetadataLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.metadata;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+impl SubmitReservationFillLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.fill;
         self.header.validate(expected_kind, expected_gate_id, index)
     }
 }
@@ -902,6 +1403,36 @@ struct AdmissionDecisionLine<'a> {
     gate_version: &'static str,
     kind: &'static str,
     decision: &'a BoltV3AdmissionDecisionEvidence,
+}
+
+#[derive(Serialize)]
+struct PositionSizerRebuildAuditLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    audit: &'a BoltV3PositionSizerRebuildAuditEvidence,
+}
+
+#[derive(Serialize)]
+struct SubmitReservationMetadataLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    metadata: &'a BoltV3SubmitReservationMetadataEvidence,
+}
+
+#[derive(Serialize)]
+struct SubmitReservationFillLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    fill: &'a BoltV3SubmitReservationFillEvidence,
 }
 
 fn current_utc_ns() -> i64 {
@@ -957,6 +1488,57 @@ fn encode_admission_decision_line(decision: &BoltV3AdmissionDecisionEvidence) ->
     Ok(line)
 }
 
+fn encode_position_sizer_rebuild_audit_line(
+    audit: &BoltV3PositionSizerRebuildAuditEvidence,
+) -> Result<Vec<u8>> {
+    let envelope = PositionSizerRebuildAuditLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND,
+        audit,
+    };
+    let mut line = serde_json::to_vec(&envelope)
+        .context("failed to serialize position sizer rebuild audit evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+fn encode_submit_reservation_metadata_line(
+    metadata: &BoltV3SubmitReservationMetadataEvidence,
+) -> Result<Vec<u8>> {
+    let envelope = SubmitReservationMetadataLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND,
+        metadata,
+    };
+    let mut line = serde_json::to_vec(&envelope)
+        .context("failed to serialize submit reservation metadata evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+fn encode_submit_reservation_fill_line(
+    fill: &BoltV3SubmitReservationFillEvidence,
+) -> Result<Vec<u8>> {
+    let envelope = SubmitReservationFillLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND,
+        fill,
+    };
+    let mut line = serde_json::to_vec(&envelope)
+        .context("failed to serialize submit reservation fill evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -973,33 +1555,6 @@ mod tests {
         assert!(line.ends_with(b"\n"), "line must end with newline");
         let json = std::str::from_utf8(&line[..line.len() - 1]).expect("line is utf8");
         serde_json::from_str(json).expect("line is json")
-    }
-
-    #[test]
-    fn old_strategy_input_snapshot_schema_with_reference_fair_value_is_rejected() {
-        let line = br#"{
-            "schema_version":9,
-            "recorded_at_utc_ns":1,
-            "gate_id":"bolt_v3.strategy_input_snapshot",
-            "gate_version":"0.1.0",
-            "kind":"strategy_input_snapshot",
-            "snapshot":{"reference_fair_value":"100.0"}
-        }"#;
-        let header: DecisionEvidenceEnvelopeHeader =
-            serde_json::from_slice(line).expect("old envelope header should parse");
-
-        let err = header
-            .validate(
-                BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
-                BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
-                0,
-            )
-            .expect_err("old v9 strategy-input snapshots must fail the schema gate");
-
-        assert!(
-            err.to_string().contains("schema_version mismatch"),
-            "old evidence should fail on schema version, got: {err:#}"
-        );
     }
 
     #[test]
@@ -1183,9 +1738,7 @@ mod tests {
             price_to_beat_value: "3100".to_string(),
             reference_quote_ts_event: 1200,
             spot_price: "3100.5".to_string(),
-            reference_current_price: Some("3100.5".to_string()),
-            reference_current_price_source_id: Some("chainlink_primary".to_string()),
-            reference_current_price_failed_over: Some(false),
+            reference_fair_value: Some("3100.5".to_string()),
             realized_volatility: "1.5".to_string(),
             realized_volatility_surface_id: String::new(),
             realized_volatility_as_of_ms: None,
@@ -1248,14 +1801,9 @@ mod tests {
                 .as_object()
                 .expect("snapshot should encode as an object")
                 .len(),
-            53
+            51
         );
         assert_eq!(snapshot_field["price_to_beat_source"], "source-one");
-        assert_eq!(
-            snapshot_field["reference_current_price_source_id"],
-            "chainlink_primary"
-        );
-        assert_eq!(snapshot_field["reference_current_price_failed_over"], false);
         assert_eq!(snapshot_field["reference_quote_ts_event"], 1200);
         assert_eq!(snapshot_field["client_order_id"], "client-order-one");
     }
@@ -1264,11 +1812,16 @@ mod tests {
     fn encode_admission_decision_line_wraps_decision_with_metadata() {
         for outcome in [
             BoltV3AdmissionOutcome::Admitted,
+            BoltV3AdmissionOutcome::RejectedKillSwitchLatched,
             BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed,
+            BoltV3AdmissionOutcome::RejectedLossGovernorHalted,
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
             BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid,
+            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded,
+            BoltV3AdmissionOutcome::RejectedPositionSizing,
         ] {
             let decision = BoltV3AdmissionDecisionEvidence {
                 strategy_id: "strategy-one".to_string(),
@@ -1278,6 +1831,12 @@ mod tests {
                 notional: "1.0".to_string(),
                 intent_kind: BoltV3SubmitIntentKind::Entry,
                 outcome: outcome.clone(),
+                loss_halt_reasons: match &outcome {
+                    BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
+                        vec!["stale_loss_snapshot".to_string()]
+                    }
+                    _ => Vec::new(),
+                },
             };
 
             let line = encode_admission_decision_line(&decision).expect("decision should encode");
@@ -1309,10 +1868,13 @@ mod tests {
             );
             assert_eq!(decision_field["notional"], "1.0");
             assert_eq!(decision_field["intent_kind"], "entry");
-            let expected_outcome = match outcome {
+            let expected_outcome = match &outcome {
                 BoltV3AdmissionOutcome::Admitted => "admitted",
                 BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
                     "rejected_submit_lifecycle_disallowed"
+                }
+                BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
+                    "rejected_loss_governor_halted"
                 }
                 BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
                     "rejected_non_positive_notional"
@@ -1331,8 +1893,15 @@ mod tests {
                     "rejected_kill_switch_forced_reduction_cap_exceeded"
                 }
                 BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",
+                BoltV3AdmissionOutcome::RejectedPositionSizing => "rejected_position_sizing",
             };
             assert_eq!(decision_field["outcome"], expected_outcome);
+            if outcome == BoltV3AdmissionOutcome::RejectedLossGovernorHalted {
+                assert_eq!(
+                    decision_field["loss_halt_reasons"],
+                    serde_json::json!(["stale_loss_snapshot"])
+                );
+            }
         }
     }
 

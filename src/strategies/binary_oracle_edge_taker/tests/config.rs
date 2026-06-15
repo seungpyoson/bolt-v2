@@ -13,6 +13,12 @@ const BPS_RUNTIME_KNOB_FIELDS: &[&str] = &[
     stringify!(book_impact_cap_bps),
     stringify!(vwap_depth_limit_bps),
     stringify!(slippage_buffer_bps),
+    stringify!(sizing_ev_reference_bps),
+];
+const ZERO_ACCEPTED_BPS_RUNTIME_KNOB_FIELDS: &[&str] = &[
+    stringify!(book_impact_cap_bps),
+    stringify!(vwap_depth_limit_bps),
+    stringify!(slippage_buffer_bps),
 ];
 
 fn unsupported_executable_entry_order_shape_cases() -> Vec<(&'static str, Value)> {
@@ -90,6 +96,7 @@ fn strategy_core_accepts_nt_hedging_oms_type() {
                 RecordingDecisionEvidenceWriter,
             )),
         ),
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     );
 
@@ -145,6 +152,45 @@ fn parse_config_rejects_zero_positive_required_integer_fields() {
 }
 
 #[test]
+fn parse_config_rejects_zero_sizing_ev_reference_bps() {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("raw config should be a TOML table")
+        .insert(
+            stringify!(sizing_ev_reference_bps).to_string(),
+            Value::Integer(ZERO_INTEGER_CONFIG_VALUE),
+        );
+
+    let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+        .expect_err("zero sizing_ev_reference_bps must be rejected");
+
+    assert!(
+        err.to_string()
+            .contains("sizing_ev_reference_bps must be positive"),
+        "expected sizing_ev_reference_bps positivity rejection, got: {err}"
+    );
+}
+
+#[test]
+fn parse_config_rejects_negative_or_non_finite_risk_lambda() {
+    for bad in [-0.01_f64, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert(stringify!(risk_lambda).to_string(), Value::Float(bad));
+
+        let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("negative or non-finite risk_lambda must be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("risk_lambda must be finite and >= 0"),
+            "expected risk_lambda finite non-negative rejection for {bad}, got: {err}"
+        );
+    }
+}
+
+#[test]
 fn parse_config_rejects_bps_runtime_knobs_above_full_scale() {
     for field in BPS_RUNTIME_KNOB_FIELDS {
         let mut raw = valid_raw_config();
@@ -168,12 +214,29 @@ fn parse_config_accepts_bps_runtime_knob_boundaries() {
     for value in [0_i64, BPS_DENOMINATOR as i64] {
         let mut raw = valid_raw_config();
         let table = raw.as_table_mut().expect("raw config should be a table");
-        for field in BPS_RUNTIME_KNOB_FIELDS {
+        for field in ZERO_ACCEPTED_BPS_RUNTIME_KNOB_FIELDS {
             table.insert((*field).to_string(), Value::Integer(value));
         }
 
         BinaryOracleEdgeTakerBuilder::parse_config(&raw)
             .unwrap_or_else(|error| panic!("bps boundary {value} should parse: {error}"));
+    }
+}
+
+#[test]
+fn parse_config_accepts_sizing_ev_reference_bps_valid_boundaries() {
+    for value in [1_i64, BPS_DENOMINATOR as i64] {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a table")
+            .insert(
+                stringify!(sizing_ev_reference_bps).to_string(),
+                Value::Integer(value),
+            );
+
+        BinaryOracleEdgeTakerBuilder::parse_config(&raw).unwrap_or_else(|error| {
+            panic!("sizing_ev_reference_bps boundary {value} should parse: {error}")
+        });
     }
 }
 
@@ -220,6 +283,47 @@ fn validate_config_rejects_bps_runtime_knobs_above_full_scale() {
             error.message,
             format!("must be at most {BPS_DENOMINATOR} bps")
         );
+    }
+}
+
+#[test]
+fn validate_config_rejects_zero_sizing_ev_reference_bps() {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("raw config should be a TOML table")
+        .insert(
+            stringify!(sizing_ev_reference_bps).to_string(),
+            Value::Integer(ZERO_INTEGER_CONFIG_VALUE),
+        );
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    let error = find_error(
+        &errors,
+        "strategies[0].config.sizing_ev_reference_bps",
+        "positive_required",
+    );
+    assert_eq!(error.message, "must be positive");
+}
+
+#[test]
+fn validate_config_rejects_negative_or_non_finite_risk_lambda() {
+    for bad in [-0.01_f64, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert(stringify!(risk_lambda).to_string(), Value::Float(bad));
+        let mut errors = Vec::new();
+
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        let error = find_error(
+            &errors,
+            "strategies[0].config.risk_lambda",
+            "value_out_of_range",
+        );
+        assert_eq!(error.message, "must be finite and >= 0");
     }
 }
 
@@ -310,6 +414,7 @@ fn validate_config_rejects_unsupported_executable_entry_order_shapes() {
 #[test]
 fn parse_config_rejects_malformed_configured_instrument_ids() {
     for (field, bad_value) in [
+        ("reference_instrument_id", "configured-reference-price"),
         ("signal_instrument_id", "configured-signal-price"),
         ("resolution_instrument_id", "configured-resolution-price"),
     ] {
@@ -347,6 +452,22 @@ fn runtime_config_parse_normalizes_order_fields_to_nt_enums() {
 }
 
 #[test]
+fn runtime_config_parse_rejects_stale_submit_orders_switch() {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .insert("submit_orders".to_string(), Value::Boolean(true));
+
+    let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+        .expect_err("strategy-local submit_orders should be rejected as stale policy");
+    let rendered = format!("{err:#}");
+    assert!(
+        rendered.contains("submit_orders"),
+        "unknown stale field should be named: {rendered}"
+    );
+}
+
+#[test]
 fn strategy_core_uses_explicit_configured_nt_strategy_fields() {
     let raw = valid_raw_config();
     let mut errors = Vec::new();
@@ -364,6 +485,7 @@ fn strategy_core_uses_explicit_configured_nt_strategy_fields() {
                     RecordingDecisionEvidenceWriter,
                 )),
             ),
+            crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         ),
     );
@@ -493,6 +615,7 @@ fn validate_config_rejects_resolution_data_with_only_one_field_set() {
 #[test]
 fn validate_config_rejects_malformed_configured_instrument_ids() {
     for (field, bad_value) in [
+        ("reference_instrument_id", "configured-reference-price"),
         ("signal_instrument_id", "configured-signal-price"),
         ("resolution_instrument_id", "configured-resolution-price"),
     ] {
@@ -539,6 +662,7 @@ fn builder_requires_strategy_id_and_client_id() {
         vwap_depth_limit_bps = 15
         slippage_buffer_bps = 15
         risk_lambda = 0.5
+        sizing_ev_reference_bps = 500
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
         forced_flat_stale_reference_ms = 1500
@@ -722,6 +846,7 @@ fn builder_accepts_static_binary_event_market_family_with_configured_outcomes() 
         config.static_fair_probability_source.as_deref(),
         Some("reference_current_price")
     );
+    assert!(errors.is_empty(), "{errors:?}");
 }
 
 #[test]
@@ -763,48 +888,42 @@ fn builder_rejects_static_binary_event_without_fair_probability_source() {
 }
 
 #[test]
-fn builder_rejects_static_binary_event_without_reference_current_price_config() {
+fn builder_rejects_static_binary_event_unsupported_fair_probability_source() {
     let mut raw = static_binary_event_raw_config();
-    let table = raw.as_table_mut().expect("valid config must be a table");
-    table.remove("reference_current_price");
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .insert(
+            "static_fair_probability_source".to_string(),
+            Value::String("manual_probability".to_string()),
+        );
     let mut errors = Vec::new();
 
     BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
 
     find_error(
         &errors,
-        "strategies[0].config.reference_current_price",
-        "missing_reference_current_price_for_static_fair_probability_source",
+        "strategies[0].config.static_fair_probability_source",
+        "unsupported_static_fair_probability_source",
     );
 }
 
 #[test]
-fn builder_accepts_integer_literals_for_f64_fields() {
+fn builder_rejects_static_event_fields_for_non_static_family() {
     let mut raw = valid_raw_config();
-    let raw_table = raw.as_table_mut().expect("valid config must be a table");
-    for (field, value) in [
-        ("order_notional_target", 1_000),
-        ("maximum_position_notional", 1_000),
-        ("book_impact_cap_bps", 15),
-        ("vwap_depth_limit_bps", 15),
-        ("slippage_buffer_bps", 15),
-        ("risk_lambda", 1),
-        ("edge_threshold_basis_points", -20),
-        ("exit_hysteresis_bps", 5),
-        ("pricing_kurtosis", 0),
-        ("theta_decay_factor", 0),
-        ("forced_flat_thin_book_min_liquidity", 100),
-        ("lead_agreement_min_corr", 1),
-    ] {
-        raw_table.insert(field.to_string(), Value::Integer(value));
-    }
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .insert(
+            "static_yes_outcome".to_string(),
+            Value::String("Yes".to_string()),
+        );
     let mut errors = Vec::new();
 
     BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
 
-    assert!(
-        errors.is_empty(),
-        "expected integer literals for f64 fields to validate, got: {errors:?}"
+    find_error(
+        &errors,
+        "strategies[0].config.static_yes_outcome",
+        "static_field_for_non_static_family",
     );
 }
 
@@ -848,32 +967,37 @@ fn static_binary_event_raw_config() -> Value {
         "static_fair_probability_source".to_string(),
         Value::String("reference_current_price".to_string()),
     );
-    table.insert(
-        "reference_current_price".to_string(),
-        reference_current_price_raw_config(),
-    );
     raw
 }
 
-fn reference_current_price_raw_config() -> Value {
-    toml::toml! {
-        asset = "WORLD_CUP_STATIC_FAIR"
-        sources = ["chainlink_primary"]
-        min_valid_sources = 1
-        selection_policy = "first_valid_per_interval"
-        max_source_age_ms = 1000
-        max_source_drift_bps = 50
-        drift_policy = "observe"
-        stale_policy = "block"
-
-        [source.chainlink_primary]
-        provider = "chainlink_ws"
-        enabled = true
-        required = true
-        client_id = "chainlink_reference"
-        instrument_id = "WORLD-CUP-FAIR.CHAINLINK"
+#[test]
+fn builder_accepts_integer_literals_for_f64_fields() {
+    let mut raw = valid_raw_config();
+    let raw_table = raw.as_table_mut().expect("valid config must be a table");
+    for (field, value) in [
+        ("order_notional_target", 1_000),
+        ("maximum_position_notional", 1_000),
+        ("book_impact_cap_bps", 15),
+        ("vwap_depth_limit_bps", 15),
+        ("slippage_buffer_bps", 15),
+        ("risk_lambda", 1),
+        ("edge_threshold_basis_points", -20),
+        ("exit_hysteresis_bps", 5),
+        ("pricing_kurtosis", 0),
+        ("theta_decay_factor", 0),
+        ("forced_flat_thin_book_min_liquidity", 100),
+        ("lead_agreement_min_corr", 1),
+    ] {
+        raw_table.insert(field.to_string(), Value::Integer(value));
     }
-    .into()
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    assert!(
+        errors.is_empty(),
+        "expected integer literals for f64 fields to validate, got: {errors:?}"
+    );
 }
 
 #[test]
@@ -928,6 +1052,7 @@ fn builder_requires_pricing_model_fields() {
         vwap_depth_limit_bps = 15
         slippage_buffer_bps = 15
         risk_lambda = 0.5
+        sizing_ev_reference_bps = 500
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
         forced_flat_stale_reference_ms = 1500

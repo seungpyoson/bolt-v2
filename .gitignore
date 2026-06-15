@@ -33,3 +33,24 @@ __pycache__/
 .DS_Store
 __pycache__/
 *.pyc
+
+# Issue #704: per-record source-universe execution-pack artifacts (run specs,
+# execution plans, accepted-tranche manifests) are evicted to content-addressed S3
+# and fingerprinted in
+# specs/023-nt-research-analytics-platform/reference/evicted-fixtures.index.json.
+# Keep each pack's summary + record-00000 dir (read by the execution-pack acceptance
+# test); never re-commit the per-record run bulk. Enforced by
+# crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_reference_fixture_eviction.rs.
+specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/*/execution-pack/runs/*
+!specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/*/execution-pack/runs/00000-*
+
+# Issue #704 Phase 2 Tier 1: generated source-universe reference JSON artifacts
+# are evicted to the same content-addressed index. Keep hand-authored TOML specs
+# plus the bybit source-universe JSON read by backfill-gate reference tests.
+specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/*/work-order/*.json
+specs/023-nt-research-analytics-platform/reference/source-universe-batch-execution-reports/**/*.json
+specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/*.json
+specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/*.json
+specs/023-nt-research-analytics-platform/reference/backfill-source-universes/binance-data-vision-trades-2026-03-01-all-instruments/*-source-universe.json
+specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/*/ledger/*.json
+specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/*.json

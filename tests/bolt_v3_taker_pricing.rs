@@ -21,7 +21,6 @@ fn pricing_config_with_family(rotating_market_family: &'static str) -> TakerPric
         edge_threshold_basis_points: 10,
         pricing_kurtosis: 0.0,
         rotating_market_family,
-        max_reference_current_price_age_ms: None,
     }
 }
 
@@ -35,7 +34,7 @@ fn observe_pair(
     ts_ms: u64,
     price: f64,
 ) {
-    pricing.observe_reference_current_price(&FastSpotObservation {
+    pricing.observe_reference_quote(&FastSpotObservation {
         venue: "reference".to_string(),
         price,
         observed_ts_ms: ts_ms,
@@ -92,7 +91,7 @@ fn assert_close(actual: f64, expected: f64) {
 fn taker_pricing_consumes_realized_vol_snapshot_without_internal_estimator_warmup() {
     let config = pricing_config();
     let mut pricing = TakerPricingState::from_config(&config);
-    pricing.observe_reference_current_price(&FastSpotObservation {
+    pricing.observe_reference_quote(&FastSpotObservation {
         venue: "<REFERENCE_SOURCE_ID>".to_string(),
         price: 3_100.0,
         observed_ts_ms: 1_000,
@@ -150,7 +149,7 @@ fn taker_pricing_consumes_realized_vol_snapshot_without_internal_estimator_warmu
 fn taker_pricing_accepts_ready_surfaced_zero_realized_volatility_snapshot() {
     let config = pricing_config();
     let mut pricing = TakerPricingState::from_config(&config);
-    pricing.observe_reference_current_price(&FastSpotObservation {
+    pricing.observe_reference_quote(&FastSpotObservation {
         venue: "<REFERENCE_SOURCE_ID>".to_string(),
         price: 3_101.0,
         observed_ts_ms: 1_000,

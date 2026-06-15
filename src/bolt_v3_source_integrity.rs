@@ -194,20 +194,6 @@ mod tests {
     // terminology from submit-admission construction and its call sites.
     // Re-derived again after merging current main's trade-flow extraction into
     // the #579 retired-gate removal head.
-    // Re-derived again by #606 after adding reference-price architecture state
-    // and subscription handling to the canonical strategy source set.
-    // Re-derived again by #606 review cleanup after resetting stale reference
-    // quote state on interval transition and using strategy clock time.
-    // Re-derived again by #606 after removing the legacy strategy quote path
-    // and making reference_current_price the single decision input.
-    // Re-derived again by #606 after renaming strategy input evidence from the
-    // retired fair-value field to reference_current_price.
-    // Re-derived again by #606 after final reference_current_price test-name
-    // cleanup in the canonical strategy source set.
-    // Re-derived again by #606 after adding chainlink_reference fixture coverage
-    // in the canonical strategy source set.
-    // Re-derived again by #606 after rejecting mismatched reference source
-    // provider instruments before feeding reference_current_price.
     // Re-derived again after moving surfaced realized-volatility bindings and
     // source forwarding into the strategy source set.
     // Re-derived again after spelling the realized-volatility binding insertion
@@ -232,46 +218,8 @@ mod tests {
     // Re-derived again after root-level surfaced RV readiness redesign moved
     // raw RV validation behind the shared ready snapshot accessor.
     // Re-derived again after removing the dead strategy evidence fallback RV
-    // parameter.
-    // Re-derived again after #606 named reference_current_price test fixtures
-    // changed the canonical strategy test source set.
-    // Re-derived again after #606 made stale reference-current-price replays
-    // fail closed without evicting fresh same-interval quotes.
-    // Re-derived again after #606 normalized the stale replay guard to the
-    // Clippy-preferred equivalent expression.
-    // Re-derived again after #606 constrained PolyResearch reference-current
-    // price support to BTC, ETH, SOL, and XRP.
-    // Re-derived again after #606 made the unsupported optional source
-    // regression assert asset-scoped subscription metadata.
-    // Re-derived again after #606 fixed the remaining unsupported optional
-    // source subscription assertion to use the configured asset.
-    // Re-derived again after merging global realized-volatility runtime and
-    // unifying reference-price source availability policy.
-    // Re-derived again after removing unused realized-volatility imports from
-    // the merged strategy module.
-    // Re-derived again after making reference-current-price runtime state
-    // interval-bound and removing parser defaults for source activation fields.
-    // Re-derived again after pinning market-switch tests to reset selection-bound
-    // reference-current-price runtime state while preserving realized volatility.
-    // Re-derived again after preserving reference-current-price source health
-    // timestamps through selection block refreshes.
-    // Re-derived again after ignoring valid out-of-order reference-current-price
-    // replays instead of replacing fresher same-source quotes.
-    // Re-derived again after making selector-level no-selection clear active
-    // and pricing reference-current-price state fail-closed.
-    // Re-derived again after formatting that fail-closed selector clear.
-    // Re-derived again after removing fee-readiness side effects from
-    // reference-current-price selection invalidation.
-    // Re-derived again after fail-closing stale selected-source updates through
-    // reference-current-price selection invalidation.
-    // Re-derived again after preserving newer stale source-health attempts
-    // against out-of-order stale updates.
-    // Re-derived again after refreshing reference-current-price failover during
-    // selection retries before forced-flat stale-reference checks.
-    // Re-derived again after enforcing reference-current-price freshness and
-    // incoherence contracts at taker entry/exit decision time.
-    // Re-derived again after adding executable-edge cost breakdown to the
-    // gated strategy source set and aligning its strategy test coverage.
+    // parameter, then after adding executable-edge cost breakdown to the gated
+    // strategy source set and aligning its strategy test coverage.
     // Re-derived again after selected-side sized-notional executable-edge
     // re-evaluation started recomputing the uncertainty band from the sized
     // limit-price fee.
@@ -294,22 +242,75 @@ mod tests {
     // Re-derived after follow-up cleanup separated sized executable-edge
     // evidence, probed executable fees at VWAP, coupled slippage/depth config,
     // labeled executable-edge Debug output, and named notional tolerance.
-    // Re-derived after merging #606 reference-current-price fail-closed fixes
-    // with executable-edge main.
-    // Re-derived after requiring reference-current-price asset/physical-source
-    // consistency and persisting reference source attribution in evidence.
-    // Re-derived after reference provider review follow-ups added stale-timeout
-    // and reference-health regression coverage.
+    // Re-derived by #618 after robust sizing started scaling the operator's
+    // dollar target by the EV fraction against the configured EV reference
+    // instead of reinterpreting the EV fraction as dollars, then once more
+    // after merging main's #619 executable-edge follow-up cleanup, then once
+    // more after the strategy-agnostic sizing primitive moved out of the
+    // taker-only signal module into `src/bolt_v3_sizing.rs`, then once more
+    // after that signal module was renamed `bolt_v3_taker_updown_signal` to
+    // carry its up/down market-family binding in the name.
+    // Re-derived again by the #623 review round: the sized re-evaluation now
+    // fails closed when the final re-priced edge does not support the resized
+    // notional, and the gated source set grew to include the moved sizing and
+    // signal modules (`src/bolt_v3_sizing.rs`,
+    // `src/bolt_v3_taker_updown_signal.rs`) so the digest covers all
+    // strategy-critical decision math.
     // Re-derived after splitting executable cost from binary outcome edge math
     // and moving entry limit-notional guarding into shared submit admission.
     // Re-derived after review cleanup single-sourced the cents-per-share unit
     // conversion in shared numeric helpers.
-    // Re-derived after merging the #606 reference provider review follow-ups
-    // with the executable-cost split on main.
-    // Re-derived after maker follow-up dispatch began charging the shared
-    // requote budget and maker runtime coverage was added to the split tests.
+    // Re-derived after merging current main's split executable-cost source set
+    // with #623's shared sizing and taker up/down signal source roots.
+    // Re-derived after external-review cleanup aligned direct builder validation
+    // and entry-evaluation sizing-input observability with the archetype path.
+    // Re-derived after adding coverage for the within-tolerance sized
+    // re-evaluation acceptance branch.
+    // Re-derived after adding position-sizer submit admission fixture coverage
+    // under the binary oracle edge taker strategy test source set.
+    // Re-derived after merging current main (#618/#623 strategy source-set
+    // state) into the consolidated NT position-sizer branch (#658), unioning the
+    // main-side strategy source set with the position-sizer fixture coverage.
+    // Re-derived after adding the TOML-owned shadow-mode submit switch and
+    // preserving decision evidence before skipped NT submits.
+    // Re-derived after the shadow-submit test started seeding admission
+    // instruments before asserting no NT submit command is emitted.
+    // Re-derived after shadow skipped submits stopped retaining pending
+    // strategy exposure without an NT order.
+    // Re-derived after skipped shadow exits retained the exit-pending latch.
+    // Re-derived after shadow skipped submits stopped consuming live admission
+    // capacity while still recording admission evidence.
+    // Re-derived after merging #623's dollar-sizing strategy source roots into
+    // the shadow-mode submit switch.
+    // Re-derived after adding the shadow-mode fail-closed config guard
+    // (runtime.order_execution_mode=shadow forbids NautilusTrader-managed venue
+    // actions) and its tests in config.rs.
+    // Re-derived after bringing the archetype config translator
+    // (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs) into the strategy
+    // source set, so the TOML->runtime-table mapping for venue-action knobs is
+    // now tamper-evidenced alongside its validating consumer.
+    // Re-derived after moving shadow submit/cancel gating from
+    // binary-oracle-local `submit_orders` into the shared root-owned order
+    // execution policy, removing the stale strategy-local field, and bringing
+    // the shared execution-policy boundary into the gated strategy source set.
+    // Re-derived after split strategy tests imported the NT Strategy trait for
+    // direct callback method resolution.
+    // Re-derived again after CI contract tests were aligned with the current
+    // split-test inventory and shared execution-policy source-set boundary.
+    // Re-derived after the shared execution policy made its raw NT mutation
+    // sink private and moved the live/shadow sink tests into the gated module.
+    // Re-derived after committing the submit-admission permit only after the
+    // shared order-execution policy's live NT submit succeeds.
+    // Re-derived again after aligning the shared policy test helper with the
+    // consolidated reservation-evidence writer trait.
+    // Re-derived after adding behavioral rollback coverage to the shared
+    // execution policy.
+    // Re-derived after isolating live-node unit-test catalog paths from the
+    // production fixture path.
+    // Re-derived after strategy submit-admission tests started committing the
+    // permits they use to simulate already-submitted orders.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "ef0aea318b2cd5795b5f2fd05199d996e5278cb4edafcbc4505b34c75c1eaa65";
+        "546d637cc2daa7c5936f5ef86dc737ae39791489ce9b9c12643c2e208111c292";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -320,10 +321,32 @@ mod tests {
     // Re-derived again after adding checked fee-inclusive admission arithmetic.
     // Re-derived after moving entry limit-notional guarding into shared submit
     // admission.
-    // Re-derived after splitting maker quote admission evidence from entry
-    // admission counters and decisions.
+    // Re-derived after adding position-sizer submit admission state and evidence
+    // to the shared submit admission module.
+    // Re-derived after routing replace-submit through configured position
+    // sizing.
+    // Re-derived after runtime order-lifecycle updates learned to re-close the
+    // position-sizer gate on unattributed live open orders.
+    // Re-derived again after adding observed admission decisions for shadow
+    // submit skips that must not consume live capacity.
+    // Re-derived after merging main's shared submit-admission changes into the
+    // shadow-mode submit switch.
+    // Re-derived after exposing read-only loss-governor policy/snapshot
+    // accessors for live manual recovery.
+    // Re-derived after removing duplicate NT-owned risk scaffolding from
+    // submit admission.
+    // Re-derived after covered sell reservations were reduced to additive
+    // fee/slippage liability only.
+    // Re-derived after allowing empty terminal NT lifecycle evidence to
+    // re-open a previously re-closed position-sizer gate.
+    // Re-derived after adding bounded fill/order dedupe retention and checked
+    // reservation liability arithmetic.
+    // Re-derived after uncommitted submit permits learned to roll back
+    // admission counters as well as position-sizer reservations.
+    // Re-derived after final submit-admission rollback and dedupe cleanup.
+    // Re-derived after removing structurally unused per-intent admission counters.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "6125510f8216b8237915c0fd4eecea790c295711692c70e9bdc463f0ae6d03ad";
+        "88619771c32b874741b5396751cfd28ead044145d1e8d184374a38f7c23802ab";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -433,9 +456,13 @@ mod tests {
             registry_relative_roots(STRATEGY_KEY),
             &[
                 "src/strategies/binary_oracle_edge_taker",
+                "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+                "src/bolt_v3_order_execution.rs",
                 "src/bolt_v3_book_sizing.rs",
                 "src/bolt_v3_binary_outcome_edge.rs",
                 "src/bolt_v3_executable_cost.rs",
+                "src/bolt_v3_sizing.rs",
+                "src/bolt_v3_taker_updown_signal.rs",
             ]
         );
     }

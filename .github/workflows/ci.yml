@@ -3,6 +3,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
     # paths-ignore is intentionally narrow: only explicitly-listed root-level
     # agent docs and pure-config dirs whose contents are NOT consumed by any
     # build/test/lint script. Do NOT add '**.md' or 'docs/**' — both contain
@@ -30,13 +31,34 @@ on:
     # defense-in-depth against direct-to-main commits.
     branches: [main]
     tags: ["v*"]
+  # Manual lane: GitHub Actions does not deliver pull_request events for PRs
+  # whose diff exceeds its internal size limit (observed at ~28k files on #610),
+  # so oversized PRs need a manually dispatched run against the branch ref.
+  # full_ci is a required structural slot enforced by ci/github-actions-runners.toml
+  # (ci_provenance.dispatch.workflow_input = "full_ci") — its presence is what the
+  # ci_provenance policy resolver detects, not its value. The resolver always applies
+  # the workflow_dispatch = "full" policy regardless of the input value.
+  workflow_dispatch:
+    inputs:
+      full_ci:
+        description: "Run full CI for the selected ref"
+        required: false
+        default: "true"
 
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
-        && format('pr-{0}', github.event.number)
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && format('pr-{0}-deferred', github.event.number)
+        || github.event_name == 'pull_request'
+        && format('pr-{0}-full', github.event.number)
+        || github.event_name == 'workflow_dispatch'
+        && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        || github.event_name == 'workflow_dispatch' }}
 
 env:
   JUST_VERSION: "1.49.0"
@@ -49,11 +71,39 @@ permissions:
   actions: read
 
 jobs:
+  ci-policy:
+    name: ci-policy
+    outputs:
+      ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
+      full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
+      full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}
+      reason: ${{ steps.policy.outputs.reason }}
+      ignore_emit_failure: ${{ steps.policy.outputs.ignore_emit_failure }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Compute CI policy
+        id: policy
+        shell: bash
+        run: >
+          python3 scripts/ci_provenance.py ci-policy
+          --event-name "${{ github.event_name }}"
+          --event-action "${{ github.event.action || '' }}"
+          --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --ref "${{ github.ref }}"
+          | tee -a "$GITHUB_OUTPUT"
+
   detector:
     name: detector
     outputs:
       build_required: ${{ steps.build_required.outputs.value }}
-    runs-on: ubuntu-latest
+      fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -73,9 +123,34 @@ jobs:
             rust-toolchain.toml \
             justfile \
             ci/rust-verification.toml \
+            ci/github-actions-runners.toml \
             .github/workflows/ci.yml \
             .github/actions/setup-environment/action.yml \
             scripts/rust_verification.py)"
+          if [[ -n "$changed" ]]; then
+            echo "any_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect fingerprint-reuse governance changes
+        id: fingerprint_reuse_inputs_changed
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
+          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin \
+            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
+            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
+            .github/workflows/ci.yml \
+            .github/actions/setup-environment/action.yml \
+            ci/github-actions-runners.toml \
+            scripts/ci_provenance.py \
+            scripts/test_ci_provenance.py \
+            scripts/verify_ci_workflow_hygiene.py \
+            scripts/test_verify_ci_workflow_hygiene.py)"
           if [[ -n "$changed" ]]; then
             echo "any_changed=true" >> "$GITHUB_OUTPUT"
           else
@@ -86,7 +161,10 @@ jobs:
         id: build_required
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "push" ]]; then
+          if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # push and workflow_dispatch always require a full build: push covers main
+            # and tags; workflow_dispatch is the manual lane for oversized PRs where
+            # a dispatched run must not produce vacuous evidence.
             echo "value=true" >> "$GITHUB_OUTPUT"
           elif [[ "${{ steps.build_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
@@ -94,10 +172,22 @@ jobs:
             echo "value=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Determine fingerprint reuse allowance
+        id: fingerprint_reuse_allowed
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          fi
+
   fmt-check:
     name: fmt-check
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -120,7 +210,7 @@ jobs:
     name: deny
     needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -152,7 +242,7 @@ jobs:
     name: clippy
     needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -184,8 +274,9 @@ jobs:
 
   check-aarch64:
     name: check-aarch64
-    needs: detector
-    runs-on: ubuntu-latest
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'tag_reuse' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -236,9 +327,9 @@ jobs:
 
   source-fence:
     name: source-fence
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubuntu-latest
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -255,6 +346,12 @@ jobs:
 
       - name: Install source-fence Python dependencies
         run: 'python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/source-fence.txt'
+
+      - name: Install cargo-shim test dependencies
+        run: 'python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/cargo-shim-tests.txt'
+
+      - name: Cargo shim tests
+        run: just cargo-shim-tests
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -273,7 +370,7 @@ jobs:
 
       - name: source-fence
         env:
-          # Keep targeted source-fence test binaries small enough for ubuntu-latest link/disk limits.
+          # Keep targeted source-fence test binaries small enough for CI link/disk limits.
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: just source-fence
 
@@ -287,13 +384,31 @@ jobs:
   # `gate` job below.
   test-archive:
     name: nextest archive
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubuntu-latest
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    outputs:
+      nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Publish nextest archive fingerprint
+        id: nextest-fingerprint
+        run: |
+          fingerprint="nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}"
+          mkdir -p .nextest-archive-fingerprint
+          printf '%s\n' "$fingerprint" > .nextest-archive-fingerprint/cache-key.txt
+          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+
+      - name: Upload nextest archive fingerprint
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          path: .nextest-archive-fingerprint/cache-key.txt
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Setup environment
         id: setup
@@ -307,7 +422,7 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -327,7 +442,7 @@ jobs:
       - name: Build nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         env:
-          # Keep CI test binaries small enough for ubuntu-latest link/disk limits.
+          # Keep CI test binaries small enough for CI link/disk limits.
           # This disables test debuginfo only; assertions and test logic still run.
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
@@ -339,7 +454,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
 
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -349,11 +464,40 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  nextest-fingerprint-reuse:
+    name: nextest fingerprint reuse
+    needs: [ci-policy, detector, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    outputs:
+      reuse_found: ${{ steps.reuse.outputs.reuse_found }}
+      source_run_id: ${{ steps.reuse.outputs.source_run_id }}
+      source_sha: ${{ steps.reuse.outputs.source_sha }}
+      source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}
+      reason: ${{ steps.reuse.outputs.reason }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Resolve nextest fingerprint reuse
+        id: reuse
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >
+          python3 scripts/ci_provenance.py resolve-fingerprint
+          --current-run-id "${{ github.run_id }}"
+          --current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+          | tee -a "$GITHUB_OUTPUT"
+
   test-shards:
     name: nextest shard ${{ matrix.shard }} of 4
-    needs: test-archive
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubuntu-latest
+    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     strategy:
       fail-fast: false
       matrix:
@@ -396,13 +540,38 @@ jobs:
 
   test:
     name: test
-    needs: test-shards
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}
-    runs-on: ubuntu-latest
+    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - name: Check test shards
         shell: bash
         run: |
+          if [[ "${{ needs.test-archive.result }}" != "success" ]]; then
+            echo "nextest archive did not succeed"
+            exit 1
+          fi
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
+          if [[ "$reuse_found" == "true" ]]; then
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_run_id"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_sha"
+              exit 1
+            fi
+            if [[ -z "${{ needs.nextest-fingerprint-reuse.outputs.source_artifact_id }}" ]]; then
+              echo "nextest fingerprint reuse did not expose source_artifact_id"
+              exit 1
+            fi
+            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
+            exit 0
+          fi
           if [[ "${{ needs.test-shards.result }}" != "success" ]]; then
             echo "test shards did not succeed"
             exit 1
@@ -410,9 +579,9 @@ jobs:
 
   build:
     name: build
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}
-    runs-on: ubuntu-latest
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.outputs.build_required == 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -449,28 +618,10 @@ jobs:
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
 
       - name: Install cargo-zigbuild
-        run: |
-          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \
-            --retry 10 \
-            --retry-delay 3 \
-            --retry-all-errors \
-            --fail \
-            --location \
-            --show-error \
-            --silent \
-            --output "$archive" \
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild"
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none
 
       - name: build
         run: just build
@@ -498,11 +649,52 @@ jobs:
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
           retention-days: 30
 
+  ci-provenance-emit:
+    name: ci-provenance-emit
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Emit CI provenance
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+        run: >
+          python3 scripts/ci_provenance.py emit-full-ci
+          --output ci-provenance.json
+          --required-job detector=${{ needs.detector.result }}
+          --required-job fmt-check=${{ needs.fmt-check.result }}
+          --required-job deny=${{ needs.deny.result }}
+          --required-job clippy=${{ needs.clippy.result }}
+          --required-job check-aarch64=${{ needs.check-aarch64.result }}
+          --required-job source-fence=${{ needs.source-fence.result }}
+          --required-job test-archive=${{ needs.test-archive.result }}
+          --required-job test-shards=${{ needs.test-shards.result }}
+          --required-job test=${{ needs.test.result }}
+          --conditional-job build.required=${{ needs.detector.outputs.build_required }}
+          --conditional-job build.result=${{ needs.build.result }}
+          --nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+
+      - name: Upload CI provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-provenance-attempt-${{ github.run_attempt }}
+          path: ci-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
   same-sha-main-evidence:
     name: same-sha-main-evidence
     needs: detector
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     outputs:
       source_run_id: ${{ steps.evidence.outputs.source_run_id }}
       check_suite_id: ${{ steps.evidence.outputs.check_suite_id }}
@@ -522,20 +714,32 @@ jobs:
         run: python3 scripts/find_same_sha_main_evidence.py
 
   gate:
-    name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]
+    name: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == true
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && 'gate-deferred'
+          || 'gate' }}
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - name: Check required lanes
         shell: bash
         run: |
-          tag_ref="${{ startsWith(github.ref, 'refs/tags/v') }}"
+          policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
+          full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
+          ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"
+          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
+          if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
+            echo "ci-policy did not succeed"
+            exit 1
+          fi
           if [[ "${{ needs.detector.result }}" != "success" ]]; then
             echo "detector did not succeed"
             exit 1
           fi
-          if [[ "$tag_ref" == "true" ]]; then
+          if [[ "$policy_path" == "tag_reuse" ]]; then
             if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
               echo "same-sha-main-evidence did not succeed"
               exit 1
@@ -566,8 +770,16 @@ jobs:
               echo "test unexpectedly ran during tag reuse"
               exit 1
             fi
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "skipped" ]]; then
+              echo "nextest-fingerprint-reuse unexpectedly ran during tag reuse"
+              exit 1
+            fi
             if [[ "${{ needs.build.result }}" != "skipped" ]]; then
               echo "build unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+              echo "ci-provenance-emit unexpectedly ran during tag reuse"
               exit 1
             fi
             exit 0
@@ -575,6 +787,41 @@ jobs:
           if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
             echo "same-sha-main-evidence unexpectedly ran outside tag reuse"
             exit 1
+          fi
+          defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}"
+          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
+            if [[ "$defer_run_context" != "true" ]]; then
+              echo "deferred CI policy outside deferred draft PR context"
+              exit 1
+            fi
+            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
+            exit 0
+          fi
+          if [[ "$policy_path" == "full" ]]; then
+            echo "full CI required"
+          else
+            echo "unknown CI policy path '$policy_path'"
+            exit 1
+          fi
+          if [[ "$reuse_found" == "true" ]]; then
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+              echo "nextest fingerprint reuse resolver did not succeed"
+              exit 1
+            fi
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+              echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
+              exit 1
+            fi
+            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
+          else
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
+              if [[ "$ignore_emit_failure" == "true" ]]; then
+                echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
+              else
+                echo "ci-provenance-emit did not succeed"
+                exit 1
+              fi
+            fi
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
             echo "fmt-check did not succeed"
@@ -617,7 +864,7 @@ jobs:
     name: deploy
     needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
     if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.gate.result == 'success' && needs.same-sha-main-evidence.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     permissions:
       contents: read
       actions: read

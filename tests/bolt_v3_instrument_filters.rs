@@ -133,7 +133,7 @@ fn plan_market_identity_from_fixture_yields_one_updown_target_plan() {
     assert_eq!(target.strategy_instance_id, "configured_updown_main");
     assert_eq!(target.configured_target_id, "configured_updown_target");
     assert_eq!(target.execution_client_id, "polymarket_main");
-    assert_eq!(target.underlying_asset, "BTC");
+    assert_eq!(target.underlying_asset, "CONFIGURED_ASSET");
     assert_eq!(target.cadence_secs, 300);
     assert_eq!(target.cadence_slug_token, "configuredwindow");
 }
@@ -877,8 +877,8 @@ fn config_module_must_not_own_market_family_target_types() {
 fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
     // Bolt-v3 startup validation must stay structural and dispatch
     // strategy-archetype policy out to a dedicated archetype module.
-    // The `binary_oracle_edge_taker` archetype's reference-current-price
-    // source requirements, its allowed entry/exit order-combination rules, and the
+    // The `binary_oracle_edge_taker` archetype's required reference-data
+    // role, its allowed entry/exit order-combination rules, and the
     // error-message policy that names those rules belong to the
     // archetype binding (`crate::bolt_v3_archetypes::binary_oracle_edge_taker`),
     // not to core validation. Validate.rs may still dispatch into the
@@ -907,15 +907,15 @@ fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
         "order_type=market",
         "time_in_force=fok",
         "time_in_force=ioc",
-        // Concrete archetype-required signal-data error-message phrase.
-        "[signal_data.primary]",
+        // Concrete archetype-required reference-data error-message phrase.
+        "[reference_data.primary]",
     ];
     for symbol in forbidden {
         assert!(
             !src.contains(symbol),
             "src/bolt_v3_validate.rs must not own binary_oracle_edge_taker policy; \
              source unexpectedly references `{symbol}`. \
-             Move the archetype's required signal-data role, its \
+             Move the archetype's required reference-data role, its \
              entry/exit order-combination rules, and the matching error \
              messages to src/bolt_v3_archetypes/binary_oracle_edge_taker.rs; \
              have validate.rs dispatch into the archetype validator via \

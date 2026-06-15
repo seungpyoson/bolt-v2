@@ -62,7 +62,7 @@ The strategy file owns:
 - venue reference
 - target definition
 - target retry/block timing
-- optional reference_current_price source declarations
+- optional reference data declarations
 - strategy-specific parameters
 - archetype-specific order parameters
 
@@ -286,6 +286,17 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 - current allowed value for live trading:
   - `Live`
 - any other value fails validation
+
+#### `order_execution_mode`
+
+- type: string enum
+- required: yes
+- allowed values:
+  - `live`
+  - `shadow`
+- `live` records order intent, evaluates submit admission, and forwards admitted submits/cancels to NautilusTrader
+- `shadow` records order intent and submit-admission evidence without consuming live submit capacity or forwarding submit/cancel mutations to NautilusTrader
+- `shadow` rejects every loaded strategy unless `manage_stop`, `manage_gtd_expiry`, and `manage_contingent_orders` are `false` and `external_order_claims` is empty
 
 ### `[nautilus]`
 
@@ -564,12 +575,13 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - local decision-evidence JSONL path under `catalog_directory`
 - must remain relative so a root catalog move changes only one config location
 
-Decision-evidence JSONL records use `schema_version = 6` for `order_intent`, `admission_decision`, and `strategy_input_snapshot` envelopes.
-Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent`, `decision`, or `snapshot`.
-The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.
+Decision-evidence JSONL records use `schema_version = 10` for `order_intent`, `admission_decision`, `strategy_input_snapshot`, `position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` envelopes.
+Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, or `fill`.
+The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `position_sizer_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, and `submit_reservation_fill` for fill metadata.
 `order_intent` payloads carry the configured strategy/order identity plus compiled NT order semantics under `order_fields`.
 `admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id` and the `execution_client_id` whose submit-admission limits were evaluated.
 `strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
+`position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-10 reservation records.
 
 `order_intent.order_fields` fields:
 
@@ -648,8 +660,8 @@ It is not the trader identifier.
 
 `[clients]` is a map keyed by these identifiers, so each client key must be unique.
 More than one client may target the same `venue`: the schema does not enforce a one-client-per-venue rule.
-A common layout is a trade client and a separate data client on the same venue, distinguished by their keys and their `[data]` / `[execution]` blocks.
-Cross-client collisions are rejected only where two clients would produce indistinguishable runtime evidence: the same `instrument_id` must not be declared under more than one client's `readiness_probe.quote_targets`, because NautilusTrader `QuoteTick` carries the instrument but not the producing data-client identifier.
+A common layout is a trade client and a separate reference-data client on the same venue, distinguished by their keys and their `[data]` / `[execution]` blocks.
+Cross-client collisions are rejected only where two clients would produce indistinguishable runtime evidence: the same `instrument_id` must not be declared under more than one client's `readiness_probe.quote_targets`, and the same reference-data `instrument_id` must not be declared under more than one `data_client_id`, because NautilusTrader `QuoteTick` carries the instrument but not the producing data-client identifier.
 
 #### `venue`
 
@@ -742,44 +754,8 @@ Presence of `[data]` means a data client is configured.
 
 No other Polymarket data-client fields are exposed in the current schema unless they are confirmed on the pinned NautilusTrader Rust adapter surface.
 
-For current data clients other than Polymarket, each client's `venue` defines its own allowed `[data]` field set.
+For current reference-data clients other than Polymarket, each client's `venue` defines its own allowed `[data]` field set.
 Unknown fields fail validation against the venue-specific set in Section 8.
-
-#### Chainlink reference-price data fields
-
-For `venue = "CHAINLINK_REFERENCE_PRICE"`, `[clients.<identifier>.data]` must define:
-
-- `websocket_endpoint`: credential-free `wss://` origin
-- `transport_backend`: string enum; current allowed value `sockudo`
-- `heartbeat_secs`: optional positive integer
-- `heartbeat_message`: optional string
-- `reconnect_timeout_ms`: positive integer
-- `reconnect_delay_initial_ms`: positive integer
-- `reconnect_delay_max_ms`: positive integer
-- `reconnect_backoff_factor`: positive finite number
-- `reconnect_jitter_ms`: positive integer
-- `reconnect_max_attempts`: required; must be `0` so Chainlink reference WebSocket auth headers are regenerated only on DataClient connect
-- `idle_timeout_ms`: positive integer
-
-Secrets must be SSM-only fields `api_key_ssm_parameter` and `api_secret_ssm_parameter`.
-
-#### PolyResearch reference-price data fields
-
-For `venue = "POLYRESEARCH_REFERENCE_PRICE"`, `[clients.<identifier>.data]` must define:
-
-- `websocket_endpoint`: credential-free `wss://` endpoint with no `key` or `apiKey` query parameter
-- `transport_backend`: string enum; current allowed value `sockudo`
-- `heartbeat_secs`: optional positive integer
-- `heartbeat_message`: optional string
-- `reconnect_timeout_ms`: positive integer
-- `reconnect_delay_initial_ms`: positive integer
-- `reconnect_delay_max_ms`: positive integer
-- `reconnect_backoff_factor`: positive finite number
-- `reconnect_jitter_ms`: positive integer
-- `reconnect_max_attempts`: required, either `"unlimited"` or a positive integer
-- `idle_timeout_ms`: positive integer
-
-Secrets must be the SSM-only field `api_key_ssm_parameter`.
 
 ### `[clients.<identifier>.execution]`
 
@@ -882,7 +858,7 @@ All are:
 
 No environment-variable fallback is allowed.
 
-For current Binance data use:
+For current Binance reference-data use:
 
 - `api_key_ssm_path` and `api_secret_ssm_path` are required
 - the expected credential type is Ed25519, matching the pinned Binance data-client requirement for SBE WebSocket streams
@@ -918,7 +894,7 @@ For current Binance data use:
 - required: yes
 - maps to Nautilus `BinanceDataClientConfig.base_url_ws`
 - explicit TOML ownership prevents NautilusTrader from falling back to its compiled-in Binance WebSocket URL
-- must not use NautilusTrader's Binance Spot JSON WebSocket host; configured NT quote subscriptions require an SBE endpoint or compatible SBE proxy so NT `subscribe_quotes` can emit `QuoteTick` data
+- must not use NautilusTrader's Binance Spot JSON WebSocket host; the bolt-v3 reference quote probe requires an SBE endpoint or compatible SBE proxy so NT `subscribe_quotes` can emit `QuoteTick` data
 
 ##### `instrument_status_poll_secs`
 
@@ -958,30 +934,6 @@ A trade chunk-count probe is the combination `market_data_kind = "trade"` with `
 - `instrument_id`: string; literal NautilusTrader `InstrumentId`, required. Its venue must match the client's `venue`.
 
 The same `instrument_id` must not appear under more than one client's `readiness_probe.quote_targets`, because NautilusTrader `QuoteTick` does not carry the producing data-client identifier and readiness quote evidence must stay source-disambiguated.
-
-### `[chainlink_data_streams]`
-
-This root-level section is required when any Chainlink Data Streams client is configured.
-It owns the single feed-binding catalog consumed by both the strike report client and the reference-current-price websocket client.
-Client-local `feed_bindings` arrays are rejected so feed-to-instrument mappings have one configured path.
-
-The runtime resolves this catalog by the root section name `chainlink_data_streams`; clients do not declare a second `feed_catalog` pointer.
-
-Fields:
-
-#### `[[chainlink_data_streams.feed_bindings]]`
-
-- type: array of tables
-- required when `[chainlink_data_streams]` is present
-- must contain one or more entries
-
-Each entry has:
-
-- `feed_id`: string; lowercase `0x`-prefixed Chainlink Data Streams feed id
-- `instrument_id`: string; literal NautilusTrader `InstrumentId`
-- `report_schema_version`: positive integer
-- `report_decimal_scale`: positive integer
-- `price_precision`: integer in `0..=255`
 
 ### `[gate_providers.<identifier>]`
 
@@ -1050,22 +1002,7 @@ market_selection_rule = "active_or_next"
 retry_interval_secs = 5
 blocked_after_secs = 60
 
-[reference_current_price]
-asset = "BTC"
-sources = ["chainlink_primary"]
-min_valid_sources = 1
-selection_policy = "first_valid_per_interval"
-max_source_age_ms = 2000
-max_source_drift_bps = 25
-drift_policy = "observe"
-stale_policy = "block"
-
-[reference_current_price.source.chainlink_primary]
-provider = "chainlink_ws"
-client_id = "chainlink_reference"
-instrument_id = "BTC-USD.CHAINLINK"
-enabled = true
-required = false
+[reference_data]
 
 [parameters.entry_order]
 side = "buy"
@@ -1100,10 +1037,12 @@ order_notional_target = "5.00"
 maximum_position_notional = "10.00"
 
 [parameters.runtime]
+reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-001"
 warmup_tick_count = 20
 reentry_cooldown_secs = 30
 book_impact_cap_bps = 50
 risk_lambda = 0.5
+sizing_ev_reference_bps = 500
 exit_hysteresis_bps = 25
 trade_flow_window_secs = 60
 trade_flow_max_samples = 2000
@@ -1287,109 +1226,34 @@ The schema does not hardcode `BTC`, `ETH`, or `300` as the only supported `updow
 
 The runtime projection of the strategy-file `[target]` block plus the top-level `execution_client_id` field into `configured_updown_target` is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 6.1.
 
-### `[reference_current_price]`
+### `[reference_data.<name>]`
 
-This section declares the current-price inputs used by `binary_oracle_edge_taker`.
-Current live strategy files include it.
+This section is optional.
 
-Fields:
+If present:
 
-#### `asset`
-
-- type: normalized uppercase asset symbol
-- required
-
-#### `sources`
-
-- type: ordered array of source keys
-- required
-- must be non-empty
-- each key must have a matching `[reference_current_price.source.<source_id>]` block
-
-#### `min_valid_sources`
-
-- type: positive integer
-- required
-- must not exceed the enabled source count
-
-#### `selection_policy`
-
-- type: enum
-- required
-- allowed values: `first_valid_per_interval`
-
-#### `max_source_age_ms`
-
-- type: positive integer
-- required
-
-#### `max_source_drift_bps`
-
-- type: positive integer
-- required
-
-#### `drift_policy`
-
-- type: enum
-- required
-- allowed values: `observe`, `block`
-
-#### `stale_policy`
-
-- type: enum
-- required
-- allowed values: `block`
-
-### `[reference_current_price.source.<source_id>]`
-
-Each source block references a root data client whose venue matches the configured provider.
+- each block references a root client that includes `[data]`
+- each block declares the exact NautilusTrader `instrument_id` the strategy subscribes to
+- the same `instrument_id` must not be declared under more than one `data_client_id`, because NautilusTrader `QuoteTick` carries the instrument but not the producing data-client identifier and readiness quote evidence must remain source-disambiguated
+- for the current `binary_oracle_edge_taker`, the required role name is `primary`
 
 Fields:
 
-#### `provider`
+#### `data_client_id`
 
-- type: provider key
+- type: keyed reference string (one of the keys under root `[clients.<id>]`)
 - required
-- allowed values for current live configs: `chainlink_ws`, `polyresearch_ws`
-
-#### `client_id`
-
-- type: keyed reference string under root `[clients.<id>]`
-- required
-- `chainlink_ws` sources must reference a `CHAINLINK_REFERENCE_PRICE` client
-- `polyresearch_ws` sources must reference a `POLYRESEARCH_REFERENCE_PRICE` client
 
 #### `instrument_id`
 
 - type: string
-- required for `chainlink_ws`
-- unsupported for `polyresearch_ws`
-
-#### `symbol`
-
-- type: string
-- required for `polyresearch_ws`
-- unsupported for `chainlink_ws`
-
-#### `enabled`
-
-- type: boolean
 - required
-
-#### `required`
-
-- type: boolean
-- required
-
-An enabled source must support the configured `reference_current_price.asset`.
-For the current provider metadata, `polyresearch_ws` supports BTC, ETH, SOL, and XRP.
-`required = false` only affects quorum; it does not make an enabled unsupported provider/asset pair valid.
 
 The TOML value is the literal NautilusTrader `InstrumentId` string.
 The field name maps one-to-one to `nautilus_model::identifiers::InstrumentId`; aliases are forbidden.
 bolt does not define a second identifier format here.
 
-No archetype may hardcode its reference_current_price source in code.
+No archetype may hardcode its reference data source in code.
 
 ### `[parameters.entry_order]`, `[parameters.exit_order]`, and `[parameters.forced_exit_order]`
 
@@ -1593,10 +1457,12 @@ For the current `binary_oracle_edge_taker` archetype:
 
 Runtime fields:
 
-- `warmup_tick_count`: unsigned integer; fresh current-price warmup count before entry is allowed
+- `reference_publish_topic`: string; reference-data topic consumed by the runtime strategy
+- `warmup_tick_count`: unsigned integer; fresh-reference warmup count before entry is allowed
 - `reentry_cooldown_secs`: unsigned integer; cooldown after an entry attempt
 - `book_impact_cap_bps`: unsigned integer; maximum allowed book-impact basis points for order construction
 - `risk_lambda`: float; sizing risk coefficient
+- `sizing_ev_reference_bps`: unsigned integer; sizing saturates at `order_notional_target` when worst-case EV reaches `2 * risk_lambda * sizing_ev_reference_bps` (must be 1..=10000)
 - `exit_hysteresis_bps`: integer; exit hysteresis threshold
 - `trade_flow_window_secs`: unsigned integer; rolling retention window for signed trade flow
 - `trade_flow_max_samples`: unsigned integer; hard cap on retained signed trades per instrument (memory bound)
@@ -1622,7 +1488,7 @@ Must fail if:
 - a referenced file does not exist
 - a client reference points to a missing client
 - a strategy `execution_client_id` points to a data-only client (no `[execution]` block)
-- a `reference_current_price.source.*.client_id` points to a client without `[data]`
+- a reference-data `data_client_id` points to a client without `[data]`
 - a `[secrets]` block is present without the same client's consuming adapter block
 - an SSM parameter path is empty or does not start with `/`
 - two listed strategy files declare the same `strategy_instance_id`
@@ -1637,13 +1503,13 @@ Must fail if:
 - `target.cadence_secs` is not positive or is not divisible by `60`
 - `target.cadence_secs` does not have a runtime-contract-defined slug-token mapping
 - a field appears under `[clients.<identifier>.data]` or `[clients.<identifier>.execution]` that is not allowed for that client's `venue`
-- a Binance data `base_url_ws` uses NautilusTrader's Binance Spot JSON WebSocket host instead of an SBE endpoint or compatible SBE proxy
+- a Binance reference-data `base_url_ws` uses NautilusTrader's Binance Spot JSON WebSocket host instead of an SBE endpoint or compatible SBE proxy
 - archetype-specific parameter sections contain fields not allowed for the declared `strategy_archetype`
 - archetype-specific order parameters contain any combination not explicitly allowed for that archetype
 - `order_notional_target` or `maximum_position_notional` is not a positive decimal
 - `order_notional_target` exceeds `root risk.default_max_notional_per_order`
 - `order_notional_target` exceeds `maximum_position_notional`
-- a shipped `binary_oracle_edge_taker` strategy file is missing `[reference_current_price]`
+- `binary_oracle_edge_taker` is missing `[reference_data.primary]`
 
 ### Live validation
 
@@ -1666,6 +1532,7 @@ strategy_files = [
 
 [runtime]
 mode = "Live"
+order_execution_mode = "live"
 
 [nautilus]
 load_state = true
@@ -1853,22 +1720,7 @@ market_selection_rule = "active_or_next"
 retry_interval_secs = 5
 blocked_after_secs = 60
 
-[reference_current_price]
-asset = "BTC"
-sources = ["chainlink_primary"]
-min_valid_sources = 1
-selection_policy = "first_valid_per_interval"
-max_source_age_ms = 2000
-max_source_drift_bps = 25
-drift_policy = "observe"
-stale_policy = "block"
-
-[reference_current_price.source.chainlink_primary]
-provider = "chainlink_ws"
-client_id = "chainlink_reference"
-instrument_id = "BTC-USD.CHAINLINK"
-enabled = true
-required = false
+[reference_data]
 
 [parameters.entry_order]
 side = "buy"
@@ -1903,10 +1755,12 @@ order_notional_target = "5.00"
 maximum_position_notional = "10.00"
 
 [parameters.runtime]
+reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-001"
 warmup_tick_count = 20
 reentry_cooldown_secs = 30
 book_impact_cap_bps = 50
 risk_lambda = 0.5
+sizing_ev_reference_bps = 500
 exit_hysteresis_bps = 25
 trade_flow_window_secs = 60
 trade_flow_max_samples = 2000

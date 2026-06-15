@@ -1,0 +1,47 @@
+{
+  "schema_version": "source-proof-sample-inspection.v1",
+  "source_binding": "hyperliquid-hip4-outcome-meta",
+  "market_structure_fixture": "binary-option",
+  "observed_at_utc": "2026-06-07T19:59:21Z",
+  "method": "POST",
+  "source_uri": "https://api.hyperliquid.xyz/info",
+  "request_json": {
+    "type": "outcomeMeta"
+  },
+  "response_bytes": 21068,
+  "response_sha256": "2a9884457e2a3118e7497a7d41dee840846526fcd50d43c0e8cfd262be67c846",
+  "top_level_keys": [
+    "outcomes",
+    "questions"
+  ],
+  "outcome_count": 62,
+  "outcome_shape": {
+    "keys": [
+      "description",
+      "name",
+      "outcome",
+      "quoteToken",
+      "sideSpecs"
+    ],
+    "side_spec_keys": [
+      "name"
+    ]
+  },
+  "question_count": 3,
+  "question_shape": {
+    "keys": [
+      "description",
+      "fallbackOutcome",
+      "name",
+      "namedOutcomes",
+      "question",
+      "settledNamedOutcomes"
+    ]
+  },
+  "sample_interpretation": [
+    "current outcome metadata source is reachable",
+    "outcome rows expose id, name, description, side specs, and quote token",
+    "question rows expose question id, fallback outcome, named outcomes, and settled outcomes",
+    "source remains bounded/current-only until historical archive coverage and parser fidelity are proven"
+  ]
+}

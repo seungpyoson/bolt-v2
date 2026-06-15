@@ -1,0 +1,20 @@
+{
+  "metadata_version": "catalog-metadata.v1",
+  "manifest_hash": "c6cfefac56875b2d2df244dbdf94e0d25f8ce17dd4c176e2f406abdad180e19d",
+  "checkpoint_hash": "a1c7b3805815d0e240634327bf52330dc304c7e553920b2efb1207b2f8e8ec41",
+  "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
+  "nt_data_type": "OrderBookDelta",
+  "nt_instrument_id": "0x92889d49761307073d461289d01208c3b19292d17da937c0f57501c7b7efa50d-73895424095742155573626958367283533358717984717096075221396743226794070701077.POLYMARKET",
+  "canonical_rows": 103,
+  "catalog_nt_data_types": [
+    "OrderBookDelta",
+    "TradeTick"
+  ],
+  "catalog_rows_by_nt_data_type": {
+    "OrderBookDelta": 103,
+    "TradeTick": 1
+  },
+  "output_catalog_uri": "file:///Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/nt-catalog",
+  "execution_catalog_uri": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/nt-catalog",
+  "direct_s3_catalog_access_proven": false
+}

@@ -15,12 +15,14 @@ use std::{
 use nautilus_common::enums::{Environment, LogLevel};
 use nautilus_model::{
     enums::OmsType,
-    identifiers::{ClientId, InstrumentId, TraderId, Venue},
+    identifiers::{AccountId, ClientId, InstrumentId, TraderId, Venue},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    bolt_v3_iv::config::IvRootConfig,
+    bolt_v3_loss_halt_actions::{LossGovernorRecoveryMode, LossGovernorTradingStateAction},
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolCoarserGridPolicy, RealizedVolEngineConfig,
         RealizedVolEstimatorConfig, RealizedVolJumpConfig, RealizedVolJumpPolicy,
@@ -75,16 +77,10 @@ pub struct BoltV3RootConfig {
     pub logging: LoggingBlock,
     pub persistence: PersistenceBlock,
     pub aws: AwsBlock,
-    pub chainlink_data_streams: Option<RootFeedBindingCatalog>,
     pub clients: BTreeMap<String, ClientBlock>,
     pub realized_volatility_surfaces: Option<BTreeMap<String, RealizedVolatilitySurfaceBlock>>,
     pub gate_providers: Option<BTreeMap<String, GateProviderBlock>>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct RootFeedBindingCatalog {
-    pub feed_bindings: Vec<toml::Value>,
+    pub iv: Option<IvRootConfig>,
 }
 
 // `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit
@@ -99,6 +95,7 @@ pub struct RootFeedBindingCatalog {
 #[serde(deny_unknown_fields)]
 pub struct RuntimeBlock {
     pub mode: Environment,
+    pub order_execution_mode: crate::bolt_v3_order_execution::BoltV3OrderExecutionMode,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -184,8 +181,69 @@ pub struct NautilusExecEngineBlock {
 #[serde(deny_unknown_fields)]
 pub struct RiskBlock {
     pub default_max_notional_per_order: String,
+    pub loss_governor: Option<LossGovernorBlock>,
+    pub capital_pools: Option<Vec<CapitalPoolBlock>>,
     pub nautilus: NautilusRiskBlock,
     pub kill_switch: Option<KillSwitchConfigBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LossGovernorBlock {
+    pub enabled: bool,
+    pub account_id: AccountId,
+    pub max_snapshot_age_ns: u64,
+    pub rolling_window_ns: u64,
+    pub active_position_pnl_max_entries: Option<usize>,
+    pub on_loss_breach_trading_state: Option<LossGovernorTradingStateAction>,
+    pub on_untrusted_snapshot_trading_state: Option<LossGovernorTradingStateAction>,
+    pub recovery_mode: Option<LossGovernorRecoveryMode>,
+    pub manual_recovery_evidence_max_path_bytes: Option<usize>,
+    pub max_per_trade_loss: Option<String>,
+    pub max_daily_loss: Option<String>,
+    pub max_rolling_loss: Option<String>,
+    pub max_drawdown: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CapitalPoolBlock {
+    pub pool_id: String,
+    pub venue_id: String,
+    pub account_id: AccountId,
+    pub collateral_currency: String,
+    pub product_kind: String,
+    pub enforce_submit_admission: bool,
+    pub max_pool_liability: String,
+    pub max_snapshot_age_ns: u64,
+    pub dedupe_retention_ns: u64,
+    pub venue_spendability_source_path: Option<String>,
+    pub venue_spendability_source_sha256: Option<String>,
+    pub venue_spendability_source_max_bytes: Option<u64>,
+    pub prediction_market_binary: Option<PredictionMarketBinaryProductBlock>,
+    pub sizing_policy: CapitalPoolSizingPolicyBlock,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PredictionMarketBinaryProductBlock {
+    pub yes_instrument_id: InstrumentId,
+    pub no_instrument_id: InstrumentId,
+    pub collateral_coupled_group_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CapitalPoolSizingPolicyBlock {
+    pub min_remaining_pool_balance: Option<String>,
+    pub fee_slippage: FeeSlippagePolicyBlock,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FeeSlippagePolicyBlock {
+    pub max_fee_liability: String,
+    pub max_slippage_liability: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -237,6 +295,14 @@ pub struct PersistenceBlock {
 #[serde(deny_unknown_fields)]
 pub struct DecisionEvidenceBlock {
     pub order_intents_relative_path: String,
+    /// Byte cap applied when the live-node startup driver reads this same
+    /// decision-evidence file to recover known submit-reservation metadata
+    /// after a restart. The path is owned by this block
+    /// (`order_intents_relative_path` via `decision_evidence_path`), so its
+    /// read bound lives here too. `None` opts startup reservation recovery
+    /// out: the position sizer then fails closed if any open orders exist at
+    /// boot (it cannot attribute them without recovered metadata).
+    pub recovery_evidence_max_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -497,14 +563,14 @@ pub struct BoltV3StrategyConfig {
     /// strategy envelope itself is target-shape-neutral.
     pub target: toml::Value,
     pub realized_volatility_surface_id: Option<String>,
-    pub signal_data: BTreeMap<String, DataInstrumentBlock>,
+    pub reference_data: BTreeMap<String, ReferenceDataBlock>,
+    pub signal_data: BTreeMap<String, ReferenceDataBlock>,
     /// Optional live resolution-strike (price-to-beat) data source. Mirrors the
-    /// data-client block shape (`data_client_id` + `instrument_id`) but is a
-    /// single block rather than a role-keyed map, matching the strategy's
+    /// `[reference_data]` block shape (`data_client_id` + `instrument_id`) but is
+    /// a single block rather than a role-keyed map, matching the strategy's
     /// singular `resolution_client_id` / `resolution_instrument_id` runtime
     /// fields. When absent, the live strike simply does not subscribe.
-    pub resolution_data: Option<DataInstrumentBlock>,
-    pub reference_current_price: Option<ReferencePriceBlock>,
+    pub resolution_data: Option<ReferenceDataBlock>,
     pub parameters: toml::Value,
 }
 
@@ -520,149 +586,9 @@ impl StrategyArchetypeKey {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct DataInstrumentBlock {
+pub struct ReferenceDataBlock {
     pub data_client_id: ClientId,
     pub instrument_id: InstrumentId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReferencePriceBlock {
-    pub asset: String,
-    pub source_order: Vec<String>,
-    pub min_valid_sources: usize,
-    pub selection_policy: ReferencePriceSelectionPolicy,
-    pub max_source_age_ms: u64,
-    pub max_source_drift_bps: u32,
-    pub drift_policy: ReferencePriceDriftPolicy,
-    pub stale_policy: ReferencePriceStalePolicy,
-    pub sources: BTreeMap<String, ReferencePriceSourceBlock>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReferencePriceBlockWire {
-    asset: String,
-    #[serde(rename = "sources")]
-    source_order: Vec<String>,
-    min_valid_sources: usize,
-    selection_policy: ReferencePriceSelectionPolicy,
-    max_source_age_ms: u64,
-    max_source_drift_bps: u32,
-    drift_policy: ReferencePriceDriftPolicy,
-    stale_policy: ReferencePriceStalePolicy,
-    #[serde(rename = "source")]
-    sources: BTreeMap<String, ReferencePriceSourceBlock>,
-}
-
-impl<'de> Deserialize<'de> for ReferencePriceBlock {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = ReferencePriceBlockWire::deserialize(deserializer)?;
-        Ok(Self {
-            asset: wire.asset,
-            source_order: wire.source_order,
-            min_valid_sources: wire.min_valid_sources,
-            selection_policy: wire.selection_policy,
-            max_source_age_ms: wire.max_source_age_ms,
-            max_source_drift_bps: wire.max_source_drift_bps,
-            drift_policy: wire.drift_policy,
-            stale_policy: wire.stale_policy,
-            sources: wire.sources,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReferencePriceSourceBlock {
-    pub provider: ReferencePriceProvider,
-    pub enabled: bool,
-    pub required: bool,
-    pub client_id: ClientId,
-    pub instrument_id: Option<String>,
-    pub symbol: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReferencePriceSourceBlockWire {
-    provider: ReferencePriceProvider,
-    enabled: bool,
-    required: bool,
-    client_id: ClientId,
-    instrument_id: Option<String>,
-    symbol: Option<String>,
-}
-
-impl<'de> Deserialize<'de> for ReferencePriceSourceBlock {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = ReferencePriceSourceBlockWire::deserialize(deserializer)?;
-        Ok(Self {
-            provider: wire.provider,
-            enabled: wire.enabled,
-            required: wire.required,
-            client_id: wire.client_id,
-            instrument_id: wire.instrument_id,
-            symbol: wire.symbol,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReferencePriceProvider(String);
-
-impl ReferencePriceProvider {
-    pub fn new(value: impl Into<String>) -> Result<Self, String> {
-        let value = value.into();
-        if value.trim().is_empty()
-            || value.trim() != value
-            || value.chars().any(char::is_whitespace)
-        {
-            return Err("reference_price provider is invalid".to_string());
-        }
-        Ok(Self(value))
-    }
-
-    pub fn from_serialized(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl<'de> Deserialize<'de> for ReferencePriceProvider {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::new(value).map_err(serde::de::Error::custom)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ReferencePriceDriftPolicy {
-    Observe,
-    Block,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ReferencePriceSelectionPolicy {
-    FirstValidPerInterval,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ReferencePriceStalePolicy {
-    Block,
 }
 
 pub fn realized_volatility_engine_config(
@@ -1118,8 +1044,7 @@ canonical_quote_asset = "<QUOTE_ASSET>"
             .as_table()
             .expect("[target] should parse into a table");
         assert!(!target_table.is_empty());
-        assert!(strategy.signal_data.contains_key("primary"));
-        assert!(strategy.reference_current_price.is_some());
+        assert!(strategy.reference_data.is_empty());
     }
 
     #[test]

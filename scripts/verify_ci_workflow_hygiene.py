@@ -9,6 +9,7 @@ import re
 import shlex
 import sys
 import tomllib
+from typing import NamedTuple
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -28,6 +29,7 @@ from command_understanding import (
     python_constant_string,
     python_inline_command_payloads,
 )
+from rust_verification import CARGO_ALIAS_SUBCOMMANDS, CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -37,22 +39,67 @@ DEFAULT_WORKFLOW_GLOBS = ("*.yml", "*.yaml")
 DEFAULT_SETUP_ACTION = REPO_ROOT / ".github" / "actions" / "setup-environment" / "action.yml"
 DEFAULT_NEXTEST_CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 DEFAULT_NO_MISTAKES_CONFIG = REPO_ROOT / ".no-mistakes.yaml"
+DEFAULT_RUNNERS_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
+DEFAULT_ACTIONLINT_CONFIG = REPO_ROOT / ".github" / "actionlint.yaml"
+DEFAULT_RUST_VERIFICATION_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
+DEFAULT_BVS_RUST_VERIFICATION_POLICY = REPO_ROOT / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
+JOB_RUNS_ON_VAR_RE = re.compile(r"^    runs-on:\s*\$\{\{\s*vars\.([A-Z0-9_]+)\s*\}\}\s*$")
+WORKFLOW_RUNNER_CONFIG_KEYS = {
+    "ci.yml": "ci",
+    ".github/workflows/ci.yml": "ci",
+    "backtester-ci.yml": "backtester_ci",
+    ".github/workflows/backtester-ci.yml": "backtester_ci",
+    "dispatch-ci-cancel.yml": "dispatch_ci_cancel",
+    ".github/workflows/dispatch-ci-cancel.yml": "dispatch_ci_cancel",
+    "ci-runner-debug.yml": "ci_runner_debug",
+    ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
+    "rust-probe.yml": "rust_probe",
+    ".github/workflows/rust-probe.yml": "rust_probe",
+    "actionlint.yml": "actionlint",
+    ".github/workflows/actionlint.yml": "actionlint",
+    "advisory.yml": "advisory",
+    ".github/workflows/advisory.yml": "advisory",
+    "summary.yml": "summary",
+    ".github/workflows/summary.yml": "summary",
+    "stale.yml": "stale",
+    ".github/workflows/stale.yml": "stale",
+    "ci-docs-pass-stub.yml": "ci_docs_pass_stub",
+    ".github/workflows/ci-docs-pass-stub.yml": "ci_docs_pass_stub",
+}
+SSH_RUNNER_ACTION_RE = re.compile(r"^ubicloud/ssh-runner@[0-9a-f]{40}$")
 DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / "justfile",)
 DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / "scripts", "*.sh"),
     (REPO_ROOT / "tests", "*.sh"),
+    (REPO_ROOT / ".github" / "scripts", "*.sh"),
     (REPO_ROOT / ".github" / "actions", "*/action.yml"),
     (REPO_ROOT / ".github" / "actions", "*/action.yaml"),
 )
 S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
+LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS = {"build", "clippy", "test"}
+LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS = set(CARGO_DISK_PREFLIGHT_SUBCOMMANDS) | set(CARGO_ALIAS_SUBCOMMANDS)
 YAML_ANCHOR_PATTERN = r"&[A-Za-z0-9_.-]+"
+YAML_KEY_PATTERN = r"""(?:[A-Za-z0-9_.-]+|'[^']*(?:''[^']*)*'|"(?:[^"\\]|\\.)*")"""
 YAML_STEP_ITEM_RE = re.compile(rf"^-\s+(?:{YAML_ANCHOR_PATTERN}(?:\s+|$))?")
 YAML_RUN_LINE_RE = re.compile(rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*(.*?)\s*$")
 YAML_FOLDED_RUN_LINE_RE = re.compile(
     rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*>[+-]?\s*(?:#.*)?$"
 )
 
+
+class PolicyError(RuntimeError):
+    pass
+
+
+class CiPolicyResult(NamedTuple):
+    ci_policy_path: str
+    full_ci_required: bool
+    full_ci_deferred: bool
+    reason: str
+
+
 REQUIRED_JOBS = (
+    "ci-policy",
     "detector",
     "fmt-check",
     "deny",
@@ -60,14 +107,25 @@ REQUIRED_JOBS = (
     "check-aarch64",
     "source-fence",
     "test-archive",
+    "nextest-fingerprint-reuse",
     "test-shards",
     "test",
     "build",
+    "ci-provenance-emit",
     "same-sha-main-evidence",
     "gate",
     "deploy",
 )
-GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build")
+GATE_REQUIRED = (
+    "detector",
+    "fmt-check",
+    "deny",
+    "clippy",
+    "check-aarch64",
+    "source-fence",
+    "test",
+    "build",
+)
 DEPLOY_REQUIRED_NEEDS = (
     "gate",
     "same-sha-main-evidence",
@@ -80,15 +138,65 @@ DEPLOY_REQUIRED_NEEDS = (
     "source-fence",
     "test",
 )
-TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build")
+CI_PROVENANCE_REQUIRED_JOBS = (
+    "detector",
+    "fmt-check",
+    "deny",
+    "clippy",
+    "check-aarch64",
+    "source-fence",
+    "test-archive",
+    "test-shards",
+    "test",
+)
+CI_PROVENANCE_POLICY_VALUES = {"full", "defer", "tag_reuse"}
+CI_PROVENANCE_POLICY_ROWS = (
+    "draft_pr_synchronize",
+    "draft_pr_opened",
+    "draft_pr_reopened",
+    "converted_to_draft",
+    "ready_pr",
+    "ready_for_review",
+    "workflow_dispatch",
+    "main_push",
+    "tag",
+    "unknown_event",
+)
+CI_PROVENANCE_POLICY_EXPECTED = {
+    "draft_pr_synchronize": "defer",
+    "draft_pr_opened": "defer",
+    "draft_pr_reopened": "defer",
+    "converted_to_draft": "defer",
+    "ready_pr": "full",
+    "ready_for_review": "full",
+    "workflow_dispatch": "full",
+    "main_push": "full",
+    "tag": "tag_reuse",
+    "unknown_event": "full",
+}
+assert set(CI_PROVENANCE_POLICY_ROWS) == set(
+    CI_PROVENANCE_POLICY_EXPECTED
+), "CI_PROVENANCE_POLICY_ROWS and CI_PROVENANCE_POLICY_EXPECTED keys must match"
+TAG_SKIPPED_JOBS = (
+    "fmt-check",
+    "deny",
+    "clippy",
+    "source-fence",
+    "nextest-fingerprint-reuse",
+    "test",
+    "build",
+    "ci-provenance-emit",
+)
 TAG_SKIP_REQUIRED_JOBS = (
     "fmt-check",
     "deny",
     "clippy",
     "source-fence",
     "test-archive",
+    "nextest-fingerprint-reuse",
     "test-shards",
     "test",
+    "ci-provenance-emit",
 )
 TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-shards", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
@@ -147,8 +255,97 @@ TAG_SKIP_ALWAYS_IF_RE = re.compile(
     r")\s*\}\}\s*$"
 )
 SAME_SHA_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
+FULL_CI_REQUIRED_EXPR = "needs.ci-policy.outputs.full_ci_required == 'true'"
+TAG_REUSE_POLICY_EXPR = "needs.ci-policy.outputs.ci_policy_path == 'tag_reuse'"
+NEXTEST_REUSE_MISS_EXPR = "needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true'"
+MAIN_BRANCH_SKIP_EXPR = "github.ref != 'refs/heads/main'"
+BUILD_REQUIRED_EXPR = "needs.detector.outputs.build_required == 'true'"
+FINGERPRINT_REUSE_ALLOWED_EXPR = "needs.detector.outputs.fingerprint_reuse_allowed == 'true'"
+FINGERPRINT_REUSE_PR_EVENT_EXPR = "github.event_name == 'pull_request'"
+FINGERPRINT_REUSE_JOB_IF_VALUE = (
+    "${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' "
+    "&& github.event_name == 'pull_request' "
+    "&& needs.detector.outputs.fingerprint_reuse_allowed == 'true' "
+    "&& github.ref != 'refs/heads/main' }}"
+)
+FINGERPRINT_REUSE_ALLOWED_OUTPUT = (
+    "fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}"
+)
+FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ALLOWED_KEYS = frozenset(
+    ("name", "id", "if", "shell", "run")
+)
+FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_SCALARS = {
+    "id": "fingerprint_reuse_inputs_changed",
+    "if": "github.event_name == 'pull_request'",
+    "shell": "bash",
+    "run": "|",
+}
+FINGERPRINT_REUSE_ALLOWED_STEP_ALLOWED_KEYS = frozenset(("name", "id", "shell", "run"))
+FINGERPRINT_REUSE_ALLOWED_STEP_SCALARS = {
+    "id": "fingerprint_reuse_allowed",
+    "shell": "bash",
+    "run": "|",
+}
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_ALLOWED_KEYS = frozenset(
+    ("name", "id", "shell", "env", "run")
+)
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_SCALARS = {
+    "id": "reuse",
+    "shell": "bash",
+    "env": "",
+    "run": ">",
+}
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_ENV = {"GITHUB_TOKEN": "${{ github.token }}"}
+FINGERPRINT_REUSE_INPUTS_CHANGED_RUN = """base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
+head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
+git fetch --no-tags origin \\
+  "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \\
+  "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
+  .github/workflows/ci.yml \\
+  .github/actions/setup-environment/action.yml \\
+  ci/github-actions-runners.toml \\
+  scripts/ci_provenance.py \\
+  scripts/test_ci_provenance.py \\
+  scripts/verify_ci_workflow_hygiene.py \\
+  scripts/test_verify_ci_workflow_hygiene.py)"
+if [[ -n "$changed" ]]; then
+  echo "any_changed=true" >> "$GITHUB_OUTPUT"
+else
+  echo "any_changed=false" >> "$GITHUB_OUTPUT"
+fi"""
+FINGERPRINT_REUSE_ALLOWED_RUN = """if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+  echo "value=false" >> "$GITHUB_OUTPUT"
+elif [[ "${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true" ]]; then
+  echo "value=false" >> "$GITHUB_OUTPUT"
+else
+  echo "value=true" >> "$GITHUB_OUTPUT"
+fi"""
+NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN = """python3 scripts/ci_provenance.py resolve-fingerprint
+--current-run-id "${{ github.run_id }}"
+--current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+| tee -a "$GITHUB_OUTPUT\""""
+GATE_NEXTEST_FINGERPRINT_REUSE_BRANCH = """if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
+  echo "nextest fingerprint reuse resolver did not succeed"
+  exit 1
+fi
+if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+  echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
+  exit 1
+fi
+echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}\""""
+FINGERPRINT_REUSE_GOVERNANCE_PATHS = (
+    ".github/workflows/ci.yml",
+    ".github/actions/setup-environment/action.yml",
+    "ci/github-actions-runners.toml",
+    "scripts/ci_provenance.py",
+    "scripts/test_ci_provenance.py",
+    "scripts/verify_ci_workflow_hygiene.py",
+    "scripts/test_verify_ci_workflow_hygiene.py",
+)
 BUILD_IF_RE = re.compile(
-    r"^    if:\s*\$\{\{\s*!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*&&\s*"
+    r"^    if:\s*\$\{\{\s*"
+    r"needs\.ci-policy\.outputs\.full_ci_required\s*==\s*['\"]true['\"]\s*&&\s*"
     r"needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*\}\}\s*$"
 )
 PR_CONCURRENCY_EVENT_RE = re.compile(r"github\.event_name\s*==\s*['\"]pull_request['\"]")
@@ -159,9 +356,8 @@ PR_CONCURRENCY_PULL_REQUEST_BRANCH_RE = re.compile(
 PR_CONCURRENCY_NON_PR_FALLBACK_RE = re.compile(
     r"\|\|\s*format\(\s*['\"]\{0\}-\{1\}['\"]\s*,\s*github\.ref_name\s*,\s*github\.sha\s*\)"
 )
-PR_CONCURRENCY_CANCEL_LINES = (
-    "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
-    'cancel-in-progress: ${{ github.event_name == "pull_request" }}',
+PR_CONCURRENCY_CANCEL_SCOPE_ERROR = (
+    "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only"
 )
 GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
 DEPLOY_IF_RE = re.compile(
@@ -201,7 +397,6 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "just --evaluate target",
     "just --evaluate zig_version",
     "just --evaluate zigbuild_version",
-    "just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256",
     "just --evaluate rust_verification_owner",
     'target-dir --repo "$GITHUB_WORKSPACE"',
     "os.path.relpath",
@@ -213,7 +408,6 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
     "target": "steps.shared.outputs.target",
     "zig_version": "steps.shared.outputs.zig_version",
     "zigbuild_version": "steps.shared.outputs.zigbuild_version",
-    "zigbuild_x86_64_unknown_linux_gnu_sha256": "steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256",
     "rust_verification_owner": "steps.shared.outputs.rust_verification_owner",
     "managed_target_dir": "steps.target_dir.outputs.managed_target_dir",
     "managed_target_dir_relative": "steps.target_dir.outputs.managed_target_dir_relative",
@@ -241,12 +435,12 @@ TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"
 TEST_ARCHIVE_EXTRACT_ROOT_COMMAND = 'archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"'
 TEST_ARCHIVE_EXTRACT_ROOT_OUTPUT = 'echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"'
 TEST_ARCHIVE_KEY_INPUTS = (
-    "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
     "'Cargo.lock'",
     "'Cargo.toml'",
     "'rust-toolchain.toml'",
     "'.cargo/config.toml'",
     "'.config/nextest.toml'",
+    "'.config/**'",
     "'ci/rust-verification.toml'",
     "'scripts/rust_verification.py'",
     "'scripts/command_understanding.py'",
@@ -257,8 +451,24 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'benches/**'",
     "'examples/**'",
     "'crates/**'",
+    "'.github/**'",
+    "'scripts/**'",
     "'specs/**/*.md'",
+    "'specs/023-nt-order-intent-layer/**'",
+    "'specs/023-nt-research-analytics-platform/reference/**'",
+    "'config/**'",
+    "'contracts/**'",
+    "'docs/bolt-v3/**'",
 )
+TEST_ARCHIVE_KEY_PREFIX = "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
+TEST_ARCHIVE_FINGERPRINT_PREFIX = "nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
+TEST_ARCHIVE_FINGERPRINT_PATH = ".nextest-archive-fingerprint/cache-key.txt"
+TEST_ARCHIVE_FINGERPRINT_OUTPUT = "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+TEST_ARCHIVE_FINGERPRINT_JOB_OUTPUT = (
+    "nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}"
+)
+TEST_ARCHIVE_FINGERPRINT_STEP_ID = "id: nextest-fingerprint"
+TEST_ARCHIVE_FINGERPRINT_OUTPUT_WRITE = 'echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"'
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
     "'.github/actions/setup-environment/action.yml'",
@@ -270,8 +480,8 @@ TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae"
-TEST_ARCHIVE_UPLOAD_ACTION = "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+UPLOAD_ARTIFACT_SHA_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*([\"']?)actions/upload-artifact@[0-9a-fA-F]{40}\1\s*$")
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
 SHARED_REGISTRY_CACHE_KEY = "cargo-registry-git-v1"
 SHARED_REGISTRY_SAVE_IF = "${{ github.job == 'test-archive' }}"
@@ -320,12 +530,14 @@ TAIKI_INSTALL_ACTION_RE = re.compile(
 )
 TAIKI_INSTALL_ACTION_MENTION_RE = re.compile(r"\btaiki-e/install-action@")
 TAIKI_INSTALL_ACTION_USES_LINE_RE = re.compile(r"^\s*(?:-\s*)?uses\s*:")
-TAIKI_INSTALL_ACTION_BARE_USES_KEY_RE = re.compile(r"^\s*(?:-\s*)?uses\s*:\s*$")
+TAIKI_INSTALL_ACTION_BARE_USES_KEY_RE = re.compile(r"^\s*(?:-\s*)?uses\s*:\s*(?:[>|][0-9+-]*)?\s*$")
+SETUP_JUST_TOOL = "just@${{ inputs.just-version }}"
 CI_INSTALL_ACTION_TOOLS = {
     "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "test-archive": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
     "test-shards": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
+    "build": ("cargo-zigbuild", "steps.setup.outputs.zigbuild_version"),
 }
 CI_SOURCE_BUILD_TOOLS = ("cargo-deny", "cargo-nextest", "cargo-zigbuild")
 CI_INSTALL_ACTION_COMMANDS = {
@@ -333,33 +545,11 @@ CI_INSTALL_ACTION_COMMANDS = {
     "advisories": "just deny-advisories",
     "test-archive": 'just test-archive "$NEXTEST_ARCHIVE_PATH"',
     "test-shards": TEST_PARTITION_COMMAND,
+    "build": "just build",
 }
 # Static-only option consumption keeps this local constant intentionally; the
 # shared scanner has broader Cargo CLI coverage while preserving scan parity.
 CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "--quiet", "-q", "--verbose", "-v"}
-ZIGBUILD_PREBUILT_LITERALS = (
-    'version="${{ steps.setup.outputs.zigbuild_version }}"',
-    'archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"',
-    "https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}",
-    "curl \\",
-    "--retry 10",
-    "--retry-delay 3",
-    "--retry-all-errors",
-    "--fail",
-    "--location",
-    "--show-error",
-    "--silent",
-    '--output "$archive"',
-    '"$base_url/$archive"',
-    'expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"',
-    'actual="$(sha256sum "$archive" | awk \'{print $1}\')"',
-    'test "$actual" = "$expected"',
-    'tar --extract --xz --file "$archive"',
-    'mkdir -p "$HOME/.cargo/bin"',
-    'mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"',
-    'chmod +x "$HOME/.cargo/bin/cargo-zigbuild"',
-    'test -x "$HOME/.cargo/bin/cargo-zigbuild"',
-)
 
 
 def strip_comment(line: str) -> str:
@@ -377,7 +567,7 @@ def strip_comment(line: str) -> str:
         if char in {"'", '"'}:
             quote = char
             continue
-        if char == "#":
+        if char == "#" and (index == 0 or line[index - 1].isspace()):
             return line[:index].rstrip()
     return line.rstrip()
 
@@ -495,12 +685,174 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
     errors: list[str] = []
     if not PR_CONCURRENCY_EVENT_RE.search(group_text):
         errors.append("concurrency group must branch on pull_request event")
-    if not PR_CONCURRENCY_PULL_REQUEST_BRANCH_RE.search(group_text):
-        errors.append("concurrency group must key pull_request runs by PR number")
+    if "needs." in group_text or "needs." in cancel_text:
+        errors.append("workflow-level concurrency must not reference job outputs")
+    if "pr-{0}-deferred" not in group_text or "pr-{0}-full" not in group_text:
+        errors.append("concurrency group must split deferred PR runs from full CI runs")
+    if "workflow_dispatch" not in group_text or "full" not in group_text:
+        errors.append("workflow_dispatch full CI runs must use a full-CI concurrency group")
     if not PR_CONCURRENCY_NON_PR_FALLBACK_RE.search(group_text):
         errors.append("concurrency group must keep non-PR runs isolated by ref and SHA")
-    if not any(line in cancel_text for line in PR_CONCURRENCY_CANCEL_LINES):
-        errors.append("cancel-in-progress must be limited to pull_request events")
+    cancel_has_pull_request = (
+        "github.event_name == 'pull_request'" in cancel_text
+        or 'github.event_name == "pull_request"' in cancel_text
+    )
+    cancel_has_dispatch = (
+        "github.event_name == 'workflow_dispatch'" in cancel_text
+        or 'github.event_name == "workflow_dispatch"' in cancel_text
+    )
+    cancel_is_draft_only = (
+        "github.event.pull_request.draft" in cancel_text
+        or "converted_to_draft" in cancel_text
+        or "contains(fromJSON" in cancel_text
+    )
+    if not cancel_has_pull_request or not cancel_has_dispatch or cancel_is_draft_only:
+        errors.append(PR_CONCURRENCY_CANCEL_SCOPE_ERROR)
+    if (
+        "github.event_name == 'push'" in cancel_text
+        or 'github.event_name == "push"' in cancel_text
+        or "refs/tags" in cancel_text
+        or "startsWith(github.ref" in cancel_text
+    ):
+        errors.append("cancel-in-progress must not cancel push, tag, or deploy flows")
+    return errors
+
+
+def evaluate_ci_policy(
+    policy: dict[str, object],
+    *,
+    event_name: str,
+    action: str,
+    pull_request_draft: bool,
+    ref: str,
+) -> CiPolicyResult:
+    override = policy.get("override")
+    force_full_ci = isinstance(override, dict) and override.get("force_full_ci") is True
+
+    if event_name == "push" and ref.startswith("refs/tags/v"):
+        path = str(policy["tag"])
+        reason = "tag"
+    elif event_name == "workflow_dispatch":
+        path = str(policy["workflow_dispatch"])
+        reason = "workflow_dispatch"
+    elif event_name == "push" and ref == "refs/heads/main":
+        path = str(policy["main_push"])
+        reason = "main_push"
+    elif event_name == "pull_request":
+        if force_full_ci:
+            path = "full"
+            reason = "force_full_ci"
+        elif action == "ready_for_review":
+            path = str(policy["ready_for_review"])
+            reason = "ready_for_review"
+        elif not pull_request_draft:
+            path = str(policy["ready_pr"])
+            reason = "ready_pr"
+        elif action == "opened":
+            path = str(policy["draft_pr_opened"])
+            reason = "draft_pr_opened"
+        elif action == "synchronize":
+            path = str(policy["draft_pr_synchronize"])
+            reason = "draft_pr_synchronize"
+        elif action == "reopened":
+            path = str(policy["draft_pr_reopened"])
+            reason = "draft_pr_reopened"
+        elif action == "converted_to_draft":
+            path = str(policy["converted_to_draft"])
+            reason = "converted_to_draft"
+        else:
+            path = str(policy["unknown_event"])
+            reason = "unknown_event"
+    else:
+        path = str(policy["unknown_event"])
+        reason = "unknown_event"
+
+    if path not in CI_PROVENANCE_POLICY_VALUES:
+        raise ValueError(f"resolved invalid ci_policy_path {path!r}")
+    return CiPolicyResult(
+        ci_policy_path=path,
+        full_ci_required=path == "full",
+        full_ci_deferred=path == "defer",
+        reason=reason,
+    )
+
+
+def workflow_trigger_block(workflow_text: str, trigger: str) -> list[str]:
+    on_block = top_level_block(workflow_text, "on")
+    trigger_line = f"  {trigger}:"
+    for index, line in enumerate(on_block):
+        if line.strip() != trigger_line.strip():
+            continue
+        block: list[str] = []
+        for child in on_block[index + 1 :]:
+            if re.match(r"^  [^ \t:#][^:#]*:", child):
+                break
+            block.append(child)
+        return block
+    return []
+
+
+def parse_inline_yaml_list(value: str) -> set[str]:
+    stripped = value.strip()
+    if not (stripped.startswith("[") and stripped.endswith("]")):
+        return set()
+    return {item.strip().strip("'\"") for item in stripped[1:-1].split(",") if item.strip()}
+
+
+def workflow_pull_request_type_errors(workflow_text: str) -> list[str]:
+    block = workflow_trigger_block(workflow_text, "pull_request")
+    types: set[str] = set()
+    for index, line in enumerate(block):
+        stripped = line.strip()
+        if stripped.startswith("types:"):
+            after = stripped.split(":", 1)[1].strip()
+            types.update(parse_inline_yaml_list(after))
+            for child in block[index + 1 :]:
+                child_stripped = child.strip()
+                if not child_stripped.startswith("- "):
+                    break
+                types.add(child_stripped.removeprefix("- ").strip().strip("'\""))
+    errors: list[str] = []
+    for required_type in ("ready_for_review", "converted_to_draft"):
+        if required_type not in types:
+            errors.append(f"pull_request types must include {required_type}")
+    return errors
+
+
+def workflow_dispatch_input_errors(workflow_text: str, input_name: str) -> list[str]:
+    block = workflow_trigger_block(workflow_text, "workflow_dispatch")
+    if not block and "workflow_dispatch:" not in "\n".join(top_level_block(workflow_text, "on")):
+        return ["workflow must define workflow_dispatch"]
+    block_text = "\n".join(block)
+    if "inputs:" not in block_text or not re.search(rf"^\s+{re.escape(input_name)}:\s*$", block_text, re.MULTILINE):
+        return ["workflow_dispatch must define configured full CI input"]
+    return []
+
+
+def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
+    text = uncommented_text(job_lines)
+    errors: list[str] = []
+    for output in (
+        "ci_policy_path",
+        "full_ci_required",
+        "full_ci_deferred",
+        "reason",
+        "ignore_emit_failure",
+    ):
+        if f"{output}: ${{{{ steps.policy.outputs.{output} }}}}" not in text:
+            errors.append(f"ci-policy must expose {output}")
+    if 'tee -a "$GITHUB_OUTPUT"' not in text:
+        errors.append("ci-policy must write script output to GITHUB_OUTPUT")
+    if "python3 scripts/ci_provenance.py ci-policy" not in text:
+        errors.append("ci-policy must run ci_provenance.py ci-policy")
+    if '--event-name "${{ github.event_name }}"' not in text:
+        errors.append("ci-policy must pass github.event_name")
+    if '--event-action "${{ github.event.action || \'\' }}"' not in text:
+        errors.append("ci-policy must pass github.event.action")
+    if '--pull-request-draft "${{ github.event.pull_request.draft || false }}"' not in text:
+        errors.append("ci-policy must pass pull_request draft state")
+    if '--ref "${{ github.ref }}"' not in text:
+        errors.append("ci-policy must pass github.ref")
     return errors
 
 
@@ -630,8 +982,20 @@ def setup_action_blocks(job_lines: list[str]) -> list[list[str]]:
     return [block for block in step_blocks(job_lines) if any("./.github/actions/setup-environment" in line for line in block)]
 
 
+def line_uses_action(line: str, action: str) -> bool:
+    match = re.match(r"^\s*(?:-\s*)?uses:\s*(['\"]?)(?P<value>[^'\"\s#]+)", strip_comment(line))
+    return match is not None and match.group("value").startswith(action)
+
+
 def action_blocks(job_lines: list[str], action: str) -> list[list[str]]:
-    return [block for block in step_blocks(job_lines) if any(action in strip_comment(line) for line in block)]
+    return [block for block in step_blocks(job_lines) if any(line_uses_action(line, action) for line in block)]
+
+
+def upload_artifact_pin_errors(job_lines: list[str]) -> list[str]:
+    for block in action_blocks(job_lines, "actions/upload-artifact@"):
+        if not any(UPLOAD_ARTIFACT_SHA_RE.match(strip_comment(line)) for line in block):
+            return ["actions/upload-artifact must be pinned to a 40-character SHA"]
+    return []
 
 
 def rust_cache_blocks(job_lines: list[str]) -> list[list[str]]:
@@ -712,6 +1076,18 @@ def block_has_input(block: list[str], name: str, value: str | None = None) -> bo
     return False
 
 
+def block_has_scalar(block: list[str], name: str, value: str) -> bool:
+    expected = f"{name}: {value}"
+    return any(strip_comment(line).strip() == expected for line in block)
+
+
+def block_input_value(block: list[str], name: str) -> str | None:
+    for item_name, item_value in block_input_items(block):
+        if item_name == name:
+            return unquote_yaml_scalar(item_value)
+    return None
+
+
 def job_has_setup_input(job_lines: list[str], name: str, value: str | None = None) -> bool:
     return any(block_has_input(block, name, value) for block in setup_action_blocks(job_lines))
 
@@ -732,8 +1108,192 @@ def uncommented_text(lines: list[str]) -> str:
     return "\n".join(strip_comment(line) for line in lines)
 
 
+def normalize_script_text(text: str) -> str:
+    text = re.sub(r"\\\s*\n\s*", " ", text)
+    lines = [line.rstrip() for line in text.strip("\n").splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    indents = [len(line) - len(line.lstrip(" ")) for line in lines if line.strip()]
+    margin = min(indents) if indents else 0
+    normalized_lines = [line[margin:] if line.strip() else "" for line in lines]
+    return "\n".join(re.sub(r"(?<=\S) {2,}(?=\S)", " ", line) for line in normalized_lines)
+
+
+def block_run_body(block: list[str]) -> str:
+    for index, line in enumerate(block):
+        clean = strip_comment(line).rstrip()
+        match = YAML_RUN_LINE_RE.match(clean)
+        if match is None:
+            continue
+        scalar = match.group(2).strip()
+        if not scalar.startswith(("|", ">")):
+            return unquote_yaml_scalar(scalar)
+        run_indent = len(match.group(1))
+        body_lines: list[str] = []
+        for nested in block[index + 1 :]:
+            nested_clean = strip_comment(nested).rstrip()
+            if not nested_clean.strip():
+                body_lines.append("")
+                continue
+            indent = len(nested_clean) - len(nested_clean.lstrip(" "))
+            if indent <= run_indent:
+                break
+            body_lines.append(nested_clean)
+        return normalize_script_text("\n".join(body_lines))
+    return ""
+
+
+def block_run_body_matches(block: list[str], expected: str) -> bool:
+    return normalize_script_text(block_run_body(block)) == normalize_script_text(expected)
+
+
+def block_step_property_indent(block: list[str]) -> int | None:
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        match = re.match(
+            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?{YAML_KEY_PATTERN}\s*:\s*.*$",
+            clean,
+        )
+        if match is None:
+            return None
+        return len(match.group(1)) + 2
+    return None
+
+
+def block_top_level_items(block: list[str]) -> dict[str, str] | None:
+    property_indent = block_step_property_indent(block)
+    if property_indent is None:
+        return None
+    step_item_indent = property_indent - 2
+    items: dict[str, str] = {}
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        step_match = re.match(
+            rf"^(\s*)-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$",
+            clean,
+        )
+        if step_match is not None:
+            if len(step_match.group(1)) != step_item_indent:
+                continue
+            key = unquote_yaml_scalar(step_match.group(2))
+            value = step_match.group(3)
+        else:
+            indent = len(clean) - len(clean.lstrip(" "))
+            if indent != property_indent:
+                continue
+            item_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+            if item_match is None:
+                return None
+            key = unquote_yaml_scalar(item_match.group(1))
+            value = item_match.group(2)
+        if key in items:
+            return None
+        items[key] = unquote_yaml_scalar(value)
+    return items
+
+
+def block_nested_mapping_items(block: list[str], parent_key: str) -> dict[str, str] | None:
+    property_indent = block_step_property_indent(block)
+    if property_indent is None:
+        return None
+    parent_indent: int | None = None
+    item_indent: int | None = None
+    items: dict[str, str] = {}
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        if parent_indent is None:
+            parent_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+            if (
+                parent_match is not None
+                and indent == property_indent
+                and unquote_yaml_scalar(parent_match.group(1)) == parent_key
+                and unquote_yaml_scalar(parent_match.group(2)) == ""
+            ):
+                parent_indent = indent
+            continue
+        if indent <= parent_indent:
+            break
+        if item_indent is None:
+            item_indent = indent
+        if indent != item_indent:
+            continue
+        item_match = re.match(rf"^\s*({YAML_KEY_PATTERN})\s*:\s*(.*?)\s*$", clean)
+        if item_match is None:
+            return None
+        key = unquote_yaml_scalar(item_match.group(1))
+        if key in items:
+            return None
+        items[key] = unquote_yaml_scalar(item_match.group(2))
+    return items
+
+
+def block_has_canonical_step_envelope(
+    block: list[str],
+    allowed_keys: frozenset[str],
+    required_scalars: dict[str, str],
+    nested_mappings: dict[str, dict[str, str]] | None = None,
+) -> bool:
+    items = block_top_level_items(block)
+    if items is None:
+        return False
+    actual_keys = set(items)
+    if actual_keys - set(allowed_keys):
+        return False
+    if not set(required_scalars).issubset(actual_keys):
+        return False
+    for key, expected in required_scalars.items():
+        if items.get(key) != expected:
+            return False
+    for parent_key, expected_items in (nested_mappings or {}).items():
+        actual_items = block_nested_mapping_items(block, parent_key)
+        if actual_items != expected_items:
+            return False
+    return True
+
+
 def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
     return any(pattern.match(strip_comment(line)) for line in lines)
+
+
+def job_if_value(job_lines: list[str]) -> str:
+    for index, line in enumerate(job_lines):
+        clean = strip_comment(line).rstrip()
+        if clean.strip() == "steps:":
+            return ""
+        match = re.match(r"^    if:\s*(?P<value>.*?)\s*$", clean)
+        if match is not None:
+            value = match.group("value")
+            child_values: list[str] = []
+            for child in job_lines[index + 1 :]:
+                child_clean = strip_comment(child).rstrip()
+                if not child_clean.strip():
+                    continue
+                indent = len(child_clean) - len(child_clean.lstrip(" "))
+                if indent <= 4:
+                    break
+                child_values.append(child_clean.strip())
+            if child_values:
+                return "\n".join([value, *child_values])
+            return value
+    return ""
+
+
+def step_has_id(block: list[str], step_id: str) -> bool:
+    return any(re.match(rf"^\s+id:\s*{re.escape(step_id)}\s*$", strip_comment(line)) for line in block)
+
+
+def unique_step_with_id(job_lines: list[str], step_id: str) -> list[str] | None:
+    matches = [block for block in step_blocks(job_lines) if step_has_id(block, step_id)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def has_run_command(lines: list[str], command: str) -> bool:
@@ -795,6 +1355,121 @@ def block_key_value_has_prefix(block: list[str], prefix: str) -> bool:
         if name == "key" and prefix in value:
             return True
     return False
+
+
+def block_key_value_contains_all(block: list[str], fragments: tuple[str, ...]) -> bool:
+    value = block_input_value(block, "key")
+    if value is None:
+        return False
+    return all(fragment in value for fragment in fragments)
+
+
+def normalized_hash_files_args(text: str) -> str | None:
+    marker = "hashFiles("
+    start = text.find(marker)
+    if start == -1:
+        return None
+    args_start = start + len(marker)
+    args_end = text.find(")", args_start)
+    if args_end == -1:
+        return None
+    args = text[args_start:args_end]
+    return ",".join(part.strip() for part in args.split(",") if part.strip())
+
+
+def nextest_archive_key_identity(text: str) -> str | None:
+    key_start = text.find("nextest-archive-v")
+    if key_start == -1:
+        key_start = text.find("nextest-archive-fingerprint-v")
+    if key_start == -1:
+        return None
+    marker = "hashFiles("
+    hash_start = text.find(marker, key_start)
+    if hash_start == -1:
+        return None
+    prefix = text[key_start:hash_start]
+    if prefix.startswith("nextest-archive-fingerprint-"):
+        prefix = "nextest-archive-" + prefix[len("nextest-archive-fingerprint-") :]
+    args = normalized_hash_files_args(text[hash_start:])
+    if args is None:
+        return None
+    return f"{prefix}{marker}{args})"
+
+
+def test_archive_fingerprint_errors(job_lines: list[str]) -> list[str]:
+    blocks = step_blocks(job_lines)
+    job_text = uncommented_text(job_lines)
+    cache_blocks = [
+        block
+        for block in (
+            action_blocks(job_lines, "actions/cache/restore@")
+            + action_blocks(job_lines, "actions/cache/save@")
+        )
+        if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
+    ]
+    run_block_indices = [
+        index
+        for index, block in enumerate(blocks)
+        if TEST_ARCHIVE_FINGERPRINT_PATH in uncommented_text(block)
+        and TEST_ARCHIVE_KEY_PREFIX in uncommented_text(block)
+    ]
+    run_blocks = [blocks[index] for index in run_block_indices]
+    upload_block_indices = [
+        index
+        for index, block in enumerate(blocks)
+        if "actions/upload-artifact@" in uncommented_text(block)
+        and block_has_input(block, "path", TEST_ARCHIVE_FINGERPRINT_PATH)
+    ]
+    upload_blocks = [
+        blocks[index]
+        for index in upload_block_indices
+    ]
+    upload_names = [block_input_value(block, "name") or "" for block in upload_blocks]
+
+    if not run_blocks or not upload_blocks:
+        return ["test-archive must publish nextest archive fingerprint"]
+    if not any(TEST_ARCHIVE_FINGERPRINT_PREFIX in name for name in upload_names):
+        return ["test-archive must publish nextest archive fingerprint"]
+
+    run_text = "\n".join(uncommented_text(block) for block in run_blocks)
+    names_text = "\n".join(upload_names)
+    if (
+        TEST_ARCHIVE_FINGERPRINT_JOB_OUTPUT not in job_text
+        or TEST_ARCHIVE_FINGERPRINT_STEP_ID not in run_text
+        or TEST_ARCHIVE_FINGERPRINT_OUTPUT_WRITE not in run_text
+    ):
+        return ["test-archive must expose secure nextest fingerprint output"]
+    if run_text.count("nextest_fingerprint=") != 1 or run_text.count("$GITHUB_OUTPUT") != 1:
+        return ["test-archive must expose exactly one secure nextest fingerprint output"]
+    repo_controlled_indices = [
+        index
+        for index, block in enumerate(blocks)
+        if "./.github/actions/setup-environment" in uncommented_text(block)
+        or 'just test-archive "$NEXTEST_ARCHIVE_PATH"' in uncommented_text(block)
+    ]
+    if repo_controlled_indices and (
+        min(run_block_indices) >= min(repo_controlled_indices)
+        or min(upload_block_indices) >= min(repo_controlled_indices)
+    ):
+        return ["test-archive must publish nextest fingerprint before repo-controlled steps"]
+    if not all(fragment in run_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
+        return ["test-archive fingerprint must include Rust and test graph inputs"]
+    if not all(fragment in names_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
+        return ["test-archive fingerprint must include Rust and test graph inputs"]
+
+    key_identities = [
+        identity
+        for identity in (
+            [nextest_archive_key_identity(block_input_value(block, "key") or "") for block in cache_blocks]
+            + [nextest_archive_key_identity(uncommented_text(block)) for block in run_blocks]
+            + [nextest_archive_key_identity(name) for name in upload_names]
+        )
+        if identity is not None
+    ]
+    expected_key_count = len(cache_blocks) + len(run_blocks) + len(upload_names)
+    if len(key_identities) != expected_key_count or len(set(key_identities)) != 1:
+        return ["test-archive cache and fingerprint keys must match"]
+    return []
 
 
 def block_declares_restore_keys_prefix(block: list[str], prefix: str) -> bool:
@@ -887,31 +1562,17 @@ def install_action_tool_step(job_lines: list[str], tool: str, output: str) -> tu
     return None
 
 
+def named_step_block(lines: list[str], step_name: str) -> list[str] | None:
+    name_re = re.compile(rf"^\s*(?:-\s*)?name:\s*{re.escape(step_name)}\s*$")
+    for block in step_blocks(lines):
+        if any(name_re.match(strip_comment(line)) for line in block):
+            return block
+    return None
+
+
 def first_step_running_command(job_lines: list[str], command: str) -> int | None:
     for index, block in enumerate(step_blocks(job_lines)):
         if block_runs_command(block, command):
-            return index
-    return None
-
-
-def first_step_containing_literals(job_lines: list[str], literals: tuple[str, ...]) -> int | None:
-    for index, block in enumerate(step_blocks(job_lines)):
-        text = uncommented_text(block)
-        if all(literal in text for literal in literals):
-            return index
-    return None
-
-
-def first_step_containing_literals_in_order(job_lines: list[str], literals: tuple[str, ...]) -> int | None:
-    for index, block in enumerate(step_blocks(job_lines)):
-        text = uncommented_text(block)
-        position = 0
-        for literal in literals:
-            found = text.find(literal, position)
-            if found < 0:
-                break
-            position = found + len(literal)
-        else:
             return index
     return None
 
@@ -985,9 +1646,11 @@ SUDO_OPTIONS_WITHOUT_ARGUMENT = {
     "--version",
 }
 ENV_OPTIONS_WITH_ARGUMENT = {
+    "-a",
     "-S",
     "-u",
     "-C",
+    "--argv0",
     "--split-string",
     "--unset",
     "--chdir",
@@ -1001,6 +1664,45 @@ ENV_OPTIONS_WITHOUT_ARGUMENT = {
     "--ignore-environment",
     "--null",
 }
+SU_SG_OPTIONS_WITH_ARGUMENT = {
+    "-g",
+    "-G",
+    "-s",
+    "-w",
+    "--group",
+    "--shell",
+    "--supp-group",
+    "--whitelist-environment",
+}
+SU_SG_OPTIONS_WITHOUT_ARGUMENT = {
+    "-l",
+    "-m",
+    "-M",
+    "-p",
+    "-P",
+    "--fast",
+    "--login",
+    "--preserve-environment",
+    "--pty",
+}
+SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS = {"m", "M", "p", "P", "l"}
+FLOCK_OPTIONS_WITH_ARGUMENT = {"-E", "-w", "--conflict-exit-code", "--wait", "--timeout"}
+FLOCK_OPTIONS_WITHOUT_ARGUMENT = {
+    "-F",
+    "-n",
+    "-o",
+    "-s",
+    "-u",
+    "-x",
+    "--close",
+    "--exclusive",
+    "--no-fork",
+    "--nonblock",
+    "--shared",
+    "--unlock",
+    "--verbose",
+}
+FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS = {"s", "x", "n", "u", "o", "F"}
 TIME_OPTIONS_WITH_ARGUMENT = {"-f", "-o", "--format", "--output"}
 TIME_OPTIONS_WITHOUT_ARGUMENT = {"-a", "-p", "-v", "--append", "--portability", "--verbose"}
 SHELL_PUNCTUATION_CHARS = ";&|(){}!<>"
@@ -1060,6 +1762,7 @@ CARGO_PROCESS_SUBCOMMANDS = {
     "run",
     "rustc",
     "test",
+    "zigbuild",
 }
 
 
@@ -1647,13 +2350,54 @@ def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
     return tools
 
 
+def python_rust_verification_script_index(tokens: list[str]) -> int | None:
+    if not tokens or not pathlib.Path(tokens[0]).name.startswith("python"):
+        return None
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-B", "-E", "-I", "-O", "-OO", "-S", "-s", "-u"}:
+            index += 1
+            continue
+        if token in {"-W", "-X"} and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("-W", "-X")) and token not in {"-W", "-X"}:
+            index += 1
+            continue
+        break
+    if index < len(tokens) and pathlib.Path(tokens[index]).name == "rust_verification.py":
+        return index
+    return None
+
+
+def managed_rust_verification_command_tokens(tokens: list[str], *, depth: int = 0) -> list[str] | None:
+    if depth > 6:
+        return None
+    tokens = strip_shell_redirections(tokens)
+    if not tokens:
+        return None
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index:
+        return managed_rust_verification_command_tokens(tokens[assignment_index:], depth=depth + 1)
+    executable = pathlib.Path(tokens[0]).name
+    if executable == "env":
+        inner = env_inner_tokens(tokens)
+        return managed_rust_verification_command_tokens(inner, depth=depth + 1) if inner is not None else None
+    if executable in RECURSIVE_WRAPPER_EXECUTABLES:
+        inner = wrapper_inner_tokens(tokens)
+        return managed_rust_verification_command_tokens(inner, depth=depth + 1) if inner is not None else None
+    script_index = python_rust_verification_script_index(tokens)
+    if script_index is None or script_index + 1 >= len(tokens):
+        return None
+    command = tokens[script_index + 1]
+    if command not in {"cargo", "run"}:
+        return None
+    return [tokens[0], tokens[script_index], *tokens[script_index + 1 :]]
+
+
 def managed_rust_verification_tokens(tokens: list[str]) -> bool:
-    return (
-        len(tokens) >= 3
-        and pathlib.Path(tokens[0]).name.startswith("python")
-        and pathlib.Path(tokens[1]).name == "rust_verification.py"
-        and tokens[2] in {"cargo", "run"}
-    )
+    return managed_rust_verification_command_tokens(tokens) is not None
 
 
 def consume_rust_verification_repo_option(tokens: list[str], index: int) -> int:
@@ -1668,10 +2412,11 @@ def consume_rust_verification_repo_option(tokens: list[str], index: int) -> int:
 
 
 def managed_rust_verification_cargo_args(tokens: list[str]) -> list[str] | None:
-    if not managed_rust_verification_tokens(tokens):
+    normalized_tokens = managed_rust_verification_command_tokens(tokens)
+    if normalized_tokens is None:
         return None
-    command = tokens[2]
-    tail = tokens[3:]
+    command = normalized_tokens[2]
+    tail = normalized_tokens[3:]
     index = 0
     while index < len(tail):
         if tail[index] == "--":
@@ -1917,6 +2662,66 @@ def chroot_inner_tokens(tokens: list[str]) -> list[str] | None:
     return tokens[index + 1 :] if index < len(tokens) else []
 
 
+def short_cluster_consumes_option_argument(
+    tokens: list[str],
+    index: int,
+    argument_flags: set[str],
+    no_argument_flags: set[str],
+) -> int | None:
+    token = tokens[index]
+    if not token.startswith("-") or token.startswith("--"):
+        return None
+    offset = 1
+    while offset < len(token):
+        flag = token[offset]
+        if flag in no_argument_flags:
+            offset += 1
+            continue
+        if flag in argument_flags:
+            return index + 1 if offset + 1 < len(token) or index + 1 >= len(tokens) else index + 2
+        return None
+    return index + 1
+
+
+def su_sg_command_option_tokens(tokens: list[str]) -> list[str] | None:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in SU_SG_OPTIONS_WITH_ARGUMENT and index + 1 < len(tokens):
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in SU_SG_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        if token in SU_SG_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        if token in {"-c", "--command"} and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        if token.startswith("--command="):
+            return command_tokens(token.split("=", 1)[1])
+        if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+            return command_tokens(token[2:])
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            prefix, suffix = token[1:].split("c", 1)
+            if set(prefix) <= SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS:
+                if suffix:
+                    return command_tokens(suffix)
+                if index + 1 < len(tokens):
+                    return command_tokens(tokens[index + 1])
+        next_index = short_cluster_consumes_option_argument(
+            tokens,
+            index,
+            {"g", "G", "s", "w"},
+            SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS,
+        )
+        if next_index is not None:
+            index = next_index
+            continue
+        index += 1
+    return None
+
+
 def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
     executable = pathlib.Path(tokens[0]).name if tokens else ""
     if executable == "command":
@@ -2081,7 +2886,7 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
                 index += 1
                 continue
             break
-        if index < len(tokens):
+        if index < len(tokens) and re.fullmatch(r"-?\d+", tokens[index]):
             index += 1
         return tokens[index:]
     if executable == "xargs":
@@ -2120,30 +2925,69 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
             return tokens[index:]
         return []
     if executable in {"su", "sg"}:
-        index = 1
-        while index < len(tokens):
-            token = tokens[index]
-            if token in {"-c", "--command"} and index + 1 < len(tokens):
-                return command_tokens(tokens[index + 1])
-            index += 1
-        return None
+        return su_sg_command_option_tokens(tokens)
     if executable == "runuser":
         index = 1
         while index < len(tokens):
             token = tokens[index]
             if token == "--":
                 return tokens[index + 1 :]
-            if token in {"-c", "--command"} and index + 1 < len(tokens):
-                return command_tokens(tokens[index + 1])
             if token in {"-u", "--user", "-g", "--group", "-G", "--supp-group", "-s", "--shell"} and index + 1 < len(tokens):
                 index += 2
                 continue
             if token.startswith(("--user=", "--group=", "--supp-group=", "--shell=")):
                 index += 1
                 continue
+            if token in {"-c", "--command"} and index + 1 < len(tokens):
+                return command_tokens(tokens[index + 1])
+            if token.startswith("--command="):
+                return command_tokens(token.split("=", 1)[1])
+            if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+                return command_tokens(token[2:])
+            if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+                prefix, suffix = token[1:].split("c", 1)
+                if set(prefix) <= {"m", "M", "p", "P", "l"}:
+                    if suffix:
+                        return command_tokens(suffix)
+                    if index + 1 < len(tokens):
+                        return command_tokens(tokens[index + 1])
+            next_index = short_cluster_consumes_option_argument(
+                tokens,
+                index,
+                {"G", "g", "s", "u"},
+                SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS,
+            )
+            if next_index is not None:
+                index = next_index
+                continue
             if token.startswith("-"):
                 index += 1
                 continue
+            command_index = index + 1
+            while command_index < len(tokens):
+                candidate = tokens[command_index]
+                if candidate in {"-u", "--user", "-g", "--group", "-G", "--supp-group", "-s", "--shell"} and command_index + 1 < len(tokens):
+                    command_index += 2
+                    continue
+                if candidate.startswith(("--user=", "--group=", "--supp-group=", "--shell=")):
+                    command_index += 1
+                    continue
+                if candidate in {"-c", "--command"} and command_index + 1 < len(tokens):
+                    return command_tokens(tokens[command_index + 1])
+                if candidate.startswith("--command="):
+                    return command_tokens(candidate.split("=", 1)[1])
+                if candidate.startswith("-c") and not candidate.startswith("--") and len(candidate) > 2:
+                    return command_tokens(candidate[2:])
+                next_command_index = short_cluster_consumes_option_argument(
+                    tokens,
+                    command_index,
+                    {"G", "g", "s", "u"},
+                    SU_SG_COMMAND_CLUSTER_PREFIX_FLAGS,
+                )
+                if next_command_index is not None:
+                    command_index = next_command_index
+                    continue
+                command_index += 1
             return tokens[index:]
         return None
     starters = {
@@ -2286,9 +3130,9 @@ def env_command_prefix_index(tokens: list[str], index: int) -> int | None:
 
 def shell_redirection_next_index(tokens: list[str], index: int) -> int | None:
     token = tokens[index]
-    if token in {">", ">>", "<", "<<", "<>", ">|"}:
+    if token in SHELL_REDIRECTION_OPERATORS:
         return min(index + 2, len(tokens))
-    if re.match(r"^\d?(?:>>?|<<?|<>|>\|).+", token):
+    if re.match(r"^(?:\d?(?:>>?|<<?|<>|>\||>&|<&)|&>>?|<<<).+", token):
         return index + 1
     return None
 
@@ -2374,11 +3218,32 @@ def flock_inner_tokens(tokens: list[str]) -> list[str] | None:
             return command_tokens(tokens[index + 1])
         if token.startswith("--command="):
             return command_tokens(token.split("=", 1)[1])
-        if token in ("-E", "--conflict-exit-code", "-w", "--wait", "--timeout") and index + 1 < len(tokens):
+        if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+            return command_tokens(token[2:])
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            prefix, suffix = token[1:].split("c", 1)
+            if set(prefix) <= FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS:
+                if suffix:
+                    return command_tokens(suffix)
+                if index + 1 < len(tokens):
+                    return command_tokens(tokens[index + 1])
+        if token in FLOCK_OPTIONS_WITH_ARGUMENT and index + 1 < len(tokens):
             index += 2
             continue
         if token.startswith(("--conflict-exit-code=", "--wait=", "--timeout=")):
             index += 1
+            continue
+        if token in FLOCK_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        next_index = short_cluster_consumes_option_argument(
+            tokens,
+            index,
+            {"E", "w"},
+            FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS,
+        )
+        if next_index is not None:
+            index = next_index
             continue
         if token.startswith("-"):
             index += 1
@@ -2399,8 +3264,33 @@ def flock_command_option_tokens(tokens: list[str]) -> list[str] | None:
             return command_tokens(tokens[index + 1])
         if token.startswith("--command="):
             return command_tokens(token.split("=", 1)[1])
-        if token.startswith("-") and not token.startswith("--") and "c" in token[1:] and index + 1 < len(tokens):
-            return command_tokens(tokens[index + 1])
+        if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+            return command_tokens(token[2:])
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            prefix, suffix = token[1:].split("c", 1)
+            if set(prefix) <= FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS:
+                if suffix:
+                    return command_tokens(suffix)
+                if index + 1 < len(tokens):
+                    return command_tokens(tokens[index + 1])
+        if token in FLOCK_OPTIONS_WITH_ARGUMENT and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--conflict-exit-code=", "--wait=", "--timeout=")):
+            index += 1
+            continue
+        if token in FLOCK_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        next_index = short_cluster_consumes_option_argument(
+            tokens,
+            index,
+            {"E", "w"},
+            FLOCK_COMMAND_CLUSTER_PREFIX_FLAGS,
+        )
+        if next_index is not None:
+            index = next_index
+            continue
         index += 1
     return None
 
@@ -2569,7 +3459,44 @@ def persistent_shell_assignment_values(tokens: list[str]) -> tuple[dict[str, str
     assignments, assignment_index = shell_declaration_assignment_values_from_tokens(tokens)
     if assignments and assignment_index == len(tokens):
         return assignments, True
+    assignments, assignment_index = shell_array_assignment_values_from_tokens(tokens)
+    if assignments and assignment_index == len(tokens):
+        return assignments, True
     return {}, False
+
+
+def shell_array_assignment_values_from_tokens(tokens: list[str]) -> tuple[dict[str, str], int]:
+    assignments: dict[str, str] = {}
+    cursor = 0
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if not shell_assignment_word(token) or not token.endswith("="):
+            break
+        name, value = token.split("=", 1)
+        if value:
+            break
+        cursor += 1
+        if cursor >= len(tokens) or tokens[cursor] != "(":
+            break
+        cursor += 1
+        depth = 1
+        parts: list[str] = []
+        while cursor < len(tokens) and depth:
+            current = tokens[cursor]
+            if current == "(":
+                depth += 1
+                parts.append(current)
+            elif current == ")":
+                depth -= 1
+                if depth:
+                    parts.append(current)
+            else:
+                parts.append(current)
+            cursor += 1
+        if depth:
+            break
+        assignments[name] = " ".join(parts)
+    return assignments, cursor
 
 
 def shell_variable_reference_token(token: str) -> str | None:
@@ -2578,6 +3505,9 @@ def shell_variable_reference_token(token: str) -> str | None:
     if match:
         return match.group(1)
     match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", clean)
+    if match:
+        return match.group(1)
+    match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\[(?:@|\*)\]\}", clean)
     if match:
         return match.group(1)
     match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-?+=].*)\}", clean)
@@ -2614,6 +3544,22 @@ def expand_known_shell_assignment_name(name: str, variables: dict[str, str]) -> 
         r"\$(?P<bare>[A-Za-z_][A-Za-z0-9_]*)|\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::?[-?+=][^}]*)?\}",
         replace_reference,
         name,
+    )
+
+
+def expand_known_shell_assignment_value(value: str, variables: dict[str, str]) -> str:
+    clean = storage_strip_quotes(value)
+
+    def replace_reference(match: re.Match[str]) -> str:
+        variable = match.group("bare") or match.group("braced")
+        if variable is None or variable not in variables:
+            return match.group(0)
+        return variables[variable]
+
+    return re.sub(
+        r"\$(?P<bare>[A-Za-z_][A-Za-z0-9_]*)|\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::?[-?+=][^}]*)?\}",
+        replace_reference,
+        clean,
     )
 
 
@@ -2939,6 +3885,9 @@ def tokens_have_repo_automation_raw_cargo(
     for payload in shell_command_substitution_payloads(tokens):
         if tokens_have_raw_cargo_launch(payload, variables=variables):
             return True
+    array_assignments, array_assignment_index = shell_array_assignment_values_from_tokens(tokens)
+    if array_assignments and array_assignment_index == len(tokens):
+        return array_assignment_values_have_cargo_executable(array_assignments)
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
         segment_variables = dict(variables)
@@ -2946,6 +3895,13 @@ def tokens_have_repo_automation_raw_cargo(
             if token in SHELL_COMMAND_BOUNDARIES:
                 assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
                 if is_persistent_assignment:
+                    array_assignments, array_assignment_index = shell_array_assignment_values_from_tokens(segment)
+                    if (
+                        array_assignments
+                        and array_assignment_index == len(segment)
+                        and array_assignment_values_have_cargo_executable(array_assignments)
+                    ):
+                        return True
                     segment_variables.update(assignments)
                     segment = []
                     continue
@@ -2958,6 +3914,49 @@ def tokens_have_repo_automation_raw_cargo(
     if tokens_are_rust_version_probe(tokens):
         return False
     return tokens_have_raw_cargo_launch(tokens, variables=variables)
+
+
+def tokens_are_shell_array_assignment(tokens: list[str]) -> bool:
+    assignments, assignment_index = shell_array_assignment_values_from_tokens(tokens)
+    return bool(assignments) and assignment_index == len(tokens)
+
+
+def array_assignment_values_have_cargo_executable(assignments: dict[str, str]) -> bool:
+    return any(tokens_have_cargo_executable_launch(command_tokens(value)) for value in assignments.values())
+
+
+def tokens_have_cargo_executable_launch(tokens: list[str], *, depth: int = 0) -> bool:
+    if depth > 6:
+        return True
+    tokens = strip_shell_redirections(tokens)
+    if not tokens:
+        return False
+    if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
+        segment: list[str] = []
+        for token in tokens:
+            if token in SHELL_COMMAND_BOUNDARIES:
+                if tokens_have_cargo_executable_launch(segment, depth=depth + 1):
+                    return True
+                segment = []
+                continue
+            segment.append(token)
+        return tokens_have_cargo_executable_launch(segment, depth=depth + 1)
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index:
+        return assignment_index < len(tokens) and tokens_have_cargo_executable_launch(
+            tokens[assignment_index:],
+            depth=depth + 1,
+        )
+    executable = pathlib.Path(tokens[0]).name
+    if executable in RECURSIVE_WRAPPER_EXECUTABLES:
+        inner = wrapper_inner_tokens(tokens)
+        if inner is not None:
+            return tokens_have_cargo_executable_launch(inner, depth=depth + 1)
+    if executable == "env":
+        inner = env_inner_tokens(tokens)
+        if inner is not None:
+            return tokens_have_cargo_executable_launch(inner, depth=depth + 1)
+    return executable == "cargo"
 
 
 def is_managed_just_recipe_guard(recipe: str, stripped_line: str) -> bool:
@@ -2990,10 +3989,11 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
         if is_justfile and not line[:1].isspace():
             if stripped.startswith("["):
                 continue
-            if ":" in stripped:
+            if ":" in stripped and ":=" not in stripped:
                 recipe = stripped.split(":", 1)[0].strip()
                 current_just_recipe = recipe.split()[0] if recipe else ""
                 managed_just_recipe = False
+                continue
         if (
             is_justfile
             and current_just_recipe in {"managed-build", "managed-clippy", "managed-test"}
@@ -3394,6 +4394,23 @@ def no_mistakes_command_section_errors(config_text: str, config_name: str) -> li
     return errors
 
 
+def command_has_managed_compile_heavy_invocation(command: str) -> bool:
+    for raw_line in command.splitlines() or [command]:
+        tokens = command_tokens(raw_line)
+        normalized_tokens = managed_rust_verification_command_tokens(tokens)
+        if normalized_tokens is None:
+            continue
+        managed_args = managed_rust_verification_cargo_args(tokens)
+        if not managed_args:
+            continue
+        subcommand = cargo_subcommand(managed_args)
+        if normalized_tokens[2] == "run" and subcommand in LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS:
+            return True
+        if normalized_tokens[2] == "cargo" and subcommand in LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS:
+            return True
+    return False
+
+
 def verify_no_mistakes_config(config_text: str, config_name: str = ".no-mistakes.yaml") -> list[str]:
     errors: list[str] = no_mistakes_command_section_errors(config_text, config_name)
     for command_name, command in no_mistakes_commands(config_text).items():
@@ -3403,10 +4420,159 @@ def verify_no_mistakes_config(config_text: str, config_name: str = ".no-mistakes
             "BOLT_MANAGED_JUST private just recipe bypass" in error for error in storage_errors
         ):
             errors.append(f"{config_name} commands.{command_name} raw Cargo drift must be classified")
+        if command_has_managed_compile_heavy_invocation(command):
+            errors.append(f"{config_name} commands.{command_name} wrapper-routed local compile-heavy Rust must be remote-first")
         for storage_error in storage_errors:
             if storage_error == "BOLT_MANAGED_JUST private just recipe bypass must be classified":
                 continue
             errors.append(f"{config_name} commands.{command_name} {storage_error}")
+    return errors
+
+
+def just_recipe_blocks(justfile_text: str) -> dict[str, tuple[list[str], list[str]]]:
+    recipes: dict[str, tuple[list[str], list[str]]] = {}
+    lines = justfile_text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or line[0].isspace() or ":=" in line:
+            index += 1
+            continue
+        header, separator, tail = stripped.partition(":")
+        if not separator:
+            index += 1
+            continue
+        name = header.split()[0]
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name):
+            index += 1
+            continue
+        dependencies = [token for token in tail.split() if token and not token.startswith("#")]
+        body: list[str] = []
+        index += 1
+        while index < len(lines):
+            candidate = lines[index]
+            if candidate.strip() and not candidate[0].isspace():
+                break
+            if candidate.strip():
+                body.append(candidate.strip())
+            index += 1
+        recipes[name] = (dependencies, body)
+    return recipes
+
+
+def verify_source_fence_static_recipe(justfile_text: str) -> list[str]:
+    recipes = just_recipe_blocks(justfile_text)
+    errors: list[str] = []
+    if "source-fence-static" not in recipes:
+        errors.append("justfile source-fence-static recipe is required")
+        return errors
+    if "source-fence" not in recipes:
+        errors.append("justfile source-fence recipe is required")
+        return errors
+    source_fence_dependencies, source_fence_body = recipes["source-fence"]
+    if "source-fence-static" not in source_fence_dependencies:
+        errors.append("justfile source-fence must depend on source-fence-static")
+    static_lines = [
+        line for line in (strip_comment(raw_line).strip() for raw_line in recipes["source-fence-static"][1]) if line
+    ]
+    static_body = "\n".join(static_lines)
+    if command_has_managed_compile_heavy_invocation(static_body) or re.search(r"\brust_verification\.py\b[^\n]*\bcargo\b", static_body):
+        errors.append("justfile source-fence-static must not invoke wrapper-routed Cargo")
+    if "cargo fetch" in static_body or re.search(r"\bscripts/verify_runtime_capture_yaml\.py\b", static_body):
+        errors.append("justfile source-fence-static must stop before cargo fetch and runtime capture verification")
+    for command in (
+        "python3 scripts/test_lane_governor.py",
+        "python3 scripts/test_verify_lane_governance.py",
+        "python3 scripts/verify_lane_governance.py",
+    ):
+        if command not in static_lines:
+            errors.append(f"justfile source-fence-static must run {command}")
+    full_body = "\n".join(source_fence_body)
+    if "verify_runtime_capture_yaml.py" not in full_body:
+        errors.append("justfile source-fence must keep runtime capture verification in the full recipe")
+    return errors
+
+
+def string_set(table: dict[str, object], key: str) -> set[str] | None:
+    value = table.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return None
+    return set(value)
+
+
+def local_compile_policy_errors(data: dict[str, object], display_name: str) -> list[str]:
+    policy = data.get("local_compile_policy")
+    if not isinstance(policy, dict):
+        return [f"{display_name} must define [local_compile_policy]"]
+    errors: list[str] = []
+    if policy.get("enabled") is not True:
+        errors.append(f"{display_name} local_compile_policy.enabled must be true")
+    if policy.get("allowed_ci_env") != "GITHUB_ACTIONS":
+        errors.append(f"{display_name} local_compile_policy.allowed_ci_env must be GITHUB_ACTIONS")
+    if policy.get("break_glass_env") != "BOLT_ALLOW_LOCAL_RUST":
+        errors.append(f"{display_name} local_compile_policy.break_glass_env must be BOLT_ALLOW_LOCAL_RUST")
+    if string_set(policy, "refused_managed_commands") != LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS:
+        errors.append(f"{display_name} local_compile_policy.refused_managed_commands must be build/clippy/test")
+    if string_set(policy, "refused_cargo_subcommands") != LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS:
+        errors.append(f"{display_name} local_compile_policy.refused_cargo_subcommands must match disk preflight and aliases")
+    return errors
+
+
+def remote_verification_policy_errors(data: dict[str, object], display_name: str, *, required: bool) -> list[str]:
+    policy = data.get("remote_verification")
+    if policy is None:
+        return [f"{display_name} must define [remote_verification]"] if required else []
+    if not required:
+        return [f"{display_name} must not define [remote_verification]"]
+    if not isinstance(policy, dict):
+        return [f"{display_name} remote_verification must be a table"]
+    expected = {
+        "poll_interval_seconds": 15,
+        "checks_appear_timeout_seconds": 300,
+        "overall_timeout_seconds": 3600,
+        "diagnostic_log_max_lines": 160,
+        "diagnostic_log_max_bytes": 20000,
+        "diagnostic_unavailable_notice_interval_polls": 4,
+    }
+    errors: list[str] = []
+    for key, value in expected.items():
+        if policy.get(key) != value:
+            errors.append(f"{display_name} remote_verification.{key} must be {value}")
+    return errors
+
+
+def load_rust_verification_policy_toml(path: pathlib.Path, display_name: str) -> dict[str, object]:
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise
+    except tomllib.TOMLDecodeError as exc:
+        raise PolicyError(f"{display_name} is invalid TOML: {exc}") from exc
+    except OSError as exc:
+        raise PolicyError(f"{display_name} could not be read: {exc}") from exc
+
+
+def verify_rust_verification_policy(path: pathlib.Path, *, require_remote: bool) -> list[str]:
+    display_name = path.relative_to(REPO_ROOT).as_posix()
+    try:
+        data = load_rust_verification_policy_toml(path, display_name)
+    except FileNotFoundError:
+        return [f"{display_name} is required"]
+    except PolicyError as exc:
+        return [str(exc)]
+    errors: list[str] = []
+    if data.get("schema_version") != 2:
+        errors.append(f"{display_name} schema_version must be 2")
+    errors.extend(local_compile_policy_errors(data, display_name))
+    errors.extend(remote_verification_policy_errors(data, display_name, required=require_remote))
+    return errors
+
+
+def verify_rust_verification_policies() -> list[str]:
+    errors: list[str] = []
+    errors.extend(verify_rust_verification_policy(DEFAULT_RUST_VERIFICATION_POLICY, require_remote=True))
+    errors.extend(verify_rust_verification_policy(DEFAULT_BVS_RUST_VERIFICATION_POLICY, require_remote=False))
     return errors
 
 
@@ -3643,20 +4809,93 @@ def command_operand_roles(
     )
 
 
-def record_active_copy_paths(
+def operand_has_s3_path_role(operand: str, s3_paths: set[str]) -> bool:
+    return storage_path_is_inside_active_path(storage_without_trailing_current_dir(operand), s3_paths)
+
+
+def local_transfer_operands(tokens: list[str], index: int) -> tuple[list[str], str] | None:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    operands: list[str] = []
+    target_directory: str | None = None
+    cluster_prefix_flags_without_argument = {"a", "d", "f", "H", "i", "L", "l", "n", "P", "p", "R", "r", "s", "u", "v", "x", "Z"}
+    cursor = 0
+    while cursor < len(tail):
+        token = tail[cursor]
+        if token == "--":
+            cursor += 1
+            continue
+        if token in {"-t", "--target-directory"} and cursor + 1 < len(tail):
+            target_directory = tail[cursor + 1]
+            cursor += 2
+            continue
+        if token.startswith("-t") and not token.startswith("--") and len(token) > 2:
+            target_directory = token[2:]
+            cursor += 1
+            continue
+        if token.startswith("-") and not token.startswith("--") and "t" in token[1:]:
+            prefix, suffix = token[1:].split("t", 1)
+            if set(prefix) <= cluster_prefix_flags_without_argument:
+                if suffix:
+                    target_directory = suffix
+                    cursor += 1
+                elif cursor + 1 < len(tail):
+                    target_directory = tail[cursor + 1]
+                    cursor += 2
+                else:
+                    cursor += 1
+                continue
+        if token.startswith("--target-directory="):
+            target_directory = token.split("=", 1)[1]
+            cursor += 1
+            continue
+        if token.startswith("-"):
+            cursor += 1
+            continue
+        operands.append(token)
+        cursor += 1
+    if target_directory is not None:
+        return (operands, target_directory) if operands else None
+    if len(operands) < 2:
+        return None
+    return operands[:-1], operands[-1]
+
+
+def command_copies_s3_path_to_active_target(
     tokens: list[str],
     index: int,
     variable_roles: dict[str, set[str]],
     active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    operands = local_transfer_operands(tokens, index)
+    if operands is None:
+        return False
+    sources, destination = operands
+    if not any(operand_has_s3_path_role(source, s3_paths) for source in sources):
+        return False
+    return STORAGE_ROLE_ACTIVE_TARGET in storage_value_roles(
+        destination,
+        variable_roles,
+        cwd_is_active_target=cwd_is_active_target,
+        active_paths=active_paths,
+    )
+
+
+def record_local_transfer_paths(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
     *,
     cwd_is_active_target: bool,
 ) -> None:
-    tail = command_tail_until_boundary(tokens, index + 1)
-    operands = [token for token in tail if not token.startswith("-")]
-    if len(operands) < 2:
+    operands = local_transfer_operands(tokens, index)
+    if operands is None:
         return
-    sources = operands[:-1]
-    destination = operands[-1]
+    sources, destination = operands
     if any(
         STORAGE_ROLE_ACTIVE_TARGET
         in command_operand_roles(
@@ -3668,39 +4907,357 @@ def record_active_copy_paths(
         for source in sources
     ):
         active_paths.add(storage_path_key(destination))
+    if any(operand_has_s3_path_role(source, s3_paths) for source in sources):
+        s3_paths.add(storage_path_key(destination))
+
+
+TAR_SHORT_OPTION_CLUSTER_FLAGS = set("AacdtruxvzjJfCOpPsSMWUmhk")
+TAR_SHORT_OPTIONS_WITH_ARGUMENT = {"C", "f"}
+
+
+def tar_cluster_looks_like_options(cluster: str) -> bool:
+    return bool(cluster) and set(cluster) <= TAR_SHORT_OPTION_CLUSTER_FLAGS
+
+
+def tar_option_parts(token: str, tail: list[str], index: int) -> tuple[set[str], dict[str, str], int, bool]:
+    flags: set[str] = set()
+    arguments: dict[str, str] = {}
+    consumed = 0
+    if token == "--":
+        return flags, arguments, consumed, True
+    if token in {"c", "-c", "--create"}:
+        flags.add("c")
+        return flags, arguments, consumed, True
+    if token in {"x", "-x", "--extract", "--get"}:
+        flags.add("x")
+        return flags, arguments, consumed, True
+    if token in {"-f", "--file"}:
+        if index + 1 < len(tail):
+            arguments["f"] = tail[index + 1]
+            consumed = 1
+        return flags, arguments, consumed, True
+    if token.startswith("--file="):
+        arguments["f"] = token.split("=", 1)[1]
+        return flags, arguments, consumed, True
+    if token in {"-C", "--directory"}:
+        if index + 1 < len(tail):
+            arguments["C"] = tail[index + 1]
+            consumed = 1
+        return flags, arguments, consumed, True
+    if token.startswith("--directory="):
+        arguments["C"] = token.split("=", 1)[1]
+        return flags, arguments, consumed, True
+    if token.startswith("--"):
+        return flags, arguments, consumed, True
+
+    traditional_cluster = False
+    cluster: str | None = None
+    if token.startswith("-") and len(token) > 1:
+        cluster = token[1:]
+    elif tar_cluster_looks_like_options(token):
+        cluster = token
+        traditional_cluster = True
+    if cluster is None:
+        return flags, arguments, consumed, False
+
+    argument_offset = 1
+    position = 0
+    while position < len(cluster):
+        flag = cluster[position]
+        if flag == "c":
+            flags.add("c")
+        elif flag == "x":
+            flags.add("x")
+        if flag in TAR_SHORT_OPTIONS_WITH_ARGUMENT:
+            suffix = cluster[position + 1 :]
+            if suffix and not (traditional_cluster or tar_cluster_looks_like_options(suffix)):
+                arguments[flag] = suffix
+                break
+            if index + argument_offset < len(tail):
+                arguments[flag] = tail[index + argument_offset]
+                consumed = max(consumed, argument_offset)
+                argument_offset += 1
+            position += 1
+            continue
+        position += 1
+    return flags, arguments, consumed, True
 
 
 def tar_writes_archive_to_stdout(tail: list[str]) -> bool:
     creates_archive = False
+    skip_count = 0
     for index, token in enumerate(tail):
-        if (
-            token
-            and not token.startswith("-")
-            and "c" in token
-            and all(char.isalnum() or char == "-" for char in token)
-        ):
-            creates_archive = True
-            if "f" in token:
-                suffix = token.split("f", 1)[1]
-                if suffix:
-                    return suffix == "-"
-                return index + 1 < len(tail) and tail[index + 1] == "-"
+        if skip_count:
+            skip_count -= 1
             continue
-        if token in {"c", "-c", "--create"}:
+        flags, arguments, consumed, _option_like = tar_option_parts(token, tail, index)
+        skip_count = consumed
+        if "c" in flags:
             creates_archive = True
-            continue
-        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
-            creates_archive = True
-        if token in {"-f", "--file"}:
-            return index + 1 < len(tail) and tail[index + 1] == "-"
-        if token.startswith("--file="):
-            return token.split("=", 1)[1] == "-"
-        if token.startswith("-") and not token.startswith("--") and "f" in token[1:]:
-            suffix = token[1:].split("f", 1)[1]
-            if suffix:
-                return suffix == "-"
-            return index + 1 < len(tail) and tail[index + 1] == "-"
+        if "f" in arguments:
+            return arguments["f"] == "-"
     return creates_archive
+
+
+def tar_archive_creation(tail: list[str]) -> tuple[str | None, list[str]]:
+    creates_archive = False
+    archive: str | None = None
+    sources: list[str] = []
+    skip_count = 0
+    for index, token in enumerate(tail):
+        if skip_count:
+            skip_count -= 1
+            continue
+        flags, arguments, consumed, option_like = tar_option_parts(token, tail, index)
+        skip_count = consumed
+        if "c" in flags:
+            creates_archive = True
+        if "f" in arguments:
+            archive = arguments["f"]
+        if option_like:
+            continue
+        sources.append(token)
+    return (archive, sources) if creates_archive else (None, [])
+
+
+def tar_archive_inputs(tail: list[str]) -> list[str]:
+    archives: list[str] = []
+    skip_count = 0
+    for index, token in enumerate(tail):
+        if skip_count:
+            skip_count -= 1
+            continue
+        _flags, arguments, consumed, option_like = tar_option_parts(token, tail, index)
+        skip_count = consumed
+        if "f" in arguments and arguments["f"] != "-":
+            archives.append(arguments["f"])
+            continue
+        if option_like:
+            continue
+        archives.append(token)
+    return archives
+
+
+def record_tar_archive_paths(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> None:
+    archive, sources = tar_archive_creation(command_tail_until_boundary(tokens, index + 1))
+    if archive is None or archive == "-":
+        return
+    if any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in command_operand_roles(
+            source,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for source in sources
+    ):
+        active_paths.add(storage_path_key(archive))
+    if any(operand_has_s3_path_role(source, s3_paths) for source in sources):
+        s3_paths.add(storage_path_key(archive))
+
+
+def tar_extracts_s3_archive_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    if not tar_extracts_to_active_target(
+        tokens,
+        index,
+        variable_roles,
+        active_paths,
+        cwd_is_active_target=cwd_is_active_target,
+    ):
+        return False
+    return any(operand_has_s3_path_role(archive, s3_paths) for archive in tar_archive_inputs(tail))
+
+
+def zip_archive_operands(tokens: list[str], index: int) -> tuple[str, list[str]] | None:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    operands: list[str] = []
+    options_with_argument = {
+        "-b",
+        "-i",
+        "-n",
+        "-O",
+        "-P",
+        "-t",
+        "-x",
+        "--before-date",
+        "--exclude",
+        "--from-date",
+        "--include",
+        "--out",
+        "--output-file",
+        "--password",
+        "--suffixes",
+        "--temp-path",
+    }
+    short_options_with_argument = {"b", "i", "n", "O", "P", "t", "x"}
+    cursor = 0
+    while cursor < len(tail):
+        token = tail[cursor]
+        if token == "--":
+            cursor += 1
+            continue
+        if token in options_with_argument and cursor + 1 < len(tail):
+            cursor += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
+            cursor += 1
+            continue
+        if token.startswith("-") and not token.startswith("--"):
+            cluster = token[1:]
+            argument_consumed = False
+            for position, flag in enumerate(cluster):
+                if flag not in short_options_with_argument:
+                    continue
+                if position + 1 < len(cluster):
+                    cursor += 1
+                elif cursor + 1 < len(tail):
+                    cursor += 2
+                else:
+                    cursor += 1
+                argument_consumed = True
+                break
+            if argument_consumed:
+                continue
+        if token.startswith("-"):
+            cursor += 1
+            continue
+        operands.append(token)
+        cursor += 1
+    if len(operands) < 2:
+        return None
+    return operands[0], operands[1:]
+
+
+def record_zip_archive_paths(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> None:
+    operands = zip_archive_operands(tokens, index)
+    if operands is None:
+        return
+    archive, sources = operands
+    if any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in command_operand_roles(
+            source,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for source in sources
+    ):
+        active_paths.add(storage_path_key(archive))
+    if any(operand_has_s3_path_role(source, s3_paths) for source in sources):
+        s3_paths.add(storage_path_key(archive))
+
+
+def unzip_extracts_s3_archive_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    archives: list[str] = []
+    members: list[str] = []
+    destination: str | None = None
+    cursor = 0
+    while cursor < len(tail):
+        token = tail[cursor]
+        if token in {"-d", "--directory"} and cursor + 1 < len(tail):
+            destination = tail[cursor + 1]
+            cursor += 2
+            continue
+        if token.startswith("--directory="):
+            destination = token.split("=", 1)[1]
+            cursor += 1
+            continue
+        if token in {"-x", "--exclude", "-P", "--password"} and cursor + 1 < len(tail):
+            cursor += 2
+            continue
+        if token.startswith(("--exclude=", "--password=")):
+            cursor += 1
+            continue
+        if token.startswith("-") and not token.startswith("--"):
+            cluster = token[1:]
+            argument_consumed = False
+            for position, flag in enumerate(cluster):
+                if flag == "d":
+                    if position + 1 < len(cluster):
+                        destination = cluster[position + 1 :]
+                        cursor += 1
+                    elif cursor + 1 < len(tail):
+                        destination = tail[cursor + 1]
+                        cursor += 2
+                    else:
+                        cursor += 1
+                    argument_consumed = True
+                    break
+                if flag in {"x", "P"}:
+                    if position + 1 < len(cluster):
+                        cursor += 1
+                    elif cursor + 1 < len(tail):
+                        cursor += 2
+                    else:
+                        cursor += 1
+                    argument_consumed = True
+                    break
+            if argument_consumed:
+                continue
+        if token == "--" or token.startswith("-"):
+            cursor += 1
+            continue
+        if archives:
+            members.append(token)
+        else:
+            archives.append(token)
+        cursor += 1
+    if not any(operand_has_s3_path_role(archive, s3_paths) for archive in archives):
+        return False
+    if cwd_is_active_target and destination is None:
+        return True
+    destination_is_active = destination is not None and STORAGE_ROLE_ACTIVE_TARGET in storage_value_roles(
+        destination,
+        variable_roles,
+        cwd_is_active_target=cwd_is_active_target,
+        active_paths=active_paths,
+    )
+    return destination_is_active or any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in storage_value_roles(
+            member,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for member in members
+    )
 
 
 def command_streams_active_target_to_stdout(
@@ -3726,6 +5283,141 @@ def command_streams_active_target_to_stdout(
         for token in tail
         if token != "-" and not token.startswith("-")
     )
+
+
+def output_redirection_targets(tokens: list[str], index: int) -> list[str]:
+    targets: list[str] = []
+    tail = command_tail_until_boundary(tokens, index + 1)
+    cursor = 0
+    while cursor < len(tail):
+        token = tail[cursor]
+        if token in {">", ">>", "<>", ">|", ">&", "&>", "&>>"}:
+            if cursor + 1 < len(tail):
+                targets.append(tail[cursor + 1])
+            cursor += 2
+            continue
+        match = re.match(r"^(?:\d?(?:>>?|<>|>\||>&)|&>>?)(.+)$", token)
+        if match is not None:
+            targets.append(match.group(1))
+        cursor += 1
+    return targets
+
+
+def command_output_redirects_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    return any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in storage_value_roles(
+            target,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for target in output_redirection_targets(tokens, index)
+    )
+
+
+def tar_extracts_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    extracts = False
+    directories: list[str] = []
+    members: list[str] = []
+    skip_count = 0
+    cursor = 0
+    while cursor < len(tail):
+        if skip_count:
+            skip_count -= 1
+            cursor += 1
+            continue
+        token = tail[cursor]
+        flags, arguments, consumed, option_like = tar_option_parts(token, tail, cursor)
+        skip_count = consumed
+        if "x" in flags:
+            extracts = True
+        if "C" in arguments:
+            directories.append(arguments["C"])
+        if option_like:
+            cursor += 1
+            continue
+        if token != "--":
+            members.append(token)
+        cursor += 1
+    if not extracts:
+        return False
+    if cwd_is_active_target:
+        return True
+    return any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in storage_value_roles(
+            directory,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for directory in directories
+    ) or any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in storage_value_roles(
+            member,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for member in members
+    )
+
+
+def command_writes_s3_stdin_to_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+    command_name: str,
+) -> bool:
+    if command_output_redirects_to_active_target(
+        tokens,
+        index,
+        variable_roles,
+        active_paths,
+        cwd_is_active_target=cwd_is_active_target,
+    ):
+        return True
+    if command_name == "tar" and tar_extracts_to_active_target(
+        tokens,
+        index,
+        variable_roles,
+        active_paths,
+        cwd_is_active_target=cwd_is_active_target,
+    ):
+        return True
+    if command_name == "tee":
+        return any(
+            STORAGE_ROLE_ACTIVE_TARGET
+            in storage_value_roles(
+                token,
+                variable_roles,
+                cwd_is_active_target=cwd_is_active_target,
+                active_paths=active_paths,
+            )
+            for token in command_tail_until_boundary(tokens, index + 1)
+            if token != "-" and not token.startswith("-")
+        )
+    return False
 
 
 def shell_assignment_from_tokens(tokens: list[str], index: int) -> tuple[str, str, int] | None:
@@ -3956,6 +5648,78 @@ def aws_s3_transfer_touches_active_target(
     return any(STORAGE_ROLE_ACTIVE_TARGET in roles for roles in endpoint_roles)
 
 
+def aws_s3_transfer_streams_s3_to_stdout(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    *,
+    cwd_is_active_target: bool,
+    active_paths: set[str],
+) -> bool:
+    service_index = aws_service_index(tokens, index)
+    if service_index is None or tokens[service_index] != "s3":
+        return False
+    op_index = service_index + 1
+    if op_index >= len(tokens) or tokens[op_index] != "cp":
+        return False
+    operands = aws_s3_operands(command_tail_until_boundary(tokens, op_index + 1))
+    if len(operands) < 2:
+        return False
+    source = operands[0]
+    destination = operands[1]
+    if destination != "-":
+        return False
+    return STORAGE_ROLE_S3 in storage_value_roles(
+        source,
+        variable_roles,
+        cwd_is_active_target=cwd_is_active_target,
+        active_paths=active_paths,
+    )
+
+
+def record_aws_s3_download_paths(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    s3_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> None:
+    service_index = aws_service_index(tokens, index)
+    if service_index is None or tokens[service_index] != "s3":
+        return
+    op_index = service_index + 1
+    if op_index >= len(tokens) or tokens[op_index] in SHELL_COMMAND_BOUNDARIES:
+        return
+    operation = tokens[op_index]
+    if operation not in {"cp", "mv", "sync"}:
+        return
+    operands = aws_s3_operands(command_tail_until_boundary(tokens, op_index + 1))
+    if len(operands) < 2:
+        return
+    sources = operands[:-1]
+    destination = operands[-1]
+    if destination == "-" or STORAGE_ROLE_S3 in storage_value_roles(
+        destination,
+        variable_roles,
+        cwd_is_active_target=cwd_is_active_target,
+        active_paths=active_paths,
+    ):
+        return
+    if any(
+        STORAGE_ROLE_S3
+        in storage_value_roles(
+            source,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for source in sources
+    ):
+        s3_paths.add(storage_path_key(destination))
+
+
 def command_prefix_before_token(tokens: list[str], index: int) -> list[str]:
     cursor = index - 1
     while cursor >= 0 and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
@@ -3967,11 +5731,44 @@ def env_chdir_value(tokens: list[str]) -> str | None:
     command_index = env_command_prefix_index(tokens, 1)
     if command_index is None:
         return None
-    for index, token in enumerate(tokens[1:command_index], start=1):
+    index = 1
+    while index < command_index:
+        token = tokens[index]
         if token in ("-C", "--chdir") and index + 1 < command_index:
             return tokens[index + 1]
         if token.startswith("--chdir="):
             return token.split("=", 1)[1]
+        if token.startswith("-") and not token.startswith("--") and "C" in token[1:]:
+            offset = 1
+            while offset < len(token):
+                option = token[offset]
+                if option in "0iv":
+                    offset += 1
+                    continue
+                if option == "C":
+                    suffix = token[offset + 1 :]
+                    if suffix:
+                        return suffix
+                    if index + 1 < command_index:
+                        return tokens[index + 1]
+                    break
+                if option in "Su":
+                    index += 1 if offset + 1 < len(token) or index + 1 >= command_index else 2
+                    break
+                break
+            else:
+                index += 1
+                continue
+            if index >= command_index or token[offset] not in "Su":
+                index += 1
+            continue
+        if token in ENV_OPTIONS_WITH_ARGUMENT and index + 1 < command_index:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in ENV_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        index += 1
     return None
 
 
@@ -3985,13 +5782,46 @@ def sudo_chdir_value(tokens: list[str]) -> str | None:
     )
     if command_index is None:
         return None
-    for index, token in enumerate(tokens[1:command_index], start=1):
+    index = 1
+    short_options_with_argument = {option[1] for option in SUDO_OPTIONS_WITH_ARGUMENT if re.match(r"^-[A-Za-z0-9]$", option)}
+    short_options_without_argument = {option[1] for option in SUDO_OPTIONS_WITHOUT_ARGUMENT if re.match(r"^-[A-Za-z0-9]$", option)}
+    while index < command_index:
+        token = tokens[index]
         if token in ("-D", "--chdir") and index + 1 < command_index:
             return tokens[index + 1]
         if token.startswith("--chdir="):
             return token.split("=", 1)[1]
-        if token.startswith("-D") and len(token) > 2:
-            return token[2:]
+        if token.startswith("-") and not token.startswith("--") and "D" in token[1:]:
+            offset = 1
+            while offset < len(token):
+                option = token[offset]
+                if option in short_options_without_argument:
+                    offset += 1
+                    continue
+                if option == "D":
+                    suffix = token[offset + 1 :]
+                    if suffix:
+                        return suffix
+                    if index + 1 < command_index:
+                        return tokens[index + 1]
+                    break
+                if option in short_options_with_argument:
+                    index += 1 if offset + 1 < len(token) or index + 1 >= command_index else 2
+                    break
+                break
+            else:
+                index += 1
+                continue
+            if index >= command_index or token[offset] not in short_options_with_argument - {"D"}:
+                index += 1
+            continue
+        if token in SUDO_OPTIONS_WITH_ARGUMENT and index + 1 < command_index:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in SUDO_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        index += 1
     return None
 
 
@@ -4028,6 +5858,122 @@ def shell_directory_change_target(tokens: list[str], cursor: int) -> tuple[str |
     return tokens[index], index + 1
 
 
+def shell_group_end_index(tokens: list[str], cursor: int) -> int | None:
+    opener = tokens[cursor]
+    closer = "}" if opener == "{" else ")"
+    depth = 1
+    index = cursor + 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == opener:
+            depth += 1
+        elif token == closer:
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return None
+
+
+def skip_shell_redirections(tokens: list[str], cursor: int) -> int:
+    while cursor < len(tokens):
+        next_cursor = shell_redirection_next_index(tokens, cursor)
+        if next_cursor is None:
+            break
+        cursor = next_cursor
+    return cursor
+
+
+def storage_stdout_roles_from_tokens(
+    tokens: list[str],
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    *,
+    depth: int,
+    initial_cwd_is_active_target: bool,
+) -> set[str]:
+    if depth > 6:
+        return set()
+    roles: set[str] = set()
+    cursor = 0
+    cwd_is_active_target = initial_cwd_is_active_target
+    pipe_stdin_is_active_target = False
+    pipe_stdin_is_s3 = False
+    while cursor < len(tokens):
+        assignment = shell_assignment_from_tokens(tokens, cursor)
+        if assignment is not None:
+            cursor = assignment[2]
+            continue
+        token = tokens[cursor]
+        if token in {"{", "("}:
+            close_index = shell_group_end_index(tokens, cursor)
+            if close_index is None:
+                cursor += 1
+                continue
+            inner_roles = storage_stdout_roles_from_tokens(
+                tokens[cursor + 1 : close_index],
+                variable_roles,
+                active_paths,
+                depth=depth + 1,
+                initial_cwd_is_active_target=cwd_is_active_target,
+            )
+            roles.update(inner_roles)
+            cursor = skip_shell_redirections(tokens, close_index + 1)
+            continue
+        if token in SHELL_COMMAND_BOUNDARIES:
+            if token == "|":
+                pipe_stdin_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in roles
+                pipe_stdin_is_s3 = STORAGE_ROLE_S3 in roles
+            else:
+                pipe_stdin_is_active_target = False
+                pipe_stdin_is_s3 = False
+            cursor += 1
+            continue
+        name = executable_name(token)
+        if name in {"cd", "pushd"}:
+            directory_target, next_cursor = shell_directory_change_target(tokens, cursor)
+            if directory_target is None:
+                if name == "cd":
+                    cwd_is_active_target = False
+                cursor = next_cursor
+                continue
+            target_roles = storage_value_roles(
+                directory_target,
+                variable_roles,
+                cwd_is_active_target=cwd_is_active_target,
+                active_paths=active_paths,
+            )
+            cwd_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in target_roles
+            cursor = next_cursor
+            continue
+        if name in ACTIVE_TARGET_STDOUT_COMMANDS and (
+            pipe_stdin_is_active_target
+            or command_streams_active_target_to_stdout(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                cwd_is_active_target=cwd_is_active_target,
+                command_name=name,
+            )
+        ):
+            roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+        elif pipe_stdin_is_active_target and name != "aws":
+            roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+        if name == "aws" and aws_s3_transfer_streams_s3_to_stdout(
+            tokens,
+            cursor,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        ):
+            roles.add(STORAGE_ROLE_S3)
+        elif pipe_stdin_is_s3:
+            roles.add(STORAGE_ROLE_S3)
+        cursor += 1
+    return roles
+
+
 def storage_transfer_policy_errors_from_tokens(
     tokens: list[str],
     variable_roles: dict[str, set[str]],
@@ -4035,32 +5981,76 @@ def storage_transfer_policy_errors_from_tokens(
     depth: int = 0,
     initial_cwd_is_active_target: bool = False,
     initial_active_paths: set[str] | None = None,
+    initial_s3_paths: set[str] | None = None,
+    initial_pipe_stdin_is_active_target: bool = False,
+    initial_pipe_stdin_is_s3: bool = False,
 ) -> list[str]:
     if depth > 6:
         return []
     cursor = 0
     cwd_is_active_target = initial_cwd_is_active_target
     active_paths: set[str] = set(initial_active_paths or set())
+    s3_paths: set[str] = set(initial_s3_paths or set())
     pipe_stdout_is_active_target = False
-    pipe_stdin_is_active_target = False
+    pipe_stdin_is_active_target = initial_pipe_stdin_is_active_target
+    pipe_stdout_is_s3 = False
+    pipe_stdin_is_s3 = initial_pipe_stdin_is_s3
     while cursor < len(tokens):
         assignment = shell_assignment_from_tokens(tokens, cursor)
         if assignment is not None:
             cursor = assignment[2]
             continue
         token = tokens[cursor]
+        if token in {"{", "("}:
+            close_index = shell_group_end_index(tokens, cursor)
+            if close_index is None:
+                cursor += 1
+                continue
+            inner_tokens = tokens[cursor + 1 : close_index]
+            nested_errors = storage_transfer_policy_errors_from_tokens(
+                inner_tokens,
+                variable_roles,
+                depth=depth + 1,
+                initial_cwd_is_active_target=cwd_is_active_target,
+                initial_active_paths=active_paths,
+                initial_s3_paths=s3_paths,
+                initial_pipe_stdin_is_active_target=pipe_stdin_is_active_target,
+                initial_pipe_stdin_is_s3=pipe_stdin_is_s3,
+            )
+            if nested_errors:
+                return nested_errors
+            group_stdout_roles = storage_stdout_roles_from_tokens(
+                inner_tokens,
+                variable_roles,
+                active_paths,
+                depth=depth + 1,
+                initial_cwd_is_active_target=cwd_is_active_target,
+            )
+            if STORAGE_ROLE_S3 in group_stdout_roles and command_output_redirects_to_active_target(
+                tokens,
+                close_index,
+                variable_roles,
+                active_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            ):
+                return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
+            pipe_stdout_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in group_stdout_roles
+            pipe_stdout_is_s3 = STORAGE_ROLE_S3 in group_stdout_roles
+            cursor = skip_shell_redirections(tokens, close_index + 1)
+            continue
         if token in SHELL_COMMAND_BOUNDARIES:
             if token == "|":
                 pipe_stdin_is_active_target = pipe_stdout_is_active_target
+                pipe_stdin_is_s3 = pipe_stdout_is_s3
             else:
                 pipe_stdin_is_active_target = False
+                pipe_stdin_is_s3 = False
             pipe_stdout_is_active_target = False
+            pipe_stdout_is_s3 = False
             cursor += 1
             continue
         name = executable_name(token)
-        if name in {"bash", "dash", "fish", "sh", "zsh"} and command_prefix_allows_cargo(
-            command_prefix_before_token(tokens, cursor)
-        ):
+        if name in {"bash", "dash", "fish", "sh", "zsh"}:
             nested = shell_command(tokens[cursor:])
             if nested is not None:
                 nested_errors = storage_transfer_policy_errors_from_tokens(
@@ -4069,10 +6059,11 @@ def storage_transfer_policy_errors_from_tokens(
                     depth=depth + 1,
                     initial_cwd_is_active_target=cwd_is_active_target,
                     initial_active_paths=active_paths,
+                    initial_s3_paths=s3_paths,
                 )
                 if nested_errors:
                     return nested_errors
-        if name == "eval" and command_prefix_allows_cargo(command_prefix_before_token(tokens, cursor)):
+        if name == "eval":
             inner = tokens[cursor + 1 :]
             if inner and inner[0] == "--":
                 inner = inner[1:]
@@ -4083,6 +6074,7 @@ def storage_transfer_policy_errors_from_tokens(
                     depth=depth + 1,
                     initial_cwd_is_active_target=cwd_is_active_target,
                     initial_active_paths=active_paths,
+                    initial_s3_paths=s3_paths,
                 )
                 if nested_errors:
                     return nested_errors
@@ -4103,6 +6095,23 @@ def storage_transfer_policy_errors_from_tokens(
                     depth=depth + 1,
                     initial_cwd_is_active_target=STORAGE_ROLE_ACTIVE_TARGET in chdir_roles,
                     initial_active_paths=active_paths,
+                    initial_s3_paths=s3_paths,
+                )
+                if nested_errors:
+                    return nested_errors
+        if name in RECURSIVE_WRAPPER_EXECUTABLES:
+            segment = [token] + command_tail_until_boundary(tokens, cursor + 1)
+            inner = wrapper_inner_tokens(segment)
+            if inner:
+                nested_errors = storage_transfer_policy_errors_from_tokens(
+                    inner,
+                    variable_roles,
+                    depth=depth + 1,
+                    initial_cwd_is_active_target=cwd_is_active_target,
+                    initial_active_paths=active_paths,
+                    initial_s3_paths=s3_paths,
+                    initial_pipe_stdin_is_active_target=pipe_stdin_is_active_target,
+                    initial_pipe_stdin_is_s3=pipe_stdin_is_s3,
                 )
                 if nested_errors:
                     return nested_errors
@@ -4122,14 +6131,60 @@ def storage_transfer_policy_errors_from_tokens(
             cwd_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in target_roles
             cursor = next_cursor
             continue
-        if name in {"cp", "rsync"}:
-            record_active_copy_paths(
+        if name in {"cp", "rsync", "mv"}:
+            if command_copies_s3_path_to_active_target(
                 tokens,
                 cursor,
                 variable_roles,
                 active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            ):
+                return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
+            record_local_transfer_paths(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
                 cwd_is_active_target=cwd_is_active_target,
             )
+        if name == "tar":
+            if tar_extracts_s3_archive_to_active_target(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            ):
+                return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
+            record_tar_archive_paths(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            )
+        if name == "zip":
+            record_zip_archive_paths(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            )
+        if name == "unzip" and unzip_extracts_s3_archive_to_active_target(
+            tokens,
+            cursor,
+            variable_roles,
+            active_paths,
+            s3_paths,
+            cwd_is_active_target=cwd_is_active_target,
+        ):
+            return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
         if name in ACTIVE_TARGET_STDOUT_COMMANDS:
             pipe_stdout_is_active_target = pipe_stdin_is_active_target or command_streams_active_target_to_stdout(
                 tokens,
@@ -4141,6 +6196,15 @@ def storage_transfer_policy_errors_from_tokens(
             )
         elif pipe_stdin_is_active_target and name != "aws":
             pipe_stdout_is_active_target = True
+        if pipe_stdin_is_s3 and command_writes_s3_stdin_to_active_target(
+            tokens,
+            cursor,
+            variable_roles,
+            active_paths,
+            cwd_is_active_target=cwd_is_active_target,
+            command_name=name,
+        ):
+            return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
         if name == "aws" and aws_s3_transfer_touches_active_target(
             tokens,
             cursor,
@@ -4151,7 +6215,25 @@ def storage_transfer_policy_errors_from_tokens(
         ):
             return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
         if name == "aws":
+            record_aws_s3_download_paths(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                s3_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            )
+            pipe_stdout_is_s3 = aws_s3_transfer_streams_s3_to_stdout(
+                tokens,
+                cursor,
+                variable_roles,
+                cwd_is_active_target=cwd_is_active_target,
+                active_paths=active_paths,
+            )
             pipe_stdin_is_active_target = False
+            pipe_stdin_is_s3 = False
+        elif pipe_stdin_is_s3:
+            pipe_stdout_is_s3 = True
         cursor += 1
     return []
 
@@ -4205,6 +6287,18 @@ def target_env_key_from_assignment_name(
     return None
 
 
+RUSTFLAGS_OUTPUT_OVERRIDE_KEYS = {
+    "CARGO_BUILD_RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "RUSTFLAGS",
+}
+
+
+def rustflags_value_has_output_override(value: str, assignments: dict[str, str] | None = None) -> bool:
+    clean = expand_known_shell_assignment_value(value, assignments or {})
+    return "--out-dir" in clean or "--artifact-dir" in clean
+
+
 def dynamic_env_assignment_message(
     token: str,
     assignments: dict[str, str],
@@ -4212,9 +6306,13 @@ def dynamic_env_assignment_message(
 ) -> str | None:
     if "=" not in token:
         return None
-    name, _value = token.split("=", 1)
+    name, value = token.split("=", 1)
     target_key = target_env_key_from_assignment_name(name, assignments, target_keys)
-    return target_keys[target_key] if target_key is not None else None
+    if target_key is None:
+        return None
+    if target_key in RUSTFLAGS_OUTPUT_OVERRIDE_KEYS and not rustflags_value_has_output_override(value, assignments):
+        return None
+    return target_keys[target_key]
 
 
 def dynamic_env_segment_messages(
@@ -4481,7 +6579,18 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
         "CARGO_TARGET_DIR": "CARGO_TARGET_DIR raw target override must be classified",
         "CARGO_BUILD_TARGET_DIR": "CARGO_BUILD_TARGET_DIR raw target override must be classified",
         "CARGO_TARGET_TMPDIR": "CARGO_TARGET_TMPDIR raw target override must be classified",
+        "CARGO_INCREMENTAL": "CARGO_INCREMENTAL raw cache override must be classified",
+        "CARGO_BUILD_RUSTFLAGS": "CARGO_BUILD_RUSTFLAGS raw output override must be classified",
+        "CARGO_ENCODED_RUSTFLAGS": "CARGO_ENCODED_RUSTFLAGS raw output override must be classified",
+        "CARGO_INSTALL_ROOT": "CARGO_INSTALL_ROOT install output override must be classified",
+        "CARGO_HOME": "CARGO_HOME raw cache override must be classified",
+        "RUSTUP_HOME": "RUSTUP_HOME raw toolchain override must be classified",
+        "RUSTFLAGS": "RUSTFLAGS raw output override must be classified",
+        "RUSTC_WRAPPER": "RUSTC_WRAPPER raw compiler wrapper must be classified",
+        "RUSTC_WORKSPACE_WRAPPER": "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified",
+        "BOLT_ALLOW_LOCAL_RUST": "BOLT_ALLOW_LOCAL_RUST local Rust break-glass must not be checked in",
         "BOLT_MANAGED_JUST": "BOLT_MANAGED_JUST private just recipe bypass must be classified",
+        "GITHUB_ACTIONS": "GITHUB_ACTIONS local CI spoof must not be checked in",
     }
     assignments: dict[str, str] = {}
     for line in shell_logical_lines(text):
@@ -4997,7 +7106,9 @@ def raw_rust_storage_errors(workflow_text: str, *, alias_depth: int = 0) -> list
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTFLAGS[\"']?\s*(?:=|:).*(?:--out-dir|--artifact-dir)", "RUSTFLAGS raw output override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WRAPPER raw compiler wrapper must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WORKSPACE_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified"),
+        (r"(^|[^A-Za-z0-9_$\{])[\"']?BOLT_ALLOW_LOCAL_RUST[\"']?\s*(?:=|:|<<)", "BOLT_ALLOW_LOCAL_RUST local Rust break-glass must not be checked in"),
         (r"(^|[^A-Za-z0-9_$\{])[\"']?BOLT_MANAGED_JUST[\"']?\s*(?:=|:|<<)", "BOLT_MANAGED_JUST private just recipe bypass must be classified"),
+        (r"(^|[^A-Za-z0-9_$\{])[\"']?GITHUB_ACTIONS[\"']?\s*(?:=|:|<<)", "GITHUB_ACTIONS local CI spoof must not be checked in"),
         (r"\bno-mistakes\b[^\n]*\bcargo\b", "no-mistakes raw Cargo drift must be classified"),
         (r"\bno-mistakes\b[^\n]*--worktree[^\n]*(?:--target-dir\s+target|\btarget\b)", "no-mistakes worktree-local target path evidence must be reported"),
         (r"\bcargo\b[^\n|]*\$@[^|]*\|\s*bash\b[^\n;&|]*\s-s\b[^\n;&|]*\s--target-dir\b", "cargo --target-dir raw target override must be classified"),
@@ -5060,11 +7171,25 @@ def test_has_inline_shard_reproduction_command(job_lines: list[str]) -> bool:
 
 
 def job_skips_tag_reuse(job_lines: list[str]) -> bool:
-    return has_line_matching(job_lines, TAG_SKIP_IF_RE) or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
+    text = uncommented_text(job_lines)
+    return (
+        has_line_matching(job_lines, TAG_SKIP_IF_RE)
+        or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
+        or FULL_CI_REQUIRED_EXPR in text
+    )
 
 
 def job_if_uses_always(job_lines: list[str]) -> bool:
-    return has_line_matching(job_lines, GATE_IF_RE) or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
+    return has_line_matching(job_lines, GATE_IF_RE) or "always()" in uncommented_text(job_lines)
+
+
+def job_gates_on_full_ci_required(job_lines: list[str]) -> bool:
+    return FULL_CI_REQUIRED_EXPR in uncommented_text(job_lines)
+
+
+def check_aarch64_runs_on_full_or_tag_reuse(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return FULL_CI_REQUIRED_EXPR in text and TAG_REUSE_POLICY_EXPR in text
 
 
 def same_sha_job_has_outputs(job_lines: list[str]) -> bool:
@@ -5081,6 +7206,153 @@ def same_sha_job_has_outputs(job_lines: list[str]) -> bool:
 def same_sha_job_runs_resolver(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "id: evidence" in text and "python3 scripts/find_same_sha_main_evidence.py" in text
+
+
+def fingerprint_reuse_job_has_outputs(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    required = (
+        "reuse_found: ${{ steps.reuse.outputs.reuse_found }}",
+        "source_run_id: ${{ steps.reuse.outputs.source_run_id }}",
+        "source_sha: ${{ steps.reuse.outputs.source_sha }}",
+        "source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}",
+        "reason: ${{ steps.reuse.outputs.reason }}",
+    )
+    return all(item in text for item in required)
+
+
+def fingerprint_reuse_job_uses_secure_current_fingerprint(job_lines: list[str]) -> bool:
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    if reuse_step is None:
+        return False
+    downloads_current_fingerprint = any(
+        block_has_input(block, "pattern", "nextest-archive-fingerprint-*")
+        for block in action_blocks(job_lines, "actions/download-artifact@")
+    )
+    return (
+        block_run_body_matches(reuse_step, NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN)
+        and not downloads_current_fingerprint
+    )
+
+
+def fingerprint_reuse_job_runs_resolver(job_lines: list[str]) -> bool:
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    if reuse_step is None:
+        return False
+    return block_run_body_matches(reuse_step, NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN)
+
+
+def fingerprint_reuse_resolver_is_canonical(job_lines: list[str]) -> bool:
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    return reuse_step is not None and block_run_body_matches(
+        reuse_step,
+        NEXTEST_FINGERPRINT_REUSE_RESOLVER_RUN,
+    )
+
+
+def fingerprint_reuse_resolver_envelope_is_canonical(job_lines: list[str]) -> bool:
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    return reuse_step is not None and block_has_canonical_step_envelope(
+        reuse_step,
+        NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_ALLOWED_KEYS,
+        NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_SCALARS,
+        {"env": NEXTEST_FINGERPRINT_REUSE_RESOLVER_ENV},
+    )
+
+
+def fingerprint_reuse_resolver_uses_bash(job_lines: list[str]) -> bool:
+    reuse_step = unique_step_with_id(job_lines, "reuse")
+    if reuse_step is None:
+        return False
+    text = uncommented_text(reuse_step)
+    return "id: reuse" in text and "shell: bash" in text
+
+
+def fingerprint_reuse_uses_canonical_job_if(job_lines: list[str]) -> bool:
+    return job_if_value(job_lines) == FINGERPRINT_REUSE_JOB_IF_VALUE
+
+
+def fingerprint_reuse_skips_main_branch(job_lines: list[str]) -> bool:
+    return MAIN_BRANCH_SKIP_EXPR in job_if_value(job_lines)
+
+
+def fingerprint_reuse_gates_on_detector_allowed(job_lines: list[str]) -> bool:
+    return FINGERPRINT_REUSE_ALLOWED_EXPR in job_if_value(job_lines)
+
+
+def fingerprint_reuse_gates_on_pull_request(job_lines: list[str]) -> bool:
+    return FINGERPRINT_REUSE_PR_EVENT_EXPR in job_if_value(job_lines)
+
+
+def test_shards_skip_on_fingerprint_reuse(job_lines: list[str]) -> bool:
+    return NEXTEST_REUSE_MISS_EXPR in uncommented_text(job_lines)
+
+
+def test_accepts_fingerprint_reuse(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    required = (
+        'reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"',
+        'if [[ "$reuse_found" == "true" ]]; then',
+        '"${{ needs.nextest-fingerprint-reuse.result }}" != "success"',
+        "nextest fingerprint reuse did not expose source_run_id",
+        "nextest fingerprint reuse did not expose source_sha",
+        "nextest fingerprint reuse did not expose source_artifact_id",
+        "nextest shards reused from run",
+    )
+    return all(item in text for item in required)
+
+
+def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return "python3 scripts/ci_provenance.py emit-full-ci" in text and "--output ci-provenance.json" in text
+
+
+def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]) -> list[str]:
+    text = uncommented_text(job_lines)
+    errors = []
+    for need in needs:
+        if need == "build":
+            expected = "--conditional-job build.result=${{ needs.build.result }}"
+            if expected not in text:
+                errors.append("ci-provenance-emit must pass build.result from needs.build.result")
+            continue
+        expected = f"--required-job {need}=${{{{ needs.{need}.result }}}}"
+        if expected not in text:
+            errors.append(f"ci-provenance-emit must pass {need} result from needs.{need}.result")
+    if "--conditional-job build.required=${{ needs.detector.outputs.build_required }}" not in text:
+        errors.append("ci-provenance-emit must pass build.required from needs.detector.outputs.build_required")
+    if (
+        f'--nextest-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"' not in text
+        or "--nextest-fingerprint-path" in text
+    ):
+        errors.append("ci-provenance-emit must use secure nextest fingerprint output")
+    return errors
+
+
+def ci_provenance_emit_upload_errors(job_lines: list[str], retention_days: int) -> list[str]:
+    errors: list[str] = []
+    upload_blocks = [
+        block
+        for block in action_blocks(job_lines, "actions/upload-artifact@")
+        if block_has_input(block, "name", "ci-provenance-attempt-${{ github.run_attempt }}")
+    ]
+    if not upload_blocks:
+        errors.append("ci-provenance-emit must upload configured provenance artifact")
+        return errors
+    if not any(block_has_input(block, "path", "ci-provenance.json") for block in upload_blocks):
+        errors.append("ci-provenance-emit must upload ci-provenance.json")
+    if retention_days > 0 and not any(
+        block_has_input(block, "retention-days", str(retention_days)) for block in upload_blocks
+    ):
+        errors.append("ci-provenance-emit retention-days must match TOML")
+    return errors
+
+
+def ci_provenance_emit_records_secure_fingerprint(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return (
+        f'--nextest-fingerprint "{TEST_ARCHIVE_FINGERPRINT_OUTPUT}"' in text
+        and "--nextest-fingerprint-path" not in text
+    )
 
 
 def clippy_installs_aarch64_toolchain(job_lines: list[str]) -> bool:
@@ -5140,7 +7412,17 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
     return errors
 
 
-GATE_TAG_REUSE_CONDITION = '"$tag_ref" == "true"'
+GATE_TAG_REUSE_CONDITION = '"$policy_path" == "tag_reuse"'
+GATE_FULL_CONDITION = '"$policy_path" == "full"'
+GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
+GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}\""""
+GATE_DEFER_CONTEXT_FAILURE_CONDITION = '"$defer_run_context" != "true"'
+GATE_DEFERRED_NAME_EXPRESSION = """name: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == true
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && 'gate-deferred'
+          || 'gate' }}"""
 
 
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
@@ -5246,10 +7528,6 @@ def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
     errors: list[str] = []
     tag_body = gate_tag_reuse_body(gate_text)
     standard_body = gate_standard_body(gate_text)
-    if 'tag_ref="${{ startsWith(github.ref, \'refs/tags/v\') }}"' not in gate_text and (
-        'tag_ref="${{ startsWith(github.ref, "refs/tags/v") }}"' not in gate_text
-    ):
-        errors.append("gate must compute tag_ref")
     if not branch_exits_reachable(tag_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "success"'):
         errors.append("gate must check same-sha-main-evidence success")
     if not branch_exits_reachable(standard_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "skipped"'):
@@ -5259,6 +7537,68 @@ def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
             errors.append(f"gate must require {job} skipped on tag reuse")
     if not branch_exits_reachable(tag_body, "if", '"${{ needs.check-aarch64.result }}" != "success"'):
         errors.append("gate must require check-aarch64 success on tag reuse")
+    return errors
+
+
+def gate_checks_nextest_fingerprint_reuse(gate_text: str) -> list[str]:
+    errors: list[str] = []
+    if 'reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"' not in gate_text:
+        errors.append("gate must read nextest fingerprint reuse output")
+    reuse_chain = if_chain_bodies(gate_standard_body(gate_text), '"$reuse_found" == "true"')
+    if reuse_chain is None:
+        errors.append("gate must branch on nextest fingerprint reuse")
+        return errors
+    reuse_body = reuse_chain.get(("if", '"$reuse_found" == "true"'), "")
+    if normalize_script_text(reuse_body) != normalize_script_text(GATE_NEXTEST_FINGERPRINT_REUSE_BRANCH):
+        errors.append("gate must use canonical nextest fingerprint reuse branch")
+    if not branch_exits_reachable(
+        reuse_body,
+        "if",
+        '"${{ needs.nextest-fingerprint-reuse.result }}" != "success"',
+    ):
+        errors.append("gate must require nextest fingerprint reuse resolver success")
+    if not branch_exits_reachable(
+        reuse_body,
+        "if",
+        '"${{ needs.ci-provenance-emit.result }}" != "skipped"',
+    ):
+        errors.append("gate must require ci-provenance-emit skipped on nextest fingerprint reuse")
+    if "nextest shards reused from run" not in reuse_body:
+        errors.append("gate must log nextest fingerprint reuse provenance")
+    return errors
+
+
+def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
+    errors: list[str] = []
+    if GATE_DEFERRED_NAME_EXPRESSION not in gate_text:
+        errors.append("gate must publish gate-deferred for deferred draft PR runs")
+    if 'policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"' not in gate_text:
+        errors.append("gate must read ci_policy_path")
+    if 'full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"' not in gate_text:
+        errors.append("gate must read full_ci_deferred")
+    if GATE_DEFER_RUN_CONTEXT_ASSIGNMENT not in gate_text:
+        errors.append("gate must compute deferred draft PR run context")
+    if 'ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"' not in gate_text:
+        errors.append("gate must read ignore_emit_failure only for ci-provenance-emit")
+    if not branch_exits_reachable(gate_text, "if", '"${{ needs.ci-policy.result }}" != "success"'):
+        errors.append("gate must check needs.ci-policy.result")
+    if not branch_exists(gate_text, "if", GATE_TAG_REUSE_CONDITION):
+        errors.append("gate must branch on ci_policy_path tag_reuse")
+    defer_sections = top_level_if_body_and_remainder(gate_text, GATE_DEFER_CONDITION)
+    defer_body = defer_sections[0] if defer_sections is not None else None
+    if defer_body is None or "full CI deferred for draft PR" not in defer_body or not body_exits_zero(defer_body):
+        errors.append("gate must pass deferred full CI without failing stale draft checks")
+    if defer_body is None or not branch_exits_reachable(defer_body, "if", GATE_DEFER_CONTEXT_FAILURE_CONDITION):
+        errors.append("gate must fail deferred policy outside deferred draft PR context")
+    if not branch_exists(gate_text, "if", GATE_FULL_CONDITION):
+        errors.append("gate must branch on ci_policy_path full")
+    emit_failure_body = branch_body(
+        gate_text,
+        "if",
+        '"${{ needs.ci-provenance-emit.result }}" != "success"',
+    )
+    if emit_failure_body is None or '"$ignore_emit_failure" == "true"' not in emit_failure_body:
+        errors.append("gate must read ignore_emit_failure only for ci-provenance-emit")
     return errors
 
 
@@ -5285,6 +7625,112 @@ def deploy_logs_reused_evidence(job_lines: list[str]) -> bool:
     return all(item in text for item in required)
 
 
+def detector_forces_build_on_workflow_dispatch(job_lines: list[str]) -> bool:
+    # The push and workflow_dispatch cases are unified in a single `if` arm:
+    #   if [[ "..." == "push" || "..." == "workflow_dispatch" ]]; then
+    # Verify that this combined arm exists and unconditionally emits value=true.
+    text = uncommented_text(job_lines)
+    branch = branch_body(
+        text,
+        "if",
+        '"${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch"',
+    )
+    return branch is not None and 'echo "value=true" >> "$GITHUB_OUTPUT"' in branch
+
+
+def git_diff_pathspecs(block_text: str) -> tuple[str, ...] | None:
+    normalized = re.sub(r"\\\s*\n\s*", " ", block_text)
+    matches = [
+        tuple(token for token in command_tokens(match.group("paths")) if token)
+        for match in re.finditer(
+            r"git\s+diff\s+--name-only\b.*?\s--\s(?P<paths>.*?)\)",
+            normalized,
+            re.DOTALL,
+        )
+    ]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def detector_maps_changed_to_any_changed(block_text: str) -> bool:
+    chain = if_chain_bodies(block_text, '-n "$changed"')
+    if chain is None:
+        return False
+    true_write = 'echo "any_changed=true" >> "$GITHUB_OUTPUT"'
+    false_write = 'echo "any_changed=false" >> "$GITHUB_OUTPUT"'
+    return (
+        true_write in chain.get(("if", '-n "$changed"'), "")
+        and false_write in chain.get(("else", ""), "")
+        and block_text.count(true_write) == 1
+        and block_text.count(false_write) == 1
+    )
+
+
+def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
+    errors: list[str] = []
+    text = uncommented_text(job_lines)
+    fingerprint_inputs_text = ""
+    allowance_text = ""
+    fingerprint_inputs_block = unique_step_with_id(job_lines, "fingerprint_reuse_inputs_changed")
+    allowance_block = unique_step_with_id(job_lines, "fingerprint_reuse_allowed")
+    for block in step_blocks(job_lines):
+        block_text = uncommented_text(block)
+        if step_has_id(block, "fingerprint_reuse_inputs_changed"):
+            fingerprint_inputs_text = block_text
+        if step_has_id(block, "fingerprint_reuse_allowed"):
+            allowance_text = block_text
+    if FINGERPRINT_REUSE_ALLOWED_OUTPUT not in text:
+        errors.append("detector must expose fingerprint_reuse_allowed")
+    if fingerprint_inputs_block is None or not block_has_canonical_step_envelope(
+        fingerprint_inputs_block,
+        FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_ALLOWED_KEYS,
+        FINGERPRINT_REUSE_INPUTS_CHANGED_STEP_SCALARS,
+    ):
+        errors.append("detector fingerprint-reuse governance step must match canonical envelope")
+    if fingerprint_inputs_block is None or not block_run_body_matches(
+        fingerprint_inputs_block,
+        FINGERPRINT_REUSE_INPUTS_CHANGED_RUN,
+    ):
+        errors.append("detector fingerprint-reuse governance step must match canonical script")
+    pathspecs = git_diff_pathspecs(fingerprint_inputs_text) if fingerprint_inputs_text else None
+    if pathspecs != FINGERPRINT_REUSE_GOVERNANCE_PATHS:
+        errors.append("detector must detect fingerprint-reuse governance changes")
+    if fingerprint_inputs_text and not detector_maps_changed_to_any_changed(fingerprint_inputs_text):
+        errors.append("detector must map fingerprint-reuse governance changes to any_changed=true")
+    if allowance_block is None or not block_has_canonical_step_envelope(
+        allowance_block,
+        FINGERPRINT_REUSE_ALLOWED_STEP_ALLOWED_KEYS,
+        FINGERPRINT_REUSE_ALLOWED_STEP_SCALARS,
+    ):
+        errors.append("detector fingerprint-reuse allowance step must match canonical envelope")
+    if allowance_block is None or not block_run_body_matches(
+        allowance_block,
+        FINGERPRINT_REUSE_ALLOWED_RUN,
+    ):
+        errors.append("detector fingerprint-reuse allowance step must match canonical script")
+    allowance_chain = if_chain_bodies(allowance_text, '"${{ github.event_name }}" != "pull_request"')
+    if allowance_chain is None:
+        errors.append("detector must deny fingerprint reuse outside pull_request")
+    elif (
+        'echo "value=false" >> "$GITHUB_OUTPUT"'
+        not in allowance_chain.get(("if", '"${{ github.event_name }}" != "pull_request"'), "")
+        or 'echo "value=false" >> "$GITHUB_OUTPUT"'
+        not in allowance_chain.get(
+            (
+                "elif",
+                '"${{ steps.fingerprint_reuse_inputs_changed.outputs.any_changed }}" == "true"',
+            ),
+            "",
+        )
+        or 'echo "value=true" >> "$GITHUB_OUTPUT"' not in allowance_chain.get(("else", ""), "")
+        or allowance_text.count('echo "value=false" >> "$GITHUB_OUTPUT"') != 2
+        or allowance_text.count('echo "value=true" >> "$GITHUB_OUTPUT"') != 1
+    ):
+        errors.append("detector must determine fingerprint_reuse_allowed")
+    return errors
+
+
 def deploy_verifies_downloaded_artifact_checksum(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "cd artifact" in text and "sha256sum -c bolt-v2.sha256" in text
@@ -5296,6 +7742,36 @@ def job_permission_has(job_lines: list[str], permission: str, value: str) -> boo
 
 def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
     return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+actions:\s+read\s*$", workflow_text) is not None
+
+
+def configured_ci_provenance_retention_days() -> int:
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
+        return -1
+    ci_provenance = config.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        return -1
+    artifacts = ci_provenance.get("artifacts")
+    if not isinstance(artifacts, dict):
+        return -1
+    retention_days = artifacts.get("retention_days")
+    return retention_days if isinstance(retention_days, int) else -1
+
+
+def configured_ci_provenance_dispatch_input() -> str:
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, FileNotFoundError, tomllib.TOMLDecodeError):
+        return ""
+    ci_provenance = config.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        return ""
+    dispatch = ci_provenance.get("dispatch")
+    if not isinstance(dispatch, dict):
+        return ""
+    workflow_input = dispatch.get("workflow_input")
+    return workflow_input if isinstance(workflow_input, str) else ""
 
 
 def branch_body(gate_text: str, keyword: str, condition: str) -> str | None:
@@ -5325,18 +7801,25 @@ def shell_line_exit_codes(line: str) -> list[str | None]:
     tokens = command_tokens(line)
     cursor = 0
     at_command_start = True
-    previous_boundary: str | None = None
     while cursor < len(tokens):
         token = tokens[cursor]
         if token in SHELL_COMMAND_BOUNDARIES:
             at_command_start = True
-            previous_boundary = token
             cursor += 1
             continue
-        if at_command_start and pathlib.Path(token).name == "exit":
-            if previous_boundary != "||":
-                code = tokens[cursor + 1] if cursor + 1 < len(tokens) and re.fullmatch(r"[0-9]+", tokens[cursor + 1]) else None
-                codes.append(code)
+        token_name = pathlib.Path(token).name
+        if at_command_start and token_name == "exit":
+            code = tokens[cursor + 1] if cursor + 1 < len(tokens) and re.fullmatch(r"[0-9]+", tokens[cursor + 1]) else None
+            codes.append(code)
+        elif (
+            at_command_start
+            and token_name in {"command", "eval"}
+            and cursor + 1 < len(tokens)
+            and pathlib.Path(tokens[cursor + 1]).name == "exit"
+        ):
+            code_index = cursor + 2
+            code = tokens[code_index] if code_index < len(tokens) and re.fullmatch(r"[0-9]+", tokens[code_index]) else None
+            codes.append(code)
         at_command_start = False
         cursor += 1
     return codes
@@ -5345,11 +7828,19 @@ def shell_line_exit_codes(line: str) -> list[str | None]:
 def shell_line_has_exit_command(line: str) -> bool:
     tokens = command_tokens(line)
     at_command_start = True
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if token in SHELL_COMMAND_BOUNDARIES:
             at_command_start = True
             continue
-        if at_command_start and pathlib.Path(token).name == "exit":
+        token_name = pathlib.Path(token).name
+        if at_command_start and token_name == "exit":
+            return True
+        if (
+            at_command_start
+            and token_name in {"command", "eval"}
+            and index + 1 < len(tokens)
+            and pathlib.Path(tokens[index + 1]).name == "exit"
+        ):
             return True
         at_command_start = False
     return False
@@ -5398,6 +7889,14 @@ def branch_exits_reachable(gate_text: str, keyword: str, condition: str) -> bool
 
 
 def body_exits(body: str) -> bool:
+    return body_exits_with_code(body, "1")
+
+
+def body_exits_zero(body: str) -> bool:
+    return body_exits_with_code(body, "0")
+
+
+def body_exits_with_code(body: str, code: str) -> bool:
     exit_codes: list[str | None] = []
     depth = 0
     for line in shell_logical_lines(body):
@@ -5425,7 +7924,7 @@ def body_exits(body: str) -> bool:
         if clean.startswith("echo "):
             continue
         return False
-    return exit_codes == ["1"]
+    return exit_codes == [code]
 
 
 def extract_action_input_block(action_text: str, input_name: str) -> list[str]:
@@ -5484,8 +7983,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
     errors.extend(workflow_steps_alias_errors(workflow_text))
     jobs = parse_jobs(workflow_text)
+    triggers = workflow_trigger_keys(workflow_text)
+    is_ci_topology = "pull_request" in triggers and "push" in triggers
     errors.extend(raw_rust_storage_errors(workflow_text))
     errors.extend(exact_head_governance_cache_errors(workflow_text))
+    for job_lines in jobs.values():
+        errors.extend(upload_artifact_pin_errors(job_lines))
 
     actual_pr_paths_ignore = extract_paths_ignore_for_trigger(workflow_text, "pull_request")
     if actual_pr_paths_ignore is None or tuple(sorted(actual_pr_paths_ignore)) != CI_PR_PATHS_IGNORE_BASELINE:
@@ -5499,6 +8002,16 @@ def verify_workflow(workflow_text: str) -> list[str]:
             "on.push must have no paths-ignore (push to main/tags must always run full CI); "
             f"got {actual_push_paths_ignore!r}"
         )
+    if is_ci_topology:
+        errors.extend(workflow_pull_request_type_errors(workflow_text))
+        dispatch_input = configured_ci_provenance_dispatch_input()
+        if dispatch_input:
+            errors.extend(
+                workflow_dispatch_input_errors(
+                    workflow_text,
+                    dispatch_input,
+                )
+            )
 
     errors.extend(verify_pr_concurrency(workflow_text))
 
@@ -5511,6 +8024,13 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if "fmt-check" in jobs and "detector" in extract_needs(jobs["fmt-check"]):
         errors.append("fmt-check must not need detector")
+    if "detector" in jobs and not detector_forces_build_on_workflow_dispatch(jobs["detector"]):
+        errors.append("detector must force build_required=true for workflow_dispatch full CI")
+    if "detector" in jobs:
+        errors.extend(detector_fingerprint_reuse_errors(jobs["detector"]))
+
+    if "ci-policy" in jobs:
+        errors.extend(ci_policy_job_errors(jobs["ci-policy"]))
 
     for job in TAG_SKIP_REQUIRED_JOBS:
         if job in jobs and not job_skips_tag_reuse(jobs[job]):
@@ -5519,6 +8039,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "source-fence" in jobs and "detector" not in extract_needs(jobs["source-fence"]):
         # FR-005: #342 owns the early-fail source-fence lane, so it remains detector-gated.
         errors.append("source-fence needs detector")
+    if "source-fence" in jobs:
+        source_fence_needs = extract_needs(jobs["source-fence"])
+        if "ci-policy" not in source_fence_needs:
+            errors.append("source-fence needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["source-fence"]):
+            errors.append("source-fence must gate on full_ci_required")
 
     for job_name, recipe in JOB_REQUIRED_JUST_RECIPE.items():
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):
@@ -5535,6 +8061,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must not need source-fence")
     if "test-shards" in jobs and "test-archive" not in extract_needs(jobs["test-shards"]):
         errors.append("test-shards needs test-archive")
+    if "test-shards" in jobs and "nextest-fingerprint-reuse" not in extract_needs(jobs["test-shards"]):
+        errors.append("test-shards needs nextest-fingerprint-reuse")
 
     if "clippy" in jobs:
         clippy_text = uncommented_text(jobs["clippy"])
@@ -5544,10 +8072,13 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("clippy must not install aarch64 cross compiler")
 
     if "check-aarch64" in jobs:
-        if "detector" not in extract_needs(jobs["check-aarch64"]):
+        check_aarch64_needs = extract_needs(jobs["check-aarch64"])
+        if "detector" not in check_aarch64_needs:
             errors.append("check-aarch64 needs detector")
-        if has_line_matching(jobs["check-aarch64"], CHECK_AARCH64_JOB_LEVEL_IF_RE):
-            errors.append("check-aarch64 must have no job-level if condition")
+        if "ci-policy" not in check_aarch64_needs:
+            errors.append("check-aarch64 needs ci-policy")
+        if not check_aarch64_runs_on_full_or_tag_reuse(jobs["check-aarch64"]):
+            errors.append("check-aarch64 must run on full CI or tag reuse")
         if not check_aarch64_has_coverage_owner_step(jobs["check-aarch64"]):
             errors.append("check-aarch64 must document build-lane aarch64 coverage delegation")
         if not check_aarch64_installs_cross_compiler_packages(jobs["check-aarch64"]):
@@ -5555,11 +8086,36 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.extend(check_aarch64_standalone_guard_errors(jobs["check-aarch64"]))
 
     if "test-archive" in jobs:
+        test_archive_needs = extract_needs(jobs["test-archive"])
+        if "ci-policy" not in test_archive_needs:
+            errors.append("test-archive needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["test-archive"]):
+            errors.append("test-archive must gate on full_ci_required")
         archive_lines = jobs["test-archive"]
         archive_text = uncommented_text(archive_lines)
+        archive_cache_blocks = [
+            block
+            for block in (
+                action_blocks(archive_lines, "actions/cache/restore@")
+                + action_blocks(archive_lines, "actions/cache/save@")
+            )
+            if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
+        ]
+        archive_upload_blocks = [
+            block
+            for block in action_blocks(archive_lines, "actions/upload-artifact@")
+            if block_has_input(block, "name", "nextest-archive")
+            and block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
+        ]
         if TEST_ARCHIVE_PATH not in archive_text:
             errors.append("test-archive must declare nextest archive path")
-        if not all(input_fragment in archive_text for input_fragment in TEST_ARCHIVE_KEY_INPUTS):
+        if not archive_cache_blocks or not all(
+            block_key_value_contains_all(
+                block,
+                (TEST_ARCHIVE_KEY_PREFIX, *TEST_ARCHIVE_KEY_INPUTS),
+            )
+            for block in archive_cache_blocks
+        ):
             errors.append("test-archive cache key must include Rust and test graph inputs")
         if "include-managed-target-dir:" in archive_text:
             errors.append("test-archive must not opt into managed target dir")
@@ -5569,7 +8125,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must restore nextest archive cache")
         if TEST_ARCHIVE_SAVE_ACTION not in archive_text:
             errors.append("test-archive must save nextest archive cache")
-        if TEST_ARCHIVE_UPLOAD_ACTION not in archive_text:
+        if not archive_upload_blocks:
             errors.append("test-archive must upload nextest archive artifact")
         if "restore-keys:" in archive_text:
             errors.append("test-archive cache must not use restore-keys")
@@ -5579,8 +8135,50 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive build must be skipped on archive cache hit")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
+        errors.extend(test_archive_fingerprint_errors(archive_lines))
+
+    if "nextest-fingerprint-reuse" in jobs:
+        reuse_lines = jobs["nextest-fingerprint-reuse"]
+        reuse_needs = extract_needs(reuse_lines)
+        if "ci-policy" not in reuse_needs:
+            errors.append("nextest-fingerprint-reuse needs ci-policy")
+        if "detector" not in reuse_needs:
+            errors.append("nextest-fingerprint-reuse needs detector")
+        if "test-archive" not in reuse_needs:
+            errors.append("nextest-fingerprint-reuse needs test-archive")
+        if not job_if_uses_always(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must use always()")
+        if not job_gates_on_full_ci_required(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must gate on full_ci_required")
+        if not fingerprint_reuse_uses_canonical_job_if(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must use the canonical job if")
+        if not fingerprint_reuse_gates_on_pull_request(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must be PR-only")
+        if not fingerprint_reuse_skips_main_branch(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must skip main branch")
+        if not fingerprint_reuse_gates_on_detector_allowed(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must gate on fingerprint_reuse_allowed")
+        if not fingerprint_reuse_job_has_outputs(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must expose reuse provenance outputs")
+        if not fingerprint_reuse_resolver_envelope_is_canonical(reuse_lines):
+            errors.append("nextest-fingerprint-reuse resolver step must match canonical envelope")
+        if not fingerprint_reuse_resolver_is_canonical(reuse_lines):
+            errors.append("nextest-fingerprint-reuse resolver step must match canonical script")
+        if not fingerprint_reuse_job_uses_secure_current_fingerprint(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must use secure current nextest fingerprint output")
+        if not fingerprint_reuse_job_runs_resolver(reuse_lines):
+            errors.append("nextest-fingerprint-reuse must run ci_provenance.py resolve-fingerprint")
+        if not fingerprint_reuse_resolver_uses_bash(reuse_lines):
+            errors.append("nextest-fingerprint-reuse resolver must use bash")
 
     if "test-shards" in jobs:
+        test_shards_needs = extract_needs(jobs["test-shards"])
+        if "ci-policy" not in test_shards_needs:
+            errors.append("test-shards needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["test-shards"]):
+            errors.append("test-shards must gate on full_ci_required")
+        if not test_shards_skip_on_fingerprint_reuse(jobs["test-shards"]):
+            errors.append("test-shards must skip on validated nextest fingerprint reuse")
         test_lines = jobs["test-shards"]
         test_text = uncommented_text(test_lines)
         if not has_line_matching(test_lines, TEST_FAIL_FAST_FALSE_RE):
@@ -5610,18 +8208,65 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "test" in jobs:
         test_needs = extract_needs(jobs["test"])
         test_text = uncommented_text(jobs["test"])
+        if "ci-policy" not in test_needs:
+            errors.append("test needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["test"]):
+            errors.append("test must gate on full_ci_required")
         if "test-shards" not in test_needs:
             errors.append("test needs test-shards")
+        if "test-archive" not in test_needs:
+            errors.append("test needs test-archive")
+        if "nextest-fingerprint-reuse" not in test_needs:
+            errors.append("test needs nextest-fingerprint-reuse")
         if not gate_checks_lane_success(test_text, "test-shards"):
             errors.append("test must check needs.test-shards.result")
+        if not test_accepts_fingerprint_reuse(jobs["test"]):
+            errors.append("test must accept validated nextest fingerprint reuse")
         if not job_if_uses_always(jobs["test"]):
             errors.append("test must use always()")
 
     if "build" in jobs:
-        if "detector" not in extract_needs(jobs["build"]):
+        build_needs = extract_needs(jobs["build"])
+        if "detector" not in build_needs:
             errors.append("build needs detector")
+        if "ci-policy" not in build_needs:
+            errors.append("build needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["build"]):
+            errors.append("build must gate on full_ci_required")
         if not has_line_matching(jobs["build"], BUILD_IF_RE):
             errors.append("build must gate on needs.detector.outputs.build_required and skip tag reuse")
+
+    if "ci-provenance-emit" in jobs:
+        emit_lines = jobs["ci-provenance-emit"]
+        emit_needs = extract_needs(emit_lines)
+        if "ci-policy" not in emit_needs:
+            errors.append("ci-provenance-emit needs ci-policy")
+        for job in (*CI_PROVENANCE_REQUIRED_JOBS, "build"):
+            if job not in emit_needs:
+                errors.append(f"ci-provenance-emit needs {job}")
+        if "nextest-fingerprint-reuse" not in emit_needs:
+            errors.append("ci-provenance-emit needs nextest-fingerprint-reuse")
+        if "gate" in emit_needs:
+            errors.append("ci-provenance-emit must not need gate")
+        if not job_if_uses_always(emit_lines):
+            errors.append("ci-provenance-emit must use always()")
+        if not job_skips_tag_reuse(emit_lines):
+            errors.append("ci-provenance-emit must skip tag reuse")
+        if not job_gates_on_full_ci_required(emit_lines):
+            errors.append("ci-provenance-emit must gate on full_ci_required")
+        if NEXTEST_REUSE_MISS_EXPR not in uncommented_text(emit_lines):
+            errors.append("ci-provenance-emit must skip validated nextest fingerprint reuse")
+        if not ci_provenance_emit_runs_emitter(emit_lines):
+            errors.append("ci-provenance-emit must run provenance emitter")
+        errors.extend(ci_provenance_emit_checks_needs(emit_lines, (*CI_PROVENANCE_REQUIRED_JOBS, "build")))
+        errors.extend(
+            ci_provenance_emit_upload_errors(
+                emit_lines,
+                configured_ci_provenance_retention_days(),
+            )
+        )
+        if not ci_provenance_emit_records_secure_fingerprint(emit_lines):
+            errors.append("ci-provenance-emit must record nextest fingerprint when present")
 
     if "same-sha-main-evidence" in jobs:
         if "detector" not in extract_needs(jobs["same-sha-main-evidence"]):
@@ -5636,6 +8281,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "gate" in jobs:
         gate_needs = extract_needs(jobs["gate"])
         gate_text = uncommented_text(jobs["gate"])
+        if "ci-policy" not in gate_needs:
+            errors.append("gate needs ci-policy")
         for job in GATE_REQUIRED:
             if job not in gate_needs:
                 errors.append(f"gate needs {job}")
@@ -5649,9 +8296,15 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"gate must check needs.{job}.result")
         if "same-sha-main-evidence" not in gate_needs:
             errors.append("gate needs same-sha-main-evidence")
+        if "nextest-fingerprint-reuse" not in gate_needs:
+            errors.append("gate needs nextest-fingerprint-reuse")
+        errors.extend(gate_policy_truth_table_errors(gate_text))
         errors.extend(gate_checks_same_sha_reuse(gate_text))
+        errors.extend(gate_checks_nextest_fingerprint_reuse(gate_text))
         if not has_line_matching(jobs["gate"], GATE_IF_RE):
             errors.append("gate must use always()")
+        if "nextest_fingerprint" in gate_text:
+            errors.append("gate must not read nextest_fingerprint")
 
     if "deploy" in jobs:
         deploy_needs = extract_needs(jobs["deploy"])
@@ -5788,21 +8441,6 @@ def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> lis
         if command_index is not None and install_index >= command_index:
             errors.append(f"{workflow_name} {job} must install {tool} before {command}")
 
-    build_lines = jobs.get("build")
-    if build_lines is None:
-        return errors
-    build_text = uncommented_text(build_lines)
-    if "archive.sha256" in build_text or "steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256" not in build_text:
-        errors.append(f"{workflow_name} build must use pinned cargo-zigbuild archive sha256")
-    zigbuild_install_index = first_step_containing_literals_in_order(build_lines, ZIGBUILD_PREBUILT_LITERALS)
-    if zigbuild_install_index is None:
-        errors.append(f"{workflow_name} build must install cargo-zigbuild from checksum-verified prebuilt release")
-    else:
-        build_command_index = first_step_running_command(build_lines, "just build")
-        if build_command_index is not None and zigbuild_install_index >= build_command_index:
-            errors.append(f"{workflow_name} build must install cargo-zigbuild before just build")
-    if 'test "$actual" = "$expected"' not in build_text:
-        errors.append(f"{workflow_name} build must verify cargo-zigbuild archive checksum")
     return errors
 
 
@@ -5810,6 +8448,15 @@ def verify_setup_action(action_text: str) -> list[str]:
     errors: list[str] = []
     uncommented_lines = [strip_comment(line) for line in action_text.splitlines()]
     uncommented = "\n".join(uncommented_lines)
+    install_just_step = named_step_block(action_text.splitlines(), "Install just")
+    if (
+        install_just_step is None
+        or not block_uses_pinned_install_action(install_just_step)
+        or not block_has_input(install_just_step, "tool", SETUP_JUST_TOOL)
+    ):
+        errors.append("setup action must install just with pinned taiki-e/install-action")
+    elif not block_has_input(install_just_step, "fallback", "none"):
+        errors.append("setup action just install-action fallback must be none")
     step_lines = [action_step_line(action_text, step) for step in SETUP_ACTION_ORDERED_STEPS]
     if any(line is None for line in step_lines):
         errors.append("setup action missing required ordered steps")
@@ -5938,6 +8585,15 @@ def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]
     return ["backtester-gate must check needs.detect.result and exit 1 when detect fails"]
 
 
+def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
+    if not file_name.endswith("backtester-ci.yml"):
+        return []
+    detect_job = parse_jobs(text).get("detect", [])
+    if any("ci/github-actions-runners.toml" in line for line in detect_job):
+        return []
+    return ["backtester detect paths must include ci/github-actions-runners.toml"]
+
+
 def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for file_name, text in texts.items():
@@ -5949,6 +8605,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
         add_unique_errors(
             errors,
             (f"{file_name}: {error}" for error in backtester_gate_detect_result_errors(file_name, text)),
+        )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in backtester_detect_path_errors(file_name, text)),
         )
         automation_texts = [text, *yaml_run_shell_texts(uncommented_text(text.splitlines()))]
         for automation_text in automation_texts:
@@ -5983,14 +8643,16 @@ def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config
     errors.extend(raw_rust_storage_errors(action_text))
     errors.extend(verify_setup_action(action_text))
     errors.extend(verify_nextest_config(nextest_config_text))
-    errors.extend(verify_install_action_pin_consistency(workflows))
+    install_action_pin_sources = dict(workflows)
+    install_action_pin_sources[".github/actions/setup-environment/action.yml"] = action_text
+    errors.extend(verify_install_action_pin_consistency(install_action_pin_sources))
     return errors
 
 
-def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str]:
+def verify_install_action_pin_consistency(sources: dict[str, str]) -> list[str]:
     # Dependabot groups action bumps so all taiki-e/install-action pins move
     # together; this guards against half-bumps in human-authored PRs that
-    # leave workflow files referencing inconsistent SHAs. Scan line-by-line
+    # leave workflow/action files referencing inconsistent SHAs. Scan line-by-line
     # after stripping comments so commentary containing the action ref does
     # not produce false positives.
     #
@@ -6006,9 +8668,9 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
     # reference must not phantom-bucket and mask a real drift.
     errors: list[str] = []
     sha_to_files: dict[str, list[str]] = {}
-    for workflow_name, workflow_text in workflows.items():
+    for source_name, source_text in sources.items():
         previous_line_was_bare_uses_key = False
-        for line_index, line in enumerate(workflow_text.splitlines(), start=1):
+        for line_index, line in enumerate(source_text.splitlines(), start=1):
             clean = strip_comment(line)
             mentions_install_action = bool(TAIKI_INSTALL_ACTION_MENTION_RE.search(clean))
             scoped_to_uses_value = (
@@ -6021,18 +8683,555 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
             match = TAIKI_INSTALL_ACTION_RE.match(clean)
             if match is None:
                 errors.append(
-                    f"{workflow_name}:{line_index}: taiki-e/install-action must be referenced as "
+                    f"{source_name}:{line_index}: taiki-e/install-action must be referenced as "
                     f"'uses: taiki-e/install-action@<40-hex-SHA>' on a single line, got: {clean.strip()}"
                 )
                 continue
             sha = match.group(2).lower()
-            sha_to_files.setdefault(sha, []).append(workflow_name)
+            sha_to_files.setdefault(sha, []).append(source_name)
     if len(sha_to_files) > 1:
         parts = sorted(
             f"{sha} in {','.join(sorted(set(files)))}"
             for sha, files in sha_to_files.items()
         )
         errors.append("taiki-e/install-action pin drift: " + "; ".join(parts))
+    return errors
+
+
+def require_config_table(parent: dict[str, object], key: str, prefix: str) -> dict[str, object]:
+    value = parent.get(key)
+    if not isinstance(value, dict):
+        raise ValueError(f"{prefix}.{key} must be a table")
+    return value
+
+
+def require_config_string(parent: dict[str, object], key: str, prefix: str) -> str:
+    value = parent.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{prefix}.{key} must be a non-empty string")
+    return value
+
+
+def require_config_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
+    value = parent.get(key)
+    if not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{prefix}.{key} must be a positive integer")
+    return value
+
+
+def require_config_string_list(parent: dict[str, object], key: str, prefix: str) -> list[str]:
+    value = parent.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"{prefix}.{key} must be a non-empty string list")
+    return value
+
+
+def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
+    ci_provenance = data.get("ci_provenance")
+    if not isinstance(ci_provenance, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [ci_provenance]")
+
+    duplicated_fingerprint_keys = {
+        "fingerprint_artifact_prefix",
+        "fingerprint_workflow",
+    } & set(ci_provenance)
+    if duplicated_fingerprint_keys:
+        raise ValueError(
+            "[ci_provenance] must reference [meter] fingerprint keys instead of duplicating "
+            + ", ".join(sorted(duplicated_fingerprint_keys))
+        )
+
+    if ci_provenance.get("schema_version") != 1:
+        raise ValueError("ci_provenance.schema_version must be 1")
+    artifact_name_template = require_config_string(
+        ci_provenance, "artifact_name_template", "ci_provenance"
+    )
+    if "{run_attempt}" not in artifact_name_template:
+        raise ValueError("ci_provenance.artifact_name_template must include {run_attempt}")
+    if require_config_string(ci_provenance, "workflow_key", "ci_provenance") != "ci":
+        raise ValueError("ci_provenance.workflow_key must be ci")
+    require_config_string(ci_provenance, "workflow_name", "ci_provenance")
+    require_config_string(ci_provenance, "workflow_path", "ci_provenance")
+    if require_config_string(ci_provenance, "fingerprint_source", "ci_provenance") != "meter":
+        raise ValueError("ci_provenance.fingerprint_source must be meter")
+
+    meter = data.get("meter")
+    if not isinstance(meter, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [meter]")
+    require_config_string(meter, "fingerprint_artifact_prefix", "meter")
+    require_config_string(meter, "fingerprint_workflow", "meter")
+
+    full_ci = require_config_table(ci_provenance, "full_ci", "ci_provenance")
+    required_jobs = require_config_string_list(full_ci, "required_jobs", "ci_provenance.full_ci")
+    if tuple(required_jobs) != CI_PROVENANCE_REQUIRED_JOBS:
+        raise ValueError(
+            "ci_provenance.full_ci.required_jobs must match the current full-CI logical jobs"
+        )
+    conditional_jobs = require_config_string_list(
+        full_ci, "conditional_jobs", "ci_provenance.full_ci"
+    )
+    if conditional_jobs != ["build"]:
+        raise ValueError("ci_provenance.full_ci.conditional_jobs must be ['build']")
+    conditional_outputs = full_ci.get("conditional_job_outputs")
+    if (
+        not isinstance(conditional_outputs, dict)
+        or conditional_outputs.get("build") != "detector.build_required"
+    ):
+        raise ValueError(
+            "ci_provenance.full_ci.conditional_job_outputs.build must be detector.build_required"
+        )
+    jobs = require_config_table(full_ci, "jobs", "ci_provenance.full_ci")
+    for job in (*CI_PROVENANCE_REQUIRED_JOBS, "build"):
+        if job not in jobs:
+            raise ValueError(f"ci_provenance.full_ci.jobs.{job} missing")
+        job_table = jobs[job]
+        if not isinstance(job_table, dict):
+            raise ValueError(f"ci_provenance.full_ci.jobs.{job} must be a table")
+        if job == "test-shards":
+            template = require_config_string(
+                job_table, "check_name_template", "ci_provenance.full_ci.jobs.test-shards"
+            )
+            shard_count = require_config_positive_int(
+                job_table, "shard_count", "ci_provenance.full_ci.jobs.test-shards"
+            )
+            if shard_count != 4:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards shard_count must match the ci.yml shard matrix"
+                )
+            if "{shard}" not in template:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards check_name_template must include {shard}"
+                )
+            literal_count = re.search(r"\bof\s+(\d+)\b", template)
+            if "{shard_count}" not in template and literal_count is None:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards check_name_template must include shard count"
+                )
+            if literal_count is not None and int(literal_count.group(1)) != shard_count:
+                raise ValueError(
+                    "ci_provenance.full_ci.jobs.test-shards template count must match shard_count"
+                )
+        else:
+            require_config_string(job_table, "check_name", f"ci_provenance.full_ci.jobs.{job}")
+        if job == "build" and job_table.get("conditional") != "detector.build_required":
+            raise ValueError(
+                "ci_provenance.full_ci.jobs.build.conditional must be detector.build_required"
+            )
+
+    deploy = require_config_table(ci_provenance, "deploy", "ci_provenance")
+    require_config_string(deploy, "artifact_name", "ci_provenance.deploy")
+    if deploy.get("require_source_event") != "push":
+        raise ValueError("ci_provenance.deploy.require_source_event must be push")
+    if deploy.get("require_source_branch") != "main":
+        raise ValueError("ci_provenance.deploy.require_source_branch must be main")
+    if deploy.get("require_gate_check") is not True:
+        raise ValueError("ci_provenance.deploy.require_gate_check must be true")
+
+    dispatch = require_config_table(ci_provenance, "dispatch", "ci_provenance")
+    require_config_string(dispatch, "workflow_input", "ci_provenance.dispatch")
+
+    api_limits = require_config_table(ci_provenance, "api_limits", "ci_provenance")
+    for key in (
+        "workflow_runs_per_page",
+        "run_jobs_per_page",
+        "run_artifacts_per_page",
+        "max_lookback_pages",
+        "max_lookback_age_seconds",
+    ):
+        require_config_positive_int(api_limits, key, "ci_provenance.api_limits")
+
+    artifacts = require_config_table(ci_provenance, "artifacts", "ci_provenance")
+    retention_days = require_config_positive_int(
+        artifacts, "retention_days", "ci_provenance.artifacts"
+    )
+    if api_limits["max_lookback_age_seconds"] > retention_days * 24 * 60 * 60:
+        raise ValueError(
+            "ci_provenance.api_limits.max_lookback_age_seconds must not exceed artifact retention"
+        )
+
+    policy = require_config_table(ci_provenance, "policy", "ci_provenance")
+    unexpected_policy_keys = set(policy) - set(CI_PROVENANCE_POLICY_ROWS) - {"override"}
+    if unexpected_policy_keys:
+        raise ValueError(
+            f"ci_provenance.policy has unexpected keys: {sorted(unexpected_policy_keys)!r}"
+        )
+    for row in CI_PROVENANCE_POLICY_ROWS:
+        value = policy.get(row)
+        if value not in CI_PROVENANCE_POLICY_VALUES:
+            raise ValueError(
+                f"ci_provenance.policy.{row} must be one of {sorted(CI_PROVENANCE_POLICY_VALUES)!r}"
+            )
+        expected = CI_PROVENANCE_POLICY_EXPECTED[row]
+        if value != expected:
+            raise ValueError(f"ci_provenance.policy.{row} must be {expected}")
+    override = require_config_table(policy, "override", "ci_provenance.policy")
+    if override.get("force_full_ci") is not False:
+        raise ValueError("ci_provenance.policy.override.force_full_ci must default to false")
+    if override.get("ignore_emit_failure") is not False:
+        raise ValueError(
+            "ci_provenance.policy.override.ignore_emit_failure must default to false"
+        )
+
+    return ci_provenance
+
+
+def validate_dispatch_cancel_config(data: dict[str, object]) -> dict[str, object]:
+    section = data.get("dispatch_cancel")
+    if not isinstance(section, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [dispatch_cancel]")
+    event = section.get("workflow_event")
+    if event != "workflow_dispatch":
+        raise ValueError("dispatch_cancel.workflow_event must be workflow_dispatch")
+    active_statuses = section.get("active_statuses")
+    required_statuses = {"queued", "requested", "waiting", "pending", "in_progress"}
+    if not isinstance(active_statuses, list) or set(active_statuses) != required_statuses:
+        raise ValueError(
+            "dispatch_cancel.active_statuses must cover queued, requested, waiting, pending, and in_progress"
+        )
+    for key in ("workflow_runs_per_page", "max_pages"):
+        require_config_positive_int(section, key, "dispatch_cancel")
+    return section
+
+
+def load_github_actions_runners_config(
+    path: pathlib.Path | None = None,
+) -> dict[str, object]:
+    if path is None:
+        path = DEFAULT_RUNNERS_CONFIG
+    if not path.exists():
+        raise FileNotFoundError(f"managed runner config missing: {path}")
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    runners = data.get("runners")
+    workflows = data.get("workflows")
+    meter = data.get("meter")
+    if not isinstance(runners, dict) or not isinstance(workflows, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [runners] and [workflows]")
+    if not isinstance(meter, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [meter]")
+    ci_provenance = validate_ci_provenance_config(data)
+    dispatch_cancel = validate_dispatch_cancel_config(data)
+    meter_workflows = meter.get("included_workflows")
+    if not isinstance(meter_workflows, list) or not all(
+        isinstance(workflow, str) and workflow for workflow in meter_workflows
+    ):
+        raise ValueError("meter.included_workflows must be a non-empty string list")
+    meter_api_limits = meter.get("api_limits")
+    if not isinstance(meter_api_limits, dict):
+        raise ValueError("meter.api_limits must be a table")
+    for key in (
+        "workflow_runs_per_page",
+        "run_jobs_per_page",
+        "run_artifacts_per_page",
+        "branch_pull_requests_per_page",
+        "draft_timeline_items",
+    ):
+        value = meter_api_limits.get(key)
+        if not isinstance(value, int) or value <= 0:
+            raise ValueError(f"meter.api_limits.{key} must be a positive integer")
+    tier_to_var: dict[str, str] = {}
+    managed_labels: list[str] = []
+    for tier, entry in runners.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"runners.{tier} must be a table")
+        variable = entry.get("variable")
+        label = entry.get("label")
+        if not isinstance(variable, str) or not variable:
+            raise ValueError(f"runners.{tier}.variable must be a non-empty string")
+        if not isinstance(label, str) or not label:
+            raise ValueError(f"runners.{tier}.label must be a non-empty string")
+        tier_to_var[tier] = variable
+        if tier != "github_hosted":
+            managed_labels.append(label)
+    for workflow_key, job_table in workflows.items():
+        if not isinstance(job_table, dict):
+            raise ValueError(f"workflows.{workflow_key} must be a table")
+        for job, tier in job_table.items():
+            if not isinstance(tier, str) or not tier:
+                raise ValueError(f"workflows.{workflow_key}.{job} must name a runner tier")
+    return {
+        "tier_to_var": tier_to_var,
+        "managed_labels": sorted(set(managed_labels)),
+        "meter_included_workflows": sorted(set(meter_workflows)),
+        "variables": sorted(tier_to_var.values()),
+        "workflows": workflows,
+        "ci_provenance": ci_provenance,
+        "dispatch_cancel": dispatch_cancel,
+    }
+
+
+def extract_job_runs_on_var(job_lines: list[str]) -> str | None:
+    for line in job_lines:
+        match = JOB_RUNS_ON_VAR_RE.match(line)
+        if match is not None:
+            return match.group(1)
+    return None
+
+
+def workflow_trigger_keys(workflow_text: str) -> set[str]:
+    lines = [strip_comment(line).rstrip() for line in workflow_text.splitlines()]
+    for index, line in enumerate(lines):
+        if line == "on:":
+            triggers: set[str] = set()
+            for child in lines[index + 1 :]:
+                if child and not child.startswith((" ", "\t")):
+                    break
+                match = re.match(r"^  ([^ \t:#][^:#]*):", child)
+                if match:
+                    triggers.add(match.group(1).strip().strip("'\""))
+            return triggers
+        if line.startswith("on:"):
+            inline = line[len("on:") :].strip()
+            if inline.startswith("[") and inline.endswith("]"):
+                return {
+                    item.strip().strip("'\"")
+                    for item in inline[1:-1].split(",")
+                    if item.strip()
+                }
+            if inline:
+                return {inline.strip().strip("'\"")}
+    return set()
+
+
+def load_ci_runner_debug_config(path: pathlib.Path = DEFAULT_RUNNERS_CONFIG) -> dict[str, str]:
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    section = data.get("ci_runner_debug")
+    if not isinstance(section, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [ci_runner_debug]")
+    required = ("ssh_wait_minutes_variable", "ssh_public_key_secret", "ssh_runner_action")
+    config: dict[str, str] = {}
+    for key in required:
+        value = section.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"ci_runner_debug.{key} must be a non-empty string")
+        config[key] = value
+    if not SSH_RUNNER_ACTION_RE.fullmatch(config["ssh_runner_action"]):
+        raise ValueError(
+            "ci_runner_debug.ssh_runner_action must pin ubicloud/ssh-runner to a 40-character SHA"
+        )
+    return config
+
+
+def verify_ci_runner_debug_workflow(workflows: dict[str, str]) -> list[str]:
+    workflow_name = ".github/workflows/ci-runner-debug.yml"
+    if workflow_name not in workflows:
+        return []
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        debug_config = load_ci_runner_debug_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"ci runner debug config invalid: {exc}"]
+
+    workflow_text = workflows[workflow_name]
+    errors: list[str] = []
+    expected_action = f"uses: {debug_config['ssh_runner_action']}"
+    expected_secret = f"secrets.{debug_config['ssh_public_key_secret']}"
+    expected_wait = f"vars.{debug_config['ssh_wait_minutes_variable']}"
+    triggers = workflow_trigger_keys(workflow_text)
+    if triggers != {"workflow_dispatch"}:
+        errors.append(
+            f"{workflow_name} must be manual-only with only workflow_dispatch, got {sorted(triggers)!r}"
+        )
+    jobs = parse_jobs(workflow_text)
+    for job in ("debug-heavy", "debug-light"):
+        job_lines = jobs.get(job)
+        if job_lines is None:
+            continue
+        if not any(expected_action in line for line in job_lines):
+            errors.append(f"{workflow_name} {job} must reference {expected_action!r}")
+        if not any(expected_secret in line for line in job_lines):
+            errors.append(f"{workflow_name} {job} must reference {expected_secret!r}")
+        if not any(expected_wait in line for line in job_lines):
+            errors.append(f"{workflow_name} {job} must reference {expected_wait!r}")
+    return errors
+
+
+def verify_dispatch_ci_cancel_workflow(workflows: dict[str, str]) -> list[str]:
+    workflow_name = ".github/workflows/dispatch-ci-cancel.yml"
+    workflow_text = workflows.get(workflow_name)
+    if workflow_text is None:
+        return [f"{workflow_name} must exist to cancel stale branch workflow_dispatch CI runs"]
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"github-actions runner config invalid: {exc}"]
+
+    ci_provenance = config["ci_provenance"]
+    workflow_event = config["dispatch_cancel"]["workflow_event"]
+    expected_ci_name = str(ci_provenance["workflow_name"])
+    jobs = parse_jobs(workflow_text)
+    job = jobs.get("cancel-obsolete-dispatch")
+    errors: list[str] = []
+    if workflow_trigger_keys(workflow_text) != {"workflow_run"}:
+        errors.append(f"{workflow_name} must trigger only on workflow_run")
+    trigger = "\n".join(workflow_trigger_block(workflow_text, "workflow_run"))
+    if f'workflows: ["{expected_ci_name}"]' not in trigger and f"workflows: ['{expected_ci_name}']" not in trigger:
+        errors.append(f"{workflow_name} workflow_run trigger must watch {expected_ci_name!r}")
+    if "types: [requested]" not in trigger:
+        errors.append(f"{workflow_name} workflow_run trigger must use requested only")
+    permissions = "\n".join(top_level_block(workflow_text, "permissions"))
+    if "  actions: write" not in permissions:
+        errors.append(f"{workflow_name} permissions must include actions: write")
+    if "  contents: read" not in permissions:
+        errors.append(f"{workflow_name} permissions must include contents: read")
+    if job is None:
+        errors.append(f"{workflow_name} must define cancel-obsolete-dispatch job")
+        return errors
+    job_if = job_if_value(job)
+    job_text = "\n".join(job)
+    event_guard = f"github.event.workflow_run.event == '{workflow_event}'"
+    name_guard = f"github.event.workflow_run.name == '{expected_ci_name}'"
+    if event_guard not in job_if:
+        errors.append(f"{workflow_name} job must filter workflow_dispatch runs")
+    if name_guard not in job_if:
+        errors.append(f"{workflow_name} job must filter the configured CI workflow")
+    if re.search(rf"{re.escape(event_guard)}\s*&&\s*{re.escape(name_guard)}", job_if) is None:
+        errors.append(f"{workflow_name} job must join workflow_dispatch and CI filters with &&")
+    if "python3 scripts/cancel_obsolete_dispatch_runs.py" not in job_text:
+        errors.append(f"{workflow_name} job must run scripts/cancel_obsolete_dispatch_runs.py")
+    if "GITHUB_TOKEN: ${{ github.token }}" not in job_text:
+        errors.append(f"{workflow_name} job must pass github.token without exposing secrets")
+    if "GITHUB_EVENT_PATH: ${{ github.event_path }}" not in job_text:
+        errors.append(f"{workflow_name} job must pass github.event_path")
+    if "GITHUB_REPOSITORY: ${{ github.repository }}" not in job_text:
+        errors.append(f"{workflow_name} job must pass github.repository")
+    return errors
+
+
+def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str]:
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"github-actions runner config invalid: {exc}"]
+
+    tier_to_var = config["tier_to_var"]
+    meter_included_workflows = set(config["meter_included_workflows"])
+    workflow_tables = config["workflows"]
+    errors: list[str] = []
+    known_workflow_keys = set(WORKFLOW_RUNNER_CONFIG_KEYS.values())
+    for workflow_key in sorted(workflow_tables):
+        if workflow_key not in known_workflow_keys:
+            errors.append(
+                f"workflows.{workflow_key} in ci/github-actions-runners.toml has no workflow contract"
+            )
+    managed_workflows = {
+        workflow_key
+        for workflow_key, job_table in workflow_tables.items()
+        if isinstance(job_table, dict)
+        and any(isinstance(tier, str) and tier != "github_hosted" for tier in job_table.values())
+    }
+    if meter_included_workflows != managed_workflows:
+        errors.append(
+            "meter.included_workflows must match workflows with managed runner tiers: "
+            f"expected {sorted(managed_workflows)!r}, got {sorted(meter_included_workflows)!r}"
+        )
+
+    for workflow_name, workflow_text in sorted(workflows.items()):
+        jobs = parse_jobs(workflow_text)
+        if not jobs:
+            continue
+        workflow_key = WORKFLOW_RUNNER_CONFIG_KEYS.get(workflow_name)
+        if workflow_key is None:
+            errors.append(
+                f"{workflow_name} must be mapped in ci/github-actions-runners.toml"
+            )
+            continue
+        job_table = workflow_tables.get(workflow_key)
+        if not isinstance(job_table, dict):
+            errors.append(f"workflows.{workflow_key} missing in ci/github-actions-runners.toml")
+            continue
+        configured_jobs = set(job_table)
+        actual_jobs = set(jobs)
+        for job in sorted(configured_jobs - actual_jobs):
+            errors.append(
+                f"{workflow_name} configured runner job {job} missing from workflow"
+            )
+        for job in sorted(actual_jobs - configured_jobs):
+            errors.append(
+                f"{workflow_name} job {job} missing from ci/github-actions-runners.toml"
+            )
+        for job in sorted(configured_jobs & actual_jobs):
+            tier = job_table[job]
+            expected_var = tier_to_var.get(tier)
+            if expected_var is None:
+                errors.append(f"unknown runner tier {tier!r} for {workflow_name} {job}")
+                continue
+            actual_var = extract_job_runs_on_var(jobs[job])
+            if actual_var is None:
+                errors.append(
+                    f"{workflow_name} {job} runs-on must reference vars.{expected_var} "
+                    "(no hardcoded runner labels)"
+                )
+                continue
+            if actual_var != expected_var:
+                errors.append(
+                    f"{workflow_name} {job} runs-on must use vars.{expected_var}, got vars.{actual_var}"
+                )
+    return errors
+
+
+def actionlint_config_variables(actionlint_text: str) -> set[str]:
+    variables: set[str] = set()
+    in_section = False
+    for line in actionlint_text.splitlines():
+        clean = strip_comment(line).strip()
+        if clean == "config-variables:":
+            in_section = True
+            continue
+        if in_section:
+            if clean and not clean.startswith("- "):
+                break
+            if clean.startswith("- "):
+                variables.add(clean[2:].strip())
+    return variables
+
+
+def workflow_repository_variables(workflows: dict[str, str]) -> set[str]:
+    variables: set[str] = set()
+    for workflow_text in workflows.values():
+        for match in re.finditer(r"vars\.([A-Z0-9_]+)", workflow_text):
+            variables.add(match.group(1))
+    return variables
+
+
+def verify_actionlint_runner_contract(
+    workflows: dict[str, str],
+    actionlint_path: pathlib.Path = DEFAULT_ACTIONLINT_CONFIG,
+) -> list[str]:
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"github-actions runner config invalid: {exc}"]
+    if not actionlint_path.exists():
+        return [f"actionlint config missing: {actionlint_path}"]
+
+    text = actionlint_path.read_text(encoding="utf-8")
+    allowed_variables = actionlint_config_variables(text)
+    errors: list[str] = []
+    for label in config["managed_labels"]:
+        if f"- {label}" not in text:
+            errors.append(f".github/actionlint.yaml must list managed runner label {label!r}")
+    for variable in config["variables"]:
+        if variable not in allowed_variables:
+            errors.append(f".github/actionlint.yaml must allow config variable {variable!r}")
+    for variable in sorted(workflow_repository_variables(workflows)):
+        if variable not in allowed_variables:
+            errors.append(
+                f".github/actionlint.yaml must allow repository variable {variable!r} "
+                "referenced by workflow vars.* expressions"
+            )
+    expected_variables = set(config["variables"]) | workflow_repository_variables(workflows)
+    for variable in sorted(allowed_variables - expected_variables):
+        errors.append(
+            f".github/actionlint.yaml allows stale config variable {variable!r} "
+            "not referenced by workflows or ci/github-actions-runners.toml"
+        )
     return errors
 
 
@@ -6060,7 +9259,14 @@ def main() -> int:
         for path in sorted(directory.glob(pattern)):
             repo_automation_texts[path.relative_to(REPO_ROOT).as_posix()] = path.read_text()
     errors = verify_workflows(workflow_texts, action_text, nextest_config_text)
+    errors.extend(verify_github_actions_runner_contract(workflow_texts))
+    errors.extend(verify_ci_runner_debug_workflow(workflow_texts))
+    errors.extend(verify_dispatch_ci_cancel_workflow(workflow_texts))
+    errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
+    errors.extend(verify_rust_verification_policies())
+    if "justfile" in repo_automation_texts:
+        errors.extend(verify_source_fence_static_recipe(repo_automation_texts["justfile"]))
     if DEFAULT_NO_MISTAKES_CONFIG.exists():
         errors.extend(verify_no_mistakes_config(DEFAULT_NO_MISTAKES_CONFIG.read_text()))
     if errors:
@@ -6072,4 +9278,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     sys.exit(main())

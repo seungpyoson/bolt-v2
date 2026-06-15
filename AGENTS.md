@@ -2,6 +2,22 @@
 
 These repo-level rules are in addition to any higher-level agent instructions.
 
+## Instruction Precedence And Sources
+
+- Direct user instructions for the current turn win unless they would violate safety.
+- This `AGENTS.md` is the repo governance source and shared operational entrypoint for coding agents.
+- `.specify/memory/constitution.md` is the SpecKit project-principles artifact. Update it when a governance change also changes SpecKit principles or gates, but do not use it as the primary agent workflow document.
+- `CLAUDE.md`, `GEMINI.md`, generated SpecKit adapter prompts, Superpowers skills, and other plugin docs are lower-priority tool adapters. If they conflict with this file, follow `AGENTS.md`, then report the drift.
+- The active SpecKit plan is feature context, not governance. Stale feature branches, stale worktrees, or stale plan pointers do not override `main`.
+
+## Agent And Plugin Discipline
+
+- Do not create new per-agent policy documents unless the target tool is verified to load them and the same policy cannot live in `AGENTS.md`.
+- For tools that do not automatically load `AGENTS.md`, explicitly provide `AGENTS.md` as read-only context when launching them. Include `.specify/memory/constitution.md` only when SpecKit gates or project principles are relevant.
+- SpecKit and Superpowers are plugins. Their generated prompts may recommend strict TDD; in this repo, use the evidence-driven verification policy below unless the user, active spec, or risk analysis explicitly requires TDD.
+- Do not patch plugin caches as a durable repo fix. Prefer repo governance, SpecKit templates, verified extension/override surfaces, or regenerated adapters.
+- Known generated-adapter drift: current SpecKit implement prompts may still say to follow TDD. Treat that as lower-priority generated guidance, not as repo policy.
+
 ## Scope Discipline
 
 - One branch or PR may cover only one declared issue, spec, task, or an explicitly named slice of one broader item.
@@ -27,6 +43,39 @@ These repo-level rules are in addition to any higher-level agent instructions.
 7. **GROUP BY CHANGE** — if swapping a wallet, credential set, or venue requires editing more than one config section, the config is wrong. All values that share a lifecycle belong in one section. Test: "if I change X, how many places do I touch?" The answer must be one.
 8. **DO NOT REFERENCE BOLT V1** — `~/Projects/Claude/bolt/` is the old repo. Do not read from it, import from it, or depend on it. NT source is in the git cache at `~/.cargo/git/checkouts/nautilus_trader-*/` or on GitHub.
 9. **STRATEGIES PRODUCE INTENT ONLY** — strategy files may produce order intent and strategy-local signal state only. Execution admissibility, venue rules, fillability, rounding, minimum order size, fee-adjusted sizing, and submit gating must live in shared execution/admission modules built on NT APIs. Any change under `src/strategies/*` that handles submit mechanics is rejected unless explicitly approved as strategy-local signal logic.
+10. **CHAINLINK DATA STREAMS: TESTNET IS PRODUCTION** — for the Chainlink Data Streams resolution oracle (`price_to_beat` for the binary-oracle taker), testnet is the only and final environment because mainnet credentials cannot be obtained. Treat the testnet Chainlink stream as production for this oracle. Do not raise testnet-vs-mainnet as a concern or ask for reconfirmation solely because the stream is testnet. Real deploy concerns still apply: config-schema compatibility, service health, fail-closed behavior, and exact-head verification.
+
+## Evidence-Driven Verification
+
+- Follow the evidence-driven verification rule in this file. `.specify/memory/constitution.md` records the matching SpecKit principle, but `AGENTS.md` owns the operational workflow.
+- TDD is allowed and often useful, but it is not mandatory unless the user, active spec, or risk analysis requires it.
+- Every claim must map to evidence: tests, static checks, source-fence results, remote CI, live artifacts, direct inspection, or explicit user-approved risk acceptance that does not violate a MUST rule.
+- Documentation, prompt, template, and policy changes require targeted text/static checks plus internal adversarial review before completion claims.
+- Every plan or task list must state the evidence class for each changed requirement or risk:
+  - Production behavior: automated behavior test, integration proof, remote CI result, live artifact, or explicit user-approved risk acceptance that does not violate a MUST rule.
+  - Trading, admission, secrets, and config changes: fail-closed evidence for invalid or missing inputs plus exact-head proof before any live operation.
+  - Refactors: existing tests, static checks, source-fence checks, or documented structural equivalence review proving behavior is unchanged.
+  - Documentation, prompt, template, and policy changes: targeted text/static checks and internal adversarial review.
+  - External review: only after local findings are resolved and exact-head CI or the user-approved equivalent is green.
+- For agents/tools that do not automatically load this file, pass `AGENTS.md` as read-only launch context rather than creating another policy document. Add the SpecKit constitution only when the task needs SpecKit principle context.
+
+## Remote-First Rust Verification
+
+- Do not run local compile-heavy Rust verification by default: no local managed Rust test/build/clippy recipes through `just`, and no raw cargo subcommands refused by `ci/rust-verification.toml` `[local_compile_policy]`.
+- Use local non-compile gates for fast feedback: `just fmt-check`, `just deny`, `just ci-lint-workflow`, Python verifiers, and `just source-fence-static`.
+- For compile/test/clippy proof: commit, push, ensure the branch has an open or draft PR, then run `just verify-remote` and use exact-head PR CI evidence from Ubicloud/GitHub Actions.
+- `just verify-remote` waits for all reported PR checks on the exact head SHA, not a local subset of workflow jobs.
+- Human operator break-glass exists for exceptional local repro and live/operator lanes only. Agents must not use it as a normal verification path.
+- Enforcement boundary: repo tooling gates cooperative paths through `just`, `scripts/rust_verification.py`, and `.no-mistakes.yaml`; standard PATH `cargo ...` is guarded by the machine-level cargo shim, whose source and installer are tracked in this repo at `scripts/cargo-shim` and `scripts/install-cargo-shim`. The shim reads this repo's `ci/rust-verification.toml` `[local_compile_policy]`.
+- CPU-heavy local verifier lanes self-serialize: every `scripts/verify_*.py` / `scripts/test_*.py` entry point acquires the per-repo machine-level lane lock declared in `ci/rust-verification.toml` `[local_lane_policy]` before doing work. Concurrent local runs queue with stderr heartbeats and fail loud at the policy timeout; CI (`allowed_ci_env`) bypasses the lock; a holder that is a process ancestor passes through. Coverage drift is a CI failure via `scripts/verify_lane_governance.py` in `source-fence-static`.
+- Residual local bypasses remain outside the accidental-use guard: absolute-path cargo invocation, `rustup run <toolchain> cargo ...`, cross-repo invocations issued outside this repo such as `cargo --manifest-path <repo>/Cargo.toml ...` or `cargo -C <repo> ...`, already-running daemons with old environments, non-no-mistakes daemon managers whose `PATH` does not include the shim directory, processes that never load shell startup files, and direct `rustc` execution.
+
+## Rust Probe Policy
+
+- Full CI is proof. Rust Probe is debugging.
+- Agents may use Rust Probe only when cheap local checks cannot answer the question.
+- Before running Rust Probe, state: (1) changed files, (2) suspected failure class, (3) selected mode, (4) selected test target/name, (5) why this is the smallest sufficient probe.
+- Limits: max 2 Rust Probe runs before stopping to explain root cause; full CI may run only after the slice is coherent; Rust Probe success is not merge readiness; Rust Probe must not replace the required `gate`; do not run full CI just to discover ordinary compiler errors.
 
 ## Review Bar
 
@@ -45,5 +94,5 @@ These repo-level rules are in addition to any higher-level agent instructions.
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/023-nt-order-intent-layer/plan.md`
+`specs/026-nt-backed-iv-engine/plan.md`
 <!-- SPECKIT END -->

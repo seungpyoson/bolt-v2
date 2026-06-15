@@ -1,0 +1,157 @@
+{
+  "schema_version": "source-universe-execution-acceptance-ledger.v1",
+  "ledger_id": "source-universe-execution-acceptance-ledger-binance-bybit-pmxt-current",
+  "status": "incomplete",
+  "universe_count": 3,
+  "converted_universes": 0,
+  "ready_for_conversion_universes": 1,
+  "partially_ready_for_conversion_universes": 1,
+  "blocked_universes": 1,
+  "total_planned_conversion_objects": 9259,
+  "total_planned_source_bytes": 579873706038,
+  "total_required_single_object_operator_runs": 9259,
+  "total_executable_single_object_operator_runs": 7892,
+  "total_materialized_single_object_operator_runs": 7892,
+  "total_withheld_conversion_objects": 1367,
+  "total_completed_conversion_records": 0,
+  "total_completed_canonical_rows": 0,
+  "total_completed_nt_catalog_rows": 0,
+  "total_remaining_conversion_objects": 9259,
+  "records": [
+    {
+      "universe_id": "backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments",
+      "venue": "binance",
+      "source": "data_vision",
+      "family": "native_trades",
+      "table_family": "trades",
+      "status": "partially_ready_for_conversion_execution",
+      "source_gate_count": 2051,
+      "source_conversion_batch_count": 8,
+      "operator_input_count": 2051,
+      "ready_operator_input_count": 2035,
+      "blocked_operator_input_count": 16,
+      "planned_conversion_objects": 2051,
+      "planned_source_bytes": 1748721970,
+      "required_single_object_operator_runs": 2051,
+      "executable_single_object_operator_runs": 2035,
+      "materialized_single_object_operator_runs": 2035,
+      "withheld_conversion_objects": 16,
+      "completed_conversion_records": 0,
+      "completed_canonical_rows": 0,
+      "completed_nt_catalog_rows": 0,
+      "remaining_conversion_objects": 2051,
+      "artifact_refs": [
+        {
+          "role": "source_universe_object_gates",
+          "path": "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json",
+          "sha256": "8e5f68118c05e12f5f533305694fdd071140748b5aeb7db6afaa67937e2c148e"
+        },
+        {
+          "role": "source_universe_conversion_run_plan",
+          "path": "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/binance-data-vision-trades-2026-03-01-all-instruments/run-plan/source-universe-conversion-run-plan.json",
+          "sha256": "560b81ef371975eaf4f5541386a7348cbb20de1529cf13688d1a758728b6d4ca"
+        },
+        {
+          "role": "source_universe_operator_inputs",
+          "path": "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments/operator-inputs/source-universe-operator-inputs.json",
+          "sha256": "8df9e1f9896d7301ad802ffab14fac4debd1e9a31c3dc0466ca7e4912d736143"
+        },
+        {
+          "role": "source_universe_execution_pack",
+          "path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/execution-pack/source-universe-execution-pack.json",
+          "sha256": "f9b995867fba9344c85e1cb50aa56a6fa9d2625e103465e654d7cd35d3aaefa8"
+        }
+      ],
+      "blocking_reasons": [
+        "blocked_source_universe_operator_input_records",
+        "missing_instrument_metadata"
+      ]
+    },
+    {
+      "universe_id": "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+      "venue": "bybit",
+      "source": "public_archive",
+      "family": "tick_trades",
+      "table_family": "trades",
+      "status": "ready_for_conversion_execution",
+      "source_gate_count": 5857,
+      "source_conversion_batch_count": 19,
+      "operator_input_count": 5857,
+      "ready_operator_input_count": 5857,
+      "blocked_operator_input_count": 0,
+      "planned_conversion_objects": 5857,
+      "planned_source_bytes": 20309079098,
+      "required_single_object_operator_runs": 5857,
+      "executable_single_object_operator_runs": 5857,
+      "materialized_single_object_operator_runs": 5857,
+      "withheld_conversion_objects": 0,
+      "completed_conversion_records": 0,
+      "completed_canonical_rows": 0,
+      "completed_nt_catalog_rows": 0,
+      "remaining_conversion_objects": 5857,
+      "artifact_refs": [
+        {
+          "role": "source_universe_object_gates",
+          "path": "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json",
+          "sha256": "1bf1f5488657070218bc9a18180abf4ea3805abe158a9f73c33bd330f09d6bdd"
+        },
+        {
+          "role": "source_universe_conversion_run_plan",
+          "path": "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json",
+          "sha256": "7dde0246feba39e0b7f192d72893833a3acfdbb317e948d77e8dfc90fc8e085f"
+        },
+        {
+          "role": "source_universe_operator_inputs",
+          "path": "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/operator-inputs/source-universe-operator-inputs.json",
+          "sha256": "ff559590fc90666b23ae11e12a3cfb19c189c75cd8a29ed3bfdee042e5e94c5d"
+        },
+        {
+          "role": "source_universe_execution_pack",
+          "path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/source-universe-execution-pack.json",
+          "sha256": "a2a2da68c079a0497a4608ac92874a393b2f2b3bbbb0c26f5e73ca3c25a8344f"
+        }
+      ],
+      "blocking_reasons": []
+    },
+    {
+      "universe_id": "backfill-source-universe-pmxt-polymarket-v2-current",
+      "venue": "pmxt",
+      "source": "polymarket-v2-archive",
+      "family": "orderbook",
+      "table_family": "order_book_snapshot_deltas",
+      "status": "blocked",
+      "source_gate_count": 0,
+      "source_conversion_batch_count": 0,
+      "operator_input_count": 0,
+      "ready_operator_input_count": 0,
+      "blocked_operator_input_count": 0,
+      "planned_conversion_objects": 1351,
+      "planned_source_bytes": 557815904970,
+      "required_single_object_operator_runs": 1351,
+      "executable_single_object_operator_runs": 0,
+      "materialized_single_object_operator_runs": 0,
+      "withheld_conversion_objects": 1351,
+      "completed_conversion_records": 0,
+      "completed_canonical_rows": 0,
+      "completed_nt_catalog_rows": 0,
+      "remaining_conversion_objects": 1351,
+      "artifact_refs": [
+        {
+          "role": "source_universe_manifest",
+          "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
+          "sha256": "1fc294c059bf0c13dfab528b80a8bc19a2fb1534fbe6bac2301197211e2239a6"
+        },
+        {
+          "role": "source_universe_conversion_queue",
+          "path": "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json",
+          "sha256": "5444284811d4b9cd8c9f2f5b97562082a1f1058e379d6e744732b3b551ac190a"
+        }
+      ],
+      "blocking_reasons": [
+        "missing_pmxt_l2_tick_size_epoch_policy",
+        "missing_source_universe_conversion_run_plan",
+        "missing_source_universe_object_gates"
+      ]
+    }
+  ]
+}

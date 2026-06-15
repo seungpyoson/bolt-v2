@@ -33,19 +33,19 @@
 //! readiness path builds a strategy-free node before using NT's supported
 //! runner loop with handle-driven stop; its dedicated quote probes call
 //! only NT quote subscribe/unsubscribe APIs for configured strategy
-//! client-owned readiness-probe instruments. This
+//! `[reference_data]` or client-owned readiness-probe instruments. This
 //! module still never constructs an order or enables any submit path
 //! from its own boundary code.
 
 #[cfg(test)]
+use std::cell::Cell;
 use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-};
-use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap},
+    path::PathBuf,
+    rc::Rc,
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -55,27 +55,40 @@ use log::LevelFilter;
 use nautilus_common::{
     enums::Environment,
     logging::logger::LoggerConfig,
-    messages::data::{
-        DataCommand, SubscribeCommand, SubscribeCustomData, UnsubscribeCommand,
-        UnsubscribeCustomData,
+    messages::{
+        SubscribeCommand, UnsubscribeCommand,
+        data::{
+            DataCommand,
+            subscribe::{SubscribeCustomData, SubscribeOptionChain, SubscribeOptionGreeks},
+            unsubscribe::{UnsubscribeCustomData, UnsubscribeOptionChain, UnsubscribeOptionGreeks},
+        },
     },
+    msgbus::{self, MStr, Pattern, ShareableMessageHandler, TypedHandler, switchboard},
+    runner::get_data_cmd_sender,
 };
-use nautilus_core::{Params, UUID4};
+use nautilus_core::{Params, UUID4, time::get_atomic_clock_realtime};
 use nautilus_live::{
     builder::LiveNodeBuilder,
     config::LiveNodeConfig,
     node::{LiveNode, LiveNodeHandle, NodeState},
 };
 use nautilus_model::{
-    data::DataType,
+    data::{CustomData, DataType, OptionChainSlice, OptionGreeks, option_chain::StrikeRange},
     enums::BarIntervalType,
-    identifiers::{ClientId, StrategyId},
+    identifiers::{ClientId, InstrumentId, OptionSeriesId, StrategyId},
+    types::Price,
 };
 #[cfg(test)]
 use nautilus_model::{
-    data::{OrderBookDeltas, QuoteTick},
-    identifiers::InstrumentId,
+    data::{OrderBookDeltas, QuoteTick, TradeTick},
+    enums::AggressorSide,
+    identifiers::TradeId,
 };
+use nautilus_model::{
+    enums::{OrderSide, OrderType, TradingState},
+    orders::{Order, OrderAny},
+};
+use rust_decimal::Decimal;
 use ustr::Ustr;
 use zeroize::Zeroizing;
 
@@ -89,28 +102,79 @@ use crate::{
         BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters,
         map_bolt_v3_adapters_with_runtime_approvals,
     },
+    bolt_v3_capital_reservation::CapitalPoolSnapshot,
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
-    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_config::{
+        BoltV3RootConfig, CapitalPoolBlock, LoadedBoltV3Config, resolve_root_relative_path,
+    },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
-        BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
+        BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
+        read_submit_reservation_recovery_evidence,
+    },
+    bolt_v3_iv::{
+        config::IvRootConfig,
+        health::IvSourceHealth,
+        runtime::{
+            IvRuntimeBindingAdapter, IvRuntimeBindingError, IvRuntimeEngine,
+            apply_subscription_plans,
+        },
+        selector::IvSelector,
+        subscription::{
+            IvRuntimeOperation, IvSubscriptionError, IvSubscriptionPlan, plan_profile_reload,
+            plan_profile_start, plan_profile_stop,
+        },
+        time::UnixNanos,
+        types::IvSourceKind,
+    },
+    bolt_v3_loss_governor::{LossGovernorPolicy, evaluate_loss_admission},
+    bolt_v3_loss_halt_actions::{
+        LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy,
+        LossGovernorManualRecoveryEvidence, LossGovernorManualRecoveryRequest,
+        LossGovernorRecoveryMode, LossGovernorTradingStateAction,
+        next_loss_governor_manual_recovery_trading_state, next_loss_governor_trading_state,
+    },
+    bolt_v3_loss_runtime_feed::{
+        LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
+        LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
+    },
+    bolt_v3_position_sizer::{
+        FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
+        SizingPolicy,
+    },
+    bolt_v3_position_sizer_runtime_feed::{
+        PositionSizerRuntimeFeed, PositionSizerRuntimeFeedConfig,
+        PositionSizerRuntimeFeedSubscription, subscribe_position_sizer_runtime_feed,
     },
     bolt_v3_providers::{
         self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderRuntimeApprovals,
     },
-    bolt_v3_reference_price::reference_price_source_is_runtime_available,
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
         check_no_forbidden_credential_env_vars, check_no_forbidden_credential_env_vars_with,
         resolve_bolt_v3_secrets, resolve_bolt_v3_secrets_with,
     },
-    bolt_v3_strategy_registration::{
-        BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
+    bolt_v3_sizing_state::{
+        VenueSpendabilityIdentity, VenueSpendabilitySnapshot, VenueSpendabilitySourceFileRequest,
+        venue_spendability_snapshot_from_json_file,
     },
-    bolt_v3_submit_admission::{BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState},
+    bolt_v3_strategy_registration::{
+        BoltV3StrategyExecutionControls, BoltV3StrategyRegistrationError,
+        register_bolt_v3_strategies_on_node_with_bindings,
+        register_bolt_v3_strategies_on_node_with_iv_runtime_bindings,
+    },
+    bolt_v3_submit_admission::{
+        BoltV3CompiledOrderSide, BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState,
+        BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingMissingNtAccountCacheBalance,
+        BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderEvidence,
+        BoltV3SubmitPositionSizingOpenOrderSnapshot, BoltV3SubmitPositionSizingRebuildDecision,
+    },
+    bolt_v3_validate::parse_decimal_string,
     nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
     secrets::SsmResolverSession,
 };
@@ -130,7 +194,37 @@ pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     registration_summary: BoltV3RegistrationSummary,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
+    loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
+    loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
+    position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
+    position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
+    position_sizer_venue_spendability_source:
+        Option<BoltV3PositionSizerVenueSpendabilitySourceConfig>,
+    submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
+    iv_runtime: Option<IvRuntimeEngine>,
+    iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
     redaction_values: Vec<Zeroizing<String>>,
+}
+
+#[derive(Debug, Clone)]
+struct BoltV3PositionSizerVenueSpendabilitySourceConfig {
+    path: PathBuf,
+    max_bytes: u64,
+    expected_sha256: String,
+    venue_id: String,
+    account_id: String,
+    collateral_currency: String,
+}
+
+/// Startup reservation-recovery source: the decision-evidence file the
+/// live-node boot driver reads to recover known submit-reservation
+/// metadata after a restart, plus the byte cap from
+/// [`crate::bolt_v3_config::DecisionEvidenceBlock::recovery_evidence_max_bytes`].
+#[derive(Debug, Clone)]
+struct BoltV3SubmitReservationRecoveryConfig {
+    path: PathBuf,
+    max_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -140,8 +234,1114 @@ struct BoltV3LiveNodeAdapterBundle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoltV3StrategyFreeDataClientReadinessCacheEvidence {
+pub struct BoltV3StrategyFreeReferenceCacheEvidence {
     cached_instrument_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IvEngineLifecyclePlan {
+    pub start_plans: Vec<IvSubscriptionPlan>,
+    pub reload_plans: Vec<IvSubscriptionPlan>,
+    pub stop_plans: Vec<IvSubscriptionPlan>,
+}
+
+pub fn plan_iv_engine_lifecycle(
+    root: &BoltV3RootConfig,
+) -> Result<IvEngineLifecyclePlan, IvSubscriptionError> {
+    let Some(iv) = &root.iv else {
+        return Ok(IvEngineLifecyclePlan {
+            start_plans: Vec::new(),
+            reload_plans: Vec::new(),
+            stop_plans: Vec::new(),
+        });
+    };
+
+    let mut start_plans = Vec::new();
+    let reload_plans = Vec::new();
+    let mut stop_plans = Vec::new();
+    for profile in &iv.profiles {
+        let subscription_config = profile.subscription_config();
+        start_plans.extend(plan_profile_start(&subscription_config)?);
+        stop_plans.extend(plan_profile_stop(&subscription_config)?);
+    }
+
+    Ok(IvEngineLifecyclePlan {
+        start_plans,
+        reload_plans,
+        stop_plans,
+    })
+}
+
+pub fn plan_iv_engine_reload_lifecycle(
+    current_root: &BoltV3RootConfig,
+    next_root: &BoltV3RootConfig,
+) -> Result<IvEngineLifecyclePlan, IvSubscriptionError> {
+    let current_profiles = current_root.iv.as_ref().map(|iv| &iv.profiles);
+    let next_profiles = next_root.iv.as_ref().map(|iv| &iv.profiles);
+    let mut start_plans = Vec::new();
+    let mut reload_plans = Vec::new();
+    let mut stop_plans = Vec::new();
+
+    match (current_profiles, next_profiles) {
+        (None, None) => {}
+        (None, Some(next_profiles)) => {
+            for profile in next_profiles {
+                start_plans.extend(plan_profile_start(&profile.subscription_config())?);
+            }
+        }
+        (Some(current_profiles), None) => {
+            for profile in current_profiles {
+                stop_plans.extend(plan_profile_stop(&profile.subscription_config())?);
+            }
+        }
+        (Some(current_profiles), Some(next_profiles)) => {
+            let current_by_id = current_profiles
+                .iter()
+                .map(|profile| (&profile.profile_id, profile))
+                .collect::<BTreeMap<_, _>>();
+            let next_by_id = next_profiles
+                .iter()
+                .map(|profile| (&profile.profile_id, profile))
+                .collect::<BTreeMap<_, _>>();
+
+            for current_profile in current_profiles {
+                if let Some(next_profile) = next_by_id.get(&current_profile.profile_id) {
+                    reload_plans.extend(plan_profile_reload(
+                        &current_profile.subscription_config(),
+                        &next_profile.subscription_config(),
+                    )?);
+                } else {
+                    stop_plans.extend(plan_profile_stop(&current_profile.subscription_config())?);
+                }
+            }
+
+            for next_profile in next_profiles {
+                if !current_by_id.contains_key(&next_profile.profile_id) {
+                    start_plans.extend(plan_profile_start(&next_profile.subscription_config())?);
+                }
+            }
+        }
+    }
+
+    Ok(IvEngineLifecyclePlan {
+        start_plans,
+        reload_plans,
+        stop_plans,
+    })
+}
+
+pub struct BoltV3IvRuntimeEventBindings {
+    option_greeks: Vec<BoltV3IvOptionGreeksRuntimeEventBinding>,
+    option_chains: Vec<BoltV3IvOptionChainRuntimeEventBinding>,
+    custom_data: Vec<BoltV3IvCustomDataRuntimeEventBinding>,
+}
+
+struct BoltV3IvOptionGreeksRuntimeEventBinding {
+    pattern: MStr<Pattern>,
+    handler: TypedHandler<OptionGreeks>,
+}
+
+struct BoltV3IvOptionChainRuntimeEventBinding {
+    pattern: MStr<Pattern>,
+    handler: TypedHandler<OptionChainSlice>,
+}
+
+struct BoltV3IvCustomDataRuntimeEventBinding {
+    pattern: MStr<Pattern>,
+    handler: ShareableMessageHandler,
+}
+
+impl Drop for BoltV3IvRuntimeEventBindings {
+    fn drop(&mut self) {
+        for binding in self.option_greeks.drain(..) {
+            msgbus::unsubscribe_option_greeks(binding.pattern, &binding.handler);
+        }
+        for binding in self.option_chains.drain(..) {
+            msgbus::unsubscribe_option_chain(binding.pattern, &binding.handler);
+        }
+        for binding in self.custom_data.drain(..) {
+            msgbus::unsubscribe_any(binding.pattern, &binding.handler);
+        }
+    }
+}
+
+pub fn wire_bolt_v3_iv_runtime_event_bindings(
+    iv: &IvRootConfig,
+    runtime: &IvRuntimeEngine,
+) -> Result<BoltV3IvRuntimeEventBindings, BoltV3StrategyRegistrationError> {
+    let mut bindings = BoltV3IvRuntimeEventBindings {
+        option_greeks: Vec::new(),
+        option_chains: Vec::new(),
+        custom_data: Vec::new(),
+    };
+
+    for profile in &iv.profiles {
+        for source in &profile.sources {
+            match (&source.source_kind, &source.selector) {
+                (
+                    IvSourceKind::OptionGreeks,
+                    IvSelector::SourceOptionGreeks { instrument_ids, .. },
+                ) => {
+                    let instrument_ids = parse_option_greeks_instrument_ids(instrument_ids)
+                        .map_err(|message| {
+                            iv_runtime_event_binding_error(
+                                &profile.profile_id,
+                                &source.source_id,
+                                message,
+                            )
+                        })?;
+                    for instrument_id in instrument_ids {
+                        bindings
+                            .option_greeks
+                            .push(wire_option_greeks_event_binding(
+                                &profile.profile_id,
+                                &source.source_id,
+                                instrument_id,
+                                runtime,
+                            ));
+                    }
+                }
+                (IvSourceKind::OptionChain, IvSelector::SourceOptionChain { series_ids, .. }) => {
+                    let series_ids =
+                        parse_option_chain_series_ids(series_ids).map_err(|message| {
+                            iv_runtime_event_binding_error(
+                                &profile.profile_id,
+                                &source.source_id,
+                                message,
+                            )
+                        })?;
+                    for series_id in series_ids {
+                        bindings.option_chains.push(wire_option_chain_event_binding(
+                            &profile.profile_id,
+                            &source.source_id,
+                            series_id,
+                            runtime,
+                        ));
+                    }
+                }
+                (
+                    IvSourceKind::AggregateGreeks,
+                    IvSelector::SourceAggregateGreeks {
+                        aggregate_key,
+                        underlying_selectors,
+                        nt_params,
+                        ..
+                    },
+                ) => {
+                    let (data_type, _) = aggregate_greeks_data_type_for_source(
+                        &source.source_id,
+                        aggregate_key,
+                        underlying_selectors,
+                        &source.params,
+                        nt_params,
+                    )
+                    .map_err(|message| {
+                        iv_runtime_event_binding_error(
+                            &profile.profile_id,
+                            &source.source_id,
+                            message,
+                        )
+                    })?;
+                    bindings
+                        .custom_data
+                        .push(wire_aggregate_greeks_custom_data_event_binding(
+                            &profile.profile_id,
+                            &source.source_id,
+                            data_type,
+                            runtime,
+                        ));
+                }
+                (
+                    IvSourceKind::CustomImpliedVolatility,
+                    IvSelector::SourceCustomImpliedVolatility {
+                        custom_iv_data_type,
+                        nt_params,
+                        ..
+                    },
+                ) => {
+                    let (data_type, _) = custom_iv_data_type_for_source(
+                        &source.source_id,
+                        custom_iv_data_type,
+                        &source.params,
+                        nt_params,
+                    )
+                    .map_err(|message| {
+                        iv_runtime_event_binding_error(
+                            &profile.profile_id,
+                            &source.source_id,
+                            message,
+                        )
+                    })?;
+                    bindings.custom_data.push(wire_custom_iv_event_binding(
+                        &profile.profile_id,
+                        &source.source_id,
+                        data_type,
+                        runtime,
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(bindings)
+}
+
+fn parse_option_greeks_instrument_ids(
+    instrument_ids: &[String],
+) -> Result<Vec<InstrumentId>, String> {
+    instrument_ids
+        .iter()
+        .map(|instrument_id| {
+            InstrumentId::from_str(instrument_id).map_err(|error| {
+                format!("invalid NT option-greeks instrument_id {instrument_id}: {error}")
+            })
+        })
+        .collect()
+}
+
+fn parse_option_chain_series_ids(series_ids: &[String]) -> Result<Vec<OptionSeriesId>, String> {
+    series_ids
+        .iter()
+        .map(|series_id| {
+            OptionSeriesId::from_str(series_id)
+                .map_err(|error| format!("invalid NT option-chain series_id {series_id}: {error}"))
+        })
+        .collect()
+}
+
+fn wire_aggregate_greeks_custom_data_event_binding(
+    profile_id: &str,
+    source_id: &str,
+    data_type: DataType,
+    runtime: &IvRuntimeEngine,
+) -> BoltV3IvCustomDataRuntimeEventBinding {
+    let pattern = switchboard::get_custom_topic(&data_type).into();
+    let runtime = runtime.clone();
+    let profile_id = profile_id.to_string();
+    let source_id = source_id.to_string();
+    let handler = ShareableMessageHandler::from_typed(move |custom_data: &CustomData| {
+        if let Err(error) = runtime.ingest_nt_aggregate_greeks_custom_data(
+            &profile_id,
+            &source_id,
+            custom_data,
+            iv_runtime_event_received_ts_ns(),
+        ) {
+            log::error!("bolt-v3 IV aggregate-greeks custom-data ingest failed: {error:?}");
+        }
+    });
+    msgbus::subscribe_any(pattern, handler.clone(), None);
+    BoltV3IvCustomDataRuntimeEventBinding { pattern, handler }
+}
+
+fn wire_custom_iv_event_binding(
+    profile_id: &str,
+    source_id: &str,
+    data_type: DataType,
+    runtime: &IvRuntimeEngine,
+) -> BoltV3IvCustomDataRuntimeEventBinding {
+    let pattern = switchboard::get_custom_topic(&data_type).into();
+    let runtime = runtime.clone();
+    let profile_id = profile_id.to_string();
+    let source_id = source_id.to_string();
+    let handler = ShareableMessageHandler::from_typed(move |custom_data: &CustomData| {
+        if let Err(error) = runtime.ingest_nt_custom_iv_data(
+            &profile_id,
+            &source_id,
+            custom_data,
+            iv_runtime_event_received_ts_ns(),
+        ) {
+            log::error!("bolt-v3 IV custom-IV custom-data ingest failed: {error:?}");
+        }
+    });
+    msgbus::subscribe_any(pattern, handler.clone(), None);
+    BoltV3IvCustomDataRuntimeEventBinding { pattern, handler }
+}
+
+fn wire_option_greeks_event_binding(
+    profile_id: &str,
+    source_id: &str,
+    instrument_id: InstrumentId,
+    runtime: &IvRuntimeEngine,
+) -> BoltV3IvOptionGreeksRuntimeEventBinding {
+    let pattern = switchboard::get_option_greeks_topic(instrument_id).into();
+    let runtime = runtime.clone();
+    let profile_id = profile_id.to_string();
+    let source_id = source_id.to_string();
+    let handler = TypedHandler::from(move |option_greeks: &OptionGreeks| {
+        if let Err(error) = runtime.ingest_nt_option_greeks(
+            &profile_id,
+            &source_id,
+            option_greeks,
+            iv_runtime_event_received_ts_ns(),
+        ) {
+            log::error!("bolt-v3 IV option-greeks event ingest failed: {error:?}");
+        }
+    });
+    msgbus::subscribe_option_greeks(pattern, handler.clone(), None);
+    BoltV3IvOptionGreeksRuntimeEventBinding { pattern, handler }
+}
+
+fn wire_option_chain_event_binding(
+    profile_id: &str,
+    source_id: &str,
+    series_id: OptionSeriesId,
+    runtime: &IvRuntimeEngine,
+) -> BoltV3IvOptionChainRuntimeEventBinding {
+    let pattern = switchboard::get_option_chain_topic(series_id).into();
+    let runtime = runtime.clone();
+    let profile_id = profile_id.to_string();
+    let source_id = source_id.to_string();
+    let handler = TypedHandler::from(move |option_chain: &OptionChainSlice| {
+        if let Err(error) = runtime.ingest_nt_option_chain_slice(
+            &profile_id,
+            &source_id,
+            option_chain,
+            iv_runtime_event_received_ts_ns(),
+        ) {
+            log::error!("bolt-v3 IV option-chain event ingest failed: {error:?}");
+        }
+    });
+    msgbus::subscribe_option_chain(pattern, handler.clone(), None);
+    BoltV3IvOptionChainRuntimeEventBinding { pattern, handler }
+}
+
+fn iv_runtime_event_received_ts_ns() -> UnixNanos {
+    UnixNanos::new(get_atomic_clock_realtime().get_time_ns().as_u64())
+}
+
+fn iv_runtime_event_binding_error(
+    profile_id: &str,
+    source_id: &str,
+    message: String,
+) -> BoltV3StrategyRegistrationError {
+    BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+        message: format!(
+            "bolt-v3 IV runtime event binding failed for profile {profile_id} source {source_id}: {message}"
+        ),
+    }
+}
+
+fn iv_runtime_data_commands_for_plan(
+    plan: &IvSubscriptionPlan,
+) -> Result<Vec<DataCommand>, IvRuntimeBindingError> {
+    let ts_init = get_atomic_clock_realtime().get_time_ns();
+    let client_id = Some(ClientId::from(plan.client_id.as_str()));
+
+    match (plan.operation, &plan.selector) {
+        (
+            IvRuntimeOperation::SubscribeOptionGreeks | IvRuntimeOperation::UnsubscribeOptionGreeks,
+            IvSelector::SourceOptionGreeks {
+                instrument_ids,
+                nt_params,
+            },
+        ) => {
+            let params = merged_nt_params(plan, nt_params)?;
+            let commands = parse_option_greeks_instrument_ids(instrument_ids)
+                .map_err(|message| binding_error(plan, message))?
+                .into_iter()
+                .map(|instrument_id| {
+                    if plan.operation == IvRuntimeOperation::SubscribeOptionGreeks {
+                        DataCommand::Subscribe(SubscribeCommand::OptionGreeks(
+                            SubscribeOptionGreeks::new(
+                                instrument_id,
+                                client_id,
+                                None,
+                                UUID4::new(),
+                                ts_init,
+                                None,
+                                params.clone(),
+                            ),
+                        ))
+                    } else {
+                        DataCommand::Unsubscribe(UnsubscribeCommand::OptionGreeks(
+                            UnsubscribeOptionGreeks::new(
+                                instrument_id,
+                                client_id,
+                                None,
+                                UUID4::new(),
+                                ts_init,
+                                None,
+                                params.clone(),
+                            ),
+                        ))
+                    }
+                })
+                .collect();
+            Ok(commands)
+        }
+        (
+            IvRuntimeOperation::SubscribeOptionChain | IvRuntimeOperation::UnsubscribeOptionChain,
+            IvSelector::SourceOptionChain {
+                series_ids,
+                strike_range_policy,
+                nt_params,
+            },
+        ) => {
+            let params = merged_nt_params(plan, nt_params)?;
+            let strike_range = parse_nt_strike_range(plan, strike_range_policy)?;
+            let snapshot_interval_ms = params
+                .as_ref()
+                .and_then(|params| params.get_u64("snapshot_interval_ms"));
+            let commands = parse_option_chain_series_ids(series_ids)
+                .map_err(|message| binding_error(plan, message))?
+                .into_iter()
+                .map(|series_id| {
+                    if plan.operation == IvRuntimeOperation::SubscribeOptionChain {
+                        DataCommand::Subscribe(SubscribeCommand::OptionChain(
+                            SubscribeOptionChain::new(
+                                series_id,
+                                strike_range.clone(),
+                                snapshot_interval_ms,
+                                UUID4::new(),
+                                ts_init,
+                                client_id,
+                                None,
+                                params.clone(),
+                            ),
+                        ))
+                    } else {
+                        DataCommand::Unsubscribe(UnsubscribeCommand::OptionChain(
+                            UnsubscribeOptionChain::new(
+                                series_id,
+                                UUID4::new(),
+                                ts_init,
+                                client_id,
+                                None,
+                            ),
+                        ))
+                    }
+                })
+                .collect();
+            Ok(commands)
+        }
+        (
+            IvRuntimeOperation::SubscribeCustomData | IvRuntimeOperation::UnsubscribeCustomData,
+            IvSelector::SourceCustomImpliedVolatility {
+                custom_iv_data_type,
+                nt_params,
+                ..
+            },
+        ) => {
+            let (data_type, params) = custom_iv_data_type_for_source(
+                &plan.source_id,
+                custom_iv_data_type,
+                &plan.params,
+                nt_params,
+            )
+            .map_err(|message| binding_error(plan, message))?;
+            Ok(vec![custom_data_command(
+                plan.operation,
+                client_id,
+                data_type,
+                params,
+                ts_init,
+            )])
+        }
+        (
+            IvRuntimeOperation::SubscribeAggregateGreeks
+            | IvRuntimeOperation::UnsubscribeAggregateGreeks,
+            IvSelector::SourceAggregateGreeks {
+                aggregate_key,
+                underlying_selectors,
+                nt_params,
+                ..
+            },
+        ) => {
+            let (data_type, params) = aggregate_greeks_data_type_for_source(
+                &plan.source_id,
+                aggregate_key,
+                underlying_selectors,
+                &plan.params,
+                nt_params,
+            )
+            .map_err(|message| binding_error(plan, message))?;
+            Ok(vec![custom_data_command(
+                plan.operation,
+                client_id,
+                data_type,
+                params,
+                ts_init,
+            )])
+        }
+        (IvRuntimeOperation::RemoveSource, _) => Ok(Vec::new()),
+        _ => Err(binding_error(
+            plan,
+            "IV subscription plan operation does not match selector kind".to_string(),
+        )),
+    }
+}
+
+fn custom_data_command(
+    operation: IvRuntimeOperation,
+    client_id: Option<ClientId>,
+    data_type: DataType,
+    params: Option<Params>,
+    ts_init: nautilus_core::UnixNanos,
+) -> DataCommand {
+    match operation {
+        IvRuntimeOperation::SubscribeCustomData | IvRuntimeOperation::SubscribeAggregateGreeks => {
+            DataCommand::Subscribe(SubscribeCommand::Data(SubscribeCustomData::new(
+                client_id,
+                None,
+                data_type,
+                UUID4::new(),
+                ts_init,
+                None,
+                params,
+            )))
+        }
+        IvRuntimeOperation::UnsubscribeCustomData
+        | IvRuntimeOperation::UnsubscribeAggregateGreeks => {
+            DataCommand::Unsubscribe(UnsubscribeCommand::Data(UnsubscribeCustomData::new(
+                client_id,
+                None,
+                data_type,
+                UUID4::new(),
+                ts_init,
+                None,
+                params,
+            )))
+        }
+        _ => unreachable!("custom data command requires a custom-data IV runtime operation"),
+    }
+}
+
+struct NtIvRuntimeCommandSenderAdapter {
+    allowed_data_client_ids: BTreeSet<ClientId>,
+    external_client_ids: BTreeSet<ClientId>,
+}
+
+impl NtIvRuntimeCommandSenderAdapter {
+    fn new(registered_data_clients: &[ClientId], configured_external_clients: &[ClientId]) -> Self {
+        let mut allowed_data_client_ids = registered_data_clients
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        allowed_data_client_ids.extend(configured_external_clients.iter().cloned());
+        Self {
+            allowed_data_client_ids,
+            external_client_ids: configured_external_clients.iter().cloned().collect(),
+        }
+    }
+
+    fn is_external_client(&self, plan: &IvSubscriptionPlan) -> bool {
+        self.external_client_ids
+            .contains(&ClientId::from(plan.client_id.as_str()))
+    }
+
+    fn validate_client_id(&self, plan: &IvSubscriptionPlan) -> Result<(), IvRuntimeBindingError> {
+        let client_id = ClientId::from(plan.client_id.as_str());
+        if self.allowed_data_client_ids.contains(&client_id) {
+            Ok(())
+        } else {
+            Err(binding_error(
+                plan,
+                format!(
+                    "IV source client_id {} is not registered as an NT data client or configured external data client",
+                    plan.client_id
+                ),
+            ))
+        }
+    }
+}
+
+impl IvRuntimeBindingAdapter for NtIvRuntimeCommandSenderAdapter {
+    fn apply_subscription_plan(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+    ) -> Result<(), IvRuntimeBindingError> {
+        if self.is_external_client(plan) {
+            return Ok(());
+        }
+        self.validate_client_id(plan)?;
+
+        let sender = get_data_cmd_sender();
+        for command in iv_runtime_data_commands_for_plan(plan)? {
+            sender.execute(command);
+        }
+        Ok(())
+    }
+}
+
+struct NtIvRuntimePlanValidationAdapter {
+    allowed_data_client_ids: BTreeSet<ClientId>,
+}
+
+impl NtIvRuntimePlanValidationAdapter {
+    fn new(node: &LiveNode, configured_external_clients: &[ClientId]) -> Self {
+        let mut allowed_data_client_ids = node
+            .kernel()
+            .data_engine
+            .borrow()
+            .registered_clients()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        allowed_data_client_ids.extend(configured_external_clients.iter().cloned());
+        Self {
+            allowed_data_client_ids,
+        }
+    }
+
+    fn validate_client_id(&self, plan: &IvSubscriptionPlan) -> Result<(), IvRuntimeBindingError> {
+        let client_id = ClientId::from(plan.client_id.as_str());
+        if self.allowed_data_client_ids.contains(&client_id) {
+            Ok(())
+        } else {
+            Err(binding_error(
+                plan,
+                format!(
+                    "IV source client_id {} is not registered as an NT data client or configured external data client",
+                    plan.client_id
+                ),
+            ))
+        }
+    }
+}
+
+impl IvRuntimeBindingAdapter for NtIvRuntimePlanValidationAdapter {
+    fn apply_subscription_plan(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+    ) -> Result<(), IvRuntimeBindingError> {
+        self.validate_client_id(plan)?;
+        iv_runtime_data_commands_for_plan(plan)?;
+        Ok(())
+    }
+}
+
+struct NtIvRuntimeBindingAdapter<'a> {
+    node: &'a mut LiveNode,
+    allowed_data_client_ids: BTreeSet<ClientId>,
+    external_client_ids: BTreeSet<ClientId>,
+}
+
+impl<'a> NtIvRuntimeBindingAdapter<'a> {
+    fn new(node: &'a mut LiveNode, configured_external_clients: &[ClientId]) -> Self {
+        let mut allowed_data_client_ids = node
+            .kernel()
+            .data_engine
+            .borrow()
+            .registered_clients()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        allowed_data_client_ids.extend(configured_external_clients.iter().cloned());
+        Self {
+            node,
+            allowed_data_client_ids,
+            external_client_ids: configured_external_clients.iter().cloned().collect(),
+        }
+    }
+
+    fn is_external_client(&self, plan: &IvSubscriptionPlan) -> bool {
+        self.external_client_ids
+            .contains(&ClientId::from(plan.client_id.as_str()))
+    }
+
+    fn client_id(&self, plan: &IvSubscriptionPlan) -> Result<ClientId, IvRuntimeBindingError> {
+        let client_id = ClientId::from(plan.client_id.as_str());
+        if self.allowed_data_client_ids.contains(&client_id) {
+            Ok(client_id)
+        } else {
+            Err(binding_error(
+                plan,
+                format!(
+                    "IV source client_id {} is not registered as an NT data client or configured external data client",
+                    plan.client_id
+                ),
+            ))
+        }
+    }
+
+    fn apply_option_greeks(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+        instrument_ids: &[String],
+        nt_params: &toml::Value,
+        subscribe: bool,
+    ) -> Result<(), IvRuntimeBindingError> {
+        let params = merged_nt_params(plan, nt_params)?;
+        let client_id = Some(self.client_id(plan)?);
+        let instrument_ids = parse_option_greeks_instrument_ids(instrument_ids)
+            .map_err(|message| binding_error(plan, message))?;
+        for instrument_id in instrument_ids {
+            let ts_init = self.node.kernel().clock.borrow().timestamp_ns();
+            if subscribe {
+                let command = SubscribeOptionGreeks::new(
+                    instrument_id,
+                    client_id,
+                    None,
+                    UUID4::new(),
+                    ts_init,
+                    None,
+                    params.clone(),
+                );
+                self.node
+                    .kernel()
+                    .data_engine
+                    .borrow_mut()
+                    .execute_subscribe(SubscribeCommand::OptionGreeks(command))
+                    .map_err(|error| binding_error(plan, error.to_string()))?;
+            } else {
+                let command = UnsubscribeOptionGreeks::new(
+                    instrument_id,
+                    client_id,
+                    None,
+                    UUID4::new(),
+                    ts_init,
+                    None,
+                    params.clone(),
+                );
+                self.node
+                    .kernel()
+                    .data_engine
+                    .borrow_mut()
+                    .execute_unsubscribe(&UnsubscribeCommand::OptionGreeks(command))
+                    .map_err(|error| binding_error(plan, error.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_option_chain(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+        series_ids: &[String],
+        strike_range_policy: &str,
+        nt_params: &toml::Value,
+        subscribe: bool,
+    ) -> Result<(), IvRuntimeBindingError> {
+        let params = merged_nt_params(plan, nt_params)?;
+        let strike_range = parse_nt_strike_range(plan, strike_range_policy)?;
+        let snapshot_interval_ms = params
+            .as_ref()
+            .and_then(|params| params.get_u64("snapshot_interval_ms"));
+        let client_id = Some(self.client_id(plan)?);
+        let series_ids = parse_option_chain_series_ids(series_ids)
+            .map_err(|message| binding_error(plan, message))?;
+        for series_id in series_ids {
+            let ts_init = self.node.kernel().clock.borrow().timestamp_ns();
+            if subscribe {
+                let command = SubscribeOptionChain::new(
+                    series_id,
+                    strike_range.clone(),
+                    snapshot_interval_ms,
+                    UUID4::new(),
+                    ts_init,
+                    client_id,
+                    None,
+                    params.clone(),
+                );
+                self.node
+                    .kernel()
+                    .data_engine
+                    .borrow_mut()
+                    .execute_subscribe(SubscribeCommand::OptionChain(command))
+                    .map_err(|error| binding_error(plan, error.to_string()))?;
+            } else {
+                let command =
+                    UnsubscribeOptionChain::new(series_id, UUID4::new(), ts_init, client_id, None);
+                self.node
+                    .kernel()
+                    .data_engine
+                    .borrow_mut()
+                    .execute_unsubscribe(&UnsubscribeCommand::OptionChain(command))
+                    .map_err(|error| binding_error(plan, error.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_custom_data(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+        custom_iv_data_type: &str,
+        nt_params: &toml::Value,
+        subscribe: bool,
+    ) -> Result<(), IvRuntimeBindingError> {
+        let (data_type, params) = custom_iv_data_type_for_source(
+            &plan.source_id,
+            custom_iv_data_type,
+            &plan.params,
+            nt_params,
+        )
+        .map_err(|message| binding_error(plan, message))?;
+        self.execute_custom_data(plan, data_type, params, subscribe)
+    }
+
+    fn apply_aggregate_greeks(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+        aggregate_key: &str,
+        underlying_selectors: &[String],
+        nt_params: &toml::Value,
+        subscribe: bool,
+    ) -> Result<(), IvRuntimeBindingError> {
+        let (data_type, params) = aggregate_greeks_data_type_for_source(
+            &plan.source_id,
+            aggregate_key,
+            underlying_selectors,
+            &plan.params,
+            nt_params,
+        )
+        .map_err(|message| binding_error(plan, message))?;
+        self.execute_custom_data(plan, data_type, params, subscribe)
+    }
+
+    fn execute_custom_data(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+        data_type: DataType,
+        params: Option<Params>,
+        subscribe: bool,
+    ) -> Result<(), IvRuntimeBindingError> {
+        let client_id = Some(self.client_id(plan)?);
+        let ts_init = self.node.kernel().clock.borrow().timestamp_ns();
+        if subscribe {
+            let command = SubscribeCustomData::new(
+                client_id,
+                None,
+                data_type,
+                UUID4::new(),
+                ts_init,
+                None,
+                params,
+            );
+            self.node
+                .kernel()
+                .data_engine
+                .borrow_mut()
+                .execute_subscribe(SubscribeCommand::Data(command))
+                .map_err(|error| binding_error(plan, error.to_string()))?;
+        } else {
+            let command = UnsubscribeCustomData::new(
+                client_id,
+                None,
+                data_type,
+                UUID4::new(),
+                ts_init,
+                None,
+                params,
+            );
+            self.node
+                .kernel()
+                .data_engine
+                .borrow_mut()
+                .execute_unsubscribe(&UnsubscribeCommand::Data(command))
+                .map_err(|error| binding_error(plan, error.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
+impl IvRuntimeBindingAdapter for NtIvRuntimeBindingAdapter<'_> {
+    fn apply_subscription_plan(
+        &mut self,
+        plan: &IvSubscriptionPlan,
+    ) -> Result<(), IvRuntimeBindingError> {
+        if self.is_external_client(plan) {
+            return Ok(());
+        }
+
+        match (plan.operation, &plan.selector) {
+            (
+                IvRuntimeOperation::SubscribeOptionGreeks
+                | IvRuntimeOperation::UnsubscribeOptionGreeks,
+                IvSelector::SourceOptionGreeks {
+                    instrument_ids,
+                    nt_params,
+                },
+            ) => self.apply_option_greeks(
+                plan,
+                instrument_ids,
+                nt_params,
+                plan.operation == IvRuntimeOperation::SubscribeOptionGreeks,
+            ),
+            (
+                IvRuntimeOperation::SubscribeOptionChain
+                | IvRuntimeOperation::UnsubscribeOptionChain,
+                IvSelector::SourceOptionChain {
+                    series_ids,
+                    strike_range_policy,
+                    nt_params,
+                },
+            ) => self.apply_option_chain(
+                plan,
+                series_ids,
+                strike_range_policy,
+                nt_params,
+                plan.operation == IvRuntimeOperation::SubscribeOptionChain,
+            ),
+            (
+                IvRuntimeOperation::SubscribeCustomData | IvRuntimeOperation::UnsubscribeCustomData,
+                IvSelector::SourceCustomImpliedVolatility {
+                    custom_iv_data_type,
+                    nt_params,
+                    ..
+                },
+            ) => self.apply_custom_data(
+                plan,
+                custom_iv_data_type,
+                nt_params,
+                plan.operation == IvRuntimeOperation::SubscribeCustomData,
+            ),
+            (
+                IvRuntimeOperation::SubscribeAggregateGreeks
+                | IvRuntimeOperation::UnsubscribeAggregateGreeks,
+                IvSelector::SourceAggregateGreeks {
+                    aggregate_key,
+                    underlying_selectors,
+                    nt_params,
+                    ..
+                },
+            ) => self.apply_aggregate_greeks(
+                plan,
+                aggregate_key,
+                underlying_selectors,
+                nt_params,
+                plan.operation == IvRuntimeOperation::SubscribeAggregateGreeks,
+            ),
+            (IvRuntimeOperation::RemoveSource, _) => Ok(()),
+            _ => Err(binding_error(
+                plan,
+                "IV subscription operation does not match selector kind".to_string(),
+            )),
+        }
+    }
+}
+
+fn binding_error(plan: &IvSubscriptionPlan, message: String) -> IvRuntimeBindingError {
+    IvRuntimeBindingError::subscription_failed(plan, message)
+}
+
+fn custom_iv_data_type_for_source(
+    source_id: &str,
+    custom_iv_data_type: &str,
+    source_params: &toml::Value,
+    selector_nt_params: &toml::Value,
+) -> Result<(DataType, Option<Params>), String> {
+    let params = merged_nt_params_from_values(source_params, selector_nt_params)?;
+    let data_type = DataType::new(
+        custom_iv_data_type,
+        params.clone(),
+        Some(source_id.to_string()),
+    );
+    Ok((data_type, params))
+}
+
+fn aggregate_greeks_data_type_for_source(
+    source_id: &str,
+    aggregate_key: &str,
+    underlying_selectors: &[String],
+    source_params: &toml::Value,
+    selector_nt_params: &toml::Value,
+) -> Result<(DataType, Option<Params>), String> {
+    let mut params = merged_nt_params_from_values(source_params, selector_nt_params)?
+        .unwrap_or_else(Params::new);
+    params.insert(
+        "underlying_selectors".to_string(),
+        serde_json::Value::Array(
+            underlying_selectors
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    );
+    let params = Some(params);
+    let data_type = DataType::new(aggregate_key, params.clone(), Some(source_id.to_string()));
+    Ok((data_type, params))
+}
+
+fn merged_nt_params(
+    plan: &IvSubscriptionPlan,
+    selector_nt_params: &toml::Value,
+) -> Result<Option<Params>, IvRuntimeBindingError> {
+    merged_nt_params_from_values(&plan.params, selector_nt_params)
+        .map_err(|message| binding_error(plan, message))
+}
+
+fn merged_nt_params_from_values(
+    source_params: &toml::Value,
+    selector_nt_params: &toml::Value,
+) -> Result<Option<Params>, String> {
+    let mut params = Params::new();
+    insert_toml_params(&mut params, source_params, "source params")?;
+    insert_toml_params(&mut params, selector_nt_params, "selector nt_params")?;
+    if params.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(params))
+    }
+}
+
+fn insert_toml_params(params: &mut Params, value: &toml::Value, label: &str) -> Result<(), String> {
+    let toml::Value::Table(table) = value else {
+        return Err(format!(
+            "{label} must be a TOML table for NT params conversion"
+        ));
+    };
+    for (key, value) in table {
+        let value = serde_json::to_value(value).map_err(|error| {
+            format!("failed to convert {label} key {key} into NT params: {error}")
+        })?;
+        params.insert(key.clone(), value);
+    }
+    Ok(())
+}
+
+fn parse_nt_strike_range(
+    plan: &IvSubscriptionPlan,
+    strike_range_policy: &str,
+) -> Result<StrikeRange, IvRuntimeBindingError> {
+    if let Some(pct) = strike_range_policy.strip_prefix("atm_percent:") {
+        return pct
+            .parse::<f64>()
+            .map(|pct| StrikeRange::AtmPercent { pct })
+            .map_err(|error| {
+                binding_error(
+                    plan,
+                    format!("invalid atm_percent strike range policy: {error}"),
+                )
+            });
+    }
+    if let Some(relative) = strike_range_policy.strip_prefix("atm_relative:") {
+        let Some((above, below)) = relative.split_once(':') else {
+            return Err(binding_error(
+                plan,
+                "atm_relative strike range policy must be atm_relative:<above>:<below>".to_string(),
+            ));
+        };
+        let strikes_above = above.parse::<usize>().map_err(|error| {
+            binding_error(
+                plan,
+                format!("invalid atm_relative strikes_above value: {error}"),
+            )
+        })?;
+        let strikes_below = below.parse::<usize>().map_err(|error| {
+            binding_error(
+                plan,
+                format!("invalid atm_relative strikes_below value: {error}"),
+            )
+        })?;
+        return Ok(StrikeRange::AtmRelative {
+            strikes_above,
+            strikes_below,
+        });
+    }
+    if let Some(fixed) = strike_range_policy.strip_prefix("fixed:") {
+        let mut strikes = Vec::new();
+        for strike in fixed.split(',') {
+            strikes.push(Price::from_str(strike.trim()).map_err(|error| {
+                binding_error(plan, format!("invalid fixed strike range value: {error}"))
+            })?);
+        }
+        return Ok(StrikeRange::Fixed(strikes));
+    }
+    Err(binding_error(
+        plan,
+        "strike_range_policy must be parseable as atm_percent:<pct>, atm_relative:<above>:<below>, or fixed:<strike,...>".to_string(),
+    ))
 }
 
 #[cfg(test)]
@@ -149,7 +1349,7 @@ mod strategy_free_probe {
     use super::*;
 
     #[derive(Debug, Clone, PartialEq)]
-    pub struct BoltV3StrategyFreeDataClientReadinessQuote {
+    pub struct BoltV3StrategyFreeReferenceQuote {
         pub data_client_id: String,
         pub instrument_id: String,
         pub bid_price: f64,
@@ -157,6 +1357,11 @@ mod strategy_free_probe {
         pub ts_event_unix_nanos: u64,
         pub ts_init_unix_nanos: u64,
         pub captured_at_unix_nanos: u64,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct BoltV3StrategyFreeReferenceQuoteEvidence {
+        pub quotes: Vec<BoltV3StrategyFreeReferenceQuote>,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,7 +1380,7 @@ mod strategy_free_probe {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(super) struct StrategyFreeDataClientReadinessQuoteSubscription {
+    pub(super) struct StrategyFreeReferenceQuoteSubscription {
         pub(super) data_client_id: ClientId,
         pub(super) instrument_id: InstrumentId,
     }
@@ -204,11 +1409,15 @@ mod strategy_free_probe {
         /// Set once the walk has finished, whether by reaching `m` (pass) or by
         /// exhausting the universe (fail closed).
         complete: Cell<bool>,
+        /// Distinct markets that fired at least one trade across subscribed
+        /// chunks. Instrument IDs are enough here because the chunk-count probe is
+        /// scoped to one data client.
+        fired_instrument_ids: RefCell<BTreeSet<String>>,
     }
 
     #[derive(Debug, Clone)]
-    pub(super) struct BoltV3StrategyFreeDataClientReadinessProbeHandle {
-        pub(super) required: Rc<RefCell<Vec<StrategyFreeDataClientReadinessQuoteSubscription>>>,
+    pub(super) struct BoltV3StrategyFreeReferenceQuoteProbeHandle {
+        pub(super) required: Rc<RefCell<Vec<StrategyFreeReferenceQuoteSubscription>>>,
         pub(super) ambiguous_instrument_ids: Rc<RefCell<BTreeSet<String>>>,
         pub(super) market_data_kind: DataClientReadinessProbeMarketDataKind,
         pub(super) metadata_response_data_client_id: Option<ClientId>,
@@ -217,7 +1426,7 @@ mod strategy_free_probe {
         pub(super) min_observed_targets: Option<usize>,
         pub(super) quote_targets_initialized: Rc<Cell<bool>>,
         pub(super) failure_reason: Rc<RefCell<Option<String>>>,
-        pub(super) quotes: Rc<RefCell<Vec<BoltV3StrategyFreeDataClientReadinessQuote>>>,
+        pub(super) quotes: Rc<RefCell<Vec<BoltV3StrategyFreeReferenceQuote>>>,
         pub(super) book_deltas: Rc<RefCell<Vec<BoltV3StrategyFreeBookDeltas>>>,
         pub(super) quote_notify: Rc<tokio::sync::Notify>,
         /// Present only for a trade chunk-count probe (`market_data_kind = "trade"`
@@ -226,9 +1435,20 @@ mod strategy_free_probe {
         chunk_walk: Option<Rc<ChunkCountWalk>>,
     }
 
-    impl BoltV3StrategyFreeDataClientReadinessProbeHandle {
+    impl BoltV3StrategyFreeReferenceQuoteProbeHandle {
+        pub(super) fn new(loaded: &LoadedBoltV3Config) -> Self {
+            let (required, ambiguous_instrument_ids) =
+                strategy_free_reference_quote_subscription_plan(loaded);
+            Self::from_plan(
+                required,
+                ambiguous_instrument_ids,
+                DataClientReadinessProbeMarketDataKind::Quote,
+                None,
+            )
+        }
+
         pub(super) fn from_plan(
-            required: Vec<StrategyFreeDataClientReadinessQuoteSubscription>,
+            required: Vec<StrategyFreeReferenceQuoteSubscription>,
             ambiguous_instrument_ids: BTreeSet<String>,
             market_data_kind: DataClientReadinessProbeMarketDataKind,
             min_observed_targets: Option<usize>,
@@ -303,6 +1523,7 @@ mod strategy_free_probe {
                     cursor: Cell::new(0),
                     started: Cell::new(false),
                     complete: Cell::new(false),
+                    fired_instrument_ids: RefCell::new(BTreeSet::new()),
                 })),
             }
         }
@@ -326,6 +1547,8 @@ mod strategy_free_probe {
             instrument_ids.dedup();
             *walk.chunks.borrow_mut() = chunk_universe(&instrument_ids, walk.chunk_size);
             walk.cursor.set(0);
+            walk.complete.set(false);
+            walk.fired_instrument_ids.borrow_mut().clear();
             walk.started.set(true);
             self.quote_notify.notify_one();
         }
@@ -335,19 +1558,31 @@ mod strategy_free_probe {
         /// the universe is exhausted.
         pub(super) fn chunk_count_next_chunk(
             &self,
-        ) -> Option<Vec<StrategyFreeDataClientReadinessQuoteSubscription>> {
+        ) -> Option<Vec<StrategyFreeReferenceQuoteSubscription>> {
             let walk = self.chunk_walk.as_ref()?;
             let cursor = walk.cursor.get();
-            let chunk = walk.chunks.borrow().get(cursor).cloned()?;
+            let chunk = match walk.chunks.borrow().get(cursor).cloned() {
+                Some(chunk) => chunk,
+                None => {
+                    walk.complete.set(true);
+                    if !self.chunk_count_passed() {
+                        self.fail_metadata_response_probe(format!(
+                            "trade chunk-count readiness probe exhausted {} chunk(s) with {} distinct fired market(s), below required min_observed_targets={}",
+                            walk.chunks.borrow().len(),
+                            walk.fired_instrument_ids.borrow().len(),
+                            walk.required_live_markets,
+                        ));
+                    }
+                    return None;
+                }
+            };
             walk.cursor.set(cursor + 1);
-            let subscriptions: Vec<StrategyFreeDataClientReadinessQuoteSubscription> = chunk
+            let subscriptions: Vec<StrategyFreeReferenceQuoteSubscription> = chunk
                 .into_iter()
-                .map(
-                    |instrument_id| StrategyFreeDataClientReadinessQuoteSubscription {
-                        data_client_id: walk.data_client_id,
-                        instrument_id,
-                    },
-                )
+                .map(|instrument_id| StrategyFreeReferenceQuoteSubscription {
+                    data_client_id: walk.data_client_id,
+                    instrument_id,
+                })
                 .collect();
             *self.required.borrow_mut() = subscriptions.clone();
             Some(subscriptions)
@@ -357,13 +1592,16 @@ mod strategy_free_probe {
         /// before advancing to the next chunk.
         pub(super) fn chunk_count_current_chunk(
             &self,
-        ) -> Vec<StrategyFreeDataClientReadinessQuoteSubscription> {
+        ) -> Vec<StrategyFreeReferenceQuoteSubscription> {
             self.required.borrow().clone()
         }
 
         pub(super) fn chunk_count_passed(&self) -> bool {
             match &self.chunk_walk {
-                Some(walk) => trade_chunk_count_probe_passed(0, walk.required_live_markets),
+                Some(walk) => trade_chunk_count_probe_passed(
+                    walk.fired_instrument_ids.borrow().len(),
+                    walk.required_live_markets,
+                ),
                 None => false,
             }
         }
@@ -444,6 +1682,16 @@ mod strategy_free_probe {
             }
         }
 
+        pub(super) fn ambiguity_error(&self) -> Option<String> {
+            if self.ambiguous_instrument_ids.borrow().is_empty() {
+                return None;
+            }
+            Some(
+            "reference quote probe cannot distinguish multiple data clients for the same instrument_id; QuoteTick does not carry data_client_id"
+                .to_string(),
+        )
+        }
+
         pub(super) fn failure_error(&self) -> Option<String> {
             self.failure_reason.borrow().clone()
         }
@@ -458,48 +1706,22 @@ mod strategy_free_probe {
             self.quote_notify.notify_one();
         }
 
+        pub(super) fn evidence(&self) -> BoltV3StrategyFreeReferenceQuoteEvidence {
+            BoltV3StrategyFreeReferenceQuoteEvidence {
+                quotes: self.quotes.borrow().clone(),
+            }
+        }
+
         pub(super) fn book_evidence(&self) -> BoltV3StrategyFreeBookDeltasEvidence {
             BoltV3StrategyFreeBookDeltasEvidence {
                 deltas: self.book_deltas.borrow().clone(),
             }
         }
 
-        pub(super) fn record_quote(&self, quote: &QuoteTick, captured_at_unix_nanos: u64) {
-            let quote_instrument_id = quote.instrument_id.to_string();
-            if self
-                .ambiguous_instrument_ids
-                .borrow()
-                .contains(&quote_instrument_id)
-            {
-                return;
-            }
-            let required = self.required.borrow().clone();
-            let mut matched_required = false;
-            let mut quotes = self.quotes.borrow_mut();
-            for required in &required {
-                if quote.instrument_id == required.instrument_id {
-                    matched_required = true;
-                    quotes.push(BoltV3StrategyFreeDataClientReadinessQuote {
-                        data_client_id: required.data_client_id.to_string(),
-                        instrument_id: required.instrument_id.to_string(),
-                        bid_price: quote.bid_price.as_f64(),
-                        ask_price: quote.ask_price.as_f64(),
-                        ts_event_unix_nanos: quote.ts_event.as_u64(),
-                        ts_init_unix_nanos: quote.ts_init.as_u64(),
-                        captured_at_unix_nanos,
-                    });
-                }
-            }
-            drop(quotes);
-            if matched_required && self.has_all_required_market_data() {
-                self.quote_notify.notify_one();
-            }
-        }
-
         pub(super) fn install_metadata_response_instrument_ids(
             &self,
             mut instrument_ids: Vec<InstrumentId>,
-        ) -> Vec<StrategyFreeDataClientReadinessQuoteSubscription> {
+        ) -> Vec<StrategyFreeReferenceQuoteSubscription> {
             let Some(data_client_id) = self.metadata_response_data_client_id else {
                 return Vec::new();
             };
@@ -528,12 +1750,10 @@ mod strategy_free_probe {
             }
             let subscriptions = instrument_ids
                 .into_iter()
-                .map(
-                    |instrument_id| StrategyFreeDataClientReadinessQuoteSubscription {
-                        data_client_id,
-                        instrument_id,
-                    },
-                )
+                .map(|instrument_id| StrategyFreeReferenceQuoteSubscription {
+                    data_client_id,
+                    instrument_id,
+                })
                 .collect();
             let (required, ambiguous_instrument_ids) =
                 dedupe_strategy_free_reference_quote_subscriptions(subscriptions);
@@ -551,6 +1771,38 @@ mod strategy_free_probe {
             self.quote_targets_initialized.set(true);
             self.quote_notify.notify_one();
             required
+        }
+
+        pub(super) fn record_quote(&self, quote: &QuoteTick, captured_at_unix_nanos: u64) {
+            let quote_instrument_id = quote.instrument_id.to_string();
+            if self
+                .ambiguous_instrument_ids
+                .borrow()
+                .contains(&quote_instrument_id)
+            {
+                return;
+            }
+            let required = self.required.borrow().clone();
+            let mut matched_required = false;
+            let mut quotes = self.quotes.borrow_mut();
+            for required in &required {
+                if quote.instrument_id == required.instrument_id {
+                    matched_required = true;
+                    quotes.push(BoltV3StrategyFreeReferenceQuote {
+                        data_client_id: required.data_client_id.to_string(),
+                        instrument_id: required.instrument_id.to_string(),
+                        bid_price: quote.bid_price.as_f64(),
+                        ask_price: quote.ask_price.as_f64(),
+                        ts_event_unix_nanos: quote.ts_event.as_u64(),
+                        ts_init_unix_nanos: quote.ts_init.as_u64(),
+                        captured_at_unix_nanos,
+                    });
+                }
+            }
+            drop(quotes);
+            if matched_required && self.has_all_required_market_data() {
+                self.quote_notify.notify_one();
+            }
         }
 
         pub(super) fn record_book_deltas(
@@ -585,6 +1837,44 @@ mod strategy_free_probe {
             drop(book_deltas);
             if matched_required && self.has_all_required_market_data() {
                 self.quote_notify.notify_one();
+            }
+        }
+
+        pub(super) fn record_trade(&self, trade: &TradeTick) {
+            if self.market_data_kind != DataClientReadinessProbeMarketDataKind::Trade {
+                return;
+            }
+            let Some(walk) = &self.chunk_walk else {
+                return;
+            };
+            if walk.complete.get() {
+                return;
+            }
+            if self
+                .required
+                .borrow()
+                .iter()
+                .any(|required| trade.instrument_id == required.instrument_id)
+            {
+                walk.fired_instrument_ids
+                    .borrow_mut()
+                    .insert(trade.instrument_id.to_string());
+                if self.chunk_count_passed() {
+                    walk.complete.set(true);
+                    self.quote_notify.notify_one();
+                }
+            }
+        }
+
+        pub(super) async fn wait_for_all_required_quotes(&self) -> Result<(), String> {
+            loop {
+                if let Some(reason) = self.failure_error() {
+                    return Err(reason);
+                }
+                if self.has_all_required_market_data() {
+                    return Ok(());
+                }
+                self.quote_notify.notified().await;
             }
         }
     }
@@ -637,7 +1927,7 @@ mod strategy_free_probe {
     }
 
     fn observed_required_book_delta_count(
-        required: &[StrategyFreeDataClientReadinessQuoteSubscription],
+        required: &[StrategyFreeReferenceQuoteSubscription],
         book_deltas: &[BoltV3StrategyFreeBookDeltas],
     ) -> usize {
         let mut observed = BTreeSet::new();
@@ -656,8 +1946,8 @@ mod strategy_free_probe {
     }
 
     fn observed_required_quote_count(
-        required: &[StrategyFreeDataClientReadinessQuoteSubscription],
-        quotes: &[BoltV3StrategyFreeDataClientReadinessQuote],
+        required: &[StrategyFreeReferenceQuoteSubscription],
+        quotes: &[BoltV3StrategyFreeReferenceQuote],
     ) -> usize {
         let mut observed = BTreeSet::new();
         for required in required {
@@ -674,51 +1964,69 @@ mod strategy_free_probe {
         observed.len()
     }
 
+    fn strategy_free_reference_quote_subscription_plan(
+        loaded: &LoadedBoltV3Config,
+    ) -> (
+        Vec<StrategyFreeReferenceQuoteSubscription>,
+        BTreeSet<String>,
+    ) {
+        let mut subscriptions = Vec::new();
+        for strategy in &loaded.strategies {
+            for reference in strategy.config.reference_data.values() {
+                subscriptions.push(StrategyFreeReferenceQuoteSubscription {
+                    data_client_id: reference.data_client_id,
+                    instrument_id: reference.instrument_id,
+                });
+            }
+        }
+        dedupe_strategy_free_reference_quote_subscriptions(subscriptions)
+    }
+
     pub(super) fn strategy_free_data_client_readiness_quote_subscription_plan(
         loaded: &LoadedBoltV3Config,
         client_key: &str,
     ) -> Result<
         (
-            Vec<StrategyFreeDataClientReadinessQuoteSubscription>,
+            Vec<StrategyFreeReferenceQuoteSubscription>,
             BTreeSet<String>,
         ),
         BoltV3LiveNodeError,
     > {
         let client = loaded.root.clients.get(client_key).ok_or_else(|| {
-            BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(anyhow::anyhow!(
+            BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(anyhow::anyhow!(
                 "data-client readiness quote probe client_key is not configured"
             ))
         })?;
         if client.data.is_none() {
-            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
                 anyhow::anyhow!(
                     "data-client readiness quote probe requires the selected client to declare [data]"
                 ),
             ));
         }
         let readiness_probe = client.readiness_probe.as_ref().ok_or_else(|| {
-        BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(anyhow::anyhow!(
+        BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(anyhow::anyhow!(
             "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
         ))
     })?;
         if readiness_probe.quote_target_source
             != DataClientReadinessProbeQuoteTargetSource::Configured
         {
-            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
                 anyhow::anyhow!(
                     "standalone data-client readiness quote probe requires quote_target_source = \"configured\"; metadata_response requires the combined data-client readiness probe"
                 ),
             ));
         }
         let Some(quote_targets) = &readiness_probe.quote_targets else {
-            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
                 anyhow::anyhow!(
                     "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
                 ),
             ));
         };
         if quote_targets.is_empty() {
-            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
                 anyhow::anyhow!(
                     "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
                 ),
@@ -726,7 +2034,7 @@ mod strategy_free_probe {
         }
         let subscriptions = quote_targets
             .values()
-            .map(|target| StrategyFreeDataClientReadinessQuoteSubscription {
+            .map(|target| StrategyFreeReferenceQuoteSubscription {
                 data_client_id: ClientId::from(client_key),
                 instrument_id: target.instrument_id,
             })
@@ -749,7 +2057,7 @@ mod strategy_free_probe {
         readiness_probe: &DataClientReadinessProbeBlock,
     ) -> Result<Option<usize>, BoltV3LiveNodeError> {
         match readiness_probe.min_observed_targets {
-            Some(0) => Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+            Some(0) => Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
                 anyhow::anyhow!(
                     "clients.<id>.readiness_probe.min_observed_targets must be a positive integer when configured"
                 ),
@@ -761,21 +2069,21 @@ mod strategy_free_probe {
     pub(super) fn strategy_free_data_client_readiness_quote_probe_handle(
         loaded: &LoadedBoltV3Config,
         client_key: &str,
-    ) -> Result<BoltV3StrategyFreeDataClientReadinessProbeHandle, BoltV3LiveNodeError> {
+    ) -> Result<BoltV3StrategyFreeReferenceQuoteProbeHandle, BoltV3LiveNodeError> {
         let client = loaded.root.clients.get(client_key).ok_or_else(|| {
-            BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(anyhow::anyhow!(
+            BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(anyhow::anyhow!(
                 "data-client readiness probe client_key is not configured"
             ))
         })?;
         if client.data.is_none() {
-            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
                 anyhow::anyhow!(
                     "data-client readiness probe requires the selected client to declare [data]"
                 ),
             ));
         }
         let Some(readiness_probe) = &client.readiness_probe else {
-            return Ok(BoltV3StrategyFreeDataClientReadinessProbeHandle::from_plan(
+            return Ok(BoltV3StrategyFreeReferenceQuoteProbeHandle::from_plan(
                 Vec::new(),
                 BTreeSet::new(),
                 DataClientReadinessProbeMarketDataKind::Quote,
@@ -786,14 +2094,14 @@ mod strategy_free_probe {
         match readiness_probe.quote_target_source {
             DataClientReadinessProbeQuoteTargetSource::Configured => {
                 let Some(quote_targets) = &readiness_probe.quote_targets else {
-                    return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+                    return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
                         anyhow::anyhow!(
                             "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
                         ),
                     ));
                 };
                 if quote_targets.is_empty() {
-                    return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+                    return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
                         anyhow::anyhow!(
                             "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
                         ),
@@ -801,7 +2109,7 @@ mod strategy_free_probe {
                 }
                 let subscriptions = quote_targets
                     .values()
-                    .map(|target| StrategyFreeDataClientReadinessQuoteSubscription {
+                    .map(|target| StrategyFreeReferenceQuoteSubscription {
                         data_client_id: ClientId::from(client_key),
                         instrument_id: target.instrument_id,
                     })
@@ -811,14 +2119,14 @@ mod strategy_free_probe {
                 if let Some(min_observed) = min_observed_targets
                     && min_observed > required.len()
                 {
-                    return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+                    return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
                         anyhow::anyhow!(
                             "clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} configured readiness_probe.quote_targets",
                             required.len()
                         ),
                     ));
                 }
-                Ok(BoltV3StrategyFreeDataClientReadinessProbeHandle::from_plan(
+                Ok(BoltV3StrategyFreeReferenceQuoteProbeHandle::from_plan(
                     required,
                     ambiguous_instrument_ids,
                     readiness_probe.market_data_kind,
@@ -832,7 +2140,7 @@ mod strategy_free_probe {
                     let chunk_size = match readiness_probe.chunk_size {
                         Some(chunk_size) if chunk_size > 0 => chunk_size,
                         _ => {
-                            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+                            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
                                 anyhow::anyhow!(
                                     "trade chunk-count readiness probe requires positive clients.<id>.readiness_probe.chunk_size"
                                 ),
@@ -844,7 +2152,7 @@ mod strategy_free_probe {
                     {
                         Some(window) if window > 0 => window,
                         _ => {
-                            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+                            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
                                 anyhow::anyhow!(
                                     "trade chunk-count readiness probe requires positive clients.<id>.readiness_probe.chunk_observation_window_seconds"
                                 ),
@@ -856,7 +2164,7 @@ mod strategy_free_probe {
                             required_live_markets
                         }
                         _ => {
-                            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+                            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
                                 anyhow::anyhow!(
                                     "trade chunk-count readiness probe requires positive clients.<id>.readiness_probe.min_observed_targets (m)"
                                 ),
@@ -864,7 +2172,7 @@ mod strategy_free_probe {
                         }
                     };
                     return Ok(
-                    BoltV3StrategyFreeDataClientReadinessProbeHandle::from_metadata_response_chunk_count_plan(
+                    BoltV3StrategyFreeReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
                         ClientId::from(client_key),
                         chunk_size,
                         chunk_observation_window_seconds,
@@ -874,12 +2182,12 @@ mod strategy_free_probe {
                 );
                 }
                 let max_quote_targets = readiness_probe.max_metadata_quote_targets.ok_or_else(|| {
-                BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(anyhow::anyhow!(
+                BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(anyhow::anyhow!(
                     "data-client readiness quote probe requires clients.<id>.readiness_probe.max_metadata_quote_targets when quote_target_source = \"metadata_response\""
                 ))
             })?;
                 if max_quote_targets == 0 {
-                    return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+                    return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
                         anyhow::anyhow!(
                             "data-client readiness quote probe requires positive clients.<id>.readiness_probe.max_metadata_quote_targets"
                         ),
@@ -888,12 +2196,12 @@ mod strategy_free_probe {
                 let allow_target_sampling = readiness_probe
                 .allow_metadata_target_sampling
                 .ok_or_else(|| {
-                    BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(anyhow::anyhow!(
+                    BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(anyhow::anyhow!(
                         "data-client readiness quote probe requires clients.<id>.readiness_probe.allow_metadata_target_sampling when quote_target_source = \"metadata_response\""
                     ))
                 })?;
                 Ok(
-                    BoltV3StrategyFreeDataClientReadinessProbeHandle::from_metadata_response_plan(
+                    BoltV3StrategyFreeReferenceQuoteProbeHandle::from_metadata_response_plan(
                         ClientId::from(client_key),
                         max_quote_targets,
                         allow_target_sampling,
@@ -906,9 +2214,9 @@ mod strategy_free_probe {
     }
 
     fn dedupe_strategy_free_reference_quote_subscriptions(
-        subscriptions: Vec<StrategyFreeDataClientReadinessQuoteSubscription>,
+        subscriptions: Vec<StrategyFreeReferenceQuoteSubscription>,
     ) -> (
-        Vec<StrategyFreeDataClientReadinessQuoteSubscription>,
+        Vec<StrategyFreeReferenceQuoteSubscription>,
         BTreeSet<String>,
     ) {
         let mut seen = BTreeSet::new();
@@ -939,7 +2247,7 @@ mod strategy_free_probe {
 #[cfg(test)]
 use strategy_free_probe::*;
 
-impl BoltV3StrategyFreeDataClientReadinessCacheEvidence {
+impl BoltV3StrategyFreeReferenceCacheEvidence {
     pub fn cached_instrument_ids(&self) -> &[String] {
         &self.cached_instrument_ids
     }
@@ -963,6 +2271,38 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
     fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
         Ok(())
     }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+struct BoltV3LiveNodeRuntimeFeeds {
+    loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
+    loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
+    loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
+    position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
+    position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
+    position_sizer_venue_spendability_source:
+        Option<BoltV3PositionSizerVenueSpendabilitySourceConfig>,
+    submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
 }
 
 impl BoltV3LiveNodeRuntime {
@@ -970,12 +2310,26 @@ impl BoltV3LiveNodeRuntime {
         node: LiveNode,
         registration_summary: BoltV3RegistrationSummary,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
+        feeds: BoltV3LiveNodeRuntimeFeeds,
+        iv_runtime: Option<IvRuntimeEngine>,
+        iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
         redaction_values: Vec<Zeroizing<String>>,
     ) -> Self {
         Self {
             node,
             registration_summary,
             submit_admission,
+            loss_halt_action_policy: feeds.loss_halt_action_policy,
+            loss_runtime_feed: feeds.loss_runtime_feed,
+            loss_runtime_feed_subscription: feeds.loss_runtime_feed_subscription,
+            position_sizer_runtime_feed: feeds.position_sizer_runtime_feed,
+            position_sizer_runtime_feed_subscription: feeds
+                .position_sizer_runtime_feed_subscription,
+            position_sizer_venue_spendability_source: feeds
+                .position_sizer_venue_spendability_source,
+            submit_reservation_recovery: feeds.submit_reservation_recovery,
+            iv_runtime,
+            iv_event_bindings,
             redaction_values,
         }
     }
@@ -992,6 +2346,106 @@ impl BoltV3LiveNodeRuntime {
         self.node.state()
     }
 
+    pub fn has_iv_runtime(&self) -> bool {
+        self.iv_runtime.is_some()
+    }
+
+    pub fn has_iv_event_bindings(&self) -> bool {
+        self.iv_event_bindings.is_some()
+    }
+
+    pub fn iv_source_health(&self, profile_id: &str, source_id: &str) -> Option<IvSourceHealth> {
+        self.iv_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.source_health(profile_id, source_id))
+    }
+
+    fn spawn_iv_engine_start_on_running(
+        &self,
+        root: &BoltV3RootConfig,
+    ) -> Result<Option<tokio::task::JoinHandle<()>>, BoltV3LiveNodeError> {
+        let Some(iv_runtime) = self.iv_runtime.clone() else {
+            return Ok(None);
+        };
+        if root.iv.is_none() {
+            return Ok(None);
+        }
+        let lifecycle = plan_iv_engine_lifecycle(root).map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(
+                BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                    message: format!("bolt-v3 IV lifecycle start planning failed: {error:?}"),
+                },
+            )
+        })?;
+        if lifecycle.start_plans.is_empty() {
+            return Ok(None);
+        }
+
+        let node_handle = self.node.handle();
+        let start_plans = lifecycle.start_plans;
+        let registered_clients = self.node.kernel().data_engine.borrow().registered_clients();
+        let external_clients = root.nautilus.data_engine.external_clients.clone();
+        let start_poll_interval =
+            Duration::from_millis(root.persistence.runtime_capture_start_poll_interval_ms);
+        Ok(Some(tokio::task::spawn_local(async move {
+            loop {
+                match node_handle.state() {
+                    NodeState::Running => break,
+                    NodeState::ShuttingDown | NodeState::Stopped => return,
+                    NodeState::Idle | NodeState::Starting => {
+                        tokio::time::sleep(start_poll_interval).await;
+                    }
+                }
+            }
+
+            let mut adapter =
+                NtIvRuntimeCommandSenderAdapter::new(&registered_clients, &external_clients);
+            let outcomes = apply_subscription_plans(&mut adapter, &start_plans);
+            if let Err(error) = iv_runtime.apply_plan_outcomes(&outcomes) {
+                log::error!("bolt-v3 IV lifecycle start outcome update failed: {error:?}");
+            }
+        })))
+    }
+
+    pub fn stop_iv_engine_lifecycle(
+        &mut self,
+        root: &BoltV3RootConfig,
+    ) -> Result<(), BoltV3LiveNodeError> {
+        let Some(iv_runtime) = self.iv_runtime.take() else {
+            return Ok(());
+        };
+        let lifecycle = match plan_iv_engine_lifecycle(root) {
+            Ok(lifecycle) => lifecycle,
+            Err(error) => {
+                self.iv_runtime = Some(iv_runtime);
+                return Err(BoltV3LiveNodeError::StrategyRegistration(
+                    BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                        message: format!("bolt-v3 IV lifecycle stop planning failed: {error:?}"),
+                    },
+                ));
+            }
+        };
+        let iv_event_bindings = self.iv_event_bindings.take();
+        let outcomes = {
+            let mut adapter = NtIvRuntimeBindingAdapter::new(
+                &mut self.node,
+                &root.nautilus.data_engine.external_clients,
+            );
+            apply_subscription_plans(&mut adapter, &lifecycle.stop_plans)
+        };
+        if let Err(error) = iv_runtime.apply_plan_outcomes(&outcomes) {
+            self.iv_runtime = Some(iv_runtime);
+            self.iv_event_bindings = iv_event_bindings;
+            return Err(BoltV3LiveNodeError::StrategyRegistration(
+                BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                    message: format!("bolt-v3 IV lifecycle stop state update failed: {error:?}"),
+                },
+            ));
+        }
+
+        Ok(())
+    }
+
     pub fn registered_data_client_ids(&self) -> Vec<ClientId> {
         self.node.kernel().data_engine.borrow().registered_clients()
     }
@@ -1005,13 +2459,10 @@ impl BoltV3LiveNodeRuntime {
     }
 
     pub fn cached_instrument_ids(&self) -> Vec<String> {
-        self.data_client_readiness_cache_evidence()
-            .cached_instrument_ids
+        self.reference_cache_evidence().cached_instrument_ids
     }
 
-    pub fn data_client_readiness_cache_evidence(
-        &self,
-    ) -> BoltV3StrategyFreeDataClientReadinessCacheEvidence {
+    pub fn reference_cache_evidence(&self) -> BoltV3StrategyFreeReferenceCacheEvidence {
         let cache = self.node.kernel().cache();
         let cache = cache.borrow();
         let cached_instrument_ids = cache
@@ -1019,112 +2470,13 @@ impl BoltV3LiveNodeRuntime {
             .into_iter()
             .map(ToString::to_string)
             .collect();
-        BoltV3StrategyFreeDataClientReadinessCacheEvidence {
+        BoltV3StrategyFreeReferenceCacheEvidence {
             cached_instrument_ids,
         }
     }
 
     pub fn redaction_values(&self) -> &[Zeroizing<String>] {
         &self.redaction_values
-    }
-
-    pub async fn connect_registered_clients(
-        &mut self,
-        loaded: &LoadedBoltV3Config,
-    ) -> Result<(), BoltV3LiveNodeError> {
-        connect_bolt_v3_clients(&mut self.node, loaded).await
-    }
-
-    pub async fn disconnect_registered_clients(
-        &mut self,
-        loaded: &LoadedBoltV3Config,
-    ) -> Result<(), BoltV3LiveNodeError> {
-        disconnect_bolt_v3_clients(&mut self.node, loaded).await
-    }
-
-    pub fn handle(&self) -> LiveNodeHandle {
-        self.node.handle()
-    }
-
-    pub fn subscribe_strategy_free_custom_data(
-        &mut self,
-        client_id: ClientId,
-        data_type: DataType,
-        params: Params,
-    ) -> Result<(), BoltV3LiveNodeError> {
-        if !self.registered_data_client_ids().contains(&client_id) {
-            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
-                anyhow::anyhow!(
-                    "custom-data subscription references unregistered data client {client_id}"
-                ),
-            ));
-        }
-        let ts_init = self.node.kernel().generate_timestamp_ns();
-        let command = SubscribeCustomData::new(
-            Some(client_id),
-            None,
-            data_type,
-            UUID4::new(),
-            ts_init,
-            None,
-            Some(params),
-        );
-        self.node
-            .kernel_mut()
-            .data_engine
-            .borrow_mut()
-            .execute(DataCommand::Subscribe(SubscribeCommand::Data(command)));
-        Ok(())
-    }
-
-    pub fn unsubscribe_strategy_free_custom_data(
-        &mut self,
-        client_id: ClientId,
-        data_type: DataType,
-        params: Params,
-    ) {
-        let ts_init = self.node.kernel().generate_timestamp_ns();
-        let command = UnsubscribeCustomData::new(
-            Some(client_id),
-            None,
-            data_type,
-            UUID4::new(),
-            ts_init,
-            None,
-            Some(params),
-        );
-        self.node
-            .kernel_mut()
-            .data_engine
-            .borrow_mut()
-            .execute(DataCommand::Unsubscribe(UnsubscribeCommand::Data(command)));
-    }
-
-    pub async fn run_strategy_free_until_stop_or_timeout(
-        &mut self,
-        run_timeout: Duration,
-        stop_timeout: Duration,
-    ) -> Result<bool, BoltV3LiveNodeError> {
-        let handle = self.node.handle();
-        let run_future = self.node.run();
-        tokio::pin!(run_future);
-
-        match tokio::time::timeout(run_timeout, &mut run_future).await {
-            Ok(result) => {
-                result.map_err(BoltV3LiveNodeError::StrategyFreeStartFailed)?;
-                Ok(false)
-            }
-            Err(_) => {
-                handle.stop();
-                tokio::time::timeout(stop_timeout, run_future)
-                    .await
-                    .map_err(|_| BoltV3LiveNodeError::StrategyFreeStopTimeout {
-                        timeout_secs: stop_timeout.as_secs(),
-                    })?
-                    .map_err(BoltV3LiveNodeError::StrategyFreeStopFailed)?;
-                Ok(true)
-            }
-        }
     }
 
     pub fn instance_id(&self) -> String {
@@ -1134,6 +2486,287 @@ impl BoltV3LiveNodeRuntime {
     pub fn admitted_order_count(&self) -> u32 {
         self.submit_admission.admitted_order_count()
     }
+
+    pub fn loss_governor_configured(&self) -> bool {
+        self.submit_admission.loss_governor_configured()
+    }
+
+    pub fn loss_governor_runtime_feed_configured(&self) -> bool {
+        self.loss_runtime_feed.is_some() && self.loss_runtime_feed_subscription.is_some()
+    }
+
+    pub fn nt_risk_trading_state(&self) -> TradingState {
+        self.node.kernel().risk_engine().borrow().trading_state()
+    }
+
+    pub fn apply_loss_governor_manual_recovery(
+        &self,
+        evidence: &LossGovernorManualRecoveryEvidence,
+        now_ns: u64,
+    ) -> Option<TradingState> {
+        let loss_policy = self.submit_admission.loss_governor_policy()?;
+        let action_policy = self.loss_halt_action_policy.as_ref()?;
+        let snapshot = self.submit_admission.loss_snapshot();
+        let decision = evaluate_loss_admission(&loss_policy, snapshot.as_ref(), now_ns);
+        let current_state = self.nt_risk_trading_state();
+        let target =
+            next_loss_governor_manual_recovery_trading_state(LossGovernorManualRecoveryRequest {
+                policy: action_policy,
+                current_state,
+                decision: &decision,
+                snapshot: snapshot.as_ref(),
+                now_ns,
+                max_snapshot_age_ns: loss_policy.max_snapshot_age_ns,
+                evidence: Some(evidence),
+                max_evidence_path_bytes: action_policy.manual_recovery_evidence_max_path_bytes,
+            })?;
+        self.node
+            .kernel()
+            .risk_engine()
+            .borrow_mut()
+            .set_trading_state(target);
+        Some(target)
+    }
+
+    pub fn position_sizer_configured(&self) -> bool {
+        self.submit_admission.position_sizer_configured()
+    }
+
+    pub fn position_sizer_runtime_feed_configured(&self) -> bool {
+        self.position_sizer_runtime_feed.is_some()
+            && self.position_sizer_runtime_feed_subscription.is_some()
+    }
+
+    pub fn refresh_position_sizer_venue_spendability_from_configured_source(
+        &self,
+    ) -> Result<Option<BoltV3SubmitPositionSizingNtComponents>, BoltV3LiveNodeError> {
+        let Some(config) = self.position_sizer_venue_spendability_source.as_ref() else {
+            return Ok(None);
+        };
+        let Some(feed) = self.position_sizer_runtime_feed.as_ref() else {
+            return Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
+                "position sizer venue spendability source configured without runtime feed"
+            )));
+        };
+        refresh_position_sizer_venue_spendability_from_source(feed, config)
+    }
+
+    pub fn position_sizer_reconciled(&self) -> Option<bool> {
+        self.submit_admission.position_sizer_reconciled()
+    }
+
+    /// Rebuild the position sizer's capital-reservation ledger from the
+    /// live NT cache at startup so a restart cannot double-allocate capital
+    /// against orders/positions that already exist. Reads open orders,
+    /// the configured collateral balance, and open positions for the
+    /// configured account, seeds the runtime feed's portfolio/cache
+    /// snapshot from that same observation, then attributes each open order
+    /// to recovered reservation metadata (when configured) before handing a
+    /// single coherent snapshot to submit admission. If any open order
+    /// cannot be attributed, the snapshot is marked not-all-attributed so
+    /// the caller fails closed rather than arming with an unreconciled
+    /// ledger.
+    pub fn rebuild_position_sizer_from_nt_cache(
+        &self,
+        now_ns: u64,
+    ) -> BoltV3SubmitPositionSizingRebuildDecision {
+        let (account_id, binary_instrument_ids, collateral_currency) =
+            match self.position_sizer_runtime_feed.as_ref() {
+                Some(feed) => {
+                    let feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    (
+                        Some(feed.configured_account_id()),
+                        feed.configured_binary_instrument_ids(),
+                        Some(feed.configured_collateral_currency()),
+                    )
+                }
+                None => (None, None, None),
+            };
+        let cache = self.node.kernel().cache();
+        let cache = cache.borrow();
+        let open_order_snapshots = match account_id.as_ref() {
+            Some(account_id) => cache
+                .orders_open(None, None, None, Some(account_id), None)
+                .into_iter()
+                .map(|order| order.cloned())
+                .collect::<Vec<_>>(),
+            None => cache
+                .orders_open(None, None, None, None, None)
+                .into_iter()
+                .map(|order| order.cloned())
+                .collect::<Vec<_>>(),
+        };
+        let open_client_order_ids = open_order_snapshots
+            .iter()
+            .map(|order| order.client_order_id().to_string())
+            .collect::<Vec<_>>();
+        let cached_account_balances = match (account_id.as_ref(), collateral_currency.as_deref()) {
+            (Some(account_id), Some(collateral_currency)) => {
+                cache.account_owned(account_id).and_then(|account| {
+                    let balances = account.balances();
+                    balances
+                        .values()
+                        .find(|balance| balance.currency.code.as_str() == collateral_currency)
+                        .map(|balance| (balance.free.as_decimal(), balance.total.as_decimal()))
+                })
+            }
+            _ => None,
+        };
+        let missing_nt_account_cache_balance = match (
+            account_id.as_ref(),
+            collateral_currency.as_deref(),
+        ) {
+            (Some(account_id), Some(collateral_currency)) if cached_account_balances.is_none() => {
+                let missing = BoltV3SubmitPositionSizingMissingNtAccountCacheBalance {
+                    account_id: account_id.to_string(),
+                    collateral_currency: collateral_currency.to_string(),
+                };
+                log::warn!(
+                    "bolt-v3 position sizer startup rebuild could not seed account portfolio snapshot because NT cache is missing account_id={} collateral_currency={}",
+                    missing.account_id,
+                    missing.collateral_currency
+                );
+                Some(missing)
+            }
+            _ => None,
+        };
+        let (yes_position, no_position) =
+            match (account_id.as_ref(), binary_instrument_ids.as_ref()) {
+                (Some(account_id), Some((yes_instrument_id, no_instrument_id))) => {
+                    let mut yes_position = Decimal::ZERO;
+                    let mut no_position = Decimal::ZERO;
+                    for position in cache.positions_open(None, None, None, Some(account_id), None) {
+                        let instrument_id = position.instrument_id.to_string();
+                        if instrument_id == *yes_instrument_id {
+                            yes_position += position.signed_decimal_qty();
+                        } else if instrument_id == *no_instrument_id {
+                            no_position += position.signed_decimal_qty();
+                        }
+                    }
+                    (yes_position, no_position)
+                }
+                _ => (Decimal::ZERO, Decimal::ZERO),
+            };
+        drop(cache);
+
+        let account_cache_is_authoritative = cached_account_balances.is_some();
+        // Seed live NT order and position state before rebuilding reservations from the same snapshot.
+        if let Some(feed) = self.position_sizer_runtime_feed.as_ref() {
+            let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some((free_collateral, total_equity)) = cached_account_balances {
+                feed.seed_account_portfolio_snapshot(free_collateral, total_equity, now_ns);
+            }
+            if account_cache_is_authoritative || !open_client_order_ids.is_empty() {
+                feed.seed_cache_snapshot(
+                    open_client_order_ids.clone(),
+                    yes_position,
+                    no_position,
+                    now_ns,
+                );
+            }
+        }
+
+        let recovered_reservations = if open_order_snapshots.is_empty() {
+            None
+        } else {
+            self.submit_reservation_recovery
+                .as_ref()
+                .and_then(|config| {
+                    match read_submit_reservation_recovery_evidence(&config.path, config.max_bytes)
+                    {
+                        Ok(recovery) => Some(recovery),
+                        Err(error) => {
+                            log::warn!(
+                                "bolt-v3 submit admission could not recover Bolt reservation metadata from decision evidence: {error:#}"
+                            );
+                            None
+                        }
+                    }
+                })
+        };
+        let mut reservations = Vec::with_capacity(open_order_snapshots.len());
+        let mut all_open_orders_attributed =
+            open_order_snapshots.is_empty() || recovered_reservations.is_some();
+        for order in &open_order_snapshots {
+            let Some(recovered_reservations) = recovered_reservations.as_ref() else {
+                all_open_orders_attributed = false;
+                break;
+            };
+            let Some(evidence) = nt_open_order_evidence_from_order(order, now_ns) else {
+                all_open_orders_attributed = false;
+                break;
+            };
+            let Some(recovered) = recovered_reservations
+                .metadata_by_client_order_id
+                .get(&evidence.client_order_id)
+            else {
+                all_open_orders_attributed = false;
+                break;
+            };
+            let Some(reservation) = self
+                .submit_admission
+                .position_sizing_open_order_reservation_from_known_metadata(evidence, recovered)
+            else {
+                all_open_orders_attributed = false;
+                break;
+            };
+            reservations.push(reservation);
+        }
+        if !all_open_orders_attributed {
+            reservations.clear();
+        }
+
+        let mut rebuild = self
+            .submit_admission
+            .rebuild_position_sizing_open_order_snapshot(
+                BoltV3SubmitPositionSizingOpenOrderSnapshot {
+                    observed_at_ns: now_ns,
+                    evidence_label: "nt_open_order_cache".to_string(),
+                    observed_open_order_count: open_order_snapshots.len(),
+                    all_open_orders_attributed,
+                    reservations,
+                },
+                now_ns,
+            );
+        if let Some(missing) = missing_nt_account_cache_balance {
+            rebuild = rebuild.with_missing_nt_account_cache_balance(
+                missing.account_id,
+                missing.collateral_currency,
+            );
+        }
+        rebuild
+    }
+}
+
+fn nt_open_order_evidence_from_order(
+    order: &OrderAny,
+    observed_at_ns: u64,
+) -> Option<BoltV3SubmitPositionSizingOpenOrderEvidence> {
+    if order.order_type() != OrderType::Limit {
+        return None;
+    }
+    let side = match order.order_side() {
+        OrderSide::Buy => BoltV3CompiledOrderSide::Buy,
+        OrderSide::Sell => BoltV3CompiledOrderSide::Sell,
+        _ => return None,
+    };
+    let limit_price = order.price()?.as_decimal();
+    if !(Decimal::ZERO..=Decimal::ONE).contains(&limit_price) {
+        return None;
+    }
+    let open_quantity = order.leaves_qty().as_decimal();
+    if open_quantity <= Decimal::ZERO {
+        return None;
+    }
+    Some(BoltV3SubmitPositionSizingOpenOrderEvidence {
+        client_order_id: order.client_order_id().to_string(),
+        instrument_id: order.instrument_id().to_string(),
+        side,
+        open_quantity,
+        limit_price,
+        observed_at_ns,
+        evidence_label: "nt_open_order_cache".to_string(),
+    })
 }
 
 impl std::fmt::Debug for BoltV3LiveNodeRuntime {
@@ -1185,6 +2818,7 @@ pub enum BoltV3LiveNodeError {
     BuilderConstruction(BoltV3LiveNodeBuilderError),
     ClientRegistration(BoltV3ClientRegistrationError),
     StrategyRegistration(BoltV3StrategyRegistrationError),
+    RiskPolicy(anyhow::Error),
     Build(anyhow::Error),
     /// Provider-specific live-submit approval loading or consumption failed
     /// while building the adapter bundle. This is intentionally outside the
@@ -1269,8 +2903,11 @@ pub enum BoltV3LiveNodeError {
     StrategyFreeExecutionAccountsMissing {
         client_venues: Vec<String>,
     },
-    StrategyFreeDataClientReadinessSetup(anyhow::Error),
-    StrategyFreeDataClientReadinessFailed {
+    StrategyFreeReferenceProbeSetup(anyhow::Error),
+    StrategyFreeReferenceProbeFailed {
+        reason: String,
+    },
+    StrategyFreeDataClientProbeFailed {
         reason: String,
     },
     StrategyFreeStartFailed(anyhow::Error),
@@ -1279,6 +2916,17 @@ pub enum BoltV3LiveNodeError {
     },
     StrategyFreeStopTimeoutOverflow,
     StrategyFreeStopFailed(anyhow::Error),
+    /// The startup position-sizer rebuild from the NT cache could not
+    /// attribute one or more pre-existing open orders to recovered
+    /// submit-reservation metadata, so submit admission would arm with an
+    /// unreconciled capital-reservation ledger. The live runner refuses to
+    /// enter NT's loop in this state to avoid double-allocating capital
+    /// against orders it cannot account for. The wrapped decision carries
+    /// the attempted/rebuilt reservation counts and rejection reason
+    /// captured at boot. This is intentionally outside the removed start
+    /// gate: it is a fail-closed reconciliation guard, not the live-canary
+    /// arm gate, so it never reintroduces a gate-report/arm sequence.
+    StartupPositionSizerRebuild(BoltV3SubmitPositionSizingRebuildDecision),
 }
 
 impl std::fmt::Display for BoltV3LiveNodeError {
@@ -1302,6 +2950,9 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             }
             BoltV3LiveNodeError::StrategyRegistration(error) => {
                 write!(f, "bolt-v3 strategy registration failed: {error}")
+            }
+            BoltV3LiveNodeError::RiskPolicy(error) => {
+                write!(f, "bolt-v3 risk policy mapping failed: {error}")
             }
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => {
@@ -1372,13 +3023,17 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                  account evidence was absent from NT cache for: {}",
                 client_venues.join(", ")
             ),
-            BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(error) => write!(
+            BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(error) => write!(
                 f,
-                "bolt-v3 strategy-free data-client readiness probe setup failed: {error}"
+                "bolt-v3 strategy-free reference quote probe setup failed: {error}"
             ),
-            BoltV3LiveNodeError::StrategyFreeDataClientReadinessFailed { reason } => write!(
+            BoltV3LiveNodeError::StrategyFreeReferenceProbeFailed { reason } => write!(
                 f,
-                "bolt-v3 strategy-free controlled-run reached NT Running but live data-client readiness evidence was not observed; engine connectivity cannot be treated as proven: {reason}"
+                "bolt-v3 strategy-free controlled-run reached NT Running but live reference quote evidence was not observed; engine connectivity cannot be treated as proven: {reason}"
+            ),
+            BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed { reason } => write!(
+                f,
+                "bolt-v3 strategy-free controlled-run reached NT Running but data-client readiness evidence was not observed; data-client production readiness cannot be treated as proven: {reason}"
             ),
             BoltV3LiveNodeError::StrategyFreeStartFailed(error) => {
                 write!(f, "bolt-v3 strategy-free controlled-start failed: {error}")
@@ -1396,6 +3051,10 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::StrategyFreeStopFailed(error) => {
                 write!(f, "bolt-v3 strategy-free controlled-stop failed: {error}")
             }
+            BoltV3LiveNodeError::StartupPositionSizerRebuild(decision) => write!(
+                f,
+                "bolt-v3 startup position-sizer rebuild rejected runtime start: {decision:?}"
+            ),
         }
     }
 }
@@ -1410,6 +3069,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::BuilderConstruction(error) => Some(error),
             BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
             BoltV3LiveNodeError::StrategyRegistration(error) => Some(error),
+            BoltV3LiveNodeError::RiskPolicy(error) => Some(error.as_ref()),
             BoltV3LiveNodeError::Build(error) => error.source(),
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => Some(error.as_ref()),
             BoltV3LiveNodeError::Run(error) => error.source(),
@@ -1426,11 +3086,13 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::StrategyFreeStartTimeoutOverflow
             | BoltV3LiveNodeError::StrategyFreeStartIncomplete
             | BoltV3LiveNodeError::StrategyFreeExecutionAccountsMissing { .. }
-            | BoltV3LiveNodeError::StrategyFreeDataClientReadinessFailed { .. }
+            | BoltV3LiveNodeError::StrategyFreeReferenceProbeFailed { .. }
+            | BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed { .. }
             | BoltV3LiveNodeError::StrategyFreeStopTimeout { .. }
-            | BoltV3LiveNodeError::StrategyFreeStopTimeoutOverflow => None,
+            | BoltV3LiveNodeError::StrategyFreeStopTimeoutOverflow
+            | BoltV3LiveNodeError::StartupPositionSizerRebuild(..) => None,
             BoltV3LiveNodeError::DisconnectFailed(error)
-            | BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(error)
+            | BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(error)
             | BoltV3LiveNodeError::StrategyFreeStartFailed(error)
             | BoltV3LiveNodeError::StrategyFreeStopFailed(error) => Some(error.as_ref()),
         }
@@ -1600,23 +3262,34 @@ fn current_unix_seconds_u64() -> Result<u64, BoltV3LiveNodeError> {
         .as_secs())
 }
 
+fn current_unix_nanos() -> Result<u64> {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    u64::try_from(nanos).map_err(|_| anyhow::anyhow!("current unix nanoseconds exceed u64"))
+}
+
 pub fn build_bolt_v3_strategy_free_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     let transport_loaded = trade_transport_loaded_config(loaded)?;
     let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
+    let adapters = strategy_free_transport_adapter_configs(&transport_loaded, &resolved)?;
+    let strategy_free_loaded = strategy_free_transport_loaded_config(&transport_loaded);
     let (runtime, _summary) =
-        build_bolt_v3_strategy_free_live_node_from_transport(&transport_loaded, &resolved)?;
+        build_live_node_with_clients(&strategy_free_loaded, &resolved, adapters)?;
     Ok(runtime)
 }
 
-fn build_bolt_v3_strategy_free_live_node_from_transport(
-    transport_loaded: &LoadedBoltV3Config,
-    resolved: &ResolvedBoltV3Secrets,
-) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
-    let adapters = strategy_free_transport_adapter_configs(transport_loaded, resolved)?;
-    let strategy_free_loaded = strategy_free_transport_loaded_config(transport_loaded);
-    build_live_node_with_clients(&strategy_free_loaded, resolved, adapters)
+pub fn build_bolt_v3_strategy_free_data_client_probe_live_node(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<(BoltV3LiveNodeRuntime, LoadedBoltV3Config), BoltV3LiveNodeError> {
+    let probe_loaded = data_client_probe_loaded_config(loaded, client_key)?;
+    let resolved = resolve_bolt_v3_live_node_secrets(&probe_loaded)?;
+    let adapters = strategy_free_transport_adapter_configs(&probe_loaded, &resolved)?;
+    let strategy_free_loaded = strategy_free_transport_loaded_config(&probe_loaded);
+    let (runtime, _summary) =
+        build_live_node_with_clients(&strategy_free_loaded, &resolved, adapters)?;
+    Ok((runtime, strategy_free_loaded))
 }
 
 pub fn build_bolt_v3_all_configured_client_mapping_live_node(
@@ -1672,25 +3345,57 @@ fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> 
     let mut client_keys = BTreeSet::new();
     for strategy in &loaded.strategies {
         client_keys.insert(strategy.config.execution_client_id.to_string());
+        for reference in strategy.config.reference_data.values() {
+            client_keys.insert(reference.data_client_id.to_string());
+        }
         for signal in strategy.config.signal_data.values() {
             client_keys.insert(signal.data_client_id.to_string());
         }
         if let Some(resolution) = strategy.config.resolution_data.as_ref() {
             client_keys.insert(resolution.data_client_id.to_string());
         }
-        if let Some(reference_current_price) = strategy.config.reference_current_price.as_ref() {
-            client_keys.extend(
-                reference_current_price
-                    .sources
-                    .values()
-                    .filter(|source| {
-                        reference_price_source_is_runtime_available(reference_current_price, source)
-                    })
-                    .map(|source| source.client_id.to_string()),
-            );
+    }
+    if let Some(iv_root) = loaded.root.iv.as_ref() {
+        for profile in &iv_root.profiles {
+            for source in &profile.sources {
+                client_keys.insert(source.client_id.clone());
+            }
         }
     }
     client_keys
+}
+
+fn data_client_probe_loaded_config(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<LoadedBoltV3Config, BoltV3LiveNodeError> {
+    if client_key.trim().is_empty() {
+        return Err(BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed {
+            reason: "data-client probe client_key is not configured".to_string(),
+        });
+    }
+    let client = loaded
+        .root
+        .clients
+        .get(client_key)
+        .cloned()
+        .ok_or_else(|| BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed {
+            reason: "data-client probe client_key is not configured".to_string(),
+        })?;
+    if client.data.is_none() {
+        return Err(BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed {
+            reason: "data-client probe requires the selected client to declare [data]".to_string(),
+        });
+    }
+    let mut probe_loaded = loaded.clone();
+    probe_loaded
+        .root
+        .clients
+        .retain(|configured_key, _| configured_key == client_key);
+    probe_loaded
+        .strategies
+        .retain(|strategy| strategy.config.execution_client_id == ClientId::from(client_key));
+    Ok(probe_loaded)
 }
 
 fn strategy_free_transport_loaded_config(loaded: &LoadedBoltV3Config) -> LoadedBoltV3Config {
@@ -1709,13 +3414,30 @@ pub async fn run_bolt_v3_live_node(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let node = &mut runtime.node;
-    let node_handle = node.handle();
-    let mut capture_guards = wire_bolt_v3_runtime_capture(node, node_handle, loaded)
-        .map_err(BoltV3LiveNodeError::RuntimeCaptureWire)?;
+    let startup_rebuild_observed_at_ns =
+        current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
+    let startup_rebuild =
+        runtime.rebuild_position_sizer_from_nt_cache(startup_rebuild_observed_at_ns);
+    // A no-open-order startup may legitimately recover nothing: NT only
+    // populates the account/portfolio cache once its runner loop performs
+    // startup reconciliation, and the live runtime feed re-seeds the
+    // portfolio from on_account events after entry. Pre-existing open orders
+    // are different: if they cannot be attributed to recovered reservation
+    // metadata, submit admission would start with an unreconciled ledger and
+    // could double-allocate capital, so fail closed before entering NT's
+    // loop. This is a reconciliation guard, not the removed start gate.
+    fail_closed_on_unreconciled_startup_rebuild(startup_rebuild)?;
+    let node_handle = runtime.node.handle();
+    let mut capture_guards = {
+        let node = &runtime.node;
+        wire_bolt_v3_runtime_capture(node, node_handle, loaded)
+    }
+    .map_err(BoltV3LiveNodeError::RuntimeCaptureWire)?;
     let mut capture_failure_receiver = capture_guards.take_failure_receiver();
+    let iv_start_task = runtime.spawn_iv_engine_start_on_running(&loaded.root)?;
 
     let run_result = {
+        let node = &mut runtime.node;
         let run_future = node.run();
         tokio::pin!(run_future);
 
@@ -1731,9 +3453,34 @@ pub async fn run_bolt_v3_live_node(
             run_future.await
         }
     };
+    if let Some(task) = iv_start_task {
+        task.abort();
+    }
+    let iv_stop_result = runtime.stop_iv_engine_lifecycle(&loaded.root);
     let shutdown_result = capture_guards.shutdown().await;
 
-    classify_live_node_run_and_capture_shutdown(run_result, shutdown_result)
+    let run_and_capture_result =
+        classify_live_node_run_and_capture_shutdown(run_result, shutdown_result);
+    match (run_and_capture_result, iv_stop_result) {
+        (Err(run_or_capture_error), Err(iv_stop_error)) => {
+            log::error!("IV lifecycle stop failed after live-node run failure: {iv_stop_error}");
+            Err(run_or_capture_error)
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+fn fail_closed_on_unreconciled_startup_rebuild(
+    startup_rebuild: BoltV3SubmitPositionSizingRebuildDecision,
+) -> Result<(), BoltV3LiveNodeError> {
+    if !startup_rebuild.accepted && startup_rebuild.attempted_reservation_count > 0 {
+        return Err(BoltV3LiveNodeError::StartupPositionSizerRebuild(
+            startup_rebuild,
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1831,25 +3578,6 @@ where
     )
 }
 
-#[cfg(test)]
-pub(crate) fn build_bolt_v3_strategy_free_live_node_with_summary<F, R, E>(
-    loaded: &LoadedBoltV3Config,
-    env_is_set: F,
-    resolver: R,
-) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError>
-where
-    F: FnMut(&str) -> bool,
-    R: FnMut(&str, &str) -> Result<String, E>,
-    E: std::fmt::Display,
-{
-    let transport_loaded = trade_transport_loaded_config(loaded)?;
-    check_no_forbidden_credential_env_vars_with(&transport_loaded.root, env_is_set)
-        .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
-    let resolved = resolve_bolt_v3_secrets_with(&transport_loaded, resolver)
-        .map_err(BoltV3LiveNodeError::SecretResolution)?;
-    build_bolt_v3_strategy_free_live_node_from_transport(&transport_loaded, &resolved)
-}
-
 pub fn build_bolt_v3_all_configured_client_mapping_live_node_with_summary<F, R, E>(
     loaded: &LoadedBoltV3Config,
     env_is_set: F,
@@ -1889,8 +3617,34 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     adapters: BoltV3AdapterConfigs,
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+    let loss_policy = loss_governor_policy_from_loaded(loaded)?;
+    let loss_halt_action_policy = loss_governor_halt_action_policy_from_loaded(loaded)?;
+    let position_sizer = position_sizer_config_from_loaded(loaded)?;
+    let iv_client_errors = crate::bolt_v3_validate::validate_iv_source_clients(&loaded.root);
+    if !iv_client_errors.is_empty() {
+        return Err(BoltV3LiveNodeError::StrategyRegistration(
+            BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                message: format!(
+                    "bolt-v3 IV source client validation failed: {}",
+                    iv_client_errors.join("; ")
+                ),
+            },
+        ));
+    }
     let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = if loaded.strategies.is_empty() {
-        Arc::new(NoStrategyDecisionEvidenceWriter)
+        if loss_policy.is_none() && position_sizer.is_none() {
+            Arc::new(NoStrategyDecisionEvidenceWriter)
+        } else {
+            Arc::new(
+                JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
+                    BoltV3LiveNodeError::StrategyRegistration(
+                        BoltV3StrategyRegistrationError::Evidence {
+                            message: error.to_string(),
+                        },
+                    )
+                })?,
+            )
+        }
     } else {
         Arc::new(
             JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
@@ -1902,23 +3656,114 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             })?,
         )
     };
-    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
-        decision_evidence.clone(),
-        live_submit_approval_limits,
-    ));
+    let startup_observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
+    let position_sizer_runtime_feed_config =
+        position_sizer_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
+    let position_sizer_venue_spendability_source =
+        position_sizer_venue_spendability_source_config_from_loaded(loaded)?;
+    let submit_reservation_recovery = if position_sizer_runtime_feed_config.is_some() {
+        submit_reservation_recovery_config_from_loaded(loaded)?
+    } else {
+        None
+    };
+    let submit_admission = Arc::new(
+        BoltV3SubmitAdmissionState::new_with_live_submit_limits_and_optional_controls(
+            decision_evidence.clone(),
+            live_submit_approval_limits,
+            loss_policy.clone(),
+            position_sizer,
+        ),
+    );
+    let (position_sizer_runtime_feed, position_sizer_runtime_feed_subscription) =
+        match position_sizer_runtime_feed_config {
+            Some(config) => {
+                let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+                    config,
+                    submit_admission.clone(),
+                )));
+                let subscription = subscribe_position_sizer_runtime_feed(feed.clone());
+                (Some(feed), Some(subscription))
+            }
+            None => (None, None),
+        };
+    let order_execution_policy =
+        crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::from_mode(
+            loaded.root.runtime.order_execution_mode,
+        );
+    let strategy_execution_controls = BoltV3StrategyExecutionControls {
+        submit_admission: submit_admission.clone(),
+        order_execution_policy,
+    };
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
-    let strategy_summary = register_bolt_v3_strategies_on_node_with_bindings(
-        &mut node,
-        loaded,
-        resolved,
-        crate::bolt_v3_archetypes::runtime_bindings(),
-        submit_admission.clone(),
-        decision_evidence.clone(),
-    )
+    let iv_runtime = loaded
+        .root
+        .iv
+        .as_ref()
+        .map(IvRuntimeEngine::from_iv_root)
+        .transpose()
+        .map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(
+                BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                    message: format!("bolt-v3 IV runtime engine construction failed: {error:?}"),
+                },
+            )
+        })?;
+    if let Some(iv_runtime) = &iv_runtime {
+        let lifecycle = plan_iv_engine_lifecycle(&loaded.root).map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(
+                BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                    message: format!("bolt-v3 IV lifecycle planning failed: {error:?}"),
+                },
+            )
+        })?;
+        let outcomes = {
+            let mut adapter = NtIvRuntimePlanValidationAdapter::new(
+                &node,
+                &loaded.root.nautilus.data_engine.external_clients,
+            );
+            apply_subscription_plans(&mut adapter, &lifecycle.start_plans)
+        };
+        iv_runtime.apply_plan_outcomes(&outcomes).map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(
+                BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                    message: format!("bolt-v3 IV lifecycle state update failed: {error:?}"),
+                },
+            )
+        })?;
+    }
+    let iv_event_bindings =
+        if let (Some(iv), Some(iv_runtime)) = (loaded.root.iv.as_ref(), iv_runtime.as_ref()) {
+            Some(
+                wire_bolt_v3_iv_runtime_event_bindings(iv, iv_runtime)
+                    .map_err(BoltV3LiveNodeError::StrategyRegistration)?,
+            )
+        } else {
+            None
+        };
+    let strategy_summary = if let Some(iv_runtime) = &iv_runtime {
+        register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
+            &mut node,
+            loaded,
+            resolved,
+            crate::bolt_v3_archetypes::runtime_bindings(),
+            strategy_execution_controls,
+            decision_evidence.clone(),
+            iv_runtime,
+        )
+    } else {
+        register_bolt_v3_strategies_on_node_with_bindings(
+            &mut node,
+            loaded,
+            resolved,
+            crate::bolt_v3_archetypes::runtime_bindings(),
+            strategy_execution_controls,
+            decision_evidence.clone(),
+        )
+    }
     .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
     for strategy in &strategy_summary.registered {
         log::info!(
@@ -1928,15 +3773,376 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             strategy.registered_strategy_id
         );
     }
-    Ok((
-        BoltV3LiveNodeRuntime::new(
-            node,
-            summary.clone(),
-            submit_admission,
-            resolved.redaction_values(),
+    let loss_halt_action_handler =
+        match (loss_policy.clone(), loss_halt_action_policy.as_ref()) {
+            (Some(policy), Some(action_policy)) => Some(
+                loss_governor_halt_action_handler_from_node(&node, policy, *action_policy),
+            ),
+            _ => None,
+        };
+    let (loss_runtime_feed, loss_runtime_feed_subscription) =
+        match loss_governor_runtime_feed_config_from_loaded(loaded)? {
+            Some(config) => {
+                let feed = LossGovernorRuntimeFeed::new(config, submit_admission.clone());
+                let feed = match loss_halt_action_handler.as_ref() {
+                    Some(handler) => feed.with_halt_action_handler(handler.clone()),
+                    None => feed,
+                };
+                let feed = Rc::new(RefCell::new(feed));
+                let subscription = subscribe_loss_governor_runtime_feed(feed.clone());
+                (Some(feed), Some(subscription))
+            }
+            None => (None, None),
+        };
+    let runtime = BoltV3LiveNodeRuntime::new(
+        node,
+        summary.clone(),
+        submit_admission,
+        BoltV3LiveNodeRuntimeFeeds {
+            loss_halt_action_policy,
+            loss_runtime_feed,
+            loss_runtime_feed_subscription,
+            position_sizer_runtime_feed,
+            position_sizer_runtime_feed_subscription,
+            position_sizer_venue_spendability_source,
+            submit_reservation_recovery,
+        },
+        iv_runtime,
+        iv_event_bindings,
+        resolved.redaction_values(),
+    );
+    runtime.refresh_position_sizer_venue_spendability_from_configured_source()?;
+    Ok((runtime, summary))
+}
+
+fn loss_governor_runtime_feed_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<LossGovernorRuntimeFeedConfig>, BoltV3LiveNodeError> {
+    let Some(block) = loaded.root.risk.loss_governor.as_ref() else {
+        return Ok(None);
+    };
+    if !block.enabled {
+        return Ok(None);
+    }
+    Ok(Some(LossGovernorRuntimeFeedConfig {
+        account_id: block.account_id,
+        rolling_window_ns: block.rolling_window_ns,
+        active_position_pnl_max_entries: required_loss_governor_usize(
+            "risk.loss_governor.active_position_pnl_max_entries",
+            block.active_position_pnl_max_entries,
+        )?,
+    }))
+}
+
+fn position_sizer_runtime_feed_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+    startup_observed_at_ns: u64,
+) -> Option<PositionSizerRuntimeFeedConfig> {
+    let pools = loaded.root.risk.capital_pools.as_ref()?;
+    let pool = pools.iter().find(|pool| pool.enforce_submit_admission)?;
+    let product = pool.prediction_market_binary.as_ref()?;
+    Some(PositionSizerRuntimeFeedConfig {
+        venue_id: pool.venue_id.clone(),
+        account_id: pool.account_id,
+        collateral_currency: pool.collateral_currency.clone(),
+        product_state: ProductSizingSnapshot::PredictionMarketBinary(
+            PredictionMarketSizingSnapshot {
+                source: "bolt_configured_binary_product".to_string(),
+                observed_at_ns: startup_observed_at_ns,
+                yes_instrument_id: product.yes_instrument_id.to_string(),
+                no_instrument_id: product.no_instrument_id.to_string(),
+                yes_position: Decimal::ZERO,
+                no_position: Decimal::ZERO,
+                collateral_allowance: Decimal::ZERO,
+                conditional_token_allowance: Decimal::ZERO,
+                collateral_coupled_group_id: product.collateral_coupled_group_id.clone(),
+            },
         ),
-        summary,
-    ))
+        startup_observed_at_ns,
+        dedupe_retention_ns: pool.dedupe_retention_ns,
+    })
+}
+
+fn position_sizer_venue_spendability_source_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<BoltV3PositionSizerVenueSpendabilitySourceConfig>, BoltV3LiveNodeError> {
+    let Some(pool) = loaded
+        .root
+        .risk
+        .capital_pools
+        .as_ref()
+        .and_then(|pools| pools.iter().find(|pool| pool.enforce_submit_admission))
+    else {
+        return Ok(None);
+    };
+    let has_source_binding = pool.venue_spendability_source_path.is_some()
+        || pool.venue_spendability_source_sha256.is_some()
+        || pool.venue_spendability_source_max_bytes.is_some();
+    if !has_source_binding {
+        return Ok(None);
+    }
+    let (Some(path_value), Some(expected_sha256), Some(max_bytes)) = (
+        pool.venue_spendability_source_path.as_ref(),
+        pool.venue_spendability_source_sha256.as_ref(),
+        pool.venue_spendability_source_max_bytes,
+    ) else {
+        return Err(BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+            "risk.capital_pools venue_spendability_source path, sha256, and max_bytes must be configured together"
+        )));
+    };
+    Ok(Some(BoltV3PositionSizerVenueSpendabilitySourceConfig {
+        path: resolve_root_relative_path(&loaded.root_path, path_value),
+        max_bytes,
+        expected_sha256: expected_sha256.clone(),
+        venue_id: pool.venue_id.clone(),
+        account_id: pool.account_id.to_string(),
+        collateral_currency: pool.collateral_currency.clone(),
+    }))
+}
+
+/// Resolve the startup reservation-recovery source from the loaded config.
+/// The recovery driver reads the decision-evidence file, so the path comes
+/// from [`decision_evidence_path`] and the read bound from
+/// `persistence.decision_evidence.recovery_evidence_max_bytes`. Returns
+/// `None` (recovery disabled) when the byte cap is not configured.
+fn submit_reservation_recovery_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<BoltV3SubmitReservationRecoveryConfig>, BoltV3LiveNodeError> {
+    let Some(max_bytes) = loaded
+        .root
+        .persistence
+        .decision_evidence
+        .recovery_evidence_max_bytes
+    else {
+        return Ok(None);
+    };
+    Ok(Some(BoltV3SubmitReservationRecoveryConfig {
+        path: decision_evidence_path(loaded).map_err(BoltV3LiveNodeError::Build)?,
+        max_bytes,
+    }))
+}
+
+fn position_sizer_venue_spendability_snapshot_from_source_config(
+    config: &BoltV3PositionSizerVenueSpendabilitySourceConfig,
+) -> Result<VenueSpendabilitySnapshot, BoltV3LiveNodeError> {
+    venue_spendability_snapshot_from_json_file(VenueSpendabilitySourceFileRequest {
+        path: &config.path,
+        max_bytes: config.max_bytes,
+        expected_sha256: &config.expected_sha256,
+        identity: VenueSpendabilityIdentity {
+            venue_id: &config.venue_id,
+            account_id: &config.account_id,
+            collateral_currency: &config.collateral_currency,
+        },
+    })
+    .map_err(|error| {
+        BoltV3LiveNodeError::Build(anyhow::anyhow!(
+            "position sizer venue spendability source rejected: {error:?}"
+        ))
+    })
+}
+
+fn refresh_position_sizer_venue_spendability_from_source(
+    feed: &Arc<Mutex<PositionSizerRuntimeFeed>>,
+    config: &BoltV3PositionSizerVenueSpendabilitySourceConfig,
+) -> Result<Option<BoltV3SubmitPositionSizingNtComponents>, BoltV3LiveNodeError> {
+    let snapshot = position_sizer_venue_spendability_snapshot_from_source_config(config)?;
+    let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    Ok(feed.on_venue_spendability_snapshot(snapshot))
+}
+
+fn position_sizer_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<BoltV3SubmitPositionSizerConfig>, BoltV3LiveNodeError> {
+    let Some(pools) = loaded.root.risk.capital_pools.as_ref() else {
+        return Ok(None);
+    };
+    let Some(pool) = pools.iter().find(|pool| pool.enforce_submit_admission) else {
+        return Ok(None);
+    };
+    Ok(Some(BoltV3SubmitPositionSizerConfig {
+        venue_id: pool.venue_id.clone(),
+        account_id: pool.account_id.to_string(),
+        product_kind: ProductKind::PredictionMarketBinary,
+        collateral_currency: pool.collateral_currency.clone(),
+        capital_pool: CapitalPoolSnapshot {
+            source: pool.pool_id.clone(),
+            observed_at_ns: 0,
+            pool_id: pool.pool_id.clone(),
+            max_pool_liability: required_pool_decimal(
+                "risk.capital_pools.max_pool_liability",
+                &pool.max_pool_liability,
+            )?,
+            committed_liability: Decimal::ZERO,
+            max_snapshot_age_ns: pool.max_snapshot_age_ns,
+        },
+        policy: sizing_policy_from_pool(pool)?,
+        dedupe_retention_ns: pool.dedupe_retention_ns,
+    }))
+}
+
+fn sizing_policy_from_pool(pool: &CapitalPoolBlock) -> Result<SizingPolicy, BoltV3LiveNodeError> {
+    let sizing = &pool.sizing_policy;
+    Ok(SizingPolicy {
+        min_remaining_pool_balance: optional_pool_decimal(
+            "risk.capital_pools.sizing_policy.min_remaining_pool_balance",
+            sizing.min_remaining_pool_balance.as_deref(),
+        )?,
+        fee_slippage_policy: Some(FeeSlippagePolicy {
+            max_fee_liability: required_pool_decimal(
+                "risk.capital_pools.sizing_policy.fee_slippage.max_fee_liability",
+                &sizing.fee_slippage.max_fee_liability,
+            )?,
+            max_slippage_liability: required_pool_decimal(
+                "risk.capital_pools.sizing_policy.fee_slippage.max_slippage_liability",
+                &sizing.fee_slippage.max_slippage_liability,
+            )?,
+        }),
+    })
+}
+
+fn required_pool_decimal(label: &str, value: &str) -> Result<Decimal, BoltV3LiveNodeError> {
+    parse_decimal_string(value).map_err(|message| {
+        BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+            "{label} must be a decimal string: {message}"
+        ))
+    })
+}
+
+fn optional_pool_decimal(
+    label: &str,
+    value: Option<&str>,
+) -> Result<Option<Decimal>, BoltV3LiveNodeError> {
+    value
+        .map(|value| required_pool_decimal(label, value))
+        .transpose()
+}
+
+fn loss_governor_policy_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<LossGovernorPolicy>, BoltV3LiveNodeError> {
+    let Some(block) = loaded.root.risk.loss_governor.as_ref() else {
+        return Ok(None);
+    };
+    if !block.enabled {
+        return Ok(None);
+    }
+    Ok(Some(LossGovernorPolicy {
+        max_snapshot_age_ns: block.max_snapshot_age_ns,
+        max_per_trade_loss: Some(required_loss_governor_decimal(
+            "risk.loss_governor.max_per_trade_loss",
+            block.max_per_trade_loss.as_deref(),
+        )?),
+        max_daily_loss: Some(required_loss_governor_decimal(
+            "risk.loss_governor.max_daily_loss",
+            block.max_daily_loss.as_deref(),
+        )?),
+        max_rolling_loss: Some(required_loss_governor_decimal(
+            "risk.loss_governor.max_rolling_loss",
+            block.max_rolling_loss.as_deref(),
+        )?),
+        max_drawdown: Some(required_loss_governor_decimal(
+            "risk.loss_governor.max_drawdown",
+            block.max_drawdown.as_deref(),
+        )?),
+    }))
+}
+
+fn loss_governor_halt_action_policy_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<LossGovernorHaltActionPolicy>, BoltV3LiveNodeError> {
+    let Some(block) = loaded.root.risk.loss_governor.as_ref() else {
+        return Ok(None);
+    };
+    if !block.enabled {
+        return Ok(None);
+    }
+    Ok(Some(LossGovernorHaltActionPolicy {
+        on_loss_breach_trading_state: required_loss_governor_trading_state_action(
+            "risk.loss_governor.on_loss_breach_trading_state",
+            block.on_loss_breach_trading_state,
+        )?,
+        on_untrusted_snapshot_trading_state: required_loss_governor_trading_state_action(
+            "risk.loss_governor.on_untrusted_snapshot_trading_state",
+            block.on_untrusted_snapshot_trading_state,
+        )?,
+        recovery_mode: required_loss_governor_recovery_mode(
+            "risk.loss_governor.recovery_mode",
+            block.recovery_mode,
+        )?,
+        manual_recovery_evidence_max_path_bytes: required_loss_governor_usize(
+            "risk.loss_governor.manual_recovery_evidence_max_path_bytes",
+            block.manual_recovery_evidence_max_path_bytes,
+        )?,
+    }))
+}
+
+fn required_loss_governor_trading_state_action(
+    label: &'static str,
+    value: Option<LossGovernorTradingStateAction>,
+) -> Result<LossGovernorTradingStateAction, BoltV3LiveNodeError> {
+    value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))
+}
+
+fn required_loss_governor_recovery_mode(
+    label: &'static str,
+    value: Option<LossGovernorRecoveryMode>,
+) -> Result<LossGovernorRecoveryMode, BoltV3LiveNodeError> {
+    value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))
+}
+
+fn required_loss_governor_usize(
+    label: &'static str,
+    value: Option<usize>,
+) -> Result<usize, BoltV3LiveNodeError> {
+    let value =
+        value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))?;
+    if value == usize::MIN {
+        return Err(BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+            "{label} must be positive"
+        )));
+    }
+    Ok(value)
+}
+
+fn loss_governor_halt_action_handler_from_node(
+    node: &LiveNode,
+    loss_policy: LossGovernorPolicy,
+    action_policy: LossGovernorHaltActionPolicy,
+) -> LossGovernorHaltActionHandler {
+    let risk_engine = node.kernel().risk_engine().clone();
+    Rc::new(move |snapshot, now_ns| {
+        let decision = evaluate_loss_admission(&loss_policy, snapshot, now_ns);
+        let current_state = risk_engine.borrow().trading_state();
+        if current_state == TradingState::Active && decision.accepted {
+            return;
+        }
+
+        if let Some(target_state) =
+            next_loss_governor_trading_state(&action_policy, current_state, &decision)
+        {
+            risk_engine.borrow_mut().set_trading_state(target_state);
+        }
+    })
+}
+
+fn required_loss_governor_decimal(
+    label: &'static str,
+    value: Option<&str>,
+) -> Result<Decimal, BoltV3LiveNodeError> {
+    let value =
+        value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))?;
+    let decimal = parse_decimal_string(value).map_err(|reason| {
+        BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+            "{label} must be a valid decimal string ({reason}): `{value}`"
+        ))
+    })?;
+    if decimal <= Decimal::ZERO {
+        return Err(BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+            "{label} must be positive: `{value}`"
+        )));
+    }
+    Ok(decimal)
 }
 
 /// Translates a validated bolt-v3 config into an NT-native
@@ -2275,11 +4481,14 @@ pub async fn disconnect_bolt_v3_clients(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bolt_v3_capital_reservation::ReservationRejectionReason;
     use crate::bolt_v3_config::{
         BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeMarketDataKind,
         DataClientReadinessProbeQuoteTargetBlock, DataClientReadinessProbeQuoteTargetSource,
-        DataInstrumentBlock,
+        ReferenceDataBlock,
     };
+    use crate::bolt_v3_iv::error::IvRejectReason;
+    use crate::bolt_v3_loss_governor::LossSnapshot;
     use crate::bolt_v3_providers::hyperliquid::{
         ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
     };
@@ -2287,12 +4496,603 @@ mod tests {
         HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
         HyperliquidProductSubmitProofBinding, write_hyperliquid_live_submit_approval_artifact,
     };
-    use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas, QuoteTick};
-    use nautilus_model::enums::{BookAction, OrderSide};
-    use nautilus_model::identifiers::TraderId;
-    use nautilus_model::types::{Price, Quantity};
+    use nautilus_core::{UUID4, UnixNanos};
+    use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
+    use nautilus_model::enums::{
+        AccountType, BookAction, CurrencyType, OrderSide, TimeInForce, TradingState,
+    };
+    use nautilus_model::events::{AccountState, OrderAccepted, OrderEventAny, OrderSubmitted};
+    use nautilus_model::identifiers::{AccountId, ClientOrderId, TraderId, VenueOrderId};
+    use nautilus_model::orders::{LimitOrder, MarketOrder, OrderAny};
+    use nautilus_model::types::{AccountBalance, Currency, Money, Price, Quantity};
     use rust_decimal::Decimal;
     use sha2::{Digest, Sha256};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEST_CATALOG_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn startup_rebuild_recovers_known_submit_reservation_from_nt_cache() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let metadata = fixture_submit_reservation_metadata(
+            "startup-known-client-order",
+            "condition-fixture-yes.POLYMARKET",
+            "buy",
+            "10",
+            "0.4",
+            "0.3",
+            "4.3",
+        );
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+        write_submit_reservation_metadata(&loaded, &metadata);
+        seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+        seed_accepted_open_limit_order(
+            &runtime,
+            generic_limit_order(
+                "startup-known-client-order",
+                "condition-fixture-yes.POLYMARKET",
+                OrderSide::Buy,
+                Quantity::from(6),
+                Price::from("0.40"),
+            ),
+            "POLYMARKET-001",
+        );
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(
+            rebuild,
+            BoltV3SubmitPositionSizingRebuildDecision {
+                accepted: true,
+                reason: None,
+                attempted_reservation_count: 1,
+                rebuilt_reservation_count: 1,
+                live_reserved_liability: Decimal::new(27, 1),
+                missing_nt_account_cache_balance: None,
+            }
+        );
+        assert_eq!(runtime.position_sizer_reconciled(), Some(true));
+        assert_eq!(
+            runtime
+                .submit_admission
+                .position_sizer_live_reserved_liability(),
+            Some(Decimal::new(27, 1))
+        );
+        assert!(
+            runtime
+                .submit_admission
+                .position_sizer_has_live_reservation("startup-known-client-order"),
+            "startup rebuild must install the recovered reservation for later fill/cancel release"
+        );
+    }
+
+    #[test]
+    fn startup_rebuild_stays_closed_for_unknown_nt_cache_order() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+        seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+        seed_accepted_open_limit_order(
+            &runtime,
+            generic_limit_order(
+                "startup-unknown-client-order",
+                "condition-fixture-yes.POLYMARKET",
+                OrderSide::Buy,
+                Quantity::from(6),
+                Price::from("0.40"),
+            ),
+            "POLYMARKET-001",
+        );
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(
+            rebuild,
+            BoltV3SubmitPositionSizingRebuildDecision {
+                accepted: false,
+                reason: Some(ReservationRejectionReason::MissingEvidence),
+                attempted_reservation_count: 1,
+                rebuilt_reservation_count: 0,
+                live_reserved_liability: Decimal::ZERO,
+                missing_nt_account_cache_balance: None,
+            }
+        );
+        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+        assert!(
+            !runtime
+                .submit_admission
+                .position_sizer_has_live_reservation("startup-unknown-client-order")
+        );
+    }
+
+    #[test]
+    fn startup_rebuild_guard_aborts_before_live_node_run_for_unattributed_open_orders() {
+        let rebuild = BoltV3SubmitPositionSizingRebuildDecision {
+            accepted: false,
+            reason: Some(ReservationRejectionReason::MissingEvidence),
+            attempted_reservation_count: 1,
+            rebuilt_reservation_count: 0,
+            live_reserved_liability: Decimal::ZERO,
+            missing_nt_account_cache_balance: None,
+        };
+
+        let error = fail_closed_on_unreconciled_startup_rebuild(rebuild.clone())
+            .expect_err("unattributed startup open orders must abort before NT runner entry");
+
+        match error {
+            BoltV3LiveNodeError::StartupPositionSizerRebuild(decision) => {
+                assert_eq!(decision, rebuild);
+            }
+            other => panic!("unexpected startup rebuild guard error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn startup_rebuild_reports_missing_nt_account_cache_balance() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(
+            rebuild.missing_nt_account_cache_balance,
+            Some(BoltV3SubmitPositionSizingMissingNtAccountCacheBalance {
+                account_id: "POLYMARKET-001".to_string(),
+                collateral_currency: "PUSD".to_string(),
+            })
+        );
+        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+
+        let feed = runtime
+            .position_sizer_runtime_feed
+            .as_ref()
+            .expect("fixture should configure position-sizer runtime feed");
+        let account_state = account_state_event("POLYMARKET-001", "PUSD", 100.0, 100.0, 2_100);
+        assert!(
+            feed.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .on_account_state(&account_state)
+                .is_some(),
+            "account state should still publish sizing components once collateral facts arrive"
+        );
+        assert_eq!(
+            runtime.position_sizer_reconciled(),
+            Some(false),
+            "missing startup account cache means the pre-run empty order cache is not authoritative"
+        );
+        let state = runtime
+            .submit_admission
+            .position_sizer_state_snapshot()
+            .expect("account state should publish an unreconciled sizing state");
+        assert_eq!(state.order_lifecycle.source, "nt_order_lifecycle_seed");
+        assert!(!state.order_lifecycle.all_open_orders_attributed);
+    }
+
+    #[test]
+    fn live_node_build_does_not_apply_loss_halt_before_first_trusted_snapshot() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        assert_eq!(runtime.nt_risk_trading_state(), TradingState::Active);
+    }
+
+    #[test]
+    fn manual_recovery_evidence_clears_live_reducing_state_after_fresh_snapshot() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+        runtime
+            .node
+            .kernel()
+            .risk_engine()
+            .borrow_mut()
+            .set_trading_state(TradingState::Reducing);
+        runtime.submit_admission.update_loss_snapshot(LossSnapshot {
+            source: "nt_loss_runtime_feed".to_string(),
+            observed_at_ns: 2_000,
+            per_trade_pnl: Some(Decimal::ZERO),
+            daily_pnl: Some(Decimal::ZERO),
+            rolling_pnl: Some(Decimal::ZERO),
+            current_equity: Some(Decimal::new(100, 0)),
+            peak_equity: Some(Decimal::new(100, 0)),
+        });
+        let evidence = LossGovernorManualRecoveryEvidence::new(
+            "operator-primary",
+            "loss-governor/manual-recovery.json",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            2_050,
+            256,
+        )
+        .expect("bounded manual recovery evidence should validate");
+
+        let target = runtime.apply_loss_governor_manual_recovery(&evidence, 2_100);
+
+        assert_eq!(target, Some(TradingState::Active));
+        assert_eq!(runtime.nt_risk_trading_state(), TradingState::Active);
+    }
+
+    #[test]
+    fn startup_rebuild_seeds_nt_cached_free_collateral_when_balance_has_locked_amount() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        // Helper writes NT AccountBalance as (total, locked, free): total=100, locked=40, free=60.
+        seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 60.0);
+        {
+            let account_id = AccountId::from("POLYMARKET-001");
+            let cache = runtime.node.kernel().cache();
+            let cache = cache.borrow();
+            let account = cache
+                .account_owned(&account_id)
+                .expect("seeded account should be present in NT cache");
+            let balances = account.balances();
+            let balance = balances
+                .values()
+                .find(|balance| balance.currency.code.as_str() == "PUSD")
+                .expect("seeded collateral balance should be present in NT cache");
+            assert_eq!(balance.total.as_decimal(), Decimal::new(100, 0));
+            assert_eq!(balance.locked.as_decimal(), Decimal::new(40, 0));
+            assert_eq!(balance.free.as_decimal(), Decimal::new(60, 0));
+        }
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(rebuild.missing_nt_account_cache_balance, None);
+        assert_eq!(runtime.position_sizer_reconciled(), Some(true));
+        let state = runtime
+            .submit_admission
+            .position_sizer_state_snapshot()
+            .expect("startup rebuild should seed position sizing state");
+        assert_eq!(state.portfolio.free_collateral, Decimal::new(60, 0));
+        assert_eq!(state.portfolio.total_equity, Decimal::new(100, 0));
+        assert_ne!(
+            state.portfolio.free_collateral, state.portfolio.total_equity,
+            "fixture must prove locked collateral is not treated as spendable"
+        );
+        match state.product_state {
+            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+                assert_eq!(snapshot.collateral_allowance, Decimal::new(60, 0));
+            }
+        }
+    }
+
+    #[test]
+    fn startup_rebuild_rejects_known_metadata_when_open_quantity_exceeds_submitted() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let metadata = fixture_submit_reservation_metadata(
+            "startup-overopen-client-order",
+            "condition-fixture-yes.POLYMARKET",
+            "buy",
+            "10",
+            "0.4",
+            "0.3",
+            "4.3",
+        );
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        write_submit_reservation_metadata(&loaded, &metadata);
+        seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+        seed_accepted_open_limit_order(
+            &runtime,
+            generic_limit_order(
+                "startup-overopen-client-order",
+                "condition-fixture-yes.POLYMARKET",
+                OrderSide::Buy,
+                Quantity::from(11),
+                Price::from("0.40"),
+            ),
+            "POLYMARKET-001",
+        );
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(
+            rebuild,
+            BoltV3SubmitPositionSizingRebuildDecision {
+                accepted: false,
+                reason: Some(ReservationRejectionReason::MissingEvidence),
+                attempted_reservation_count: 1,
+                rebuilt_reservation_count: 0,
+                live_reserved_liability: Decimal::ZERO,
+                missing_nt_account_cache_balance: None,
+            }
+        );
+        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+        assert!(
+            !runtime
+                .submit_admission
+                .position_sizer_has_live_reservation("startup-overopen-client-order")
+        );
+    }
+
+    #[test]
+    fn nt_limit_order_snapshot_maps_to_generic_open_order_evidence() {
+        let order = generic_limit_order(
+            "client-order-1",
+            "instrument-yes.VENUE-A",
+            OrderSide::Buy,
+            Quantity::from(10),
+            Price::from("0.40"),
+        );
+
+        let evidence = nt_open_order_evidence_from_order(&order, 1_000)
+            .expect("bounded NT limit order should produce generic open-order evidence");
+
+        assert_eq!(evidence.client_order_id, "client-order-1");
+        assert_eq!(evidence.instrument_id, "instrument-yes.VENUE-A");
+        assert_eq!(evidence.side, BoltV3CompiledOrderSide::Buy);
+        assert_eq!(evidence.open_quantity, Decimal::new(10, 0));
+        assert_eq!(evidence.limit_price, Decimal::new(4, 1));
+        assert_eq!(evidence.observed_at_ns, 1_000);
+        assert_eq!(evidence.evidence_label, "nt_open_order_cache");
+    }
+
+    #[test]
+    fn nt_non_limit_order_snapshot_is_not_sizing_evidence() {
+        let order = generic_market_order(
+            "client-order-1",
+            "instrument-yes.VENUE-A",
+            OrderSide::Buy,
+            Quantity::from(10),
+        );
+
+        assert!(nt_open_order_evidence_from_order(&order, 1_000).is_none());
+    }
+
+    fn loaded_config_with_submit_sizer_recovery(temp_path: &std::path::Path) -> LoadedBoltV3Config {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        loaded.strategies.clear();
+        loaded
+            .root
+            .risk
+            .capital_pools
+            .as_mut()
+            .expect("fixture should configure capital pools")[0]
+            .enforce_submit_admission = true;
+        loaded.root.persistence.catalog_directory = temp_path.to_string_lossy().to_string();
+        loaded
+            .root
+            .persistence
+            .decision_evidence
+            .recovery_evidence_max_bytes = Some(100_000);
+        loaded
+    }
+
+    fn fixture_submit_reservation_metadata(
+        client_order_id: &str,
+        instrument_id: &str,
+        side: &str,
+        submitted_quantity: &str,
+        liability_factor: &str,
+        additive_liability: &str,
+        reserved_liability: &str,
+    ) -> BoltV3SubmitReservationMetadataEvidence {
+        BoltV3SubmitReservationMetadataEvidence {
+            client_order_id: client_order_id.to_string(),
+            submit_reservation_id: format!("{client_order_id}#submit"),
+            venue_id: "POLYMARKET".to_string(),
+            account_id: "POLYMARKET-001".to_string(),
+            product_kind: "prediction_market_binary".to_string(),
+            collateral_currency: "PUSD".to_string(),
+            capital_pool_id: "polymarket-prediction-live".to_string(),
+            collateral_group_id: "condition-fixture".to_string(),
+            instrument_id: instrument_id.to_string(),
+            side: side.to_string(),
+            submitted_quantity: submitted_quantity.to_string(),
+            liability_factor: liability_factor.to_string(),
+            additive_liability: additive_liability.to_string(),
+            reserved_liability: reserved_liability.to_string(),
+            observed_at_ns: 1_000,
+            source: "submit_admission".to_string(),
+        }
+    }
+
+    fn write_submit_reservation_metadata(
+        loaded: &LoadedBoltV3Config,
+        metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) {
+        let writer = JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded)
+            .expect("decision evidence writer should open");
+        writer
+            .record_submit_reservation_metadata(metadata)
+            .expect("submit reservation metadata should write");
+    }
+
+    fn fake_bolt_v3_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
+        match path {
+            "/bolt/polymarket_main/private_key" => Ok(
+                "0x4242424242424242424242424242424242424242424242424242424242424242".to_string(),
+            ),
+            "/bolt/polymarket_main/api_key" => Ok("polymarket-api-key".to_string()),
+            "/bolt/polymarket_main/api_secret" => Ok("YWJj".to_string()),
+            "/bolt/polymarket_main/passphrase" => Ok("polymarket-passphrase".to_string()),
+            "/bolt/binance_reference/api_key" => Ok("binance-api-key".to_string()),
+            "/bolt/binance_reference/api_secret" => {
+                Ok("MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f".to_string())
+            }
+            _ => Err("unexpected SSM path requested by bolt-v3 fake resolver"),
+        }
+    }
+
+    fn seed_cached_account_state(
+        runtime: &BoltV3LiveNodeRuntime,
+        account_id: &str,
+        currency_code: &str,
+        total: f64,
+        free: f64,
+    ) {
+        let account_state = account_state_event(account_id, currency_code, total, free, 1);
+        runtime
+            .node
+            .kernel()
+            .cache()
+            .borrow_mut()
+            .update_account_state(&account_state)
+            .expect("NT cache should apply account state");
+    }
+
+    fn account_state_event(
+        account_id: &str,
+        currency_code: &str,
+        total: f64,
+        free: f64,
+        timestamp_ns: u64,
+    ) -> AccountState {
+        let currency = test_currency(currency_code);
+        AccountState::new(
+            AccountId::from(account_id),
+            AccountType::Cash,
+            vec![AccountBalance::new(
+                Money::new(total, currency),
+                Money::new(total - free, currency),
+                Money::new(free, currency),
+            )],
+            vec![],
+            true,
+            UUID4::default(),
+            UnixNanos::from(timestamp_ns),
+            UnixNanos::from(timestamp_ns),
+            Some(currency),
+        )
+    }
+
+    fn test_currency(currency_code: &str) -> Currency {
+        if currency_code == "PUSD" {
+            return Currency::new("PUSD", 2, 0, "Test PUSD", CurrencyType::Fiat);
+        }
+        Currency::from(currency_code)
+    }
+
+    fn seed_accepted_open_limit_order(
+        runtime: &BoltV3LiveNodeRuntime,
+        order: OrderAny,
+        account_id: &str,
+    ) {
+        let cache = runtime.node.kernel().cache();
+        let mut cache = cache.borrow_mut();
+        cache
+            .add_order(
+                order.clone(),
+                None,
+                Some(ClientId::from("polymarket_main")),
+                false,
+            )
+            .expect("NT cache should accept initialized order");
+        cache
+            .update_order(&OrderEventAny::Submitted(OrderSubmitted::new(
+                order.trader_id(),
+                order.strategy_id(),
+                order.instrument_id(),
+                order.client_order_id(),
+                AccountId::from(account_id),
+                UUID4::default(),
+                UnixNanos::from(1),
+                UnixNanos::from(1),
+            )))
+            .expect("NT cache should apply submitted event");
+        cache
+            .update_order(&OrderEventAny::Accepted(OrderAccepted::new(
+                order.trader_id(),
+                order.strategy_id(),
+                order.instrument_id(),
+                order.client_order_id(),
+                VenueOrderId::from("venue-order-startup"),
+                AccountId::from(account_id),
+                UUID4::default(),
+                UnixNanos::from(2),
+                UnixNanos::from(2),
+                false,
+            )))
+            .expect("NT cache should apply accepted event");
+    }
+
+    fn generic_limit_order(
+        client_order_id: &str,
+        instrument_id: &str,
+        order_side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+    ) -> OrderAny {
+        OrderAny::Limit(
+            LimitOrder::new_checked(
+                TraderId::from("TRADER-001"),
+                StrategyId::from("strategy-a"),
+                InstrumentId::from(instrument_id),
+                ClientOrderId::from(client_order_id),
+                order_side,
+                quantity,
+                price,
+                TimeInForce::Gtc,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                UUID4::default(),
+                UnixNanos::from(1),
+            )
+            .expect("generic limit order should be valid"),
+        )
+    }
+
+    fn generic_market_order(
+        client_order_id: &str,
+        instrument_id: &str,
+        order_side: OrderSide,
+        quantity: Quantity,
+    ) -> OrderAny {
+        OrderAny::Market(
+            MarketOrder::new_checked(
+                TraderId::from("TRADER-001"),
+                StrategyId::from("strategy-a"),
+                InstrumentId::from(instrument_id),
+                ClientOrderId::from(client_order_id),
+                order_side,
+                quantity,
+                TimeInForce::Ioc,
+                UUID4::default(),
+                UnixNanos::from(1),
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("generic market order should be valid"),
+        )
+    }
 
     #[test]
     fn live_node_adapter_mapping_consumes_hyperliquid_live_submit_approval_artifact() {
@@ -3100,10 +5900,22 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         assert!(trade_chunk_count_probe_passed(11, 10), "above m must pass");
     }
 
+    fn readiness_trade_tick(instrument_id: InstrumentId, trade_id: &str) -> TradeTick {
+        TradeTick::new(
+            instrument_id,
+            Price::from("1.00"),
+            nautilus_model::types::Quantity::from("1.00"),
+            AggressorSide::Buyer,
+            TradeId::from(trade_id),
+            1.into(),
+            1.into(),
+        )
+    }
+
     #[test]
     fn chunk_count_handle_chunks_universe_and_walks_in_sorted_order() {
         let handle =
-            BoltV3StrategyFreeDataClientReadinessProbeHandle::from_metadata_response_chunk_count_plan(
+            BoltV3StrategyFreeReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
                 ClientId::from("okx_data"),
                 2,
                 45,
@@ -3154,9 +5966,84 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         );
     }
 
+    #[test]
+    fn chunk_count_handle_passes_after_distinct_trade_markets_reach_m() {
+        let handle =
+            BoltV3StrategyFreeReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
+                ClientId::from("okx_data"),
+                3,
+                45,
+                2,
+                DataClientReadinessProbeMarketDataKind::Trade,
+            );
+        handle.chunk_count_capture_universe(vec![
+            InstrumentId::from("A-1.OKX"),
+            InstrumentId::from("B-2.OKX"),
+            InstrumentId::from("C-3.OKX"),
+        ]);
+        let chunk = handle.chunk_count_next_chunk().expect("first chunk");
+
+        handle.record_trade(&readiness_trade_tick(chunk[0].instrument_id, "T-A1"));
+        assert!(
+            !handle.has_all_required_market_data(),
+            "one distinct firing market is below m=2"
+        );
+
+        handle.record_trade(&readiness_trade_tick(chunk[0].instrument_id, "T-A2"));
+        assert!(
+            !handle.has_all_required_market_data(),
+            "duplicate trades from the same market must not double-count"
+        );
+
+        handle.record_trade(&readiness_trade_tick(chunk[1].instrument_id, "T-B1"));
+        assert!(
+            handle.has_all_required_market_data(),
+            "the trade chunk-count probe should pass once m distinct markets fire"
+        );
+    }
+
+    #[test]
+    fn chunk_count_handle_fails_closed_when_universe_exhausts_below_m() {
+        let handle =
+            BoltV3StrategyFreeReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
+                ClientId::from("okx_data"),
+                1,
+                45,
+                2,
+                DataClientReadinessProbeMarketDataKind::Trade,
+            );
+        handle.chunk_count_capture_universe(vec![InstrumentId::from("A-1.OKX")]);
+        let chunk = handle.chunk_count_next_chunk().expect("first chunk");
+        handle.record_trade(&readiness_trade_tick(chunk[0].instrument_id, "T-A1"));
+
+        assert!(
+            handle.chunk_count_next_chunk().is_none(),
+            "the single-market universe is exhausted after one chunk"
+        );
+        let failure = handle
+            .failure_error()
+            .expect("exhausting below m must set a fail-closed reason");
+        assert!(
+            failure.contains("below required min_observed_targets=2"),
+            "failure should explain the unmet m threshold: {failure}"
+        );
+        assert!(
+            !handle.has_all_required_market_data(),
+            "exhaustion below m must never satisfy readiness"
+        );
+    }
+
     fn fixture_loaded_config() -> LoadedBoltV3Config {
         let root_text = include_str!("../tests/fixtures/bolt_v3/root.toml");
-        let root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
+        let mut root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
+        let catalog_id = NEXT_TEST_CATALOG_ID.fetch_add(1, Ordering::Relaxed);
+        root.persistence.catalog_directory = std::env::temp_dir()
+            .join(format!(
+                "bolt-v3-live-node-test-catalog-{}-{catalog_id}",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .to_string();
         LoadedBoltV3Config {
             root_path: std::path::PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
             config_bundle_checksum: String::new(),
@@ -3165,21 +6052,950 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         }
     }
 
-    fn record_readiness_quote(
-        handle: &BoltV3StrategyFreeDataClientReadinessProbeHandle,
-        subscription: &StrategyFreeDataClientReadinessQuoteSubscription,
-        captured_at_unix_nanos: u64,
+    fn write_venue_spendability_source(
+        loaded: &mut LoadedBoltV3Config,
+        temp_path: &std::path::Path,
+        observed_at_ns: u64,
+        spendable_collateral: &str,
+        collateral_allowance: &str,
     ) {
-        let quote = QuoteTick::new(
-            subscription.instrument_id,
-            Price::from("1.0"),
-            Price::from("2.0"),
-            Quantity::from("1.0"),
-            Quantity::from("1.0"),
-            1_000.into(),
-            1_100.into(),
+        let path = temp_path.join("venue-spendability-source.json");
+        let pool = loaded
+            .root
+            .risk
+            .capital_pools
+            .as_mut()
+            .and_then(|pools| pools.first_mut())
+            .expect("fixture should configure a capital pool");
+        pool.enforce_submit_admission = true;
+        let payload = format!(
+            r#"{{
+  "schema_version": {schema_version},
+  "record_kind": "{record_kind}",
+  "source": "operator_venue_spendability",
+  "observed_at_ns": {observed_at_ns},
+  "venue_id": "{venue_id}",
+  "account_id": "{account_id}",
+  "collateral_currency": "{collateral_currency}",
+  "spendable_collateral": "{spendable_collateral}",
+  "collateral_allowance": "{collateral_allowance}"
+}}"#,
+            schema_version = crate::bolt_v3_sizing_state::VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION,
+            record_kind = crate::bolt_v3_sizing_state::VENUE_SPENDABILITY_SOURCE_RECORD_KIND,
+            venue_id = pool.venue_id,
+            account_id = pool.account_id,
+            collateral_currency = pool.collateral_currency,
         );
-        handle.record_quote(&quote, captured_at_unix_nanos);
+        std::fs::write(&path, payload.as_bytes()).expect("spendability source should write");
+        pool.venue_spendability_source_path = Some(path.to_string_lossy().to_string());
+        pool.venue_spendability_source_sha256 =
+            Some(hex::encode(Sha256::digest(payload.as_bytes())));
+        pool.venue_spendability_source_max_bytes = Some(16_384);
+    }
+
+    fn insert_configured_data_client(loaded: &mut LoadedBoltV3Config) {
+        loaded.root.clients.insert(
+            "configured-client".to_string(),
+            toml::from_str(
+                r#"
+venue = "OKX"
+
+[data]
+configured_data_param = "configured-value"
+"#,
+            )
+            .expect("configured data client should parse"),
+        );
+    }
+
+    fn fixture_loaded_config_with_external_option_greeks_iv() -> LoadedBoltV3Config {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.clients.clear();
+        insert_configured_data_client(&mut loaded);
+        loaded.root.nautilus.data_engine.external_clients =
+            vec![ClientId::from("configured-client")];
+        loaded.root.iv = Some(
+            toml::from_str(
+                r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "configured-profile"
+enabled_products = ["source_health"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_derived_points = 2
+max_source_health_events = 2
+max_source_event_future_skew_ns = 0
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+derived_input_policies = []
+
+[profiles.audit_policy]
+profile_id = "configured-profile"
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-greeks-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "configured-greeks-source"
+selector_fingerprint = "configured-greeks-selector"
+source_kind = "option_greeks"
+client_id = "configured-client"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["BTC-20240101-50000-C.DERIBIT"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value"
+
+[profiles.sources.params]
+configured_source_param = "configured-value"
+"#,
+            )
+            .expect("configured IV profile should parse"),
+        );
+        loaded
+    }
+
+    #[test]
+    fn live_node_startup_applies_iv_subscription_plans_to_runtime_source_health() {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.clients.clear();
+        insert_configured_data_client(&mut loaded);
+        loaded.root.nautilus.data_engine.external_clients =
+            vec![ClientId::from("configured-client")];
+        loaded.root.iv = Some(
+            toml::from_str(
+                r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "configured-profile"
+enabled_products = ["source_health"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_derived_points = 2
+max_source_health_events = 2
+max_source_event_future_skew_ns = 0
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+derived_input_policies = []
+
+[profiles.audit_policy]
+profile_id = "configured-profile"
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-greeks-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "configured-greeks-source"
+selector_fingerprint = "configured-greeks-selector"
+source_kind = "option_greeks"
+client_id = "configured-client"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["BTC-20240101-50000-C.DERIBIT"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value"
+
+[profiles.sources.params]
+configured_source_param = "configured-value"
+"#,
+            )
+            .expect("configured IV profile should parse"),
+        );
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+        let adapters = BoltV3AdapterConfigs {
+            clients: BTreeMap::new(),
+        };
+
+        let (runtime, _) = build_live_node_with_clients_and_submit_approval_limits(
+            &loaded,
+            &resolved,
+            adapters,
+            BTreeMap::new(),
+        )
+        .expect("configured external IV source should build without live transport");
+
+        assert!(runtime.has_iv_runtime());
+        let health = runtime
+            .iv_source_health("configured-profile", "configured-greeks-source")
+            .expect("startup should apply IV source health");
+        assert_eq!(
+            health.subscription_state,
+            crate::bolt_v3_iv::health::IvSourceHealthState::Subscribing
+        );
+        assert_eq!(health.subscription_generation, 7);
+    }
+
+    #[test]
+    fn live_node_startup_rejects_unknown_iv_data_client() {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.clients.clear();
+        loaded.root.nautilus.data_engine.external_clients.clear();
+        loaded.root.iv = Some(
+            toml::from_str(
+                r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "configured-profile"
+enabled_products = ["source_health"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_derived_points = 2
+max_source_health_events = 2
+max_source_event_future_skew_ns = 0
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+derived_input_policies = []
+
+[profiles.audit_policy]
+profile_id = "configured-profile"
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-greeks-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "configured-greeks-source"
+selector_fingerprint = "configured-greeks-selector"
+source_kind = "option_greeks"
+client_id = "missing-client"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["BTC-20240101-50000-C.DERIBIT"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value"
+
+[profiles.sources.params]
+configured_source_param = "configured-value"
+"#,
+            )
+            .expect("configured IV profile should parse"),
+        );
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+        let adapters = BoltV3AdapterConfigs {
+            clients: BTreeMap::new(),
+        };
+
+        let error = build_live_node_with_clients_and_submit_approval_limits(
+            &loaded,
+            &resolved,
+            adapters,
+            BTreeMap::new(),
+        )
+        .expect_err("unknown IV source client must reject before live-node build");
+
+        assert!(format!("{error:?}").contains("missing-client"));
+    }
+
+    #[test]
+    fn iv_option_greeks_identifier_list_rejects_before_runtime_commands() {
+        let ids = vec![
+            "BTC-20240101-50000-C.DERIBIT".to_string(),
+            "configured-invalid-option-instrument".to_string(),
+        ];
+
+        let error = parse_option_greeks_instrument_ids(&ids).expect_err("invalid ID should reject");
+
+        assert!(error.contains("invalid NT option-greeks instrument_id"));
+        assert!(error.contains("configured-invalid-option-instrument"));
+    }
+
+    #[test]
+    fn iv_option_chain_identifier_list_rejects_before_runtime_commands() {
+        let ids = vec![
+            "DERIBIT:BTC:BTC:2024-01-01".to_string(),
+            "configured-invalid-option-series".to_string(),
+        ];
+
+        let error = parse_option_chain_series_ids(&ids).expect_err("invalid ID should reject");
+
+        assert!(error.contains("invalid NT option-chain series_id"));
+        assert!(error.contains("configured-invalid-option-series"));
+    }
+
+    #[test]
+    fn iv_option_greeks_start_plan_translates_to_runtime_data_command() {
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-greeks-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeOptionGreeks,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionGreeks,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceOptionGreeks {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                nt_params: toml::Value::Table(toml::map::Map::new()),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+
+        let commands = iv_runtime_data_commands_for_plan(&plan)
+            .expect("valid option-greeks plan should translate to an NT data command");
+
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            nautilus_common::messages::data::DataCommand::Subscribe(
+                SubscribeCommand::OptionGreeks(command),
+            ) => {
+                assert_eq!(
+                    command.instrument_id,
+                    InstrumentId::from("BTC-20240101-50000-C.DERIBIT")
+                );
+                assert_eq!(command.client_id, Some(ClientId::from("configured-client")));
+            }
+            other => panic!("expected option-greeks subscribe command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn iv_remove_source_plan_translates_to_no_runtime_data_commands() {
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-greeks-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::SourceRemoval,
+            operation: IvRuntimeOperation::RemoveSource,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionGreeks,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceOptionGreeks {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                nt_params: toml::Value::Table(toml::map::Map::new()),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+
+        let commands = iv_runtime_data_commands_for_plan(&plan)
+            .expect("source removal should not require NT data commands");
+
+        assert!(commands.is_empty());
+    }
+
+    #[test]
+    fn iv_option_chain_start_plan_translates_parseable_strike_range_to_runtime_data_command() {
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-chain-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeOptionChain,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionChain,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceOptionChain {
+                series_ids: vec!["DERIBIT:BTC:BTC:2024-01-01T00:00:00Z".to_string()],
+                strike_range_policy: "atm_relative:1:1".to_string(),
+                nt_params: toml::toml! {
+                    snapshot_interval_ms = 250
+                }
+                .into(),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+
+        let commands = iv_runtime_data_commands_for_plan(&plan)
+            .expect("valid option-chain plan should translate to an NT data command");
+
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            nautilus_common::messages::data::DataCommand::Subscribe(
+                SubscribeCommand::OptionChain(command),
+            ) => {
+                assert_eq!(
+                    command.series_id,
+                    OptionSeriesId::from_str("DERIBIT:BTC:BTC:2024-01-01T00:00:00Z").unwrap()
+                );
+                assert_eq!(
+                    command.strike_range,
+                    StrikeRange::AtmRelative {
+                        strikes_above: 1,
+                        strikes_below: 1,
+                    }
+                );
+                assert_eq!(command.snapshot_interval_ms, Some(250));
+                assert_eq!(command.client_id, Some(ClientId::from("configured-client")));
+            }
+            other => panic!("expected option-chain subscribe command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn iv_custom_iv_start_plan_translates_to_runtime_custom_data_command() {
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-custom-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeCustomData,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::CustomData,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceCustomImpliedVolatility {
+                custom_iv_data_type: "ConfiguredCustomIvEvent".to_string(),
+                custom_iv_data_fields: vec!["configured_iv".to_string()],
+                nt_params: toml::toml! {
+                    configured_selector_param = "selector-value"
+                }
+                .into(),
+            },
+            params: toml::toml! {
+                configured_source_param = "source-value"
+            }
+            .into(),
+            subscription_generation: 7,
+        };
+
+        let commands = iv_runtime_data_commands_for_plan(&plan)
+            .expect("valid custom-IV plan should translate to an NT custom-data command");
+
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            nautilus_common::messages::data::DataCommand::Subscribe(SubscribeCommand::Data(
+                command,
+            )) => {
+                assert_eq!(command.client_id, Some(ClientId::from("configured-client")));
+                assert_eq!(command.data_type.type_name(), "ConfiguredCustomIvEvent");
+                assert_eq!(
+                    command.data_type.identifier(),
+                    Some("configured-custom-source")
+                );
+                let metadata = command
+                    .data_type
+                    .metadata()
+                    .expect("custom-IV data type should carry merged params");
+                assert_eq!(
+                    metadata.get("configured_source_param"),
+                    Some(&serde_json::Value::String("source-value".to_string()))
+                );
+                assert_eq!(
+                    metadata.get("configured_selector_param"),
+                    Some(&serde_json::Value::String("selector-value".to_string()))
+                );
+                assert_eq!(command.params.as_ref(), Some(metadata));
+            }
+            other => panic!("expected custom-IV data subscribe command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn iv_aggregate_greeks_start_plan_translates_to_runtime_custom_data_command() {
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-aggregate-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeAggregateGreeks,
+            nt_source_kind:
+                crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::AggregateGreeksTopic,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceAggregateGreeks {
+                aggregate_key: "ConfiguredAggregateGreeksEvent".to_string(),
+                underlying_selectors: vec!["configured-underlying-selector".to_string()],
+                delta_field: "configured_delta".to_string(),
+                gamma_field: "configured_gamma".to_string(),
+                vega_field: "configured_vega".to_string(),
+                theta_field: "configured_theta".to_string(),
+                rho_field: "configured_rho".to_string(),
+                iv_field: Some("configured_iv".to_string()),
+                iv_basis: None,
+                iv_convention: None,
+                nt_params: toml::toml! {
+                    configured_selector_param = "selector-value"
+                }
+                .into(),
+            },
+            params: toml::toml! {
+                configured_source_param = "source-value"
+            }
+            .into(),
+            subscription_generation: 7,
+        };
+
+        let commands = iv_runtime_data_commands_for_plan(&plan)
+            .expect("valid aggregate-greeks plan should translate to an NT custom-data command");
+
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            nautilus_common::messages::data::DataCommand::Subscribe(SubscribeCommand::Data(
+                command,
+            )) => {
+                assert_eq!(command.client_id, Some(ClientId::from("configured-client")));
+                assert_eq!(
+                    command.data_type.type_name(),
+                    "ConfiguredAggregateGreeksEvent"
+                );
+                assert_eq!(
+                    command.data_type.identifier(),
+                    Some("configured-aggregate-source")
+                );
+                let metadata = command
+                    .data_type
+                    .metadata()
+                    .expect("aggregate-greeks data type should carry merged params");
+                assert_eq!(
+                    metadata.get("underlying_selectors"),
+                    Some(&serde_json::Value::Array(vec![serde_json::Value::String(
+                        "configured-underlying-selector".to_string()
+                    )]))
+                );
+                assert_eq!(
+                    metadata.get("configured_source_param"),
+                    Some(&serde_json::Value::String("source-value".to_string()))
+                );
+                assert_eq!(
+                    metadata.get("configured_selector_param"),
+                    Some(&serde_json::Value::String("selector-value".to_string()))
+                );
+                assert_eq!(command.params.as_ref(), Some(metadata));
+            }
+            other => panic!("expected aggregate-greeks data subscribe command, got {other:?}"),
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecordingDataCommandSender {
+        commands: std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>>,
+    }
+
+    impl nautilus_common::runner::DataCommandSender for RecordingDataCommandSender {
+        fn execute(&self, command: DataCommand) {
+            self.commands
+                .lock()
+                .expect("recording data command sender lock should not be poisoned")
+                .push(command);
+        }
+    }
+
+    struct DataCommandSenderRestore;
+
+    impl Drop for DataCommandSenderRestore {
+        fn drop(&mut self) {
+            nautilus_common::runner::replace_data_cmd_sender(std::sync::Arc::new(
+                nautilus_common::runner::SyncDataCommandSender,
+            ));
+        }
+    }
+
+    #[test]
+    fn iv_runtime_command_sender_adapter_queues_start_plan_after_runner_sender_is_bound() {
+        let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        nautilus_common::runner::replace_data_cmd_sender(std::sync::Arc::new(
+            RecordingDataCommandSender {
+                commands: commands.clone(),
+            },
+        ));
+        let _restore_sender = DataCommandSenderRestore;
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-greeks-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeOptionGreeks,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionGreeks,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceOptionGreeks {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                nt_params: toml::Value::Table(toml::map::Map::new()),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+        let mut adapter =
+            NtIvRuntimeCommandSenderAdapter::new(&[ClientId::from("configured-client")], &[]);
+
+        adapter
+            .apply_subscription_plan(&plan)
+            .expect("valid runtime start plan should be queued");
+
+        let commands = commands
+            .lock()
+            .expect("recording data command sender lock should not be poisoned");
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(
+            &commands[0],
+            DataCommand::Subscribe(SubscribeCommand::OptionGreeks(_))
+        ));
+    }
+
+    #[test]
+    fn iv_runtime_command_sender_adapter_rejects_unknown_start_client_without_queueing() {
+        let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        nautilus_common::runner::replace_data_cmd_sender(std::sync::Arc::new(
+            RecordingDataCommandSender {
+                commands: commands.clone(),
+            },
+        ));
+        let _restore_sender = DataCommandSenderRestore;
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-greeks-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeOptionGreeks,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionGreeks,
+            client_id: "missing-client".to_string(),
+            selector: IvSelector::SourceOptionGreeks {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                nt_params: toml::Value::Table(toml::map::Map::new()),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+        let mut adapter = NtIvRuntimeCommandSenderAdapter::new(&[], &[]);
+
+        let error = adapter
+            .apply_subscription_plan(&plan)
+            .expect_err("unknown runtime start client should reject before queueing");
+
+        assert_eq!(error.reason, IvRejectReason::SubscriptionFailed);
+        assert!(error.message.contains("not registered"));
+        assert!(
+            commands
+                .lock()
+                .expect("recording data command sender lock should not be poisoned")
+                .is_empty(),
+            "invalid start client must not enqueue a data command"
+        );
+    }
+
+    #[test]
+    fn iv_runtime_command_sender_adapter_skips_external_start_client_without_queueing() {
+        let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        nautilus_common::runner::replace_data_cmd_sender(std::sync::Arc::new(
+            RecordingDataCommandSender {
+                commands: commands.clone(),
+            },
+        ));
+        let _restore_sender = DataCommandSenderRestore;
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-greeks-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeOptionGreeks,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionGreeks,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceOptionGreeks {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                nt_params: toml::Value::Table(toml::map::Map::new()),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+        let mut adapter =
+            NtIvRuntimeCommandSenderAdapter::new(&[], &[ClientId::from("configured-client")]);
+
+        adapter
+            .apply_subscription_plan(&plan)
+            .expect("external start client should be accepted without NT queueing");
+
+        assert!(
+            commands
+                .lock()
+                .expect("recording data command sender lock should not be poisoned")
+                .is_empty(),
+            "external start client is managed outside the runtime sender"
+        );
+    }
+
+    #[test]
+    fn live_node_runtime_stop_applies_iv_unsubscribe_lifecycle() {
+        let loaded = fixture_loaded_config_with_external_option_greeks_iv();
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+        let adapters = BoltV3AdapterConfigs {
+            clients: BTreeMap::new(),
+        };
+
+        let (mut runtime, _) = build_live_node_with_clients_and_submit_approval_limits(
+            &loaded,
+            &resolved,
+            adapters,
+            BTreeMap::new(),
+        )
+        .expect("configured external IV source should build without live transport");
+        assert!(
+            runtime.has_iv_event_bindings(),
+            "startup should install IV receive-side bindings"
+        );
+
+        runtime
+            .stop_iv_engine_lifecycle(&loaded.root)
+            .expect("IV stop lifecycle should apply unsubscribe plans");
+        assert!(
+            !runtime.has_iv_event_bindings(),
+            "stop should drop IV receive-side bindings"
+        );
+        assert!(
+            !runtime.has_iv_runtime(),
+            "stop should clear the IV runtime after applying unsubscribe outcomes"
+        );
+        assert!(
+            runtime
+                .iv_source_health("configured-profile", "configured-greeks-source")
+                .is_none(),
+            "stopped live node should not expose IV source health through a retained runtime"
+        );
+    }
+
+    #[test]
+    fn live_node_runtime_stop_planning_failure_keeps_iv_runtime() {
+        let loaded = fixture_loaded_config_with_external_option_greeks_iv();
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+        let adapters = BoltV3AdapterConfigs {
+            clients: BTreeMap::new(),
+        };
+
+        let (mut runtime, _) = build_live_node_with_clients_and_submit_approval_limits(
+            &loaded,
+            &resolved,
+            adapters,
+            BTreeMap::new(),
+        )
+        .expect("configured external IV source should build without live transport");
+        assert!(runtime.has_iv_runtime());
+        assert!(runtime.has_iv_event_bindings());
+
+        let mut invalid_stop_root = loaded.root.clone();
+        let profile = invalid_stop_root
+            .iv
+            .as_mut()
+            .and_then(|iv| iv.profiles.first_mut())
+            .expect("fixture should include one IV profile");
+        let duplicate_source = profile
+            .sources
+            .first()
+            .expect("fixture should include one IV source")
+            .clone();
+        profile.sources.push(duplicate_source);
+
+        let error = runtime
+            .stop_iv_engine_lifecycle(&invalid_stop_root)
+            .expect_err("invalid stop lifecycle planning should fail");
+
+        assert!(
+            error.to_string().contains("DuplicateSourceId"),
+            "failure should identify duplicate-source stop planning: {error}"
+        );
+        assert!(
+            runtime.has_iv_runtime(),
+            "failed stop planning must not drop the IV runtime"
+        );
+        assert!(
+            runtime.has_iv_event_bindings(),
+            "failed stop planning must not drop IV event bindings"
+        );
+    }
+
+    #[test]
+    fn live_node_startup_binds_aggregate_greeks_sources_through_nt_custom_data() {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.clients.clear();
+        insert_configured_data_client(&mut loaded);
+        loaded.root.nautilus.data_engine.external_clients =
+            vec![ClientId::from("configured-client")];
+        loaded.root.iv = Some(
+            toml::from_str(
+                r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "configured-profile"
+enabled_products = ["source_health", "aggregate_greeks"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_derived_points = 2
+max_source_health_events = 2
+max_source_event_future_skew_ns = 0
+input_bounds = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 5.0, unit = "unitless", allowed_conventions = { allowed_conventions = ["configured-convention", "BLACK_SCHOLES", "ConfiguredOptionGreeks", "ConfiguredOptionChain", "ConfiguredAggregateGreeks", "ConfiguredCustomIv", "ConfiguredNtSymbol"] } }
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+derived_input_policies = []
+
+[profiles.audit_policy]
+profile_id = "configured-profile"
+enabled_raw_products = ["aggregate_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-aggregate-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health", "aggregate_greeks"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "configured-aggregate-source"
+selector_fingerprint = "configured-aggregate-selector"
+source_kind = "aggregate_greeks"
+client_id = "configured-client"
+subscription_generation = 11
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredAggregateGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_aggregate_greeks"
+aggregate_key = "configured-aggregate-greeks-topic"
+underlying_selectors = ["configured-underlying-selector"]
+delta_field = "configured-delta-field"
+gamma_field = "configured-gamma-field"
+vega_field = "configured-vega-field"
+theta_field = "configured-theta-field"
+rho_field = "configured-rho-field"
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value"
+
+[profiles.sources.params]
+configured_source_param = "configured-value"
+"#,
+            )
+            .expect("configured aggregate IV profile should parse"),
+        );
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+        let adapters = BoltV3AdapterConfigs {
+            clients: BTreeMap::new(),
+        };
+
+        let (runtime, _) = build_live_node_with_clients_and_submit_approval_limits(
+            &loaded,
+            &resolved,
+            adapters,
+            BTreeMap::new(),
+        )
+        .expect("configured aggregate IV source should build without live transport");
+
+        let health = runtime
+            .iv_source_health("configured-profile", "configured-aggregate-source")
+            .expect("startup should apply aggregate IV source health");
+        assert_eq!(
+            health.subscription_state,
+            crate::bolt_v3_iv::health::IvSourceHealthState::Subscribing
+        );
+        assert_eq!(health.subscription_generation, 11);
+    }
+
+    fn loaded_config_with_primary_reference_data() -> LoadedBoltV3Config {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        strategy.config.reference_data.insert(
+            "primary".to_string(),
+            ReferenceDataBlock {
+                data_client_id: ClientId::from("polymarket_main"),
+                instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
+            },
+        );
+        loaded
     }
 
     #[test]
@@ -3261,8 +7077,19 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             !handle.has_all_required_quotes(),
             "installing targets should not pass the quote probe until quotes arrive"
         );
-        for subscription in &installed {
-            record_readiness_quote(&handle, subscription, 1_200);
+        for subscription in installed {
+            handle
+                .quotes
+                .borrow_mut()
+                .push(BoltV3StrategyFreeReferenceQuote {
+                    data_client_id: subscription.data_client_id.to_string(),
+                    instrument_id: subscription.instrument_id.to_string(),
+                    bid_price: 1.0,
+                    ask_price: 2.0,
+                    ts_event_unix_nanos: 1_000,
+                    ts_init_unix_nanos: 1_100,
+                    captured_at_unix_nanos: 1_200,
+                });
         }
 
         assert!(
@@ -3390,7 +7217,18 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         ]);
 
         for subscription in installed.iter().take(1) {
-            record_readiness_quote(&handle, subscription, 1_200);
+            handle
+                .quotes
+                .borrow_mut()
+                .push(BoltV3StrategyFreeReferenceQuote {
+                    data_client_id: subscription.data_client_id.to_string(),
+                    instrument_id: subscription.instrument_id.to_string(),
+                    bid_price: 1.0,
+                    ask_price: 2.0,
+                    ts_event_unix_nanos: 1_000,
+                    ts_init_unix_nanos: 1_100,
+                    captured_at_unix_nanos: 1_200,
+                });
         }
         assert!(
             !handle.has_all_required_quotes(),
@@ -3400,7 +7238,18 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         let subscription = installed
             .get(1)
             .expect("second source-owned target should be installed");
-        record_readiness_quote(&handle, subscription, 1_200);
+        handle
+            .quotes
+            .borrow_mut()
+            .push(BoltV3StrategyFreeReferenceQuote {
+                data_client_id: subscription.data_client_id.to_string(),
+                instrument_id: subscription.instrument_id.to_string(),
+                bid_price: 1.0,
+                ask_price: 2.0,
+                ts_event_unix_nanos: 1_000,
+                ts_init_unix_nanos: 1_100,
+                captured_at_unix_nanos: 1_200,
+            });
 
         assert!(
             !handle.has_all_required_quotes(),
@@ -3410,7 +7259,18 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         let subscription = installed
             .get(2)
             .expect("third source-owned target should be installed");
-        record_readiness_quote(&handle, subscription, 1_200);
+        handle
+            .quotes
+            .borrow_mut()
+            .push(BoltV3StrategyFreeReferenceQuote {
+                data_client_id: subscription.data_client_id.to_string(),
+                instrument_id: subscription.instrument_id.to_string(),
+                bid_price: 1.0,
+                ask_price: 2.0,
+                ts_event_unix_nanos: 1_000,
+                ts_init_unix_nanos: 1_100,
+                captured_at_unix_nanos: 1_200,
+            });
 
         assert!(
             handle.has_all_required_quotes(),
@@ -3508,7 +7368,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         ]);
         assert_eq!(installed.len(), 5);
 
-        let record_delta = |subscription: &StrategyFreeDataClientReadinessQuoteSubscription| {
+        let record_delta = |subscription: &StrategyFreeReferenceQuoteSubscription| {
             let delta = OrderBookDelta::new(
                 subscription.instrument_id,
                 BookAction::Add,
@@ -3654,20 +7514,36 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
     }
 
     #[test]
+    fn trade_transport_config_keeps_iv_only_source_clients() {
+        let loaded = fixture_loaded_config_with_external_option_greeks_iv();
+
+        let scoped =
+            trade_transport_loaded_config(&loaded).expect("IV source client must stay in scope");
+
+        assert_eq!(scoped.root.clients.len(), 1);
+        assert!(scoped.root.clients.contains_key("configured-client"));
+        assert!(loaded.root.clients.contains_key("configured-client"));
+    }
+
+    #[test]
     fn trade_transport_config_keeps_only_strategy_bound_clients() {
         let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
             "tests/fixtures/bolt_v3/root.toml",
         ))
         .expect("fixture config should load");
-        let mut extra_data_client = loaded
+        let mut reference_client = loaded
             .root
             .clients
             .get("polymarket_main")
             .expect("fixture client should exist")
             .clone();
-        extra_data_client.execution = None;
-        extra_data_client.secrets = None;
-        let unrelated_client = extra_data_client.clone();
+        reference_client.execution = None;
+        reference_client.secrets = None;
+        let unrelated_client = reference_client.clone();
+        loaded
+            .root
+            .clients
+            .insert("reference_data".to_string(), reference_client);
         let mut signal_client = loaded
             .root
             .clients
@@ -3688,9 +7564,16 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             .strategies
             .first_mut()
             .expect("fixture should include one strategy");
+        strategy.config.reference_data.insert(
+            "primary".to_string(),
+            ReferenceDataBlock {
+                data_client_id: ClientId::from("reference_data"),
+                instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
+            },
+        );
         strategy.config.signal_data.insert(
             "primary".to_string(),
-            DataInstrumentBlock {
+            ReferenceDataBlock {
                 data_client_id: ClientId::from("signal_data"),
                 instrument_id: InstrumentId::from("SIGNAL.SOURCE"),
             },
@@ -3699,17 +7582,10 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         let scoped = trade_transport_loaded_config(&loaded)
             .expect("strategy-bound transport scope should be derived from config");
 
-        assert_eq!(scoped.root.clients.len(), 4);
+        assert_eq!(scoped.root.clients.len(), 3);
         assert!(scoped.root.clients.contains_key("polymarket_main"));
+        assert!(scoped.root.clients.contains_key("reference_data"));
         assert!(scoped.root.clients.contains_key("signal_data"));
-        assert!(
-            scoped.root.clients.contains_key("chainlink_reference"),
-            "reference_current_price source clients must be registered in the live transport scope"
-        );
-        assert!(
-            scoped.root.clients.contains_key("polyresearch_reference"),
-            "reference_current_price PRR source client must be registered in the live transport scope"
-        );
         assert!(
             !scoped.root.clients.contains_key("unrelated_data"),
             "unrelated configured data clients must not block the selected trade path"
@@ -3722,44 +7598,100 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
     }
 
     #[test]
-    fn trade_transport_config_skips_unsupported_optional_reference_sources() {
+    fn data_client_probe_config_keeps_only_selected_data_client() {
         let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
             "tests/fixtures/bolt_v3/root.toml",
         ))
         .expect("fixture config should load");
-        let strategy = loaded
-            .strategies
-            .first_mut()
-            .expect("fixture should include one strategy");
-        let reference_current_price = strategy
-            .config
-            .reference_current_price
-            .as_mut()
-            .expect("fixture strategy should include reference_current_price");
-        reference_current_price.asset = "BNB".to_string();
-        reference_current_price
-            .sources
-            .get_mut("chainlink_primary")
-            .expect("fixture should include chainlink reference source")
-            .instrument_id = Some("BNB-USD.CHAINLINK".to_string());
-        reference_current_price
-            .sources
-            .get_mut("polyresearch_backup")
-            .expect("fixture should include PRR reference source")
-            .symbol = Some("BNB/USD".to_string());
+        let mut secondary = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        secondary.execution = None;
+        secondary.secrets = None;
+        loaded
+            .root
+            .clients
+            .insert("secondary_data".to_string(), secondary);
 
-        let scoped = trade_transport_loaded_config(&loaded)
-            .expect("strategy-bound transport scope should be derived from config");
+        let probe_loaded = data_client_probe_loaded_config(&loaded, "secondary_data")
+            .expect("selected data client should produce a scoped probe config");
 
-        assert!(scoped.root.clients.contains_key("polymarket_main"));
         assert!(
-            scoped.root.clients.contains_key("chainlink_reference"),
-            "Chainlink supports the selected reference_current_price asset and remains transport-bound"
+            probe_loaded.strategies.is_empty(),
+            "adapter mapping must drop strategy targets that do not reference the selected probe client"
+        );
+        assert_eq!(probe_loaded.root_path, loaded.root_path);
+        assert_eq!(
+            probe_loaded.config_bundle_checksum,
+            loaded.config_bundle_checksum
+        );
+        assert_eq!(probe_loaded.root.clients.len(), 1);
+        assert!(probe_loaded.root.clients.contains_key("secondary_data"));
+        assert!(
+            loaded.root.clients.contains_key("polymarket_main"),
+            "helper must not mutate the caller's full client bundle"
+        );
+    }
+
+    #[test]
+    fn data_client_probe_adapter_mapping_drops_unrelated_strategy_targets() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let mut secondary = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        secondary.execution = None;
+        secondary.secrets = None;
+        loaded
+            .root
+            .clients
+            .insert("secondary_data".to_string(), secondary);
+
+        let probe_loaded = data_client_probe_loaded_config(&loaded, "secondary_data")
+            .expect("selected data client should produce a scoped probe config");
+
+        assert!(
+            probe_loaded.strategies.is_empty(),
+            "probe mapping input must drop strategy targets that reference clients outside the scoped probe"
+        );
+        strategy_free_transport_adapter_configs(
+            &probe_loaded,
+            &crate::bolt_v3_secrets::ResolvedBoltV3Secrets {
+                clients: Default::default(),
+            },
+        )
+        .expect("scoped data-client adapter mapping must not fail on unrelated strategies");
+    }
+
+    #[test]
+    fn data_client_probe_runtime_clears_strategies_after_adapter_mapping() {
+        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+
+        let probe_loaded = data_client_probe_loaded_config(&loaded, "polymarket_main")
+            .expect("selected data client should produce a scoped probe config");
+        let runtime_loaded = strategy_free_transport_loaded_config(&probe_loaded);
+
+        assert!(
+            !probe_loaded.strategies.is_empty(),
+            "probe adapter mapping input must keep strategies for provider-owned data filters"
         );
         assert!(
-            !scoped.root.clients.contains_key("polyresearch_reference"),
-            "unsupported optional PRR source must not keep an unused transport client registered"
+            runtime_loaded.strategies.is_empty(),
+            "strategy-free data-client probes must not register strategy actors"
         );
+        assert_eq!(runtime_loaded.root.clients.len(), 1);
+        assert!(runtime_loaded.root.clients.contains_key("polymarket_main"));
     }
 
     #[test]
@@ -3767,9 +7699,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         use crate::{
             bolt_v3_providers::{
                 binance::ResolvedBoltV3BinanceSecrets, chainlink::ResolvedBoltV3ChainlinkSecrets,
-                chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
                 polymarket::ResolvedBoltV3PolymarketSecrets,
-                polyresearch::ResolvedBoltV3PolyResearchSecrets,
             },
             bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
         };
@@ -3804,19 +7734,6 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
                 api_secret: zeroize::Zeroizing::new("fixture-chainlink-api-secret".to_string()),
             }),
         );
-        clients.insert(
-            "chainlink_reference".to_string(),
-            Arc::new(ResolvedBoltV3ChainlinkReferenceSecrets {
-                api_key: zeroize::Zeroizing::new("fixture-chainlink-api-key".to_string()),
-                api_secret: zeroize::Zeroizing::new("fixture-chainlink-api-secret".to_string()),
-            }),
-        );
-        clients.insert(
-            "polyresearch_reference".to_string(),
-            Arc::new(ResolvedBoltV3PolyResearchSecrets {
-                api_key: zeroize::Zeroizing::new("fixture-polyresearch-api-key".to_string()),
-            }),
-        );
         let resolved = ResolvedBoltV3Secrets { clients };
 
         let adapters = strategy_free_transport_adapter_configs(&loaded, &resolved)
@@ -3844,6 +7761,118 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn reference_quote_probe_does_not_satisfy_distinct_clients_with_one_quote() {
+        let mut loaded = loaded_config_with_primary_reference_data();
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        let primary = strategy
+            .config
+            .reference_data
+            .get("primary")
+            .expect("fixture should include primary reference data")
+            .clone();
+        strategy.config.reference_data.insert(
+            "secondary".to_string(),
+            ReferenceDataBlock {
+                data_client_id: ClientId::from("secondary_reference"),
+                instrument_id: primary.instrument_id,
+            },
+        );
+        let handle = BoltV3StrategyFreeReferenceQuoteProbeHandle::new(&loaded);
+        let ambiguity = handle
+            .ambiguity_error()
+            .expect("probe setup should reject ambiguous reference quote sources");
+        assert!(ambiguity.contains("QuoteTick does not carry data_client_id"));
+        let quote = QuoteTick::new(
+            primary.instrument_id,
+            Price::from("100.00"),
+            Price::from("100.01"),
+            Quantity::from("1"),
+            Quantity::from("1"),
+            1_u64.into(),
+            1_u64.into(),
+        );
+
+        handle.record_quote(&quote, 2);
+
+        assert!(
+            !handle.has_all_required_quotes(),
+            "one source-unattributed QuoteTick must not satisfy distinct data clients"
+        );
+        assert_eq!(
+            handle.evidence().quotes.len(),
+            0,
+            "probe must not label a source-unattributed QuoteTick with any ambiguous data client"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reference_quote_probe_wait_wakes_when_required_quote_records() {
+        let loaded = loaded_config_with_primary_reference_data();
+        let handle = BoltV3StrategyFreeReferenceQuoteProbeHandle::new(&loaded);
+        let required = handle
+            .required
+            .borrow()
+            .first()
+            .expect("fixture should require reference quote evidence")
+            .clone();
+        let quote = QuoteTick::new(
+            required.instrument_id,
+            Price::from("100.00"),
+            Price::from("100.01"),
+            Quantity::from("1"),
+            Quantity::from("1"),
+            1_u64.into(),
+            1_u64.into(),
+        );
+        let wait = handle.wait_for_all_required_quotes();
+        tokio::pin!(wait);
+
+        tokio::select! {
+            result = &mut wait => panic!("wait should not complete before required quote evidence: {result:?}"),
+            () = tokio::time::sleep(Duration::from_millis(5)) => {}
+        }
+
+        handle.record_quote(&quote, 2);
+        tokio::time::timeout(Duration::from_millis(100), &mut wait)
+            .await
+            .expect("notify must wake required-quote wait")
+            .expect("required quote wait should succeed");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reference_quote_probe_wait_accepts_quote_recorded_before_wait_starts() {
+        let loaded = loaded_config_with_primary_reference_data();
+        let handle = BoltV3StrategyFreeReferenceQuoteProbeHandle::new(&loaded);
+        let required = handle
+            .required
+            .borrow()
+            .first()
+            .expect("fixture should require reference quote evidence")
+            .clone();
+        let quote = QuoteTick::new(
+            required.instrument_id,
+            Price::from("100.00"),
+            Price::from("100.01"),
+            Quantity::from("1"),
+            Quantity::from("1"),
+            1_u64.into(),
+            1_u64.into(),
+        );
+
+        handle.record_quote(&quote, 2);
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            handle.wait_for_all_required_quotes(),
+        )
+        .await
+        .expect("pre-observed quote must not be lost before wait starts")
+        .expect("required quote wait should succeed");
     }
 
     #[test]
@@ -4092,6 +8121,45 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
     }
 
     #[test]
+    fn venue_spendability_source_config_reads_configured_capital_pool_source() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let mut loaded = fixture_loaded_config();
+        write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
+        let config = position_sizer_venue_spendability_source_config_from_loaded(&loaded)
+            .expect("source config should build")
+            .expect("fixture should configure source");
+
+        let snapshot = position_sizer_venue_spendability_snapshot_from_source_config(&config)
+            .expect("configured source should be accepted");
+
+        assert_eq!(snapshot.source, "operator_venue_spendability");
+        assert_eq!(snapshot.spendable_collateral, Decimal::from(20));
+        assert_eq!(snapshot.collateral_allowance, Decimal::from(12));
+    }
+
+    #[test]
+    fn venue_spendability_source_config_fails_closed_on_sha_mismatch() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let mut loaded = fixture_loaded_config();
+        write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
+        let mut config = position_sizer_venue_spendability_source_config_from_loaded(&loaded)
+            .expect("source config should build")
+            .expect("fixture should configure source");
+        config.expected_sha256 =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+
+        let error = position_sizer_venue_spendability_snapshot_from_source_config(&config)
+            .expect_err("hash mismatch must fail closed");
+        let rendered = error.to_string();
+
+        assert!(
+            rendered.contains("position sizer venue spendability source rejected")
+                && rendered.contains("Sha256Mismatch"),
+            "startup error should name rejected spendability evidence, got: {rendered}"
+        );
+    }
+
+    #[test]
     fn live_node_config_maps_log_levels_from_uppercase_strings() {
         let loaded = fixture_loaded_config();
         let cfg = make_live_node_config(&loaded);
@@ -4135,9 +8203,10 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 
     #[test]
     fn live_node_config_suppresses_nt_credential_module_logs_to_warn() {
-        // Regression for the slice-7 review finding: provider-owned NT
-        // modules may see credential material before redaction. Bolt-v3
-        // forces those targets to
+        // Regression for the slice-7 review finding: NT's
+        // `nautilus_polymarket::common::credential` and
+        // `nautilus_binance::common::credential` modules log credential
+        // material at info-level. Bolt-v3 forces those targets to
         // `Warn` even when the root TOML log level is `Info`, so the
         // logger filter must contain both module paths with at most
         // `Warn` regardless of the configured root level.

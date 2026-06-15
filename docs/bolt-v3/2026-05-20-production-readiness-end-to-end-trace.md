@@ -108,8 +108,8 @@ Current source code contains the intended single bolt-v3 production path and loc
 3. Controlled connect/reference/disconnect stages
    - `src/bolt_v3_live_node.rs:721-843`
    - Stage builder records operator approval, secret resolution, live-node build, controlled connect, reference readiness, controlled disconnect, report write, and top-level `generated_at_unix_seconds`.
-   - reference_current_price health subscribes to configured custom-data sources through the strategy-free LiveNode transport path. Cache-only instrument-ID membership remains fail-closed and is not treated as live current-price freshness.
-   - Configured source-age and observation-timeout fields bound accepted custom-data age and the wait before the runner stops.
+   - Reference readiness required configured quote evidence from the strategy-free reference quote probe. Cache-only instrument-ID membership remained fail-closed and was not treated as live reference-data freshness.
+   - Configured quote freshness and wait-timeout fields bounded the accepted quote age and the probe wait before the runner stopped.
 
 4. Readiness consumption
    - Current live submit safety is owned by submit admission and strategy decision evidence, not by a separate pre-run evidence gate.
@@ -132,7 +132,7 @@ Current live-operator evidence:
 - Report path: readiness report under `/Users/spson/Projects/Claude/bolt-v2/var/bolt-v3-live/reports/`; mode observed as `-rw-------`, size `1283` bytes.
 - Report fields: retired strategy-free readiness schema v2, generated timestamp `1779356084`, config bundle checksum `a6f0f1d1e472c88d848b8505dc138e136a55314ec89d80dbb6be926ab7b88639`, executable identity `ec913e9f98ab11d60b8a2dd921e92d99163cc0e959f124e0bd9c3199fb31c601`.
 - Satisfied stages: `operator_approval`, `secret_resolution`, `live_node_build`, `controlled_disconnect`, and `report_write`.
-- Failed stage: `controlled_connect`, with report detail that the strategy-free controlled run reached NT Running but live reference quote evidence was not observed; engine connectivity could not be treated as proven because the legacy reference-quote probe did not observe all configured role-map quotes within the configured wait timeout.
+- Failed stage: `controlled_connect`, with report detail that the strategy-free controlled run reached NT Running but live reference quote evidence was not observed; engine connectivity could not be treated as proven because the reference quote probe did not observe all configured reference_data quotes within the configured wait timeout.
 - Skipped stage: `reference_readiness`, with report detail `controlled connect failed`.
 - Runtime log evidence showed `polymarket_main` data and execution connected, `binance_reference` data did not connect, `DataEngine.check_connected() == false`, `ExecEngine.check_connected() == true`, and NT refused to start the trader.
 - The observed Binance reference failure was a WebSocket handshake rejection from `stream-sbe.binance.com/ws` with HTTP 400 and `Invalid X-MBX-APIKEY header`; no credential value was printed.

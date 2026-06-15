@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Verify Bolt does not wire NautilusTrader venue-mutating control paths.
+
+Shadow mode forbids venue mutation under `runtime.order_execution_mode=shadow`. The NT
+`StrategyCommand::ExitMarket` control endpoint can route to `market_exit()`,
+which is outside Bolt's submit/cancel chokepoints, so Bolt production source
+must not wire a sender for that command or call equivalent market-exit/close
+APIs directly. The fence also rejects other NT venue-mutating APIs that would
+bypass Bolt's shadow-mode submit/cancel chokepoints.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+from bolt_v3_source_roots import REPO_ROOT
+from verify_bolt_v3_pure_rust_runtime import (
+    production_text,
+    strip_rust_comments_and_literals,
+)
+
+
+@dataclass(frozen=True)
+class Rule:
+    label: str
+    pattern: re.Pattern[str]
+
+
+@dataclass(frozen=True)
+class Violation:
+    path: str
+    line: int
+    label: str
+    excerpt: str
+
+
+FORBIDDEN_RULES = (
+    Rule(
+        "NT ExitMarket command sender",
+        re.compile(r"(?<![A-Za-z0-9_])ExitMarket(?![A-Za-z0-9_])"),
+    ),
+    Rule(
+        "NT venue-mutating lifecycle API",
+        re.compile(
+            r"(?:\.|::)\s*(?:r#)?"
+            r"(?:market_exit_strategy|submit_order_list|close_all_positions|cancel_all_orders|close_position|cancel_orders|modify_order|exit_market|market_exit)"
+            r"(?![A-Za-z0-9_])"
+        ),
+    ),
+)
+
+
+def line_number(text: str, pos: int) -> int:
+    return text.count("\n", 0, pos) + 1
+
+
+def find_violations_in_text(path: str, text: str) -> list[Violation]:
+    scan_text = strip_rust_comments_and_literals(text)
+    violations: list[Violation] = []
+    for rule in FORBIDDEN_RULES:
+        for match in rule.pattern.finditer(scan_text):
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            line_end = text.find("\n", match.end())
+            if line_end == -1:
+                line_end = len(text)
+            violations.append(
+                Violation(
+                    path=path,
+                    line=line_number(scan_text, match.start()),
+                    label=rule.label,
+                    excerpt=text[line_start:line_end].strip(),
+                )
+            )
+    return violations
+
+
+def bolt_src_files() -> list[Path]:
+    src_root = REPO_ROOT / "src"
+    files: list[Path] = []
+    for path in src_root.rglob("*.rs"):
+        if path.is_symlink():
+            raise ValueError(f"src contains a symlink: {path}")
+        if path.is_file():
+            files.append(path)
+    files.sort(key=lambda path: path.relative_to(REPO_ROOT).as_posix().encode("utf-8"))
+    return files
+
+
+def collect_violations_from_files(files: list[Path]) -> list[Violation]:
+    if not files:
+        raise RuntimeError("no Rust source files found under src")
+
+    violations: list[Violation] = []
+    for path in files:
+        try:
+            rel = str(path.relative_to(REPO_ROOT))
+        except ValueError:
+            rel = str(path)
+        violations.extend(find_violations_in_text(rel, production_text(path)))
+    return violations
+
+
+def collect_violations() -> list[Violation]:
+    return collect_violations_from_files(bolt_src_files())
+
+
+def main() -> int:
+    violations = collect_violations()
+    if violations:
+        for violation in violations:
+            print(
+                "FAIL: Bolt-v3 NT ExitMarket command fence "
+                f"{violation.label} at {violation.path}:{violation.line}: {violation.excerpt}",
+                file=sys.stderr,
+            )
+        return 1
+
+    print("OK: Bolt-v3 NT ExitMarket command fence passed.")
+    return 0
+
+
+if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
+    raise SystemExit(main())

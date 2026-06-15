@@ -15,9 +15,8 @@ use serde::Deserialize;
 use toml::Value;
 
 use crate::{
-    bolt_v3_config::ReferencePriceBlock,
     bolt_v3_market_families,
-    bolt_v3_numeric::{BPS_DENOMINATOR, UNIT_F64, is_non_negative_finite, is_positive_finite},
+    bolt_v3_numeric::{BPS_DENOMINATOR, is_non_negative_finite, is_positive_finite},
     strategies::registry::ValidationError,
 };
 
@@ -67,6 +66,7 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             vwap_depth_limit_bps: u64 => Integer;
             slippage_buffer_bps: u64 => Integer;
             risk_lambda: f64 => Float;
+            sizing_ev_reference_bps: u64 => Integer;
             edge_threshold_basis_points: i64 => Integer;
             exit_hysteresis_bps: i64 => Integer;
             trade_flow_window_secs: u64 => Integer;
@@ -101,27 +101,6 @@ pub(super) struct BinaryOracleEdgeTakerOrderConfig {
     pub(super) is_post_only: bool,
     pub(super) is_reduce_only: bool,
     pub(super) is_quote_quantity: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct BinaryOracleEdgeTakerMakerQuoteConfig {
-    pub(super) yes_quantity: f64,
-    pub(super) no_quantity: f64,
-    pub(super) collateral_budget: f64,
-    pub(super) informed_fraction: f64,
-    pub(super) microprice_weight: f64,
-    pub(super) inventory_skew_gain: f64,
-    pub(super) position_cap: f64,
-    pub(super) half_spread_floor: f64,
-    pub(super) max_half_spread: f64,
-    pub(super) epsilon: f64,
-    pub(super) reference_tau_secs: f64,
-    pub(super) time_widen_cap: f64,
-    pub(super) requote_threshold: f64,
-    pub(super) requote_action_cost: u64,
-    pub(super) requote_min_interval_ms: u64,
-    pub(super) order: BinaryOracleEdgeTakerOrderConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,11 +150,12 @@ macro_rules! define_config_struct {
         #[serde(deny_unknown_fields)]
         pub(super) struct BinaryOracleEdgeTakerConfig {
             $( pub(super) $field: $ty, )+
+            pub(super) reference_venue: Option<String>,
+            pub(super) reference_instrument_id: Option<String>,
             pub(super) signal_venue: Option<String>,
             pub(super) signal_instrument_id: Option<String>,
             pub(super) resolution_client_id: Option<String>,
             pub(super) resolution_instrument_id: Option<String>,
-            pub(super) reference_current_price: Option<ReferencePriceBlock>,
             pub(super) realized_volatility_surface_id: String,
             pub(super) static_condition_id: Option<String>,
             pub(super) static_yes_outcome: Option<String>,
@@ -184,7 +164,6 @@ macro_rules! define_config_struct {
             pub(super) entry_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) exit_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
-            pub(super) maker_quote: Option<BinaryOracleEdgeTakerMakerQuoteConfig>,
         }
     };
 }
@@ -303,6 +282,10 @@ impl BinaryOracleEdgeTakerBuilder {
             is_positive_finite(config.spike_guard_return_threshold),
             "spike_guard_return_threshold must be positive and finite"
         );
+        anyhow::ensure!(
+            is_non_negative_finite(config.risk_lambda),
+            "risk_lambda must be finite and >= 0"
+        );
         // Fail loud at load for positive-required integer knobs. A zero
         // trade-flow sample cap makes the count-cap evict every observation,
         // permanently emptying the buffer and starving the W3 read seam.
@@ -319,6 +302,10 @@ impl BinaryOracleEdgeTakerBuilder {
                 stringify!(spike_guard_cooldown_secs),
                 Some(config.spike_guard_cooldown_secs),
             ),
+            (
+                stringify!(sizing_ev_reference_bps),
+                Some(config.sizing_ev_reference_bps),
+            ),
         ] {
             if let Some(value) = value {
                 anyhow::ensure!(value > u64::MIN, "{field} must be positive");
@@ -326,7 +313,6 @@ impl BinaryOracleEdgeTakerBuilder {
         }
         Self::ensure_bps_runtime_knobs_within_full_scale(&config)?;
         Self::ensure_executable_entry_order_shape(&config)?;
-        Self::ensure_maker_quote_config(&config)?;
         Self::ensure_configured_instrument_id_fields_parse(&config)?;
         Ok(config)
     }
@@ -341,6 +327,10 @@ impl BinaryOracleEdgeTakerBuilder {
                 config.vwap_depth_limit_bps,
             ),
             (stringify!(slippage_buffer_bps), config.slippage_buffer_bps),
+            (
+                stringify!(sizing_ev_reference_bps),
+                config.sizing_ev_reference_bps,
+            ),
         ] {
             anyhow::ensure!(
                 (value as f64) <= BPS_DENOMINATOR,
@@ -378,80 +368,14 @@ impl BinaryOracleEdgeTakerBuilder {
             && order.trailing_offset_type.is_none()
     }
 
-    fn ensure_maker_quote_config(config: &BinaryOracleEdgeTakerConfig) -> Result<()> {
-        let Some(maker) = config.maker_quote.as_ref() else {
-            return Ok(());
-        };
-        for (field, value) in [
-            ("maker_quote.yes_quantity", maker.yes_quantity),
-            ("maker_quote.no_quantity", maker.no_quantity),
-            ("maker_quote.collateral_budget", maker.collateral_budget),
-            ("maker_quote.position_cap", maker.position_cap),
-            ("maker_quote.max_half_spread", maker.max_half_spread),
-            ("maker_quote.epsilon", maker.epsilon),
-            ("maker_quote.reference_tau_secs", maker.reference_tau_secs),
-            ("maker_quote.time_widen_cap", maker.time_widen_cap),
-            ("maker_quote.requote_threshold", maker.requote_threshold),
-        ] {
-            anyhow::ensure!(
-                is_positive_finite(value),
-                "{field} must be positive and finite"
-            );
-        }
-        for (field, value) in [
-            ("maker_quote.informed_fraction", maker.informed_fraction),
-            ("maker_quote.microprice_weight", maker.microprice_weight),
-        ] {
-            anyhow::ensure!(
-                is_non_negative_finite(value) && value <= UNIT_F64,
-                "{field} must be between 0.0 and 1.0"
-            );
-        }
-        for (field, value) in [
-            ("maker_quote.inventory_skew_gain", maker.inventory_skew_gain),
-            ("maker_quote.half_spread_floor", maker.half_spread_floor),
-        ] {
-            anyhow::ensure!(
-                is_non_negative_finite(value),
-                "{field} must be non-negative and finite"
-            );
-        }
-        anyhow::ensure!(
-            maker.max_half_spread >= maker.half_spread_floor,
-            "maker_quote.max_half_spread must be greater than or equal to maker_quote.half_spread_floor"
-        );
-        anyhow::ensure!(
-            maker.requote_action_cost > u64::MIN,
-            "maker_quote.requote_action_cost must be positive"
-        );
-        anyhow::ensure!(
-            Self::maker_order_shape_supported(&maker.order),
-            "maker_quote.order must be buy/long limit GTC post-only without reduce-only, quote-quantity, expiry, trigger, or trailing fields"
-        );
-        Ok(())
-    }
-
-    pub(super) fn maker_order_shape_supported(order: &BinaryOracleEdgeTakerOrderConfig) -> bool {
-        order.side == ORDER_SIDE_BUY_VALUE
-            && order.position_side == POSITION_SIDE_LONG_VALUE
-            && order.order_type == OrderType::Limit
-            && order.time_in_force == TimeInForce::Gtc
-            && order.expire_time_unix_nanos.is_none()
-            && order.is_post_only
-            && !order.is_reduce_only
-            && !order.is_quote_quantity
-            && order.trigger_price.is_none()
-            && order.activation_price.is_none()
-            && order.trigger_type.is_none()
-            && order.trigger_instrument_id.is_none()
-            && order.trailing_offset.is_none()
-            && order.trailing_offset_type.is_none()
-    }
-
     fn ensure_configured_instrument_id_fields_parse(
         config: &BinaryOracleEdgeTakerConfig,
     ) -> Result<()> {
         for (field_name, instrument_id) in [
+            (
+                "reference_instrument_id",
+                config.reference_instrument_id.as_deref(),
+            ),
             (
                 "signal_instrument_id",
                 config.signal_instrument_id.as_deref(),
@@ -522,12 +446,12 @@ impl BinaryOracleEdgeTakerBuilder {
                 ENTRY_ORDER_FIELD
                     | EXIT_ORDER_FIELD
                     | FORCED_EXIT_ORDER_FIELD
-                    | "maker_quote"
+                    | "reference_venue"
+                    | "reference_instrument_id"
                     | "signal_venue"
                     | "signal_instrument_id"
                     | "resolution_client_id"
                     | "resolution_instrument_id"
-                    | "reference_current_price"
                     | REALIZED_VOLATILITY_SURFACE_ID_FIELD
                     | "static_condition_id"
                     | "static_yes_outcome"
@@ -548,9 +472,22 @@ impl BinaryOracleEdgeTakerBuilder {
             stringify!(book_impact_cap_bps),
             stringify!(vwap_depth_limit_bps),
             stringify!(slippage_buffer_bps),
+            stringify!(sizing_ev_reference_bps),
         ] {
             Self::validate_bps_runtime_knob_upper_bound(table, field_prefix, field_name, errors);
         }
+        Self::validate_positive_u64_field(
+            table,
+            field_prefix,
+            stringify!(sizing_ev_reference_bps),
+            errors,
+        );
+        Self::validate_non_negative_finite_float_field(
+            table,
+            field_prefix,
+            stringify!(risk_lambda),
+            errors,
+        );
         Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);
         Self::validate_optional_string_field(
             table,
@@ -567,8 +504,6 @@ impl BinaryOracleEdgeTakerBuilder {
             "resolution_instrument_id",
             errors,
         );
-        Self::validate_optional_table_field(table, field_prefix, "reference_current_price", errors);
-        Self::validate_optional_table_field(table, field_prefix, "maker_quote", errors);
         Self::validate_optional_string_field(
             table,
             field_prefix,
@@ -588,6 +523,12 @@ impl BinaryOracleEdgeTakerBuilder {
         Self::validate_optional_instrument_id_field(
             table,
             field_prefix,
+            "reference_instrument_id",
+            errors,
+        );
+        Self::validate_optional_instrument_id_field(
+            table,
+            field_prefix,
             "signal_instrument_id",
             errors,
         );
@@ -597,6 +538,19 @@ impl BinaryOracleEdgeTakerBuilder {
             "resolution_instrument_id",
             errors,
         );
+        if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {
+            let missing = if table.contains_key("reference_venue") {
+                "reference_instrument_id"
+            } else {
+                "reference_venue"
+            };
+            Self::push_missing(
+                errors,
+                format!("{field_prefix}.{missing}"),
+                "missing_reference_data_pair",
+                BinaryOracleEdgeTakerFieldType::String,
+            );
+        }
         match (
             table.contains_key("signal_venue"),
             table.contains_key("signal_instrument_id"),
@@ -617,7 +571,8 @@ impl BinaryOracleEdgeTakerBuilder {
         }
         // Resolution-strike binding is optional, but both-or-neither: a strategy
         // either declares the live Chainlink strike (resolution_client_id +
-        // resolution_instrument_id) or neither (entry stays fail-closed).
+        // resolution_instrument_id) or neither (entry stays fail-closed). Mirrors
+        // the reference_data pair rule.
         if table.contains_key("resolution_client_id")
             != table.contains_key("resolution_instrument_id")
         {
@@ -654,128 +609,10 @@ impl BinaryOracleEdgeTakerBuilder {
             concat!(stringify!(missing_), stringify!(forced_exit_order)),
             errors,
         );
-        Self::validate_maker_quote_table(table, field_prefix, errors);
         Self::validate_executable_entry_order_shape(table, field_prefix, errors);
         Self::validate_slippage_buffer_covers_vwap_depth(table, field_prefix, errors);
         Self::validate_rotating_market_family(table, field_prefix, errors);
         Self::validate_static_binary_event_runtime_fields(table, field_prefix, errors);
-    }
-
-    fn validate_maker_quote_table(
-        table: &toml::map::Map<String, Value>,
-        field_prefix: &str,
-        errors: &mut Vec<ValidationError>,
-    ) {
-        let Some(maker_table) = table.get("maker_quote").and_then(Value::as_table) else {
-            return;
-        };
-        for (field_name, field_type) in [
-            ("yes_quantity", BinaryOracleEdgeTakerFieldType::Float),
-            ("no_quantity", BinaryOracleEdgeTakerFieldType::Float),
-            ("collateral_budget", BinaryOracleEdgeTakerFieldType::Float),
-            ("informed_fraction", BinaryOracleEdgeTakerFieldType::Float),
-            ("microprice_weight", BinaryOracleEdgeTakerFieldType::Float),
-            ("inventory_skew_gain", BinaryOracleEdgeTakerFieldType::Float),
-            ("position_cap", BinaryOracleEdgeTakerFieldType::Float),
-            ("half_spread_floor", BinaryOracleEdgeTakerFieldType::Float),
-            ("max_half_spread", BinaryOracleEdgeTakerFieldType::Float),
-            ("epsilon", BinaryOracleEdgeTakerFieldType::Float),
-            ("reference_tau_secs", BinaryOracleEdgeTakerFieldType::Float),
-            ("time_widen_cap", BinaryOracleEdgeTakerFieldType::Float),
-            ("requote_threshold", BinaryOracleEdgeTakerFieldType::Float),
-            (
-                "requote_action_cost",
-                BinaryOracleEdgeTakerFieldType::Integer,
-            ),
-            (
-                "requote_min_interval_ms",
-                BinaryOracleEdgeTakerFieldType::Integer,
-            ),
-            ("order", BinaryOracleEdgeTakerFieldType::Table),
-        ] {
-            Self::validate_order_field(
-                maker_table,
-                &format!("{field_prefix}.maker_quote"),
-                field_name,
-                "missing_maker_quote_field",
-                field_type,
-                errors,
-            );
-        }
-        for key in maker_table.keys() {
-            if !matches!(
-                key.as_str(),
-                "yes_quantity"
-                    | "no_quantity"
-                    | "collateral_budget"
-                    | "informed_fraction"
-                    | "microprice_weight"
-                    | "inventory_skew_gain"
-                    | "position_cap"
-                    | "half_spread_floor"
-                    | "max_half_spread"
-                    | "epsilon"
-                    | "reference_tau_secs"
-                    | "time_widen_cap"
-                    | "requote_threshold"
-                    | "requote_action_cost"
-                    | "requote_min_interval_ms"
-                    | "order"
-            ) {
-                Self::push_unknown_field(errors, format!("{field_prefix}.maker_quote.{key}"), key);
-            }
-        }
-        if let Some(order_table) = maker_table.get("order").and_then(Value::as_table) {
-            Self::validate_order_table(
-                maker_table,
-                &format!("{field_prefix}.maker_quote"),
-                "order",
-                "missing_maker_quote_order",
-                errors,
-            );
-            let supported = order_table
-                .get(stringify!(side))
-                .and_then(Value::as_str)
-                .is_some_and(|value| value == ORDER_SIDE_BUY_VALUE)
-                && order_table
-                    .get(stringify!(position_side))
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| value == POSITION_SIDE_LONG_VALUE)
-                && order_table
-                    .get(stringify!(order_type))
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| value == stringify!(limit))
-                && order_table
-                    .get(stringify!(time_in_force))
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| value == stringify!(gtc))
-                && order_table
-                    .get(stringify!(is_post_only))
-                    .and_then(Value::as_bool)
-                    .is_some_and(|value| value)
-                && order_table
-                    .get(stringify!(is_reduce_only))
-                    .and_then(Value::as_bool)
-                    .is_some_and(|value| !value)
-                && order_table
-                    .get(stringify!(is_quote_quantity))
-                    .and_then(Value::as_bool)
-                    .is_some_and(|value| !value)
-                && !order_table.contains_key(ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD)
-                && !order_table.contains_key(ORDER_TRIGGER_PRICE_FIELD)
-                && !order_table.contains_key(ORDER_ACTIVATION_PRICE_FIELD)
-                && !order_table.contains_key(ORDER_TRIGGER_TYPE_FIELD)
-                && !order_table.contains_key(ORDER_TRIGGER_INSTRUMENT_ID_FIELD)
-                && !order_table.contains_key(ORDER_TRAILING_OFFSET_FIELD)
-                && !order_table.contains_key(ORDER_TRAILING_OFFSET_TYPE_FIELD);
-            if !supported {
-                errors.push(ValidationError {
-                    field: format!("{field_prefix}.maker_quote.order"),
-                    code: stringify!(unsupported_maker_quote_order_shape),
-                    message: "must be buy/long limit GTC post-only without reduce-only, quote-quantity, expiry, trigger, or trailing fields".to_string(),
-                });
-            }
-        }
     }
 
     fn validate_executable_entry_order_shape(
@@ -843,6 +680,42 @@ impl BinaryOracleEdgeTakerBuilder {
                 field: format!("{field_prefix}.{field_name}"),
                 code: stringify!(bps_out_of_range),
                 message: format!("must be at most {BPS_DENOMINATOR} bps"),
+            });
+        }
+    }
+
+    fn validate_positive_u64_field(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        field_name: &'static str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Some(value) = table.get(field_name).and_then(Value::as_integer) else {
+            return;
+        };
+        if value <= 0 {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{field_name}"),
+                code: stringify!(positive_required),
+                message: "must be positive".to_string(),
+            });
+        }
+    }
+
+    fn validate_non_negative_finite_float_field(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        field_name: &'static str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Some(value) = table.get(field_name).and_then(Value::as_float_or_integer) else {
+            return;
+        };
+        if !is_non_negative_finite(value) {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{field_name}"),
+                code: stringify!(value_out_of_range),
+                message: "must be finite and >= 0".to_string(),
             });
         }
     }
@@ -929,19 +802,16 @@ impl BinaryOracleEdgeTakerBuilder {
         field_prefix: &str,
         errors: &mut Vec<ValidationError>,
     ) {
-        let Some(family) = table
+        let family = table
             .get(stringify!(rotating_market_family))
-            .and_then(Value::as_str)
-        else {
-            return;
-        };
+            .and_then(Value::as_str);
         let static_fields = [
             "static_condition_id",
             "static_yes_outcome",
             "static_no_outcome",
             "static_fair_probability_source",
         ];
-        if family != bolt_v3_market_families::static_binary_event_family_key() {
+        if family != Some(bolt_v3_market_families::static_binary_event_family_key()) {
             for field_name in static_fields {
                 if table.contains_key(field_name) {
                     errors.push(ValidationError {
@@ -974,40 +844,29 @@ impl BinaryOracleEdgeTakerBuilder {
                 );
             }
         }
+
         let yes = table.get("static_yes_outcome").and_then(Value::as_str);
         let no = table.get("static_no_outcome").and_then(Value::as_str);
-        if let (Some(yes), Some(no)) = (yes, no)
-            && yes == no
-        {
+        if yes.is_some() && yes == no {
             errors.push(ValidationError {
                 field: format!("{field_prefix}.static_no_outcome"),
                 code: stringify!(static_outcomes_not_distinct),
                 message: "must be distinct from static_yes_outcome".to_string(),
             });
         }
-        if let Some(source) = table
-            .get("static_fair_probability_source")
-            .and_then(Value::as_str)
-        {
-            if source
+
+        if let Some(source) = table.get("static_fair_probability_source").and_then(Value::as_str)
+            && source
                 != bolt_v3_market_families::static_binary_event_reference_current_price_fair_probability_source()
-            {
-                errors.push(ValidationError {
-                    field: format!("{field_prefix}.static_fair_probability_source"),
-                    code: stringify!(unsupported_static_fair_probability_source),
-                    message: format!(
-                        "must be `{}`",
-                        bolt_v3_market_families::static_binary_event_reference_current_price_fair_probability_source()
-                    ),
-                });
-            } else if !table.contains_key("reference_current_price") {
-                Self::push_missing(
-                    errors,
-                    format!("{field_prefix}.reference_current_price"),
-                    stringify!(missing_reference_current_price_for_static_fair_probability_source),
-                    BinaryOracleEdgeTakerFieldType::Table,
-                );
-            }
+        {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.static_fair_probability_source"),
+                code: stringify!(unsupported_static_fair_probability_source),
+                message: format!(
+                    "must be `{}` until another static-event fair-probability source is implemented",
+                    bolt_v3_market_families::static_binary_event_reference_current_price_fair_probability_source()
+                ),
+            });
         }
     }
 
@@ -1024,24 +883,6 @@ impl BinaryOracleEdgeTakerBuilder {
                 errors,
                 format!("{field_prefix}.{field_name}"),
                 BinaryOracleEdgeTakerFieldType::String,
-                value,
-            );
-        }
-    }
-
-    fn validate_optional_table_field(
-        table: &toml::map::Map<String, Value>,
-        field_prefix: &str,
-        field_name: &'static str,
-        errors: &mut Vec<ValidationError>,
-    ) {
-        if let Some(value) = table.get(field_name)
-            && !BinaryOracleEdgeTakerFieldType::Table.matches(value)
-        {
-            Self::push_wrong_type(
-                errors,
-                format!("{field_prefix}.{field_name}"),
-                BinaryOracleEdgeTakerFieldType::Table,
                 value,
             );
         }

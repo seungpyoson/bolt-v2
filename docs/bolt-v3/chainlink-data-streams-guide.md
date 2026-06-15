@@ -42,20 +42,17 @@ Each price update is a **V3 report** containing: benchmark price (mid), bid, ask
 ### Testnet feed-id bindings (single source of truth)
 
 The authoritative per-asset testnet `feed_id → resolution-instrument` bindings for the **live
-strike path** live in `config/root.toml` under root-owned
-`[chainlink_data_streams]` / `[[chainlink_data_streams.feed_bindings]]`.
-The live `clients.chainlink_strike` block consumes that shared catalog; it must
-not declare its own `data.feed_bindings`. The gate provider's
-`feed_bindings` is a separate offline proof mapping keyed by
-`resolution_identity` and `value_kind`, not the live per-asset strike catalog.
-Bindings are intentionally **not duplicated here**: `config/root.toml` is the
-single source of truth, so this guide cannot drift from what the runtime
-actually loads, and the live per-asset bindings are pinned by a drift-guard test
-(`shipped_chainlink_shared_catalog_pins_each_asset_feed_binding` in
-`tests/config_parsing.rs`) so a cross-asset feed swap fails CI. Each `feed_id`
-was discovered empirically and verified against the testnet endpoint using the
-procedure below (crypto feeds update at 1 Hz). Mainnet feed IDs differ and are a
-config swap, not a code change.
+strike path** live in `config/root.toml` under the live strike client's
+`[clients.chainlink_strike.data].feed_bindings` — that is the only source the running strategy
+loads. The `chainlink_data_streams` gate provider's `feed_bindings` is a separate **offline**
+proof stub (a single placeholder, retired in #551); it is **not** the live strike source, so
+editing it does not change live behavior. Bindings are intentionally **not duplicated here**:
+`config/root.toml` is the single source of truth, so this guide cannot drift from what the
+runtime actually loads, and the live per-asset bindings are pinned by a drift-guard test
+(`shipped_chainlink_strike_client_pins_each_asset_feed_binding` in `tests/config_parsing.rs`)
+so a cross-asset feed swap fails CI. Each `feed_id` was discovered empirically and verified
+against the testnet endpoint using the procedure below (crypto feeds update at 1 Hz). Mainnet
+feed IDs differ and are a config swap, not a code change.
 
 ### How to Discover Testnet Feed IDs for New Assets
 
@@ -243,32 +240,28 @@ ask   = int192(blob[256:288]) / 1e18
 
 ### TOML Config (bolt-v2 shape)
 
-The Chainlink strike client is a normal NT data client under `[clients.<id>]`.
-The feed catalog is root-owned under `[chainlink_data_streams]`, with one
-`feed_bindings` entry per supported asset mapping `feed_id` to the NT resolution
-instrument. Client-local feed catalogs are rejected so changing a feed touches
-one config section. Secrets are SSM parameter names only (resolved at runtime,
-never stored in TOML). The authoritative schema is owned by the code
+The Chainlink strike client is a normal NT data client under `[clients.<id>]`,
+with one `feed_bindings` entry per supported asset mapping `feed_id` to the NT
+resolution instrument. Secrets are SSM parameter names only (resolved at
+runtime, never stored in TOML). The authoritative schema is owned by the code
 (`parse_feed_binding` / `ChainlinkDataConfig` in
 `src/bolt_v3_providers/chainlink.rs` +
-`src/bolt_v3_providers/chainlink/strike_source.rs`) and the shipped values live
-in `config/root.toml`; this guide does not restate them so they cannot drift.
-Shape:
+`src/bolt_v3_providers/chainlink/strike_source.rs`)
+and the shipped values live in `config/root.toml` — this guide does not restate
+them so they cannot drift. Shape:
 
 ```toml
-[chainlink_data_streams]
+[clients.<id>.data]
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = <n>
 
-[[chainlink_data_streams.feed_bindings]]
+[[clients.<id>.data.feed_bindings]]
 feed_id = "<0x + 64 lowercase hex testnet feed id from the table above>"
 instrument_id = "<NT resolution instrument>"
 report_schema_version = 3
 report_decimal_scale = 18
 price_precision = <u8>
-
-[clients.<id>.data]
-rest_base_url = "https://api.testnet-dataengine.chain.link"
-report_endpoint_path = "/api/v1/reports"
-http_timeout_secs = <n>
 
 [clients.<id>.secrets]
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
@@ -292,15 +285,16 @@ instrument_id = "BTC-USD.CHAINLINK"
 
 That block does not contain a Chainlink `feed_id`. `data_client_id` selects the
 root `[clients.chainlink_strike]` data client, and `instrument_id` selects the
-matching `[[chainlink_data_streams.feed_bindings]]` row in `config/root.toml`.
+matching `[[clients.chainlink_strike.data.feed_bindings]]` row in
+`config/root.toml`.
 
 At load time, the binary-oracle archetype bridge validates the binding and
 copies it into the raw strategy config as `resolution_client_id` and
 `resolution_instrument_id`. The current validation requires this client to be
 the Chainlink Data Streams strike client and requires the instrument to have a
-matching root-owned `feed_bindings` entry. This means the feed IDs are
-config-driven, but the current `price_to_beat` subscription path is Chainlink
-strike-source specific.
+matching `feed_bindings` entry. This means the feed IDs are config-driven, but
+the current `price_to_beat` subscription path is Chainlink strike-source
+specific.
 
 At runtime, the strategy subscribes to the strike like this:
 
@@ -320,10 +314,10 @@ At runtime, the strategy subscribes to the strike like this:
    `price_to_beat`.
 
 This is a point-in-time resolution-strike path, not a continuous reference-price
-feed. Do not route `price_to_beat` through current-price sources,
-decision-reference plumbing, PRR WebSocket quotes, or future normalized
-reference-quote providers. Those belong to live fair-value/reference pricing and
-must remain separate from the market boundary strike.
+feed. Do not route `price_to_beat` through `[reference_data]`,
+`decision_reference`, PRR WebSocket quotes, or future normalized reference-quote
+providers. Those belong to live fair-value/reference pricing and must remain
+separate from the market boundary strike.
 
 Code landmarks for future sessions:
 
@@ -341,7 +335,7 @@ Code landmarks for future sessions:
 1. Probe all `0x0003`-prefix feeds via REST: list `GET /api/v1/feeds`, then `GET /api/v1/reports/latest?feedID={id}` for each and decode the mid price
 2. Match the returned price against the asset's known market price
 3. Verify 1 Hz WebSocket stream before deploying
-4. Add a `[[chainlink_data_streams.feed_bindings]]` entry (feed_id + resolution instrument) in `config/root.toml`, and add the feed id to the verified-testnet table above
+4. Add a `[[clients.<id>.data.feed_bindings]]` entry (feed_id + resolution instrument) in `config/root.toml`, and add the feed id to the verified-testnet table above
 
 ### Source Code (bolt-v2)
 

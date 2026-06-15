@@ -1,0 +1,134 @@
+{
+  "source_proof_id": "source-proof-binance-spot-native-trades-bnbusdc-2026-03-28",
+  "source_proof_version": 1,
+  "contract_version": "backfill-table-contract.v1",
+  "schema_version": "backfill-source-proof.v1",
+  "status": "accepted",
+  "source_binding": "binance-spot-native-trades",
+  "venue": "binance",
+  "product_family": "spot",
+  "product_category": "spot",
+  "table_family": "trades",
+  "evidence_state": "directly_backfillable",
+  "source_candidate_class": "official_free",
+  "source_selection_status": "ACCEPTED_LOWER_FIDELITY",
+  "fixture_type": "perps-spot",
+  "requested_time_range": {
+    "start_utc": "2025-06-01T00:00:00Z",
+    "end_utc": "2026-06-01T00:00:00Z"
+  },
+  "coverage_time_range": {
+    "start_utc": "2026-03-28T00:00:00Z",
+    "end_utc": "2026-03-29T00:00:00Z"
+  },
+  "instrument_universe_id": "binance-spot-bnbusdc-current-exchange-info-current-only-2026-06-07",
+  "raw_sample_uri": "s3://bolt-parquet/nt-research-analytics/raw/source=data.binance.vision/product=spot/frequency=daily/family=trades/symbol=BNBUSDC/dt=2026-03-28/object=328702f4960fb7ab0331a8dbd58e479c6caf30e8649e71220af1a0be590e661a.zip",
+  "raw_sample_hash": "328702f4960fb7ab0331a8dbd58e479c6caf30e8649e71220af1a0be590e661a",
+  "schema_sample_uri": "s3://bolt-parquet/nt-research-analytics/source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-bnbusdc-2026-03-28/version=1/schema-sample.json",
+  "schema_sample_hash": "22ec3fcfde7a72347dd059a88da31d0fb8fe2c585216190e5c2df2ca01ea1265",
+  "license_ref": "s3://bolt-parquet/nt-research-analytics/source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-bnbusdc-2026-03-28/version=1/binance-public-data-README.md",
+  "license_scope": "public",
+  "retention_ref": "https://github.com/binance/binance-public-data README: daily/monthly public archive, checksum sidecars, update log, Licence MIT; observed 2026-06-07",
+  "cost_ref": "cost://free-public-archive",
+  "nt_mapping_status": "accepted",
+  "fidelity_class": "TRADE_REPLAY",
+  "l2_replay_evidence": {},
+  "forbidden_claims": [
+    "No execution-quality, queue-position, or order-book-liquidity claims.",
+    "No L2/L3 order-book replay claims from trade prints.",
+    "Coverage is limited to BNBUSDC spot 2026-03-28; no multi-day or multi-instrument claims.",
+    "No historical venue-rule, fillability, rounding, sizing, or execution-quality claims."
+  ],
+  "claim_limits": [
+    {
+      "id": "source-proof-claim-limit-001",
+      "severity": "blocking",
+      "claim": "No execution-quality, queue-position, or order-book-liquidity claims.",
+      "reason": "TRADE_REPLAY source proof is native trade-print replay, not order-book replay.",
+      "evidence_ref": "source-proof://source-proof-binance-spot-native-trades-bnbusdc-2026-03-28/fidelity"
+    },
+    {
+      "id": "source-proof-claim-limit-002",
+      "severity": "blocking",
+      "claim": "No L2/L3 order-book replay claims from trade prints.",
+      "reason": "The accepted raw sample contains trade prints and no L2/L3 order-book deltas or depth snapshots.",
+      "evidence_ref": "s3://bolt-parquet/nt-research-analytics/source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-bnbusdc-2026-03-28/version=1/schema-sample.json"
+    },
+    {
+      "id": "source-proof-claim-limit-003",
+      "severity": "blocking",
+      "claim": "Coverage is limited to BNBUSDC spot 2026-03-28; no multi-day or multi-instrument claims.",
+      "reason": "The accepted manifest scope contains exactly one BNBUSDC spot object for 2026-03-28.",
+      "evidence_ref": "s3://bolt-parquet/nt-research-analytics/raw/source=data.binance.vision/product=spot/frequency=daily/family=trades/symbol=BNBUSDC/dt=2026-03-28/object=328702f4960fb7ab0331a8dbd58e479c6caf30e8649e71220af1a0be590e661a.zip"
+    },
+    {
+      "id": "source-proof-claim-limit-004",
+      "severity": "blocking",
+      "claim": "No historical venue-rule, fillability, rounding, sizing, or execution-quality claims.",
+      "reason": "No dated Binance exchangeInfo/symbol-filter snapshot was proven for 2026-03-28; current exchangeInfo is used only to construct the NT CurrencyPair instrument for trade replay.",
+      "evidence_ref": "s3://bolt-parquet/nt-research-analytics/source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-bnbusdc-2026-03-28/version=1/instrument-universe-current-summary.json"
+    }
+  ],
+  "acceptance_scope": {
+    "planned_objects": 1,
+    "completed_objects": 1,
+    "failed_objects": 0,
+    "skipped_objects": 0,
+    "accepted_bytes": 518256,
+    "selector_scope_violations": 0
+  },
+  "gap_policy_id": "",
+  "required_checks": {
+    "source_access": {
+      "outcome": "passed",
+      "evidence_ref": "https://data.binance.vision/data/spot/daily/trades/BNBUSDC/BNBUSDC-trades-2026-03-28.zip and .CHECKSUM matched SHA256 328702f4960fb7ab0331a8dbd58e479c6caf30e8649e71220af1a0be590e661a"
+    },
+    "license": {
+      "outcome": "passed",
+      "evidence_ref": "s3://bolt-parquet/nt-research-analytics/source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-bnbusdc-2026-03-28/version=1/binance-public-data-README.md"
+    },
+    "schema": {
+      "outcome": "passed",
+      "evidence_ref": "s3://bolt-parquet/nt-research-analytics/source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-bnbusdc-2026-03-28/version=1/schema-sample.json"
+    },
+    "time_semantics": {
+      "outcome": "passed",
+      "evidence_ref": "Binance public-data README: spot data timestamps from 2025-01-01 onward are microseconds"
+    },
+    "instrument_universe": {
+      "outcome": "not_applicable",
+      "evidence_ref": "s3://bolt-parquet/nt-research-analytics/source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-bnbusdc-2026-03-28/version=1/instrument-universe-current-summary.json"
+    },
+    "coverage": {
+      "outcome": "passed",
+      "evidence_ref": "object dt=2026-03-28 within coverage window [2026-03-28, 2026-03-28)"
+    },
+    "retention_freshness": {
+      "outcome": "passed",
+      "evidence_ref": "Binance public-data README documents daily/monthly public archive retention/update-log evidence; observed 2026-06-07"
+    },
+    "granularity": {
+      "outcome": "passed",
+      "evidence_ref": "native Binance trades endpoint schema; not aggTrades"
+    },
+    "completeness": {
+      "outcome": "passed",
+      "evidence_ref": "daily ZIP rows=33124 bytes=518256 sha256=328702f4960fb7ab0331a8dbd58e479c6caf30e8649e71220af1a0be590e661a"
+    },
+    "nt_mapping": {
+      "outcome": "passed",
+      "evidence_ref": "nautilus_model::data::TradeTick; proven by ParquetDataCatalog projection + query_typed_data read-back"
+    },
+    "cost": {
+      "outcome": "passed",
+      "evidence_ref": "official public-data archive sample; no paid vendor or subscription required for this accepted proof"
+    },
+    "storage": {
+      "outcome": "passed",
+      "evidence_ref": "raw object under s3://bolt-parquet/nt-research-analytics/raw/ and source-proof evidence under s3://bolt-parquet/nt-research-analytics/source-proofs/"
+    }
+  },
+  "acceptance_mode": "manual",
+  "accepted_by": "codex-bte-source-proof-operator",
+  "accepted_at": "2026-06-10T00:00:00Z"
+}

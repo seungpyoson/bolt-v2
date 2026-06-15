@@ -31,8 +31,6 @@ const CHAINLINK_REPORT_V3_FEED_ID_WORD_INDEX: usize = 0;
 const CHAINLINK_REPORT_V3_VALID_FROM_WORD_INDEX: usize = 1;
 const CHAINLINK_REPORT_V3_OBSERVATIONS_WORD_INDEX: usize = 2;
 const CHAINLINK_REPORT_V3_BENCHMARK_PRICE_WORD_INDEX: usize = 6;
-const CHAINLINK_REPORT_V3_BID_PRICE_WORD_INDEX: usize = 7;
-const CHAINLINK_REPORT_V3_ASK_PRICE_WORD_INDEX: usize = 8;
 pub(crate) const CHAINLINK_REPORT_MILLISECONDS_PER_SECOND: u64 = 1_000;
 const CHAINLINK_REPORT_SIGN_BIT_MASK: u8 = 0x80;
 const CHAINLINK_REPORT_BASE256_RADIX: f64 = 256.0;
@@ -51,8 +49,6 @@ pub(crate) struct DecodedPriceToBeatReport {
     pub(crate) valid_from_timestamp_ms: u64,
     pub(crate) observations_timestamp_ms: u64,
     pub(crate) benchmark_price: f64,
-    pub(crate) bid_price: f64,
-    pub(crate) ask_price: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,12 +68,6 @@ pub(crate) struct ChainlinkDataStreamsReportSource {
     observations_timestamp: u64,
     #[serde(rename = "fullReport")]
     full_report: String,
-}
-
-impl ChainlinkDataStreamsReportSource {
-    pub(crate) fn feed_id(&self) -> &str {
-        self.feed_id.as_str()
-    }
 }
 
 pub(crate) fn decode_price_to_beat_report(
@@ -183,19 +173,11 @@ fn decode_chainlink_v3_report_blob(
         read_chainlink_abi_i192_word(report_blob, CHAINLINK_REPORT_V3_BENCHMARK_PRICE_WORD_INDEX)?;
     let benchmark_price =
         scale_chainlink_report_price(&benchmark_price_raw, binding.decimal_scale)?;
-    let bid_price_raw =
-        read_chainlink_abi_i192_word(report_blob, CHAINLINK_REPORT_V3_BID_PRICE_WORD_INDEX)?;
-    let bid_price = scale_chainlink_report_price(&bid_price_raw, binding.decimal_scale)?;
-    let ask_price_raw =
-        read_chainlink_abi_i192_word(report_blob, CHAINLINK_REPORT_V3_ASK_PRICE_WORD_INDEX)?;
-    let ask_price = scale_chainlink_report_price(&ask_price_raw, binding.decimal_scale)?;
     Ok(DecodedPriceToBeatReport {
         feed_id,
         valid_from_timestamp_ms,
         observations_timestamp_ms,
         benchmark_price,
-        bid_price,
-        ask_price,
     })
 }
 

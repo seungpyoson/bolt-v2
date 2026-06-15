@@ -53,7 +53,7 @@ It validates:
 - Amazon Web Services Systems Manager secret resolution
 - forbidden provider-specific environment-variable fallbacks are absent
 - keyed client config can be converted into NautilusTrader client config
-- required reference-current-price source clients and instruments are resolvable
+- required reference-data clients and instruments are resolvable
 - current market-selection machinery can load NautilusTrader venue/instrument state and attempt selection through that state only
 - root risk config is enforced for Bolt-owned strategy sizing fields, and supported NautilusTrader risk-engine knobs are explicit and mapped rather than accepted as no-ops
 - current `updown` market-identity readiness gates for each configured `updown` target
@@ -125,7 +125,7 @@ For current Polymarket live trading, the forbidden variables are:
 - `POLYMARKET_API_SECRET`
 - `POLYMARKET_PASSPHRASE`
 
-For current Binance data use, the forbidden variables are:
+For current Binance reference-data use, the forbidden variables are:
 
 - `BINANCE_ED25519_API_KEY`
 - `BINANCE_ED25519_API_SECRET`
@@ -257,10 +257,10 @@ Market-selection input order:
 Current rule:
 
 - bolt may query Chainlink Data Streams REST `GET /api/v1/reports?feedID=<feed_id>&timestamp=<boundary_unix>` for the selected market boundary timestamp
-- the selected `feed_id` must come from the configured `resolution_data` Chainlink Data Streams surface; raw feed-id ownership and catalog rules are tracked by the Chainlink resolution catalog slice
+- the selected `feed_id` must come from the configured reference-data surface; raw feed-id ownership and catalog rules are tracked by the reference-data catalog slice
 - for current first-live `updown` Polymarket scope, `event_page_slug` equals the selected CLOB market slug; this is scoped #244 evidence for sampled BTC/ETH 5m updown markets, not a universal Polymarket mapping rule
 - bolt may call Gamma `GET /events?slug=<event_page_slug>` only after close to compare Gamma `eventMetadata.priceToBeat` against the Chainlink-derived runtime anchor for forensic validation
-- Gamma must not be used as a runtime anchor, broad discovery source, order state, prices, `NT Portfolio` state, reference-current-price input, or strategy-side HTTP
+- Gamma must not be used as a runtime anchor, broad discovery source, order state, prices, `NT Portfolio` state, reference data, or strategy-side HTTP
 - if the Chainlink Data Streams report is missing, non-numeric, non-positive, or ambiguous, market selection fails loud and the strategy remains non-trading
 
 Current Polymarket loading contract:
@@ -560,11 +560,11 @@ Boundary:
 - no entry-readiness summary field
 - no generic market-status summary field
 
-## 7. Reference Current Price Contract
+## 7. Reference Data Contract
 
-If an archetype requires reference_current_price:
+If an archetype requires reference data:
 
-- the strategy file must declare `[reference_current_price]` explicitly
+- the strategy file must declare it explicitly
 - the root file must declare the keyed data client explicitly
 - the strategy subscribes directly through NautilusTrader data clients
 
@@ -572,23 +572,23 @@ There is no bolt-owned reference actor.
 
 For the current `binary_oracle_edge_taker`:
 
-- enabled `[reference_current_price.source.*]` inputs are subscribed as reference-price custom data
-- the archetype derives spot-price input from the selector's active `ReferencePriceUpdate`
+- the declared reference-data instrument is subscribed as quote ticks
+- the archetype derives spot-price input from that declared quote-tick stream
 
-Reference-current-price resolution rule for validation:
+Reference-data resolution rule for validation:
 
-- `resolvable` means the configured `client_id` references a root data client whose venue matches the source provider
-- Chainlink current-price sources use `CHAINLINK_REFERENCE_PRICE`; Chainlink resolution-strike sources remain separate under `[resolution_data]`
-- `resolvable` does not require receiving a live reference-price update before `just check` completes
+- `resolvable` means that after NautilusTrader venue/instrument loading completes, the declared `instrument_id` exists in the NautilusTrader instrument cache for the referenced keyed client
+- `resolvable` does not require receiving a live quote before `just check` completes
 
 ### 7.1 Current `binary_oracle_edge_taker` pricing inputs
 
 For the current `binary_oracle_edge_taker`, the reference stream and pricing inputs are mechanical:
 
 - `spot_price`
-  - derived from the selector's active `ReferencePriceUpdate.price`
-  - if no source is selected for the active interval, spot price is unavailable
-  - if the selected update is older than `reference_current_price.max_source_age_ms`, the reference price is stale
+  - derived from the latest two-sided midpoint on `reference_data.primary`
+  - midpoint formula: `(best_bid_price + best_ask_price) / 2`
+  - if the latest quote tick does not contain both sides, midpoint is unavailable
+  - if the latest midpoint sample is older than `target.retry_interval_secs` seconds, the reference quote is stale
 - `price_to_beat_source`
   - must match `[parameters.runtime].price_to_beat_source`
 
@@ -599,13 +599,13 @@ There is no fallback from missing price-to-beat metadata to midpoint.
 The current realized-volatility estimator is defined as:
 
 - input samples:
-  - selected current-reference-price samples from `[reference_current_price]`
+  - midpoint samples from `reference_data.primary`
 - retention window:
-  - keep selected reference-price samples whose timestamps fall within the trailing `target.cadence_secs` seconds
+  - keep midpoint samples whose timestamps fall within the trailing `target.cadence_secs` seconds
 - reset rule:
-  - if the gap between consecutive selected samples exceeds `target.retry_interval_secs` seconds, reset the estimator state
+  - if the gap between consecutive midpoint samples exceeds `target.retry_interval_secs` seconds, reset the estimator state
 - readiness rule:
-  - at least two selected samples are required
+  - at least two midpoint samples are required
   - sample timestamps used for the estimator must be strictly increasing
   - `elapsed_secs`, measured from the first retained sample timestamp to the last retained sample timestamp, must be strictly positive
 - return formula:
@@ -715,7 +715,7 @@ The current `binary_oracle_edge_taker` behavior is the behavioral reference, not
 The strategy actor orchestrates NautilusTrader interaction and runtime state updates.
 It must not own every strategy concern internally.
 
-Pricing, reference-current-price fusion, market identity, risk and sizing, decision evaluation, and execution mapping must live behind separately testable module boundaries.
+Pricing, reference-data fusion, market identity, risk and sizing, decision evaluation, and execution mapping must live behind separately testable module boundaries.
 Examples of concerns that belong outside the strategy actor body:
 
 - active market selection, slug / cadence / asset mapping, and instrument identity
@@ -727,7 +727,7 @@ Examples of concerns that belong outside the strategy actor body:
 - conversion of accepted decisions into NautilusTrader-native order construction inputs
 
 The strategy actor may compose these modules, maintain actor-local runtime state, emit decision evidence, and call the execution boundary.
-It must remain thin enough that pricing, reference-current-price, risk, decision, and execution behavior can be tested without running NautilusTrader.
+It must remain thin enough that pricing, reference data, risk, decision, and execution behavior can be tested without running NautilusTrader.
 
 ## 9. Forensic Event Contract
 
@@ -825,7 +825,7 @@ Definitions:
   - the exact root-file `trader_id` value
 - `execution_client_id`
   - the strategy file's `execution_client_id` (a `[clients.<id>]` key)
-  - not a reference-current-price source client key
+  - not a reference-data client key
 - `venue`
   - the exact NT `Venue` identifier value from the `[clients.<id>]` block referenced by `execution_client_id`
   - for the current `updown` scope, `POLYMARKET`
@@ -982,7 +982,7 @@ For the current `binary_oracle_edge_taker`, `archetype_metrics` must contain:
 Definitions for the current `binary_oracle_edge_taker` metrics:
 
 - `spot_price`
-  - latest valid selected price from `[reference_current_price]`
+  - latest valid midpoint from `reference_data.primary`
 - `price_to_beat_value`
   - selected market reference price used for updown evaluation
 - `realized_volatility`

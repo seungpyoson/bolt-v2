@@ -47,11 +47,9 @@ use bolt_v2::{
         ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
         ProviderProductSubmitProofArtifactRequest, binance::ResolvedBoltV3BinanceSecrets,
         binding_for_provider_key, chainlink::ResolvedBoltV3ChainlinkSecrets,
-        chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
         hyperliquid::ResolvedBoltV3HyperliquidSecrets,
         hyperliquid_artifacts::read_hyperliquid_live_submit_approval_artifact,
-        polymarket::ResolvedBoltV3PolymarketSecrets,
-        polyresearch::ResolvedBoltV3PolyResearchSecrets, validate_client_block,
+        polymarket::ResolvedBoltV3PolymarketSecrets, validate_client_block,
     },
     bolt_v3_secrets::{
         ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets,
@@ -130,21 +128,6 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         Arc::new(ResolvedBoltV3ChainlinkSecrets {
             api_key: zeroize::Zeroizing::new("binding-chainlink-api-key".to_string()),
             api_secret: zeroize::Zeroizing::new("binding-chainlink-api-secret".to_string()),
-        }),
-    );
-    clients.insert(
-        "chainlink_reference".to_string(),
-        Arc::new(ResolvedBoltV3ChainlinkReferenceSecrets {
-            api_key: zeroize::Zeroizing::new("binding-chainlink-reference-api-key".to_string()),
-            api_secret: zeroize::Zeroizing::new(
-                "binding-chainlink-reference-api-secret".to_string(),
-            ),
-        }),
-    );
-    clients.insert(
-        "polyresearch_reference".to_string(),
-        Arc::new(ResolvedBoltV3PolyResearchSecrets {
-            api_key: zeroize::Zeroizing::new("binding-polyresearch-api-key".to_string()),
         }),
     );
     ResolvedBoltV3Secrets { clients }
@@ -1331,8 +1314,8 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
     assert_eq!(
         slugs,
         vec![
-            "btc-updown-configuredwindow-600".to_string(),
-            "btc-updown-configuredwindow-900".to_string(),
+            "configured_asset-updown-configuredwindow-600".to_string(),
+            "configured_asset-updown-configuredwindow-900".to_string(),
         ],
         "provider filter slug ordering must be [current, next]"
     );
@@ -1581,8 +1564,8 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
     assert_eq!(
         filter.market_slugs(),
         Some(vec![
-            "btc-updown-configuredwindow-600".to_string(),
-            "btc-updown-configuredwindow-900".to_string(),
+            "configured_asset-updown-configuredwindow-600".to_string(),
+            "configured_asset-updown-configuredwindow-900".to_string(),
         ]),
         "first market_slugs() call must reflect counter=601"
     );
@@ -1593,8 +1576,8 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
     assert_eq!(
         filter.market_slugs(),
         Some(vec![
-            "btc-updown-configuredwindow-900".to_string(),
-            "btc-updown-configuredwindow-1200".to_string(),
+            "configured_asset-updown-configuredwindow-900".to_string(),
+            "configured_asset-updown-configuredwindow-1200".to_string(),
         ]),
         "second market_slugs() call must reflect counter=901; \
          caching the slug list would fail this assertion"

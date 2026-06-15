@@ -39,15 +39,6 @@ const SHIPPED_BINARY_ORACLE_STRATEGY_FILES: &[&str] = &[
     "config/strategies/binary_oracle_doge.toml",
 ];
 
-const SHIPPED_REFERENCE_PRICE_SOURCES: &[(&str, &str, Option<&str>)] = &[
-    ("BTC", "BTC-USD.CHAINLINK", Some("BTC/USD")),
-    ("ETH", "ETH-USD.CHAINLINK", Some("ETH/USD")),
-    ("SOL", "SOL-USD.CHAINLINK", Some("SOL/USD")),
-    ("BNB", "BNB-USD.CHAINLINK", None),
-    ("XRP", "XRP-USD.CHAINLINK", Some("XRP/USD")),
-    ("DOGE", "DOGE-USD.CHAINLINK", None),
-];
-
 fn assert_binary_oracle_entry_order_shape_rejected(messages: &[String], case_name: &str) {
     assert!(
         messages.iter().any(|message| validation_message_has_code(
@@ -105,98 +96,6 @@ fn shipped_polymarket_secrets_use_eu_west_2_registry_paths() {
 }
 
 #[test]
-fn shipped_reference_current_price_can_select_chainlink_or_prr_websockets() {
-    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
-
-    let loaded = load_bolt_v3_config(&support::repo_path("config/root.toml"))
-        .expect("shipped root config should load");
-
-    assert_eq!(
-        loaded
-            .root
-            .clients
-            .get("chainlink_reference")
-            .expect("shipped root must declare Chainlink current-price websocket client")
-            .venue
-            .as_str(),
-        "CHAINLINK_REFERENCE_PRICE"
-    );
-    assert_eq!(
-        loaded
-            .root
-            .clients
-            .get("polyresearch_reference")
-            .expect("shipped root must declare PRR current-price websocket client")
-            .venue
-            .as_str(),
-        "POLYRESEARCH_REFERENCE_PRICE"
-    );
-
-    for (asset, chainlink_instrument, prr_symbol) in SHIPPED_REFERENCE_PRICE_SOURCES {
-        let strategy = loaded
-            .strategies
-            .iter()
-            .find(|strategy| {
-                strategy
-                    .config
-                    .reference_current_price
-                    .as_ref()
-                    .is_some_and(|reference| reference.asset == *asset)
-            })
-            .unwrap_or_else(|| {
-                panic!("shipped config must include {asset} reference_current_price")
-            });
-        let reference = strategy
-            .config
-            .reference_current_price
-            .as_ref()
-            .expect("strategy should declare reference_current_price");
-
-        let expected_sources = if prr_symbol.is_some() {
-            vec![
-                "chainlink_primary".to_string(),
-                "polyresearch_backup".to_string(),
-            ]
-        } else {
-            vec!["chainlink_primary".to_string()]
-        };
-        assert_eq!(
-            reference.source_order, expected_sources,
-            "{asset} must expose only supported current-price sources in order"
-        );
-        assert_eq!(reference.min_valid_sources, 1);
-
-        let chainlink = reference
-            .sources
-            .get("chainlink_primary")
-            .expect("Chainlink current-price source must be configured");
-        assert_eq!(chainlink.provider.as_str(), "chainlink_ws");
-        assert_eq!(chainlink.client_id.as_str(), "chainlink_reference");
-        assert_eq!(
-            chainlink.instrument_id.as_deref(),
-            Some(*chainlink_instrument)
-        );
-        assert!(!chainlink.required);
-
-        if let Some(prr_symbol) = prr_symbol {
-            let prr = reference
-                .sources
-                .get("polyresearch_backup")
-                .expect("PRR current-price source must be configured for supported assets");
-            assert_eq!(prr.provider.as_str(), "polyresearch_ws");
-            assert_eq!(prr.client_id.as_str(), "polyresearch_reference");
-            assert_eq!(prr.symbol.as_deref(), Some(*prr_symbol));
-            assert!(!prr.required);
-        } else {
-            assert!(
-                !reference.sources.contains_key("polyresearch_backup"),
-                "{asset} must not declare unsupported PRR current-price source"
-            );
-        }
-    }
-}
-
-#[test]
 fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
     use nautilus_model::identifiers::ClientId;
@@ -209,7 +108,7 @@ fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
         strategy.execution_client_id,
         nautilus_model::identifiers::ClientId::from("polymarket_main")
     );
-    assert!(!strategy.signal_data.is_empty());
+    assert!(strategy.reference_data.is_empty());
 
     let data_engine = &loaded.root.nautilus.data_engine;
     let exec_engine = &loaded.root.nautilus.exec_engine;
@@ -457,7 +356,7 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
 }
 
 #[test]
-fn shipped_chainlink_shared_catalog_pins_each_asset_feed_binding() {
+fn shipped_chainlink_strike_client_pins_each_asset_feed_binding() {
     // Drift guard for the LIVE strike feed bindings. The validFrom/feed_id/schema
     // decode checks cannot detect a cross-asset substitution (a feed_id is always
     // internally consistent with its own report), so a copy-paste swap pointing
@@ -479,26 +378,17 @@ fn shipped_chainlink_shared_catalog_pins_each_asset_feed_binding() {
         .expect("root config should be readable");
     let parsed = toml::from_str::<toml::Value>(&source).expect("root TOML should parse");
     let feed_bindings = parsed
-        .get("chainlink_data_streams")
-        .and_then(|value| value.get("feed_bindings"))
-        .and_then(toml::Value::as_array)
-        .expect("root config should declare live root-owned Chainlink feed bindings");
-
-    let client_has_feed_bindings = parsed
         .get("clients")
         .and_then(|value| value.get("chainlink_strike"))
         .and_then(|value| value.get("data"))
         .and_then(|value| value.get("feed_bindings"))
-        .is_some();
-    assert!(
-        !client_has_feed_bindings,
-        "config/root.toml must not keep legacy clients.chainlink_strike.data.feed_bindings"
-    );
+        .and_then(toml::Value::as_array)
+        .expect("root config should declare live chainlink_strike feed bindings");
 
     assert_eq!(
         feed_bindings.len(),
         expected.len(),
-        "the live root-owned Chainlink catalog must ship exactly one feed binding per supported asset"
+        "the live chainlink_strike client must ship exactly one feed binding per supported asset"
     );
 
     let mut seen_feed_ids = std::collections::HashSet::new();
@@ -513,7 +403,7 @@ fn shipped_chainlink_shared_catalog_pins_each_asset_feed_binding() {
             .expect("feed binding should declare feed_id");
         assert_eq!(
             actual_instrument, *instrument_id,
-            "live root-owned Chainlink feed bindings must stay in the pinned per-asset order"
+            "live chainlink_strike feed bindings must stay in the pinned per-asset order"
         );
         assert_eq!(
             actual_feed, *feed_id,
@@ -548,6 +438,52 @@ fn shipped_chainlink_shared_catalog_pins_each_asset_feed_binding() {
 }
 
 #[test]
+fn bolt_v3_reference_data_instrument_id_uses_nt_typed_identifier() {
+    // `ReferenceDataBlock.instrument_id` is typed as
+    // `nautilus_model::identifiers::InstrumentId`. The strategy block is
+    // parsed via `toml::from_str(&content)` directly (borrowed source),
+    // so NT's `impl_serialization_for_identifier!` macro runs and routes
+    // through `InstrumentId::new_checked`, eliminating the bolt-side
+    // runtime empty / non-empty guard.
+    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
+    use nautilus_model::identifiers::InstrumentId;
+
+    let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_fixture_with_reference_data(
+        "reference_data_client",
+        "REFERENCE.SOURCE",
+    ))
+    .expect("strategy with optional reference_data should parse");
+
+    let reference = strategy
+        .reference_data
+        .get("primary")
+        .expect("strategy should have reference_data.primary");
+    let instrument_id: InstrumentId = reference.instrument_id;
+    assert_eq!(instrument_id.to_string(), "REFERENCE.SOURCE");
+}
+
+#[test]
+fn bolt_v3_reference_data_instrument_id_rejects_empty_string_at_parse_time() {
+    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
+
+    let mutated = strategy_fixture_with_reference_data("reference_data_client", "");
+    let err = toml::from_str::<BoltV3StrategyConfig>(&mutated)
+        .expect_err("empty instrument_id should be rejected by NT InstrumentId serde");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("InstrumentId"),
+        "rejection should cite the NT InstrumentId parser, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("empty")
+            || rendered.contains("invalid")
+            || rendered.contains("missing")
+            || rendered.contains("separator"),
+        "rejection should explain the empty instrument_id, got: {rendered}"
+    );
+}
+
+#[test]
 fn bolt_v3_strategy_execution_client_id_uses_nt_typed_identifier() {
     // `BoltV3StrategyConfig.execution_client_id` is typed as
     // `nautilus_model::identifiers::ClientId`. The strategy block is
@@ -565,7 +501,8 @@ fn bolt_v3_strategy_execution_client_id_uses_nt_typed_identifier() {
     let execution_client_id: ClientId = strategy.execution_client_id;
     assert_eq!(execution_client_id, ClientId::from("polymarket_main"));
 
-    assert!(!strategy.signal_data.is_empty());
+    assert!(strategy.reference_data.is_empty());
+    let _typed_client_id_check = ClientId::from("reference_data_client");
 }
 
 #[test]
@@ -586,6 +523,20 @@ fn bolt_v3_strategy_execution_client_id_rejects_empty_string_at_parse_time() {
     assert!(
         rendered.contains("empty") || rendered.contains("invalid"),
         "rejection should explain the empty execution_client_id, got: {rendered}"
+    );
+}
+
+#[test]
+fn bolt_v3_reference_data_data_client_id_rejects_empty_string_at_parse_time() {
+    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
+
+    let mutated = strategy_fixture_with_reference_data("", "REFERENCE.SOURCE");
+    let err = toml::from_str::<BoltV3StrategyConfig>(&mutated)
+        .expect_err("empty data_client_id should be rejected by NT ClientId serde");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("empty") || rendered.contains("invalid"),
+        "rejection should explain the empty data_client_id, got: {rendered}"
     );
 }
 
@@ -667,20 +618,6 @@ fn binary_oracle_strategy_rejects_legacy_price_to_beat_source_under_runtime() {
                 && message.contains("target.gate_subscriptions")
         }),
         "legacy price_to_beat_source must fail closed with a target gate migration message: {messages:#?}"
-    );
-}
-
-#[test]
-fn binary_oracle_strategy_rejects_legacy_reference_publish_topic_under_runtime() {
-    let messages = legacy_binary_oracle_runtime_field_messages(
-        "reference_publish_topic = \"platform.runtime.selection.binary_oracle_edge_taker-001\"",
-    );
-
-    assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("reference_publish_topic")),
-        "legacy reference_publish_topic must fail closed at the strategy runtime schema boundary: {messages:#?}"
     );
 }
 
@@ -771,6 +708,73 @@ fn bolt_v3_polymarket_client_rejects_execution_without_data_block_with_client_vo
 }
 
 #[test]
+fn bolt_v3_reference_data_client_id_rejects_execution_only_client_with_client_vocabulary() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let data_block = "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream-sbe.binance.com/ws\" # NT: BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n";
+    let root: BoltV3RootConfig =
+        toml::from_str(&replace_in_binance_reference_fixture(data_block, ""))
+            .expect("execution-only binance fixture should parse");
+    let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_fixture_with_reference_data(
+        "binance_reference",
+        "REFERENCE.SOURCE",
+    ))
+    .expect("strategy fixture should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&root, &loaded);
+    let rendered = messages.join("\n");
+    assert!(rendered.contains("reference_data.primary.data_client_id `binance_reference`"));
+    assert!(rendered.contains("data-capable client"));
+    assert!(rendered.contains("referenced client has no [data] block"));
+    assert!(!rendered.contains("data-capable venue"));
+    assert!(!rendered.contains("referenced venue"));
+}
+
+#[test]
+fn bolt_v3_reference_data_rejects_same_instrument_across_distinct_data_clients() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig =
+        toml::from_str(&fixture_root_with_binance_reference_client())
+            .expect("stable root should parse");
+    let mutated_strategy = format!(
+        "{}\n[reference_data.primary]\ndata_client_id = \"binance_reference\"\ninstrument_id = \"REFERENCE.SOURCE\"\n\n[reference_data.secondary]\ndata_client_id = \"polymarket_main\"\ninstrument_id = \"REFERENCE.SOURCE\"\n",
+        std::fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable")
+    );
+    let strategy: BoltV3StrategyConfig = toml::from_str(&mutated_strategy)
+        .expect("duplicate reference instrument strategy should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    let rendered = messages.join("\n");
+
+    assert!(
+        rendered.contains("reference_data.secondary.instrument_id `REFERENCE.SOURCE`")
+            && rendered.contains("binance_reference")
+            && rendered.contains("polymarket_main")
+            && rendered.contains("QuoteTick does not carry data_client_id"),
+        "expected same-instrument/distinct-client rejection, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_runtime_mode_uses_nt_environment_enum() {
     // FINDING-1: `runtime.mode` is typed as `nautilus_common::enums::Environment`
     // (not a bolt shadow `RuntimeMode`). NT's `Environment` derives serde
@@ -805,6 +809,134 @@ fn bolt_v3_runtime_mode_rejects_backtest_and_sandbox_variants() {
                 .iter()
                 .any(|m| m.contains("runtime.mode") && m.contains("Live")),
             "expected runtime.mode rejection citing Live variant for `{variant}`, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn bolt_v3_order_execution_mode_is_required_under_runtime() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+
+    let missing = fixture_root_without_order_execution_mode();
+    let error = toml::from_str::<BoltV3RootConfig>(&missing)
+        .expect_err("runtime.order_execution_mode must be required and fail closed");
+
+    assert!(
+        error.to_string().contains("order_execution_mode"),
+        "missing order_execution_mode should be named in the parse error: {error}"
+    );
+}
+
+#[test]
+fn bolt_v3_order_execution_mode_accepts_only_lowercase_live_and_shadow() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+    use bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionMode;
+
+    for (value, expected) in [
+        ("live", BoltV3OrderExecutionMode::Live),
+        ("shadow", BoltV3OrderExecutionMode::Shadow),
+    ] {
+        let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_order_execution_mode(value))
+            .unwrap_or_else(|error| {
+                panic!("lowercase runtime.order_execution_mode={value:?} should parse: {error}")
+            });
+        assert_eq!(root.runtime.order_execution_mode, expected);
+    }
+
+    for value in ["Live", "Shadow", "LIVE", "SHADOW"] {
+        let error =
+            toml::from_str::<BoltV3RootConfig>(&fixture_root_with_order_execution_mode(value))
+                .expect_err("mixed-case order_execution_mode must not parse");
+        assert!(
+            error.to_string().contains("order_execution_mode"),
+            "mixed-case value {value:?} should identify order_execution_mode: {error}"
+        );
+    }
+}
+
+#[test]
+fn binary_oracle_parameters_reject_stale_strategy_local_submit_orders() {
+    use bolt_v2::{
+        bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock,
+        bolt_v3_config::BoltV3StrategyConfig,
+    };
+
+    let stale = fixture_strategy_with_submit_orders("true");
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&stale).expect("strategy envelope should still parse");
+    let error = strategy
+        .parameters
+        .try_into::<ParametersBlock>()
+        .expect_err("parameters.submit_orders must be rejected as stale strategy-local policy");
+
+    assert!(
+        error.to_string().contains("submit_orders"),
+        "stale submit_orders rejection should name the field: {error}"
+    );
+}
+
+#[test]
+fn shadow_order_execution_mode_rejects_managed_venue_action_knobs() {
+    for (field, stale_line, replacement) in [
+        ("manage_stop", "manage_stop = false", "manage_stop = true"),
+        (
+            "manage_gtd_expiry",
+            "manage_gtd_expiry = false",
+            "manage_gtd_expiry = true",
+        ),
+        (
+            "manage_contingent_orders",
+            "manage_contingent_orders = false",
+            "manage_contingent_orders = true",
+        ),
+        (
+            "external_order_claims",
+            "external_order_claims = []",
+            "external_order_claims = [\"AUXILIARY.SOURCE\"]",
+        ),
+    ] {
+        let root_toml = fixture_root_with_order_execution_mode("shadow");
+        let strategy_toml =
+            strategy_fixture_without_submit_orders().replace(stale_line, replacement);
+        let messages =
+            strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+        let rendered = messages.join("\n");
+        assert!(
+            rendered.contains(field)
+                && rendered.contains("order_execution_mode")
+                && rendered.contains("shadow"),
+            "shadow runtime.order_execution_mode should reject {field}; got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn shadow_order_execution_mode_reports_every_managed_venue_action_knob() {
+    let root_toml = fixture_root_with_order_execution_mode("shadow");
+    let strategy_toml = strategy_fixture_without_submit_orders()
+        .replace("manage_stop = false", "manage_stop = true")
+        .replace("manage_gtd_expiry = false", "manage_gtd_expiry = true")
+        .replace(
+            "manage_contingent_orders = false",
+            "manage_contingent_orders = true",
+        )
+        .replace(
+            "external_order_claims = []",
+            "external_order_claims = [\"AUXILIARY.SOURCE\"]",
+        );
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    let rendered = messages.join("\n");
+
+    for field in [
+        "manage_stop",
+        "manage_gtd_expiry",
+        "manage_contingent_orders",
+        "external_order_claims",
+    ] {
+        assert!(
+            rendered.contains(field),
+            "shadow validation should collect {field}; got: {messages:#?}"
         );
     }
 }
@@ -1332,6 +1464,159 @@ fn bolt_v3_archetype_rejects_negative_edge_threshold_basis_points() {
         }),
         "negative edge_threshold_basis_points must fail closed at load: {messages:#?}"
     );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_zero_sizing_ev_reference_bps() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let parameters = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table");
+    let runtime = parameters
+        .get_mut("runtime")
+        .and_then(|value| value.as_table_mut())
+        .expect("strategy runtime parameters should be a table");
+    // A zero EV sizing reference makes the dollar-scale division undefined; the
+    // runtime sizing path fails closed to a zero size and the strategy silently
+    // never submits, so the misconfiguration must fail closed at load.
+    runtime.insert(
+        "sizing_ev_reference_bps".to_string(),
+        toml::Value::Integer(0),
+    );
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.runtime.sizing_ev_reference_bps")
+                && message.contains("must be > 0")
+        }),
+        "zero sizing_ev_reference_bps must fail closed at load: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_oversized_sizing_ev_reference_bps() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let parameters = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table");
+    let runtime = parameters
+        .get_mut("runtime")
+        .and_then(|value| value.as_table_mut())
+        .expect("strategy runtime parameters should be a table");
+    runtime.insert(
+        "sizing_ev_reference_bps".to_string(),
+        toml::Value::Integer(10_001),
+    );
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.runtime.sizing_ev_reference_bps")
+                && message.contains("must be at most 10000")
+        }),
+        "oversized sizing_ev_reference_bps must fail closed at load: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_negative_or_non_finite_risk_lambda() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+
+    // TOML floats legally admit negative, nan, and inf values. Each loads
+    // through serde but makes the runtime sizing path fail soft to a zero
+    // size (a silently dead strategy), so each must fail closed at load.
+    for bad_risk_lambda in [-0.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut strategy: BoltV3StrategyConfig = toml::from_str(
+            &fs::read_to_string(support::repo_path(
+                "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+            ))
+            .expect("strategy fixture should be readable"),
+        )
+        .expect("strategy fixture should parse");
+        let parameters = strategy
+            .parameters
+            .as_table_mut()
+            .expect("strategy parameters should be a table");
+        let runtime = parameters
+            .get_mut("runtime")
+            .and_then(|value| value.as_table_mut())
+            .expect("strategy runtime parameters should be a table");
+        runtime.insert(
+            "risk_lambda".to_string(),
+            toml::Value::Float(bad_risk_lambda),
+        );
+
+        let loaded = vec![LoadedStrategy {
+            config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+            relative_path: "strategies/binary_oracle.toml".to_string(),
+            config: strategy,
+        }];
+
+        let messages = validate_strategies(&stable_root, &loaded);
+        assert!(
+            messages.iter().any(|message| {
+                message.contains("parameters.runtime.risk_lambda")
+                    && message.contains("finite and >= 0")
+            }),
+            "risk_lambda {bad_risk_lambda} must fail closed at load: {messages:#?}"
+        );
+    }
 }
 
 #[test]
@@ -3249,7 +3534,7 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     assert_eq!(parameters.entry_order.time_in_force, TimeInForce::Fok);
     assert_eq!(parameters.exit_order.order_type, OrderType::Market);
     assert_eq!(parameters.exit_order.time_in_force, TimeInForce::Ioc);
-    assert!(!strategy.signal_data.is_empty());
+    assert!(strategy.reference_data.is_empty());
 }
 
 #[test]
@@ -4501,6 +4786,29 @@ fn shipped_binary_oracle_configs_do_not_canonicalize_one_reference_market_or_ven
 }
 
 #[test]
+fn shipped_binary_oracle_configs_carry_sizing_ev_reference_for_deploy() {
+    for relative_path in SHIPPED_BINARY_ORACLE_STRATEGY_FILES {
+        let source =
+            std::fs::read_to_string(support::repo_path(relative_path)).expect("source should read");
+        let document = toml::from_str::<toml::Value>(&source)
+            .unwrap_or_else(|error| panic!("{relative_path} should parse: {error}"));
+        let runtime = document
+            .get("parameters")
+            .and_then(|parameters| parameters.get("runtime"))
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| panic!("{relative_path} must define [parameters.runtime]"));
+        let sizing_ev_reference_bps = runtime
+            .get("sizing_ev_reference_bps")
+            .and_then(toml::Value::as_integer)
+            .unwrap_or_else(|| panic!("{relative_path} must ship runtime.sizing_ev_reference_bps"));
+        assert!(
+            (1..=10_000).contains(&sizing_ev_reference_bps),
+            "{relative_path} must deploy with sizing_ev_reference_bps inside the load-validated range"
+        );
+    }
+}
+
+#[test]
 fn binary_oracle_archetype_exposes_provider_neutral_gate_requirements() {
     use std::collections::BTreeSet;
 
@@ -4564,6 +4872,7 @@ strategy_files = ["strategies/binary_oracle.toml"]
 
 [runtime]
 mode = "Live"
+order_execution_mode = "live"
 
 [nautilus]
 load_state = true
@@ -4700,7 +5009,7 @@ transport_backend = "sockudo"
 }
 
 #[test]
-fn rejects_binance_reference_client_missing_secrets_block() {
+fn rejects_binance_reference_data_client_missing_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let toml_text = fixture_root_with_binance_reference_client()
@@ -4714,10 +5023,10 @@ fn rejects_binance_reference_client_missing_secrets_block() {
         messages.iter().any(|m| m.contains("binance_reference")
             && m.contains("[data]")
             && m.contains("required [secrets] block")),
-        "expected missing-secrets failure for binance data client, got: {messages:#?}"
+        "expected missing-secrets failure for binance reference-data client, got: {messages:#?}"
     );
-    assert!(rendered.contains("Binance data client"));
-    assert!(!rendered.contains("Binance data venue"));
+    assert!(rendered.contains("Binance reference-data client"));
+    assert!(!rendered.contains("Binance reference-data venue"));
     assert!(rendered.contains("(provider=BINANCE)"));
     assert!(!rendered.contains("(venue="));
 }
@@ -4993,6 +5302,7 @@ strategy_files = ["strategies/binary_oracle.toml"]
 
 [runtime]
 mode = "Live"
+order_execution_mode = "live"
 
 [nautilus]
 load_state = true
@@ -5310,6 +5620,60 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
     fixture.replace(needle, replacement)
 }
 
+fn fixture_root_with_order_execution_mode(mode: &str) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    if fixture
+        .lines()
+        .any(|line| line.trim_start().starts_with("order_execution_mode = "))
+    {
+        return fixture
+            .lines()
+            .map(|line| {
+                if line.trim_start().starts_with("order_execution_mode = ") {
+                    let indent = &line[..line.len() - line.trim_start().len()];
+                    format!("{indent}order_execution_mode = \"{mode}\"")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    fixture.replace(
+        "mode = \"Live\"",
+        &format!("mode = \"Live\"\norder_execution_mode = \"{mode}\""),
+    )
+}
+
+fn fixture_root_without_order_execution_mode() -> String {
+    std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("order_execution_mode = "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn strategy_fixture_without_submit_orders() -> String {
+    std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .lines()
+    .filter(|line| !line.trim_start().starts_with("submit_orders = "))
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+fn fixture_strategy_with_submit_orders(value: &str) -> String {
+    let fixture = strategy_fixture_without_submit_orders();
+    fixture.replace(
+        "[parameters]\n",
+        &format!("[parameters]\nsubmit_orders = {value}\n"),
+    )
+}
+
 /// Replace one-line key assignments inside a single TOML table.
 ///
 /// `replace_in_fixture_root` does a global `str::replace`, so a key that also
@@ -5355,6 +5719,478 @@ fn replace_in_fixture_section(section_header: &str, replacements: &[(&str, &str)
     rewritten.join("\n")
 }
 
+fn root_with_venue_spendability_source_binding(path: &str, sha256: &str, max_bytes: u64) -> String {
+    replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    )
+    .replace(
+        "max_snapshot_age_ns = 5000000000\ndedupe_retention_ns = 60000000000\n\n[risk.capital_pools.prediction_market_binary]",
+        &format!(
+            "max_snapshot_age_ns = 5000000000\ndedupe_retention_ns = 60000000000\nvenue_spendability_source_path = \"{path}\"\nvenue_spendability_source_sha256 = \"{sha256}\"\nvenue_spendability_source_max_bytes = {max_bytes}\n\n[risk.capital_pools.prediction_market_binary]"
+        ),
+    )
+}
+
+#[test]
+fn parses_loss_governor_halt_actions_from_root_fixture() {
+    use bolt_v2::{
+        bolt_v3_config::BoltV3RootConfig,
+        bolt_v3_loss_halt_actions::{LossGovernorRecoveryMode, LossGovernorTradingStateAction},
+    };
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&fixture).expect("root fixture should parse");
+    let loss_governor = root
+        .risk
+        .loss_governor
+        .as_ref()
+        .expect("root fixture should configure loss governor");
+
+    assert_eq!(
+        loss_governor.on_loss_breach_trading_state,
+        Some(LossGovernorTradingStateAction::Reducing)
+    );
+    assert_eq!(
+        loss_governor.on_untrusted_snapshot_trading_state,
+        Some(LossGovernorTradingStateAction::Reducing)
+    );
+    assert_eq!(
+        loss_governor.recovery_mode,
+        Some(LossGovernorRecoveryMode::Manual)
+    );
+    assert_eq!(
+        loss_governor.manual_recovery_evidence_max_path_bytes,
+        Some(256)
+    );
+    assert_eq!(loss_governor.active_position_pnl_max_entries, Some(64));
+}
+
+#[test]
+fn rejects_enabled_loss_governor_missing_halt_action_fields() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("on_loss_breach_trading_state = \"reducing\"\n", "");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("missing action fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.loss_governor.on_loss_breach_trading_state")
+                && message.contains("must be configured when enabled")
+        }),
+        "enabled loss governor should require explicit trading-state action: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_enabled_loss_governor_missing_manual_recovery_evidence_path_limit() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("manual_recovery_evidence_max_path_bytes = 256\n", "");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("missing manual recovery limit fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.loss_governor.manual_recovery_evidence_max_path_bytes")
+                && message.contains("must be configured when enabled")
+        }),
+        "enabled loss governor should require explicit manual recovery evidence path limit: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_enabled_loss_governor_zero_manual_recovery_evidence_path_limit() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "manual_recovery_evidence_max_path_bytes = 256",
+        "manual_recovery_evidence_max_path_bytes = 0",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero manual recovery limit fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.loss_governor.manual_recovery_evidence_max_path_bytes")
+                && message.contains("positive integer")
+        }),
+        "enabled loss governor should reject zero manual recovery evidence path limit: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_enabled_loss_governor_missing_active_position_pnl_cap() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("active_position_pnl_max_entries = 64\n", "");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("missing active position PnL cap fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.loss_governor.active_position_pnl_max_entries")
+                && message.contains("positive integer")
+        }),
+        "enabled loss governor should require an active position PnL cap: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_enabled_loss_governor_zero_active_position_pnl_cap() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "active_position_pnl_max_entries = 64",
+        "active_position_pnl_max_entries = 0",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero active position PnL cap fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.loss_governor.active_position_pnl_max_entries")
+                && message.contains("positive integer")
+        }),
+        "enabled loss governor should reject zero active position PnL cap: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_enabled_loss_governor_untrusted_snapshot_noop_action() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "on_untrusted_snapshot_trading_state = \"reducing\"",
+        "on_untrusted_snapshot_trading_state = \"none\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("untrusted snapshot noop action fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.loss_governor.on_untrusted_snapshot_trading_state")
+                && message.contains("reducing or halted")
+        }),
+        "enabled loss governor should reject no-op untrusted snapshot action: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_enabled_loss_governor_missing_threshold_fields() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for (field, line) in [
+        ("max_per_trade_loss", "max_per_trade_loss = \"2.50\"\n"),
+        ("max_daily_loss", "max_daily_loss = \"7.50\"\n"),
+        ("max_rolling_loss", "max_rolling_loss = \"10.00\"\n"),
+        ("max_drawdown", "max_drawdown = \"15.00\"\n"),
+    ] {
+        let mutated = replace_in_fixture_root(line, "");
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("missing loss threshold fixture should parse");
+        let messages = validate_root_only(&root);
+        let label = format!("risk.loss_governor.{field}");
+
+        assert!(
+            messages.iter().any(|message| {
+                message.contains(&label) && message.contains("must be configured when enabled")
+            }),
+            "enabled loss governor should require {label}: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_enabled_loss_governor_non_positive_thresholds() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for (field, original) in [
+        ("max_per_trade_loss", "max_per_trade_loss = \"2.50\""),
+        ("max_daily_loss", "max_daily_loss = \"7.50\""),
+        ("max_rolling_loss", "max_rolling_loss = \"10.00\""),
+        ("max_drawdown", "max_drawdown = \"15.00\""),
+    ] {
+        let replacement = format!("{field} = \"0\"");
+        let mutated = replace_in_fixture_root(original, &replacement);
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("zero loss threshold fixture should parse");
+        let messages = validate_root_only(&root);
+        let label = format!("risk.loss_governor.{field}");
+
+        assert!(
+            messages.iter().any(|message| {
+                message.contains(&label) && message.contains("positive decimal")
+            }),
+            "enabled loss governor should reject non-positive {label}: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn enforced_submit_admission_uses_nt_account_spendability_without_source_binding() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("enforced submit-admission fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("venue_spendability_source")),
+        "enforced submit admission should use NT account spendability without requiring a source binding: {messages:#?}"
+    );
+}
+
+#[test]
+fn enforced_submit_admission_rejects_missing_recovery_evidence_max_bytes() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("enforced submit-admission fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("persistence.decision_evidence.recovery_evidence_max_bytes")
+                && message.contains("must be configured")
+        }),
+        "enforced submit admission should require bounded recovery evidence reads: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_zero_decision_evidence_recovery_evidence_max_bytes() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
+        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"\nrecovery_evidence_max_bytes = 0",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("zero recovery evidence cap fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("persistence.decision_evidence.recovery_evidence_max_bytes")
+                && message.contains("positive integer")
+        }),
+        "recovery evidence max bytes must reject zero: {messages:#?}"
+    );
+}
+
+#[test]
+fn enforced_submit_admission_accepts_positive_recovery_evidence_max_bytes() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    )
+    .replace(
+        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
+        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"\nrecovery_evidence_max_bytes = 1048576",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("positive recovery evidence cap fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        !messages.iter().any(|message| {
+            message.contains("persistence.decision_evidence.recovery_evidence_max_bytes")
+        }),
+        "positive recovery evidence cap should satisfy enforced submit admission: {messages:#?}"
+    );
+}
+
+#[test]
+fn enforced_submit_admission_rejects_zero_dedupe_retention() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "dedupe_retention_ns = 60000000000",
+        "dedupe_retention_ns = 0",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("zero dedupe retention fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.capital_pools[polymarket-prediction-live].dedupe_retention_ns")
+                && message.contains("positive integer")
+        }),
+        "capital pool dedupe retention must reject zero: {messages:#?}"
+    );
+}
+
+#[test]
+fn capital_pool_rejects_non_positive_thresholds() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for (section, label, original, replacement) in [
+        (
+            "[[risk.capital_pools]]",
+            "risk.capital_pools[polymarket-prediction-live].max_pool_liability",
+            "max_pool_liability = \"25.00\"",
+            "max_pool_liability = \"0\"",
+        ),
+        (
+            "[[risk.capital_pools]]",
+            "risk.capital_pools[polymarket-prediction-live].max_snapshot_age_ns",
+            "max_snapshot_age_ns = 5000000000",
+            "max_snapshot_age_ns = 0",
+        ),
+        (
+            "[risk.capital_pools.sizing_policy]",
+            "risk.capital_pools[polymarket-prediction-live].sizing_policy.min_remaining_pool_balance",
+            "min_remaining_pool_balance = \"1.00\"",
+            "min_remaining_pool_balance = \"0\"",
+        ),
+        (
+            "[risk.capital_pools.sizing_policy.fee_slippage]",
+            "risk.capital_pools[polymarket-prediction-live].sizing_policy.fee_slippage.max_fee_liability",
+            "max_fee_liability = \"0.10\"",
+            "max_fee_liability = \"0\"",
+        ),
+        (
+            "[risk.capital_pools.sizing_policy.fee_slippage]",
+            "risk.capital_pools[polymarket-prediction-live].sizing_policy.fee_slippage.max_slippage_liability",
+            "max_slippage_liability = \"0.20\"",
+            "max_slippage_liability = \"0\"",
+        ),
+    ] {
+        let mutated = replace_in_fixture_section(section, &[(original, replacement)]);
+        let root: BoltV3RootConfig = toml::from_str(&mutated)
+            .expect("non-positive capital pool threshold fixture should parse");
+        let messages = validate_root_only(&root);
+
+        assert!(
+            messages.iter().any(|message| {
+                message.contains(label)
+                    && (message.contains("positive decimal")
+                        || message.contains("positive integer"))
+            }),
+            "capital pool threshold {label} should reject non-positive values: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_more_than_one_enforced_capital_pool() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = format!(
+        "{}\n{}",
+        replace_in_fixture_root(
+            "enforce_submit_admission = false",
+            "enforce_submit_admission = true"
+        ),
+        r#"
+[[risk.capital_pools]]
+pool_id = "secondary-prediction-live"
+venue_id = "POLYMARKET"
+account_id = "POLYMARKET-001"
+collateral_currency = "PUSD"
+product_kind = "prediction_market_binary"
+enforce_submit_admission = true
+max_pool_liability = "10.00"
+max_snapshot_age_ns = 5000000000
+dedupe_retention_ns = 60000000000
+
+[risk.capital_pools.prediction_market_binary]
+yes_instrument_id = "condition-secondary-yes.POLYMARKET"
+no_instrument_id = "condition-secondary-no.POLYMARKET"
+collateral_coupled_group_id = "condition-secondary"
+
+[risk.capital_pools.sizing_policy]
+min_remaining_pool_balance = "1.00"
+
+[risk.capital_pools.sizing_policy.fee_slippage]
+max_fee_liability = "0.10"
+max_slippage_liability = "0.20"
+"#
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("two enforced pool fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains(
+                "risk.capital_pools may enable submit admission enforcement for at most one pool",
+            )
+        }),
+        "multiple enforced capital pools must fail validation: {messages:#?}"
+    );
+}
+
+#[test]
+fn enforced_submit_admission_rejects_invalid_venue_spendability_source_sha256() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = root_with_venue_spendability_source_binding(
+        "/var/lib/bolt/operator-evidence/venue-spendability.json",
+        "ABC",
+        16_384,
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("source-binding fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains(
+                "risk.capital_pools[polymarket-prediction-live].venue_spendability_source_sha256",
+            ) && message.contains("lowercase sha256")
+        }),
+        "invalid venue spendability source sha256 must fail at config load: {messages:#?}"
+    );
+}
+
+#[test]
+fn enforced_submit_admission_rejects_incomplete_venue_spendability_source_binding() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    )
+    .replace(
+        "max_snapshot_age_ns = 5000000000\ndedupe_retention_ns = 60000000000\n\n[risk.capital_pools.prediction_market_binary]",
+        "max_snapshot_age_ns = 5000000000\ndedupe_retention_ns = 60000000000\nvenue_spendability_source_path = \"/var/lib/bolt/operator-evidence/venue-spendability.json\"\nvenue_spendability_source_sha256 = \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\n\n[risk.capital_pools.prediction_market_binary]",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("incomplete source-binding fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.capital_pools[polymarket-prediction-live].venue_spendability_source_max_bytes")
+                && message.contains("must be positive")
+        }),
+        "source binding must require positive max bytes with path and sha: {messages:#?}"
+    );
+}
+
 fn fixture_root_with_binance_reference_client() -> String {
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
@@ -5365,7 +6201,7 @@ fn binance_reference_root_fixture() -> String {
     support::repo_text("tests/fixtures/bolt_v3/binance_reference_root.toml")
 }
 
-fn binance_reference_client_data_block() -> String {
+fn binance_reference_data_block() -> String {
     let fixture = binance_reference_root_fixture();
     let start = fixture
         .find("[clients.binance_reference.data]")
@@ -5391,6 +6227,16 @@ fn replace_in_binance_reference_fixture(needle: &str, replacement: &str) -> Stri
         "binance validation fixture must contain `{needle}` for this test to mutate"
     );
     fixture.replace(needle, replacement)
+}
+
+fn strategy_fixture_with_reference_data(data_client_id: &str, instrument_id: &str) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    format!(
+        "{fixture}\n[reference_data.primary]\ndata_client_id = \"{data_client_id}\"\ninstrument_id = \"{instrument_id}\"\n"
+    )
 }
 
 fn fixture_root_with_gate_providers(gate_providers_toml: &str) -> String {
@@ -5562,7 +6408,6 @@ fn is_legacy_binary_oracle_gate_runtime_line(line: &&str) -> bool {
         "price_to_beat_report_schema_version",
         "price_to_beat_report_decimal_scale",
         "forced_flat_stale_chainlink_ms",
-        "reference_publish_topic",
     ]
     .iter()
     .any(|field| trimmed.starts_with(field))
@@ -5583,7 +6428,6 @@ fn assert_binary_oracle_strategy_source_uses_gate_schema(label: &str, source: &s
         "price_to_beat_report_schema_version",
         "price_to_beat_report_decimal_scale",
         "forced_flat_stale_chainlink_ms",
-        "reference_publish_topic",
     ] {
         assert!(
             !source.contains(forbidden),
@@ -6145,7 +6989,7 @@ fn rejects_non_positive_nt_risk_max_notional_map_values() {
 fn rejects_orphan_secrets_block_without_data_or_execution() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let data_block = binance_reference_client_data_block();
+    let data_block = binance_reference_data_block();
     let mutated = replace_in_binance_reference_fixture(&data_block, "");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("orphan-secrets fixture should parse");

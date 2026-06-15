@@ -4,9 +4,9 @@
     "BACKTESTING_ENGINE-022"
   ],
   "created_at_utc": "2026-06-09T02:32:25Z",
-  "updated_at_utc": "2026-06-09T10:57:05Z",
-  "status": "generic_gates_and_run_spec_materialization_source_agnostic_single_durable_adapter_registered_with_dispatch_guard",
-  "decision": "The current BTE gate/readiness/catalog/result-contract boundary is mostly source-agnostic, cross-market component role requirements are source-binding registry policy instead of product-name constants, source adapter registrations declare their accepted table family and NT data type, and accepted-tranche metadata now materializes into a validated operator run-spec without venue branches. The accepted-object registry is generic and the durable operator path now has a regression guard for registered adapter kinds without a runner dispatch, but only the native-trades CSV adapter is registered for durable canonical use and PMXT remains a separate one-off adapter. Adding a new source is easy only when it can reuse an existing registered adapter and NT data class; adding a new raw format or data family still requires a new adapter and proof.",
+  "updated_at_utc": "2026-06-15T03:55:35Z",
+  "status": "generic_gates_and_run_spec_materialization_source_agnostic_multi_adapter_dispatch_guarded",
+  "decision": "The current BTE gate/readiness/catalog/result-contract boundary is source-agnostic: cross-market component role requirements are source-binding registry policy instead of product-name constants, source adapter registrations declare their accepted table family and NT data type, and accepted-tranche metadata materializes into a validated operator run-spec without venue branches. The accepted-object registry now includes multiple production adapter kinds and the durable operator dispatch covers trade CSV, bar, JSONL/tar snapshot-delta, Parquet event-stream delta, quote, index, and mark-price families while still failing closed for unsupported or test-only registered adapter kinds. PMXT remains a separate one-off adapter because durable PMXT/Polymarket broad backfill still lacks source acceptance, dynamic tick-size replay policy, coverage/cost evidence, and bounded broad-backfill efficiency proof.",
   "generic_surfaces_proven": [
     {
       "surface": "sample venue hardcode guard",
@@ -51,7 +51,7 @@
     {
       "surface": "registered source adapter data-family contract",
       "path": "repo://crates/backtesting-vertical-slice/src/canonical_trades.rs",
-      "evidence": "SourceAdapterDefinition now declares adapter kind, table_family, normalized_schema_version, and nt_data_type. Operator preflight rejects a source proof whose accepted table_family does not match the registered source adapter before conversion artifacts are written, and also fails closed unless an explicit runner dispatch exists for the adapter kind. A test-only registered OrderBookDelta fixture proves registered non-durable adapter kinds are rejected before conversion checkpoint writes. The current durable dispatch supports CsvNativeTrades only."
+      "evidence": "SourceAdapterDefinition declares adapter kind, table_family, normalized_schema_version, and nt_data_type. Production REGISTERED_SOURCE_ADAPTERS includes CsvNativeTrades, CsvNativeBars, PagedJsonBars, JsonlMultiIntervalBars, JsonlSnapshotDeltas, TarJsonlSnapshotDeltas, ParquetEventStreamDeltas, SnapshotQuotes, IndexPrices, and MarkPrices. Operator preflight rejects a source proof whose accepted table_family does not match the registered source adapter before conversion artifacts are written, and the durable operator dispatch fails closed unless an explicit runner dispatch exists for the adapter kind. A test-only registered OrderBookDelta fixture proves unsupported registered adapter kinds are rejected before conversion checkpoint writes."
     },
     {
       "surface": "accepted-tranche to operator run-spec materialization",
@@ -73,15 +73,15 @@
     {
       "surface": "accepted-object converter registry",
       "path": "repo://crates/backtesting-vertical-slice/src/canonical_trades.rs",
-      "status": "generic_registry_single_native_trade_csv_adapter",
-      "evidence": "Production REGISTERED_SOURCE_ADAPTERS currently contains csv-native-trades-to-canonical-trades.v1 with kind=CsvNativeTrades, table_family=trades, and nt_data_type=TradeTick. Compatibility helpers expose the durable trade entry as REGISTERED_TRADE_CONVERTERS, and normalize_registered_trade_converter dispatches CsvNativeTrades to normalize_csv_native_trades. Test builds add a synthetic OrderBookDelta adapter fixture only to prove the durable operator dispatch guard.",
-      "impact": "A new venue whose accepted object is native trade CSV/GZIP/ZIP can reuse this path by TOML config. A new raw container, schema family, bars, L2 deltas, snapshots, or non-trade event stream cannot be added by TOML alone."
+      "status": "generic_registry_multi_adapter",
+      "evidence": "Production REGISTERED_SOURCE_ADAPTERS contains native trades, bars, paged/JSONL bars, JSONL/tar snapshot deltas, Parquet event-stream deltas, quotes, index prices, and mark prices. Compatibility helpers keep the existing durable trade entry while registered adapter lookup and table-family validation are shared across the families.",
+      "impact": "A new source whose accepted object matches an existing registered adapter can reuse the generic registry/operator path by TOML plus source-proof evidence. A genuinely new raw container, schema family, or NT data family still requires a new registered adapter implementation and proof."
     },
     {
       "surface": "accepted-object operator",
       "path": "repo://crates/backtesting-vertical-slice/src/operator.rs",
-      "status": "trade_csv_oriented",
-      "evidence": "run_from_run_spec validates a registered source adapter by identity/version and table_family, then the current durable runner decodes CSV text from CsvGzip/CsvText/SingleCsvZip, writes canonical-trades.parquet, and projects TradeTicks. This is systematic for native trade CSV sources but not a general raw-source adapter runner."
+      "status": "multi_adapter_dispatch",
+      "evidence": "run_operator_from_run_spec resolves the registered source adapter and dispatches CsvNativeTrades through the existing single-table trade path while routing all other production adapter kinds through the multi-table flow. The multi-table dispatch normalizes registered bar, delta, Parquet event-stream, quote, index, and mark-price adapters before catalog projection, and still rejects unsupported/test-only adapter kinds before artifacts are written."
     },
     {
       "surface": "PMXT one-off projection",
@@ -156,12 +156,13 @@
     "Accepted-tranche metadata now materializes into a validated operator run-spec before payload fetch without adding venue-specific branches.",
     "Bybit and Binance are sample/reference source rows, not generic production gate branches.",
     "PMXT and Polymarket names are confined to explicit one-off/proof modules and test fixtures by a committed guard test.",
-    "Adding another source that matches the existing native-trade CSV adapter should require registry/source-proof/run-spec data, not generic gate code."
+    "Adding another source that matches an existing registered adapter should require registry/source-proof/run-spec data, not generic gate code.",
+    "The stale single durable adapter gap is closed for BTE-022 status purposes; PMXT remains blocked by source acceptance, coverage/cost, dynamic tick-size replay, and broad-efficiency proof."
   ],
   "rejected_claims": [
     "Adding any new venue or data type is TOML-only today.",
     "PMXT is a durable canonical Polymarket source today.",
-    "The accepted-object operator is a general raw-source adapter runner today.",
+    "The accepted-object operator authorizes broad PMXT/Polymarket backfill today.",
     "Every future adapter/source policy is TOML-only today."
   ],
   "next_required_evidence": [

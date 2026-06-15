@@ -309,12 +309,20 @@ pub(super) fn test_strategy() -> BinaryOracleEdgeTaker {
 }
 
 pub(super) fn register_test_strategy(strategy: &mut BinaryOracleEdgeTaker) -> Rc<RefCell<Cache>> {
+    let (cache, _clock) = register_test_strategy_with_clock(strategy);
+    cache
+}
+
+pub(super) fn register_test_strategy_with_clock(
+    strategy: &mut BinaryOracleEdgeTaker,
+) -> (Rc<RefCell<Cache>>, Rc<RefCell<TestClock>>) {
     let clock = Rc::new(RefCell::new(TestClock::new()));
     clock
         .borrow_mut()
         .set_time(UnixNanos::from(1_200_u64 * NANOS_PER_MILLI_U64));
     let cache = Rc::new(RefCell::new(Cache::default()));
     let cache_handle = cache.clone();
+    let clock_handle = clock.clone();
     let portfolio = Rc::new(RefCell::new(Portfolio::new(
         cache.clone(),
         clock.clone(),
@@ -324,7 +332,7 @@ pub(super) fn register_test_strategy(strategy: &mut BinaryOracleEdgeTaker) -> Rc
         .core
         .register(TraderId::from("TRADER-001"), clock, cache, portfolio)
         .expect("test strategy should register with NT core");
-    cache_handle
+    (cache_handle, clock_handle)
 }
 
 pub(super) fn register_test_strategy_with_active_instruments(strategy: &mut BinaryOracleEdgeTaker) {

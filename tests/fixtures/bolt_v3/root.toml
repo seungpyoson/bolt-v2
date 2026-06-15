@@ -141,7 +141,7 @@ region = "eu-west-2"
 
 [[chainlink_data_streams.feed_bindings]]
 feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
-instrument_id = "BTC-USD.CHAINLINK"
+instrument_id = "CONFIGURED_ASSET-USD.CHAINLINK"
 report_schema_version = 3
 report_decimal_scale = 18
 price_precision = 8

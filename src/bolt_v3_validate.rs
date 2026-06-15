@@ -2393,10 +2393,10 @@ fn validate_reference_current_price(
         || !reference_current_price
             .asset
             .chars()
-            .all(|char| char.is_ascii_uppercase() || char.is_ascii_digit())
+            .all(|char| char.is_ascii_uppercase() || char.is_ascii_digit() || char == '_')
     {
         errors.push(format!(
-            "{context}: reference_current_price.asset must be a normalized non-empty uppercase ASCII asset symbol containing only letters and digits"
+            "{context}: reference_current_price.asset must be a normalized non-empty uppercase ASCII asset symbol containing only letters, digits, and underscores"
         ));
     }
     if let Ok(target) =

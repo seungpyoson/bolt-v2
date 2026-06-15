@@ -63,7 +63,7 @@ data_client_id = "okx_data"
 instrument_id = "BTC-USDT.OKX"
 
 [reference_current_price]
-asset = "BTC"
+asset = "CONFIGURED_ASSET"
 sources = ["chainlink_primary", "polyresearch_backup"]
 min_valid_sources = 1
 selection_policy = "first_valid_per_interval"
@@ -75,14 +75,14 @@ stale_policy = "block"
 [reference_current_price.source.chainlink_primary]
 provider = "chainlink_ws"
 client_id = "chainlink_reference"
-instrument_id = "BTC-USD.CHAINLINK"
+instrument_id = "CONFIGURED_ASSET-USD.CHAINLINK"
 enabled = true
 required = false
 
 [reference_current_price.source.polyresearch_backup]
 provider = "polyresearch_ws"
 client_id = "polyresearch_reference"
-symbol = "BTC/USD"
+symbol = "CONFIGURED_ASSET/USD"
 enabled = true
 required = false
 

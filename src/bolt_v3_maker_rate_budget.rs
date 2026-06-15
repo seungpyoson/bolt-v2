@@ -42,7 +42,7 @@ use crate::bolt_v3_requote_budget::{CANCEL_RESUBMIT_REST_COST, RequoteBudget, Re
 /// floor). A `min_interval_ms` at or above a sliding window is NOT rejected — it
 /// is a valid, conservative cadence: the first reservation is granted and later
 /// reservations are granted once the interval elapses, so the maker still quotes.
-pub fn build_requote_budget_pair(
+pub(crate) fn build_requote_budget_pair(
     submit_rate: &str,
     rest_cap_per_minute: u32,
     min_interval_ms: u64,
@@ -256,6 +256,52 @@ mod tests {
         assert!(
             pair.try_reserve_fresh_submit(61_001),
             "a quote past the 60s REST window/floor is granted again — not permanently closed"
+        );
+    }
+
+    #[test]
+    fn a_min_interval_above_the_submit_window_still_grants_over_time() {
+        // The decisive case for the removed `min_interval >= submit_window` guard: a
+        // min-interval STRICTLY GREATER than the window. The equality test above is
+        // survived by a guard re-added as `>` (30_000 > 30_000 is false, so a `>`
+        // guard would ACCEPT the equality config and that test would not flip). This
+        // case flips under BOTH a `>=` and a `>` re-addition, pinning the whole
+        // removal. "1/00:00:30" => 30_000 ms submit window; min-interval 45_000 (> it).
+        let mut pair = build_requote_budget_pair("1/00:00:30", 100, 45_000)
+            .expect("a min-interval above the submit window is a valid cadence");
+        assert!(
+            pair.try_reserve_fresh_submit(1_000),
+            "first quote is granted"
+        );
+        assert!(
+            !pair.try_reserve_fresh_submit(2_000),
+            "a quote 1s later is throttled by the 45s anti-flicker floor"
+        );
+        assert!(
+            pair.try_reserve_fresh_submit(46_001),
+            "a quote past the 45s floor is granted again — the submit window evicted the first emit"
+        );
+    }
+
+    #[test]
+    fn a_min_interval_above_the_rest_window_still_grants_over_time() {
+        // The mirror beyond the fixed 60_000 ms REST window, pinning removal of the
+        // `min_interval >= MILLIS_PER_MINUTE_U64` guard against both `>=` and `>`
+        // re-additions. A 10/2h submit rate keeps the submit cap and window slack so
+        // the 90_000 ms min-interval (> the 60s REST window) is the only thing tested.
+        let mut pair = build_requote_budget_pair("10/02:00:00", 100, 90_000)
+            .expect("a min-interval above the REST window is a valid cadence");
+        assert!(
+            pair.try_reserve_fresh_submit(1_000),
+            "first quote is granted"
+        );
+        assert!(
+            !pair.try_reserve_fresh_submit(2_000),
+            "a quote 1s later is throttled by the 90s anti-flicker floor"
+        );
+        assert!(
+            pair.try_reserve_fresh_submit(91_001),
+            "a quote past the 90s floor is granted again — the REST window evicted the first emit"
         );
     }
 

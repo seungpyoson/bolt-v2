@@ -263,6 +263,8 @@ pub struct KillSwitchConfigBlock {
     pub enabled: bool,
     pub state_path: String,
     pub max_state_file_bytes: u64,
+    pub max_utc_daily_realized_loss: String,
+    pub flatten_open_positions_on_breach: bool,
     pub action_retry_interval_ms: u64,
     pub action_retry_timeout_ms: u64,
     pub mandatory_proof_max_age_ms: u64,

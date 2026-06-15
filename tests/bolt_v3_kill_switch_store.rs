@@ -12,7 +12,7 @@ use bolt_v2::{
 fn missing_corrupt_or_unresolved_evidence_recovers_fail_closed() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let path = temp.path().join("kill-switch-state.json");
-    let store = KillSwitchStore::new(path.clone());
+    let store = KillSwitchStore::new(path.clone(), 65_536);
 
     assert_eq!(
         store
@@ -62,7 +62,7 @@ fn missing_corrupt_or_unresolved_evidence_recovers_fail_closed() {
 fn persisted_state_round_trips_with_schema_version() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let path = temp.path().join("kill-switch-state.json");
-    let store = KillSwitchStore::new(path.clone());
+    let store = KillSwitchStore::new(path.clone(), 65_536);
     let state = KillSwitchState::Flat {
         halt_id: "halt-1".to_string(),
     };
@@ -92,6 +92,8 @@ fn config_relative_state_path_recovers_missing_evidence_fail_closed() {
 enabled = true
 state_path = "state/kill-switch.json"
 max_state_file_bytes = 65536
+max_utc_daily_realized_loss = "250.00"
+flatten_open_positions_on_breach = false
 action_retry_interval_ms = 250
 action_retry_timeout_ms = 5000
 mandatory_proof_max_age_ms = 1000
@@ -133,7 +135,7 @@ instrument_ids = ["BTC-USD.BINANCE"]
 fn failed_manual_intervention_evidence_recovers_fail_closed() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let path = temp.path().join("kill-switch-state.json");
-    let store = KillSwitchStore::new(path);
+    let store = KillSwitchStore::new(path, 65_536);
     let state = KillSwitchState::FailedManualIntervention {
         halt_id: "halt-1".to_string(),
         reason: "fsync failed".to_string(),

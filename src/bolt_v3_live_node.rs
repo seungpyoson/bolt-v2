@@ -63,7 +63,10 @@ use nautilus_common::{
             unsubscribe::{UnsubscribeCustomData, UnsubscribeOptionChain, UnsubscribeOptionGreeks},
         },
     },
-    msgbus::{self, MStr, Pattern, ShareableMessageHandler, TypedHandler, switchboard},
+    msgbus::{
+        self, MStr, Pattern, ShareableMessageHandler, TypedHandler, subscribe_position_events,
+        switchboard, unsubscribe_position_events,
+    },
     runner::get_data_cmd_sender,
 };
 use nautilus_core::{Params, UUID4, time::get_atomic_clock_realtime};
@@ -86,8 +89,10 @@ use nautilus_model::{
 };
 use nautilus_model::{
     enums::{OrderSide, OrderType, TradingState},
+    events::PositionEvent,
     orders::{Order, OrderAny},
 };
+use nautilus_system::trader::Trader;
 use rust_decimal::Decimal;
 use ustr::Ustr;
 use zeroize::Zeroizing;
@@ -131,6 +136,10 @@ use crate::{
         time::UnixNanos,
         types::IvSourceKind,
     },
+    bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind},
+    bolt_v3_kill_switch_store::{
+        KillSwitchRecoveryReason, KillSwitchRecoveryState, KillSwitchStore, KillSwitchStoreError,
+    },
     bolt_v3_loss_governor::{LossGovernorPolicy, evaluate_loss_admission},
     bolt_v3_loss_halt_actions::{
         LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy,
@@ -138,10 +147,15 @@ use crate::{
         LossGovernorRecoveryMode, LossGovernorTradingStateAction,
         next_loss_governor_manual_recovery_trading_state, next_loss_governor_trading_state,
     },
+    bolt_v3_loss_protection::{
+        KillSwitchLossAction, KillSwitchLossActionKind, KillSwitchLossActionSink,
+        KillSwitchLossProtection, KillSwitchLossProtectionConfig,
+    },
     bolt_v3_loss_runtime_feed::{
         LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
         LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
     },
+    bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
     bolt_v3_position_sizer::{
         FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
         SizingPolicy,
@@ -175,7 +189,9 @@ use crate::{
         BoltV3SubmitPositionSizingOpenOrderSnapshot, BoltV3SubmitPositionSizingRebuildDecision,
     },
     bolt_v3_validate::parse_decimal_string,
-    nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
+    nt_runtime_capture::{
+        NtRuntimeCaptureGuards, position_events_pattern, wire_nt_runtime_capture,
+    },
     secrets::SsmResolverSession,
 };
 
@@ -194,6 +210,7 @@ pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     registration_summary: BoltV3RegistrationSummary,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    loss_protection: Option<Rc<RefCell<KillSwitchLossProtection>>>,
     loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
     loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
@@ -2295,6 +2312,7 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
 }
 
 struct BoltV3LiveNodeRuntimeFeeds {
+    loss_protection: Option<Rc<RefCell<KillSwitchLossProtection>>>,
     loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
     loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
@@ -2319,6 +2337,7 @@ impl BoltV3LiveNodeRuntime {
             node,
             registration_summary,
             submit_admission,
+            loss_protection: feeds.loss_protection,
             loss_halt_action_policy: feeds.loss_halt_action_policy,
             loss_runtime_feed: feeds.loss_runtime_feed,
             loss_runtime_feed_subscription: feeds.loss_runtime_feed_subscription,
@@ -2497,6 +2516,26 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn nt_risk_trading_state(&self) -> TradingState {
         self.node.kernel().risk_engine().borrow().trading_state()
+    }
+
+    /// NT `RiskEngine` trading state. Alias of [`nt_risk_trading_state`] kept
+    /// for the kill-switch durable-recovery tests, which assert the seeded
+    /// kill-switch state is synced into NT's trading state at build time.
+    pub fn nt_trading_state(&self) -> TradingState {
+        self.node.kernel().risk_engine().borrow().trading_state()
+    }
+
+    /// Kind of the currently latched durable kill-switch state.
+    ///
+    /// Derived from the configured loss-protection accumulator, which owns the
+    /// durable kill-switch state machine and was seeded from the durable store
+    /// at build time. When the hard kill switch is disabled there is no
+    /// accumulator, so the runtime reports the armed (non-latched) default.
+    pub fn kill_switch_state_kind(&self) -> KillSwitchStateKind {
+        match self.loss_protection.as_ref() {
+            Some(loss_protection) => loss_protection.borrow().state().kind(),
+            None => KillSwitchStateKind::Armed,
+        }
     }
 
     pub fn apply_loss_governor_manual_recovery(
@@ -2820,6 +2859,22 @@ pub enum BoltV3LiveNodeError {
     StrategyRegistration(BoltV3StrategyRegistrationError),
     RiskPolicy(anyhow::Error),
     Build(anyhow::Error),
+    /// Enabled kill-switch startup recovery found durable state that cannot
+    /// safely re-arm local admission. The build path fails closed before
+    /// resolving secrets, constructing NT clients, or registering
+    /// submit-capable strategy runtime.
+    KillSwitchRecovery {
+        reason: KillSwitchRecoveryReason,
+    },
+    /// Enabled kill-switch startup recovery could not read the durable state
+    /// store. Distinct from a classified fail-closed state because the
+    /// underlying I/O error is useful operator evidence.
+    KillSwitchStore(KillSwitchStoreError),
+    /// Enabled kill-switch loss protection (the durable daily-realized
+    /// accumulator) could not be configured, seeded from the durable store, or
+    /// persisted at build time. Fails the build closed rather than running
+    /// without the hard daily-realized circuit breaker.
+    KillSwitchLossProtection(anyhow::Error),
     /// Provider-specific live-submit approval loading or consumption failed
     /// while building the adapter bundle. This is intentionally outside the
     /// live runner wrapper; production `run_bolt_v3_live_node` still enters NT
@@ -2955,6 +3010,18 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 write!(f, "bolt-v3 risk policy mapping failed: {error}")
             }
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
+            BoltV3LiveNodeError::KillSwitchRecovery { reason } => write!(
+                f,
+                "bolt-v3 kill-switch durable state recovery failed closed before live-node build: {reason}"
+            ),
+            BoltV3LiveNodeError::KillSwitchStore(error) => write!(
+                f,
+                "bolt-v3 kill-switch durable state store read failed before live-node build: {error}"
+            ),
+            BoltV3LiveNodeError::KillSwitchLossProtection(error) => write!(
+                f,
+                "bolt-v3 kill-switch loss protection setup failed: {error}"
+            ),
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => {
                 write!(
                     f,
@@ -3071,6 +3138,8 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::StrategyRegistration(error) => Some(error),
             BoltV3LiveNodeError::RiskPolicy(error) => Some(error.as_ref()),
             BoltV3LiveNodeError::Build(error) => error.source(),
+            BoltV3LiveNodeError::KillSwitchStore(error) => Some(error),
+            BoltV3LiveNodeError::KillSwitchLossProtection(error) => Some(error.as_ref()),
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => Some(error.as_ref()),
             BoltV3LiveNodeError::Run(error) => error.source(),
             BoltV3LiveNodeError::RuntimeCaptureWire(error)
@@ -3082,6 +3151,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::ConnectIncomplete
             | BoltV3LiveNodeError::DisconnectTimeout { .. }
             | BoltV3LiveNodeError::LiveTransportScope { .. }
+            | BoltV3LiveNodeError::KillSwitchRecovery { .. }
             | BoltV3LiveNodeError::StrategyFreeStartTimeout { .. }
             | BoltV3LiveNodeError::StrategyFreeStartTimeoutOverflow
             | BoltV3LiveNodeError::StrategyFreeStartIncomplete
@@ -3427,6 +3497,10 @@ pub async fn run_bolt_v3_live_node(
     // could double-allocate capital, so fail closed before entering NT's
     // loop. This is a reconciliation guard, not the removed start gate.
     fail_closed_on_unreconciled_startup_rebuild(startup_rebuild)?;
+    // Wire the durable kill-switch loss protection for the whole run: subscribe
+    // the accumulator to position events and spawn its halt-action retry loop.
+    // The guard unsubscribes and aborts the retry task on drop.
+    let _loss_protection_guards = wire_bolt_v3_loss_protection_runtime(runtime);
     let node_handle = runtime.node.handle();
     let mut capture_guards = {
         let node = &runtime.node;
@@ -3617,6 +3691,12 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     adapters: BoltV3AdapterConfigs,
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+    // Enabled kill-switch boot must fail closed on an unresolved/corrupt/missing
+    // durable record before constructing NT clients or registering
+    // submit-capable strategy runtime. A clean recovery returns the latched
+    // state to seed admission (before registration) and to sync NT trading
+    // state (after build).
+    let kill_switch_startup_state = recover_kill_switch_state_before_live_node_build(loaded)?;
     let loss_policy = loss_governor_policy_from_loaded(loaded)?;
     let loss_halt_action_policy = loss_governor_halt_action_policy_from_loaded(loaded)?;
     let position_sizer = position_sizer_config_from_loaded(loaded)?;
@@ -3674,6 +3754,12 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             position_sizer,
         ),
     );
+    // Latch the recovered kill-switch state into submit admission before any
+    // submit-capable strategy runtime is registered, so a recovered halt blocks
+    // submits from the first registered strategy onward.
+    if let Some(state) = kill_switch_startup_state.as_ref() {
+        submit_admission.replace_kill_switch_state(state.clone());
+    }
     let (position_sizer_runtime_feed, position_sizer_runtime_feed_subscription) =
         match position_sizer_runtime_feed_config {
             Some(config) => {
@@ -3699,6 +3785,12 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
+    // Sync the recovered kill-switch state into NT's RiskEngine trading state so
+    // the NT risk engine and the submit-admission latch agree on the halt. The
+    // loss-protection seed below can override this for fail-closed cases.
+    if let Some(state) = kill_switch_startup_state.as_ref() {
+        sync_nt_trading_state_for_kill_switch(&mut node, state);
+    }
     let iv_runtime = loaded
         .root
         .iv
@@ -3773,6 +3865,20 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             strategy.registered_strategy_id
         );
     }
+    // Configure the durable kill-switch loss-protection accumulator after
+    // strategies are registered (its flatten targets are the registered NT
+    // strategy ids) and seed it from the durable store. `seed_from_store` can
+    // fail closed (e.g. an armed durable record with no loss snapshot becomes
+    // `FailedManualIntervention`) and override the kill-switch state established
+    // above by `recover_kill_switch_state_before_live_node_build`, so re-sync NT
+    // trading state from the final loss-protection state — otherwise a
+    // fail-closed seed would latch admission while leaving NT trading `Active`.
+    let loss_protection =
+        configure_bolt_v3_kill_switch_loss_protection(loaded, &node, submit_admission.clone())?;
+    if let Some(protection) = loss_protection.as_ref() {
+        let seeded_state = protection.borrow().state().clone();
+        sync_nt_trading_state_for_kill_switch(&mut node, &seeded_state);
+    }
     let loss_halt_action_handler =
         match (loss_policy.clone(), loss_halt_action_policy.as_ref()) {
             (Some(policy), Some(action_policy)) => Some(
@@ -3799,6 +3905,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         summary.clone(),
         submit_admission,
         BoltV3LiveNodeRuntimeFeeds {
+            loss_protection,
             loss_halt_action_policy,
             loss_runtime_feed,
             loss_runtime_feed_subscription,
@@ -4103,6 +4210,442 @@ fn required_loss_governor_usize(
         )));
     }
     Ok(value)
+}
+
+/// Reads the durable kill-switch state before the live node is built.
+///
+/// Enabled kill-switch boot must fail closed before resolving secrets,
+/// constructing NT clients, or registering submit-capable strategy runtime when
+/// the durable store holds an unresolved/corrupt/missing record. A disabled (or
+/// unconfigured) kill switch carries no durable state requirement.
+fn recover_kill_switch_state_before_live_node_build(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<KillSwitchState>, BoltV3LiveNodeError> {
+    let Some(config) = loaded.root.risk.kill_switch.as_ref() else {
+        return Ok(None);
+    };
+    if !config.enabled {
+        return Ok(None);
+    }
+
+    let store = KillSwitchStore::from_root_config_path(&loaded.root_path, config);
+    match store
+        .load_recovery_state()
+        .map_err(BoltV3LiveNodeError::KillSwitchStore)?
+    {
+        KillSwitchRecoveryState::Recovered(state) => Ok(Some(state)),
+        KillSwitchRecoveryState::FailClosed { reason, .. } => {
+            Err(BoltV3LiveNodeError::KillSwitchRecovery { reason })
+        }
+    }
+}
+
+/// Syncs a recovered/seeded kill-switch state into NT's `RiskEngine` trading
+/// state so the NT risk engine and the submit-admission latch agree on the halt
+/// after a restart, instead of leaving NT trading `Active` behind a latched
+/// admission.
+fn sync_nt_trading_state_for_kill_switch(node: &mut LiveNode, state: &KillSwitchState) {
+    let Some(trading_state) = nt_trading_state_for_kill_switch_state(state) else {
+        return;
+    };
+    node.kernel()
+        .risk_engine()
+        .borrow_mut()
+        .set_trading_state(trading_state);
+}
+
+fn nt_trading_state_for_kill_switch_state(state: &KillSwitchState) -> Option<TradingState> {
+    match state {
+        KillSwitchState::Armed => None,
+        KillSwitchState::Halting { .. } | KillSwitchState::Halted { .. } => {
+            Some(TradingState::Reducing)
+        }
+        KillSwitchState::Flat { .. } | KillSwitchState::FailedManualIntervention { .. } => {
+            Some(TradingState::Halted)
+        }
+    }
+}
+
+/// Indirection over NT's `Trader::market_exit_strategy` so the loss-halt exit
+/// loop is unit-testable without a live NT `Trader`. The production impl
+/// (`NtTraderMarketExitDispatcher`) owns the single spec-sanctioned market-exit
+/// call site; the hard kill-switch flatten path dispatches through this one
+/// trait method, not through a second direct call.
+trait MarketExitDispatcher {
+    fn exit_strategy(&self, strategy_id: &StrategyId) -> Result<()>;
+}
+
+struct NtTraderMarketExitDispatcher {
+    trader: Rc<RefCell<Trader>>,
+}
+
+impl MarketExitDispatcher for NtTraderMarketExitDispatcher {
+    fn exit_strategy(&self, strategy_id: &StrategyId) -> Result<()> {
+        // Sole NT market-exit dispatch: sends `StrategyCommand::ExitMarket` to
+        // the strategy's control endpoint so the strategy performs its own
+        // managed market exit.
+        Trader::market_exit_strategy(&self.trader, strategy_id)
+    }
+}
+
+/// Moves the NT risk engine to `Reducing` before a loss-halt market exit so the
+/// venue admits the reduce-only exit orders. Abstracted as a trait so the hard
+/// kill-switch sink is unit-testable without a live NT risk engine. The
+/// transition is venue-neutral (it applies regardless of the global execution
+/// mode); only the subsequent NT market exit is shadow-gated.
+trait TradingStateController {
+    fn enter_reducing(&self);
+}
+
+/// Closure-backed `TradingStateController`. The production caller captures the
+/// NT risk-engine handle in the closure so the concrete NT risk-engine type
+/// does not have to be named here; tests inject a recording controller instead.
+struct ClosureTradingStateController<F: Fn()> {
+    enter_reducing: F,
+}
+
+impl<F: Fn()> TradingStateController for ClosureTradingStateController<F> {
+    fn enter_reducing(&self) {
+        (self.enter_reducing)();
+    }
+}
+
+/// Per-strategy idempotency ledger for loss-halt market exits so a retried halt
+/// never re-exits a strategy that already exited. The hard kill-switch keeps one
+/// ledger per halt id. Abstracting it lets `dispatch_shadow_aware_market_exit`
+/// own the single exit loop.
+trait MarketExitIdempotency {
+    fn already_exited(&self, strategy_id: &StrategyId) -> bool;
+    fn record_exited(&mut self, strategy_id: &StrategyId);
+}
+
+impl MarketExitIdempotency for BTreeSet<String> {
+    fn already_exited(&self, strategy_id: &StrategyId) -> bool {
+        self.contains(&strategy_id.to_string())
+    }
+
+    fn record_exited(&mut self, strategy_id: &StrategyId) {
+        self.insert(strategy_id.to_string());
+    }
+}
+
+/// Splits registered strategies into those eligible for an NT market-exit
+/// dispatch and those suppressed because the global execution policy does not
+/// allow venue mutation (shadow / dry-run modes). The kill switch uses a single
+/// GLOBAL execution policy rather than a per-strategy submit flag: when the
+/// policy allows venue mutation every strategy is a dispatch target; otherwise
+/// every strategy is suppressed (logged, never exited). The NT risk-engine
+/// `Reducing` transition is venue-neutral and applied upstream regardless of
+/// this split. Returns `(dispatch_targets, suppressed_targets)`.
+fn partition_market_exit_targets(
+    strategies: &[StrategyId],
+    policy: BoltV3OrderExecutionPolicy,
+) -> (Vec<StrategyId>, Vec<StrategyId>) {
+    if policy.allows_venue_mutation() {
+        (strategies.to_vec(), Vec::new())
+    } else {
+        (Vec::new(), strategies.to_vec())
+    }
+}
+
+/// The single shadow-aware NT market-exit loop for the hard kill-switch flatten
+/// path. When the global execution policy forbids venue mutation, every
+/// strategy is partitioned out and never exited (logged instead); otherwise
+/// live strategies are exited exactly once (per the supplied idempotency
+/// ledger) through the sole sanctioned `MarketExitDispatcher`. The first
+/// dispatch error is returned after every eligible strategy has been attempted,
+/// so one failing strategy never blocks the others. Callers own the NT
+/// `TradingState` transition (it is venue-neutral) and the idempotency ledger
+/// lifecycle.
+fn dispatch_shadow_aware_market_exit(
+    dispatcher: &dyn MarketExitDispatcher,
+    strategies: &[StrategyId],
+    policy: BoltV3OrderExecutionPolicy,
+    idempotency: &mut dyn MarketExitIdempotency,
+) -> Result<()> {
+    let (dispatch_targets, suppressed_targets) = partition_market_exit_targets(strategies, policy);
+    for strategy_id in &suppressed_targets {
+        log::info!(
+            "loss-halt NT market exit suppressed for strategy {strategy_id} (global execution policy forbids venue mutation)"
+        );
+    }
+    let mut first_error: Option<anyhow::Error> = None;
+    for strategy_id in &dispatch_targets {
+        if idempotency.already_exited(strategy_id) {
+            continue;
+        }
+        match dispatcher.exit_strategy(strategy_id) {
+            Ok(()) => idempotency.record_exited(strategy_id),
+            Err(error) => {
+                log::error!("loss-halt NT market exit failed for strategy {strategy_id}: {error}");
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Hard kill-switch loss-action sink that drives the NT runtime on a durable
+/// daily-realized loss breach.
+///
+/// On a fresh `FlattenPositions` halt it ALWAYS moves the NT risk engine to
+/// `Reducing` (venue-neutral). Whether it then issues an NT market exit is a
+/// config switch: `flatten_open_positions` (from
+/// `risk.kill_switch.flatten_open_positions_on_breach`) `true` flattens through
+/// the shadow-aware NT exit loop; `false` (freeze mode) leaves positions in
+/// place and only blocks new submits (via the admission latch) plus the
+/// `Reducing` transition. Per-halt idempotency keeps a retried halt from
+/// re-exiting strategies that already exited.
+struct NtMarketExitLossActionSink {
+    dispatcher: Rc<dyn MarketExitDispatcher>,
+    trading_state: Rc<dyn TradingStateController>,
+    strategies: Vec<StrategyId>,
+    policy: BoltV3OrderExecutionPolicy,
+    flatten_open_positions: bool,
+    dispatched_halts: RefCell<BTreeSet<String>>,
+    dispatched_strategies_by_halt: RefCell<BTreeMap<String, BTreeSet<String>>>,
+}
+
+impl NtMarketExitLossActionSink {
+    fn new(
+        trader: Rc<RefCell<Trader>>,
+        trading_state: Rc<dyn TradingStateController>,
+        strategies: Vec<StrategyId>,
+        policy: BoltV3OrderExecutionPolicy,
+        flatten_open_positions: bool,
+    ) -> Self {
+        Self::new_with_dispatcher(
+            Rc::new(NtTraderMarketExitDispatcher { trader }),
+            trading_state,
+            strategies,
+            policy,
+            flatten_open_positions,
+        )
+    }
+
+    fn new_with_dispatcher(
+        dispatcher: Rc<dyn MarketExitDispatcher>,
+        trading_state: Rc<dyn TradingStateController>,
+        strategies: Vec<StrategyId>,
+        policy: BoltV3OrderExecutionPolicy,
+        flatten_open_positions: bool,
+    ) -> Self {
+        Self {
+            dispatcher,
+            trading_state,
+            strategies,
+            policy,
+            flatten_open_positions,
+            dispatched_halts: RefCell::new(BTreeSet::new()),
+            dispatched_strategies_by_halt: RefCell::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl KillSwitchLossActionSink for NtMarketExitLossActionSink {
+    fn emit(&self, action: KillSwitchLossAction) -> Result<()> {
+        if action.kind != KillSwitchLossActionKind::FlattenPositions {
+            return Ok(());
+        }
+        if self.dispatched_halts.borrow().contains(&action.halt_id) {
+            return Ok(());
+        }
+        // Move the NT risk engine to `Reducing` before any exit so the venue
+        // admits the reduce-only exits. This transition is venue-neutral and
+        // applies in both freeze and flatten modes.
+        self.trading_state.enter_reducing();
+        // Freeze mode: do not issue any NT market exit. The `Reducing`
+        // transition plus the admission latch are the whole breach response;
+        // open positions are left for the operator to handle.
+        if !self.flatten_open_positions {
+            self.dispatched_halts
+                .borrow_mut()
+                .insert(action.halt_id.clone());
+            self.dispatched_strategies_by_halt
+                .borrow_mut()
+                .remove(&action.halt_id);
+            return Ok(());
+        }
+        let mut succeeded = BTreeSet::new();
+        if let Some(dispatched) = self
+            .dispatched_strategies_by_halt
+            .borrow()
+            .get(&action.halt_id)
+        {
+            succeeded.clone_from(dispatched);
+        }
+        let result = dispatch_shadow_aware_market_exit(
+            self.dispatcher.as_ref(),
+            &self.strategies,
+            self.policy,
+            &mut succeeded,
+        );
+        if let Err(error) = result {
+            self.dispatched_strategies_by_halt
+                .borrow_mut()
+                .insert(action.halt_id, succeeded);
+            return Err(error);
+        }
+        self.dispatched_halts
+            .borrow_mut()
+            .insert(action.halt_id.clone());
+        self.dispatched_strategies_by_halt
+            .borrow_mut()
+            .remove(&action.halt_id);
+        Ok(())
+    }
+}
+
+/// Configures the durable kill-switch loss-protection accumulator from the
+/// validated `risk.kill_switch` block.
+///
+/// Returns `Ok(None)` when the kill switch is absent or disabled. Otherwise
+/// builds the daily-realized accumulator wired to:
+/// - the GLOBAL `BoltV3OrderExecutionPolicy` (so a breach flatten only mutates
+///   venue state when the global execution mode allows it),
+/// - the registered NT strategy ids (the flatten targets),
+/// - the `flatten_open_positions_on_breach` freeze/flatten switch,
+/// and seeds it from the durable store. A failed seed can fail closed to a
+/// halted state; the caller syncs NT trading state from the resulting state.
+fn configure_bolt_v3_kill_switch_loss_protection(
+    loaded: &LoadedBoltV3Config,
+    node: &LiveNode,
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
+) -> Result<Option<Rc<RefCell<KillSwitchLossProtection>>>, BoltV3LiveNodeError> {
+    let Some(kill_switch) = loaded
+        .root
+        .risk
+        .kill_switch
+        .as_ref()
+        .filter(|kill_switch| kill_switch.enabled)
+    else {
+        return Ok(None);
+    };
+    let max_utc_daily_realized_loss =
+        parse_decimal_string(&kill_switch.max_utc_daily_realized_loss).map_err(|reason| {
+            BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
+                "risk.kill_switch.max_utc_daily_realized_loss parse failed: {reason}"
+            ))
+        })?;
+    let config = KillSwitchLossProtectionConfig {
+        max_utc_daily_realized_loss,
+        action_retry_interval_ms: kill_switch.action_retry_interval_ms,
+        action_retry_timeout_ms: kill_switch.action_retry_timeout_ms,
+        account_ids: kill_switch.account_ids.clone(),
+        instrument_ids: kill_switch.instrument_ids.clone(),
+    };
+    let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
+    // GLOBAL shadow gate: main routes order execution through one
+    // `BoltV3OrderExecutionPolicy` derived from `runtime.order_execution_mode`,
+    // not a per-strategy submit flag. The breach flatten reuses that same gate
+    // so it never mutates venue state in shadow/dry-run modes.
+    let policy = BoltV3OrderExecutionPolicy::from_mode(loaded.root.runtime.order_execution_mode);
+    let strategies: Vec<StrategyId> = node.kernel().trader().borrow().strategy_ids();
+    let flatten_open_positions = kill_switch.flatten_open_positions_on_breach;
+    let risk_engine = node.kernel().risk_engine().clone();
+    let trading_state: Rc<dyn TradingStateController> = Rc::new(ClosureTradingStateController {
+        enter_reducing: move || {
+            risk_engine
+                .borrow_mut()
+                .set_trading_state(TradingState::Reducing);
+        },
+    });
+    let action_sink = Rc::new(NtMarketExitLossActionSink::new(
+        Rc::clone(node.kernel().trader()),
+        trading_state,
+        strategies,
+        policy,
+        flatten_open_positions,
+    ));
+    let mut protection =
+        KillSwitchLossProtection::new(config, submit_admission, store, action_sink)
+            .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
+    let recovery_action_clock_unix_nanos =
+        current_unix_nanos().map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
+    protection
+        .seed_from_store(recovery_action_clock_unix_nanos)
+        .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
+    Ok(Some(Rc::new(RefCell::new(protection))))
+}
+
+/// Runtime guards for the durable kill-switch loss protection. Owns the
+/// position-event subscription and the action-retry task; dropping it
+/// unsubscribes and aborts the retry loop.
+struct BoltV3LossProtectionRuntimeGuards {
+    position_events: Option<TypedHandler<PositionEvent>>,
+    retry_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl BoltV3LossProtectionRuntimeGuards {
+    fn none() -> Self {
+        Self {
+            position_events: None,
+            retry_handle: None,
+        }
+    }
+}
+
+impl Drop for BoltV3LossProtectionRuntimeGuards {
+    fn drop(&mut self) {
+        if let Some(position_events) = self.position_events.take() {
+            unsubscribe_position_events(position_events_pattern(), &position_events);
+        }
+        if let Some(retry_handle) = self.retry_handle.take() {
+            retry_handle.abort();
+        }
+    }
+}
+
+/// Wires the durable kill-switch loss protection into NT's runtime: subscribes
+/// the accumulator to position events (so realized PnL drives the daily breach)
+/// and spawns the pending-halt-action retry loop. A no-op when no kill switch
+/// is configured.
+fn wire_bolt_v3_loss_protection_runtime(
+    runtime: &BoltV3LiveNodeRuntime,
+) -> BoltV3LossProtectionRuntimeGuards {
+    let Some(loss_protection) = runtime.loss_protection.as_ref() else {
+        return BoltV3LossProtectionRuntimeGuards::none();
+    };
+    let retry_interval_ms = loss_protection.borrow().action_retry_interval_ms();
+    let retry_loss_protection = Rc::clone(loss_protection);
+    let retry_handle = tokio::task::spawn_local(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(retry_interval_ms));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let now_unix_nanos = match current_unix_nanos() {
+                Ok(now_unix_nanos) => now_unix_nanos,
+                Err(error) => {
+                    log::error!("bolt-v3 kill-switch loss protection retry clock failed: {error}");
+                    continue;
+                }
+            };
+            if let Err(error) = retry_loss_protection
+                .borrow_mut()
+                .poll_pending_halt_actions(now_unix_nanos)
+            {
+                log::error!("bolt-v3 kill-switch loss protection action retry failed: {error}");
+            }
+        }
+    });
+    let loss_protection = Rc::clone(loss_protection);
+    let position_events = TypedHandler::from(move |event: &PositionEvent| {
+        if let Err(error) = loss_protection.borrow_mut().record_position_event(event) {
+            log::error!(
+                "bolt-v3 kill-switch loss protection position-event handling failed: {error}"
+            );
+        }
+    });
+    subscribe_position_events(position_events_pattern(), position_events.clone(), None);
+    BoltV3LossProtectionRuntimeGuards {
+        position_events: Some(position_events),
+        retry_handle: Some(retry_handle),
+    }
 }
 
 fn loss_governor_halt_action_handler_from_node(

@@ -42,7 +42,7 @@ use std::{
 
 use nautilus_model::{
     enums::{BarAggregation, BarIntervalType},
-    identifiers::{ClientOrderId, InstrumentId},
+    identifiers::{AccountId, ClientOrderId, InstrumentId},
 };
 use rust_decimal::Decimal;
 
@@ -1608,6 +1608,16 @@ fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
     if block.max_state_file_bytes == 0 {
         errors.push("risk.kill_switch.max_state_file_bytes must be positive".to_string());
     }
+    match parse_decimal_string(&block.max_utc_daily_realized_loss) {
+        Ok(limit) if limit > Decimal::ZERO => {}
+        Ok(_) => {
+            errors.push("risk.kill_switch.max_utc_daily_realized_loss must be positive".to_string());
+        }
+        Err(reason) => errors.push(format!(
+            "risk.kill_switch.max_utc_daily_realized_loss is not a valid decimal string ({reason}): `{}`",
+            block.max_utc_daily_realized_loss
+        )),
+    }
     if block.action_retry_interval_ms == 0 {
         errors.push("risk.kill_switch.action_retry_interval_ms must be positive".to_string());
     }
@@ -1679,6 +1689,13 @@ fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
         .any(|account_id| account_id.trim().is_empty())
     {
         errors.push("risk.kill_switch.account_ids must not contain empty values".to_string());
+    }
+    for account_id in &block.account_ids {
+        if AccountId::new_checked(account_id).is_err() {
+            errors.push(format!(
+                "risk.kill_switch.account_ids[`{account_id}`] is not a valid Nautilus account ID"
+            ));
+        }
     }
     if block.instrument_ids.is_empty() {
         errors.push("risk.kill_switch.instrument_ids must not be empty when enabled".to_string());

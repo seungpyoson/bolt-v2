@@ -10,6 +10,8 @@ fn valid_kill_switch_block() -> &'static str {
 enabled = true
 state_path = "state/kill-switch.json"
 max_state_file_bytes = 65536
+max_utc_daily_realized_loss = "250.00"
+flatten_open_positions_on_breach = false
 action_retry_interval_ms = 250
 action_retry_timeout_ms = 5000
 mandatory_proof_max_age_ms = 1000
@@ -59,6 +61,8 @@ fn enabled_kill_switch_rejects_invalid_runtime_settings() {
 enabled = true
 state_path = ""
 max_state_file_bytes = 0
+max_utc_daily_realized_loss = "0"
+flatten_open_positions_on_breach = false
 action_retry_interval_ms = 0
 action_retry_timeout_ms = 0
 mandatory_proof_max_age_ms = 0
@@ -78,6 +82,7 @@ instrument_ids = ["not-an-instrument"]
     for expected in [
         "risk.kill_switch.state_path must be a non-empty relative path",
         "risk.kill_switch.max_state_file_bytes must be positive",
+        "risk.kill_switch.max_utc_daily_realized_loss must be positive",
         "risk.kill_switch.action_retry_interval_ms must be positive",
         "risk.kill_switch.action_retry_timeout_ms must be positive",
         "risk.kill_switch.mandatory_proof_max_age_ms must be positive",

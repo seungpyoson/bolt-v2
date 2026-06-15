@@ -29,6 +29,7 @@ pub enum KillSwitchEvent {
     HaltTriggered(KillSwitchHaltTrigger),
     DurableHaltEvidenceRecorded,
     DurableHaltEvidenceWriteFailed { reason: String },
+    HaltActionDispatchFailed { reason: String },
     ReconciliationProofReceived,
     ManualResetRequested(KillSwitchManualResetEvidence),
 }
@@ -169,6 +170,7 @@ pub enum KillSwitchEventKind {
     HaltTriggered,
     DurableHaltEvidenceRecorded,
     DurableHaltEvidenceWriteFailed,
+    HaltActionDispatchFailed,
     ReconciliationProofReceived,
     ManualResetRequested,
 }
@@ -195,6 +197,10 @@ pub fn transition_kill_switch_state(
         (
             KillSwitchState::Halting { halt_id, .. },
             KillSwitchEvent::DurableHaltEvidenceWriteFailed { reason },
+        ) => Ok(KillSwitchState::FailedManualIntervention { halt_id, reason }),
+        (
+            KillSwitchState::Halting { halt_id, .. },
+            KillSwitchEvent::HaltActionDispatchFailed { reason },
         ) => Ok(KillSwitchState::FailedManualIntervention { halt_id, reason }),
         (KillSwitchState::Halted { halt_id, .. }, KillSwitchEvent::ReconciliationProofReceived) => {
             require_fresh_clean_reconciliation(&context)?;
@@ -246,6 +252,9 @@ impl KillSwitchEvent {
             }
             KillSwitchEvent::DurableHaltEvidenceWriteFailed { .. } => {
                 KillSwitchEventKind::DurableHaltEvidenceWriteFailed
+            }
+            KillSwitchEvent::HaltActionDispatchFailed { .. } => {
+                KillSwitchEventKind::HaltActionDispatchFailed
             }
             KillSwitchEvent::ReconciliationProofReceived => {
                 KillSwitchEventKind::ReconciliationProofReceived

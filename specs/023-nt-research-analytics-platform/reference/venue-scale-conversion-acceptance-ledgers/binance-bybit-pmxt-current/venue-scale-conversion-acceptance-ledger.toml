@@ -72,6 +72,7 @@ source_universe_conversion_queue_path = "specs/023-nt-research-analytics-platfor
 source_universe_source_proof_set_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proof-set.json"
 selected_source_report_path = "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json"
 blocking_issues = [
+  "missing_accepted_source_proof",
   "missing_source_universe_object_gates",
   "missing_source_universe_conversion_run_plan",
   "missing_pmxt_l2_tick_size_epoch_policy",

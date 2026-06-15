@@ -240,6 +240,7 @@ source_universe_conversion_queue_path = "{pmxt_conversion_queue}"
 source_universe_source_proof_set_path = "{pmxt_source_proof_set}"
 selected_source_report_path = "{pmxt_selected_source_report}"
 blocking_issues = [
+  "missing_accepted_source_proof",
   "missing_source_universe_object_gates",
   "missing_source_universe_conversion_run_plan",
   "missing_pmxt_l2_tick_size_epoch_policy",
@@ -550,6 +551,7 @@ blocking_issues = [
     assert_eq!(
         pmxt_full.blocking_issues,
         vec![
+            "missing_accepted_source_proof",
             "missing_source_universe_object_gates",
             "missing_source_universe_conversion_run_plan",
             "missing_pmxt_l2_tick_size_epoch_policy",

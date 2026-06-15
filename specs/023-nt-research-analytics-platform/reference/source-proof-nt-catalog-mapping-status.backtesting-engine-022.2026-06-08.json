@@ -366,6 +366,7 @@
       "RED-GATED crates/backtesting-vertical-slice/src/venue_scale_conversion_acceptance.rs unit regression source_only_status_rejects_unaccepted_source_proof_set documents that a source-only universe with a referenced source proof set but zero accepted proofs must fail validation.",
       "GREEN-GATED venue-scale conversion acceptance validation now receives source_proof_count and source_accepted_proof_count and rejects SourceOnly when source_proof_count > 0 and source_accepted_proof_count == 0.",
       "REGRESSION crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_venue_scale_conversion_acceptance.rs source_proof_set_rejects_accepted_count_above_total_count documents that source proof sets with accepted_proof_count > proof_count must fail before status accounting.",
+      "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml explicitly lists missing_accepted_source_proof on pmxt-polymarket-full-current-data while source_accepted_proof_count remains 0.",
       "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml keeps pmxt-polymarket-full-current-data blocked with source_accepted_proof_count=0 evidence preserved on the universe record."
     ],
     "claim_limits": [
@@ -430,7 +431,7 @@
     },
     {
       "blocker": "durable_source_selection_unproven",
-      "required_evidence": "A source-proof acceptance record for any durable Polymarket source. Venue-scale acceptance now rejects source-only status when an explicit source proof set has zero accepted proofs, but the bounded PMXT sample remains one-off evidence only and the full-current PMXT source proof set still has source_accepted_proof_count=0."
+      "required_evidence": "A source-proof acceptance record for any durable Polymarket source. Venue-scale acceptance now rejects source-only status when an explicit source proof set has zero accepted proofs, and the PMXT full-current universe now lists missing_accepted_source_proof while source_accepted_proof_count remains 0; the bounded PMXT sample remains one-off evidence only."
     },
     {
       "blocker": "broad_backfill_efficiency_unproven",

@@ -202,10 +202,7 @@ concurrency:
         || github.event_name == 'workflow_dispatch'
         && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}
-  cancel-in-progress: >-
-    ${{ github.event_name == 'pull_request'
-        && github.event.pull_request.draft == true
-        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -1519,10 +1516,14 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
             ),
         ),
         (
-            "cancel-in-progress must be true only for deferred draft PR runs",
+            "cancel-in-progress must apply to all pull_request runs",
             re.sub(
-                r"  cancel-in-progress: >-\n    \$\{\{ github\.event_name == 'pull_request'\n        && github\.event\.pull_request\.draft == true\n        && contains\(fromJSON\('\[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\"\]'\), github\.event\.action\) \}\}\n",
-                "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n",
+                r"  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}\n",
+                """  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) }}
+""",
                 workflow,
                 count=1,
             ),
@@ -1857,10 +1858,7 @@ def without_pr_concurrency(workflow: str) -> str:
         || github.event_name == 'workflow_dispatch'
         && format('{0}-full-ci', github.ref_name)
         || format('{0}-{1}', github.ref_name, github.sha) }}
-  cancel-in-progress: >-
-    ${{ github.event_name == 'pull_request'
-        && github.event.pull_request.draft == true
-        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 """,
         "",
@@ -5294,14 +5292,22 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, "format('{0}-{1}', github.ref_name, github.sha)", "github.ref_name"),
     )
     assert_error(
-        "cancel-in-progress must be true only for deferred draft PR runs",
+        "cancel-in-progress must apply to all pull_request runs",
         replace_once(
             BASE_WORKFLOW,
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+            "cancel-in-progress: true",
+        ),
+    )
+    assert_error(
+        "cancel-in-progress must apply to all pull_request runs",
+        replace_once(
+            BASE_WORKFLOW,
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
             """cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) }}""",
-            "cancel-in-progress: true",
         ),
     )
     assert_error(

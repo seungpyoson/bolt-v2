@@ -12,7 +12,7 @@ Tracking:
 - Problem 1: #739, local source-fence verifier lanes serialize independent checks.
 - Problem 2: #740, add a lane-aware scheduler for local verification commands.
 - Problem 3: #741, harden Rust Probe into a safe agent-facing remote debug lane.
-- Problem 4: #742, stop using full CI as the default debugging path.
+- Problem 4: #742, clarify agent-facing verification lane routing.
 
 ### Problem 1: Local verifier gates are over-serialized
 
@@ -51,15 +51,21 @@ But it is not yet a safe agent-facing lane:
 - the runner does not assert the checked-out SHA;
 - there is no wrapper-owned run correlation, active-run cap, timeout policy, or refusal-text integration.
 
-### Problem 4: Full CI is being used for debugging because the middle lanes are weak
+### Problem 4: Agent-facing verification lane routing is unclear
 
-`just verify-remote` is the correct merge-proof path, but it is too broad for ordinary compile/test discovery. Because local verifier orchestration and Rust Probe are both underdeveloped, agents overuse either queued local gates or full CI.
+Agents do not have a clear routing decision tree for verification symptoms. Local compile-heavy Rust refusals point directly toward `just verify-remote`, while local lane-lock symptoms and Rust compile/test debugging need different middle lanes. This makes agents confuse local Python/source-fence queues with Rust compile/test feedback, launch competing local gates, or use full CI as a discovery mechanism.
+
+Expected routing:
+
+- local source-fence/Python verifier queueing -> local verifier scheduler work;
+- targeted Rust compile/test debugging -> hardened Rust Probe wrapper;
+- merge-proof evidence -> `just verify-remote`.
 
 ## Scope Of This Plan
 
 This plan fixes Problem 3 only: turn the existing manual Rust Probe into a safe remote Rust debugging command for agents.
 
-It does not fix Problem 1 or Problem 2. Those require a separate local verifier orchestrator plan. It only helps Problem 4 for Rust compile/test debugging, not for local source-fence/Python verifier queueing.
+It does not fix Problem 1 or Problem 2. Those require a separate local verifier orchestrator plan. It enables part of the eventual Problem 4 routing fix by creating the Rust debug lane that guidance can safely point to.
 
 ## Invariants
 

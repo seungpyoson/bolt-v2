@@ -870,6 +870,8 @@ fn evaluate_universe(
         source_object_count,
         source_conversion_run_object_count,
         converted_completion_proof_seen,
+        source_proof_count,
+        source_accepted_proof_count,
     )?;
 
     Ok(VenueScaleConversionAcceptanceUniverse {
@@ -928,6 +930,8 @@ fn validate_status_inputs(
     source_object_count: u64,
     planned_conversion_run_object_count: u64,
     converted_completion_proof_seen: bool,
+    source_proof_count: u64,
+    source_accepted_proof_count: u64,
 ) -> Result<()> {
     match spec.status {
         VenueScaleConversionAcceptanceStatus::Converted => {
@@ -981,6 +985,12 @@ fn validate_status_inputs(
             ensure!(
                 spec.blocking_issues.is_empty(),
                 "source-only universe {} must not contain blocking issues",
+                spec.universe_id
+            );
+            ensure!(
+                source_proof_count == 0 || source_accepted_proof_count > 0,
+                "source-only universe {} with a source proof set must contain accepted source \
+                 proof evidence",
                 spec.universe_id
             );
         }
@@ -1098,7 +1108,7 @@ mod tests {
         let spec = converted_universe_spec();
         // converted_record_count (3) < planned conversion-run object count (5):
         // the operator-asserted Converted status must be rejected, not copied.
-        let error = validate_status_inputs(&spec, 3, 0, 5, true)
+        let error = validate_status_inputs(&spec, 3, 0, 5, true, 0, 0)
             .expect_err("converted universe short of planned objects must be blocked");
         assert!(
             format!("{error:#}").contains("record_count_mismatch"),
@@ -1109,7 +1119,7 @@ mod tests {
     #[test]
     fn converted_status_accepts_full_planned_object_coverage() {
         let spec = converted_universe_spec();
-        validate_status_inputs(&spec, 5, 0, 5, true)
+        validate_status_inputs(&spec, 5, 0, 5, true, 0, 0)
             .expect("converted universe covering every planned object is accepted");
     }
 
@@ -1117,11 +1127,22 @@ mod tests {
     fn source_only_status_rejects_blocking_issues() {
         let mut spec = source_only_universe_spec();
         spec.blocking_issues = vec!["missing_object_gates".to_string()];
-        let error = validate_status_inputs(&spec, 0, 1, 0, false)
+        let error = validate_status_inputs(&spec, 0, 1, 0, false, 0, 0)
             .expect_err("source-only universe with blocking issues must be rejected");
         assert!(
             format!("{error:#}").contains("blocking issues"),
             "expected blocking-issues rejection, got: {error:#}"
+        );
+    }
+
+    #[test]
+    fn source_only_status_rejects_unaccepted_source_proof_set() {
+        let spec = source_only_universe_spec();
+        let error = validate_status_inputs(&spec, 0, 1, 0, false, 1, 0)
+            .expect_err("source-only universe with unaccepted source proof set must be rejected");
+        assert!(
+            format!("{error:#}").contains("accepted source proof"),
+            "expected accepted-source-proof rejection, got: {error:#}"
         );
     }
 
@@ -1131,7 +1152,7 @@ mod tests {
         // planned == 0 (no run plan) and no completion-proof artifact: the prior
         // bypass accepted this on converted_record_count > 0 alone. It must now
         // be rejected for missing coverage proof.
-        let error = validate_status_inputs(&spec, 7, 0, 0, false)
+        let error = validate_status_inputs(&spec, 7, 0, 0, false, 0, 0)
             .expect_err("converted universe without a completion proof must be blocked");
         assert!(
             format!("{error:#}").contains("coverage proof"),
@@ -1145,7 +1166,7 @@ mod tests {
         // Control: a self-attesting completion proof with no run plan
         // (planned == 0) is the legitimate Converted-via-completion-ledger or
         // selected-manifest case.
-        validate_status_inputs(&spec, 7, 0, 0, true)
+        validate_status_inputs(&spec, 7, 0, 0, true, 0, 0)
             .expect("converted universe with a completion proof and no run plan is accepted");
     }
 }

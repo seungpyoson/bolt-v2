@@ -360,6 +360,20 @@
       "This does not authorize broad PMXT backfill."
     ]
   },
+  "durable_source_selection_source_only_guardrail_status": {
+    "status": "code_guardrail_added_actual_pmxt_accepted_source_proof_unproven",
+    "evidence": [
+      "RED-GATED crates/backtesting-vertical-slice/src/venue_scale_conversion_acceptance.rs unit regression source_only_status_rejects_unaccepted_source_proof_set documents that a source-only universe with a referenced source proof set but zero accepted proofs must fail validation.",
+      "GREEN-GATED venue-scale conversion acceptance validation now receives source_proof_count and source_accepted_proof_count and rejects SourceOnly when source_proof_count > 0 and source_accepted_proof_count == 0.",
+      "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml keeps pmxt-polymarket-full-current-data blocked with source_accepted_proof_count=0 evidence preserved on the universe record."
+    ],
+    "claim_limits": [
+      "This proves a venue-scale source-only status cannot be backed by an explicitly unaccepted source proof set.",
+      "This does not accept any PMXT source proof.",
+      "This does not prove expanded PMXT coverage, cost, object gates, conversion run plans, or dynamic tick-size replay.",
+      "This does not authorize broad PMXT backfill."
+    ]
+  },
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
   "old_artifact_recommendation": {
     "recommendation": "keep_as_historical_reference_only",
@@ -414,7 +428,7 @@
     },
     {
       "blocker": "durable_source_selection_unproven",
-      "required_evidence": "A source-proof acceptance record for any durable Polymarket source. The bounded PMXT sample remains one-off evidence only."
+      "required_evidence": "A source-proof acceptance record for any durable Polymarket source. Venue-scale acceptance now rejects source-only status when an explicit source proof set has zero accepted proofs, but the bounded PMXT sample remains one-off evidence only and the full-current PMXT source proof set still has source_accepted_proof_count=0."
     },
     {
       "blocker": "broad_backfill_efficiency_unproven",

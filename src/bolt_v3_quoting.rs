@@ -17,6 +17,9 @@ pub enum QuoteSide {
 pub struct QuoteTargetLeg {
     pub side: QuoteSide,
     pub price: f64,
+    /// Dollar order notional for this leg, sized off the protective half-spread
+    /// (the GM/CG edge proxy) by `maker_robust_size`, never off directional EV.
+    pub size_notional: f64,
 }
 
 /// Two target legs produced by shared quote layout.
@@ -40,6 +43,11 @@ pub struct FamilyQuoteInputs {
     pub tau: f64,
     pub reference_tau: f64,
     pub time_widen_cap: f64,
+    /// Operator per-order dollar target for each maker quote leg. Scaled by the
+    /// captured edge (relative to `max_half_spread`) in `maker_robust_size`.
+    pub order_notional_target: f64,
+    /// Operator cap on per-leg dollar notional; clamps the sized target.
+    pub maximum_position_notional: f64,
 }
 
 /// Two binary outcome-token bid prices.

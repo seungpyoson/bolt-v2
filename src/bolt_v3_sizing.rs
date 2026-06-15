@@ -63,6 +63,57 @@ pub(crate) fn choose_robust_size(inputs: &RobustSizingInputs) -> f64 {
     (sanitize_non_negative(inputs.order_notional_target) * target_scale).min(cap)
 }
 
+/// Maker order notional for one quote leg, sized off the protective half-spread
+/// (the GM/CG edge proxy) rather than directional EV.
+///
+/// The GM/CG binary maker is directional-EV break-even, so it cannot consume
+/// [`choose_robust_size`]: that primitive fails closed to ZERO on non-positive
+/// EV (`expected_ev_per_notional`), which is exactly the maker's standing regime
+/// — it would emit perpetual zero-size quotes (§16#13). This sibling instead
+/// sizes on the half-spread the maker actually captures. It NEVER reads an EV
+/// sign.
+///
+/// It is the half-spread analogue of `choose_robust_size`'s
+/// `EV / ev_reference` scaling — same shape, same module, same dollar-anchored
+/// contract: a strictly positive protective edge is required to quote at all
+/// (a non-finite or non-positive `half_spread` sizes to ZERO, never the cap),
+/// and the operator's per-order dollar target is scaled by the captured edge
+/// relative to `reference_half_spread` (the widest protective half-spread, which
+/// earns the full target), saturating once the edge reaches the reference and
+/// clamped to the position-notional cap. Like `choose_robust_size` it fails
+/// closed to [`ZERO_F64`] on any non-finite or negative input, so an invalid
+/// input can never select a positive size.
+pub(crate) fn maker_robust_size(
+    half_spread: f64,
+    reference_half_spread: f64,
+    order_notional_target: f64,
+    maximum_position_notional: f64,
+) -> f64 {
+    // No protective edge => no quote. Unlike the taker the maker cannot gate on
+    // EV (it is break-even), so the half-spread it captures is the gate.
+    if !is_positive_finite(half_spread) {
+        return ZERO_F64;
+    }
+    // The reference edge anchors the scale; a non-positive/non-finite reference
+    // can never define a valid scale, so it fails closed rather than dividing.
+    if !is_positive_finite(reference_half_spread) {
+        return ZERO_F64;
+    }
+
+    let cap = sanitize_non_negative(order_notional_target)
+        .min(sanitize_non_negative(maximum_position_notional));
+    if cap <= ZERO_F64 {
+        return ZERO_F64;
+    }
+
+    // Dimensional contract mirrors choose_robust_size: the dimensionless edge
+    // ratio only scales the operator's dollar target; it is never itself a
+    // dollar amount. An edge at or beyond the reference saturates the scale at
+    // the full target.
+    let edge_scale = clamp_probability(half_spread / reference_half_spread);
+    (sanitize_non_negative(order_notional_target) * edge_scale).min(cap)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +316,103 @@ mod tests {
                     maximum_position_notional: 10.0,
                     impact_cap_notional: 100.0,
                 }),
+                0.0
+            );
+        }
+    }
+
+    #[test]
+    fn maker_robust_size_sizes_positively_in_the_break_even_regime() {
+        // The headline §16#13 property: with a positive protective half-spread the
+        // maker sizes a POSITIVE dollar order, even though it carries no positive
+        // directional EV. `choose_robust_size` has no edge input and would return
+        // ZERO across this whole regime; this primitive sizes off the edge alone,
+        // so it is structurally impossible for an EV sign to zero it out (there is
+        // no EV parameter to read).
+        let size = maker_robust_size(0.05, 0.10, 5.0, 10.0);
+        assert!(
+            size > 0.0,
+            "positive edge must yield a positive maker size, got {size}"
+        );
+        assert!(
+            (size - 2.5).abs() < 1e-12,
+            "0.05/0.10 scale on a $5 target is $2.50, got {size}"
+        );
+    }
+
+    #[test]
+    fn maker_robust_size_requires_a_strictly_positive_protective_edge() {
+        // No-edge gate. A sign-flipped or edge-ignoring variant that returned the
+        // cap regardless of `half_spread` would size POSITIVE here and fail; only a
+        // primitive that genuinely gates on a strictly positive, finite edge passes.
+        for half_spread in [0.0, -0.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                maker_robust_size(half_spread, 0.10, 5.0, 10.0),
+                0.0,
+                "half_spread={half_spread} has no protective edge and must size to zero"
+            );
+        }
+    }
+
+    #[test]
+    fn maker_robust_size_grows_monotonically_with_the_captured_edge() {
+        // Magnitude differential: the size must depend on the edge MAGNITUDE, not
+        // merely be gated by its sign. A constant-cap variant (size independent of
+        // `half_spread`) would return the same value for both and fail here.
+        let thin = maker_robust_size(0.04, 0.10, 10.0, 100.0);
+        let wide = maker_robust_size(0.08, 0.10, 10.0, 100.0);
+        assert!(
+            wide > thin,
+            "a wider protective edge must size larger: thin={thin}, wide={wide}"
+        );
+        assert!(
+            (thin - 4.0).abs() < 1e-12,
+            "0.04/0.10 scale on $10 is $4, got {thin}"
+        );
+        assert!(
+            (wide - 8.0).abs() < 1e-12,
+            "0.08/0.10 scale on $10 is $8, got {wide}"
+        );
+    }
+
+    #[test]
+    fn maker_robust_size_saturates_at_the_reference_edge_and_respects_the_cap() {
+        // An edge at or beyond the reference earns the full per-order target.
+        assert_eq!(maker_robust_size(0.10, 0.10, 10.0, 100.0), 10.0);
+        assert_eq!(maker_robust_size(0.50, 0.10, 10.0, 100.0), 10.0);
+        // The position-notional cap clamps the saturated target.
+        assert_eq!(maker_robust_size(0.50, 0.10, 100.0, 12.0), 12.0);
+    }
+
+    #[test]
+    fn maker_robust_size_is_dimensionally_anchored_to_the_dollar_target() {
+        // Doubling the dollar anchor doubles the size while the dimensionless edge
+        // ratio stays fixed; the edge ratio alone is never dollars.
+        let base = maker_robust_size(0.05, 0.10, 5.0, 100.0);
+        let doubled = maker_robust_size(0.05, 0.10, 10.0, 100.0);
+        assert!((doubled - 2.0 * base).abs() < 1e-12);
+        assert!((base - 2.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn maker_robust_size_fails_closed_on_invalid_reference_target_or_cap() {
+        // A non-finite/non-positive reference edge cannot define a scale.
+        for reference_half_spread in [0.0, -0.10, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                maker_robust_size(0.05, reference_half_spread, 5.0, 10.0),
+                0.0
+            );
+        }
+        // A non-finite/negative target or cap sanitizes to zero capacity => no size.
+        for order_notional_target in [-1.0, f64::NAN, f64::NEG_INFINITY] {
+            assert_eq!(
+                maker_robust_size(0.05, 0.10, order_notional_target, 10.0),
+                0.0
+            );
+        }
+        for maximum_position_notional in [0.0, -1.0, f64::NAN, f64::NEG_INFINITY] {
+            assert_eq!(
+                maker_robust_size(0.05, 0.10, 5.0, maximum_position_notional),
                 0.0
             );
         }

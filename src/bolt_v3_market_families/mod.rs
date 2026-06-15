@@ -1314,6 +1314,8 @@ mod tests {
             tau: 3_600.0,
             reference_tau: 3_600.0,
             time_widen_cap: 10.0,
+            order_notional_target: 5.0,
+            maximum_position_notional: 10.0,
         }
     }
 
@@ -1326,6 +1328,10 @@ mod tests {
         assert_eq!(targets.leg_b.side, QuoteSide::Buy);
         assert!(targets.leg_a.price < 0.60);
         assert!(targets.leg_b.price < 0.40);
+        // The sizing seam carries a positive, symmetric per-leg notional sized off
+        // the protective half-spread (the band's positive edge survives routing).
+        assert!(targets.leg_a.size_notional > 0.0);
+        assert_eq!(targets.leg_a.size_notional, targets.leg_b.size_notional);
     }
 
     #[test]

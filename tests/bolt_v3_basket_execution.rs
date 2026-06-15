@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use bolt_v2::{
     bolt_v3_basket_execution::{
-        BoltV3BasketExecutionConfig, BoltV3BasketExecutionEvent, BoltV3BasketExecutionLegIntent,
-        BoltV3BasketExecutionState, BoltV3BasketExecutionStatus,
+        BoltV3BasketExecutionConfig, BoltV3BasketExecutionError, BoltV3BasketExecutionEvent,
+        BoltV3BasketExecutionLegIntent, BoltV3BasketExecutionState, BoltV3BasketExecutionStatus,
         BoltV3BasketExecutionSubmitDisposition, BoltV3BasketFillSource,
         BoltV3BasketNtSubmitCommand, BoltV3BasketRepairInput, BoltV3BasketRepairOutcome,
         BoltV3BasketRepairPolicy, BoltV3BasketRestartReport, BoltV3BasketSettlementSignal,
@@ -128,7 +128,10 @@ fn same_venue_submit_rejects_duplicate_leg_intents_before_mutating_state() {
         )
         .expect_err("duplicate leg intents must reject before submit mutation");
 
-    assert_eq!(error.to_string(), "basket execution leg shape mismatch");
+    assert!(matches!(
+        error,
+        BoltV3BasketExecutionError::LegShapeMismatch
+    ));
     assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Reserved);
     assert_eq!(basket.order_list_id(), None);
     assert!(basket.client_order_ids().is_empty());
@@ -148,7 +151,10 @@ fn same_venue_submit_rejects_mismatched_leg_intents_before_mutating_state() {
         )
         .expect_err("intent instrument must match the reserved basket leg");
 
-    assert_eq!(error.to_string(), "basket execution leg shape mismatch");
+    assert!(matches!(
+        error,
+        BoltV3BasketExecutionError::LegShapeMismatch
+    ));
     assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Reserved);
     assert_eq!(basket.order_list_id(), None);
     assert!(basket.client_order_ids().is_empty());

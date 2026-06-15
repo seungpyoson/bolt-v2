@@ -2730,7 +2730,7 @@ def draft_pr_is_fork(repo: pathlib.Path, pr: dict[str, Any]) -> tuple[bool | Non
 WORKFLOW_RUN_FIELDS = "attempt,databaseId,event,headSha,status,conclusion,createdAt,url"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|SESSION_TOKEN)[A-Z0-9_]*)\b\s*[:=]\s*\S+"
+    r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|SESSION_TOKEN)[A-Z0-9_]*)\b(\s*[:=]\s*)\S+"
 )
 BEARER_RE = re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S+")
 FULL_CI_READY_EVENTS = {"pull_request"}
@@ -2842,6 +2842,8 @@ def run_attempt(run: dict[str, Any]) -> int | None:
 
 def job_database_id(job: dict[str, Any]) -> int | None:
     database_id = job.get("databaseId")
+    if database_id is None:
+        database_id = job.get("id")
     if isinstance(database_id, int) and not isinstance(database_id, bool):
         return database_id
     if isinstance(database_id, str) and database_id.isdecimal():
@@ -2866,7 +2868,7 @@ def failed_job_summary(job: dict[str, Any], job_id: int) -> str:
 
 
 def mask_obvious_secrets(line: str) -> str:
-    line = SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}=<redacted>", line)
+    line = SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}<redacted>", line)
     return BEARER_RE.sub("Authorization: Bearer <redacted>", line)
 
 

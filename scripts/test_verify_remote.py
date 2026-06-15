@@ -106,6 +106,8 @@ def assert_diagnostic_excerpt_is_bounded_and_masked() -> None:
     text = (
         "\x1b[31mline0\x1b[0m\n"
         "TOKEN=abc123\n"
+        "password: secret-value\n"
+        "API_KEY = api-secret\n"
         "AWS_SECRET_ACCESS_KEY=awssecret\n"
         "Authorization: Bearer secretvalue\n"
         "line3\n"
@@ -113,14 +115,20 @@ def assert_diagnostic_excerpt_is_bounded_and_masked() -> None:
     )
     excerpt = owner.diagnostic_log_excerpt(
         text,
-        max_lines=3,
+        max_lines=7,
         max_bytes=200,
     )
     if "\x1b" in excerpt:
         raise AssertionError(excerpt)
-    if "abc123" in excerpt or "awssecret" in excerpt or "secretvalue" in excerpt:
+    if any(secret in excerpt for secret in ("abc123", "secret-value", "api-secret", "awssecret", "secretvalue")):
         raise AssertionError(excerpt)
-    if len(excerpt.splitlines()) > 3:
+    if len(excerpt.splitlines()) > 7:
+        raise AssertionError(excerpt)
+    if "TOKEN=<redacted>" not in excerpt:
+        raise AssertionError(excerpt)
+    if "password: <redacted>" not in excerpt:
+        raise AssertionError(excerpt)
+    if "API_KEY = <redacted>" not in excerpt:
         raise AssertionError(excerpt)
 
 
@@ -832,7 +840,7 @@ def assert_failed_job_diagnostics_retries_unavailable_and_reports_once() -> None
         owner.workflow_run_jobs = lambda _repo, _run_id, _attempt: (
             [
                 {
-                    "databaseId": 11,
+                    "id": 11,
                     "name": "nextest shard 1 of 4",
                     "status": "completed",
                     "conclusion": "failure",

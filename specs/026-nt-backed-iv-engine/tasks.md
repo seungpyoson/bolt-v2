@@ -2,14 +2,14 @@
 
 **Input**: Design documents from `specs/026-nt-backed-iv-engine/`
 **Prerequisites**: `plan.md`, `spec.md`, `research.md`, `data-model.md`, `contracts/iv-engine-api.md`, `quickstart.md`
-**Tests**: Required. The spec, constitution, and `practice.md` require TDD with named RED/GREEN evidence for implementation tasks.
+**Verification**: Required. The spec, constitution, and `AGENTS.md` require evidence-driven verification. Use behavior tests and RED/GREEN evidence where tests are the smallest reliable proof; otherwise record the exact static check, source-fence result, remote CI result, review artifact, or live/operator evidence that proves the claim.
 **Scope**: IV/implied-volatility engine only. FV and RV are explicitly out of scope.
 
 ## Phase 1: Setup
 
 **Purpose**: Establish exact repository evidence and IV module scaffolding without implementing behavior.
 
-- [X] T001 Record repository truth from `practice.md` in `specs/026-nt-backed-iv-engine/reference/repository-truth.md`
+- [X] T001 Record repository truth in `specs/026-nt-backed-iv-engine/reference/repository-truth.md`
 - [X] T002 Record open PR and open issue overlap review in `specs/026-nt-backed-iv-engine/reference/overlap-ledger.md`
 - [X] T003 Record current-main requirement evidence in `specs/026-nt-backed-iv-engine/reference/evidence-ledger.md`
 - [X] T004 Record pinned NT dependency evidence from `Cargo.toml` and `Cargo.lock` in `specs/026-nt-backed-iv-engine/reference/nt-evidence.md`
@@ -39,7 +39,7 @@
 - [X] T021 Add shared IV fixture builders for tests in `tests/bolt_v3_iv_support.rs`
 - [X] T022 Add IV source-fence verifier entrypoint placeholder in `tests/bolt_v3_iv_source_fence.rs`
 - [X] T023 Wire IV source-fence target into `justfile`
-- [X] T024 Record foundational RED/GREEN evidence requirements in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T024 Record foundational verification evidence requirements in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 **Checkpoint**: Shared IV type boundary is ready; user story work can start.
 
@@ -336,4 +336,4 @@ Task: T096 Implement quorum policy.
 
 ### Review Discipline
 
-Each story must leave a clean evidence trail in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`: requirement, current-main evidence, NT evidence, RED test evidence, GREEN test evidence, source-fence impact, and residual risk.
+Each story must leave a clean evidence trail in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`: requirement, current-main evidence, NT evidence, selected verification evidence, test-first RED/GREEN evidence when used, source-fence impact, and residual risk.

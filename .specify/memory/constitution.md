@@ -1,13 +1,16 @@
 <!--
 Sync Impact Report
-Version change: 1.0.0 -> 1.1.0
-Modified principles: added VII. Research And Analytics Stay NT-First
-Added sections: Research/backtest config constraint; v1.1.0 migration note
+Version change: 1.1.0 -> 2.0.0
+Modified principles: IV. Test-First Safety Gates -> IV. Evidence-Driven Verification Gates;
+V. Evidence Before Claims clarified
+Added sections: v2.0.0 migration note
 Removed sections: none
 Templates reviewed: .specify/templates/plan-template.md - no update needed;
 .specify/templates/spec-template.md - no update needed;
-.specify/templates/tasks-template.md - no update needed;
+.specify/templates/tasks-template.md - updated;
+.specify/templates/constitution-template.md - updated;
 .specify/templates/commands - absent in this repo
+Runtime guidance updated: AGENTS.md; CLAUDE.md and GEMINI.md now point to AGENTS.md
 Follow-up items: none
 -->
 
@@ -33,15 +36,21 @@ There is one config format, one secret source, one production build path, and on
 
 Changing a wallet, credential set, venue, target market, strategy, notional cap, timing bound, or approval token must require editing one coherent TOML section, not scattered code or multiple config locations.
 
-### IV. Test-First Safety Gates
+### IV. Evidence-Driven Verification Gates
 
-Implementation MUST be TDD. For every production behavior change: write the failing test, verify the expected failure, implement the smallest code change, verify green, then run the phase verification gate.
+Implementation MUST be evidence-driven and risk-appropriate. TDD is permitted and
+often useful, but it is not mandatory unless the user, active spec, or risk
+analysis explicitly requires it. Every change MUST have current evidence before
+readiness is claimed. Detailed agent workflow belongs in `AGENTS.md`.
 
 Live trading stays fail-closed. No live submit may occur unless production entrypoint, live canary gate, submit admission, mandatory decision evidence, no-submit readiness evidence, configured caps, and explicit operator approval all pass on the exact head being run.
 
 ### V. Evidence Before Claims
 
-Claims about readiness require current evidence from exact files, exact commands, exact SHAs, exact PR/check state, or live run artifacts. Passing tests or local mocks are not live readiness unless the checked behavior covers the stated live requirement.
+Claims about readiness require current evidence from exact files, exact commands,
+exact SHAs, exact PR/check state, or live run artifacts. Passing tests, static
+checks, reviews, or local mocks are not readiness evidence unless the checked
+behavior covers the stated requirement.
 
 External review is requested only after the branch is clean, pushed, all local findings are resolved, and exact-head CI is green. no-mistakes may be used for task triage and branch gating, but its output is advisory until mapped to concrete repo evidence.
 
@@ -76,14 +85,20 @@ External data providers are allowed when they avoid rebuilding commodity data in
 
 1. Evidence: inspect current `main`, exact file paths, exact lines, exact command output.
 2. Contract: update this constitution or feature contracts before runtime code when the boundary changes.
-3. Plan: decompose into independently reviewable slices with tests and verification commands.
-4. TDD implementation: red, green, refactor, verification gate for each behavior slice.
+3. Plan: decompose into independently reviewable slices with a named verification approach.
+4. Implementation: collect current evidence before claiming completion.
 5. Review: no external review request until local branch is clean, pushed, exact-head checks are green, and known findings are resolved.
 6. Merge: no merge without explicit user approval.
 
 ## Governance
 
 This constitution supersedes convenience, local habit, and stale branch artifacts. Any PR that violates a MUST rule requires redesign, not waiver-by-documentation. Amendments require an explicit user-approved diff, a migration note for affected specs/plans, and a version bump.
+
+Migration note for v2.0.0: affected planning artifacts must replace blanket TDD
+language with evidence-driven verification. Active work under
+`specs/026-nt-backed-iv-engine/` is updated by this amendment. Historical specs
+remain archival unless reopened from current `main`. Operational agent guidance
+for plugins and generated prompts lives in `AGENTS.md`.
 
 Migration note for v1.1.0: affected planning artifacts are
 `specs/023-nt-research-analytics-platform/spec.md`,
@@ -96,4 +111,4 @@ and `specs/023-nt-research-analytics-platform/tasks.md`. Runtime code is not
 changed by this amendment; implementation remains gated by feature-branch
 SpecKit checks and exact-head verification.
 
-**Version**: 1.1.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-05-20
+**Version**: 2.0.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-06-15

@@ -89,6 +89,99 @@ impl RequoteBudget {
     }
 }
 
+/// Structural token cost of one NT submit command against the submit-governor
+/// budget. A submit (fresh or resubmit) issues exactly one submit command.
+const SUBMIT_COMMAND_COST: u64 = 1;
+/// Structural token cost of one venue REST call against the CLOB REST budget.
+/// Every cancel and every submit is exactly one REST call.
+const REST_CALL_COST: u64 = 1;
+/// REST cost of a cancel+resubmit reprice cycle: the cancel REST call plus the
+/// resubmit REST call. The venue lacks an in-place modify, so a reprice is always
+/// two REST calls.
+const CANCEL_RESUBMIT_REST_COST: u64 = REST_CALL_COST + REST_CALL_COST;
+
+/// The two-budget maker requote admission gate (§16#3, FR-011).
+///
+/// A maker reprice is bounded by TWO independent constraints in DIFFERENT units,
+/// which must not be collapsed into a single "whichever is lower" window:
+/// - `submit_commands` — the NT submit-governor budget (`max_order_submit_rate`,
+///   e.g. 40/min). Counts submit COMMANDS; a cancel is not a submit command.
+/// - `rest_calls` — the venue CLOB REST budget (`clob_per_minute`, e.g. 100/min).
+///   Counts REST CALLS; every cancel and every submit is one REST call.
+///
+/// A cancel+resubmit reprice costs **1 submit command + 2 REST calls**. The gate
+/// reserves both budgets for the WHOLE pair **atomically as one acquisition**
+/// before the cancel is issued: if either budget would be exhausted, neither is
+/// charged, so mid-window exhaustion can never strand a cancelled side with no
+/// budget left to resubmit. Atomicity is enforced by trying both reservations on
+/// throwaway clones and committing only when both succeed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequoteBudgetPair {
+    submit_commands: RequoteBudget,
+    rest_calls: RequoteBudget,
+}
+
+impl RequoteBudgetPair {
+    /// Compose the submit-command and REST-call budgets. Callers derive each
+    /// budget's caps/windows from TOML (`max_order_submit_rate`) and venue
+    /// capability facts (`clob_per_minute`); this gate only composes them.
+    pub fn new(submit_commands: RequoteBudget, rest_calls: RequoteBudget) -> Self {
+        Self {
+            submit_commands,
+            rest_calls,
+        }
+    }
+
+    /// Reserve budget for a fresh submit (a leg with no resting order): one submit
+    /// command and one REST call. All-or-nothing across both budgets.
+    pub fn try_reserve_fresh_submit(&mut self, now_ms: u64) -> bool {
+        self.try_reserve(now_ms, SUBMIT_COMMAND_COST, REST_CALL_COST)
+    }
+
+    /// Reserve budget for a cancel+resubmit reprice as ONE acquisition: one submit
+    /// command and two REST calls. All-or-nothing across both budgets, so a
+    /// granted cancel is always paired with a guaranteed resubmit token.
+    pub fn try_reserve_cancel_resubmit(&mut self, now_ms: u64) -> bool {
+        self.try_reserve(now_ms, SUBMIT_COMMAND_COST, CANCEL_RESUBMIT_REST_COST)
+    }
+
+    /// Reserve budget for a standalone cancel (no resubmit): zero submit commands
+    /// and one REST call.
+    pub fn try_reserve_cancel(&mut self, now_ms: u64) -> bool {
+        self.try_reserve(now_ms, 0, REST_CALL_COST)
+    }
+
+    /// Granted submit commands currently counted inside the submit-governor window.
+    pub fn submit_commands_in_window(&self) -> usize {
+        self.submit_commands.in_window()
+    }
+
+    /// Total REST-call cost currently counted inside the venue REST window.
+    pub fn rest_cost_in_window(&self) -> u64 {
+        self.rest_calls.cost_in_window()
+    }
+
+    /// Atomically reserve `submit_cost` submit commands and `rest_cost` REST calls.
+    /// Both reservations are attempted on throwaway clones; the live budgets are
+    /// replaced only when BOTH succeed, so a failed reservation never leaves a
+    /// partial charge on either budget. A zero submit cost (a standalone cancel)
+    /// leaves the submit budget untouched.
+    fn try_reserve(&mut self, now_ms: u64, submit_cost: u64, rest_cost: u64) -> bool {
+        let mut submit_trial = self.submit_commands.clone();
+        let mut rest_trial = self.rest_calls.clone();
+
+        let submit_ok = submit_cost == 0 || submit_trial.try_acquire(now_ms, submit_cost);
+        let rest_ok = rest_trial.try_acquire(now_ms, rest_cost);
+        if !(submit_ok && rest_ok) {
+            return false;
+        }
+
+        self.submit_commands = submit_trial;
+        self.rest_calls = rest_trial;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +296,110 @@ mod tests {
         assert!(budget.try_acquire(10_001 + ONE_MINUTE_MS, 1));
         assert_eq!(budget.in_window(), 1);
         assert_eq!(budget.cost_in_window(), 1);
+    }
+
+    fn fresh_pair(submit_cap: u64, rest_cap: u64) -> RequoteBudgetPair {
+        RequoteBudgetPair::new(
+            RequoteBudget::new(submit_cap, ONE_MINUTE_MS, 0),
+            RequoteBudget::new(rest_cap, ONE_MINUTE_MS, 0),
+        )
+    }
+
+    #[test]
+    fn fresh_submit_charges_one_submit_command_and_one_rest_call() {
+        let mut pair = fresh_pair(40, 100);
+        assert!(pair.try_reserve_fresh_submit(1_000));
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 1);
+    }
+
+    #[test]
+    fn cancel_resubmit_charges_one_submit_command_and_two_rest_calls() {
+        let mut pair = fresh_pair(40, 100);
+        assert!(pair.try_reserve_cancel_resubmit(1_000));
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 2);
+    }
+
+    #[test]
+    fn standalone_cancel_charges_one_rest_call_and_no_submit_command() {
+        let mut pair = fresh_pair(40, 100);
+        assert!(pair.try_reserve_cancel(1_000));
+        assert_eq!(pair.submit_commands_in_window(), 0);
+        assert_eq!(pair.rest_cost_in_window(), 1);
+    }
+
+    #[test]
+    fn the_two_budgets_are_independent_constraints_submit_can_bind_first() {
+        // Submit-governor caps at 2 while REST has ample room; the third fresh
+        // submit must fail on the SUBMIT budget, proving the constraints are NOT
+        // collapsed into a single "whichever is lower" window.
+        let mut pair = fresh_pair(2, 100);
+        assert!(pair.try_reserve_fresh_submit(1_000));
+        assert!(pair.try_reserve_fresh_submit(1_100));
+        assert!(!pair.try_reserve_fresh_submit(1_200));
+        assert_eq!(pair.submit_commands_in_window(), 2);
+        // REST charged exactly twice (the two granted submits), not three times.
+        assert_eq!(pair.rest_cost_in_window(), 2);
+    }
+
+    #[test]
+    fn the_two_budgets_are_independent_constraints_rest_can_bind_first() {
+        // REST caps at 3 while the submit-governor has ample room; a cancel+resubmit
+        // costs 2 REST, so the first fits but the second (needing 2 more, total 4)
+        // must fail on the REST budget.
+        let mut pair = fresh_pair(100, 3);
+        assert!(pair.try_reserve_cancel_resubmit(1_000));
+        assert!(!pair.try_reserve_cancel_resubmit(1_100));
+        // Only the first cancel+resubmit landed: 1 submit command, 2 REST calls.
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 2);
+    }
+
+    #[test]
+    fn failed_rest_reservation_leaves_the_submit_budget_uncharged() {
+        // Anti-stranding atomicity: a cancel+resubmit needs 2 REST but only 1 fits.
+        // A non-atomic gate would charge the submit command first, then fail on REST,
+        // stranding a submit token. The atomic gate must charge NEITHER budget.
+        let mut pair = fresh_pair(40, 1);
+        assert!(!pair.try_reserve_cancel_resubmit(1_000));
+        assert_eq!(
+            pair.submit_commands_in_window(),
+            0,
+            "submit budget must be untouched"
+        );
+        assert_eq!(
+            pair.rest_cost_in_window(),
+            0,
+            "rest budget must be untouched"
+        );
+        // The gate is not poisoned: a later affordable standalone cancel still works.
+        assert!(pair.try_reserve_cancel(1_100));
+        assert_eq!(pair.rest_cost_in_window(), 1);
+    }
+
+    #[test]
+    fn failed_submit_reservation_leaves_the_rest_budget_uncharged() {
+        // The mirror case: the submit-governor is exhausted but REST has room. The
+        // cancel+resubmit must charge NEITHER budget (no partial 2-REST charge).
+        let mut pair = fresh_pair(1, 100);
+        assert!(pair.try_reserve_fresh_submit(1_000)); // exhausts the 1-command submit budget
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 1);
+        assert!(!pair.try_reserve_cancel_resubmit(1_100));
+        // The failed reprice added neither a submit command nor any REST cost.
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 1);
+    }
+
+    #[test]
+    fn budgets_replenish_as_both_windows_slide() {
+        let mut pair = fresh_pair(1, 2);
+        assert!(pair.try_reserve_cancel_resubmit(1_000)); // 1 submit, 2 rest -> both full
+        assert!(!pair.try_reserve_cancel_resubmit(1_100));
+        // After both one-minute windows slide past, a fresh reprice is admitted again.
+        assert!(pair.try_reserve_cancel_resubmit(1_001 + ONE_MINUTE_MS));
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 2);
     }
 }

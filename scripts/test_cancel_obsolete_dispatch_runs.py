@@ -189,6 +189,20 @@ def assert_terminal_cancel_http_errors_are_conflicts() -> None:
         assert client.cancel_run(100) == "conflict"
 
 
+def assert_cancel_uses_force_cancel_endpoint() -> None:
+    module = load_script()
+    calls = []
+    client = module.GitHubClient(repo="example/repo", token="token")
+
+    def record_request(method, path, *, params):
+        calls.append((method, path, params))
+        return {}
+
+    client._request_json = record_request
+    assert client.cancel_run(100) == "cancelled"
+    assert calls == [("POST", "actions/runs/100/force-cancel", {})], calls
+
+
 def assert_paginates_until_partial_page() -> None:
     module = load_script()
     fake = FakeClient(
@@ -328,6 +342,7 @@ def main() -> int:
     assert_dry_run_reports_without_cancelling()
     assert_cancel_conflict_is_recorded_not_failed()
     assert_terminal_cancel_http_errors_are_conflicts()
+    assert_cancel_uses_force_cancel_endpoint()
     assert_paginates_until_partial_page()
     assert_warns_when_pagination_cap_is_full()
     assert_config_comes_from_toml()

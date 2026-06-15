@@ -22,6 +22,10 @@ fn strategy_with_reference_current_price(reference_current_price: &str) -> Strin
 }
 
 fn root_fixture() -> BoltV3RootConfig {
+    root_fixture_for_asset("BTC")
+}
+
+fn root_fixture_for_asset(asset: &str) -> BoltV3RootConfig {
     let fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml");
     let reference_price_fixture_additions = r#"
 [[chainlink_data_streams.feed_bindings]]
@@ -45,7 +49,7 @@ price_precision = 8
         .as_mut()
         .and_then(|surfaces| surfaces.get_mut("configured_rv_surface"))
         .expect("root fixture should include configured RV surface")
-        .canonical_base_asset = "BTC".to_string();
+        .canonical_base_asset = asset.to_string();
     root
 }
 
@@ -81,9 +85,16 @@ fn try_parse_strategy(
 }
 
 fn validate_reference_current_price(reference_current_price: &str) -> Vec<String> {
+    validate_reference_current_price_for_asset(reference_current_price, "BTC")
+}
+
+fn validate_reference_current_price_for_asset(
+    reference_current_price: &str,
+    asset: &str,
+) -> Vec<String> {
     let mut strategy = parse_strategy(reference_current_price);
-    set_target_underlying_asset(&mut strategy, "BTC");
-    validate_strategies(&root_fixture(), &loaded_strategy(strategy))
+    set_target_underlying_asset(&mut strategy, asset);
+    validate_strategies(&root_fixture_for_asset(asset), &loaded_strategy(strategy))
 }
 
 #[test]
@@ -568,7 +579,7 @@ symbol = "BTC"
 
 #[test]
 fn unlisted_unsupported_source_does_not_reduce_supported_source_quorum() {
-    let messages = validate_reference_current_price(
+    let messages = validate_reference_current_price_for_asset(
         r#"
 [reference_current_price]
 asset = "ADA"
@@ -594,6 +605,7 @@ required = false
 client_id = "polyresearch_reference"
 symbol = "ADA/USD"
 "#,
+        "ADA",
     );
 
     assert!(
@@ -1072,7 +1084,7 @@ instrument_id = "BTC-USD.CHAINLINK"
 
 #[test]
 fn optional_enabled_unsupported_polyresearch_source_is_skipped_when_quorum_can_be_met() {
-    let messages = validate_reference_current_price(
+    let messages = validate_reference_current_price_for_asset(
         r#"
 [reference_current_price]
 asset = "ADA"
@@ -1098,6 +1110,7 @@ required = false
 client_id = "polyresearch_reference"
 symbol = "ADA/USD"
 "#,
+        "ADA",
     );
 
     assert!(
@@ -1120,7 +1133,7 @@ symbol = "ADA/USD"
 
 #[test]
 fn required_unsupported_polyresearch_source_rejects() {
-    let messages = validate_reference_current_price(
+    let messages = validate_reference_current_price_for_asset(
         r#"
 [reference_current_price]
 asset = "ADA"
@@ -1139,6 +1152,7 @@ required = true
 client_id = "polyresearch_reference"
 symbol = "ADA/USD"
 "#,
+        "ADA",
     );
 
     assert!(

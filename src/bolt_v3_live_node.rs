@@ -4491,6 +4491,9 @@ mod tests {
     use nautilus_model::types::{AccountBalance, Currency, Money, Price, Quantity};
     use rust_decimal::Decimal;
     use sha2::{Digest, Sha256};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEST_CATALOG_ID: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn startup_rebuild_recovers_known_submit_reservation_from_nt_cache() {
@@ -5994,7 +5997,15 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
         let root_text = include_str!("../tests/fixtures/bolt_v3/root.toml");
-        let root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
+        let mut root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
+        let catalog_id = NEXT_TEST_CATALOG_ID.fetch_add(1, Ordering::Relaxed);
+        root.persistence.catalog_directory = std::env::temp_dir()
+            .join(format!(
+                "bolt-v3-live-node-test-catalog-{}-{catalog_id}",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .to_string();
         LoadedBoltV3Config {
             root_path: std::path::PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
             config_bundle_checksum: String::new(),

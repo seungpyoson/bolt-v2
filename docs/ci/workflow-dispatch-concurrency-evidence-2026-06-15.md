@@ -4,13 +4,19 @@ Issue: #728
 
 ## Scope
 
-This slice owns only the `workflow_dispatch` full-CI rerun lane in
-`.github/workflows/ci.yml`.
+This slice owns only the `workflow_dispatch` full-CI rerun lane for CI.
 
 Relative to current `main`, it preserves existing pull-request cancellation and
-only adds cancellation for the `workflow_dispatch` full-CI lane. It does not
-change path filters, deploy trust, fingerprint reuse, the meaning of `gate`, or
-any Rust verification lane.
+adds cancellation for the `workflow_dispatch` full-CI lane in two places:
+
+- `.github/workflows/ci.yml` cancels same-ref dispatch reruns when the selected
+  branch already contains the current workflow file.
+- `.github/workflows/dispatch-ci-cancel.yml` runs from the default branch on
+  `workflow_run: requested` and cancels older active same-branch dispatch runs
+  even when the selected branch still has stale workflow YAML.
+
+It does not change path filters, deploy trust, fingerprint reuse, the meaning of
+`gate`, or any Rust verification lane.
 
 ## Baseline Billing Evidence
 
@@ -45,10 +51,10 @@ That run completed at generated timestamp `2026-06-15T05:31:31Z`. Its full raw
 JSON was intentionally not committed because it is very large and includes
 per-job rows for the whole API snapshot.
 
-Exact after-policy billed minutes are not measurable before this workflow
-change runs on GitHub. The required post-merge measurement is the same command
-above, run after the new `cancel-in-progress` expression has been live long
-enough to include real `workflow_dispatch` reruns.
+Exact after-policy billed minutes are not measurable before the default-branch
+watchdog runs on GitHub. The required post-merge measurement is the same command
+above, run after the watchdog has been live long enough to include real
+`workflow_dispatch` reruns.
 
 ## Dispatch Rerun Concentration
 
@@ -90,9 +96,10 @@ observed recent concentration is repeated branch-head verification during PR
 iteration.
 
 Reduction in this slice: repeated same-ref manual full-CI dispatches now cancel
-older in-progress runs automatically through the existing `{ref}-full-ci`
-concurrency group. This reduces obsolete overlap without weakening the manual
-full-CI lane itself.
+older active runs. Branches that already carry current `ci.yml` use the existing
+`{ref}-full-ci` concurrency group. Stale selected branches are covered by the
+default-branch `dispatch-ci-cancel.yml` watchdog, because GitHub evaluates
+`workflow_run` workflows from the default branch.
 
 ## Policy Change
 
@@ -110,6 +117,19 @@ cancel-in-progress: >-
       || github.event_name == 'workflow_dispatch' }}
 ```
 
+Default-branch watchdog:
+
+```yaml
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [requested]
+
+permissions:
+  contents: read
+  actions: write
+```
+
 The concurrency group is unchanged:
 
 - deferred draft PRs: `pr-{number}-deferred`
@@ -124,6 +144,10 @@ The `cancel-in-progress` expression contains no `push`, no `refs/tags`, and no
 tag flows therefore keep the non-PR fallback group and do not opt into workflow
 cancellation.
 
+The watchdog also ignores non-`workflow_dispatch` events before listing or
+cancelling runs. Branchless workflow-run payloads are ignored, which prevents
+the watchdog from treating tag/deploy paths as branch dispatch reruns.
+
 Static guards:
 
 - `scripts/verify_ci_workflow_hygiene.py` now requires
@@ -132,18 +156,44 @@ Static guards:
   `cancel-in-progress`.
 - `scripts/test_verify_ci_workflow_hygiene.py` has regression checks for
   missing dispatch cancellation and accidental push, tag, or deploy cancellation.
+- `scripts/cancel_obsolete_dispatch_runs.py` filters candidates to older active
+  same-branch runs with the configured CI workflow name/path and
+  `workflow_dispatch` event.
+- `scripts/test_cancel_obsolete_dispatch_runs.py` proves PR events, branchless
+  payloads, completed runs, other branches, other workflows, and newer runs are
+  not cancelled.
+
+Post-merge adversarial finding addressed in this follow-up:
+
+- PR #731 merged at `2026-06-15T07:53:53Z`.
+- Older dispatch run `27532153745` on
+  `codex/722-reference-current-price-port` was created at
+  `2026-06-15T07:56:32Z`.
+- Newer same-branch dispatch run `27533378454` was created at
+  `2026-06-15T08:20:42Z`.
+- The older run completed with `failure` instead of cancellation, proving that
+  the top-level `ci.yml` concurrency change alone does not cover stale selected
+  branches.
 
 Local evidence:
 
 ```bash
 python3 -c 'import scripts.test_verify_ci_workflow_hygiene as t; t.assert_ci_concurrency_split_gaps_are_reported()'
+python3 scripts/test_cancel_obsolete_dispatch_runs.py
 python3 scripts/verify_ci_workflow_hygiene.py
 python3 scripts/test_verify_ci_workflow_hygiene.py
 git diff --check
 just ci-lint-workflow
+just source-fence-static
+just fmt-check
 ```
 
 All commands passed on this branch after the workflow change.
+
+Remote exact-head evidence belongs in PR #737 status and review metadata rather
+than this file: amending this evidence file changes the PR head SHA. Before
+merge, verify the current PR head with `gh pr checks 737` and the repo remote
+gate (`just verify-remote`).
 
 ## Follow-Up Measurement
 

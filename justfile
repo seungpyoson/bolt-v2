@@ -266,6 +266,9 @@ ci-lint-workflow:
     if ! python3 scripts/test_verify_ci_workflow_hygiene.py; then
         failed=1
     fi
+    if ! python3 scripts/test_cancel_obsolete_dispatch_runs.py; then
+        failed=1
+    fi
     if ! python3 scripts/test_run_rust_probe.py; then
         failed=1
     fi

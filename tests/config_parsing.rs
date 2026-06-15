@@ -5764,6 +5764,7 @@ fn parses_loss_governor_halt_actions_from_root_fixture() {
         loss_governor.manual_recovery_evidence_max_path_bytes,
         Some(256)
     );
+    assert_eq!(loss_governor.active_position_pnl_max_entries, Some(64));
 }
 
 #[test]
@@ -5820,6 +5821,45 @@ fn rejects_enabled_loss_governor_zero_manual_recovery_evidence_path_limit() {
                 && message.contains("positive integer")
         }),
         "enabled loss governor should reject zero manual recovery evidence path limit: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_enabled_loss_governor_missing_active_position_pnl_cap() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("active_position_pnl_max_entries = 64\n", "");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("missing active position PnL cap fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.loss_governor.active_position_pnl_max_entries")
+                && message.contains("positive integer")
+        }),
+        "enabled loss governor should require an active position PnL cap: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_enabled_loss_governor_zero_active_position_pnl_cap() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "active_position_pnl_max_entries = 64",
+        "active_position_pnl_max_entries = 0",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero active position PnL cap fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.loss_governor.active_position_pnl_max_entries")
+                && message.contains("positive integer")
+        }),
+        "enabled loss governor should reject zero active position PnL cap: {messages:#?}"
     );
 }
 

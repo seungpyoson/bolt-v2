@@ -112,6 +112,7 @@ enabled = true
 account_id = "POLYMARKET-001"
 max_snapshot_age_ns = 5000000000
 rolling_window_ns = 300000000000
+active_position_pnl_max_entries = 64
 on_loss_breach_trading_state = "reducing"
 on_untrusted_snapshot_trading_state = "reducing"
 recovery_mode = "manual"

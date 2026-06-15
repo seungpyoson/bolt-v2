@@ -1032,6 +1032,171 @@ fn external_fill_replay_after_dedupe_retention_expires_does_not_double_count_pro
 }
 
 #[test]
+fn authoritative_reseed_rearms_external_fill_accounting_after_retention_latch() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    seed_venue_spendability(&mut feed, 950);
+    assert!(
+        feed.seed_cache_snapshot(Vec::<String>::new(), Decimal::ZERO, Decimal::ZERO, 1_000)
+            .is_some()
+    );
+    rebuild_empty_position_sizer(&admission);
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "external-order-1",
+            "external-trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(3),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "external-order-1",
+            "external-trade-1",
+            1_700,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(3),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "external-order-2",
+            "external-trade-2",
+            1_800,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(2),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("latched external fill should preserve pre-reseed product state");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.observed_at_ns, 1_100);
+    assert_eq!(product.yes_position, Decimal::new(3, 0));
+
+    assert!(
+        feed.seed_cache_snapshot(Vec::<String>::new(), Decimal::ZERO, Decimal::ZERO, 1_900)
+            .is_some()
+    );
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "external-order-2",
+            "external-trade-2",
+            2_000,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(2),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("authoritative reseed should re-arm external fill accounting");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.observed_at_ns, 2_000);
+    assert_eq!(product.yes_position, Decimal::new(2, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(2, 0));
+}
+
+#[test]
+fn known_fill_retention_expiry_does_not_block_distinct_external_fill() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+
+    feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+        "client-order-1",
+        "known-trade-1",
+        1_100,
+        AccountId::from("ACCOUNT-001"),
+        Quantity::from(10),
+        OrderSide::Buy,
+        InstrumentId::from("instrument-yes.VENUE-A"),
+    )))
+    .expect("matching known fill should release reservation");
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "external-order-1",
+            "external-trade-1",
+            1_700,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(2),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("distinct external fill should update after known-fill retention expiry");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.observed_at_ns, 1_700);
+    assert_eq!(product.yes_position, Decimal::new(12, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(12, 0));
+}
+
+#[test]
+fn known_fill_replay_after_dedupe_retention_expires_does_not_apply_external_delta() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+
+    feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+        "client-order-1",
+        "known-trade-1",
+        1_100,
+        AccountId::from("ACCOUNT-001"),
+        Quantity::from(10),
+        OrderSide::Buy,
+        InstrumentId::from("instrument-yes.VENUE-A"),
+    )))
+    .expect("matching known fill should release reservation");
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "known-trade-1",
+            1_700,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(10),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("post-retention known duplicate should preserve product state");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.observed_at_ns, 1_100);
+    assert_eq!(product.yes_position, Decimal::new(10, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(10, 0));
+}
+
+#[test]
 fn external_fill_dedupe_keys_by_instrument_and_trade_id() {
     let (admission, mut feed) = committed_submit_runtime_feed();
 

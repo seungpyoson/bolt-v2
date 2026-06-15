@@ -3781,7 +3781,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             _ => None,
         };
     let (loss_runtime_feed, loss_runtime_feed_subscription) =
-        match loss_governor_runtime_feed_config_from_loaded(loaded) {
+        match loss_governor_runtime_feed_config_from_loaded(loaded)? {
             Some(config) => {
                 let feed = LossGovernorRuntimeFeed::new(config, submit_admission.clone());
                 let feed = match loss_halt_action_handler.as_ref() {
@@ -3817,12 +3817,21 @@ fn build_live_node_with_clients_and_submit_approval_limits(
 
 fn loss_governor_runtime_feed_config_from_loaded(
     loaded: &LoadedBoltV3Config,
-) -> Option<LossGovernorRuntimeFeedConfig> {
-    let block = loaded.root.risk.loss_governor.as_ref()?;
-    block.enabled.then_some(LossGovernorRuntimeFeedConfig {
+) -> Result<Option<LossGovernorRuntimeFeedConfig>, BoltV3LiveNodeError> {
+    let Some(block) = loaded.root.risk.loss_governor.as_ref() else {
+        return Ok(None);
+    };
+    if !block.enabled {
+        return Ok(None);
+    }
+    Ok(Some(LossGovernorRuntimeFeedConfig {
         account_id: block.account_id,
         rolling_window_ns: block.rolling_window_ns,
-    })
+        active_position_pnl_max_entries: required_loss_governor_usize(
+            "risk.loss_governor.active_position_pnl_max_entries",
+            block.active_position_pnl_max_entries,
+        )?,
+    }))
 }
 
 fn position_sizer_runtime_feed_config_from_loaded(

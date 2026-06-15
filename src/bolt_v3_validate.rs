@@ -1242,6 +1242,16 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                 "risk.loss_governor.rolling_window_ns must be a positive integer".to_string(),
             );
         }
+        if loss_governor.enabled
+            && loss_governor
+                .active_position_pnl_max_entries
+                .is_none_or(|value| value == 0)
+        {
+            errors.push(
+                "risk.loss_governor.active_position_pnl_max_entries must be a positive integer"
+                    .to_string(),
+            );
+        }
         if loss_governor.enabled {
             for (label, threshold) in [
                 (

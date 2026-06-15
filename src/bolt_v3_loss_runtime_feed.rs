@@ -32,6 +32,7 @@ const LOSS_RUNTIME_FEED_SOURCE: &str = stringify!(nt_loss_runtime_feed);
 pub struct LossGovernorRuntimeFeedConfig {
     pub account_id: AccountId,
     pub rolling_window_ns: u64,
+    pub active_position_pnl_max_entries: usize,
 }
 
 pub struct LossGovernorRuntimeFeed {
@@ -58,6 +59,7 @@ struct LossGovernorRuntimeFeedState {
     per_trade_pnl: Option<TimedDecimal>,
     per_trade_pnl_source: Option<PerTradePnlSource>,
     active_position_pnls: BTreeMap<PositionId, TimedDecimal>,
+    active_position_pnl_overflow_floor: Option<TimedDecimal>,
     last_position_pnl: Option<TimedDecimal>,
     current_equity: Option<TimedDecimal>,
     peak_equity: Option<TimedDecimal>,
@@ -78,6 +80,13 @@ impl TimedDecimal {
             value,
             observed_at_ns,
         }
+    }
+}
+
+fn worse_timed_decimal(current: Option<TimedDecimal>, candidate: TimedDecimal) -> TimedDecimal {
+    match current {
+        Some(current) if current.value <= candidate.value => current,
+        _ => candidate,
     }
 }
 
@@ -344,6 +353,7 @@ impl LossGovernorRuntimeFeed {
                 TimedDecimal::new(per_trade_pnl, position_fact.observed_at_ns),
                 position_fact.closed,
                 position_fact.reset_completed_position_pnl,
+                self.config.active_position_pnl_max_entries,
             );
         }
 
@@ -424,6 +434,7 @@ impl LossGovernorRuntimeFeedState {
             per_trade_pnl: None,
             per_trade_pnl_source: None,
             active_position_pnls: BTreeMap::new(),
+            active_position_pnl_overflow_floor: None,
             last_position_pnl: None,
             current_equity: None,
             peak_equity: None,
@@ -447,6 +458,10 @@ impl LossGovernorRuntimeFeedState {
         if self.per_trade_pnl_source == Some(PerTradePnlSource::PositionEvent) {
             for per_trade_pnl in self.active_position_pnls.values_mut() {
                 *per_trade_pnl = TimedDecimal::new(per_trade_pnl.value, observed_at_ns);
+            }
+            if let Some(overflow_floor) = self.active_position_pnl_overflow_floor {
+                self.active_position_pnl_overflow_floor =
+                    Some(TimedDecimal::new(overflow_floor.value, observed_at_ns));
             }
             if let Some(last_position_pnl) = self.last_position_pnl {
                 self.last_position_pnl =
@@ -474,14 +489,22 @@ impl LossGovernorRuntimeFeedState {
         position_pnl: TimedDecimal,
         closed: bool,
         reset_completed_position_pnl: bool,
+        active_position_pnl_max_entries: usize,
     ) {
         if reset_completed_position_pnl {
             self.last_position_pnl = None;
         }
         if closed {
             self.active_position_pnls.remove(&position_id);
-        } else {
+        } else if self.active_position_pnls.contains_key(&position_id)
+            || self.active_position_pnls.len() < active_position_pnl_max_entries
+        {
             self.active_position_pnls.insert(position_id, position_pnl);
+        } else {
+            self.active_position_pnl_overflow_floor = Some(worse_timed_decimal(
+                self.active_position_pnl_overflow_floor,
+                position_pnl,
+            ));
         }
         if !reset_completed_position_pnl {
             self.last_position_pnl = Some(position_pnl);
@@ -494,6 +517,7 @@ impl LossGovernorRuntimeFeedState {
             .active_position_pnls
             .values()
             .copied()
+            .chain(self.active_position_pnl_overflow_floor)
             .chain(self.last_position_pnl)
             .min_by_key(|per_trade_pnl| per_trade_pnl.value);
         if let Some(worst_position_pnl) = worst_position_pnl {
@@ -718,4 +742,58 @@ fn sum_money<'a>(values: impl Iterator<Item = &'a Money>, currency: Currency) ->
         total += value.as_decimal();
     }
     found.then_some(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LossGovernorRuntimeFeedState, TimedDecimal};
+    use nautilus_model::identifiers::PositionId;
+    use rust_decimal::Decimal;
+
+    #[test]
+    fn active_position_pnl_cap_keeps_bounded_map_and_conservative_overflow_floor() {
+        let mut state = LossGovernorRuntimeFeedState::new();
+
+        state.record_position_pnl(
+            PositionId::from("POSITION-A"),
+            TimedDecimal::new(Decimal::new(-8, 0), 1_000),
+            false,
+            false,
+            1,
+        );
+        state.record_position_pnl(
+            PositionId::from("POSITION-B"),
+            TimedDecimal::new(Decimal::new(-1, 0), 1_100),
+            false,
+            false,
+            1,
+        );
+        assert_eq!(state.active_position_pnls.len(), 1);
+        assert_eq!(
+            state.active_position_pnl_overflow_floor,
+            Some(TimedDecimal::new(Decimal::new(-1, 0), 1_100))
+        );
+        assert_eq!(
+            state.per_trade_pnl,
+            Some(TimedDecimal::new(Decimal::new(-8, 0), 1_000))
+        );
+
+        state.record_position_pnl(
+            PositionId::from("POSITION-C"),
+            TimedDecimal::new(Decimal::new(-12, 0), 1_200),
+            false,
+            false,
+            1,
+        );
+
+        assert_eq!(state.active_position_pnls.len(), 1);
+        assert_eq!(
+            state.active_position_pnl_overflow_floor,
+            Some(TimedDecimal::new(Decimal::new(-12, 0), 1_200))
+        );
+        assert_eq!(
+            state.per_trade_pnl,
+            Some(TimedDecimal::new(Decimal::new(-12, 0), 1_200))
+        );
+    }
 }

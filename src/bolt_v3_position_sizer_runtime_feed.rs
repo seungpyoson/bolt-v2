@@ -58,8 +58,9 @@ pub struct PositionSizerRuntimeFeed {
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     component_builder: PositionSizerRuntimeComponentBuilder,
     latest_terminal_observed_at_ns: Option<u64>,
-    seen_position_fill_trade_ids: BTreeMap<PositionFillTradeKey, u64>,
-    position_fill_trade_id_retention_exhausted: bool,
+    seen_known_position_fill_trade_ids: BTreeMap<PositionFillTradeKey, u64>,
+    seen_external_position_fill_trade_ids: BTreeMap<PositionFillTradeKey, u64>,
+    external_position_fill_trade_id_retention_exhausted: bool,
 }
 
 pub struct PositionSizerRuntimeFeedSubscription {
@@ -164,8 +165,9 @@ impl PositionSizerRuntimeFeed {
             submit_admission,
             component_builder,
             latest_terminal_observed_at_ns: None,
-            seen_position_fill_trade_ids: BTreeMap::new(),
-            position_fill_trade_id_retention_exhausted: false,
+            seen_known_position_fill_trade_ids: BTreeMap::new(),
+            seen_external_position_fill_trade_ids: BTreeMap::new(),
+            external_position_fill_trade_id_retention_exhausted: false,
         }
     }
 
@@ -277,8 +279,9 @@ impl PositionSizerRuntimeFeed {
             observed_at_ns,
             self.config.dedupe_retention_ns,
         );
-        self.seen_position_fill_trade_ids.clear();
-        self.position_fill_trade_id_retention_exhausted = false;
+        self.seen_known_position_fill_trade_ids.clear();
+        self.seen_external_position_fill_trade_ids.clear();
+        self.external_position_fill_trade_id_retention_exhausted = false;
         self.publish_components_if_ready()
     }
 
@@ -465,8 +468,8 @@ impl PositionSizerRuntimeFeed {
         key: PositionFillTradeKey,
         observed_at_ns: u64,
     ) {
-        self.prune_seen_position_fill_trade_ids(observed_at_ns);
-        self.seen_position_fill_trade_ids
+        self.prune_seen_known_position_fill_trade_ids(observed_at_ns);
+        self.seen_known_position_fill_trade_ids
             .insert(key, observed_at_ns);
     }
 
@@ -475,24 +478,53 @@ impl PositionSizerRuntimeFeed {
         key: PositionFillTradeKey,
         observed_at_ns: u64,
     ) -> bool {
-        self.prune_seen_position_fill_trade_ids(observed_at_ns);
-        if self.position_fill_trade_id_retention_exhausted {
+        self.prune_seen_external_position_fill_trade_ids(observed_at_ns);
+        if self.external_position_fill_trade_id_retention_exhausted
+            || self.known_position_fill_trade_id_blocks_external(&key, observed_at_ns)
+            || self
+                .seen_external_position_fill_trade_ids
+                .contains_key(&key)
+        {
             return false;
         }
-        self.seen_position_fill_trade_ids
+        self.seen_external_position_fill_trade_ids
             .insert(key, observed_at_ns)
             .is_none()
     }
 
-    fn prune_seen_position_fill_trade_ids(&mut self, observed_at_ns: u64) {
-        let len_before = self.seen_position_fill_trade_ids.len();
+    fn known_position_fill_trade_id_blocks_external(
+        &mut self,
+        key: &PositionFillTradeKey,
+        observed_at_ns: u64,
+    ) -> bool {
+        let Some(previous_observed_at_ns) = self.seen_known_position_fill_trade_ids.get_mut(key)
+        else {
+            return false;
+        };
+        if observed_at_ns.saturating_sub(*previous_observed_at_ns) > self.config.dedupe_retention_ns
+        {
+            *previous_observed_at_ns = observed_at_ns;
+        }
+        true
+    }
+
+    fn prune_seen_known_position_fill_trade_ids(&mut self, observed_at_ns: u64) {
         prune_observed_dedupe_entries(
-            &mut self.seen_position_fill_trade_ids,
+            &mut self.seen_known_position_fill_trade_ids,
             observed_at_ns,
             self.config.dedupe_retention_ns,
         );
-        if self.seen_position_fill_trade_ids.len() < len_before {
-            self.position_fill_trade_id_retention_exhausted = true;
+    }
+
+    fn prune_seen_external_position_fill_trade_ids(&mut self, observed_at_ns: u64) {
+        let len_before = self.seen_external_position_fill_trade_ids.len();
+        prune_observed_dedupe_entries(
+            &mut self.seen_external_position_fill_trade_ids,
+            observed_at_ns,
+            self.config.dedupe_retention_ns,
+        );
+        if self.seen_external_position_fill_trade_ids.len() < len_before {
+            self.external_position_fill_trade_id_retention_exhausted = true;
         }
     }
 

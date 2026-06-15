@@ -35,6 +35,7 @@ fn nt_runtime_feed_publishes_fresh_portfolio_loss_snapshot_to_submit_admission()
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 500,
+            active_position_pnl_max_entries: 64,
         },
         admission.clone(),
     );
@@ -71,6 +72,7 @@ fn subscribed_nt_events_update_submit_admission_loss_snapshot() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 500,
+            active_position_pnl_max_entries: 64,
         },
         admission.clone(),
     )));
@@ -106,6 +108,7 @@ fn subscribed_account_state_without_portfolio_snapshot_updates_loss_snapshot() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 500,
+            active_position_pnl_max_entries: 64,
         },
         admission.clone(),
     )));
@@ -145,6 +148,7 @@ fn account_state_equity_drop_updates_daily_and_rolling_loss() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 500,
+            active_position_pnl_max_entries: 64,
         },
         admission.clone(),
     );
@@ -188,6 +192,7 @@ fn account_state_heartbeat_preserves_portfolio_loss_components() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 500,
+            active_position_pnl_max_entries: 64,
         },
         admission.clone(),
     );
@@ -240,6 +245,7 @@ fn halt_action_handler_receives_snapshot_init_time_as_now() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 500,
+            active_position_pnl_max_entries: 64,
         },
         admission,
     )
@@ -277,6 +283,7 @@ fn subscribed_untrusted_portfolio_snapshot_invokes_halt_action_with_none() {
             LossGovernorRuntimeFeedConfig {
                 account_id,
                 rolling_window_ns: 500,
+                active_position_pnl_max_entries: 64,
             },
             admission,
         )
@@ -315,6 +322,7 @@ fn rolling_window_advances_from_portfolio_pnl_deltas_and_evicts_on_heartbeat() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 250,
+            active_position_pnl_max_entries: 64,
         },
         admission,
     );
@@ -350,6 +358,7 @@ fn position_adjustment_does_not_mask_larger_per_trade_loss() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 250,
+            active_position_pnl_max_entries: 64,
         },
         admission,
     );
@@ -382,6 +391,7 @@ fn later_safe_position_event_does_not_mask_open_position_per_trade_loss() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 250,
+            active_position_pnl_max_entries: 64,
         },
         admission.clone(),
     );
@@ -421,6 +431,70 @@ fn later_safe_position_event_does_not_mask_open_position_per_trade_loss() {
 }
 
 #[test]
+fn active_position_pnl_cap_preserves_worst_overflow_loss() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-PER-TRADE-CAPPED");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+            active_position_pnl_max_entries: 1,
+        },
+        admission.clone(),
+    );
+
+    feed.on_account_state(&account_state(account_id, 1_000, 1_000.0))
+        .expect("account baseline should publish");
+    feed.on_position_event(&changed_position_event_for_position(
+        account_id,
+        "POSITION-LOSS-A",
+        "INSTRUMENT-LOSS-A.SIM",
+        1_100,
+        -8.0,
+    ))
+    .expect("first open position should publish per-trade pnl");
+    let safe_overflow_position = feed
+        .on_position_event(&changed_position_event_for_position(
+            account_id,
+            "POSITION-LOSS-B",
+            "INSTRUMENT-LOSS-B.SIM",
+            1_200,
+            -1.0,
+        ))
+        .expect("overflow position should not mask worse retained loss");
+    assert_eq!(
+        safe_overflow_position.per_trade_pnl,
+        Some(Decimal::new(-8, 0))
+    );
+
+    let worse_overflow_position = feed
+        .on_position_event(&changed_position_event_for_position(
+            account_id,
+            "POSITION-LOSS-C",
+            "INSTRUMENT-LOSS-C.SIM",
+            1_300,
+            -12.0,
+        ))
+        .expect("worse overflow position should update conservative floor");
+    assert_eq!(
+        worse_overflow_position.per_trade_pnl,
+        Some(Decimal::new(-12, 0))
+    );
+    let error = admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 1_350)
+        .expect_err("worst overflow position loss should halt entry submit");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }
+            if reasons == vec![LossHaltReason::PerTradeLossLimit]
+    ));
+}
+
+#[test]
 fn position_opened_resets_completed_position_per_trade_pnl() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
@@ -432,6 +506,7 @@ fn position_opened_resets_completed_position_per_trade_pnl() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 250,
+            active_position_pnl_max_entries: 64,
         },
         admission.clone(),
     );
@@ -482,6 +557,7 @@ fn account_state_heartbeat_refreshes_position_event_per_trade_timestamp() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 250,
+            active_position_pnl_max_entries: 64,
         },
         admission.clone(),
     );
@@ -523,6 +599,7 @@ fn stale_peak_timestamp_does_not_make_fresh_portfolio_snapshot_stale() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 250,
+            active_position_pnl_max_entries: 64,
         },
         admission.clone(),
     );
@@ -553,6 +630,7 @@ fn flat_daily_pnl_portfolio_snapshot_does_not_lower_peak_equity() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 500,
+            active_position_pnl_max_entries: 64,
         },
         admission.clone(),
     );

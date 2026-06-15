@@ -101,9 +101,6 @@ struct BoltV3SubmitAdmissionInner {
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
     admitted_order_count: u32,
     admitted_order_count_by_execution_client: BTreeMap<String, u32>,
-    admitted_entry_order_count: u32,
-    admitted_risk_reducing_exit_order_count: u32,
-    admitted_replace_submit_order_count: u32,
     live_kill_switch_forced_reduction_order_count: u32,
     loss_policy: Option<LossGovernorPolicy>,
     loss_snapshot: Option<LossSnapshot>,
@@ -368,9 +365,6 @@ impl BoltV3SubmitAdmissionState {
                 live_submit_approval_limits,
                 admitted_order_count: 0,
                 admitted_order_count_by_execution_client: BTreeMap::new(),
-                admitted_entry_order_count: 0,
-                admitted_risk_reducing_exit_order_count: 0,
-                admitted_replace_submit_order_count: 0,
                 live_kill_switch_forced_reduction_order_count: 0,
                 loss_policy,
                 loss_snapshot: None,
@@ -1281,19 +1275,8 @@ impl BoltV3SubmitAdmissionState {
                     .admitted_order_count_by_execution_client
                     .entry(request.execution_client_id.clone())
                     .or_insert(0) += 1;
-                match request.intent_kind {
-                    BoltV3SubmitIntentKind::Entry => {
-                        inner.admitted_entry_order_count += 1;
-                    }
-                    BoltV3SubmitIntentKind::RiskReducingExit => {
-                        inner.admitted_risk_reducing_exit_order_count += 1;
-                    }
-                    BoltV3SubmitIntentKind::ReplaceSubmit => {
-                        inner.admitted_replace_submit_order_count += 1;
-                    }
-                    BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
-                        inner.live_kill_switch_forced_reduction_order_count += 1;
-                    }
+                if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
+                    inner.live_kill_switch_forced_reduction_order_count += 1;
                 }
                 let counter_rollback = Some(BoltV3SubmitAdmissionCounterRollback {
                     execution_client_id: request.execution_client_id.clone(),
@@ -2927,18 +2910,9 @@ fn rollback_admission_counters(
             .remove(&rollback.execution_client_id);
     }
     match rollback.intent_kind {
-        BoltV3SubmitIntentKind::Entry => {
-            inner.admitted_entry_order_count = inner.admitted_entry_order_count.saturating_sub(1);
-        }
-        BoltV3SubmitIntentKind::RiskReducingExit => {
-            inner.admitted_risk_reducing_exit_order_count = inner
-                .admitted_risk_reducing_exit_order_count
-                .saturating_sub(1);
-        }
-        BoltV3SubmitIntentKind::ReplaceSubmit => {
-            inner.admitted_replace_submit_order_count =
-                inner.admitted_replace_submit_order_count.saturating_sub(1);
-        }
+        BoltV3SubmitIntentKind::Entry
+        | BoltV3SubmitIntentKind::RiskReducingExit
+        | BoltV3SubmitIntentKind::ReplaceSubmit => {}
         BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
             inner.live_kill_switch_forced_reduction_order_count = inner
                 .live_kill_switch_forced_reduction_order_count

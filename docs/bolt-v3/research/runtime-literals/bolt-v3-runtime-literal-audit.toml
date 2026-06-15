@@ -1855,22 +1855,6 @@ reason = "The submit admission counter starts empty for each fresh submit-admiss
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
-literal = '''0'''
-context = '''admitted_entry_order_count: 0,'''
-classification = "submit_admission_counter_identity"
-reason = "The exposure-opening admission counter starts empty for each fresh submit-admission runtime state; the operator-provided cap comes from validated live submit approval limits."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''0'''
-context = '''admitted_risk_reducing_exit_order_count: 0,'''
-classification = "submit_admission_counter_identity"
-reason = "The risk-reducing exit admission counter starts empty for each fresh submit-admission runtime state; it is used only to enforce the explicit lifecycle policy."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
 literal = '''1'''
 context = '''inner.admitted_order_count += 1;'''
 classification = "submit_admission_counter_increment"
@@ -1904,22 +1888,6 @@ reason = "A missing per-client live-submit approval counter means no orders have
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''1'''
-context = '''inner.admitted_entry_order_count += 1;'''
-classification = "submit_admission_counter_increment"
-reason = "Each admitted entry or replace-submit increments the exposure-opening counter used by the explicit lifecycle policy."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''1'''
-context = '''inner.admitted_risk_reducing_exit_order_count += 1;'''
-classification = "submit_admission_counter_increment"
-reason = "Each admitted risk-reducing exit increments the lifecycle counter so one configured exit cannot be reused indefinitely."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''1'''
 context = '''inner.admitted_order_count = inner.admitted_order_count.saturating_sub(1);'''
 classification = "submit_admission_counter_rollback"
 reason = "Dropping an uncommitted submit permit releases exactly one previously consumed order-count slot after NT submit fails before commit."
@@ -1939,22 +1907,6 @@ literal = '''0'''
 context = '''remove_execution_client = *count == 0;'''
 classification = "submit_admission_counter_identity"
 reason = "A per-client counter at zero has no remaining consumed approvals and is removed from the sparse counter map."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''1'''
-context = '''inner.admitted_entry_order_count = inner.admitted_entry_order_count.saturating_sub(1);'''
-classification = "submit_admission_counter_rollback"
-reason = "Dropping an uncommitted entry permit releases exactly one exposure-opening lifecycle slot after NT submit fails before commit."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''1'''
-context = '''inner.admitted_replace_submit_order_count.saturating_sub(1);'''
-classification = "submit_admission_counter_rollback"
-reason = "Dropping an uncommitted replace-submit permit releases exactly one replace lifecycle slot after NT submit fails before commit."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -1995,6 +1947,14 @@ literal = '''2'''
 context = '''pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;'''
 classification = "schema_version_gate"
 reason = "The strategy schema version is a structural compatibility gate, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''0'''
+context = '''.is_none_or(|value| value == 0)'''
+classification = "config_validation_zero_rejection"
+reason = "Zero is the invalid lower-bound sentinel for the TOML-owned active position PnL entry cap; runtime capacity is still provided by config and must be positive."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
@@ -6152,14 +6112,6 @@ reason = "This initializes the source-owned no-exchange-mutation proof counter f
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''0'''
-context = '''admitted_replace_submit_order_count: 0,'''
-classification = "submit_admission_counter_zero"
-reason = "Initial value for an internal admission counter; operator limits and admissibility values remain TOML-owned and validated separately."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''0'''
 context = '''cancel: 0,'''
 classification = "strategy_free_mutation_count_none_invariant"
 reason = "This initializes the source-owned no-exchange-mutation proof counter for cancel requests; observed counts come from captured exchange traffic, not operator config."
@@ -6835,14 +6787,6 @@ literal = '''1'''
 context = '''.take(max_bytes.saturating_add(1))'''
 classification = "bounded_artifact_read_overflow_probe"
 reason = "This reads one byte beyond the configured artifact byte cap to detect oversized Hyperliquid approval artifacts without unbounded memory growth."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''1'''
-context = '''inner.admitted_replace_submit_order_count += 1;'''
-classification = "submit_admission_counter_increment"
-reason = "Single-event increment for an internal admission counter; operator limits and admissibility values remain TOML-owned and validated separately."
 
 [[allowed]]
 path = "src/bolt_v3_kill_switch.rs"

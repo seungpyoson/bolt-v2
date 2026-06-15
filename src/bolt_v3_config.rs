@@ -194,6 +194,7 @@ pub struct LossGovernorBlock {
     pub account_id: AccountId,
     pub max_snapshot_age_ns: u64,
     pub rolling_window_ns: u64,
+    pub active_position_pnl_max_entries: Option<usize>,
     pub on_loss_breach_trading_state: Option<LossGovernorTradingStateAction>,
     pub on_untrusted_snapshot_trading_state: Option<LossGovernorTradingStateAction>,
     pub recovery_mode: Option<LossGovernorRecoveryMode>,

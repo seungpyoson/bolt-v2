@@ -4,6 +4,8 @@ use nautilus_model::identifiers::{ClientId, InstrumentId, Venue};
 use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
 
+const DISALLOWED_OPERATOR_FORMAT_CHARS: &str = "\u{00ad}\u{034f}\u{061c}\u{115f}\u{1160}\u{17b4}\u{17b5}\u{180e}\u{200b}\u{200c}\u{200d}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2060}\u{2061}\u{2062}\u{2063}\u{2064}\u{2066}\u{2067}\u{2068}\u{2069}\u{206a}\u{206b}\u{206c}\u{206d}\u{206e}\u{206f}\u{feff}";
+
 pub type OutcomeGroupId = String;
 pub type OutcomeLegId = String;
 pub type TerminalStateId = String;
@@ -130,6 +132,10 @@ impl GroupingProof {
                         fingerprint,
                     )?;
                 }
+                validate_sha256_field(
+                    "grouping_proof.discovery_scope.cache_key_fingerprint",
+                    &discovery_scope.cache_key_fingerprint,
+                )?;
             }
             Self::HyperliquidOutcome {
                 proof_fingerprint, ..
@@ -153,6 +159,7 @@ pub struct PolymarketDiscoveryScopeEvidence {
     pub event_slugs: Vec<String>,
     pub market_slugs: Vec<String>,
     pub gamma_query_fingerprint: Option<String>,
+    pub cache_key_fingerprint: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,6 +309,7 @@ pub enum OutcomeGroupValidationError {
     MixedSettlementAsset { leg_id: OutcomeLegId },
     InvalidNormalizedPriceScaleEvidence,
     InvalidOrderConstraintFloor { leg_id: OutcomeLegId },
+    InvalidOperatorString,
     MetadataFingerprintMismatch,
 }
 
@@ -390,6 +398,10 @@ impl OutcomeGroupValidationError {
         matches!(self, Self::InvalidOrderConstraintFloor { .. })
     }
 
+    pub fn is_invalid_operator_string(&self) -> bool {
+        matches!(self, Self::InvalidOperatorString)
+    }
+
     pub fn is_mixed_settlement_asset(&self) -> bool {
         matches!(self, Self::MixedSettlementAsset { .. })
     }
@@ -428,6 +440,7 @@ impl ValidatedOutcomeGroup {
             return Err(OutcomeGroupValidationError::UnsupportedTerminalStateConvention);
         }
 
+        validate_operator_strings(group)?;
         validate_leg_assets_scales_and_constraints(group)?;
         validate_payout_matrix_shape(group)?;
         validate_non_standard_payouts(group)?;
@@ -724,8 +737,8 @@ fn validate_price_scale(
             assertion_source,
         } => {
             if settlement_asset_id != group_settlement_asset_id
-                || *payout_per_contract <= Decimal::ZERO
-                || *price_units_per_payout <= Decimal::ZERO
+                || *payout_per_contract != Decimal::ONE
+                || *price_units_per_payout != Decimal::ONE
             {
                 return Err(OutcomeGroupValidationError::InvalidNormalizedPriceScaleEvidence);
             }
@@ -755,6 +768,158 @@ fn validate_order_constraints(
         return Err(OutcomeGroupValidationError::InvalidOrderConstraintFloor {
             leg_id: leg_id.to_string(),
         });
+    }
+    Ok(())
+}
+
+fn validate_operator_strings(group: &OutcomeGroup) -> Result<(), OutcomeGroupValidationError> {
+    validate_operator_text(&group.group_id)?;
+    validate_operator_text(&group.settlement_asset_id)?;
+    validate_operator_text(&group.freshness_source_id)?;
+
+    for (terminal_state_id, terminal_state) in &group.terminal_states {
+        validate_operator_text(terminal_state_id)?;
+        validate_operator_text(&terminal_state.state_id)?;
+        validate_operator_text(&terminal_state.label)?;
+    }
+
+    for (leg_id, leg) in &group.tradable_legs {
+        validate_operator_text(leg_id)?;
+        validate_operator_text(&leg.instrument_id.to_string())?;
+        validate_operator_text(&leg.native_leg_id)?;
+        validate_operator_text(&leg.settlement_asset_id)?;
+        validate_operator_text(&leg.outcome_label)?;
+        validate_operator_text(&leg.side_label)?;
+        validate_leg_role_text(&leg.leg_role)?;
+    }
+
+    for col in &group.payout_matrix.cols {
+        validate_operator_text(col)?;
+    }
+    for terminal_state_id in group.payout_matrix.payout_per_unit_by_state.keys() {
+        validate_operator_text(terminal_state_id)?;
+    }
+
+    validate_grouping_proof_text(
+        group
+            .grouping_proof
+            .as_ref()
+            .ok_or(OutcomeGroupValidationError::MissingGroupingProof)?,
+    )?;
+    if let Some(role_binding_proof) = &group.role_binding_proof {
+        validate_role_binding_proof_text(role_binding_proof)?;
+    }
+    for vector in &group.settlement_rules.non_standard_terminal_payouts {
+        validate_operator_text(&vector.terminal_state_id)?;
+        validate_operator_text(&vector.label)?;
+        validate_operator_text(&vector.refund_convention)?;
+        for col in &vector.cols {
+            validate_attested_leg_ref_text(col)?;
+        }
+    }
+    if let TerminalStateConvention::Unsupported(value) =
+        &group.settlement_rules.terminal_state_convention
+    {
+        validate_operator_text(value)?;
+    }
+
+    Ok(())
+}
+
+fn validate_grouping_proof_text(
+    grouping_proof: &GroupingProof,
+) -> Result<(), OutcomeGroupValidationError> {
+    match grouping_proof {
+        GroupingProof::PolymarketNegRisk {
+            neg_risk_market_id,
+            discovery_scope,
+            market_slugs,
+            ..
+        } => {
+            validate_operator_text(neg_risk_market_id)?;
+            validate_operator_text(&discovery_scope.source_id)?;
+            for slug in &discovery_scope.event_slugs {
+                validate_operator_text(slug)?;
+            }
+            for slug in &discovery_scope.market_slugs {
+                validate_operator_text(slug)?;
+            }
+            for slug in market_slugs {
+                validate_operator_text(slug)?;
+            }
+        }
+        GroupingProof::OperatorAttested {
+            settlement_contract_id,
+            attestation_id,
+            ..
+        } => {
+            validate_operator_text(settlement_contract_id)?;
+            validate_operator_text(attestation_id)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_role_binding_proof_text(
+    role_binding_proof: &RoleBindingProof,
+) -> Result<(), OutcomeGroupValidationError> {
+    match role_binding_proof {
+        RoleBindingProof::OperatorAttested {
+            attestation_id,
+            positive_side_bindings,
+            ..
+        } => {
+            validate_operator_text(attestation_id)?;
+            for binding in positive_side_bindings {
+                validate_operator_text(&binding.terminal_state_label)?;
+                validate_attested_leg_ref_text(&binding.pays_on_leg)?;
+                validate_attested_leg_ref_text(&binding.pays_unless_leg)?;
+            }
+        }
+        RoleBindingProof::VenueStructuredFields { source_id, .. } => {
+            validate_operator_text(source_id)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_leg_role_text(role: &OutcomeLegRole) -> Result<(), OutcomeGroupValidationError> {
+    match role {
+        OutcomeLegRole::PaysOnTerminalState(terminal_state_id)
+        | OutcomeLegRole::PaysUnlessTerminalState(terminal_state_id) => {
+            validate_operator_text(terminal_state_id)
+        }
+        OutcomeLegRole::UnsupportedMultiState { terminal_state_ids } => {
+            for terminal_state_id in terminal_state_ids {
+                validate_operator_text(terminal_state_id)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_attested_leg_ref_text(
+    leg_ref: &AttestedLegRef,
+) -> Result<(), OutcomeGroupValidationError> {
+    match leg_ref {
+        AttestedLegRef::NativeLegId(native_leg_id) => validate_operator_text(native_leg_id),
+        AttestedLegRef::OutcomeAndSide {
+            outcome_label,
+            side_label,
+        } => {
+            validate_operator_text(outcome_label)?;
+            validate_operator_text(side_label)
+        }
+    }
+}
+
+fn validate_operator_text(value: &str) -> Result<(), OutcomeGroupValidationError> {
+    if value
+        .chars()
+        .any(|ch| ch.is_control() || DISALLOWED_OPERATOR_FORMAT_CHARS.contains(ch))
+    {
+        return Err(OutcomeGroupValidationError::InvalidOperatorString);
     }
     Ok(())
 }
@@ -1119,6 +1284,10 @@ fn append_grouping_identity_fields(
             fields.push(CanonicalField::new(
                 ["grouping", "source_id"],
                 &discovery_scope.source_id,
+            ));
+            fields.push(CanonicalField::new(
+                ["grouping", "cache_key_fingerprint"],
+                &discovery_scope.cache_key_fingerprint,
             ));
             append_string_list_fields(
                 fields,

@@ -20,7 +20,9 @@ use serde::Deserialize;
 use toml::Value;
 
 use crate::{
-    bolt_v3_archetypes::complete_set_arbitrage::raw_complete_set_config,
+    bolt_v3_archetypes::complete_set_arbitrage::{
+        CompleteSetSubmitMode, raw_complete_set_config, submit_mode_contract,
+    },
     bolt_v3_basket_execution::{
         BoltV3BasketExecutionError, BoltV3BasketExecutionEvent, BoltV3BasketExecutionState,
         BoltV3BasketSettlementSignal,
@@ -41,7 +43,6 @@ pub const KEY: &str = COMPLETE_SET_ARBITRAGE_KEY;
 const CONFIG_FIELD_OMS_TYPE: &str = stringify!(oms_type);
 const WRONG_TYPE_CODE: &str = stringify!(wrong_type);
 const INVALID_CONFIG_CODE: &str = stringify!(invalid_config);
-const SUBMIT_MODE_IOC: &str = "ioc";
 
 pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
     key: KEY,
@@ -207,7 +208,7 @@ impl CompleteSetArbitrageShell {
         event: BoltV3BasketExecutionEvent,
     ) -> Result<(), BoltV3BasketExecutionError> {
         basket.apply_event(event)?;
-        self.forwarded_event_count = self.forwarded_event_count.saturating_add(u64::from(true));
+        self.forwarded_event_count = self.forwarded_event_count.saturating_add(1);
         Ok(())
     }
 }
@@ -246,10 +247,7 @@ impl CompleteSetArbitrageBuilder {
         ] {
             anyhow::ensure!(value > u64::MIN, "{field} must be positive");
         }
-        anyhow::ensure!(
-            config.submit_mode == SUBMIT_MODE_IOC,
-            "submit_mode must be `ioc`"
-        );
+        parse_submit_mode(&config.submit_mode)?;
         Ok(config)
     }
 }
@@ -355,6 +353,8 @@ pub fn live_settlement_policy() -> CompleteSetSettlementPolicy {
     CompleteSetSettlementPolicy::RejectUntilReachableNtSignal
 }
 
+/// Always returns an error while Task 0 classifies live settlement signals as
+/// unreachable through the allowed NT Polymarket subscription path.
 pub fn forward_settlement_signal(
     basket: &mut BoltV3BasketExecutionState,
 ) -> Result<(), BoltV3BasketExecutionError> {
@@ -370,10 +370,14 @@ fn parse_configured_oms_type(field: &str, value: &str) -> Result<NtOmsType> {
 }
 
 fn submit_mode_time_in_force(value: &str) -> Result<TimeInForce> {
-    match value {
-        SUBMIT_MODE_IOC => Ok(TimeInForce::Ioc),
-        _ => anyhow::bail!("submit_mode must be `ioc`"),
-    }
+    Ok(submit_mode_contract(parse_submit_mode(value)?)
+        .order_template
+        .time_in_force)
+}
+
+fn parse_submit_mode(value: &str) -> Result<CompleteSetSubmitMode> {
+    CompleteSetSubmitMode::from_config(value)
+        .with_context(|| "submit_mode is not supported by the complete-set archetype")
 }
 
 fn binding_message(

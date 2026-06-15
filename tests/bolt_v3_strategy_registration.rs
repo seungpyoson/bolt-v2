@@ -689,7 +689,10 @@ fn complete_set_runtime_fixture() -> (
 }
 
 fn complete_set_root_toml() -> String {
-    let mut fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml");
+    let mut fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml").replace(
+        "order_execution_mode = \"live\"",
+        "order_execution_mode = \"shadow\"",
+    );
     fixture = fixture.replace(
         "strategy_files = [\n  \"strategies/binary_oracle.toml\",\n]",
         "strategy_files = [\n  \"strategies/complete_set.toml\",\n]",

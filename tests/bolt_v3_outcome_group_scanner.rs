@@ -603,6 +603,10 @@ fn fixture_group() -> OutcomeGroup {
                 event_slugs: Vec::new(),
                 market_slugs: Vec::new(),
                 gamma_query_fingerprint: None,
+                cache_key_fingerprint: canonical_fingerprint(vec![CanonicalField::new(
+                    ["cache_key", "fixture"],
+                    "scanner",
+                )]),
             },
             market_slugs: vec!["home-market".to_string(), "away-market".to_string()],
             proof_fingerprint: canonical_fingerprint(vec![CanonicalField::new(

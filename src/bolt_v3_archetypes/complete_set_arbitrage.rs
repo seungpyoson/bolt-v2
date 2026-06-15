@@ -417,10 +417,16 @@ pub fn raw_complete_set_config(
 }
 
 impl CompleteSetSubmitMode {
-    fn from_config(value: &str) -> Option<Self> {
+    pub fn from_config(value: &str) -> Option<Self> {
         match value {
             "ioc" => Some(Self::Ioc),
             _ => None,
+        }
+    }
+
+    pub fn as_config(self) -> &'static str {
+        match self {
+            Self::Ioc => "ioc",
         }
     }
 }

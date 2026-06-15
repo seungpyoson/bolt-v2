@@ -6057,6 +6057,23 @@ fn outcome_group_strategy_does_not_require_dummy_realized_volatility_or_target_r
 }
 
 #[test]
+fn complete_set_live_order_execution_mode_rejects_registration_only_activation() {
+    let live_root = outcome_group_root_toml(&valid_polymarket_event_source_toml(), true).replace(
+        "order_execution_mode = \"shadow\"",
+        "order_execution_mode = \"live\"",
+    );
+    let messages =
+        outcome_group_strategy_validation_messages(&live_root, &complete_set_strategy_toml());
+
+    let rendered = messages.join("\n");
+    assert!(
+        rendered.contains("complete_set_arbitrage runtime activation is registration-only")
+            && rendered.contains("runtime.order_execution_mode must be shadow"),
+        "live complete-set activation should fail closed until NT event forwarding is wired: {messages:#?}"
+    );
+}
+
+#[test]
 fn binary_oracle_archetype_still_requires_realized_volatility_surface() {
     let strategy = support::repo_text("tests/fixtures/bolt_v3/strategies/binary_oracle.toml")
         .replace(
@@ -6386,7 +6403,10 @@ fn without_toml_sections(source: &str, section_prefixes: &[&str]) -> String {
 }
 
 fn outcome_group_root_toml(source_toml: &str, include_basket_execution: bool) -> String {
-    let fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml");
+    let fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml").replace(
+        "order_execution_mode = \"live\"",
+        "order_execution_mode = \"shadow\"",
+    );
     let basket = if include_basket_execution {
         outcome_group_basket_execution_toml()
     } else {

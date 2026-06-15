@@ -2,12 +2,10 @@
 
 ## Scope
 
-Build a future research-only analytics project that STANDS ON NautilusTrader for
-every analytical primitive — data catalog, typed query, indicators/aggregators,
-the one Rust backtest engine, portfolio analytics — and builds ONLY what NT
-lacks. It owns experiments, notebooks, point-in-time correctness,
-feature/result lineage, research-validity invariants, and the subjective
-GO/NO-GO verdict over NT's objective results.
+Build a future research-only analytics project over raw evidence, NT catalog
+projections, and NT-derived backtest/live results. It owns experiments,
+notebooks, point-in-time correctness, feature/result lineage, and promotion
+gates into typed runtime configuration.
 
 This is separate from Backtesting Engine and Dashboard. It does not own the NT
 runner, live trading, dashboard UI, provider procurement, or independent
@@ -16,8 +14,8 @@ PnL/account truth.
 ## Users
 
 - Researcher: explores data, features, strategies, and results.
-- Maintainer: reviews experiment lineage, leakage controls, and findings before
-  anything can affect production runtime.
+- Maintainer: reviews experiment lineage, leakage controls, and promotion
+  packages before anything can affect production runtime.
 
 ## Requirements
 
@@ -26,10 +24,13 @@ PnL/account truth.
 - Research notebooks may read data and produce analysis artifacts only.
 - Notebook/Python workflows must not submit orders, cancel orders, transfer
   funds, mutate credentials, or become production runtime.
-- Feature joins must be point-in-time correct and carry as-of/freshness rules;
-  future-data joins must fail closed.
+- Feature joins must be point-in-time correct and carry as-of/freshness rules.
 - Experiments must record parameters, datasets, hashes, metrics, artifacts,
   fidelity class, and claim limits.
+- Promotion to production requires typed TOML/NT-compatible config and runtime
+  contract, not notebook code.
+- Promotion packages may produce typed strategy config for Backtesting Engine,
+  but they do not create a Python strategy runtime path.
 - Analytics/read models must not become independent PnL, position, account, or
   portfolio truth.
 - Venue/provider identity remains TOML/registry-selected data, not hardcoded
@@ -37,67 +38,43 @@ PnL/account truth.
 - Kimchi premium features must use TOML/registry-selected Korean spot price
   source(s), reference spot/perps price source(s), FX/quote conversion
   source(s), and point-in-time joins.
-- Research datasets must reference canonical NT catalog, raw evidence,
-  source-proof, and backtest artifacts under the single configured S3
-  `artifact_root`, content-hashed with `sha256`. Analytics must not create a
-  second canonical storage root for the same artifacts.
+- Research datasets must reference canonical raw, NT catalog, source-proof, and
+  backtest artifacts under the configured S3 `artifact_root`.
 - Research datasets and experiment outputs must preserve upstream
   `SourceProofReport` ids, fidelity classes, and claim limits. Analytics may
   narrow claims but must not upgrade source/backtest fidelity.
 - Analytics must not mark upstream `SourceProofReport` records accepted or
   weaken forbidden claims for catalog/backtest use.
-- Analytics must orchestrate the ONE Rust BacktestEngine through typed run-spec
-  TOMLs and read its persisted `BacktestResultContract`. Analytics owns the
-  subjective GO/NO-GO verdict; it must not own a runner or emit objective result
-  truth.
-
-## NautilusTrader Facility Map
-
-Research Analytics is layered on NT facilities. Each layer reuses an NT facility
-and builds only the named gap.
-
-| Layer | Stands on (NT facility) | WE BUILD (NT lacks) |
-|---|---|---|
-| L0 data | `ParquetDataCatalog` in S3 = single canonical input (`from_uri` S3, Tardis/CSV streamers + `EncodeToRecordBatch`). NT's own catalog write is non-atomic — a `head()` existence check then an unconditional `object_store.put` (overwrite-by-default; `parquet.rs` / `backend/catalog.rs`); NT names no `PutMode` at all (`grep PutMode` over NT crates returns zero hits). | Make the proven converters write to S3 DURABLY + IMMUTABLY (today reproduce-on-demand local only) via the conditional create-only writer over `object_store`'s `PutMode::Create` (S3 If-None-Match) per `../reference/normalization-catalog-plan.v3.md`, plus config-driven venue dispatch. |
-| L1 read | NT typed `query<T>` (instrument + time + SQL where pushdown) + `DataBackendSession` (DataFusion SQL → Arrow). | A thin reader helper (~dozens LOC). |
-| L2 features | NT indicators (38 `impl Indicator for` in the Rust indicators crate; 47 public names in NT's Python `indicators` package), `BarAggregator` family, `Clock`/`TestClock`, `Cache`, and NT-native implied-vol / Black-Scholes greeks (`crates/model/src/data/greeks.rs`) as the offline-usable primitives. NT `DataActor` is a live actor-runtime Component (Clock/MessageBus/Cache-bound) — usable only for in-backtest / in-actor feature computation, NOT as an offline batch primitive over a catalog query result. | Point-in-time / leakage enforcement (the one research-validity invariant NT lacks). |
-| L3 backtest | THE ONE Rust `BacktestEngine` the BTE already wraps. RA NEVER owns a runner. | Sweep orchestration + Polymarket cost realism as `FeeModel` / `FillModel` / `LatencyModel` trait impls. |
-| L4 evaluate | NT `PortfolioAnalyzer` + the `PortfolioStatistic` trait suite, registered via the `PortfolioAnalyzer::register_statistic` method. | NEW `PortfolioStatistic` impls run IN-PROCESS during the backtest (registered before the run via the BTE; the trait methods take live `&Returns` / `Vec<Box<dyn Order>>` / `&[Position]` — `crates/analysis/src/statistic.rs`, NOT the flat stat maps the persisted `BacktestResultContract` carries). Post-hoc domain metrics are computed from the Contract's aggregates, or require the BTE to explicitly export per-period returns / `OrderFilled` / `PositionOpened` series. Do not re-run statistics over the persisted contract. Plus a thin run-id → params → result-pointer index over `catalog.list_backtest_runs`. |
-| L5 present | Off-the-shelf BI (duckdb/polars over NT catalog Arrow output) + #409 `PortfolioSnapshot` as the single PnL read source. NT `reporter.py` / `tearsheet.py` are Python (pandas) analysis APIs — excluded because the single-engine invariant keeps RA on the Rust path and bans importing NT's Python/Cython engine layer, not because they need a live cache (the `reporter.py` helpers take plain `list[Order]`/`list[Position]` and `tearsheet.py`'s `create_tearsheet_from_stats` takes precomputed stats; only the engine-driven `create_tearsheet` needs `engine.kernel.cache`). The supported presentation path is the duckdb/polars Arrow read above. | Notebook ergonomics + the dashboard product (off-the-shelf, custom UI fallback only). |
-
-### Single-Engine Invariant
-
-RA orchestrates the ONE Rust BTE: write N typed run-spec TOMLs, invoke the
-existing entrypoint (`operator::run_from_run_spec` / the CLI binary), read the
-persisted `BacktestResultContract` (NT's in-process `BacktestResult` is
-`#[derive(Debug)]`-only and never persisted; the Contract is the JSON
-`run_from_run_spec` writes and is what RA, out-of-process, reads). RA MUST NEVER
-import NT's Cython/Python backtest engine
-(`nautilus_trader.backtest.engine` / `.node`) — that is a SECOND engine with
-different fill/PnL truth. Verified: pyo3 `add_native_strategy` is
-`#[cfg(feature="examples")]` and can only run NT example strategies, not bolt's.
-Enforce mechanically: a notebook-boundary test that FAILS on importing the
-Cython engine. (Project rule #5, pure-Rust live binary, is untouched — it
-governs the live trading binary, not research tooling.)
-
-Known prerequisite (do not hide): the BTE runner today registers only an NT
-example strategy (`HurstVpinDirectional`) over one venue (`bybit-spot`); bolt's
-`binary_oracle_edge_taker` + venue normalization must be wired into the BTE
-before Phase-3 sweeps are real.
-
-### Canonical Input
-
-The NT catalog is canonical and is treated as INCREMENTALLY growing — only
-Polymarket is durable today; BTE work lands more venues over time. There is ONE
-documented carve-out: latency / lead-lag receive-offset research may read raw
-archives because the current converter drops capture/receipt time. This is a
-TEMPORARY fallback with an explicit SUNSET tied to issue #677 (fix the converter
-to write `ts_init = capture_time`), NOT a permanent dual path. The
-`polymarket_parquet` tabular layer is convenience-only exploratory, NOT
-canonical. Its sunset has a concrete, measurable trigger and an owner, parallel
-to the #677 carve-out: it is sunset (deleted, not "never deleted") when the NT
-catalog covers the Polymarket instruments / windows the lead-lag lane needs;
-tracked under #676.
+- Analytics must preserve source proof version/supersession metadata and must
+  not mutate accepted proof records.
+- Analytics must keep historical backtest/experiment records tied to the proof
+  version they used; supersession metadata may be shown but must not relabel
+  old results as if they used the newer proof.
+- When consuming runs pinned to a non-latest proof, analytics must preserve the
+  upstream `proof_pin_reason_code` and `proof_pin_reason_detail` when present.
+- Analytics must preserve upstream `run_purpose` so normal results are not mixed
+  with reproduction/audit/regression/migration results without labels.
+- Research Analytics experiment runs that consume non-latest proof or pinned
+  backtests must carry the same non-normal `run_purpose` and structured pin
+  reason fields; they must not publish such experiments as normal current
+  results.
+- This non-normal requirement applies specifically to non-latest
+  `source_proof_version`. It does not automatically classify older NT versions,
+  strategy config hashes, catalog hashes, manifest schema versions, or
+  historical data windows; those require separate future currentness rules
+  deferred to manifest-schema work.
+- Research datasets may consume explicit artifact-local handles passed by a
+  producer/caller; cross-run and bulk artifact discovery must use committed
+  Artifact Index snapshots, not recursive S3 listing.
+- Research Analytics is read-only for upstream raw, NT catalog, source-proof,
+  and backtest Artifact Index records. If it later produces derived research
+  artifacts, it may write only those RA-owned artifact records.
+- RA-owned derived artifacts use the single top-level `research-analytics`
+  Artifact Index kind. Subfamilies are `datasets`, `feature-tables`,
+  `experiment-results`, and `promotion-packages`; they do not get separate
+  latest pointers.
+- Research datasets must preserve artifact lifecycle metadata and must not
+  propose default deletion of canonical artifacts.
 
 ## Evidence And Decisions
 
@@ -116,13 +93,19 @@ tracked under #676.
 | E-030 | SOURCE_PROVEN + DECISION_NEEDED | MarketLens, PMXT, PolyBackTest, PolymarketData, and Goldsky are candidates after schema/license/sample proof. |
 | E-031 | SOURCE_PROVEN | Lean, Qlib, Freqtrade, and Feast support separation of research/backtest/live lifecycle and leakage controls as prior art. |
 | E-033 | USER_ASSUMPTION + DECISION_NEEDED | Kimchi premium is a required cross-market feature/source family; Upbit/Bithumb-style Korean spot prices are candidate bindings, not hardcoded analytics branches. |
-| E-041 | SOURCE_PROVEN | Backtesting Engine emits objective result contracts only; Research Analytics owns the subjective GO/NO-GO verdict over those results. |
+| E-034 | USER_ASSUMPTION + DECISION_NEEDED | Analytics consumes raw, NT catalog, source-proof, and backtest artifact pointers under the configured S3 `artifact_root`; it must not create a second canonical storage root for the same artifacts. |
+| E-035 | USER_ASSUMPTION + DECISION_NEEDED | Analytics must preserve retain-forever lifecycle metadata and cannot introduce default artifact deletion. |
+| E-036 | USER_ASSUMPTION + DECISION_NEEDED | Analytics preserves the simple lifecycle state: artifacts start `active`; after configured quiet window they become `inactive`; inactive allows archive transition, not deletion. |
+| E-038 | SOURCE_PROVEN + DECISION_NEEDED | Analytics bulk discovery must consume the committed Artifact Index snapshot and must not scan S3 prefixes as its normal discovery path. |
+| E-039 | USER_ASSUMPTION + DECISION_NEEDED | Analytics is read-only for upstream raw/catalog/source-proof/backtest Artifact Index records; it may write only explicitly RA-owned derived artifact records. |
+| E-040 | USER_ASSUMPTION + DECISION_NEEDED | Analytics consumes `SourceProofReport` ids, fidelity classes, and claim limits as upstream proof metadata; it must not accept upstream proof, weaken forbidden claims, or reclassify weaker sources as stronger evidence. |
+| E-041 | SOURCE_PROVEN + DECISION_NEEDED | Backtesting Engine emits objective result contracts only; Analytics owns strategy promotion/review status through `PromotionPackage` or later RA-owned review artifacts. |
 
 ## Fidelity Class Reference
 
 Research Analytics consumes fidelity labels from Backtesting Engine and data
 source contracts. It must preserve them in datasets, experiments, metrics, and
-findings.
+promotion packages.
 
 | Class | Meaning for analytics |
 |---|---|
@@ -148,7 +131,8 @@ findings.
 
 - `ResearchDataset`: raw evidence records, catalog projections, NT result/report
   references, artifact URIs under configured `artifact_root`, source hashes,
-  source proof ids, fidelity classes, claim limits, and as-of bounds.
+  source proof ids, run purpose, proof pin reason code/detail when present,
+  fidelity classes, claim limits, lifecycle metadata, and as-of bounds.
 - `RawEvidenceRecord`: source family, source URI or redacted pointer, capture
   time, source time range, payload hash, schema/version, license reference, and
   lineage parent.
@@ -156,58 +140,70 @@ findings.
   NT data type, instrument ids, transform/config hash, fidelity class, and
   validation status.
 - `ExperimentRun`: parameters, code/artifact refs, dataset refs, metrics,
-  result hashes, consumed `BacktestResultContract` refs, fidelity class, and
-  claim limits. When a finding is recorded it also carries the RA-owned verdict;
-  the verdict field set and the persistence/index/lifecycle behavior are defined
-  in `../reference/data-model.md` (`experiment-results`), not restated here.
+  result hashes, consumed `BacktestResultContract` refs, run purpose, proof pin
+  reason code/detail when present, fidelity class, and claim limits.
 - `FeatureDefinition`: source fields, join keys, event time, availability time,
-  and leakage checks.
+  leakage checks, cross-market component source refs when applicable, and
+  allowed consumers.
+- `PromotionPackage`: promoted strategy candidate, typed config diff, runtime
+  contract, required Backtesting Engine evidence, selected Dashboard source
+  fields if any, source proof ids, claim limits, evidence rows,
+  strategy-review status, reviewer/policy references, and rejection/approval
+  state. It consumes BTE result contracts as evidence; it does not mutate or
+  rewrite them.
+- `ResearchAnalyticsArtifact`: RA-owned artifact under
+  `research-analytics/v1/{datasets,feature-tables,experiment-results,promotion-packages}/`
+  with schema version, source refs, source hashes, `sha256` content hash,
+  lifecycle state, Artifact Index event, and owner `research-analytics`.
 
-## Findings & Promotion
+## Promotion Status
 
-Findings are recorded with the lead-lag lane's GO / NO-GO verdict model — see
-`../reference/leadlag-lane.md` as the seed RA model. The BTE emits the OBJECTIVE
-results; RA owns the SUBJECTIVE verdict.
-The verdict's types, field set, and how it is persisted, indexed, and lifecycle-tracked
-are defined once in `../reference/data-model.md` (ResearchAnalyticsArtifact /
-`experiment-results`) and `../reference/contracts.md` (Artifact Index Contract +
-Artifact Lifecycle Contract); this spec does not restate them.
+`PromotionPackage` status is a controlled enum:
 
-A promotion gate (typed TOML/NT-compatible config for the Backtesting Engine) is
-added only WHEN a real GO finding exists to promote — never a Python strategy
-runtime path, an auto-merge, an auto-enabled strategy, a live-trading schedule, an
-SSM credential touch, or a production-runtime mutation. There is no standing
-promotion machine; see `../reference/contracts.md` Result And Promotion Boundary.
+- `draft`: package is incomplete.
+- `blocked`: required evidence or validation is missing or failed.
+- `ready_for_review`: package is complete enough for formal review.
+- `changes_requested`: reviewed and not rejected, but requires more research,
+  tuning, data proof, reruns, or feature work before review can proceed.
+- `rejected`: reviewed and not accepted.
+- `approved_for_config`: approved only to generate typed TOML/NT-compatible
+  runtime config; this is not live-trading approval.
+
+`approved_for_config` requires accepted `SourceProofReport` refs, objective
+backtest result refs, preserved claim limits, fidelity-compatible claims, no
+notebook runtime code, typed TOML/NT-compatible config output, reviewer/policy
+refs, and an explicit non-live boundary.
+
+After `approved_for_config`, the only allowed output is a typed config artifact
+for later implementation/review. The status must not auto-merge, auto-enable a
+strategy, schedule live trading, touch SSM credentials, or mutate production
+runtime config.
+
+Generated promotion/config artifacts live under the configured S3 `artifact_root`
+as RA-owned derived artifacts, e.g.
+`research-analytics/v1/promotion-packages/`.
+They must not be written directly into repo runtime config; importing them into
+production config is a separate future implementation/review step.
 
 ## Issue Dependencies
 
 Link or depend on #19, #20, #21, #22, #24, #34, #39, #75, #148, #158, #176,
-#236, #407, and #677 as applicable. Existing data-lake and strategy issues do
-not fully cover research analytics, alpha exploration, or findings.
+#236, and #407 as applicable. Existing data-lake and strategy issues do not
+fully cover research analytics, alpha exploration, or promotion gates.
 
 ## Non-Goals
 
-- No NT backtest runner implementation, and no second (Cython/Python) backtest
-  engine.
+- No NT backtest runner implementation.
 - No dashboard UI or operator control plane.
 - No live trading or credential mutation.
 - No provider recorder or data-lake capture expansion.
 - No custom PnL/account truth.
-- No standing promotion machine (6-state enum, approved-for-config checklist, or
-  promotion-only lifecycle/Artifact-Index layer); a promotion gate exists only
-  when a real finding needs one. How the verdict is persisted and promoted is
-  defined in `../reference/data-model.md` and `../reference/contracts.md` (Result
-  And Promotion Boundary), not restated here.
 
 ## Acceptance
 
-- Reviewer can see the NautilusTrader facility map (L0–L5) and the single-engine
-  boundary (no Cython/Python engine import).
 - Reviewer can reproduce each research result from recorded source hashes and
   parameters.
 - Reviewer can identify which claims are execution-quality, lower-fidelity, or
   exploratory.
-- Reviewer can see point-in-time / leakage proof (future-data joins fail closed).
 - Reviewer can prove notebooks have no production mutation path.
-- Reviewer can see a GO/NO-GO finding with its re-measurement cadence — not a
-  6-state promotion package.
+- Reviewer can see a typed promotion package before any production runtime work.

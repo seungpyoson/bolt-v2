@@ -99,6 +99,7 @@ pub struct BoltV3BasketExecutionLegIntent {
     pub side: OrderSide,
     pub quantity: Decimal,
     pub notional: Decimal,
+    pub observed_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,6 +216,8 @@ impl BoltV3BasketExecutionState {
         disposition: BoltV3BasketExecutionSubmitDisposition,
         order_list_id: &str,
         leg_intents: Vec<BoltV3BasketExecutionLegIntent>,
+        now_unix_ms: u64,
+        max_observation_age_ms: u64,
     ) -> Result<BoltV3BasketNtSubmitCommand, BoltV3BasketExecutionError> {
         if disposition != BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList {
             return Err(BoltV3BasketExecutionError::SubmitModeRejected);
@@ -242,6 +245,14 @@ impl BoltV3BasketExecutionState {
         for intent in &leg_intents {
             if !seen_leg_ids.insert(intent.leg_id.as_str()) {
                 return Err(BoltV3BasketExecutionError::LegShapeMismatch);
+            }
+            if !outcome_group_observation_is_fresh(
+                now_unix_ms,
+                intent.observed_unix_ms,
+                max_observation_age_ms,
+                None,
+            ) {
+                return Err(BoltV3BasketExecutionError::StaleSubmitIntent);
             }
             if !client_order_id_is_valid(&intent.client_order_id)
                 || !seen_client_order_ids.insert(intent.client_order_id.as_str())
@@ -311,12 +322,14 @@ impl BoltV3BasketExecutionState {
                 cost,
                 source,
             } => {
-                let leg = self.leg_for_client_order_mut(&client_order_id)?;
+                let Some(index) = self.legs.iter().position(|leg| {
+                    leg.client_order_id.as_deref() == Some(client_order_id.as_str())
+                }) else {
+                    return Err(BoltV3BasketExecutionError::UnknownClientOrderId);
+                };
                 if let Some(venue_order_id) = venue_order_id {
-                    leg.venue_order_id = Some(venue_order_id);
+                    self.legs[index].venue_order_id = Some(venue_order_id);
                 }
-                leg.filled_quantity += quantity;
-                leg.filled_cost += cost;
                 self.fill_sources.push(source);
                 if source == BoltV3BasketFillSource::Hip4SyntheticSettlement {
                     self.settled = true;
@@ -325,6 +338,9 @@ impl BoltV3BasketExecutionState {
                     self.reservation_held = true;
                     return Ok(());
                 }
+                let leg = &mut self.legs[index];
+                leg.filled_quantity += quantity;
+                leg.filled_cost += cost;
                 self.refresh_fill_status();
             }
             BoltV3BasketExecutionEvent::CancelRejected { .. }
@@ -414,6 +430,23 @@ impl BoltV3BasketExecutionState {
     }
 
     fn refresh_fill_status(&mut self) {
+        if matches!(
+            self.status,
+            BoltV3BasketExecutionStatus::Stuck | BoltV3BasketExecutionStatus::Closed
+        ) || self.settled
+        {
+            return;
+        }
+        let overfilled = self
+            .legs
+            .iter()
+            .any(|leg| leg.filled_quantity > leg.target_quantity);
+        if overfilled {
+            self.status = BoltV3BasketExecutionStatus::Stuck;
+            self.unresolved_real_exposure = true;
+            self.reservation_held = true;
+            return;
+        }
         let any_fill = self
             .legs
             .iter()
@@ -707,23 +740,30 @@ pub fn trip_stuck_basket_kill_switch(
     let halting = transition_kill_switch_state(
         KillSwitchState::Armed,
         KillSwitchEvent::HaltTriggered(trigger),
-        kill_switch_transition_context(),
+        kill_switch_transition_context(false, false),
     )?;
-    kill_switch_store.write_state(&halting)?;
+    let durable_halting_evidence_recorded =
+        kill_switch_store.write_state(&halting).map(|()| true)?;
     let halted = transition_kill_switch_state(
         halting,
         KillSwitchEvent::DurableHaltEvidenceRecorded,
-        kill_switch_transition_context(),
+        kill_switch_transition_context(
+            durable_halting_evidence_recorded,
+            durable_halting_evidence_recorded,
+        ),
     )?;
     kill_switch_store.write_state(&halted)?;
     submit_admission.replace_kill_switch_state(halted.clone());
     Ok(halted)
 }
 
-fn kill_switch_transition_context() -> KillSwitchTransitionContext {
+fn kill_switch_transition_context(
+    state_write_succeeded: bool,
+    durable_halt_evidence_recorded: bool,
+) -> KillSwitchTransitionContext {
     KillSwitchTransitionContext {
-        state_write_succeeded: true,
-        durable_halt_evidence_recorded: true,
+        state_write_succeeded,
+        durable_halt_evidence_recorded,
         operator_authorized: false,
         manual_reset_evidence_valid: false,
         mandatory_proof_streams_fresh: false,
@@ -825,6 +865,7 @@ pub enum BoltV3BasketExecutionError {
     InvalidStateTransition,
     MixedVenueBasket,
     LegShapeMismatch,
+    StaleSubmitIntent,
     UnknownClientOrderId,
     LiveSettlementSignalUnreachable,
     UnresolvedExposure,
@@ -852,6 +893,9 @@ impl fmt::Display for BoltV3BasketExecutionError {
                 f,
                 "basket execution leg shape does not match durable basket"
             ),
+            Self::StaleSubmitIntent => {
+                write!(f, "basket execution submit intent observation is stale")
+            }
             Self::UnknownClientOrderId => write!(
                 f,
                 "basket execution event references an unknown client order id"

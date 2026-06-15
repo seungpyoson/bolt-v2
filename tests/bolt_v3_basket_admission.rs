@@ -216,6 +216,41 @@ fn basket_admission_rejects_stale_or_non_admissible_scanner_and_group_evidence()
         BoltV3BasketAdmissionError::NonPositiveCandidateCost,
     );
 
+    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
+    let mut missing_claim = entry_claims(&group, dec!(0.9));
+    missing_claim.pop();
+    assert_basket_rejects(
+        "submit claim count mismatch",
+        basket_request("basket-claim-count", &group, &scan, missing_claim),
+        BoltV3BasketAdmissionError::SubmitClaimsMismatch,
+    );
+
+    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
+    let mut wrong_instrument_claims = entry_claims(&group, dec!(0.9));
+    wrong_instrument_claims[0].instrument_id = "other.POLYMARKET".to_string();
+    assert_basket_rejects(
+        "submit claim instrument mismatch",
+        basket_request(
+            "basket-claim-instrument",
+            &group,
+            &scan,
+            wrong_instrument_claims,
+        ),
+        BoltV3BasketAdmissionError::SubmitClaimsMismatch,
+    );
+
+    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
+    assert_basket_rejects(
+        "submit claim notional exceeds scanned leg",
+        basket_request(
+            "basket-claim-notional",
+            &group,
+            &scan,
+            entry_claims(&group, dec!(0.91)),
+        ),
+        BoltV3BasketAdmissionError::SubmitClaimsMismatch,
+    );
+
     let scan = scan_evidence(&group, dec!(1.8), dec!(-0.1), dec!(1000), 1_000);
     assert_basket_rejects(
         "non-positive edge",
@@ -819,6 +854,10 @@ fn fixture_group() -> OutcomeGroup {
                 event_slugs: Vec::new(),
                 market_slugs: Vec::new(),
                 gamma_query_fingerprint: None,
+                cache_key_fingerprint: canonical_fingerprint(vec![CanonicalField::new(
+                    ["cache_key", "fixture"],
+                    "basket-admission",
+                )]),
             },
             market_slugs: vec!["home-market".to_string(), "away-market".to_string()],
             proof_fingerprint: canonical_fingerprint(vec![CanonicalField::new(

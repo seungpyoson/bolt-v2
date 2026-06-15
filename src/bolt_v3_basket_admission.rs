@@ -45,11 +45,13 @@ pub enum BoltV3BasketAdmissionError {
     NonPositiveCandidateCost,
     NonPositiveEdge,
     EdgeThreshold,
+    SubmitClaimsMismatch,
     MissingGroupingProof,
     MissingSettlementRules,
     RetryBudgetExceeded,
     BasketAlreadyOpen,
     BasketReservationMissing,
+    StuckReservationHeld,
     SubmitAdmissionFailed(BoltV3SubmitAdmissionError),
     EvidenceWriteFailed { reason: String },
 }
@@ -68,12 +70,18 @@ impl std::fmt::Display for BoltV3BasketAdmissionError {
             }
             Self::NonPositiveEdge => write!(f, "basket admission edge must be positive"),
             Self::EdgeThreshold => write!(f, "basket admission edge threshold not met"),
+            Self::SubmitClaimsMismatch => {
+                write!(f, "basket admission submit claims must match scanned legs")
+            }
             Self::MissingGroupingProof => write!(f, "basket admission missing grouping proof"),
             Self::MissingSettlementRules => write!(f, "basket admission missing settlement rules"),
             Self::RetryBudgetExceeded => write!(f, "basket admission retry budget exceeded"),
             Self::BasketAlreadyOpen => write!(f, "basket admission basket id is already open"),
             Self::BasketReservationMissing => {
                 write!(f, "basket admission reservation does not exist")
+            }
+            Self::StuckReservationHeld => {
+                write!(f, "basket admission stuck reservation must remain held")
             }
             Self::SubmitAdmissionFailed(error) => write!(f, "{error}"),
             Self::EvidenceWriteFailed { reason } => {
@@ -158,12 +166,17 @@ impl BoltV3BasketAdmissionState {
     pub fn release_basket(
         &self,
         basket_id: &str,
-        _reason: BoltV3BasketAdmissionReleaseReason,
+        reason: BoltV3BasketAdmissionReleaseReason,
     ) -> Result<(), BoltV3BasketAdmissionError> {
         let mut inner = self
             .inner
             .lock()
             .expect("basket admission state mutex should not be poisoned");
+        if reason == BoltV3BasketAdmissionReleaseReason::Stuck
+            && inner.open_baskets.contains_key(basket_id)
+        {
+            return Err(BoltV3BasketAdmissionError::StuckReservationHeld);
+        }
         if inner.open_baskets.remove(basket_id).is_some() {
             Ok(())
         } else {
@@ -194,6 +207,7 @@ impl BoltV3BasketAdmissionState {
         if request.scanner_evidence.total_adjusted_cost > self.limits.max_basket_notional {
             return Err(BoltV3BasketAdmissionError::BasketNotionalCapExceeded);
         }
+        self.validate_submit_claims_match_scanned_legs(request)?;
         if !request.scanner_evidence.admissible || request.scanner_evidence.block_reason.is_some() {
             return Err(BoltV3BasketAdmissionError::NonPositiveCandidateCost);
         }
@@ -222,6 +236,48 @@ impl BoltV3BasketAdmissionState {
             return Err(BoltV3BasketAdmissionError::StaleSubmitRecheck);
         }
 
+        Ok(())
+    }
+
+    fn validate_submit_claims_match_scanned_legs(
+        &self,
+        request: &BoltV3BasketAdmissionRequest<'_>,
+    ) -> Result<(), BoltV3BasketAdmissionError> {
+        if request.submit_claims.len() != request.scanner_evidence.leg_costs.len() {
+            return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
+        }
+
+        let mut scanned_notional_by_instrument = BTreeMap::new();
+        for leg in &request.scanner_evidence.leg_costs {
+            if scanned_notional_by_instrument
+                .insert(leg.instrument_id.to_string(), leg.total_adjusted_cost)
+                .is_some()
+            {
+                return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
+            }
+        }
+
+        let mut total_claim_notional = Decimal::ZERO;
+        for claim in &request.submit_claims {
+            let Some(scanned_notional) =
+                scanned_notional_by_instrument.remove(claim.instrument_id.as_str())
+            else {
+                return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
+            };
+            if claim.notional <= Decimal::ZERO || claim.notional > scanned_notional {
+                return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
+            }
+            total_claim_notional = total_claim_notional
+                .checked_add(claim.notional)
+                .ok_or(BoltV3BasketAdmissionError::BasketNotionalCapExceeded)?;
+        }
+
+        if !scanned_notional_by_instrument.is_empty() {
+            return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
+        }
+        if total_claim_notional > self.limits.max_basket_notional {
+            return Err(BoltV3BasketAdmissionError::BasketNotionalCapExceeded);
+        }
         Ok(())
     }
 
@@ -323,6 +379,9 @@ fn basket_outcome_from_error(error: &BoltV3BasketAdmissionError) -> BoltV3Basket
         BoltV3BasketAdmissionError::EdgeThreshold => {
             BoltV3BasketAdmissionOutcome::RejectedEdgeThreshold
         }
+        BoltV3BasketAdmissionError::SubmitClaimsMismatch => {
+            BoltV3BasketAdmissionOutcome::RejectedSubmitSlots
+        }
         BoltV3BasketAdmissionError::MissingGroupingProof => {
             BoltV3BasketAdmissionOutcome::RejectedMissingGroupingProof
         }
@@ -334,6 +393,7 @@ fn basket_outcome_from_error(error: &BoltV3BasketAdmissionError) -> BoltV3Basket
         }
         BoltV3BasketAdmissionError::BasketAlreadyOpen
         | BoltV3BasketAdmissionError::BasketReservationMissing
+        | BoltV3BasketAdmissionError::StuckReservationHeld
         | BoltV3BasketAdmissionError::SubmitAdmissionFailed(_)
         | BoltV3BasketAdmissionError::EvidenceWriteFailed { .. } => {
             BoltV3BasketAdmissionOutcome::RejectedSubmitSlots

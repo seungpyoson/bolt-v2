@@ -28,6 +28,10 @@ use nautilus_model::enums::OrderSide;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
 
+const SUBMIT_NOW_UNIX_MS: u64 = 2_000;
+const SUBMIT_MAX_OBSERVATION_AGE_MS: u64 = 500;
+const SUBMIT_OBSERVED_UNIX_MS: u64 = 1_750;
+
 #[test]
 fn complete_and_partial_fill_transitions_hold_and_release_reservation_explicitly() {
     let mut partial = reserved_basket();
@@ -36,6 +40,8 @@ fn complete_and_partial_fill_transitions_hold_and_release_reservation_explicitly
             BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
             "OL-COMPLETE",
             leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect("same-venue NT submit command should build");
 
@@ -94,6 +100,8 @@ fn same_venue_submit_uses_nt_order_list_contract_and_persists_client_ids_before_
             BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
             "OL-SAME-VENUE",
             leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect("reuse_nt same venue basket should build");
 
@@ -125,6 +133,8 @@ fn same_venue_submit_rejects_duplicate_leg_intents_before_mutating_state() {
             BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
             "OL-DUPLICATE",
             intents,
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect_err("duplicate leg intents must reject before submit mutation");
 
@@ -148,6 +158,8 @@ fn same_venue_submit_rejects_mismatched_leg_intents_before_mutating_state() {
             BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
             "OL-MISMATCH",
             intents,
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect_err("intent instrument must match the reserved basket leg");
 
@@ -171,6 +183,8 @@ fn same_venue_submit_rejects_duplicate_client_order_ids_before_mutating_state() 
             BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
             "OL-DUPLICATE-COID",
             intents,
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect_err("duplicate client order ids must reject before submit mutation");
 
@@ -194,6 +208,8 @@ fn same_venue_submit_rejects_empty_client_order_id_before_mutating_state() {
             BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
             "OL-EMPTY-COID",
             intents,
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect_err("empty client order id must reject before submit mutation");
 
@@ -219,6 +235,8 @@ fn same_venue_submit_rejects_intent_venue_that_disagrees_with_instrument_before_
             BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
             "OL-WRONG-VENUE",
             intents,
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect_err("intent venue must match the durable basket instrument venue");
 
@@ -244,12 +262,39 @@ fn same_venue_submit_rejects_empty_venue_before_mutating_state() {
             BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
             "OL-EMPTY-VENUE",
             intents,
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect_err("empty venue must reject before submit mutation");
 
     assert!(matches!(
         error,
         BoltV3BasketExecutionError::LegShapeMismatch
+    ));
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Reserved);
+    assert_eq!(basket.order_list_id(), None);
+    assert!(basket.client_order_ids().is_empty());
+}
+
+#[test]
+fn same_venue_submit_rechecks_freshness_before_mutating_state() {
+    let mut basket = reserved_basket();
+    let mut intents = leg_intents();
+    intents[0].observed_unix_ms = SUBMIT_NOW_UNIX_MS - SUBMIT_MAX_OBSERVATION_AGE_MS - 1;
+
+    let error = basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-STALE",
+            intents,
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
+        )
+        .expect_err("stale submit intent must reject before submit mutation");
+
+    assert!(matches!(
+        error,
+        BoltV3BasketExecutionError::StaleSubmitIntent
     ));
     assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Reserved);
     assert_eq!(basket.order_list_id(), None);
@@ -265,6 +310,8 @@ fn audited_submit_mode_without_nt_order_list_is_rejected_without_fallback() {
             BoltV3BasketExecutionSubmitDisposition::RejectForNow,
             "OL-REJECTED",
             leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect_err("submit mode without SubmitOrderList support must reject");
 
@@ -443,6 +490,8 @@ fn polymarket_live_settlement_rejects_until_reachable_signal_and_hip4_synthetic_
         BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
         "OL-HIP4",
         leg_intents(),
+        SUBMIT_NOW_UNIX_MS,
+        SUBMIT_MAX_OBSERVATION_AGE_MS,
     )
     .expect("same venue command should build");
     hip4.apply_event(BoltV3BasketExecutionEvent::LegFill {
@@ -501,6 +550,8 @@ fn strategy_fill_after_stuck_does_not_clear_unresolved_exposure_or_release_reser
             BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
             "OL-STUCK",
             leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect("same venue command should build");
     basket
@@ -543,6 +594,8 @@ fn overfilled_basket_fails_closed_instead_of_marking_complete() {
             BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
             "OL-OVERFILL",
             leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect("same venue command should build");
     basket
@@ -571,6 +624,8 @@ fn durable_store_round_trips_basket_specific_recovery_state_and_enforces_size_li
             BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
             "OL-RECOVER",
             leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect("command should build");
     basket
@@ -615,6 +670,8 @@ fn restart_reconciliation_joins_client_id_then_venue_id_and_stucks_orphans() {
             BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
             "OL-RECON",
             leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect("command should build");
     basket
@@ -747,6 +804,7 @@ fn leg_intents() -> Vec<BoltV3BasketExecutionLegIntent> {
             side: OrderSide::Buy,
             quantity: dec("1.0"),
             notional: dec("0.44"),
+            observed_unix_ms: SUBMIT_OBSERVED_UNIX_MS,
         },
         BoltV3BasketExecutionLegIntent {
             leg_id: "NO".to_string(),
@@ -756,6 +814,7 @@ fn leg_intents() -> Vec<BoltV3BasketExecutionLegIntent> {
             side: OrderSide::Buy,
             quantity: dec("1.0"),
             notional: dec("0.46"),
+            observed_unix_ms: SUBMIT_OBSERVED_UNIX_MS,
         },
     ]
 }

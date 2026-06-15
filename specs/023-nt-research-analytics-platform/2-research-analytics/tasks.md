@@ -1,9 +1,9 @@
 # Tasks: Research Analytics
 
-- [ ] RA-001 Gate-0: wire durable + immutable S3 write into the existing venue converters and add config-driven venue dispatch so all converted NT catalog data lands in the canonical S3 artifact_root instead of a local reproduce-on-demand path. Durability/immutability is WE-BUILD via the conditional create-only writer over object_store's PutMode::Create (S3 If-None-Match) per ../reference/normalization-catalog-plan.v3.md — NT's own catalog write is non-atomic head() + unconditional object_store.put (overwrite-by-default; NT names no PutMode, zero PutMode hits in NT crates), not a create-only facility. Read access stays NT (from_uri S3).
+- [ ] RA-001 Define `ResearchDataset` schema with source hashes, source proof ids, run purpose, proof pin reason code/detail when present, fidelity classes, claim limits, and as-of bounds.
 - [ ] RA-002 Define point-in-time feature join rules and leakage fixtures.
-- [ ] RA-003 Implement leakage-check fixtures that fail closed on future-data access.
-- [ ] RA-004 Implement a thin reader helper (~dozens LOC) over NT typed query<T> (instrument + time + SQL where pushdown) and DataBackendSession (DataFusion SQL → Arrow) to expose catalog data to research notebooks without duplicating NT's query surface.
+- [ ] RA-003 Define `ExperimentRun` metadata and artifact contract, including run purpose and proof pin reason code/detail when consuming non-latest proof or pinned backtests.
+- [ ] RA-004 Define claim-limit propagation from upstream `SourceProofReport` fidelity to results, including no authority to accept upstream proof, mutate accepted proof records, weaken forbidden claims, relabel historical results after proof supersession, or publish experiments consuming non-latest `source_proof_version` as normal current results; do not apply this rule automatically to older NT versions, strategy config hashes, catalog hashes, manifest schema versions, or historical data windows.
 - [ ] RA-005 Define notebook read-only boundary and prohibited runtime actions.
 - [ ] RA-006 Define kimchi-premium feature source contract for TOML-selected Korean spot price sources, reference price source, FX/quote source, token mapping, as-of alignment, and claim limits.
 - [ ] RA-007 Define configured S3 `artifact_root` URI rules and Artifact Index consumption rules for raw, NT catalog, source-proof, and backtest artifact references consumed by analytics, including read-only upstream records and explicit RA-owned derived-artifact write scope under the single `research-analytics` top-level kind.

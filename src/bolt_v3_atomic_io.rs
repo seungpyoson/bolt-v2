@@ -40,9 +40,9 @@ pub fn write_private_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), Atomic
 }
 
 pub fn private_atomic_temp_path(path: &Path) -> PathBuf {
-    let mut temp_path = path.to_path_buf();
-    temp_path.set_extension("tmp");
-    temp_path
+    let mut temp_path = path.as_os_str().to_os_string();
+    temp_path.push(".tmp");
+    PathBuf::from(temp_path)
 }
 
 fn write_private_synced_temp_file(path: &Path, bytes: &[u8]) -> Result<(), AtomicIoError> {

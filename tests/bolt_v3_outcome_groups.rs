@@ -206,6 +206,7 @@ fn valid_group() -> OutcomeGroup {
                 event_slugs: Vec::new(),
                 market_slugs: vec!["home-market".to_string(), "draw-market".to_string()],
                 gamma_query_fingerprint: Some(hash('b')),
+                cache_key_fingerprint: hash('c'),
             },
             market_slugs: vec!["home-market".to_string(), "draw-market".to_string()],
             proof_fingerprint: canonical_fingerprint(vec![CanonicalField::new(
@@ -240,6 +241,34 @@ fn valid_group_with_void_vector_passes_and_derives_standard_rows() {
     assert_eq!(
         group.payout_matrix.payout_per_unit_by_state["draw"],
         vec![dec(1), dec(0), dec(0), dec(1)]
+    );
+}
+
+#[test]
+fn operator_strings_reject_control_characters_before_metadata_fingerprint_acceptance() {
+    let mut group = valid_group();
+    group.freshness_source_id = "world-cup-source\0shadow".to_string();
+
+    assert!(
+        ValidatedOutcomeGroup::validate(&group)
+            .is_err_and(|error| error.is_invalid_operator_string())
+    );
+}
+
+#[test]
+fn operator_strings_reject_zero_width_format_characters_before_hashing() {
+    let mut group = valid_group();
+    let Some(GroupingProof::PolymarketNegRisk {
+        discovery_scope, ..
+    }) = &mut group.grouping_proof
+    else {
+        panic!("fixture should use Polymarket grouping proof");
+    };
+    discovery_scope.market_slugs[0] = "home\u{200b}-market".to_string();
+
+    assert!(
+        ValidatedOutcomeGroup::validate(&group)
+            .is_err_and(|error| error.is_invalid_operator_string())
     );
 }
 

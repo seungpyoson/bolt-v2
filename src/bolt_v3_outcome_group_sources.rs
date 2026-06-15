@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    path::{Component, Path},
     str::FromStr,
 };
 
@@ -9,6 +9,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    bolt_v3_archetypes::complete_set_arbitrage::CompleteSetSubmitMode,
+    bolt_v3_basket_store::BASKET_STORE_SCHEMA_VERSION,
     bolt_v3_config::{BoltV3RootConfig, ClientBlock, GateProviderFreshnessBlock, LoadedStrategy},
     bolt_v3_operator_artifacts::is_lowercase_sha256,
 };
@@ -262,11 +264,6 @@ pub struct CompleteSetArbitrageRuntimeBlock {
     pub max_unwind_attempts: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutcomeGroupSubmitMode {
-    Ioc,
-}
-
 pub fn validate_root_sources(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();
     let mut seen_source_ids = BTreeSet::new();
@@ -298,14 +295,17 @@ pub fn validate_basket_execution(block: &BasketExecutionRiskBlock) -> Vec<String
     let state_path = Path::new(block.state_path.trim());
     if state_path.as_os_str().is_empty()
         || state_path.is_absolute()
+        || state_path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
         || block.state_path.trim() != block.state_path
     {
         errors.push(
-            "risk.basket_execution.state_path must be a non-empty relative path without surrounding whitespace"
+            "risk.basket_execution.state_path must be a non-empty relative path under the configured root"
                 .to_string(),
         );
     }
-    if block.schema_version != 1 {
+    if block.schema_version != BASKET_STORE_SCHEMA_VERSION {
         errors.push(format!(
             "risk.basket_execution.schema_version={} is unsupported by this build",
             block.schema_version
@@ -408,10 +408,10 @@ pub fn validate_outcome_group_strategy_links(
                     source.client_id, strategy.execution_client_id
                 ));
             }
-            if matches!(runtime, Some(OutcomeGroupSubmitMode::Ioc)) {
+            if matches!(runtime, Some(CompleteSetSubmitMode::Ioc)) {
                 errors.extend(validate_min_notional_required_for_submit_mode(
                     source,
-                    "ioc",
+                    CompleteSetSubmitMode::Ioc.as_config(),
                     &format!("{context}: outcome_group_sources.{source_id}"),
                 ));
             }
@@ -467,7 +467,11 @@ fn validate_source_client(
         OutcomeGroupSourceKind::GammaEvent
         | OutcomeGroupSourceKind::GammaMarketSlug
         | OutcomeGroupSourceKind::GammaQuery => {
-            errors.extend(validate_client_venue(context, client, "POLYMARKET"));
+            errors.extend(validate_client_venue(
+                context,
+                client,
+                crate::bolt_v3_providers::OUTCOME_GROUP_POLYMARKET_VENUE_KEY,
+            ));
             errors.extend(validate_metadata_refresh(
                 root,
                 context,
@@ -476,7 +480,11 @@ fn validate_source_client(
             ));
         }
         OutcomeGroupSourceKind::Hip4 => {
-            errors.extend(validate_client_venue(context, client, "HYPERLIQUID"));
+            errors.extend(validate_client_venue(
+                context,
+                client,
+                crate::bolt_v3_providers::OUTCOME_GROUP_HIP4_VENUE_KEY,
+            ));
             errors.extend(validate_metadata_refresh(
                 root,
                 context,
@@ -667,12 +675,24 @@ fn validate_freshness(
         return vec![format!("{context}.freshness is required")];
     };
     let mut errors = Vec::new();
-    if freshness.max_age_ms == Some(0) {
-        errors.push(format!("{context}.freshness.max_age_ms must be positive"));
+    match freshness.max_age_ms {
+        Some(0) => errors.push(format!("{context}.freshness.max_age_ms must be positive")),
+        Some(_) => {}
+        None => errors.push(format!("{context}.freshness.max_age_ms is required")),
     }
-    if freshness.max_clock_skew_ms == Some(0) {
-        errors.push(format!(
+    match freshness.max_clock_skew_ms {
+        Some(0) => errors.push(format!(
             "{context}.freshness.max_clock_skew_ms must be positive"
+        )),
+        Some(_) => {}
+        None => errors.push(format!("{context}.freshness.max_clock_skew_ms is required")),
+    }
+    if let (Some(max_age_ms), Some(max_clock_skew_ms)) =
+        (freshness.max_age_ms, freshness.max_clock_skew_ms)
+        && max_clock_skew_ms > max_age_ms
+    {
+        errors.push(format!(
+            "{context}.freshness.max_clock_skew_ms must be less than or equal to {context}.freshness.max_age_ms"
         ));
     }
     errors
@@ -870,7 +890,7 @@ fn validate_complete_set_runtime_parameters(
     context: &str,
     parameters: &toml::Value,
     errors: &mut Vec<String>,
-) -> Option<OutcomeGroupSubmitMode> {
+) -> Option<CompleteSetSubmitMode> {
     let Some(runtime) = parameters.get("runtime").and_then(toml::Value::as_table) else {
         errors.push(format!("{context}: parameters.runtime is required"));
         return None;
@@ -896,7 +916,7 @@ fn validate_complete_set_runtime_parameters(
         Ok(value) => value,
         Err(error) => {
             if let Some(submit_mode) = runtime.get("submit_mode").and_then(toml::Value::as_str)
-                && submit_mode != "ioc"
+                && CompleteSetSubmitMode::from_config(submit_mode).is_none()
             {
                 errors.push(format!(
                     "{context}: parameters.runtime.submit_mode `{submit_mode}` is not supported"
@@ -935,11 +955,12 @@ fn validate_complete_set_runtime_parameters(
             "{context}: parameters.runtime.slippage_buffer_bps must be positive"
         ));
     }
-    match runtime.submit_mode.as_str() {
-        "ioc" => Some(OutcomeGroupSubmitMode::Ioc),
-        unsupported => {
+    match CompleteSetSubmitMode::from_config(runtime.submit_mode.as_str()) {
+        Some(mode) => Some(mode),
+        None => {
             errors.push(format!(
-                "{context}: parameters.runtime.submit_mode `{unsupported}` is not supported"
+                "{context}: parameters.runtime.submit_mode `{}` is not supported",
+                runtime.submit_mode
             ));
             None
         }

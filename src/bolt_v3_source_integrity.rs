@@ -303,8 +303,12 @@ mod tests {
     // order-execution policy context.
     // Re-derived after shared outcome freshness and basket submit validation
     // moved into shared execution/source modules.
+    // Re-derived after adversarial review fixes clarified complete-set shell
+    // event forwarding and settlement gating.
+    // Re-derived after complete-set submit-mode parsing was consolidated under
+    // the archetype-owned mode contract.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "4522a70d12ea197305f3034b31f58fc0467695d302b8c8ebab1ed597eb5fe8bc";
+        "a1953f8969ec93a0996da60014468cd6d7ee55362bc3d89c87e7365fec3eaf6e";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -338,8 +342,21 @@ mod tests {
     // moved into shared execution/source modules.
     // Re-derived after basket execution repair/unwind planning tightened partial
     // quantity handling.
+    // Re-derived after adversarial review fixes tightened basket execution,
+    // admission, source validation, atomic I/O, and price-scale invariants.
+    // Re-derived again after binding Polymarket discovery scope to the
+    // injectively framed native cache key fingerprint.
+    // Re-derived again after threading basket-stuck kill-switch transition
+    // evidence from the actual halting-state write result.
+    // Re-derived again after submit-time freshness, submit-claim binding,
+    // printable operator strings, activation guard, and submit-mode/venue
+    // single-owner fixes.
+    // Re-derived again after moving printable operator-string validation ahead
+    // of attestation and metadata hashing.
+    // Re-derived again after routing outcome-group venue keys through
+    // provider-neutral exports for the provider-leak fence.
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "cd8d0a804ee9f49372477af79f04afead36af8406e52cbb684efc784ef4927b7";
+        "0786ce9b4dafa805987444d6d28d3305d892ccd82b98687db2a1d79e9efc00da";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -498,6 +515,19 @@ mod tests {
                 "src/strategy_runtime_bindings.rs",
                 "src/strategies/complete_set_arbitrage",
             ]
+        );
+    }
+
+    #[test]
+    fn complete_set_strategy_shell_overlap_is_intentional_and_pinned() {
+        let complete_set_root = "src/strategies/complete_set_arbitrage";
+        assert!(
+            registry_relative_roots(STRATEGY_KEY).contains(&complete_set_root),
+            "complete-set shell is a production-registered strategy and must stay under strategy source integrity"
+        );
+        assert!(
+            registry_relative_roots(OUTCOME_GROUP_KEY).contains(&complete_set_root),
+            "complete-set shell is the first outcome-group consumer and must stay under outcome-group source integrity"
         );
     }
 

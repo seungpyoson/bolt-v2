@@ -618,6 +618,12 @@ fn grouping_proof(
             event_slugs: cloned_vec(source.event_slugs.as_ref()),
             market_slugs: cloned_vec(source.market_slugs.as_ref()),
             gamma_query_fingerprint: source.gamma_query.as_ref().map(gamma_query_fingerprint),
+            cache_key_fingerprint: polymarket_cache_key_fingerprint(
+                &source.source_id,
+                neg_risk_market_id,
+                &market_slugs,
+                &condition_ids,
+            ),
         },
         market_slugs: market_slugs.clone(),
         proof_fingerprint: canonical_fingerprint(vec![
@@ -627,6 +633,39 @@ fn grouping_proof(
             CanonicalField::new(["grouping", "condition_ids"], condition_ids.join(",")),
         ]),
     })
+}
+
+fn polymarket_cache_key_fingerprint(
+    source_id: &str,
+    neg_risk_market_id: &str,
+    market_slugs: &[String],
+    condition_ids: &[String],
+) -> String {
+    let mut fields = vec![
+        CanonicalField::new(["cache_key", "source_id"], source_id),
+        CanonicalField::new(["cache_key", "neg_risk_market_id"], neg_risk_market_id),
+    ];
+    for (index, market_slug) in market_slugs.iter().enumerate() {
+        fields.push(CanonicalField::owned(
+            vec![
+                "cache_key".to_string(),
+                "market_slugs".to_string(),
+                index.to_string(),
+            ],
+            market_slug,
+        ));
+    }
+    for (index, condition_id) in condition_ids.iter().enumerate() {
+        fields.push(CanonicalField::owned(
+            vec![
+                "cache_key".to_string(),
+                "condition_ids".to_string(),
+                index.to_string(),
+            ],
+            condition_id,
+        ));
+    }
+    canonical_fingerprint(fields)
 }
 
 fn gamma_query_fingerprint(

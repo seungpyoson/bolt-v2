@@ -1,7 +1,7 @@
 # Tasks: Dashboard
 
 - [ ] DASH-001 Define dashboard customer jobs and capability classes before product selection: trade monitor, trade investigation, optional annotation/review notes, and controlled action workflow; keep trading/runtime/credential/fund/order mutation outside this package unless separately approved.
-- [ ] DASH-002 Define dashboard field-source matrix, including trade explanation fields, source proof id, run purpose, proof pin reason code/detail when present, fidelity class, claim limits, warning fields, source role, and data status/gap reason.
+- [ ] DASH-002 Define dashboard field-source matrix, including trade explanation fields, source proof id, run purpose, proof pin reason code/detail when present, fidelity class, claim limits, warning fields, source role, data status/gap reason, and RA-owned strategy-review/promotion status source where applicable.
 - [ ] DASH-003 Resolve #409 `PortfolioSnapshot` dependency for PnL completeness.
 - [ ] DASH-004 Resolve #77 durable trade-history/PnL dependency.
 - [ ] DASH-005 Decide #36 redemption-realized-PnL inclusion or exclusion.
@@ -9,7 +9,7 @@
 - [ ] DASH-007 Define freshness rules plus source-role and data-status semantics; defer final user-facing label names and legend text to the cross-project terminology/legend registry.
 - [ ] DASH-008 Run Grafana/Metabase/Superset/Preset/Retool/Plotly/custom product gate against specified customer jobs and read-model shape, then refresh/reference `plan.md` Product Cost Baselines.
 - [ ] DASH-009 Define selected product/UI no-mutation controls and any future non-trading annotation/review write controls only after explicit owner/schema/audit rules exist.
-- [ ] DASH-010 Implement read-only source contract validation, including rejection of proof-strength reclassification, upstream proof acceptance, accepted proof mutation, forbidden-claim weakening, historical-result relabeling after proof supersession, and any inference of the RA-owned GO / NO-GO verdict from BTE metrics or mutation of an RA finding/verdict review artifact (the dashboard displays an RA-owned verdict read-only or not at all; it never derives or changes one).
+- [ ] DASH-010 Implement read-only source contract validation, including rejection of proof-strength reclassification, upstream proof acceptance, accepted proof mutation, forbidden-claim weakening, historical-result relabeling after proof supersession, promotion-status inference from BTE metrics, and promotion-state mutation.
 - [ ] DASH-011 Add tests that dashboard field-source resolution does not branch on hardcoded venue/provider names.
 - [ ] DASH-012 Add tests that displayed artifact links stay under the configured S3 `artifact_root`, allow explicit artifact-local handles only for direct upstream handoffs, use committed Artifact Index snapshots for cross-run/bulk lists, reject cross-kind joins from independent latest pointers instead of manifest lineage ids, reject publish/repair/mutation of Artifact Index records, and do not create a second canonical root.
 - [ ] DASH-013 Add tests that dashboard cannot delete, expire, or mutate canonical artifacts.

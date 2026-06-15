@@ -1861,6 +1861,9 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
                 &context, root, strategy,
             ),
         );
+        errors.extend(validate_complete_set_activation_is_shadow_only(
+            &context, root, strategy,
+        ));
 
         if let Some(surface_id) = &strategy.realized_volatility_surface_id
             && !root
@@ -1935,6 +1938,23 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
     );
 
     errors
+}
+
+fn validate_complete_set_activation_is_shadow_only(
+    context: &str,
+    root: &BoltV3RootConfig,
+    strategy: &BoltV3StrategyConfig,
+) -> Vec<String> {
+    if strategy.strategy_archetype.as_str()
+        != crate::bolt_v3_outcome_group_sources::COMPLETE_SET_ARBITRAGE_KEY
+        || root.runtime.order_execution_mode == BoltV3OrderExecutionMode::Shadow
+    {
+        return Vec::new();
+    }
+
+    vec![format!(
+        "{context}: complete_set_arbitrage runtime activation is registration-only until NautilusTrader event forwarding is wired; runtime.order_execution_mode must be shadow for this substrate slice"
+    )]
 }
 
 fn validate_shadow_order_execution_mode_forbids_managed_venue_actions(

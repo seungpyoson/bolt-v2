@@ -6839,10 +6839,10 @@ reason = "Durable state-file schema version for forward-compatible recovery; not
 [[allowed]]
 path = "src/bolt_v3_atomic_io.rs"
 kind = "string"
-literal = '''"tmp"'''
-context = '''temp_path.set_extension("tmp");'''
-classification = "shared_atomic_io_temp_extension"
-reason = "Internal same-directory temporary file extension used before atomic rename; durable paths remain TOML-owned by callers."
+literal = '''".tmp"'''
+context = '''temp_path.push(".tmp");'''
+classification = "shared_atomic_io_temp_suffix"
+reason = "Internal same-directory temporary file suffix appended before atomic rename; durable paths remain TOML-owned by callers."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
@@ -11406,6 +11406,14 @@ reason = "Stable structured block-reason label for executable-cost output; it re
 [[allowed]]
 path = "src/bolt_v3_outcome_groups.rs"
 kind = "string"
+literal = '''"\u{00ad}\u{034f}\u{061c}\u{115f}\u{1160}\u{17b4}\u{17b5}\u{180e}\u{200b}\u{200c}\u{200d}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2060}\u{2061}\u{2062}\u{2063}\u{2064}\u{2066}\u{2067}\u{2068}\u{2069}\u{206a}\u{206b}\u{206c}\u{206d}\u{206e}\u{206f}\u{feff}"'''
+context = '''const DISALLOWED_OPERATOR_FORMAT_CHARS: &str = "\u{00ad}\u{034f}\u{061c}\u{115f}\u{1160}\u{17b4}\u{17b5}\u{180e}\u{200b}\u{200c}\u{200d}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2060}\u{2061}\u{2062}\u{2063}\u{2064}\u{2066}\u{2067}\u{2068}\u{2069}\u{206a}\u{206b}\u{206c}\u{206d}\u{206e}\u{206f}\u{feff}";'''
+classification = "operator_text_safety_denylist"
+reason = "Stable denylist for zero-width and format characters rejected before operator-controlled outcome-group text is hashed; not a runtime configuration value."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
 literal = '''"grouping_proof.proof_fingerprint"'''
 context = '''validate_sha256_field("grouping_proof.proof_fingerprint", proof_fingerprint)?;'''
 classification = "outcome_group_model_evidence_schema_label"
@@ -11416,6 +11424,14 @@ path = "src/bolt_v3_outcome_groups.rs"
 kind = "string"
 literal = '''"grouping_proof.discovery_scope.gamma_query_fingerprint"'''
 context = '''"grouping_proof.discovery_scope.gamma_query_fingerprint",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping_proof.discovery_scope.cache_key_fingerprint"'''
+context = '''"grouping_proof.discovery_scope.cache_key_fingerprint",'''
 classification = "outcome_group_model_evidence_schema_label"
 reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
 
@@ -11918,6 +11934,22 @@ reason = "Stable outcome-group model canonical evidence label or enum tag; runti
 path = "src/bolt_v3_outcome_groups.rs"
 kind = "string"
 literal = '''"grouping"'''
+context = '''["grouping", "cache_key_fingerprint"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"cache_key_fingerprint"'''
+context = '''["grouping", "cache_key_fingerprint"],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"grouping"'''
 context = '''vec!["grouping".to_string(), "market_slugs".to_string()],'''
 classification = "outcome_group_model_evidence_schema_label"
 reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
@@ -12332,22 +12364,6 @@ reason = "Fixed minute-to-millisecond conversion for provider metadata refresh i
 [[allowed]]
 path = "src/bolt_v3_outcome_group_sources.rs"
 kind = "string"
-literal = '''"POLYMARKET"'''
-context = '''errors.extend(validate_client_venue(context, client, "POLYMARKET"));'''
-classification = "provider_key_validation_token"
-reason = "Provider key used only to validate that a configured source references the matching TOML client venue."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_sources.rs"
-kind = "string"
-literal = '''"HYPERLIQUID"'''
-context = '''errors.extend(validate_client_venue(context, client, "HYPERLIQUID"));'''
-classification = "provider_key_validation_token"
-reason = "Provider key used only to validate that a configured source references the matching TOML client venue."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_sources.rs"
-kind = "string"
 literal = '''"complete_set_arbitrage"'''
 context = '''pub const COMPLETE_SET_ARBITRAGE_KEY: &str = "complete_set_arbitrage";'''
 classification = "strategy_archetype_key"
@@ -12552,6 +12568,62 @@ literal = '''"grouping"'''
 context = '''CanonicalField::new(["grouping", "source_id"], &source.source_id),'''
 classification = "outcome_group_normalizer_evidence_schema_label"
 reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"cache_key"'''
+context = '''CanonicalField::new(["cache_key", "source_id"], source_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket cache-key fingerprint evidence label; runtime values remain supplied by TOML or Gamma metadata."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''CanonicalField::new(["cache_key", "source_id"], source_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket cache-key fingerprint evidence label; runtime values remain supplied by TOML or Gamma metadata."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"cache_key"'''
+context = '''CanonicalField::new(["cache_key", "neg_risk_market_id"], neg_risk_market_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket cache-key fingerprint evidence label; runtime values remain supplied by TOML or Gamma metadata."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"neg_risk_market_id"'''
+context = '''CanonicalField::new(["cache_key", "neg_risk_market_id"], neg_risk_market_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket cache-key fingerprint evidence label; runtime values remain supplied by TOML or Gamma metadata."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"cache_key"'''
+context = '''"cache_key".to_string(),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket cache-key fingerprint evidence label; runtime values remain supplied by TOML or Gamma metadata."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"market_slugs"'''
+context = '''"market_slugs".to_string(),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket cache-key fingerprint evidence label; runtime values remain supplied by TOML or Gamma metadata."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"condition_ids"'''
+context = '''"condition_ids".to_string(),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket cache-key fingerprint evidence label; runtime values remain supplied by TOML or Gamma metadata."
 
 [[allowed]]
 path = "src/bolt_v3_outcome_group_polymarket.rs"
@@ -13020,30 +13092,6 @@ reason = "TOML field name used to validate bounded basket unwind policy; value r
 [[allowed]]
 path = "src/bolt_v3_outcome_group_sources.rs"
 kind = "string"
-literal = '''"ioc"'''
-context = '''"ioc",'''
-classification = "submit_mode_schema_token"
-reason = "Closed submit-mode TOML enum token for the audited first-slice basket submit mode."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_sources.rs"
-kind = "string"
-literal = '''"ioc"'''
-context = '''&& submit_mode != "ioc"'''
-classification = "submit_mode_schema_token"
-reason = "Closed submit-mode TOML enum token used only for fail-closed validation."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_sources.rs"
-kind = "string"
-literal = '''"ioc"'''
-context = '''"ioc" => Some(OutcomeGroupSubmitMode::Ioc),'''
-classification = "submit_mode_schema_token"
-reason = "Closed submit-mode TOML enum token used only for fail-closed validation."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_sources.rs"
-kind = "string"
 literal = '''"max_markets"'''
 context = '''validate_positive_cap(&mut errors, context, "max_markets", source.max_markets);'''
 classification = "source_schema_field"
@@ -13284,6 +13332,14 @@ reason = "Field path supplied to NT order-template validation for the supported 
 [[allowed]]
 path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
 kind = "string"
+literal = '''"ioc"'''
+context = '''Self::Ioc => "ioc",'''
+classification = "source_schema_enum_value"
+reason = "Canonical complete-set submit_mode TOML enum token owned by the archetype parser; consumers call the archetype contract instead of re-declaring it."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/complete_set_arbitrage.rs"
+kind = "string"
 literal = '''"runtime"'''
 context = '''.get("runtime")'''
 classification = "source_schema_field"
@@ -13483,11 +13539,11 @@ reason = "Concrete complete-set raw strategy config field populated from the com
 
 [[allowed]]
 path = "src/strategies/complete_set_arbitrage/mod.rs"
-kind = "string"
-literal = '''"ioc"'''
-context = '''const SUBMIT_MODE_IOC: &str = "ioc";'''
-classification = "source_schema_enum_value"
-reason = "Supported complete-set submit_mode value used by the concrete shell to derive the NT IOC time-in-force contract."
+kind = "number"
+literal = '''1'''
+context = '''self.forwarded_event_count = self.forwarded_event_count.saturating_add(1);'''
+classification = "strategy_loop_constant"
+reason = "Increment-by-one step in a saturating strategy event-forwarding counter; not an operator runtime value."
 
 [[allowed]]
 path = "src/source_canonicalization.rs"

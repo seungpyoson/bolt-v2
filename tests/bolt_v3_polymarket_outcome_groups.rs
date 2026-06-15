@@ -17,7 +17,7 @@ use bolt_v2::{
     },
     bolt_v3_outcome_groups::{
         AttestedLegRef, GroupingProof, OutcomeGroupSourceKind, OutcomeLegRole, PositiveSideBinding,
-        RoleBindingProof, TerminalStateKind, ValidatedOutcomeGroup,
+        RoleBindingProof, TerminalStateKind, ValidatedOutcomeGroup, is_lowercase_sha256,
         payout_vector_attestation_sha256, role_binding_attestation_sha256,
     },
 };
@@ -95,6 +95,7 @@ fn polymarket_normalizer_builds_three_way_neg_risk_group_from_attested_roles() {
         discovery_scope.event_slugs,
         vec!["world-cup-final".to_string()]
     );
+    assert!(is_lowercase_sha256(&discovery_scope.cache_key_fingerprint));
     assert_eq!(
         market_slugs,
         &vec![
@@ -138,6 +139,7 @@ fn polymarket_normalizer_allows_market_slug_and_gamma_query_sources_without_even
             discovery_scope.event_slugs.is_empty(),
             "event membership should be optional discovery evidence"
         );
+        assert!(is_lowercase_sha256(&discovery_scope.cache_key_fingerprint));
         assert_eq!(group.tradable_legs.len(), 6);
     }
 }

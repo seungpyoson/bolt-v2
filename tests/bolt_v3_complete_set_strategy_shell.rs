@@ -13,6 +13,10 @@ use bolt_v2::{
 use nautilus_model::enums::{OrderSide, OrderType, TimeInForce};
 use rust_decimal::Decimal;
 
+const SUBMIT_NOW_UNIX_MS: u64 = 2_000;
+const SUBMIT_MAX_OBSERVATION_AGE_MS: u64 = 500;
+const SUBMIT_OBSERVED_UNIX_MS: u64 = 1_750;
+
 #[test]
 fn complete_set_source_files_are_registered_for_runtime_activation() {
     assert_eq!(complete_set_arbitrage::KEY, "complete_set_arbitrage");
@@ -127,6 +131,8 @@ fn strategy_shell_forwards_events_into_shared_executor_without_submit_mechanics(
             BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
             "OL-SHELL",
             leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
         )
         .expect("submit command should persist client order ids before fills");
     basket
@@ -215,6 +221,7 @@ fn leg_intents() -> Vec<BoltV3BasketExecutionLegIntent> {
             side: OrderSide::Buy,
             quantity: dec("1.0"),
             notional: dec("0.44"),
+            observed_unix_ms: SUBMIT_OBSERVED_UNIX_MS,
         },
         BoltV3BasketExecutionLegIntent {
             leg_id: "NO".to_string(),
@@ -224,6 +231,7 @@ fn leg_intents() -> Vec<BoltV3BasketExecutionLegIntent> {
             side: OrderSide::Buy,
             quantity: dec("1.0"),
             notional: dec("0.46"),
+            observed_unix_ms: SUBMIT_OBSERVED_UNIX_MS,
         },
     ]
 }

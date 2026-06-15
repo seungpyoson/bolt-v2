@@ -390,8 +390,10 @@ mod tests {
     // outcome-group normalizers without changing the fingerprint framing.
     // Re-derived after resolving current main conflicts in the shared
     // outcome-group substrate.
+    // Re-derived after committing basket submit-slot permits on successful
+    // shared basket admission.
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "4c820cfa4959f249dc6b0012f5e9e04aac5e39e49d5e946c987c65957be23348";
+        "9484632e0a2caf91074ddea1286860404076bff140db52b5b36c6d610cc3cd36";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

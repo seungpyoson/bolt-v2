@@ -355,8 +355,10 @@ mod tests {
     // of attestation and metadata hashing.
     // Re-derived again after routing outcome-group venue keys through
     // provider-neutral exports for the provider-leak fence.
+    // Re-derived again after exposing indexed canonical fields to sibling
+    // outcome-group normalizers without changing the fingerprint framing.
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "0786ce9b4dafa805987444d6d28d3305d892ccd82b98687db2a1d79e9efc00da";
+        "4c820cfa4959f249dc6b0012f5e9e04aac5e39e49d5e946c987c65957be23348";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

@@ -273,7 +273,7 @@ impl CanonicalField {
         }
     }
 
-    fn owned(path: Vec<String>, value: impl ToString) -> Self {
+    pub(crate) fn owned(path: Vec<String>, value: impl ToString) -> Self {
         Self {
             path,
             value: value.to_string(),

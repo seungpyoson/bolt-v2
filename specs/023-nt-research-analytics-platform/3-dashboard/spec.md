@@ -101,6 +101,9 @@ independent PnL/account truth.
 Link or depend on #36, #77, #88, #148, #236, #369, and #409. Dashboard source
 contract work does not close production readiness by itself.
 
+GitHub issue #733 records the dashboard source-contract scope and links the
+named dependency set for implementation review.
+
 ## Non-Goals
 
 - No trading or runtime control plane.

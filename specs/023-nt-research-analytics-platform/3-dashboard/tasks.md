@@ -14,5 +14,5 @@
 - [x] DASH-012 Add tests that displayed artifact links stay under the configured S3 `artifact_root`, allow explicit artifact-local handles only for direct upstream handoffs, use committed Artifact Index snapshots for cross-run/bulk lists, reject cross-kind joins from independent latest pointers instead of manifest lineage ids, reject publish/repair/mutation of Artifact Index records, and do not create a second canonical root.
 - [x] DASH-013 Add tests that dashboard cannot delete, expire, or mutate canonical artifacts.
 - [x] DASH-014 Add tests for unmapped fields, stale rendering, missing PnL/exposure source gap labels, source-proof/claim-limit display without upgrade, strategy outlook displayed only with accepted source or exploratory label and never calculated as trading truth by dashboard, and mutation absence.
-- [ ] DASH-015 Link/update issue dependencies named in `spec.md` before implementation review.
+- [x] DASH-015 Link/update issue dependencies named in `spec.md` before implementation review. GitHub issue #733 records the dashboard source-contract scope and links #36, #77, #88, #148, #236, #369, and #409.
 - [ ] DASH-016 Run future branch verification checks.

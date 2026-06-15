@@ -7432,14 +7432,6 @@ reason = "This is a named initial counter invariant for strategy state, not an o
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "number"
 literal = '''1'''
-context = '''const COUNTER_INCREMENT: usize = 1;'''
-classification = "strategy_state_invariant"
-reason = "This is a named counter increment invariant for strategy state, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
-kind = "number"
-literal = '''1'''
 context = '''const COUNTER_INCREMENT_U64: u64 = 1;'''
 classification = "strategy_state_invariant"
 reason = "This is a named counter increment invariant for strategy state, not an operator runtime value."

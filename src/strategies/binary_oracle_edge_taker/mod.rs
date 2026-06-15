@@ -1689,17 +1689,6 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn refresh_current_reference_price_selection_at(&mut self, now_ms: u64) {
-        self.ensure_reference_price_runtime_state();
-        let (Some(interval_start_ms), Some(interval_end_ms)) =
-            (self.active.interval_start_ms, self.active.interval_end_ms)
-        else {
-            return;
-        };
-        self.observe_current_reference_price_selection(interval_start_ms, interval_end_ms, now_ms);
-        self.sync_exposure_context_from_active();
-    }
-
     fn refresh_reference_price_source_statuses(
         &mut self,
         interval_start_ms: u64,
@@ -6214,7 +6203,6 @@ fn refresh_fee_readiness_for_active(
 }
 
 const INITIAL_COUNTER_U64: u64 = 0;
-const COUNTER_INCREMENT: usize = 1;
 const COUNTER_INCREMENT_U64: u64 = 1;
 const NANOS_PER_MILLI_U64: u64 = 1_000_000;
 const NANOS_PER_SECOND_U64: u64 = 1_000_000_000;

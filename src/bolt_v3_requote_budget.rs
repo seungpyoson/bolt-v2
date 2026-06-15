@@ -17,9 +17,12 @@ pub struct RequoteBudget {
 
 impl RequoteBudget {
     /// Construct a throttle with an explicit window cap, window length, and
-    /// minimum interval. Callers derive these values from TOML and venue
-    /// capability facts; the helper only accounts for already-resolved values.
-    pub fn new(max_cost_per_window: u64, window_ms: u64, min_interval_ms: u64) -> Self {
+    /// minimum interval. The config bridge
+    /// `bolt_v3_maker_rate_budget::build_requote_budget_pair` derives these values
+    /// from TOML and venue capability facts; this constructor only accounts for
+    /// already-resolved values, so it is `pub(crate)` and reached only through that
+    /// bridge in production (enforced by `verify_bolt_v3_requote_construction.py`).
+    pub(crate) fn new(max_cost_per_window: u64, window_ms: u64, min_interval_ms: u64) -> Self {
         Self {
             window_ms,
             max_cost_per_window,
@@ -132,10 +135,13 @@ pub struct RequoteBudgetPair {
 }
 
 impl RequoteBudgetPair {
-    /// Compose the submit-command and REST-call budgets. Callers derive each
-    /// budget's caps/windows from TOML (`max_order_submit_rate`) and venue
-    /// capability facts (`clob_per_minute`); this gate only composes them.
-    pub fn new(submit_commands: RequoteBudget, rest_calls: RequoteBudget) -> Self {
+    /// Compose the submit-command and REST-call budgets. The config bridge
+    /// `bolt_v3_maker_rate_budget::build_requote_budget_pair` derives each budget's
+    /// caps/windows from TOML (`max_order_submit_rate`) and the venue egress
+    /// capability fact (`VenueEgressModel::cap_per_minute`); this gate only composes
+    /// them, so it is `pub(crate)` and reached only through that bridge in production
+    /// (enforced by `verify_bolt_v3_requote_construction.py`).
+    pub(crate) fn new(submit_commands: RequoteBudget, rest_calls: RequoteBudget) -> Self {
         Self {
             submit_commands,
             rest_calls,
@@ -283,6 +289,29 @@ mod tests {
         assert_eq!(budget.cost_in_window(), 1);
 
         assert!(budget.try_acquire(ONE_MINUTE_MS + 1, 1));
+        assert_eq!(budget.in_window(), 1);
+        assert_eq!(budget.cost_in_window(), 1);
+    }
+
+    #[test]
+    fn timestamp_exactly_at_eviction_cutoff_is_retained() {
+        // Pins the INCLUSIVE trailing edge of the eviction loop: an emit whose
+        // timestamp equals `now - window_ms` is still INSIDE the window and must be
+        // RETAINED, not evicted. The sibling test above only exercises the
+        // `now <= window_ms` early-return and the strictly-below-cutoff case (front
+        // at 0 vs cutoff 1), so it never places a front entry exactly at the cutoff
+        // while the eviction loop runs. Here the first emit lands at 1_000 and the
+        // second acquisition is exactly one window later, so `cutoff == 1_000 ==`
+        // the front emit's timestamp.
+        let mut budget = RequoteBudget::new(1, ONE_MINUTE_MS, 0);
+
+        assert!(budget.try_acquire(1_000, 1));
+        // With the inclusive `timestamp_ms >= cutoff_ms` keep-condition the front is
+        // retained, exhausting the cap-1 budget, so the boundary reprice is DENIED.
+        // Weakening evict's compare to `>` (which would evict the exactly-at-cutoff
+        // emit) frees the budget and GRANTS this acquisition, flipping the assert —
+        // so this test fails on that mutant.
+        assert!(!budget.try_acquire(1_000 + ONE_MINUTE_MS, 1));
         assert_eq!(budget.in_window(), 1);
         assert_eq!(budget.cost_in_window(), 1);
     }

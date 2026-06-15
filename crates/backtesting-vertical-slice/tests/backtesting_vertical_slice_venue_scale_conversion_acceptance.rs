@@ -529,10 +529,7 @@ blocking_issues = [
         .iter()
         .find(|venue| venue.venue == "pmxt")
         .expect("pmxt venue");
-    assert_eq!(
-        pmxt.status,
-        VenueScaleConversionAcceptanceStatus::Blocked
-    );
+    assert_eq!(pmxt.status, VenueScaleConversionAcceptanceStatus::Blocked);
     assert_eq!(pmxt.converted_universes, 1);
     assert_eq!(pmxt.source_only_universes, 0);
     assert_eq!(pmxt.blocked_universes, 1);

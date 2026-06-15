@@ -835,6 +835,39 @@ jobs:
 """
 
 
+BASE_DISPATCH_CI_CANCEL_WORKFLOW = """
+name: Dispatch CI Cancel
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [requested]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  cancel-obsolete-dispatch:
+    name: cancel-obsolete-dispatch
+    if: >-
+      ${{ github.event.workflow_run.event == 'workflow_dispatch'
+          && github.event.workflow_run.name == 'CI' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Cancel older same-branch dispatch runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/cancel_obsolete_dispatch_runs.py
+"""
+
+
 BASE_ADVISORY_WORKFLOW = """
 name: Advisory Check
 
@@ -1574,6 +1607,99 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
     ]
     for fragment, mutated_workflow in cases:
         errors = verifier.verify_workflow(mutated_workflow)
+        if not any(fragment in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_dispatch_cancel_watchdog_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/dispatch-ci-cancel.yml")
+    cases = [
+        (
+            "must trigger only on workflow_run",
+            replace_once(workflow, "  workflow_run:\n", "  pull_request:\n"),
+        ),
+        (
+            "workflow_run trigger must watch",
+            replace_once(workflow, '    workflows: ["CI"]\n', '    workflows: ["Backtester CI"]\n'),
+        ),
+        (
+            "workflow_run trigger must use requested only",
+            replace_once(workflow, "    types: [requested]\n", "    types: [completed]\n"),
+        ),
+        (
+            "permissions must include actions: write",
+            replace_once(workflow, "  actions: write\n", "  actions: read\n"),
+        ),
+        (
+            "permissions must include contents: read",
+            replace_once(workflow, "  contents: read\n", "  contents: none\n"),
+        ),
+        (
+            "must define cancel-obsolete-dispatch job",
+            replace_once(workflow, "  cancel-obsolete-dispatch:\n", "  cancel-stale-dispatch:\n"),
+        ),
+        (
+            "job must filter workflow_dispatch runs",
+            replace_once(
+                workflow,
+                "github.event.workflow_run.event == 'workflow_dispatch'",
+                "github.event.workflow_run.event == 'pull_request'",
+            ),
+        ),
+        (
+            "job must filter the configured CI workflow",
+            replace_once(
+                workflow,
+                "github.event.workflow_run.name == 'CI'",
+                "github.event.workflow_run.name == 'Backtester CI'",
+            ),
+        ),
+        (
+            "job must join workflow_dispatch and CI filters with &&",
+            replace_once(
+                workflow,
+                "          && github.event.workflow_run.name == 'CI' }}\n",
+                "          || github.event.workflow_run.name == 'CI' }}\n",
+            ),
+        ),
+        (
+            "job must run scripts/cancel_obsolete_dispatch_runs.py",
+            replace_once(
+                workflow,
+                "python3 scripts/cancel_obsolete_dispatch_runs.py",
+                "python3 scripts/ci_provenance.py ci-policy",
+            ),
+        ),
+        (
+            "job must pass github.token",
+            replace_once(
+                workflow,
+                "          GITHUB_TOKEN: ${{ github.token }}\n",
+                "",
+            ),
+        ),
+        (
+            "job must pass github.event_path",
+            replace_once(
+                workflow,
+                "          GITHUB_EVENT_PATH: ${{ github.event_path }}\n",
+                "",
+            ),
+        ),
+        (
+            "job must pass github.repository",
+            replace_once(
+                workflow,
+                "          GITHUB_REPOSITORY: ${{ github.repository }}\n",
+                "",
+            ),
+        ),
+    ]
+    for fragment, mutated_workflow in cases:
+        errors = verifier.verify_dispatch_ci_cancel_workflow(
+            {".github/workflows/dispatch-ci-cancel.yml": mutated_workflow}
+        )
         if not any(fragment in error for error in errors):
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
@@ -4008,6 +4134,12 @@ def workflow_with_exact_head_governance_cache_inputs(workflow: str) -> str:
     )
 
 
+def write_base_workflows(workflow_dir: pathlib.Path) -> None:
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+    (workflow_dir / "dispatch-ci-cancel.yml").write_text(BASE_DISPATCH_CI_CANCEL_WORKFLOW)
+
+
 def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -4016,8 +4148,7 @@ def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]
         verifier_path.write_text(VERIFIER_PATH.read_text())
 
         workflow_dir = tmp_path / ".github" / "workflows"
-        workflow_dir.mkdir(parents=True)
-        (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+        write_base_workflows(workflow_dir)
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
         action_path.parent.mkdir(parents=True)
@@ -4046,8 +4177,7 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         verifier_path.write_text(VERIFIER_PATH.read_text())
 
         workflow_dir = tmp_path / ".github" / "workflows"
-        workflow_dir.mkdir(parents=True)
-        (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+        write_base_workflows(workflow_dir)
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
         action_path.parent.mkdir(parents=True)
@@ -4078,8 +4208,7 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         verifier_path.write_text(VERIFIER_PATH.read_text())
 
         workflow_dir = tmp_path / ".github" / "workflows"
-        workflow_dir.mkdir(parents=True)
-        (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+        write_base_workflows(workflow_dir)
         (workflow_dir / workflow_name).write_text(workflow_text)
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
@@ -5182,6 +5311,13 @@ def assert_ci_lint_runs_rust_probe_tests() -> None:
         raise AssertionError("ci-lint-workflow must run Rust Probe runner self-tests")
 
 
+def assert_ci_lint_runs_cancel_obsolete_dispatch_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_cancel_obsolete_dispatch_runs.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run dispatch cancellation self-tests")
+
+
 def assert_github_scripts_are_repo_automation_fenced() -> None:
     verifier = load_verifier()
     expected_glob = (verifier.REPO_ROOT / ".github" / "scripts", "*.sh")
@@ -5295,6 +5431,7 @@ def main() -> int:
     assert_ci_lint_runs_ci_provenance_tests()
     assert_ci_lint_runs_command_understanding_tests()
     assert_ci_lint_runs_rust_probe_tests()
+    assert_ci_lint_runs_cancel_obsolete_dispatch_tests()
     assert_github_scripts_are_repo_automation_fenced()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()
@@ -7465,19 +7602,18 @@ def main() -> int:
     assert_ci_policy_heavy_lane_gaps_are_reported()
     assert_gate_policy_truth_table_gaps_are_reported()
     assert_ci_concurrency_split_gaps_are_reported()
+    assert_dispatch_cancel_watchdog_gaps_are_reported()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"
     assert runner_config.exists(), "ci/github-actions-runners.toml must exist"
-    real_ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
-    runner_errors = verifier.verify_github_actions_runner_contract(
-        {".github/workflows/ci.yml": real_ci}
-    )
+    real_workflows = verifier.repo_workflow_texts()
+    runner_errors = verifier.verify_github_actions_runner_contract(real_workflows)
     assert not runner_errors, runner_errors
-    actionlint_errors = verifier.verify_actionlint_runner_contract(
-        verifier.repo_workflow_texts()
-    )
+    actionlint_errors = verifier.verify_actionlint_runner_contract(real_workflows)
     assert not actionlint_errors, actionlint_errors
+    dispatch_cancel_errors = verifier.verify_dispatch_ci_cancel_workflow(real_workflows)
+    assert not dispatch_cancel_errors, dispatch_cancel_errors
 
     print("OK: CI workflow hygiene verifier self-tests passed.")
     return 0

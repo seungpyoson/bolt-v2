@@ -4531,6 +4531,9 @@ def remote_verification_policy_errors(data: dict[str, object], display_name: str
         "poll_interval_seconds": 15,
         "checks_appear_timeout_seconds": 300,
         "overall_timeout_seconds": 3600,
+        "diagnostic_log_max_lines": 160,
+        "diagnostic_log_max_bytes": 20000,
+        "diagnostic_unavailable_notice_interval_polls": 4,
     }
     errors: list[str] = []
     for key, value in expected.items():

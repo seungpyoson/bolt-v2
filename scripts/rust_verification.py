@@ -305,7 +305,14 @@ def validate_remote_verification_policy(data: dict[str, Any]) -> None:
     if not isinstance(policy, dict):
         raise PolicyError("remote_verification table must be a table")
     values: dict[str, int] = {}
-    for key in ("poll_interval_seconds", "checks_appear_timeout_seconds", "overall_timeout_seconds"):
+    for key in (
+        "poll_interval_seconds",
+        "checks_appear_timeout_seconds",
+        "overall_timeout_seconds",
+        "diagnostic_log_max_lines",
+        "diagnostic_log_max_bytes",
+        "diagnostic_unavailable_notice_interval_polls",
+    ):
         value = policy.get(key)
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
             raise PolicyError(f"remote_verification.{key} must be a positive integer")
@@ -2477,6 +2484,11 @@ def remote_verification_policy(policy: dict[str, Any]) -> dict[str, int]:
         "poll_interval_seconds": int(raw["poll_interval_seconds"]),
         "checks_appear_timeout_seconds": int(raw["checks_appear_timeout_seconds"]),
         "overall_timeout_seconds": int(raw["overall_timeout_seconds"]),
+        "diagnostic_log_max_lines": int(raw["diagnostic_log_max_lines"]),
+        "diagnostic_log_max_bytes": int(raw["diagnostic_log_max_bytes"]),
+        "diagnostic_unavailable_notice_interval_polls": int(
+            raw["diagnostic_unavailable_notice_interval_polls"]
+        ),
     }
 
 
@@ -2715,9 +2727,23 @@ def draft_pr_is_fork(repo: pathlib.Path, pr: dict[str, Any]) -> tuple[bool | Non
     return (head_owner, head_repo) != (current_owner, current_name), None
 
 
-WORKFLOW_RUN_FIELDS = "databaseId,event,headSha,status,conclusion,createdAt,url"
+WORKFLOW_RUN_FIELDS = "attempt,databaseId,event,headSha,status,conclusion,createdAt,url"
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b("
+    r"[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|SESSION_TOKEN|PRIVATE_KEY|MNEMONIC|SEED_PHRASE|WALLET_KEY|SIGNING_KEY|PASSPHRASE|CREDENTIAL)[A-Z0-9_]*"
+    r")\b(\s*[:=]\s*)\S.*"
+)
+BEARER_RE = re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S+")
 FULL_CI_READY_EVENTS = {"pull_request"}
 FULL_CI_DRAFT_EVENTS = {"workflow_dispatch"}
+
+
+class RemoteFailureDiagnosticsState:
+    def __init__(self) -> None:
+        self.reported_job_ids: set[int] = set()
+        self.unavailable_notice_polls: dict[int, int] = {}
+        self.jobs_unavailable_notice_polls: dict[int, int] = {}
 
 
 def workflow_run_list(
@@ -2759,6 +2785,38 @@ def workflow_run_view(repo: pathlib.Path, run_id: int) -> tuple[dict[str, Any] |
     return payload, None
 
 
+def workflow_run_jobs(
+    repo: pathlib.Path,
+    run_id: int,
+    attempt: int | None,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    argv = ["gh", "run", "view", str(run_id), "--json", "jobs"]
+    if attempt is not None:
+        argv.extend(["--attempt", str(attempt)])
+    payload, error = load_json_command(argv, repo=repo)
+    if error is not None:
+        return None, f"verify-remote could not inspect workflow run {run_id} jobs: {error}"
+    if not isinstance(payload, dict):
+        return None, "gh run view returned an unexpected jobs payload"
+    jobs = payload.get("jobs")
+    if not isinstance(jobs, list) or not all(isinstance(item, dict) for item in jobs):
+        return None, "gh run view returned an unexpected jobs payload"
+    return jobs, None
+
+
+def job_log_failed(repo: pathlib.Path, job_id: int) -> tuple[str | None, str | None]:
+    argv = ["gh", "run", "view", "--job", str(job_id), "--log-failed"]
+    try:
+        result = run_capture(argv, repo=repo)
+    except FileNotFoundError:
+        return None, "gh is required for remote verification"
+    if result.returncode != 0:
+        return None, command_error(argv, result)
+    if not ANSI_ESCAPE_RE.sub("", result.stdout).strip():
+        return None, "failed job log is not available yet"
+    return result.stdout, None
+
+
 def run_created_at(run: dict[str, Any]) -> str:
     created_at = run.get("createdAt")
     return created_at if isinstance(created_at, str) else ""
@@ -2771,6 +2829,114 @@ def run_database_id(run: dict[str, Any]) -> int | None:
     if isinstance(database_id, str) and database_id.isdigit():
         return int(database_id)
     return None
+
+
+def run_attempt(run: dict[str, Any]) -> int | None:
+    attempt = run.get("attempt")
+    if isinstance(attempt, int) and not isinstance(attempt, bool) and attempt > 0:
+        return attempt
+    if isinstance(attempt, str) and attempt.isdecimal():
+        value = int(attempt)
+        if value > 0:
+            return value
+    return None
+
+
+def job_database_id(job: dict[str, Any]) -> int | None:
+    database_id = job.get("databaseId")
+    if database_id is None:
+        database_id = job.get("id")
+    if isinstance(database_id, int) and not isinstance(database_id, bool):
+        return database_id
+    if isinstance(database_id, str) and database_id.isdecimal():
+        return int(database_id)
+    return None
+
+
+def job_text(job: dict[str, Any], key: str) -> str | None:
+    value = job.get(key)
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def failed_job_summary(job: dict[str, Any], job_id: int) -> str:
+    name = job_text(job, "name") or f"job {job_id}"
+    status = job_text(job, "status") or "unknown"
+    conclusion = job_text(job, "conclusion") or "unknown"
+    url = job_text(job, "url")
+    summary = f"{name} [{status}/{conclusion}]"
+    return summary + (f" {url}" if url else "")
+
+
+def mask_obvious_secrets(line: str) -> str:
+    line = SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}<redacted>", line)
+    return BEARER_RE.sub("Authorization: Bearer <redacted>", line)
+
+
+def diagnostic_log_excerpt(text: str, *, max_lines: int, max_bytes: int) -> str:
+    cleaned = ANSI_ESCAPE_RE.sub("", text)
+    lines = [mask_obvious_secrets(line) for line in cleaned.splitlines()]
+    excerpt = "\n".join(lines[-max_lines:])
+    encoded = excerpt.encode("utf-8")
+    if len(encoded) > max_bytes:
+        excerpt = encoded[-max_bytes:].decode("utf-8", errors="replace")
+    return excerpt.strip()
+
+
+def emit_failed_job_diagnostics(
+    *,
+    repo: pathlib.Path,
+    run: dict[str, Any],
+    state: RemoteFailureDiagnosticsState,
+    remote_policy: dict[str, int],
+) -> bool:
+    run_id = run_database_id(run)
+    if run_id is None:
+        print("CI failed-job diagnostics unavailable: workflow run databaseId missing", file=sys.stderr)
+        return False
+    attempt = run_attempt(run)
+    if attempt is None:
+        print("CI failed-job diagnostics unavailable: workflow run attempt missing", file=sys.stderr)
+        return False
+    jobs, error = workflow_run_jobs(repo, run_id, attempt)
+    if error is not None or jobs is None:
+        notice_interval = remote_policy["diagnostic_unavailable_notice_interval_polls"]
+        poll_count = state.jobs_unavailable_notice_polls.get(run_id, 0) + 1
+        state.jobs_unavailable_notice_polls[run_id] = poll_count
+        if poll_count == 1 or poll_count % notice_interval == 0:
+            print(f"CI failed-job diagnostics unavailable: {error or 'unable to inspect workflow run jobs'}", file=sys.stderr)
+        return False
+    state.jobs_unavailable_notice_polls.pop(run_id, None)
+    notice_interval = remote_policy["diagnostic_unavailable_notice_interval_polls"]
+    for job in jobs:
+        if job_text(job, "status") != "completed" or job_text(job, "conclusion") != "failure":
+            continue
+        job_id = job_database_id(job)
+        if job_id is None or job_id in state.reported_job_ids:
+            continue
+        log_text, log_error = job_log_failed(repo, job_id)
+        excerpt = (
+            diagnostic_log_excerpt(
+                log_text,
+                max_lines=remote_policy["diagnostic_log_max_lines"],
+                max_bytes=remote_policy["diagnostic_log_max_bytes"],
+            )
+            if log_text is not None
+            else ""
+        )
+        if not excerpt:
+            poll_count = state.unavailable_notice_polls.get(job_id, 0) + 1
+            state.unavailable_notice_polls[job_id] = poll_count
+            if poll_count == 1 or poll_count % notice_interval == 0:
+                print(f"CI failed job: {failed_job_summary(job, job_id)}", file=sys.stderr)
+                print(f"  job_log=unavailable yet: {log_error or 'not available'}", file=sys.stderr)
+            continue
+        state.reported_job_ids.add(job_id)
+        state.unavailable_notice_polls.pop(job_id, None)
+        print(f"CI failed job: {failed_job_summary(job, job_id)}", file=sys.stderr)
+        print(excerpt, file=sys.stderr)
+    return True
 
 
 def matching_full_ci_runs(
@@ -2878,6 +3044,7 @@ def wait_for_full_ci_run(
     overall_deadline = time.monotonic() + remote_policy["overall_timeout_seconds"]
     interval = remote_policy["poll_interval_seconds"]
     tracked_run_id: int | None = initial_tracked_run_id
+    diagnostics_state = RemoteFailureDiagnosticsState()
     if tracked_run_id is not None and sleep_before_initial_tracked_poll:
         time.sleep(interval)
     while True:
@@ -2915,6 +3082,15 @@ def wait_for_full_ci_run(
                 return verify_remote_fail(f"no matching full-CI workflow run appeared for {head} on {pr_url}")
             time.sleep(interval)
             continue
+        head_result = verify_remote_head_current_or_fail(repo, branch, head)
+        if head_result is not None:
+            return head_result
+        emit_failed_job_diagnostics(
+            repo=repo,
+            run=run,
+            state=diagnostics_state,
+            remote_policy=remote_policy,
+        )
         if workflow_run_state(run) != "pending":
             head_result = verify_remote_head_current_or_fail(repo, branch, head)
             if head_result is not None:
@@ -2926,6 +3102,43 @@ def wait_for_full_ci_run(
                 return head_result
             return result
         time.sleep(interval)
+
+
+def cmd_ci_logs(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    try:
+        policy = load_policy(repo)
+        remote_policy = remote_verification_policy(policy)
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        return verify_remote_fail(str(exc))
+    head, branch, error = ensure_verify_remote_preconditions(repo)
+    if error is not None or head is None or branch is None:
+        return verify_remote_fail(error or "unable to inspect git state")
+    pr, error = pr_for_exact_head(repo, branch, head, during_watch=False)
+    if error is not None or pr is None:
+        return verify_remote_fail(error or "unable to inspect pull request")
+    pr_url = pr.get("url") or f"PR #{pr.get('number')}"
+    dispatch_config, error = ci_provenance_dispatch_config(repo)
+    if error is not None or dispatch_config is None:
+        return verify_remote_fail(error or "unable to inspect CI dispatch config")
+    runs, error = workflow_run_list(repo, dispatch_config, branch)
+    if error is not None or runs is None:
+        return verify_remote_fail(error or "unable to inspect workflow runs")
+    events = FULL_CI_DRAFT_EVENTS if bool(pr.get("isDraft")) else FULL_CI_READY_EVENTS
+    matching = matching_full_ci_runs(
+        runs,
+        head=head,
+        events=events,
+    )
+    if not matching:
+        return verify_remote_fail(f"no matching full-CI workflow run found for {head} on {pr_url}")
+    diagnostics_available = emit_failed_job_diagnostics(
+        repo=repo,
+        run=matching[0],
+        state=RemoteFailureDiagnosticsState(),
+        remote_policy=remote_policy,
+    )
+    return 2 if diagnostics_available is False else 0
 
 
 def cmd_verify_remote(args: argparse.Namespace) -> int:
@@ -3293,6 +3506,13 @@ def build_parser() -> argparse.ArgumentParser:
     verify_remote = subparsers.add_parser("verify-remote")
     verify_remote.add_argument("--repo", required=True)
     verify_remote.set_defaults(func=cmd_verify_remote)
+
+    ci_logs = subparsers.add_parser(
+        "ci-logs",
+        description="Print failed-job diagnostics for the matching exact-head full-CI run; not a CI pass/fail gate.",
+    )
+    ci_logs.add_argument("--repo", required=True)
+    ci_logs.set_defaults(func=cmd_ci_logs)
 
     scrub = subparsers.add_parser("scrub-env-keys")
     scrub.set_defaults(func=cmd_scrub_env_keys)

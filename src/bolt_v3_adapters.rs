@@ -578,11 +578,21 @@ mod tests {
         }
     }
 
-    fn fixture_chainlink_secrets()
+    fn fixture_chainlink_strike_secrets()
     -> crate::bolt_v3_providers::chainlink::ResolvedBoltV3ChainlinkSecrets {
         crate::bolt_v3_providers::chainlink::ResolvedBoltV3ChainlinkSecrets {
             api_key: zeroize::Zeroizing::new("fixture-chainlink-api-key".to_string()),
             api_secret: zeroize::Zeroizing::new("fixture-chainlink-api-secret".to_string()),
+        }
+    }
+
+    fn fixture_chainlink_reference_secrets()
+    -> crate::bolt_v3_providers::chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets {
+        crate::bolt_v3_providers::chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets {
+            api_key: zeroize::Zeroizing::new("fixture-chainlink-reference-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new(
+                "fixture-chainlink-reference-api-secret".to_string(),
+            ),
         }
     }
 
@@ -604,11 +614,11 @@ mod tests {
         );
         clients.insert(
             "chainlink_strike".to_string(),
-            Arc::new(fixture_chainlink_secrets()),
+            Arc::new(fixture_chainlink_strike_secrets()),
         );
         clients.insert(
             "chainlink_reference".to_string(),
-            Arc::new(fixture_chainlink_secrets()),
+            Arc::new(fixture_chainlink_reference_secrets()),
         );
         clients.insert(
             "polyresearch_reference".to_string(),
@@ -917,11 +927,11 @@ mod tests {
         let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
         clients.insert(
             "chainlink_reference".to_string(),
-            Arc::new(fixture_chainlink_secrets()),
+            Arc::new(fixture_chainlink_reference_secrets()),
         );
         clients.insert(
             "chainlink_strike".to_string(),
-            Arc::new(fixture_chainlink_secrets()),
+            Arc::new(fixture_chainlink_strike_secrets()),
         );
         let resolved = ResolvedBoltV3Secrets { clients };
 
@@ -992,11 +1002,11 @@ mod tests {
         // and surfaces the provider MISMATCH there rather than a chainlink miss.
         clients.insert(
             "chainlink_reference".to_string(),
-            Arc::new(fixture_chainlink_secrets()),
+            Arc::new(fixture_chainlink_reference_secrets()),
         );
         clients.insert(
             "chainlink_strike".to_string(),
-            Arc::new(fixture_chainlink_secrets()),
+            Arc::new(fixture_chainlink_strike_secrets()),
         );
         let resolved = ResolvedBoltV3Secrets { clients };
 

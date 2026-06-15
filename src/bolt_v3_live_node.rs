@@ -6253,6 +6253,7 @@ configured_source_param = "configured-value"
         use crate::{
             bolt_v3_providers::{
                 binance::ResolvedBoltV3BinanceSecrets, chainlink::ResolvedBoltV3ChainlinkSecrets,
+                chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
                 polymarket::ResolvedBoltV3PolymarketSecrets,
             },
             bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
@@ -6286,6 +6287,15 @@ configured_source_param = "configured-value"
             Arc::new(ResolvedBoltV3ChainlinkSecrets {
                 api_key: zeroize::Zeroizing::new("fixture-chainlink-api-key".to_string()),
                 api_secret: zeroize::Zeroizing::new("fixture-chainlink-api-secret".to_string()),
+            }),
+        );
+        clients.insert(
+            "chainlink_reference".to_string(),
+            Arc::new(ResolvedBoltV3ChainlinkReferenceSecrets {
+                api_key: zeroize::Zeroizing::new("fixture-chainlink-reference-api-key".to_string()),
+                api_secret: zeroize::Zeroizing::new(
+                    "fixture-chainlink-reference-api-secret".to_string(),
+                ),
             }),
         );
         let resolved = ResolvedBoltV3Secrets { clients };

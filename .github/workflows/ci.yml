@@ -498,6 +498,8 @@ jobs:
     needs: [ci-policy, test-archive, nextest-fingerprint-reuse]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    env:
+      NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
     strategy:
       fail-fast: false
       matrix:
@@ -513,11 +515,33 @@ jobs:
           include-nextest-version: "true"
           include-managed-target-dir: "true"
 
+      - name: Restore nextest archive cache
+        id: nextest-archive-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
+          key: ${{ needs.test-archive.outputs.nextest_fingerprint }}
+
       - name: Download nextest archive
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: nextest-archive
           path: ${{ runner.temp }}/nextest-archive
+
+      - name: Stage nextest archive
+        run: |
+          archive_path="$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst"
+          mkdir -p "$(dirname "$archive_path")"
+
+          if [[ "${{ steps.nextest-archive-cache.outputs.cache-hit }}" == "true" ]]; then
+            cp "$NEXTEST_ARCHIVE_PATH" "$archive_path"
+          fi
+
+          if [[ ! -f "$archive_path" ]]; then
+            echo "missing nextest archive at $archive_path" >&2
+            exit 1
+          fi
 
       - name: Resolve archive extraction root
         id: archive-root

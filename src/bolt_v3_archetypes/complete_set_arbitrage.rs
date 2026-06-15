@@ -131,7 +131,7 @@ pub fn validate_strategy(
             errors.push(format!("{context}: parameters.runtime.{field} is required"));
         }
     }
-    if strategy.config.market_exit_reduce_only.is_none() {
+    if strategy.market_exit_reduce_only.is_none() {
         errors.push(format!("{context}: market_exit_reduce_only is required"));
     }
 

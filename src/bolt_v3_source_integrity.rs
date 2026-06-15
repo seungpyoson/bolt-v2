@@ -351,8 +351,10 @@ mod tests {
     // main's rollback-aware submit admission.
     // Re-derived after submit-admission rollback counts became explicit
     // counter deltas during the conflict-resolution merge.
+    // Re-derived after the same merge adapted basket reservation diagnostics to
+    // current submit-admission request/proof APIs.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "01cba650c8d44b9d256ac09bdf272449f06b266df05549679d1aa603013ec837";
+        "008b012e0cfd447d6c510b273e4caf63c1464b38d5f5f618f00baca508a74f48";
     // GOLDEN_OUTCOME_GROUP_DIGEST is introduced by the shared outcome-group
     // substrate source-integrity task after every first-slice source root exists
     // on disk. Re-derived after Task 10 activated the complete-set runtime

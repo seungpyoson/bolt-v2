@@ -1522,7 +1522,9 @@ impl BoltV3SubmitAdmissionState {
             if let (Some(request), Some(evaluation)) =
                 (rejected_request.as_ref(), rejected_evaluation.as_ref())
             {
-                return Self::admission_result(&inner, request, evaluation);
+                if let Err(error) = Self::admission_result(&inner, request, evaluation) {
+                    return Err(error);
+                }
             }
             return Err(submit_admission_error_from_outcome(
                 outcome,
@@ -1615,7 +1617,7 @@ impl BoltV3SubmitAdmissionState {
         }
         if let Some(limits) = inner
             .live_submit_approval_limits
-            .get(request.execution_client_id)
+            .get(&request.execution_client_id)
         {
             if request.notional > limits.max_order_notional {
                 return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
@@ -1624,7 +1626,7 @@ impl BoltV3SubmitAdmissionState {
             }
             let current_count = inner
                 .admitted_order_count_by_execution_client
-                .get(request.execution_client_id)
+                .get(&request.execution_client_id)
                 .copied()
                 .unwrap_or(0);
             if live_submit_count_cap_outcome(current_count, 1, limits.max_order_count)
@@ -1643,7 +1645,11 @@ impl BoltV3SubmitAdmissionState {
                         BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
                     );
                 };
-                if !proof.is_valid_for(request) {
+                if !proof.is_valid_for_shape(
+                    &request.instrument_id,
+                    request.order_side,
+                    request.order_quantity,
+                ) {
                     return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                         BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
                     );
@@ -2615,7 +2621,7 @@ pub enum BoltV3PositionSizerRejectReason {
     SizedQuantityMismatch,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum BoltV3SubmitAdmissionError {
     KillSwitchLatched {
         state: KillSwitchStateKind,

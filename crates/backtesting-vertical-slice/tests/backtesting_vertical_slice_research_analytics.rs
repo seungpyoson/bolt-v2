@@ -2,9 +2,10 @@ use backtesting_vertical_slice::{
     artifact_index::LifecycleState,
     operator::{RESULT_CONTRACT_FILE, RunSpec},
     research_analytics::{
-        ArtifactPointerRef, BacktestEvidenceRef, BacktestSweepPlan, BacktestSweepRun,
-        ExperimentResultArtifact, ForbiddenPromotionAction, PromotionConfigRef, RaVerdict,
-        RaVerdictKind, ResearchAnalyticsArtifactError, SourceProofEvidenceRef,
+        ArtifactPointerRef, BacktestEvidenceRef, BacktestRunCatalogList, BacktestSweepPlan,
+        BacktestSweepRun, ExperimentResultArtifact, ForbiddenPromotionAction, PromotionConfigRef,
+        RaVerdict, RaVerdictKind, ResearchAnalyticsArtifactError, RunPointerIndexRecord,
+        RunPointerResult, SourceProofEvidenceRef, build_run_pointer_index_from_catalog,
         run_backtest_sweep_with_executor,
     },
     result_contract::{
@@ -13,7 +14,7 @@ use backtesting_vertical_slice::{
     source_proof::AcceptanceMode,
     source_proof::SourceProofFidelityClass,
 };
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 use tempfile::TempDir;
 
 const COMMITTED_RUN_SPEC: &str = include_str!(
@@ -189,6 +190,39 @@ fn write_contract(output_dir: &Path, run_id: &str) {
     .expect("write result contract");
 }
 
+struct FakeBacktestRunCatalog {
+    run_ids: Vec<String>,
+}
+
+impl BacktestRunCatalogList for FakeBacktestRunCatalog {
+    fn list_backtest_runs(&self) -> anyhow::Result<Vec<String>> {
+        Ok(self.run_ids.clone())
+    }
+}
+
+fn run_pointer_record(
+    artifact_root: &str,
+    run_id: &str,
+    strategy: &str,
+    hash_char: char,
+) -> RunPointerIndexRecord {
+    let mut params = BTreeMap::new();
+    params.insert(
+        "strategy".to_string(),
+        serde_json::Value::String(strategy.to_string()),
+    );
+    params.insert("threshold_bps".to_string(), serde_json::json!(12));
+
+    RunPointerIndexRecord {
+        run_id: run_id.to_string(),
+        params,
+        result: RunPointerResult {
+            result_contract_uri: format!("{artifact_root}/backtests/{run_id}/result-contract.json"),
+            result_contract_hash: hash_char.to_string().repeat(64),
+        },
+    }
+}
+
 #[test]
 fn sweep_orchestration_writes_typed_run_specs_invokes_bte_and_reads_contracts() {
     let temp = TempDir::new().expect("temp dir");
@@ -254,6 +288,102 @@ fn sweep_orchestration_writes_typed_run_specs_invokes_bte_and_reads_contracts() 
             .join("run-output")
             .join("first-run")
             .join(RESULT_CONTRACT_FILE)
+    );
+}
+
+#[test]
+fn run_pointer_index_covers_catalog_runs_with_hash_and_no_lifecycle_or_promotion_state() {
+    let artifact_root = "s3://example-bucket/nt-research-analytics";
+    let catalog = FakeBacktestRunCatalog {
+        run_ids: vec!["ra-run-b".to_string(), "ra-run-a".to_string()],
+    };
+
+    let index = build_run_pointer_index_from_catalog(
+        &catalog,
+        artifact_root,
+        vec![
+            run_pointer_record(artifact_root, "ra-run-a", "edge-taker", 'a'),
+            run_pointer_record(artifact_root, "ra-run-b", "mean-reversion", 'b'),
+        ],
+    )
+    .expect("catalog-listed runs build a run-pointer index");
+
+    index.validate().expect("run-pointer index validates");
+    assert_eq!(index.artifact_root, artifact_root);
+    assert_eq!(
+        index
+            .runs
+            .iter()
+            .map(|entry| entry.run_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ra-run-a", "ra-run-b"]
+    );
+    assert_eq!(index.content_hash.len(), 64);
+    assert!(
+        index
+            .content_hash
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ('a'..='f').contains(&ch))
+    );
+    assert_eq!(
+        index.runs[0].params.get("strategy"),
+        Some(&serde_json::Value::String("edge-taker".to_string()))
+    );
+
+    let serialized = serde_json::to_value(&index).expect("serialize run-pointer index");
+    assert!(serialized.get("lifecycle_state").is_none());
+    assert!(serialized.get("promotion_config").is_none());
+    for entry in serialized
+        .get("runs")
+        .and_then(serde_json::Value::as_array)
+        .expect("runs serialize as array")
+    {
+        assert!(entry.get("lifecycle_state").is_none());
+        assert!(entry.get("promotion_config").is_none());
+    }
+}
+
+#[test]
+fn run_pointer_index_rejects_records_not_backed_by_one_catalog_root() {
+    let artifact_root = "s3://example-bucket/nt-research-analytics";
+    let catalog = FakeBacktestRunCatalog {
+        run_ids: vec!["ra-run-a".to_string(), "ra-run-b".to_string()],
+    };
+
+    let missing_run = build_run_pointer_index_from_catalog(
+        &catalog,
+        artifact_root,
+        vec![run_pointer_record(
+            artifact_root,
+            "ra-run-a",
+            "edge-taker",
+            'a',
+        )],
+    )
+    .expect_err("records must cover catalog.list_backtest_runs exactly");
+    assert!(
+        missing_run
+            .to_string()
+            .contains("catalog.list_backtest_runs"),
+        "{missing_run}"
+    );
+
+    let mut foreign_root = run_pointer_record(artifact_root, "ra-run-b", "mean-reversion", 'b');
+    foreign_root.result.result_contract_uri =
+        "s3://other-bucket/nt-research-analytics/backtests/ra-run-b/result-contract.json"
+            .to_string();
+    let wrong_root = build_run_pointer_index_from_catalog(
+        &catalog,
+        artifact_root,
+        vec![
+            run_pointer_record(artifact_root, "ra-run-a", "edge-taker", 'a'),
+            foreign_root,
+        ],
+    )
+    .expect_err("result pointers must share the index artifact_root");
+    assert!(
+        wrong_root.to_string().contains("artifact_root"),
+        "{wrong_root}"
     );
 }
 

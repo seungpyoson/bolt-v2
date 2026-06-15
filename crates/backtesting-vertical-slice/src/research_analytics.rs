@@ -6,16 +6,19 @@
 //! sweep inputs for the existing BTE operator path.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt, fs,
     path::{Component, Path, PathBuf},
 };
 
 use anyhow::{Context, Result, ensure};
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     artifact_index::LifecycleState,
+    hashing::sha256_hex,
     operator::{RESULT_CONTRACT_FILE, RunSpec, run_operator_from_run_spec},
     result_contract::BacktestResultContract,
     source_proof::SourceProofFidelityClass,
@@ -24,6 +27,7 @@ use crate::{
 const RESEARCH_ANALYTICS_KIND_PATH: &str = "research-analytics";
 const RESEARCH_ANALYTICS_SCHEMA_VERSION: &str = "v1";
 const RESEARCH_ANALYTICS_EXPERIMENT_RESULTS_SUBFAMILY: &str = "experiment-results";
+const RUN_POINTER_INDEX_SCHEMA_VERSION: u64 = 1;
 
 #[derive(Debug, Clone)]
 pub struct BacktestSweepPlan {
@@ -52,6 +56,207 @@ pub struct BacktestSweepRunReport {
     pub output_dir: PathBuf,
     pub result_contract_path: PathBuf,
     pub contract: BacktestResultContract,
+}
+
+pub trait BacktestRunCatalogList {
+    fn list_backtest_runs(&self) -> anyhow::Result<Vec<String>>;
+}
+
+impl BacktestRunCatalogList for ParquetDataCatalog {
+    fn list_backtest_runs(&self) -> anyhow::Result<Vec<String>> {
+        ParquetDataCatalog::list_backtest_runs(self).map_err(Into::into)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunPointerResult {
+    pub result_contract_uri: String,
+    pub result_contract_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunPointerIndexRecord {
+    pub run_id: String,
+    pub params: BTreeMap<String, serde_json::Value>,
+    pub result: RunPointerResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunPointerIndex {
+    pub schema_version: u64,
+    pub artifact_root: String,
+    pub content_hash: String,
+    pub runs: Vec<RunPointerIndexRecord>,
+}
+
+#[derive(Serialize)]
+struct RunPointerIndexHashPayload<'a> {
+    schema_version: u64,
+    artifact_root: &'a str,
+    runs: &'a [RunPointerIndexRecord],
+}
+
+impl RunPointerIndex {
+    /// # Errors
+    ///
+    /// Returns an error when the index uses an unsupported schema version,
+    /// contains invalid pointers, or has a stale `content_hash`.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.schema_version == RUN_POINTER_INDEX_SCHEMA_VERSION,
+            "run-pointer index schema_version must be {RUN_POINTER_INDEX_SCHEMA_VERSION}"
+        );
+        let artifact_root = validate_run_pointer_artifact_root(&self.artifact_root)?;
+        ensure!(
+            self.artifact_root == artifact_root,
+            "run-pointer index artifact_root must be normalized without a trailing slash"
+        );
+        ensure!(
+            is_sha256_hex(&self.content_hash),
+            "run-pointer index content_hash must be lowercase sha256 hex"
+        );
+        ensure!(
+            !self.runs.is_empty(),
+            "run-pointer index must include at least one catalog-listed run"
+        );
+
+        let mut seen = BTreeSet::new();
+        for record in &self.runs {
+            record.validate(&artifact_root)?;
+            ensure!(
+                seen.insert(record.run_id.clone()),
+                "run-pointer index contains duplicate run_id {:?}",
+                record.run_id
+            );
+        }
+        ensure!(
+            self.runs
+                .windows(2)
+                .all(|pair| pair[0].run_id.as_str() < pair[1].run_id.as_str()),
+            "run-pointer index runs must be sorted by run_id"
+        );
+        ensure!(
+            self.content_hash == self.expected_content_hash()?,
+            "run-pointer index content_hash does not match payload"
+        );
+        Ok(())
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the index cannot be serialized as structured JSON.
+    pub fn expected_content_hash(&self) -> Result<String> {
+        let artifact_root = validate_run_pointer_artifact_root(&self.artifact_root)?;
+        let payload = RunPointerIndexHashPayload {
+            schema_version: self.schema_version,
+            artifact_root: &artifact_root,
+            runs: &self.runs,
+        };
+        Ok(sha256_hex(&serde_json::to_vec(&payload)?))
+    }
+}
+
+impl RunPointerIndexRecord {
+    fn validate(&self, artifact_root: &str) -> Result<()> {
+        ensure!(!self.run_id.trim().is_empty(), "run_id must not be empty");
+        ensure!(
+            !self.params.is_empty(),
+            "run-pointer params for run_id {:?} must not be empty",
+            self.run_id
+        );
+        for key in self.params.keys() {
+            ensure!(
+                !key.trim().is_empty(),
+                "run-pointer params for run_id {:?} must not contain an empty key",
+                self.run_id
+            );
+        }
+        ensure!(
+            !self.params.contains_key("lifecycle_state"),
+            "run-pointer params must not carry lifecycle_state"
+        );
+        ensure!(
+            !self.params.contains_key("promotion_config"),
+            "run-pointer params must not carry promotion_config"
+        );
+        self.result.validate(artifact_root)
+    }
+}
+
+impl RunPointerResult {
+    fn validate(&self, artifact_root: &str) -> Result<()> {
+        ensure!(
+            self.result_contract_uri
+                .starts_with(&format!("{artifact_root}/")),
+            "result_contract_uri must live under artifact_root {artifact_root:?}"
+        );
+        ensure!(
+            is_sha256_hex(&self.result_contract_hash),
+            "result_contract_hash must be lowercase sha256 hex"
+        );
+        Ok(())
+    }
+}
+
+/// # Errors
+///
+/// Returns an error if the catalog cannot list backtest runs, the provided
+/// records do not exactly cover that list, or any result pointer is invalid.
+pub fn build_run_pointer_index_from_catalog<C: BacktestRunCatalogList>(
+    catalog: &C,
+    artifact_root: &str,
+    records: Vec<RunPointerIndexRecord>,
+) -> Result<RunPointerIndex> {
+    build_run_pointer_index_from_catalog_list(catalog.list_backtest_runs()?, artifact_root, records)
+}
+
+/// # Errors
+///
+/// Returns an error if the listed run IDs and pointer records differ, contain
+/// duplicates, or point outside the single artifact root.
+pub fn build_run_pointer_index_from_catalog_list<I>(
+    catalog_run_ids: I,
+    artifact_root: &str,
+    records: Vec<RunPointerIndexRecord>,
+) -> Result<RunPointerIndex>
+where
+    I: IntoIterator,
+    I::Item: Into<String>,
+{
+    let artifact_root = validate_run_pointer_artifact_root(artifact_root)?;
+    let listed = exact_run_id_set(
+        "catalog.list_backtest_runs",
+        catalog_run_ids.into_iter().map(Into::into),
+    )?;
+    ensure!(
+        !listed.is_empty(),
+        "catalog.list_backtest_runs must include at least one run"
+    );
+
+    let indexed = exact_run_id_set(
+        "run pointer records",
+        records.iter().map(|record| record.run_id.clone()),
+    )?;
+    ensure!(
+        listed == indexed,
+        "run pointer records must exactly match catalog.list_backtest_runs"
+    );
+
+    let mut runs = records;
+    runs.sort_by(|left, right| left.run_id.cmp(&right.run_id));
+    for record in &runs {
+        record.validate(&artifact_root)?;
+    }
+
+    let mut index = RunPointerIndex {
+        schema_version: RUN_POINTER_INDEX_SCHEMA_VERSION,
+        artifact_root,
+        content_hash: String::new(),
+        runs,
+    };
+    index.content_hash = index.expected_content_hash()?;
+    index.validate()?;
+    Ok(index)
 }
 
 /// # Errors
@@ -131,6 +336,37 @@ where
 fn read_result_contract(path: &Path) -> Result<BacktestResultContract> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+}
+
+fn validate_run_pointer_artifact_root(artifact_root: &str) -> Result<String> {
+    let artifact_root = artifact_root.trim_end_matches('/').to_string();
+    ensure!(
+        !artifact_root.trim().is_empty(),
+        "artifact_root must not be empty"
+    );
+    ensure!(
+        artifact_root.starts_with("s3://"),
+        "artifact_root must be an s3:// URI"
+    );
+    Ok(artifact_root)
+}
+
+fn exact_run_id_set(
+    source: &'static str,
+    run_ids: impl Iterator<Item = String>,
+) -> Result<BTreeSet<String>> {
+    let mut set = BTreeSet::new();
+    for run_id in run_ids {
+        ensure!(
+            !run_id.trim().is_empty(),
+            "{source} must not include an empty run_id"
+        );
+        ensure!(
+            set.insert(run_id.clone()),
+            "{source} includes duplicate run_id {run_id:?}"
+        );
+    }
+    Ok(set)
 }
 
 fn validate_run_spec_file_name(value: &str) -> Result<()> {
@@ -581,11 +817,7 @@ fn ensure_non_empty<T>(
 }
 
 fn validate_sha256(field: &'static str, value: &str) -> Result<(), ResearchAnalyticsArtifactError> {
-    let is_sha256 = value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-    if is_sha256 {
+    if is_sha256_hex(value) {
         Ok(())
     } else {
         Err(ResearchAnalyticsArtifactError::InvalidSha256 {
@@ -593,6 +825,13 @@ fn validate_sha256(field: &'static str, value: &str) -> Result<(), ResearchAnaly
             value: value.to_string(),
         })
     }
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn source_fidelity_supports_claim(

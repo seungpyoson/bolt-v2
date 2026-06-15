@@ -109,6 +109,10 @@ verify-ra-cost-realism: check-workspace
     python3 scripts/test_verify_ra_cost_realism.py
     python3 scripts/verify_ra_cost_realism.py
 
+verify-ra-domain-metrics: check-workspace
+    python3 scripts/test_verify_ra_domain_metrics.py
+    python3 scripts/verify_ra_domain_metrics.py
+
 verify-dashboard-customer-jobs: check-workspace
     python3 scripts/test_verify_dashboard_customer_jobs.py
     python3 scripts/verify_dashboard_customer_jobs.py
@@ -249,6 +253,8 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_ra_sweep_orchestration.py
     python3 scripts/test_verify_ra_cost_realism.py
     python3 scripts/verify_ra_cost_realism.py
+    python3 scripts/test_verify_ra_domain_metrics.py
+    python3 scripts/verify_ra_domain_metrics.py
     python3 scripts/test_verify_dashboard_customer_jobs.py
     python3 scripts/verify_dashboard_customer_jobs.py
     python3 scripts/test_verify_dashboard_field_source_matrix.py

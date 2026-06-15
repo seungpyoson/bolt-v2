@@ -74,6 +74,8 @@ pub const FEE_MODEL_PREDICTION_MARKET_MAKER_TAKER: &str = "prediction_market_mak
 pub const FILL_MODEL_PREDICTION_MARKET_PROBABILISTIC: &str = "prediction_market_probabilistic";
 /// TOML selector for prediction-market venue latency backed by NT's static latency model.
 pub const LATENCY_MODEL_PREDICTION_MARKET_STATIC: &str = "prediction_market_static";
+/// TOML selector for the closed-position share domain metric.
+pub const DOMAIN_METRIC_CLOSED_POSITION_RATIO: &str = "closed_position_ratio";
 /// NT venue-model surfaces declared in TOML but rejected until typed mappings exist.
 pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] =
     &["leverages", "margin_model", "modules", "settlement_prices"];
@@ -143,6 +145,11 @@ pub fn registered_strategy_parameters(registry_key: &str) -> Option<&'static [&'
         ]),
         _ => None,
     }
+}
+
+#[must_use]
+pub fn registered_domain_metrics() -> &'static [&'static str] {
+    &[DOMAIN_METRIC_CLOSED_POSITION_RATIO]
 }
 
 /// Market-structure fixture family.
@@ -434,6 +441,12 @@ pub struct ManifestFeeModelConfig {
     pub kind: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestDomainMetricConfig {
+    pub kind: String,
+}
+
 /// Catalog input mapped into [`BacktestDataConfig`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -569,6 +582,9 @@ pub struct BacktestingRunManifest {
     pub output_prefix: String,
     /// Artifact-store options for output publication and direct catalog proof.
     pub artifact_store: ManifestArtifactStore,
+    /// Domain statistics registered with NT PortfolioAnalyzer for this run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domain_metrics: Vec<ManifestDomainMetricConfig>,
     /// Optional inclusive start time (Unix nanos).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub start_time: Option<i64>,
@@ -1500,6 +1516,14 @@ impl BacktestingRunManifest {
                 option_value(venue.fee_model()),
             ),
         ];
+        for (index, metric) in self.domain_metrics.iter().enumerate() {
+            surfaces.push(resolved_surface(
+                &format!("domain_metrics[{index}].kind"),
+                NtSurfaceClassification::CustomOwned,
+                "PortfolioAnalyzer::register_statistic",
+                metric.kind.clone(),
+            ));
+        }
         let data_configs = run_config.data();
         for (index, data) in data_configs.iter().enumerate() {
             let prefix = if data_configs.len() == 1 {
@@ -1679,6 +1703,7 @@ impl BacktestingRunManifest {
             }
         }
         ensure_supported_enums(self)?;
+        ensure_supported_domain_metrics(self)?;
         ensure_unsupported_nt_venue_surfaces_absent(&self.venue)?;
         for input in &self.catalog_inputs {
             ensure_unsupported_nt_catalog_query_surfaces_absent(input)?;
@@ -2244,6 +2269,21 @@ fn ensure_supported_enums(manifest: &BacktestingRunManifest) -> Result<(), Manif
     resolve_fill_model(manifest.venue.fill_model.as_ref())?;
     resolve_latency_model(manifest.venue.latency_model.as_ref())?;
     resolve_fee_model(manifest.venue.fee_model.as_ref())?;
+    Ok(())
+}
+
+fn ensure_supported_domain_metrics(manifest: &BacktestingRunManifest) -> Result<(), ManifestError> {
+    for metric in &manifest.domain_metrics {
+        if metric.kind.trim().is_empty() {
+            return Err(ManifestError::MissingField("domain_metrics.kind"));
+        }
+        if !registered_domain_metrics().contains(&metric.kind.as_str()) {
+            return Err(ManifestError::UnsupportedEnum {
+                field: "domain_metrics.kind",
+                value: metric.kind.clone(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -3119,6 +3159,7 @@ mod tests {
                 rust_storage_options: BTreeMap::new(),
                 ssm_parameters: None,
             },
+            domain_metrics: Vec::new(),
             start_time: None,
             end_time: None,
         }
@@ -3739,6 +3780,11 @@ mod tests {
                 kind: FEE_MODEL_PREDICTION_MARKET_MAKER_TAKER.to_string(),
             });
         });
+        assert_hash_changes("domain_metrics", |manifest| {
+            manifest.domain_metrics.push(ManifestDomainMetricConfig {
+                kind: DOMAIN_METRIC_CLOSED_POSITION_RATIO.to_string(),
+            });
+        });
         assert_hash_changes("catalog_inputs.catalog_fs_protocol", |manifest| {
             manifest.catalog_inputs[0].catalog_path =
                 "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
@@ -4143,6 +4189,39 @@ mod tests {
                 "missing resolved NT surface {surface}"
             );
         }
+    }
+
+    #[test]
+    fn resolved_nt_surfaces_record_domain_metric_registration() {
+        let mut manifest = valid_manifest();
+        manifest.domain_metrics.push(ManifestDomainMetricConfig {
+            kind: DOMAIN_METRIC_CLOSED_POSITION_RATIO.to_string(),
+        });
+
+        let surfaces = manifest.resolved_nt_surfaces().expect("resolved surfaces");
+
+        assert!(surfaces.iter().any(|resolved| {
+            resolved.surface == "domain_metrics[0].kind"
+                && resolved.classification == NtSurfaceClassification::CustomOwned
+                && resolved.nt_field == "PortfolioAnalyzer::register_statistic"
+                && resolved.resolved_value == DOMAIN_METRIC_CLOSED_POSITION_RATIO
+        }));
+    }
+
+    #[test]
+    fn rejects_unknown_domain_metric_selector() {
+        let mut manifest = valid_manifest();
+        manifest.domain_metrics.push(ManifestDomainMetricConfig {
+            kind: "unknown_domain_metric".to_string(),
+        });
+
+        assert!(matches!(
+            manifest.validate(&accepted_dataset()),
+            Err(ManifestError::UnsupportedEnum {
+                field: "domain_metrics.kind",
+                value
+            }) if value == "unknown_domain_metric"
+        ));
     }
 
     #[test]

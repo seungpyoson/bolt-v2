@@ -1656,6 +1656,7 @@ dependencies = [
  "futures",
  "futures-util",
  "hex",
+ "nautilus-analysis",
  "nautilus-backtest",
  "nautilus-common",
  "nautilus-core",

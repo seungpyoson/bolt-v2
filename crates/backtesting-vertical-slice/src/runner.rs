@@ -26,6 +26,7 @@ use bolt_v2::{
     },
 };
 use futures_util::future::BoxFuture;
+use nautilus_analysis::analyzer::PortfolioAnalyzer;
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
 use nautilus_model::{
     data::{
@@ -51,6 +52,9 @@ use super::{
     },
     conversion_boundary::{
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
+    },
+    domain_metrics::{
+        domain_statistics_from_analyzer, register_domain_statistics, resolve_domain_statistics,
     },
     mechanical_probe_strategy::{MechanicalTradeReplayProbe, MechanicalTradeReplayProbeConfig},
     result_contract::{
@@ -385,6 +389,9 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
     let run_config = manifest
         .to_nt_run_config()
         .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
+    let domain_statistics = resolve_domain_statistics(&manifest.domain_metrics)?;
+    let mut domain_analyzer = PortfolioAnalyzer::new();
+    register_domain_statistics(&mut domain_analyzer, &domain_statistics);
     let mut node = BacktestNode::new(vec![run_config]).context("construct BacktestNode")?;
     node.build().context("build BacktestNode")?;
     {
@@ -403,14 +410,27 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
     // holds its post-run cache here; capture each order's terminal state before
     // the node is dropped. A run that disposed (NautilusTrader default) would
     // leave this empty and the order-terminal proof would have nothing to check.
+    let mut nt_result = results.remove(0);
     let order_terminals = {
         let engine = node
             .get_engine(&manifest.run_id)
             .with_context(|| format!("no engine for run id {} after run", manifest.run_id))?;
+        let positions: Vec<_> = {
+            let cache = engine.kernel().cache.borrow();
+            cache
+                .positions(None, None, None, None, None)
+                .into_iter()
+                .map(|position| position.cloned())
+                .collect()
+        };
+        domain_analyzer.add_positions(&positions);
+        for (name, value) in domain_statistics_from_analyzer(&domain_analyzer, &domain_statistics) {
+            nt_result.stats_general.insert(name, value);
+        }
         capture_order_terminals(engine)
     };
     Ok(NtBacktestNodeRun {
-        result: results.remove(0),
+        result: nt_result,
         order_terminals,
     })
 }

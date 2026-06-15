@@ -55,6 +55,9 @@ probe-light = "managed_light"
 [workflows.actionlint]
 actionlint = "github_hosted"
 
+[workflows.dispatch_ci_cancel]
+cancel-obsolete-dispatch = "github_hosted"
+
 [workflows.advisory]
 advisories = "github_hosted"
 
@@ -172,6 +175,12 @@ unknown_event = "full"
 [ci_provenance.policy.override]
 force_full_ci = false
 ignore_emit_failure = false
+
+[dispatch_cancel]
+workflow_event = "workflow_dispatch"
+active_statuses = ["queued", "requested", "waiting", "pending", "in_progress"]
+workflow_runs_per_page = 100
+max_pages = 3
 
 [ci_runner_debug]
 ssh_wait_minutes_variable = "CI_DEBUG_SSH_WAIT_MINUTES"

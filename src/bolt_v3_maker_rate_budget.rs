@@ -14,7 +14,7 @@
 //! `VenueEgressModel::cap_per_minute`.
 
 use crate::bolt_v3_numeric::{MILLIS_PER_MINUTE_U64, MILLIS_PER_SECOND_U64};
-use crate::bolt_v3_requote_budget::{RequoteBudget, RequoteBudgetPair};
+use crate::bolt_v3_requote_budget::{CANCEL_RESUBMIT_REST_COST, RequoteBudget, RequoteBudgetPair};
 
 /// Build the maker's two-budget requote governor from configured rates.
 ///
@@ -29,11 +29,19 @@ use crate::bolt_v3_requote_budget::{RequoteBudget, RequoteBudgetPair};
 /// - `min_interval_ms` is the operator anti-flicker floor applied to BOTH
 ///   sub-budgets.
 ///
-/// Fails closed (returns `Err`) on a malformed submit-rate string, an interval
-/// that overflows the millisecond window, a zero REST cap, a zero
-/// `min_interval_ms`, or a `min_interval_ms` that is not strictly below either
-/// sliding window — any of which would throttle or refuse every reservation and
-/// silently stop the maker quoting.
+/// The submit-command floor is delegated to
+/// [`crate::bolt_v3_validate::validate_rate_limit_string`], which guarantees the
+/// parsed `limit` is `>= 1` (one submit command), so the submit budget can always
+/// admit at least one submit; this builder does not re-assert that invariant
+/// (single source of truth for the submit-rate floor).
+///
+/// Fails closed (returns `Err`) on: a malformed submit-rate string; an interval
+/// that overflows the millisecond window; a REST cap below the cost of a single
+/// cancel+resubmit reprice (which would build a budget that can place a quote but
+/// never move it); or a zero `min_interval_ms` (which disables the anti-flicker
+/// floor). A `min_interval_ms` at or above a sliding window is NOT rejected — it
+/// is a valid, conservative cadence: the first reservation is granted and later
+/// reservations are granted once the interval elapses, so the maker still quotes.
 pub fn build_requote_budget_pair(
     submit_rate: &str,
     rest_cap_per_minute: u32,
@@ -51,27 +59,22 @@ pub fn build_requote_budget_pair(
             )
         })?;
 
-    if rest_cap_per_minute == 0 {
-        return Err(
-            "venue REST egress cap_per_minute must be > 0 (a zero REST budget refuses every quote)"
-                .to_string(),
-        );
+    // The REST budget must admit the most expensive single reservation the maker
+    // can issue: a cancel+resubmit reprice, which costs `CANCEL_RESUBMIT_REST_COST`
+    // REST calls (the venue has no in-place modify). A cap below that floor builds a
+    // budget that grants a fresh quote but can NEVER reprice it, silently stranding
+    // the maker. The floor is sourced from the same structural reprice-cost constant
+    // the budget charges, so there is one source of truth for the reprice REST cost.
+    if u64::from(rest_cap_per_minute) < CANCEL_RESUBMIT_REST_COST {
+        return Err(format!(
+            "venue REST egress cap_per_minute ({rest_cap_per_minute}) must be >= the cancel+resubmit reprice cost ({CANCEL_RESUBMIT_REST_COST} REST calls); a smaller REST budget can place a quote but can never reprice it, silently stranding the maker"
+        ));
     }
     if min_interval_ms == 0 {
         return Err(
             "requote_min_interval_ms must be > 0 (a zero anti-flicker floor disables the throttle)"
                 .to_string(),
         );
-    }
-    if min_interval_ms >= submit_window_ms {
-        return Err(format!(
-            "requote_min_interval_ms ({min_interval_ms}) must be < the submit-rate window ({submit_window_ms} ms), otherwise every submit reservation is throttled and the maker never quotes"
-        ));
-    }
-    if min_interval_ms >= MILLIS_PER_MINUTE_U64 {
-        return Err(format!(
-            "requote_min_interval_ms ({min_interval_ms}) must be < the REST window ({MILLIS_PER_MINUTE_U64} ms), otherwise every REST reservation is throttled and the maker never quotes"
-        ));
     }
 
     Ok(RequoteBudgetPair::new(
@@ -150,6 +153,26 @@ mod tests {
     }
 
     #[test]
+    fn the_two_budgets_are_not_swapped_at_construction() {
+        // A tandem swap of the two RequoteBudget args is invisible to the symmetric
+        // fresh-submit (1 submit / 1 REST) sourcing tests above, so it needs an
+        // ASYMMETRIC charge. "1/00:01:00" gives a submit cap of 1; the REST cap is a
+        // slack 100. A single cancel+resubmit costs 1 submit + 2 REST: correctly
+        // placed, the cap-1 submit budget admits the 1 command and the cap-100 REST
+        // budget admits the 2 calls, so it is granted. If the two budgets were
+        // swapped, the 2-REST charge would hit the cap-1 budget and be refused — so
+        // this grant FAILS on a swap, which a symmetric reservation could not detect.
+        let mut pair = build_requote_budget_pair("1/00:01:00", 100, MIN_INTERVAL_MS)
+            .expect("a well-formed config builds a pair");
+        assert!(
+            pair.try_reserve_cancel_resubmit(1_000),
+            "a single reprice (1 submit + 2 REST) is granted; a swapped pair refuses the 2-REST charge on the cap-1 submit budget"
+        );
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 2);
+    }
+
+    #[test]
     fn a_malformed_submit_rate_fails_closed() {
         let error = build_requote_budget_pair("not-a-rate", 100, MIN_INTERVAL_MS)
             .expect_err("a malformed submit-rate string must fail closed");
@@ -167,10 +190,17 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_rest_cap_fails_closed() {
-        let error = build_requote_budget_pair("40/00:01:00", 0, MIN_INTERVAL_MS)
+    fn a_rest_cap_below_the_reprice_cost_fails_closed() {
+        // The decisive differential against the old `== 0`-only guard: a REST cap of
+        // 1 is non-zero so the old guard ACCEPTED it, yet a cancel+resubmit reprice
+        // costs 2 REST calls, so the built budget could place a quote but never move
+        // it. The floor is the structural reprice cost, so 1 (and 0) must fail closed.
+        let one = build_requote_budget_pair("40/00:01:00", 1, MIN_INTERVAL_MS)
+            .expect_err("a REST cap below the reprice cost must fail closed");
+        assert!(one.contains("can never reprice"), "{one}");
+        let zero = build_requote_budget_pair("40/00:01:00", 0, MIN_INTERVAL_MS)
             .expect_err("a zero REST egress cap must fail closed");
-        assert!(error.contains("cap_per_minute must be > 0"), "{error}");
+        assert!(zero.contains("can never reprice"), "{zero}");
     }
 
     #[test]
@@ -184,25 +214,95 @@ mod tests {
     }
 
     #[test]
-    fn a_min_interval_not_below_the_submit_window_fails_closed() {
-        // "1/00:00:30" => 30_000 ms submit window; a 30_000 ms min-interval would
-        // throttle every submit reservation.
-        let error = build_requote_budget_pair("1/00:00:30", 100, 30_000)
-            .expect_err("a min-interval at/above the submit window must fail closed");
+    fn a_min_interval_at_the_submit_window_still_grants_over_time() {
+        // A min-interval EQUAL to the submit window is a valid conservative cadence,
+        // not a degenerate config: the budget is not permanently closed. This pins
+        // the removal of the old `min_interval >= submit_window` fail-closed guard by
+        // reproducing the behavior it wrongly rejected — the first quote is granted,
+        // a quote inside the interval is throttled, and a quote past the window is
+        // granted again. "1/00:00:30" => 30_000 ms submit window; min-interval 30_000.
+        let mut pair = build_requote_budget_pair("1/00:00:30", 100, 30_000)
+            .expect("a min-interval equal to the submit window is a valid cadence");
         assert!(
-            error.contains("must be < the submit-rate window"),
-            "{error}"
+            pair.try_reserve_fresh_submit(1_000),
+            "first quote is granted"
+        );
+        assert!(
+            !pair.try_reserve_fresh_submit(2_000),
+            "a quote 1s later is throttled by the 30s anti-flicker floor"
+        );
+        assert!(
+            pair.try_reserve_fresh_submit(31_001),
+            "a quote past the 30s window/floor is granted again — not permanently closed"
         );
     }
 
     #[test]
-    fn a_min_interval_not_below_the_rest_window_fails_closed() {
-        // "1/02:00:00" => 7_200_000 ms submit window (passes the submit check) but
-        // the REST window is the fixed 60_000 ms minute, so a 60_000 ms
-        // min-interval must be rejected against the REST window.
-        let error = build_requote_budget_pair("1/02:00:00", 100, 60_000)
-            .expect_err("a min-interval at/above the REST window must fail closed");
-        assert!(error.contains("must be < the REST window"), "{error}");
+    fn a_min_interval_at_the_rest_window_still_grants_over_time() {
+        // The mirror for the REST window: a min-interval equal to the fixed 60_000 ms
+        // REST window is also valid, pinning removal of the old `min_interval >=
+        // MILLIS_PER_MINUTE_U64` guard. A 10/2h submit rate keeps the submit cap slack
+        // so the REST-window min-interval is the only thing under test.
+        let mut pair = build_requote_budget_pair("10/02:00:00", 100, 60_000)
+            .expect("a min-interval equal to the REST window is a valid cadence");
+        assert!(
+            pair.try_reserve_fresh_submit(1_000),
+            "first quote is granted"
+        );
+        assert!(
+            !pair.try_reserve_fresh_submit(2_000),
+            "a quote 1s later is throttled by the 60s anti-flicker floor"
+        );
+        assert!(
+            pair.try_reserve_fresh_submit(61_001),
+            "a quote past the 60s REST window/floor is granted again — not permanently closed"
+        );
+    }
+
+    #[test]
+    fn the_min_interval_floor_is_plumbed_into_both_sub_budgets() {
+        // The success tests above space reservations PAST the floor, so none proves
+        // the configured `min_interval_ms` actually reached the RequoteBudget::new
+        // calls. A standalone cancel charges only the REST budget, advancing only its
+        // min-interval floor: a fresh submit a short tick later is then refused on the
+        // REST floor (the submit budget's floor is still pristine — last_emit None),
+        // proving the REST budget received the 500ms floor. If the builder had passed
+        // 0 to the REST budget, the cancel would set no active floor and the submit
+        // would be granted. (There is no submit-only reservation through the pair API,
+        // so the submit budget's floor cannot be isolated the same way; the builder
+        // passes the one `min_interval_ms` value to BOTH RequoteBudget::new calls.)
+        let mut rest_floor = build_requote_budget_pair("40/00:01:00", 100, MIN_INTERVAL_MS)
+            .expect("a well-formed config builds a pair");
+        assert!(
+            rest_floor.try_reserve_cancel(1_000),
+            "a standalone cancel is granted"
+        );
+        assert!(
+            !rest_floor.try_reserve_fresh_submit(1_100),
+            "a submit 100ms after the cancel is refused on the REST min-interval floor"
+        );
+        assert!(
+            rest_floor.try_reserve_fresh_submit(1_500),
+            "once the 500ms REST floor clears the submit is granted"
+        );
+
+        // And the floor is live (and is exactly the configured value, not 0) on the
+        // fresh-submit path: two distinct-tick submits inside 500ms are throttled, and
+        // a submit at the 500ms boundary is admitted.
+        let mut submit_floor = build_requote_budget_pair("40/00:01:00", 100, MIN_INTERVAL_MS)
+            .expect("a well-formed config builds a pair");
+        assert!(
+            submit_floor.try_reserve_fresh_submit(1_000),
+            "first submit is granted"
+        );
+        assert!(
+            !submit_floor.try_reserve_fresh_submit(1_100),
+            "a second submit 100ms later is throttled by the 500ms floor"
+        );
+        assert!(
+            submit_floor.try_reserve_fresh_submit(1_500),
+            "a submit at the 500ms boundary is admitted"
+        );
     }
 
     #[test]

@@ -1856,15 +1856,15 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
             block.catalog_directory
         ));
     }
-    if let Some(required_catalog_prefix) = block.required_catalog_prefix.as_deref() {
-        if !Path::new(required_catalog_prefix).is_absolute() {
-            errors.push(format!(
-                "{}.{} must be an absolute path: `{}`",
-                stringify!(persistence),
-                stringify!(required_catalog_prefix),
-                required_catalog_prefix
-            ));
-        }
+    if let Some(required_catalog_prefix) = block.required_catalog_prefix.as_deref()
+        && !Path::new(required_catalog_prefix).is_absolute()
+    {
+        errors.push(format!(
+            "{}.{} must be an absolute path: `{}`",
+            stringify!(persistence),
+            stringify!(required_catalog_prefix),
+            required_catalog_prefix
+        ));
     }
     if block.runtime_capture_start_poll_interval_ms == 0 {
         errors.push(

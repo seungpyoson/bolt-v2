@@ -27,9 +27,13 @@ use crate::{
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig},
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
     bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
+    bolt_v3_maker_order_plan::{
+        MakerLegOrderPlan, MakerMarketActionOrderInput, MakerOrderPlan,
+        maker_order_intent_from_market_action,
+    },
     bolt_v3_maker_runtime_order::{
-        MakerRuntimeOrderDispatchInput, MakerRuntimeOrderDispatchOutcome,
-        dispatch_maker_runtime_order_plan_with_command_router,
+        MakerRuntimeLegOrderDispatchOutcome, MakerRuntimeOrderDispatchInput,
+        MakerRuntimeOrderDispatchOutcome, dispatch_maker_runtime_order_plan_with_command_router,
     },
     bolt_v3_maker_runtime_quote::{
         MakerRuntimeQuoteDecision, MakerRuntimeQuoteInput, plan_maker_runtime_quote,
@@ -39,7 +43,7 @@ use crate::{
         route_maker_order_command as route_maker_order_command_through_policy,
     },
     bolt_v3_order_intent::NtOrderTemplate,
-    bolt_v3_quote_lifecycle::MarketQuote,
+    bolt_v3_quote_lifecycle::{Leg, MarketAction, MarketQuote},
     bolt_v3_requote_budget::RequoteBudgetPair,
     bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
@@ -87,6 +91,22 @@ pub struct BinaryOracleMakerRuntimeQuoteRouteInput<'a> {
 pub struct BinaryOracleMakerRuntimeQuoteRouteOutcome {
     pub quote: MakerRuntimeQuoteDecision,
     pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryOracleMakerMarketActionRouteInput<'a> {
+    pub action: MakerMarketActionOrderInput,
+    pub submit_template: &'a NtOrderTemplate,
+    pub price_precision: u8,
+    pub quantity_precision: u8,
+    pub submit_order_prefix: &'a str,
+    pub max_fee_bps: Decimal,
+    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryOracleMakerMarketActionRouteOutcome {
+    pub order: MakerRuntimeLegOrderDispatchOutcome,
 }
 
 impl std::fmt::Debug for BinaryOracleMaker {
@@ -200,6 +220,70 @@ impl BinaryOracleMaker {
             quote: quote_decision,
             orders,
         })
+    }
+
+    pub fn route_maker_market_action(
+        &mut self,
+        input: BinaryOracleMakerMarketActionRouteInput<'_>,
+    ) -> Result<BinaryOracleMakerMarketActionRouteOutcome> {
+        let BinaryOracleMakerMarketActionRouteInput {
+            action,
+            submit_template,
+            price_precision,
+            quantity_precision,
+            submit_order_prefix,
+            max_fee_bps,
+            submit_lifecycle_policy,
+        } = input;
+
+        let action_leg = match action.action {
+            MarketAction::Leg { leg, .. } => Some(leg),
+            MarketAction::CancelAllBothLegs | MarketAction::CancelAllOneSide { .. } => None,
+        };
+        let leg_order_plan = maker_order_intent_from_market_action(action);
+        let no_order = MakerLegOrderPlan {
+            intent: None,
+            blocked_by: None,
+        };
+        let order_plan = match action_leg {
+            Some(Leg::Yes) => MakerOrderPlan {
+                yes: leg_order_plan,
+                no: no_order,
+            },
+            Some(Leg::No) => MakerOrderPlan {
+                yes: no_order,
+                no: leg_order_plan,
+            },
+            None => MakerOrderPlan {
+                yes: leg_order_plan,
+                no: no_order,
+            },
+        };
+
+        let mut route_command = |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
+            self.route_maker_order_command(
+                command,
+                submit_order_prefix,
+                max_fee_bps,
+                submit_lifecycle_policy,
+            )
+        };
+        let orders = dispatch_maker_runtime_order_plan_with_command_router(
+            MakerRuntimeOrderDispatchInput {
+                order_plan: &order_plan,
+                submit_template,
+                price_precision,
+                quantity_precision,
+                submit_order_prefix,
+            },
+            &mut route_command,
+        )?;
+        let order = match action_leg {
+            Some(Leg::No) => orders.no,
+            Some(Leg::Yes) | None => orders.yes,
+        };
+
+        Ok(BinaryOracleMakerMarketActionRouteOutcome { order })
     }
 }
 

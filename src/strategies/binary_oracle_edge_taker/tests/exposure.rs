@@ -2320,7 +2320,9 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
 
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
     strategy.active.interval_open = Some(3_200.0);
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_101.0, 2_000));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_101.0, 2_000)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 2_000);

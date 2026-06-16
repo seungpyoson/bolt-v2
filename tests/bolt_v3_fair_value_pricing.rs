@@ -191,6 +191,35 @@ fn fair_value_pricing_reports_realized_vol_source_evidence() {
 }
 
 #[test]
+fn fair_value_pricing_reports_no_source_venue_when_snapshot_sources_are_empty() {
+    let mut state =
+        FairValuePricingState::from_realized_volatility_surface_id(TARGET_SURFACE_ID.into());
+    state.observe_pricing_spot(&FastSpotObservation {
+        venue: "<SPOT_SOURCE_ID>".to_string(),
+        price: 3_105.0,
+        observed_ts_ms: TARGET_READY_TS_MS,
+    });
+    state.observe_realized_vol_snapshot(snapshot(
+        TARGET_SURFACE_ID,
+        TARGET_READY_TS_MS,
+        TARGET_REALIZED_VOL,
+        true,
+        &[],
+    ));
+
+    let result = state
+        .fair_value_pricing_at(&pricing_config(), pricing_request())
+        .expect("ready fair-value state should price without source attribution");
+
+    assert_eq!(result.realized_vol_source_venue, None);
+    assert_eq!(result.realized_vol_source_ts_ms, Some(TARGET_READY_TS_MS));
+    assert_eq!(
+        state.current_realized_vol_source_at(TARGET_READY_TS_MS),
+        (None, Some(TARGET_READY_TS_MS))
+    );
+}
+
+#[test]
 fn newer_same_surface_unready_snapshot_blocks_pricing_fail_closed() {
     let mut state = observe_ready_fair_value_state();
     state.observe_realized_vol_snapshot(unready_snapshot(

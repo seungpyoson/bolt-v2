@@ -204,6 +204,7 @@ impl FairValuePricingState {
         config: &FairValuePricingConfig<'_>,
         request: FairValuePricingRequest,
     ) -> Result<FairValuePricingInputs, Vec<FairValuePricingBlockReason>> {
+        self.debug_assert_config_surface_matches_state(config);
         let mut blocked_by = Vec::new();
 
         let spot_price = self.spot_price().filter(|value| is_positive_finite(*value));
@@ -254,6 +255,7 @@ impl FairValuePricingState {
         now_ms: u64,
         inputs: FairValuePricingInputs,
     ) -> Result<FairValuePricingResult, Vec<FairValuePricingBlockReason>> {
+        self.debug_assert_config_surface_matches_state(config);
         let Some(fair_probability_up) = bolt_v3_market_families::fair_probability_up_for_family(
             config.market_family,
             &FairProbabilityInputs {
@@ -325,6 +327,14 @@ impl FairValuePricingState {
         }
 
         Some(snapshot)
+    }
+
+    fn debug_assert_config_surface_matches_state(&self, config: &FairValuePricingConfig<'_>) {
+        debug_assert_eq!(
+            self.realized_volatility_surface_id.as_str(),
+            config.realized_volatility_surface_id,
+            "fair-value config surface must match the surface-scoped pricing state"
+        );
     }
 
     #[cfg(test)]

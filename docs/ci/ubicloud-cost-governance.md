@@ -38,7 +38,7 @@ Fingerprint evidence is provenance-based. Runs before this instrumentation have 
 
 The nextest cache/fingerprint expression remains inline in `.github/workflows/ci.yml` because GitHub Actions evaluates `hashFiles(...)` inside workflow YAML. The hygiene verifier enforces structural identity across the cache restore key, cache save key, fingerprint file, and fingerprint artifact name so version, shard, or input drift fails CI.
 
-Fingerprint reuse is available only on pull request runs. It is disabled on pull requests that change the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests. Those PRs, plus branch `workflow_dispatch` full-CI runs, must run the normal nextest shards so PR-controlled reuse logic cannot decide to skip test execution outside the diff guard.
+Fingerprint reuse is available only on pull request runs. It is disabled on pull requests that change the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests. Those PRs, plus branch `workflow_dispatch` full-CI runs, must run the normal nextest archive lane so PR-controlled reuse logic cannot decide to skip test execution outside the diff guard.
 
 ## Baseline Evidence
 
@@ -120,7 +120,7 @@ The workflow concurrency group remains PR-scoped and cancellation remains limite
 | Ubicloud-side cap | Recommended if available, not verified in this session | This is the only hard cap that cannot be bypassed by agents or operators. Dashboard access was not available from this session, so no setting was changed. |
 | GitHub workflow concurrency | Keep current topology | Fresh evidence shows superseded PR runs cancel promptly. Redesign belongs only to Lever A or B after quantification. |
 | Operator session policy | Adopt now | The spend multiplier is active sessions times surviving pushes. Policy is immediately enforceable without CI topology risk. |
-| Runner tier adjustment | No-go now | The dominant jobs are CPU-bound nextest shards. Downgrading likely trades lower rate for longer wall time and risks disk-pressure regressions. |
+| Runner tier adjustment | No-go now | The dominant test work is CPU-bound nextest archive execution. Downgrading likely trades lower rate for longer wall time and risks disk-pressure regressions. |
 
 If Ubicloud exposes a per-repo or project runner/vCPU cap, set the first cap to allow at most two full CI runs at once: 8 concurrent `managed_heavy` runners, or 32 `managed_heavy` vCPUs if the cap is vCPU-based. Keep `managed_light` at 4 concurrent runners or 8 vCPUs. This queues excess verification instead of silently multiplying spend.
 
@@ -136,7 +136,7 @@ If Ubicloud exposes a per-repo or project runner/vCPU cap, set the first cap to 
 
 ### Lever A: test-result reuse by fingerprint
 
-Decision: go. Slice A implements safe nextest shard reuse by fingerprint for `.github/workflows/ci.yml`.
+Decision: go. Slice A implements safe nextest archive reuse by fingerprint for `.github/workflows/ci.yml`.
 
 Post-instrumentation evidence found real duplicate nextest spend:
 
@@ -149,9 +149,9 @@ Post-instrumentation evidence found real duplicate nextest spend:
 | reruns after prior successful same-fingerprint run | 32 |
 | duplicate nextest shard runner-minutes | ~1,422 |
 
-The workflow now resolves the current nextest fingerprint from the secure `test-archive` job output after publishing `nextest-archive-fingerprint-*` for metering evidence. If a bounded search finds a newer-prior successful CI run with exactly one matching fingerprint artifact, exactly one matching CI provenance artifact, matching workflow/config digests, successful required job evidence, and the same parsed nextest fingerprint, the four `nextest shard` jobs are skipped. The `test` aggregate and `gate` jobs accept that path only when resolver outputs identify the reused source run, source SHA, and provenance artifact. Fingerprint reuse is disabled on `refs/heads/main` so main pushes still emit exact-SHA CI provenance for tag deploy reuse. Missing, malformed, ambiguous, expired, failed, cancelled, in-progress, wrong-workflow, wrong-OS, wrong-arch, wrong-profile, wrong-shard-count, wrong-schema, or otherwise unverifiable evidence falls back to normal full nextest shards.
+The workflow now resolves the current nextest fingerprint from the secure `nextest-fingerprint` job output after publishing `nextest-archive-fingerprint-*` for metering evidence. If a bounded search finds a newer-prior successful CI run with exactly one matching fingerprint artifact, exactly one matching CI provenance artifact, matching workflow/config digests, successful required job evidence, and the same parsed nextest fingerprint, the managed-heavy `test-archive` job is skipped. The `test` aggregate and `gate` jobs accept that path only when resolver outputs identify the reused source run, source SHA, and provenance artifact. Fingerprint reuse is disabled on `refs/heads/main` so main pushes still emit exact-SHA CI provenance for tag deploy reuse. Missing, malformed, ambiguous, expired, failed, cancelled, in-progress, wrong-workflow, wrong-OS, wrong-arch, wrong-profile, wrong-shard-count, wrong-schema, or otherwise unverifiable evidence falls back to normal full nextest archive execution.
 
-Policy override: set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to force the full-CI policy path for PRs while preserving the validated fingerprint reuse path for investigation. Revert the Slice A workflow/provenance commits if reuse itself must be removed. Branch `workflow_dispatch` runs always execute the nextest shards. Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; it does not make cache hits proof and does not bypass the validated reuse requirement.
+Policy override: set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to force the full-CI policy path for PRs while preserving the validated fingerprint reuse path for investigation. Revert the Slice A workflow/provenance commits if reuse itself must be removed. Branch `workflow_dispatch` runs always execute the nextest archive lane. Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; it does not make cache hits proof and does not bypass the validated reuse requirement.
 
 ### Lever B: full CI on demand
 

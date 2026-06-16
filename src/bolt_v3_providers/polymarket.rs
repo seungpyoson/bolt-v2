@@ -1184,11 +1184,16 @@ mod tests {
             yes_outcome: "Yes".to_string(),
             no_outcome: "No".to_string(),
         });
-        let filters = build_market_slug_filters_for_client(
+        let root: BoltV3RootConfig =
+            toml::from_str(include_str!("../../tests/fixtures/bolt_v3/root.toml"))
+                .expect("fixture root config should parse");
+        let filters = build_instrument_filters_for_client(
+            &root,
             &plan,
             "polymarket_main",
             Arc::new(|| 1_746_000_000),
-        );
+        )
+        .expect("static-only target plan should build filters");
 
         let slugs = filters
             .iter()

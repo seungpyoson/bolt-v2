@@ -9,12 +9,13 @@ use bolt_v2::{
         BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
         BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
         BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
-        BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields, BoltV3PositionSizerRebuildAuditEvidence,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitIntentKind, BoltV3SubmitReservationFillEvidence,
-        BoltV3SubmitReservationMetadataEvidence, decision_evidence_path,
-        read_latest_entry_decision_evidence_chain, read_submit_reservation_recovery_evidence,
+        BoltV3BasketAdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
+        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields,
+        BoltV3PositionSizerRebuildAuditEvidence, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
+        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
+        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+        decision_evidence_path, read_latest_entry_decision_evidence_chain,
+        read_submit_reservation_recovery_evidence,
     },
     bolt_v3_realized_volatility::{
         RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
@@ -606,6 +607,13 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     }
 
     fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()> {
         Ok(())
     }
 

@@ -1370,7 +1370,7 @@ impl BinaryOracleEdgeTaker {
         }
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_trade_subscription_requests_for_surface(surface_id)
+            .realized_volatility_trade_subscription_requests_for_surface(&surface_id)
         {
             #[cfg(not(test))]
             self.subscribe_trades(instrument_id, client_id, None);
@@ -1379,7 +1379,7 @@ impl BinaryOracleEdgeTaker {
         }
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_index_subscription_requests_for_surface(surface_id)
+            .realized_volatility_index_subscription_requests_for_surface(&surface_id)
         {
             #[cfg(not(test))]
             self.subscribe_index_prices(instrument_id, client_id, None);
@@ -1830,7 +1830,7 @@ impl BinaryOracleEdgeTaker {
         }
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_trade_subscription_requests_for_surface(surface_id)
+            .realized_volatility_trade_subscription_requests_for_surface(&surface_id)
         {
             #[cfg(not(test))]
             self.unsubscribe_trades(instrument_id, client_id, None);
@@ -1839,7 +1839,7 @@ impl BinaryOracleEdgeTaker {
         }
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_index_subscription_requests_for_surface(surface_id)
+            .realized_volatility_index_subscription_requests_for_surface(&surface_id)
         {
             #[cfg(not(test))]
             self.unsubscribe_index_prices(instrument_id, client_id, None);

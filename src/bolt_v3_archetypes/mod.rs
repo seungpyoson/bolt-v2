@@ -25,10 +25,7 @@ use std::collections::BTreeSet;
 
 use rust_decimal::Decimal;
 
-use crate::{
-    bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig},
-    bolt_v3_strategy_registration::StrategyRuntimeBinding,
-};
+use crate::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GateRole {

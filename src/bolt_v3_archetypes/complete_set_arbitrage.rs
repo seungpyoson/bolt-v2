@@ -14,7 +14,7 @@ use toml::{Value, map::Map};
 
 use crate::{
     bolt_v3_archetypes::{ArchetypeGateRequirement, ArchetypeValidationBinding},
-    bolt_v3_config::{BoltV3StrategyConfig, LoadedBoltV3Config, LoadedStrategy},
+    bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedBoltV3Config, LoadedStrategy},
     bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config},
     bolt_v3_outcome_group_sources::{
         COMPLETE_SET_ARBITRAGE_KEY, CompleteSetArbitrageParametersBlock,
@@ -93,6 +93,7 @@ pub fn submit_mode_contract(mode: CompleteSetSubmitMode) -> CompleteSetSubmitMod
 
 pub fn validate_strategy(
     context: &str,
+    _root: &BoltV3RootConfig,
     strategy: &BoltV3StrategyConfig,
     default_max_notional_decimal: Option<&Decimal>,
 ) -> Vec<String> {

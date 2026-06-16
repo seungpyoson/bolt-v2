@@ -1999,9 +1999,13 @@ def assert_source_fence_static_ignores_comments() -> None:
     verifier = load_verifier()
     justfile_text = """
 source-fence-static:
+    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner
+
+source-fence-static-inner: require-local-verification-gate
     # cargo fetch and scripts/verify_runtime_capture_yaml.py stay in source-fence
     # python3 scripts/rust_verification.py cargo --repo . -- test stays remote-only
     python3 scripts/test_verify_runtime_capture_yaml.py
+    python3 scripts/test_local_verification_gate.py
     python3 scripts/test_lane_governor.py
     python3 scripts/test_verify_lane_governance.py
     python3 scripts/verify_lane_governance.py
@@ -2022,6 +2026,39 @@ source-fence: source-fence-static
     if not any("must not invoke wrapper-routed Cargo" in error for error in bad_errors):
         raise AssertionError(f"source-fence-static active wrapper cargo must still fail, got: {bad_errors}")
 
+    ungated = justfile_text.replace(
+        "    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner\n\n",
+        "",
+    )
+    ungated_errors = verifier.verify_source_fence_static_recipe(ungated)
+    if not any("must run through scripts/local_verification_gate.py" in error for error in ungated_errors):
+        raise AssertionError(f"source-fence-static must require the local gate, got: {ungated_errors}")
+
+    extra_public_work = justfile_text.replace(
+        "    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner",
+        "    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner\n"
+        "    python3 scripts/verify_lane_governance.py",
+    )
+    extra_public_errors = verifier.verify_source_fence_static_recipe(extra_public_work)
+    if not any("source-fence-static must contain only the local verification gate command" in error for error in extra_public_errors):
+        raise AssertionError(f"source-fence-static public recipe extra work was silent, got: {extra_public_errors}")
+
+    nested_public_gate = justfile_text.replace(
+        "    python3 scripts/test_local_verification_gate.py",
+        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner",
+    )
+    nested_public_errors = verifier.verify_source_fence_static_recipe(nested_public_gate)
+    if not any("source-fence-static-inner must not invoke local verification gate recipes" in error for error in nested_public_errors):
+        raise AssertionError(f"source-fence-static nested gate call was silent, got: {nested_public_errors}")
+
+    nested_public_dependency = justfile_text.replace(
+        "source-fence-static-inner: require-local-verification-gate",
+        "source-fence-static-inner: require-local-verification-gate fmt-check",
+    )
+    nested_dependency_errors = verifier.verify_source_fence_static_recipe(nested_public_dependency)
+    if not any("source-fence-static-inner must not depend on local verification gate recipes" in error for error in nested_dependency_errors):
+        raise AssertionError(f"source-fence-static nested gate dependency was silent, got: {nested_dependency_errors}")
+
     missing_lane_check = justfile_text.replace("    python3 scripts/verify_lane_governance.py\n", "")
     missing_errors = verifier.verify_source_fence_static_recipe(missing_lane_check)
     if not any("must run python3 scripts/verify_lane_governance.py" in error for error in missing_errors):
@@ -2034,6 +2071,67 @@ source-fence: source-fence-static
     commented_errors = verifier.verify_source_fence_static_recipe(commented_lane_test)
     if not any("must run python3 scripts/test_lane_governor.py" in error for error in commented_errors):
         raise AssertionError(f"source-fence-static comments must not satisfy lane test wiring, got: {commented_errors}")
+
+
+def assert_local_verification_gate_recipes_are_enforced() -> None:
+    verifier = load_verifier()
+    justfile_text = """
+fmt-check:
+    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner
+
+fmt-check-inner: require-local-verification-gate check-workspace
+    python3 scripts/rust_verification.py cargo --repo . -- fmt --check
+
+ci-lint-workflow:
+    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner
+
+ci-lint-workflow-inner: require-local-verification-gate
+    python3 scripts/test_verify_ci_workflow_hygiene.py
+"""
+    errors = verifier.verify_local_verification_gate_recipes(justfile_text)
+    if errors:
+        raise AssertionError(f"local gate recipe wiring should pass, got: {errors}")
+
+    ungated = justfile_text.replace(
+        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner",
+        "    python3 scripts/rust_verification.py cargo --repo . -- fmt --check",
+    )
+    ungated_errors = verifier.verify_local_verification_gate_recipes(ungated)
+    if not any("justfile fmt-check must run through scripts/local_verification_gate.py" in error for error in ungated_errors):
+        raise AssertionError(f"fmt-check gate drift was silent, got: {ungated_errors}")
+
+    extra_public_work = justfile_text.replace(
+        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner",
+        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner\n"
+        "    python3 scripts/test_verify_ci_workflow_hygiene.py",
+    )
+    extra_public_errors = verifier.verify_local_verification_gate_recipes(extra_public_work)
+    if not any("justfile fmt-check must contain only the local verification gate command" in error for error in extra_public_errors):
+        raise AssertionError(f"fmt-check public recipe extra work was silent, got: {extra_public_errors}")
+
+    nested_public_gate = justfile_text.replace(
+        "    python3 scripts/test_verify_ci_workflow_hygiene.py",
+        "    just fmt-check",
+    )
+    nested_public_errors = verifier.verify_local_verification_gate_recipes(nested_public_gate)
+    if not any("justfile ci-lint-workflow-inner must not invoke local verification gate recipes" in error for error in nested_public_errors):
+        raise AssertionError(f"ci-lint-workflow nested public gate call was silent, got: {nested_public_errors}")
+
+    nested_public_dependency = justfile_text.replace(
+        "ci-lint-workflow-inner: require-local-verification-gate",
+        "ci-lint-workflow-inner: require-local-verification-gate fmt-check",
+    )
+    nested_dependency_errors = verifier.verify_local_verification_gate_recipes(nested_public_dependency)
+    if not any("justfile ci-lint-workflow-inner must not depend on local verification gate recipes" in error for error in nested_dependency_errors):
+        raise AssertionError(f"ci-lint-workflow nested public gate dependency was silent, got: {nested_dependency_errors}")
+
+    missing_guard = justfile_text.replace(
+        "fmt-check-inner: require-local-verification-gate check-workspace",
+        "fmt-check-inner: check-workspace",
+    )
+    missing_guard_errors = verifier.verify_local_verification_gate_recipes(missing_guard)
+    if not any("justfile fmt-check-inner must require the local verification gate" in error for error in missing_guard_errors):
+        raise AssertionError(f"fmt-check inner guard drift was silent, got: {missing_guard_errors}")
 
 
 def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
@@ -7610,6 +7708,7 @@ def main() -> int:
     assert_actionlint_requires_pr_event_types()
     assert_ci_docs_pass_stub_requires_pr_event_types()
     assert_source_fence_static_ignores_comments()
+    assert_local_verification_gate_recipes_are_enforced()
     assert_rust_verification_policy_parse_errors_are_domain_specific()
     assert_ci_policy_matrix()
     assert_pull_request_type_parser_accepts_block_list_indentation()

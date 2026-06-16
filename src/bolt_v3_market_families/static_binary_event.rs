@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     bolt_v3_config::LoadedStrategy,
     bolt_v3_instrument_filters::InstrumentFilterError,
+    bolt_v3_numeric::sanitize_probability,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
 };
@@ -349,8 +350,8 @@ pub fn selected_market_requirement(
     })
 }
 
-pub fn fair_probability_up(_inputs: &FairProbabilityInputs) -> Option<f64> {
-    None
+pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
+    sanitize_probability(inputs.spot_price)
 }
 
 pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {

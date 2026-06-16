@@ -15,4 +15,4 @@
 - [x] DASH-013 Add tests that dashboard cannot delete, expire, or mutate canonical artifacts.
 - [x] DASH-014 Add tests for unmapped fields, stale rendering, missing PnL/exposure source gap labels, source-proof/claim-limit display without upgrade, strategy outlook displayed only with accepted source or exploratory label and never calculated as trading truth by dashboard, and mutation absence.
 - [x] DASH-015 Link/update issue dependencies named in `spec.md` before implementation review. GitHub issue #733 records the dashboard source-contract scope and links #36, #77, #88, #148, #236, #369, and #409.
-- [ ] DASH-016 Run future branch verification checks.
+- [x] DASH-016 Run future branch verification checks. Evidence: PR #690 exact head `9495e29d5c85544b02abd8088a850b40975b2d10` completed CI workflow run 27614839439 with conclusion `success`.

@@ -150,7 +150,7 @@ mod tests {
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "1272c25f08c1f3ca8359b0f06e1be187e7e67e5ba1da8d2836022dc50e70e752";
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "2c1ea8435f53f30efbb85e60b30171ca05b4f8f51daeae63873988d2101a9ab7";
+        "eddfa57968559e5a03f11db78e527a86b04332f2f7087ccd77e92284aba6488a";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

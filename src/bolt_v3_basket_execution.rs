@@ -977,7 +977,7 @@ fn projected_quantities(
 }
 
 fn guaranteed_payout(payout_matrix: &[Vec<Decimal>], quantities: &[Decimal]) -> Option<Decimal> {
-    let mut minimum = None;
+    let mut minimum: Option<Decimal> = None;
     for row in payout_matrix {
         let mut row_total = Decimal::ZERO;
         for (payout, quantity) in row.iter().zip(quantities.iter()) {

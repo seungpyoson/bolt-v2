@@ -270,7 +270,7 @@ impl BoltV3BasketAdmissionState {
                 .group
                 .tradable_legs
                 .values()
-                .any(|group_leg| group_leg.instrument_id.to_string() == leg.instrument_id)
+                .any(|group_leg| group_leg.instrument_id == leg.instrument_id)
             {
                 return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
             }

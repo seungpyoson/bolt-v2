@@ -7272,7 +7272,7 @@ reason = "Chainlink Data Streams V3 report encoding/unit constant fixed by the v
 path = "src/bolt_v3_providers/chainlink/strike_source.rs"
 kind = "number"
 literal = '''0'''
-context = '''.filter(|seconds| *seconds != 0)'''
+context = '''.filter(|seconds| *seconds != 0);'''
 classification = "chainlink_protocol_constant"
 reason = "Strike timestamp unit-conversion / zero-guard constant fixed by NT UnixNanos and the Chainlink report format, not operator-configurable."
 
@@ -7307,6 +7307,22 @@ literal = '''"CHAINLINK_DATA_STREAMS"'''
 context = '''const CHAINLINK_STRIKE_SOURCE_FACTORY_NAME: &str = "CHAINLINK_DATA_STREAMS";'''
 classification = "chainlink_provider_type_tag"
 reason = "Stable NT factory/config type tag for the Chainlink strike DataClient; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"Chainlink {} timestamp exceeds milliseconds range"'''
+context = '''"Chainlink {} timestamp exceeds milliseconds range",'''
+classification = "chainlink_provider_diagnostic"
+reason = "Fail-closed timestamp overflow diagnostic for Chainlink open/close boundary report mapping; the boundary label is selected from provider-owned enum variants."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"Chainlink {} timestamp exceeds nanos range"'''
+context = '''"Chainlink {} timestamp exceeds nanos range",'''
+classification = "chainlink_provider_diagnostic"
+reason = "Fail-closed timestamp overflow diagnostic for Chainlink open/close boundary report mapping; the boundary label is selected from provider-owned enum variants."
 
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink/strike_source.rs"
@@ -7363,6 +7379,46 @@ literal = '''"report_schema_version"'''
 context = '''required_positive_u64(client_key, index, table, "report_schema_version")?;'''
 classification = "chainlink_provider_config_field"
 reason = "Chainlink feed-binding config field name parsed from the configured bolt-v3 TOML; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"window-close boundary"'''
+context = '''Self::WindowCloseSettlement => "window-close boundary",'''
+classification = "chainlink_provider_diagnostic"
+reason = "Provider-owned diagnostic label for the Chainlink window-close settlement boundary; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"window-close settlement"'''
+context = '''Self::WindowCloseSettlement => "window-close settlement",'''
+classification = "chainlink_provider_diagnostic"
+reason = "Provider-owned diagnostic label for the Chainlink window-close settlement fetch; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"window-open boundary"'''
+context = '''Self::WindowOpenStrike => "window-open boundary",'''
+classification = "chainlink_provider_diagnostic"
+reason = "Provider-owned diagnostic label for the Chainlink window-open strike boundary; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"window-open strike"'''
+context = '''Self::WindowOpenStrike => "window-open strike",'''
+classification = "chainlink_provider_diagnostic"
+reason = "Provider-owned diagnostic label for the Chainlink window-open strike fetch; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"window_close_unix_seconds"'''
+context = '''pub const SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM: &str = "window_close_unix_seconds";'''
+classification = "chainlink_subscribe_param_key"
+reason = "Stable NT subscribe-command params key carrying the window-close Unix seconds; a fixed contract between the maker settlement path and the Chainlink strike DataClient."
 
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink/strike_source.rs"

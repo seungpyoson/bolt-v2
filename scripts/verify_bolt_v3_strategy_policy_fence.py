@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from bolt_v3_source_roots import (
     ALL_GATED_SOURCE_ROOTS,
+    MAKER_SOURCE_ROOT,
     REPO_ROOT,
     STRATEGY_SOURCE_ROOTS,
     source_set_files,
@@ -210,6 +211,15 @@ STRATEGY_POLICY_RULES: tuple[Rule, ...] = (
             r"|\bregistry\.register\s*<\s*(?:super::)+"
         ),
     ),
+    Rule(
+        "maker dependency on taker pricing internals",
+        re.compile(
+            r"\bcrate\s*::\s*bolt_v3_taker_pricing\b"
+            r"|\b(?:super\s*::\s*)+bolt_v3_taker_pricing\b"
+            r"|\bbolt_v3_taker_pricing\s*::"
+            r"|\bTakerPricing[A-Za-z0-9_]*\b"
+        ),
+    ),
 )
 
 EXECUTION_POLICY_RULES: tuple[Rule, ...] = (
@@ -272,6 +282,10 @@ STRATEGY_ROOT_POLICY_EXEMPT_PATHS = frozenset(
         "src/strategies/registry.rs",
     }
 )
+
+
+def is_maker_strategy_source_path(path: str) -> bool:
+    return path == MAKER_SOURCE_ROOT or path.startswith(f"{MAKER_SOURCE_ROOT}/")
 
 
 def line_number(text: str, pos: int) -> int:
@@ -380,6 +394,11 @@ def find_violations_in_text(
         if (
             rule.label == "strategy-local execution policy override"
             and path in ALLOWED_EXECUTION_POLICY_OVERRIDE_PATHS
+        ):
+            continue
+        if (
+            rule.label == "maker dependency on taker pricing internals"
+            and not is_maker_strategy_source_path(path)
         ):
             continue
         for match in rule.pattern.finditer(text):

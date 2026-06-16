@@ -59,7 +59,10 @@ install -d -o "${BOLT_USER}" -g "${BOLT_GROUP}" \
     "${BOLT_HOME}/var" \
     "${BOLT_HOME}/var/audit" \
     "${BOLT_HOME}/var/logs" \
-    "${BOLT_HOME}/var/raw"
+    "${BOLT_HOME}/var/raw" \
+    "${BOLT_HOME}/var/bolt-v3-live" \
+    "${BOLT_HOME}/var/bolt-v3-live/catalog" \
+    "${BOLT_HOME}/var/bolt-v3-live/reports"
 install -d -m 0755 "${BOLT_INSTALL_ROOT}"
 install -d -o root -g "${BOLT_GROUP}" -m 0750 "${BOLT_INSTALL_ROOT}/config"
 

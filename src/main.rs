@@ -1,8 +1,11 @@
 use clap::Parser;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(unix)]
+use std::{ffi::CString, os::unix::ffi::OsStrExt};
 
 use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
@@ -44,6 +47,10 @@ enum Command {
         #[command(subcommand)]
         command: SecretsCommand,
     },
+    Ops {
+        #[command(subcommand)]
+        command: OpsCommand,
+    },
     ProviderArtifacts {
         #[command(subcommand)]
         command: Box<ProviderArtifactsCommand>,
@@ -59,6 +66,16 @@ enum SecretsCommand {
     Resolve {
         #[arg(short, long)]
         config: PathBuf,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum OpsCommand {
+    PrestartCheck {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        required_catalog_prefix: PathBuf,
     },
 }
 
@@ -129,6 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Run { config } => run_live_node(config),
         Command::Secrets { command } => run_secrets_command(command),
+        Command::Ops { command } => run_ops_command(command),
         Command::ProviderArtifacts { command } => run_provider_artifacts_command(*command),
     }
 }
@@ -145,6 +163,97 @@ fn run_live_node(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     };
     runtime.block_on(local.run_until(app))
+}
+
+fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        OpsCommand::PrestartCheck {
+            config,
+            required_catalog_prefix,
+        } => run_prestart_check(&config, &required_catalog_prefix),
+    }
+}
+
+fn run_prestart_check(
+    config: &Path,
+    required_catalog_prefix: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !required_catalog_prefix.is_absolute() {
+        return Err(format!(
+            "--required-catalog-prefix must be an absolute path: `{}`",
+            required_catalog_prefix.display()
+        )
+        .into());
+    }
+    let loaded = load_bolt_v3_config(config)?;
+    let catalog_directory = Path::new(&loaded.root.persistence.catalog_directory);
+    if !catalog_directory.starts_with(required_catalog_prefix) {
+        return Err(format!(
+            "persistence.catalog_directory `{}` must be under `{}` for this service",
+            catalog_directory.display(),
+            required_catalog_prefix.display()
+        )
+        .into());
+    }
+    let min_free_bytes = loaded.root.persistence.min_free_bytes.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "persistence.min_free_bytes must be configured for ops prestart-check",
+        )
+    })?;
+    let catalog_metadata = std::fs::metadata(catalog_directory).map_err(|source| {
+        std::io::Error::new(
+            source.kind(),
+            format!(
+                "persistence.catalog_directory `{}` is not readable before service start: {source}",
+                catalog_directory.display()
+            ),
+        )
+    })?;
+    if !catalog_metadata.is_dir() {
+        return Err(format!(
+            "persistence.catalog_directory `{}` must be a directory before service start",
+            catalog_directory.display()
+        )
+        .into());
+    }
+    let available_bytes = filesystem_available_bytes(catalog_directory)?;
+    if available_bytes < min_free_bytes {
+        return Err(format!(
+            "persistence.catalog_directory `{}` has {available_bytes} free bytes, below configured persistence.min_free_bytes {min_free_bytes}",
+            catalog_directory.display()
+        )
+        .into());
+    }
+    println!(
+        "ops prestart check ok: catalog_directory={} available_bytes={} min_free_bytes={}",
+        catalog_directory.display(),
+        available_bytes,
+        min_free_bytes
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn filesystem_available_bytes(path: &Path) -> Result<u64, Box<dyn std::error::Error>> {
+    let c_path = CString::new(path.as_os_str().as_bytes())?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
+    if unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let stat = unsafe { stat.assume_init() };
+    let fragment_size = if stat.f_frsize == 0 {
+        stat.f_bsize
+    } else {
+        stat.f_frsize
+    };
+    let available = u128::from(stat.f_bavail) * u128::from(fragment_size);
+    Ok(available.min(u128::from(u64::MAX)) as u64)
+}
+
+#[cfg(not(unix))]
+fn filesystem_available_bytes(_path: &Path) -> Result<u64, Box<dyn std::error::Error>> {
+    Err("ops prestart-check disk free-space validation requires a Unix platform".into())
 }
 
 fn run_provider_artifacts_command(
@@ -394,5 +503,33 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prestart_check_rejects_catalog_outside_required_prefix_before_disk_probe() {
+        let config = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/root.toml");
+        let error = run_prestart_check(&config, Path::new("/tmp/bolt-v2"))
+            .expect_err("wrong catalog prefix should fail prestart");
+        let message = error.to_string();
+
+        assert!(message.contains("persistence.catalog_directory"));
+        assert!(message.contains("must be under"));
+    }
+
+    #[test]
+    fn prestart_check_requires_configured_min_free_bytes() {
+        let config =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bolt_v3/root.toml");
+        let error = run_prestart_check(&config, Path::new("/var/lib/bolt"))
+            .expect_err("missing free-space floor should fail prestart");
+        let message = error.to_string();
+
+        assert!(message.contains("persistence.min_free_bytes"));
+        assert!(message.contains("ops prestart-check"));
     }
 }

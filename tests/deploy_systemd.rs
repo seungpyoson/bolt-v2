@@ -23,3 +23,63 @@ fn systemd_unit_requires_srv_mountpoint() {
         "systemd unit must fail fast if /srv/bolt-v2 is not mounted"
     );
 }
+
+#[test]
+fn systemd_unit_runs_rust_prestart_storage_check() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
+
+    assert!(
+        unit.contains(
+            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops prestart-check --config /opt/bolt-v2/config/live.toml --required-catalog-prefix /srv/bolt-v2"
+        ),
+        "systemd unit must reject wrong-disk or low-space live config before starting"
+    );
+}
+
+#[test]
+fn install_script_provisions_runtime_catalog_on_srv_volume() {
+    let install_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
+    let install = fs::read_to_string(&install_path).expect("install script should exist");
+
+    assert!(
+        install.contains("\"${BOLT_HOME}/var/bolt-v3-live/catalog\""),
+        "install script must provision the configured runtime catalog under /srv/bolt-v2"
+    );
+    assert!(
+        install.contains("\"${BOLT_HOME}/var/bolt-v3-live/reports\""),
+        "install script must provision runtime reports under /srv/bolt-v2"
+    );
+}
+
+#[test]
+fn root_config_sets_runtime_catalog_and_min_free_space_on_srv_volume() {
+    let root_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/root.toml");
+    let root = fs::read_to_string(&root_path).expect("root config should exist");
+
+    assert!(
+        root.contains("catalog_directory = \"/srv/bolt-v2/var/bolt-v3-live/catalog\""),
+        "root config must place runtime catalog under /srv/bolt-v2"
+    );
+    assert!(
+        root.contains("min_free_bytes = 10737418240"),
+        "root config must declare the prestart free-space floor"
+    );
+}
+
+#[test]
+fn journald_caps_persistent_and_runtime_storage() {
+    let journald_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/journald-bolt-v2.conf");
+    let journald = fs::read_to_string(&journald_path).expect("journald config should exist");
+
+    assert!(
+        journald.contains("SystemMaxUse=500M"),
+        "persistent journald storage must be capped"
+    );
+    assert!(
+        journald.contains("RuntimeMaxUse=500M"),
+        "volatile journald storage must be capped"
+    );
+}

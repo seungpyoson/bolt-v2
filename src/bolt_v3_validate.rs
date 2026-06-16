@@ -1862,6 +1862,12 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
                 .to_string(),
         );
     }
+    if block
+        .min_free_bytes
+        .is_some_and(|min_free_bytes| min_free_bytes == 0)
+    {
+        errors.push("persistence.min_free_bytes must be a positive integer".to_string());
+    }
     if block.streaming.flush_interval_ms == 0 {
         errors
             .push("persistence.streaming.flush_interval_ms must be a positive integer".to_string());

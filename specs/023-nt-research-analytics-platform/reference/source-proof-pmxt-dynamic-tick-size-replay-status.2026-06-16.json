@@ -1,0 +1,48 @@
+{
+  "schema_version": "source-proof-pmxt-dynamic-tick-size-replay-status.v1",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "source_binding": "polymarket-parquet-archive-index",
+  "observed_at_utc": "2026-06-16T00:00:00Z",
+  "dynamic_tick_size_replay_status": "blocked_standard_backtestnode_no_timed_instrument_any",
+  "standard_backtestnode_catalog_replay_supports_dynamic_instrument_any": false,
+  "timed_instrument_epoch_replay_accepted": false,
+  "bounded_no_tick_size_change_first_proof_allowed": true,
+  "pmxt_full_l2_with_tick_size_change_can_be_accepted_now": false,
+  "bte_022_can_close": false,
+  "committed_input_hashes": {
+    "tick_size_change_status": {
+      "path": "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json",
+      "sha256": "144561e2f97631c7dd40e1f2c93ed201efaf306093f494bbf027927bcf39160e"
+    },
+    "timed_instrument_replay_audit": {
+      "path": "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-timed-instrument-replay-nt-audit.2026-06-09.json",
+      "sha256": "087e045034001fa1573ffc8d01daeffc21ceb6b797c593fd541f494d24707120"
+    },
+    "first_universe_policy": {
+      "path": "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json",
+      "sha256": "36e2af98cae120d3b1320d2a99ee6bbfda326ca3f9c3154cf1c52e45824a84a4"
+    },
+    "pmxt_source_proof_spec": {
+      "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml",
+      "sha256": "2b0ece5774eea20a610a326e1a3819b2c6816229b687b6966a8d0985e0750ad6"
+    }
+  },
+  "guard_verification": {
+    "script": "repo://scripts/verify_bte_022_pmxt_dynamic_tick_size.py",
+    "self_test": "repo://scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py",
+    "source_fence_static": true
+  },
+  "claim_limits": [
+    "Standard BacktestNode catalog replay must not be used to claim PMXT dynamic tick-size replay.",
+    "InstrumentStatus and InstrumentClose auxiliary streams do not substitute for timed InstrumentAny instrument-definition epochs.",
+    "The bounded PMXT first proof may use only a source-proof-bound no-tick-size-change universe and cannot prove full PMXT L2 acceptance.",
+    "The pending PMXT source proof must remain blocked until either timed InstrumentAny replay is accepted or an accepted no-tick-size-change universe scope closes the claim.",
+    "This does not authorize broad PMXT backfill."
+  ],
+  "remaining_blockers": [
+    "dynamic_tick_size_replay_unproven",
+    "expanded_tranche_coverage_and_cost_unproven",
+    "durable_source_selection_unproven",
+    "broad_backfill_efficiency_unproven"
+  ]
+}

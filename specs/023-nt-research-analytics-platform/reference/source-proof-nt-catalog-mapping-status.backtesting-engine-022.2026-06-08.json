@@ -380,6 +380,23 @@
       "This does not authorize broad PMXT backfill."
     ]
   },
+  "dynamic_tick_size_replay_guardrail_status": {
+    "status": "source_fenced_blocked_standard_backtestnode_no_timed_instrument_any",
+    "evidence": [
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json records that standard BacktestNode catalog replay cannot schedule timed InstrumentAny instrument-definition epochs.",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-timed-instrument-replay-nt-audit.2026-06-09.json records the pinned NT audit: InstrumentAny storage exists, but BacktestDataConfig/Data replay has no timed InstrumentAny stream.",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json permits only the bounded no-tick-size-change first proof and keeps full PMXT L2 acceptance open.",
+      "repo://specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml keeps the PMXT source proof pending and blocks dynamic tick-size replay acceptance through claim_limit pmxt-source-proof-claim-limit-002.",
+      "STATIC-GATED scripts/verify_bte_022_pmxt_dynamic_tick_size.py rejects drift from the blocked dynamic tick-size replay decision, missing BTE-022 blocker text, source-proof overclaiming, and source-fence wiring gaps."
+    ],
+    "claim_limits": [
+      "This proves the current repo state records dynamic tick-size replay as blocked for standard BacktestNode catalog replay.",
+      "This proves the bounded PMXT first proof is limited to source-proof-selected assets/windows with tick_size_change_rows == 0.",
+      "This proves the pending PMXT source proof has not accepted timed InstrumentAny replay or full PMXT L2 with tick_size_change rows.",
+      "This does not implement timed InstrumentAny replay.",
+      "This does not close BTE-022 or authorize broad PMXT backfill."
+    ]
+  },
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
   "old_artifact_recommendation": {
     "recommendation": "keep_as_historical_reference_only",
@@ -430,7 +447,7 @@
     },
     {
       "blocker": "dynamic_tick_size_replay_unproven",
-      "required_evidence": "A separate NT BacktestNode/catalog proof that tick_size_change epochs can be represented without custom simulation behavior before full PMXT Polymarket L2 acceptance. The bounded one-off PMXT source proof now binds l2_replay_evidence.no_tick_size_change_universe_ref to repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json sha256=36e2af98cae120d3b1320d2a99ee6bbfda326ca3f9c3154cf1c52e45824a84a4, but that only supports the selected unaffected universe and does not prove dynamic tick-size replay. InstrumentStatus/InstrumentClose replay support is not InstrumentAny replay; current guards only prove auxiliary status/close data-config mapping and that the one-off selected-source projection cannot silently ignore configured non-ignorable tick_size_change rows."
+      "required_evidence": "A separate NT BacktestNode/catalog proof that tick_size_change epochs can be represented without custom simulation behavior before full PMXT Polymarket L2 acceptance. The pending bounded one-off PMXT source proof must not attach a no-tick-change universe or timed instrument epoch replay reference while status remains pending; the selected first-proof universe policy only supports selected unaffected assets/windows and does not prove dynamic tick-size replay. InstrumentStatus/InstrumentClose replay support is not InstrumentAny replay; current guards only prove auxiliary status/close data-config mapping and that the one-off selected-source projection cannot silently ignore configured non-ignorable tick_size_change rows."
     },
     {
       "blocker": "durable_source_selection_unproven",

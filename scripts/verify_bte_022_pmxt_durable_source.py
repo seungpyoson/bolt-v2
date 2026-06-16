@@ -201,6 +201,12 @@ DURABLE_STATUS_REMAINING_BLOCKERS = (
     "dynamic_tick_size_replay_unproven",
     "broad_backfill_efficiency_unproven",
 )
+BTE_REMAINING_BLOCKERS = (
+    "expanded_tranche_coverage_and_cost_unproven",
+    "dynamic_tick_size_replay_unproven",
+    "durable_source_selection_unproven",
+    "broad_backfill_efficiency_unproven",
+)
 BTE_DURABLE_GUARD_STATUS = "code_guardrail_added_actual_pmxt_accepted_source_proof_unproven"
 BTE_DURABLE_GUARD_EVIDENCE = (
     "RED-GATED crates/backtesting-vertical-slice/src/venue_scale_conversion_acceptance.rs unit regression source_only_status_rejects_unaccepted_source_proof_set documents that a source-only universe with a referenced source proof set but zero accepted proofs must fail validation.",
@@ -219,6 +225,7 @@ BTE_DURABLE_GUARD_CLAIM_LIMITS = (
     "This does not prove expanded PMXT coverage, cost, object gates, conversion run plans, or dynamic tick-size replay.",
     "This does not authorize broad PMXT backfill.",
 )
+BTE_DURABLE_GUARD_KEYS = ("claim_limits", "evidence", "status")
 BTE_STATUS_KEYS = (
     "accepted_trade_replay_runtime_recheck",
     "bolt_current_limitations",
@@ -233,6 +240,7 @@ BTE_STATUS_KEYS = (
     "current_reconciliation",
     "decision",
     "durable_source_selection_source_only_guardrail_status",
+    "dynamic_tick_size_replay_guardrail_status",
     "_".join(("first", "proof", "policy", "status")),
     "next_required_evidence",
     "non_hardcoding_decision",
@@ -444,9 +452,9 @@ def just_recipe_commands(justfile: str, recipe_name: str) -> set[str]:
 def check_status_hashes(root: Path, durable_status: dict, findings: list[str]) -> None:
     for key_path, rel_path in STATUS_HASH_TARGETS:
         entry = nested_mapping(durable_status, key_path, PMXT_DURABLE_STATUS, findings)
-        if not entry:
-            continue
         label = ".".join(key_path)
+        if key_path[0] == "committed_input_hashes":
+            require_keys_equal(PMXT_DURABLE_STATUS, label, entry, DURABLE_STATUS_HASH_ENTRY_KEYS, findings)
         require_equal(PMXT_DURABLE_STATUS, f"{label}.path", entry.get("path"), repo_uri(rel_path), findings)
         require_equal(
             PMXT_DURABLE_STATUS,
@@ -476,38 +484,35 @@ def check_durable_status_artifact(durable_status: dict, findings: list[str]) -> 
     )
 
     source_proof_status = nested_mapping(durable_status, ("source_proof_set_spec",), PMXT_DURABLE_STATUS, findings)
-    if source_proof_status:
-        require_keys_equal(PMXT_DURABLE_STATUS, "source_proof_set_spec", source_proof_status, DURABLE_STATUS_SOURCE_PROOF_SPEC_KEYS, findings)
-        require_equal(PMXT_DURABLE_STATUS, "source_proof_set_spec.status", source_proof_status.get("status"), "pending", findings)
-        require_equal(
-            PMXT_DURABLE_STATUS,
-            "source_proof_set_spec.source_selection_status",
-            source_proof_status.get("source_selection_status"),
-            "PENDING_MORE_PROOF",
-            findings,
-        )
-        require_equal(
-            PMXT_DURABLE_STATUS,
-            "source_proof_set_spec.usage_scope",
-            source_proof_status.get("usage_scope"),
-            "one_off_backfill_data",
-            findings,
-        )
-        require_equal(PMXT_DURABLE_STATUS, "source_proof_set_spec.fidelity_class", source_proof_status.get("fidelity_class"), "L2_REPLAY", findings)
+    require_keys_equal(PMXT_DURABLE_STATUS, "source_proof_set_spec", source_proof_status, DURABLE_STATUS_SOURCE_PROOF_SPEC_KEYS, findings)
+    require_equal(PMXT_DURABLE_STATUS, "source_proof_set_spec.status", source_proof_status.get("status"), "pending", findings)
+    require_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_set_spec.source_selection_status",
+        source_proof_status.get("source_selection_status"),
+        "PENDING_MORE_PROOF",
+        findings,
+    )
+    require_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_set_spec.usage_scope",
+        source_proof_status.get("usage_scope"),
+        "one_off_backfill_data",
+        findings,
+    )
+    require_equal(PMXT_DURABLE_STATUS, "source_proof_set_spec.fidelity_class", source_proof_status.get("fidelity_class"), "L2_REPLAY", findings)
 
     committed_input_hashes = nested_mapping(durable_status, ("committed_input_hashes",), PMXT_DURABLE_STATUS, findings)
-    if committed_input_hashes:
-        require_keys_equal(PMXT_DURABLE_STATUS, "committed_input_hashes", committed_input_hashes, DURABLE_STATUS_COMMITTED_INPUT_HASHES_KEYS, findings)
-        for hash_key, hash_entry in committed_input_hashes.items():
-            require_keys_equal(PMXT_DURABLE_STATUS, f"committed_input_hashes.{hash_key}", hash_entry, DURABLE_STATUS_HASH_ENTRY_KEYS, findings)
+    require_keys_equal(PMXT_DURABLE_STATUS, "committed_input_hashes", committed_input_hashes, DURABLE_STATUS_COMMITTED_INPUT_HASHES_KEYS, findings)
+    for hash_key, hash_entry in committed_input_hashes.items():
+        require_keys_equal(PMXT_DURABLE_STATUS, f"committed_input_hashes.{hash_key}", hash_entry, DURABLE_STATUS_HASH_ENTRY_KEYS, findings)
 
     manifest_scope = nested_mapping(durable_status, ("manifest_scope",), PMXT_DURABLE_STATUS, findings)
-    if manifest_scope:
-        require_keys_equal(PMXT_DURABLE_STATUS, "manifest_scope", manifest_scope, DURABLE_STATUS_MANIFEST_SCOPE_KEYS, findings)
-        require_equal(PMXT_DURABLE_STATUS, "manifest_scope.object_count", manifest_scope.get("object_count"), 1351, findings)
-        require_equal(PMXT_DURABLE_STATUS, "manifest_scope.verified_head_count", manifest_scope.get("verified_head_count"), 1351, findings)
-        require_equal(PMXT_DURABLE_STATUS, "manifest_scope.accepted_bytes", manifest_scope.get("accepted_bytes"), 557_815_904_970, findings)
-        require_equal(PMXT_DURABLE_STATUS, "manifest_scope.source_accepted_proof_count", manifest_scope.get("source_accepted_proof_count"), 0, findings)
+    require_keys_equal(PMXT_DURABLE_STATUS, "manifest_scope", manifest_scope, DURABLE_STATUS_MANIFEST_SCOPE_KEYS, findings)
+    require_equal(PMXT_DURABLE_STATUS, "manifest_scope.object_count", manifest_scope.get("object_count"), 1351, findings)
+    require_equal(PMXT_DURABLE_STATUS, "manifest_scope.verified_head_count", manifest_scope.get("verified_head_count"), 1351, findings)
+    require_equal(PMXT_DURABLE_STATUS, "manifest_scope.accepted_bytes", manifest_scope.get("accepted_bytes"), 557_815_904_970, findings)
+    require_equal(PMXT_DURABLE_STATUS, "manifest_scope.source_accepted_proof_count", manifest_scope.get("source_accepted_proof_count"), 0, findings)
 
     require_list_equal(
         PMXT_DURABLE_STATUS,
@@ -539,29 +544,27 @@ def check_durable_status_artifact(durable_status: dict, findings: list[str]) -> 
     )
 
     generated_policy = nested_mapping(durable_status, ("generated_artifact_policy",), PMXT_DURABLE_STATUS, findings)
-    if generated_policy:
-        require_keys_equal(PMXT_DURABLE_STATUS, "generated_artifact_policy", generated_policy, DURABLE_STATUS_GENERATED_ARTIFACT_POLICY_KEYS, findings)
-        require_equal(PMXT_DURABLE_STATUS, "generated_artifact_policy.status", generated_policy.get("status"), "bulk_json_evicted", findings)
-        require_list_equal(PMXT_DURABLE_STATUS, "generated_artifact_policy.gitignore_refs", generated_policy.get("gitignore_refs"), PMXT_EVICTION_PATTERNS, findings)
+    require_keys_equal(PMXT_DURABLE_STATUS, "generated_artifact_policy", generated_policy, DURABLE_STATUS_GENERATED_ARTIFACT_POLICY_KEYS, findings)
+    require_equal(PMXT_DURABLE_STATUS, "generated_artifact_policy.status", generated_policy.get("status"), "bulk_json_evicted", findings)
+    require_list_equal(PMXT_DURABLE_STATUS, "generated_artifact_policy.gitignore_refs", generated_policy.get("gitignore_refs"), PMXT_EVICTION_PATTERNS, findings)
 
     guard_verification = nested_mapping(durable_status, ("guard_verification",), PMXT_DURABLE_STATUS, findings)
-    if guard_verification:
-        require_keys_equal(PMXT_DURABLE_STATUS, "guard_verification", guard_verification, DURABLE_STATUS_GUARD_VERIFICATION_KEYS, findings)
-        require_equal(
-            PMXT_DURABLE_STATUS,
-            "guard_verification.script",
-            guard_verification.get("script"),
-            "repo://scripts/verify_bte_022_pmxt_durable_source.py",
-            findings,
-        )
-        require_equal(
-            PMXT_DURABLE_STATUS,
-            "guard_verification.self_test",
-            guard_verification.get("self_test"),
-            "repo://scripts/test_verify_bte_022_pmxt_durable_source.py",
-            findings,
-        )
-        require_equal(PMXT_DURABLE_STATUS, "guard_verification.source_fence_static", guard_verification.get("source_fence_static"), True, findings)
+    require_keys_equal(PMXT_DURABLE_STATUS, "guard_verification", guard_verification, DURABLE_STATUS_GUARD_VERIFICATION_KEYS, findings)
+    require_equal(
+        PMXT_DURABLE_STATUS,
+        "guard_verification.script",
+        guard_verification.get("script"),
+        "repo://scripts/verify_bte_022_pmxt_durable_source.py",
+        findings,
+    )
+    require_equal(
+        PMXT_DURABLE_STATUS,
+        "guard_verification.self_test",
+        guard_verification.get("self_test"),
+        "repo://scripts/test_verify_bte_022_pmxt_durable_source.py",
+        findings,
+    )
+    require_equal(PMXT_DURABLE_STATUS, "guard_verification.source_fence_static", guard_verification.get("source_fence_static"), True, findings)
 
     require_list_equal(PMXT_DURABLE_STATUS, "claim_limits", durable_status.get("claim_limits"), DURABLE_STATUS_CLAIM_LIMITS, findings)
     require_list_equal(PMXT_DURABLE_STATUS, "remaining_blockers", durable_status.get("remaining_blockers"), DURABLE_STATUS_REMAINING_BLOCKERS, findings)
@@ -574,8 +577,13 @@ def check_bte_status_durable_guard_block(bte_status: dict, findings: list[str]) 
         BTE_022_STATUS,
         findings,
     )
-    if not guard_block:
-        return
+    require_keys_equal(
+        BTE_022_STATUS,
+        "durable_source_selection_source_only_guardrail_status",
+        guard_block,
+        BTE_DURABLE_GUARD_KEYS,
+        findings,
+    )
     require_equal(BTE_022_STATUS, "durable_source_selection_source_only_guardrail_status.status", guard_block.get("status"), BTE_DURABLE_GUARD_STATUS, findings)
     require_list_equal(
         BTE_022_STATUS,
@@ -735,10 +743,14 @@ def scan_root(root: Path) -> list[str]:
             findings,
         )
 
-    blockers = bte_status.get("remaining_blockers", [])
-    blocker_names = {blocker.get("blocker") for blocker in blockers if isinstance(blocker, dict)}
-    if "durable_source_selection_unproven" not in blocker_names:
-        findings.append(f"{BTE_022_STATUS}: remaining_blockers must include durable_source_selection_unproven")
+    blockers = bte_status.get("remaining_blockers")
+    if not isinstance(blockers, list):
+        findings.append(f"{BTE_022_STATUS}: remaining_blockers must be a list")
+    else:
+        blocker_names = tuple(blocker.get("blocker") for blocker in blockers if isinstance(blocker, dict))
+        if len(blocker_names) != len(blockers):
+            findings.append(f"{BTE_022_STATUS}: remaining_blockers entries must be objects with blocker names")
+        require_equal(BTE_022_STATUS, "remaining_blockers.blocker_names", blocker_names, BTE_REMAINING_BLOCKERS, findings)
     require_equal(BTE_022_STATUS, "bte_022_can_close", bte_status.get("bte_022_can_close"), False, findings)
     check_bte_status_artifact(bte_status, findings)
 

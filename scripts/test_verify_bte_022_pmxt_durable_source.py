@@ -235,10 +235,16 @@ def bte_status_json(*, can_close: bool = False) -> str:
             "broad_backfill_efficiency_object_selection_metadata_status": {},
             "broad_backfill_source_usage_scope_status": {},
             "durable_source_selection_source_only_guardrail_status": guard_status,
+            "dynamic_tick_size_replay_guardrail_status": {},
             "non_hardcoding_decision": "",
             "old_artifact_recommendation": {},
             "next_required_evidence": [],
-            "remaining_blockers": [{"blocker": "durable_source_selection_unproven"}],
+            "remaining_blockers": [
+                {"blocker": "expanded_tranche_coverage_and_cost_unproven"},
+                {"blocker": "dynamic_tick_size_replay_unproven"},
+                {"blocker": "durable_source_selection_unproven"},
+                {"blocker": "broad_backfill_efficiency_unproven"},
+            ],
             "bte_022_can_close": can_close,
         },
         indent=2,
@@ -539,6 +545,30 @@ def test_bte_status_durable_guard_overclaim_is_a_finding() -> None:
     assert any("durable_source_selection_source_only_guardrail_status.claim_limits" in finding for finding in findings)
 
 
+def test_bte_status_empty_durable_guard_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        bte_status = json.loads(bte_status_json())
+        bte_status["durable_source_selection_source_only_guardrail_status"] = {}
+        write_file(root, str(verifier.BTE_022_STATUS), json.dumps(bte_status, indent=2) + "\n")
+        findings = verifier.scan_root(root)
+    assert any("durable_source_selection_source_only_guardrail_status.status" in finding for finding in findings)
+
+
+def test_bte_status_extra_durable_guard_key_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        bte_status = json.loads(bte_status_json())
+        bte_status["durable_source_selection_source_only_guardrail_status"]["accepted_source_proof"] = True
+        write_file(root, str(verifier.BTE_022_STATUS), json.dumps(bte_status, indent=2) + "\n")
+        findings = verifier.scan_root(root)
+    assert any("durable_source_selection_source_only_guardrail_status keys" in finding for finding in findings)
+
+
 def test_malformed_required_check_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -716,6 +746,26 @@ def test_durable_status_nested_acceptance_drift_is_a_finding() -> None:
     assert any("source_proof_set_spec.usage_scope" in finding for finding in findings)
 
 
+def test_durable_status_empty_nested_block_is_a_finding() -> None:
+    verifier = load_verifier()
+    nested_keys = (
+        "source_proof_set_spec",
+        "committed_input_hashes",
+        "manifest_scope",
+        "generated_artifact_policy",
+        "guard_verification",
+    )
+    for key in nested_keys:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_complete_fixture(root)
+            durable_status = json.loads(durable_status_json(root))
+            durable_status[key] = {}
+            write_file(root, str(verifier.PMXT_DURABLE_STATUS), json.dumps(durable_status, indent=2) + "\n")
+            findings = verifier.scan_root(root)
+        assert any(key in finding for finding in findings), (key, findings)
+
+
 def test_durable_status_remaining_blockers_drift_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -740,6 +790,21 @@ def test_durable_status_remaining_blockers_drift_is_a_finding() -> None:
         )
         findings = verifier.scan_root(root)
     assert any("remaining_blockers" in finding for finding in findings)
+
+
+def test_bte_status_remaining_blockers_drift_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        bte_status = json.loads(bte_status_json())
+        bte_status["remaining_blockers"] = [
+            blocker for blocker in bte_status["remaining_blockers"]
+            if blocker["blocker"] != "broad_backfill_efficiency_unproven"
+        ]
+        write_file(root, str(verifier.BTE_022_STATUS), json.dumps(bte_status, indent=2) + "\n")
+        findings = verifier.scan_root(root)
+    assert any("remaining_blockers.blocker_names" in finding for finding in findings)
 
 
 def test_durable_status_extra_overclaim_key_is_a_finding() -> None:
@@ -873,6 +938,8 @@ def main() -> int:
         test_bte_close_claim_is_a_finding,
         test_bte_top_level_status_overclaim_is_a_finding,
         test_bte_status_durable_guard_overclaim_is_a_finding,
+        test_bte_status_empty_durable_guard_is_a_finding,
+        test_bte_status_extra_durable_guard_key_is_a_finding,
         test_malformed_required_check_is_a_finding,
         test_extra_required_check_is_a_finding,
         test_required_check_acceptance_provenance_is_a_finding,
@@ -883,7 +950,9 @@ def main() -> int:
         test_malformed_source_binding_is_a_finding,
         test_status_hash_drift_is_a_finding,
         test_durable_status_nested_acceptance_drift_is_a_finding,
+        test_durable_status_empty_nested_block_is_a_finding,
         test_durable_status_remaining_blockers_drift_is_a_finding,
+        test_bte_status_remaining_blockers_drift_is_a_finding,
         test_durable_status_extra_overclaim_key_is_a_finding,
         test_commented_gitignore_eviction_pattern_is_a_finding,
         test_gitignore_negation_of_pmxt_artifact_is_a_finding,

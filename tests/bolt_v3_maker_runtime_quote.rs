@@ -14,10 +14,11 @@ use bolt_v2::{
     },
     bolt_v3_maker_runtime_quote::{
         MakerRuntimeOrderPlanInput, MakerRuntimeQuoteBlockReason, MakerRuntimeQuoteInput,
-        MakerRuntimeQuoteSetInput, MakerRuntimeReferenceFairValueInput,
-        maker_reference_current_price_fair_value, plan_maker_runtime_quote,
+        MakerRuntimeQuoteSetInput, MakerRuntimeReferenceFairValueBlockReason,
+        MakerRuntimeReferenceFairValueInput, maker_reference_current_price_fair_value,
+        maker_reference_current_price_fair_value_decision, plan_maker_runtime_quote,
     },
-    bolt_v3_market_families::static_binary_event,
+    bolt_v3_market_families::{FairProbabilityInputs, static_binary_event, updown},
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketState},
     bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
@@ -154,6 +155,83 @@ fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
             .yes
             .intent
             .is_some()
+    );
+}
+
+#[test]
+fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_blockers() {
+    let quotes = vec![
+        reference_quote("BTC", "primary", 99.0, 1_000),
+        reference_quote("BTC", "backup", 101.0, 1_490),
+    ];
+    let mut selector = ReferencePriceSelector::new(
+        "BTC",
+        vec!["primary".to_string(), "backup".to_string()],
+        1,
+        100,
+        25,
+    )
+    .expect("selector fixture should be valid");
+    let input = MakerRuntimeReferenceFairValueInput {
+        family_key: updown::KEY,
+        interval_start_ms: 1_000,
+        interval_end_ms: 2_000,
+        now_ms: 1_500,
+        reference_quotes: &quotes,
+        strike_price: 100.0,
+        seconds_to_market_end: 300,
+        realized_vol: 1.5,
+        pricing_kurtosis: 0.25,
+    };
+
+    let decision = maker_reference_current_price_fair_value_decision(&mut selector, input);
+
+    assert_eq!(decision.blocked_by, None);
+    let fair = decision
+        .fair_value
+        .expect("fresh backup reference current price should price");
+    assert_eq!(fair.spot_price, 101.0);
+    assert_eq!(fair.strike_price, input.strike_price);
+    assert_eq!(fair.seconds_to_market_end, input.seconds_to_market_end);
+    assert_eq!(fair.realized_vol, input.realized_vol);
+    assert_eq!(fair.pricing_kurtosis, input.pricing_kurtosis);
+    assert_eq!(fair.reference_current_price, 101.0);
+    assert_eq!(fair.reference_current_price_source_id, "backup");
+    assert!(fair.reference_current_price_failed_over);
+    assert_eq!(
+        fair.fair_probability_up,
+        updown::fair_probability_up(&FairProbabilityInputs {
+            spot_price: 101.0,
+            strike_price: input.strike_price,
+            seconds_to_market_end: input.seconds_to_market_end,
+            realized_vol: input.realized_vol,
+            pricing_kurtosis: input.pricing_kurtosis,
+        })
+        .expect("same updown fair-value inputs should price")
+    );
+
+    let mut blocked_selector =
+        ReferencePriceSelector::new("BTC", vec!["primary".to_string()], 1, 100, 25)
+            .expect("selector fixture should be valid");
+    let blocked = maker_reference_current_price_fair_value_decision(
+        &mut blocked_selector,
+        MakerRuntimeReferenceFairValueInput {
+            family_key: updown::KEY,
+            interval_start_ms: 1_000,
+            interval_end_ms: 2_000,
+            now_ms: 1_500,
+            reference_quotes: &[],
+            strike_price: input.strike_price,
+            seconds_to_market_end: input.seconds_to_market_end,
+            realized_vol: input.realized_vol,
+            pricing_kurtosis: input.pricing_kurtosis,
+        },
+    );
+
+    assert_eq!(blocked.fair_value, None);
+    assert_eq!(
+        blocked.blocked_by,
+        Some(MakerRuntimeReferenceFairValueBlockReason::ReferenceCurrentPriceUnavailable)
     );
 }
 

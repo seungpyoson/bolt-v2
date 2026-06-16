@@ -13498,14 +13498,6 @@ classification = "strategy_runtime_schema_field"
 reason = "Static binary-event YES outcome field admitted by the strategy config schema."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "number"
-literal = '''0'''
-context = '''.is_some_and(|min_free_bytes| min_free_bytes == 0)'''
-classification = "persistence_config_validation_sentinel"
-reason = "Zero is the invalid sentinel for TOML-owned persistence.min_free_bytes validation; the actual free-space floor remains config-owned."
-
-[[allowed]]
 path = "src/main.rs"
 kind = "string"
 literal = '''"persistence.catalog_directory `{}` has {available_bytes} free bytes, below configured persistence.min_free_bytes {min_free_bytes}"'''

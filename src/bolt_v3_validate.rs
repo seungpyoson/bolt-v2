@@ -1864,9 +1864,13 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
     }
     if block
         .min_free_bytes
-        .is_some_and(|min_free_bytes| min_free_bytes == 0)
+        .is_some_and(|min_free_bytes| min_free_bytes == u64::MIN)
     {
-        errors.push("persistence.min_free_bytes must be a positive integer".to_string());
+        errors.push(format!(
+            "{}.{} must be a positive integer",
+            stringify!(persistence),
+            stringify!(min_free_bytes)
+        ));
     }
     if block.streaming.flush_interval_ms == 0 {
         errors

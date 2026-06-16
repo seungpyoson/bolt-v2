@@ -216,16 +216,7 @@ fn run_prestart_check(
         )
         .into());
     }
-    let catalog_metadata = std::fs::metadata(configured_catalog_directory).map_err(|source| {
-        std::io::Error::new(
-            source.kind(),
-            format!(
-                "persistence.catalog_directory `{}` is not readable before service start: {source}",
-                configured_catalog_directory.display()
-            ),
-        )
-    })?;
-    if !catalog_metadata.is_dir() {
+    if !catalog_link_metadata.is_dir() {
         return Err(format!(
             "persistence.catalog_directory `{}` must be a directory before service start",
             configured_catalog_directory.display()
@@ -279,6 +270,7 @@ fn verify_catalog_write_probe(catalog_directory: &Path) -> Result<(), Box<dyn st
         ".bolt-v2-prestart-write-probe-{}",
         std::process::id()
     ));
+    let _ = std::fs::remove_file(&probe_path);
     let probe_file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -693,6 +685,31 @@ mod tests {
 
         run_prestart_check(&fixture.config_path, &required_prefix)
             .expect("writable catalog under required prefix should pass prestart");
+    }
+
+    #[test]
+    fn prestart_check_removes_stale_write_probe_file() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let required_prefix = temp.path().join("srv").join("bolt-v2");
+        let catalog_path = required_prefix
+            .join("var")
+            .join("bolt-v3-live")
+            .join("catalog");
+        fs::create_dir_all(&catalog_path).expect("catalog directory should create");
+        let stale_probe_path = catalog_path.join(format!(
+            ".bolt-v2-prestart-write-probe-{}",
+            std::process::id()
+        ));
+        fs::write(&stale_probe_path, "stale").expect("stale probe file should create");
+        let fixture = prestart_fixture_config(&catalog_path, Some(1));
+
+        run_prestart_check(&fixture.config_path, &required_prefix)
+            .expect("stale write-probe file should not block prestart");
+
+        assert!(
+            !stale_probe_path.exists(),
+            "prestart should clean up the stale probe path"
+        );
     }
 
     struct PrestartFixture {

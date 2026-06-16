@@ -607,7 +607,7 @@ mod tests {
             venue_id: "VENUE-A".to_string(),
             product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
             side: BoltV3CompiledOrderSide::Buy,
-            quantity: Decimal::new(10, 0),
+            quantity: Decimal::new(1, 0),
             effective_price: Decimal::new(40, 2),
             order_kind: BoltV3CompiledOrderKind::Limit,
             liquidity: BoltV3CompiledOrderLiquidity::Taker,

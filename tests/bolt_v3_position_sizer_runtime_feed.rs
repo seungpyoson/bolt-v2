@@ -2461,6 +2461,7 @@ fn sized_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
 
 fn sized_sell_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
     let mut request = sized_submit_request(client_order_id);
+    request.order_side = OrderSide::Sell;
     request
         .position_sizing
         .as_mut()

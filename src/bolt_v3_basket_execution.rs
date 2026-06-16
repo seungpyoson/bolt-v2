@@ -332,20 +332,37 @@ impl BoltV3BasketExecutionState {
                 }) else {
                     return Err(BoltV3BasketExecutionError::UnknownClientOrderId);
                 };
-                if let Some(venue_order_id) = venue_order_id {
-                    self.legs[index].venue_order_id = Some(venue_order_id);
-                }
-                self.fill_sources.push(source);
                 if source == BoltV3BasketFillSource::Hip4SyntheticSettlement {
+                    if let Some(venue_order_id) = venue_order_id {
+                        self.legs[index].venue_order_id = Some(venue_order_id);
+                    }
+                    self.fill_sources.push(source);
                     self.settled = true;
                     self.status = BoltV3BasketExecutionStatus::Stuck;
                     self.unresolved_real_exposure = true;
                     self.reservation_held = true;
                     return Ok(());
                 }
+                if quantity <= Decimal::ZERO || cost < Decimal::ZERO {
+                    self.mark_stuck_exposure();
+                    return Ok(());
+                }
+                let Some(filled_quantity) = self.legs[index].filled_quantity.checked_add(quantity)
+                else {
+                    self.mark_stuck_exposure();
+                    return Ok(());
+                };
+                let Some(filled_cost) = self.legs[index].filled_cost.checked_add(cost) else {
+                    self.mark_stuck_exposure();
+                    return Ok(());
+                };
                 let leg = &mut self.legs[index];
-                leg.filled_quantity += quantity;
-                leg.filled_cost += cost;
+                if let Some(venue_order_id) = venue_order_id {
+                    leg.venue_order_id = Some(venue_order_id);
+                }
+                leg.filled_quantity = filled_quantity;
+                leg.filled_cost = filled_cost;
+                self.fill_sources.push(source);
                 self.refresh_fill_status();
             }
             BoltV3BasketExecutionEvent::CancelRejected { .. }
@@ -393,6 +410,7 @@ impl BoltV3BasketExecutionState {
         &mut self,
         reports: &[BoltV3BasketRestartReport],
     ) -> Result<(), BoltV3BasketExecutionError> {
+        let mut matched_leg_indexes = BTreeSet::new();
         for report in reports {
             if report.report_class != BoltV3ExternalReportClass::StrategyOwned {
                 self.mark_stuck_exposure();
@@ -402,6 +420,13 @@ impl BoltV3BasketExecutionState {
                 self.mark_stuck_exposure();
                 return Ok(());
             };
+            if !matched_leg_indexes.insert(index)
+                || report.filled_quantity < Decimal::ZERO
+                || report.filled_cost < Decimal::ZERO
+            {
+                self.mark_stuck_exposure();
+                return Ok(());
+            }
             let leg = self
                 .legs
                 .get_mut(index)
@@ -418,6 +443,12 @@ impl BoltV3BasketExecutionState {
             if leg.venue_order_id.is_none() {
                 leg.venue_order_id = report.venue_order_id.clone();
             }
+        }
+        if self.status == BoltV3BasketExecutionStatus::Submitting
+            && matched_leg_indexes.len() != self.legs.len()
+        {
+            self.mark_stuck_exposure();
+            return Ok(());
         }
         self.refresh_fill_status();
         Ok(())

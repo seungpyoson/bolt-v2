@@ -72,12 +72,13 @@ fn basket_admission_reserves_whole_basket_records_keyed_evidence_and_releases_ex
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1111.111111), 1_000);
     let claims = entry_claims(&group, dec!(0.9));
 
-    let permit = basket_state
+    let mut permit = basket_state
         .admit(
             &basket_request("basket-1", &group, &scan, claims.clone()),
             &submit_state,
         )
         .expect("first basket should admit");
+    permit.commit_submitted();
 
     assert_eq!(submit_state.admitted_order_count(), 2);
     let decisions = writer.basket_admission_decisions();
@@ -106,12 +107,13 @@ fn basket_admission_reserves_whole_basket_records_keyed_evidence_and_releases_ex
         .release_basket("basket-1", BoltV3BasketAdmissionReleaseReason::Terminal)
         .expect("terminal release should free basket exposure reservation");
     drop(permit);
-    let _second_permit = basket_state
+    let mut second_permit = basket_state
         .admit(
             &basket_request("basket-2", &group, &scan, claims),
             &submit_state,
         )
         .expect("released exposure should allow the next basket");
+    second_permit.commit_submitted();
 
     assert_eq!(
         submit_state.admitted_order_count(),
@@ -135,14 +137,22 @@ fn dropped_basket_admission_permit_releases_open_reservation() {
             &submit_state,
         )
         .expect("basket should admit");
+    assert_eq!(submit_state.admitted_order_count(), 2);
     drop(permit);
+    assert_eq!(
+        submit_state.admitted_order_count(),
+        0,
+        "dropping before downstream submit commit must roll back submit slots"
+    );
 
-    basket_state
+    let mut second_permit = basket_state
         .admit(
             &basket_request("basket-2", &group, &scan, claims),
             &submit_state,
         )
         .expect("dropped permit should release the open basket reservation");
+    second_permit.commit_submitted();
+    assert_eq!(submit_state.admitted_order_count(), 2);
 }
 
 #[test]
@@ -154,12 +164,13 @@ fn stuck_reason_cannot_release_basket_exposure_reservation() {
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1111.111111), 1_000);
     let claims = entry_claims(&group, dec!(0.9));
 
-    let permit = basket_state
+    let mut permit = basket_state
         .admit(
             &basket_request("basket-1", &group, &scan, claims.clone()),
             &submit_state,
         )
         .expect("basket should admit");
+    permit.commit_submitted();
 
     assert!(
         basket_state
@@ -445,12 +456,13 @@ fn basket_submit_slots_carry_position_sizing_evidence_into_shared_gate() {
     attach_position_sizing(&mut claims);
     seed_position_sizer_for_claims(&submit_gate, &claims);
 
-    basket_state
+    let mut permit = basket_state
         .admit(
             &basket_request("position-sized-basket", &group, &scan, claims.clone()),
             &submit_gate,
         )
         .expect("position-sized basket claims should pass through the shared submit gate");
+    permit.commit_submitted();
 
     assert_eq!(submit_gate.admitted_order_count(), 2);
     assert_eq!(
@@ -470,6 +482,64 @@ fn basket_submit_slots_carry_position_sizing_evidence_into_shared_gate() {
         2,
         "basket legs must record submit reservation metadata before commit"
     );
+}
+
+#[test]
+fn basket_admission_rolls_back_submit_slots_when_metadata_evidence_fails() {
+    let writer = Arc::new(RecordingBasketDecisionWriter {
+        fail_submit_reservation_metadata: true,
+        ..Default::default()
+    });
+    let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
+    let submit_gate = position_sized_submit_state(writer.clone());
+    let group = fixture_group();
+    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
+    let mut claims = entry_claims(&group, dec!(0.9));
+    attach_position_sizing(&mut claims);
+    seed_position_sizer_for_claims(&submit_gate, &claims);
+
+    let error = basket_state
+        .admit(
+            &basket_request("metadata-failure-basket", &group, &scan, claims.clone()),
+            &submit_gate,
+        )
+        .expect_err("metadata evidence failure must reject the basket admission");
+
+    assert!(matches!(
+        error,
+        BoltV3BasketAdmissionError::SubmitAdmissionFailed(
+            BoltV3SubmitAdmissionError::EvidenceWriteFailed { .. }
+        )
+    ));
+    assert_eq!(submit_gate.admitted_order_count(), 0);
+    assert_eq!(
+        submit_gate.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    assert!(
+        writer.basket_admission_decisions().is_empty(),
+        "admitted basket evidence must not be recorded before per-leg reservation metadata"
+    );
+    for claim in &claims {
+        assert!(
+            !submit_gate.position_sizer_has_live_reservation(&claim.client_order_id),
+            "failed metadata write must roll back {}",
+            claim.client_order_id
+        );
+    }
+
+    let mut plain_permit = basket_state
+        .admit(
+            &basket_request(
+                "metadata-failure-basket",
+                &group,
+                &scan,
+                entry_claims(&group, dec!(0.9)),
+            ),
+            &submit_gate,
+        )
+        .expect("failed submit reservation must release the open basket");
+    plain_permit.commit_submitted();
 }
 
 #[test]
@@ -656,6 +726,7 @@ struct RecordingBasketDecisionWriter {
     admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
     basket_admission_decisions: Mutex<Vec<BoltV3BasketAdmissionDecisionEvidence>>,
     submit_reservation_metadata: Mutex<Vec<BoltV3SubmitReservationMetadataEvidence>>,
+    fail_submit_reservation_metadata: bool,
 }
 
 impl RecordingBasketDecisionWriter {
@@ -719,6 +790,9 @@ impl BoltV3DecisionEvidenceWriter for RecordingBasketDecisionWriter {
         &self,
         metadata: &BoltV3SubmitReservationMetadataEvidence,
     ) -> anyhow::Result<()> {
+        if self.fail_submit_reservation_metadata {
+            anyhow::bail!("submit reservation metadata write failed");
+        }
         self.submit_reservation_metadata
             .lock()
             .expect("submit reservation metadata mutex should not be poisoned")

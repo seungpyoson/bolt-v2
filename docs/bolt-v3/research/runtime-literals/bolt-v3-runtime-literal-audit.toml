@@ -783,6 +783,14 @@ reason = "This is the JSONL envelope discriminator for basket-admission decision
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
+literal = '''"basket_admission_decision"'''
+context = '''"basket_admission_decision" => {'''
+classification = "decision_evidence_record_kind_match"
+reason = "This is the recovery-reader match arm for the basket-admission JSONL envelope discriminator; the record kind is a stable audit schema label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
 literal = '''"CARGO_PKG_VERSION"'''
 context = '''pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");'''
 classification = "decision_evidence_gate_version_source"
@@ -1824,7 +1832,7 @@ reason = "The submit admission counter starts empty for each fresh submit-admiss
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''1'''
-context = '''let Some(next_admitted_order_count) = inner.admitted_order_count.checked_add(1)'''
+context = '''let Some(next_admitted_order_count) = inner.admitted_order_count.checked_add(1) else {'''
 classification = "submit_admission_counter_increment"
 reason = "Each admitted live submit consumes exactly one order-count slot from the operator-provided gate cap."
 
@@ -1832,7 +1840,7 @@ reason = "Each admitted live submit consumes exactly one order-count slot from t
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''1'''
-context = '''current_execution_client_count.checked_add(1)'''
+context = '''let Some(next_execution_client_count) = current_execution_client_count.checked_add(1)'''
 classification = "submit_admission_counter_increment"
 reason = "Each admitted order for an approved execution client consumes exactly one slot from that client's consumed live-submit approval artifact."
 
@@ -8191,6 +8199,14 @@ reason = '''Repo-relative root path of the shared outcome-group model source inc
 [[allowed]]
 path = "src/source_canonicalization.rs"
 kind = "string"
+literal = '''"src/bolt_v3_atomic_io.rs"'''
+context = '''"src/bolt_v3_atomic_io.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared atomic-IO source included in the outcome-group source set because basket and kill-switch durable writes are part of the substrate safety boundary; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
 literal = '''"src/bolt_v3_outcome_group_sources.rs"'''
 context = '''"src/bolt_v3_outcome_group_sources.rs",'''
 classification = '''gated_source_registry_relative_root'''
@@ -8243,6 +8259,14 @@ literal = '''"src/bolt_v3_archetypes/complete_set_arbitrage.rs"'''
 context = '''"src/bolt_v3_archetypes/complete_set_arbitrage.rs",'''
 classification = '''gated_source_registry_relative_root'''
 reason = '''Repo-relative root path of the first-consumer complete-set archetype source included in the outcome-group source set for runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"src/bolt_v3_market_families/outcome_group.rs"'''
+context = '''"src/bolt_v3_market_families/outcome_group.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the outcome-group market-family registration source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
 [[allowed]]
 path = "src/source_canonicalization.rs"
@@ -12768,6 +12792,14 @@ literal = '''"invalid_cost"'''
 context = '''Self::InvalidCost => "invalid_cost",'''
 classification = "scanner_block_reason_label"
 reason = "Stable machine-readable scanner block reason; it reports computed scan state and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_scanner.rs"
+kind = "string"
+literal = '''"incomplete_candidate"'''
+context = '''Self::IncompleteCandidate => "incomplete_candidate",'''
+classification = "scanner_block_reason_label"
+reason = "Stable machine-readable scanner block reason for candidate-leg completeness failures; it reports computed scan state and does not configure runtime behavior."
 
 [[allowed]]
 path = "src/bolt_v3_outcome_group_scanner.rs"

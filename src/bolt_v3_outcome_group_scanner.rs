@@ -164,6 +164,7 @@ pub enum OutcomeGroupScanBlockReason {
     NonPositiveEdge,
     EdgeThreshold,
     UnknownLeg,
+    IncompleteCandidate,
     UnsupportedOrderSide,
 }
 
@@ -183,6 +184,7 @@ impl OutcomeGroupScanBlockReason {
             Self::NonPositiveEdge => "non_positive_edge",
             Self::EdgeThreshold => "edge_threshold",
             Self::UnknownLeg => "unknown_leg",
+            Self::IncompleteCandidate => "incomplete_candidate",
             Self::UnsupportedOrderSide => "unsupported_order_side",
         }
     }
@@ -321,6 +323,11 @@ fn scan_outcome_group_candidate_inner(
                 None => return Err((OutcomeGroupScanBlockReason::InvalidCost, evidence)),
             };
         evidence.leg_costs.push(priced_leg);
+    }
+    for leg_id in input.group.tradable_legs.keys() {
+        if !quantities_by_leg.contains_key(leg_id) {
+            return Err((OutcomeGroupScanBlockReason::IncompleteCandidate, evidence));
+        }
     }
 
     evidence.state_payouts =

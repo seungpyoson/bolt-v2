@@ -754,6 +754,24 @@ pub fn read_latest_entry_decision_evidence_chain(
                     }
                 }
             }
+            "basket_admission_decision" => {
+                header.validate(
+                    BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                let decoded: BasketAdmissionDecisionLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 basket admission decision line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+            }
             "position_sizer_rebuild" => {
                 header.validate(
                     BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND,
@@ -910,6 +928,24 @@ pub fn read_submit_reservation_recovery_evidence(
                     })?;
                 decoded.validate_header(
                     BOLT_V3_ADMISSION_DECISION_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+            }
+            "basket_admission_decision" => {
+                header.validate(
+                    BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                let decoded: BasketAdmissionDecisionLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 basket admission decision line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND,
                     BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
                     index,
                 )?;
@@ -1370,6 +1406,13 @@ struct AdmissionDecisionLineOwned {
 }
 
 #[derive(Deserialize)]
+struct BasketAdmissionDecisionLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    decision: BoltV3BasketAdmissionDecisionEvidence,
+}
+
+#[derive(Deserialize)]
 struct PositionSizerRebuildAuditLineOwned {
     #[serde(flatten)]
     header: DecisionEvidenceEnvelopeHeader,
@@ -1397,6 +1440,18 @@ impl AdmissionDecisionLineOwned {
         expected_gate_id: &str,
         index: usize,
     ) -> Result<()> {
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+impl BasketAdmissionDecisionLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.decision;
         self.header.validate(expected_kind, expected_gate_id, index)
     }
 }

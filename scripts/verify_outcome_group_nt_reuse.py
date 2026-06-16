@@ -9,6 +9,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from bolt_v3_source_roots import OUTCOME_GROUP_SOURCE_ROOTS, source_set_files
 from verify_bolt_v3_provider_leaks import production_text
 from verify_bolt_v3_pure_rust_runtime import strip_rust_comments_and_literals
 
@@ -37,21 +38,6 @@ VALID_DISPOSITIONS = {
     "bolt_shim",
     "reject_for_now",
 }
-
-OUTCOME_GROUP_CANDIDATE_ROOTS: tuple[str, ...] = (
-    "src/bolt_v3_outcome_groups.rs",
-    "src/bolt_v3_outcome_group_sources.rs",
-    "src/bolt_v3_outcome_group_polymarket.rs",
-    "src/bolt_v3_outcome_group_hyperliquid.rs",
-    "src/bolt_v3_outcome_group_scanner.rs",
-    "src/bolt_v3_basket_admission.rs",
-    "src/bolt_v3_basket_execution.rs",
-    "src/bolt_v3_basket_repair.rs",
-    "src/bolt_v3_basket_unwind.rs",
-    "src/bolt_v3_basket_store.rs",
-    "src/bolt_v3_cross_venue_outcome_groups.rs",
-    "src/strategies/complete_set_arbitrage",
-)
 
 APPROVED_PROVIDER_NORMALIZER_PREFIXES: tuple[str, ...] = (
     "src/bolt_v3_outcome_group_polymarket.rs",
@@ -193,27 +179,8 @@ def validate_ledger(root: Path) -> list[str]:
     return findings
 
 
-def source_files_under(root: Path, relative_root: str) -> list[Path]:
-    path = root / relative_root
-    if path.is_file() and path.suffix == ".rs":
-        return [path]
-    if not path.is_dir():
-        return []
-    return sorted(
-        (candidate for candidate in path.rglob("*.rs") if candidate.is_file()),
-        key=lambda candidate: candidate.relative_to(root).as_posix().encode("utf-8"),
-    )
-
-
 def outcome_group_source_files(root: Path) -> list[Path]:
-    seen: set[Path] = set()
-    files: list[Path] = []
-    for relative_root in OUTCOME_GROUP_CANDIDATE_ROOTS:
-        for path in source_files_under(root, relative_root):
-            if path not in seen:
-                seen.add(path)
-                files.append(path)
-    return files
+    return source_set_files(OUTCOME_GROUP_SOURCE_ROOTS, repo_root=root)
 
 
 def scan_text(source: str) -> str:
@@ -330,8 +297,8 @@ def validate_source_file(root: Path, path: Path) -> list[str]:
 
     if (
         "basket_execution" in relative_path
-        or "complete_set_arbitrage" in relative_path
         or "outcome_group_execution" in relative_path
+        or relative_path.startswith("src/strategies/complete_set_arbitrage/")
     ):
         if not references_nt_order_list_contract(text):
             findings.append(

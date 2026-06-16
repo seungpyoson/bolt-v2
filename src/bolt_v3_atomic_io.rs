@@ -40,9 +40,7 @@ pub fn write_private_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), Atomic
         });
     }
 
-    // The target path now contains the new bytes. Parent fsync is a durability
-    // best effort; reporting this as a failed write would lie to callers.
-    let _ = sync_parent_dir(path);
+    sync_parent_dir(path)?;
     Ok(())
 }
 

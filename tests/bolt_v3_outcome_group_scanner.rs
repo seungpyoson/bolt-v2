@@ -419,6 +419,34 @@ fn scanner_rejects_sell_candidates_before_payout_evaluation() {
     );
 }
 
+#[test]
+fn scanner_rejects_incomplete_candidate_baskets_before_payout_evaluation() {
+    let group = fixture_group();
+    let result = scan_outcome_group_candidate(scan_input(
+        &group,
+        fees(&group, dec!(0)),
+        vec![candidate("home-positive", dec!(0.4))],
+        books([book(
+            "home-positive",
+            "0.39",
+            "20",
+            "0.40",
+            "20",
+            Some(1_000),
+        )]),
+    ));
+
+    assert!(!result.admissible);
+    assert_eq!(
+        result.block_reason,
+        Some(OutcomeGroupScanBlockReason::IncompleteCandidate)
+    );
+    assert!(
+        result.state_payouts.is_empty(),
+        "incomplete candidates must not treat missing legs as zero-quantity payout inputs"
+    );
+}
+
 fn scan_input<'a>(
     group: &'a OutcomeGroup,
     fee_bps: BTreeMap<InstrumentId, Decimal>,

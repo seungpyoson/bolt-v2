@@ -9,7 +9,8 @@ use crate::bolt_v3_outcome_group_scanner::OutcomeGroupScanEvidence;
 use crate::bolt_v3_outcome_group_sources::outcome_group_observation_is_fresh;
 use crate::bolt_v3_outcome_groups::{OutcomeGroup, ValidatedOutcomeGroup};
 use crate::bolt_v3_submit_admission::{
-    BoltV3BasketSubmitSlotClaim, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState,
+    BoltV3BasketSubmitSlotClaim, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionPermit,
+    BoltV3SubmitAdmissionState,
 };
 use rust_decimal::Decimal;
 
@@ -132,6 +133,15 @@ struct BoltV3BasketReservation {
 pub struct BoltV3BasketAdmissionPermit {
     inner: Arc<Mutex<BoltV3BasketAdmissionInner>>,
     basket_id: String,
+    submit_permit: Option<BoltV3SubmitAdmissionPermit>,
+}
+
+impl BoltV3BasketAdmissionPermit {
+    pub fn commit_submitted(&mut self) {
+        if let Some(submit_permit) = self.submit_permit.take() {
+            submit_permit.commit_submitted();
+        }
+    }
 }
 
 impl Drop for BoltV3BasketAdmissionPermit {
@@ -190,10 +200,10 @@ impl BoltV3BasketAdmissionState {
                 return Err(BoltV3BasketAdmissionError::SubmitAdmissionFailed(error));
             }
         };
-        submit_permit.commit_submitted();
         Ok(BoltV3BasketAdmissionPermit {
             inner: Arc::clone(&self.inner),
             basket_id: request.basket_id.to_string(),
+            submit_permit: Some(submit_permit),
         })
     }
 

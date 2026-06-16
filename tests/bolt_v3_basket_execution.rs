@@ -81,6 +81,59 @@ fn complete_and_partial_fill_transitions_hold_and_release_reservation_explicitly
 }
 
 #[test]
+fn leg_fill_rejects_non_positive_quantity_and_negative_cost() {
+    let mut zero_quantity = reserved_basket();
+    zero_quantity
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-ZERO-FILL",
+            leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
+        )
+        .expect("command should build");
+
+    zero_quantity
+        .apply_event(BoltV3BasketExecutionEvent::LegFill {
+            client_order_id: "COID-YES".to_string(),
+            venue_order_id: Some("VOID-YES".to_string()),
+            quantity: Decimal::ZERO,
+            cost: Decimal::ZERO,
+            source: BoltV3BasketFillSource::Strategy,
+        })
+        .expect("malformed fill should classify without panicking");
+
+    assert_eq!(zero_quantity.status(), BoltV3BasketExecutionStatus::Stuck);
+    assert!(zero_quantity.unresolved_real_exposure());
+    assert!(zero_quantity.reservation_held());
+
+    let mut negative_cost = reserved_basket();
+    negative_cost
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-NEGATIVE-FILL",
+            leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
+        )
+        .expect("command should build");
+
+    negative_cost
+        .apply_event(BoltV3BasketExecutionEvent::LegFill {
+            client_order_id: "COID-YES".to_string(),
+            venue_order_id: Some("VOID-YES".to_string()),
+            quantity: dec("1.0"),
+            cost: dec("-0.01"),
+            source: BoltV3BasketFillSource::Strategy,
+        })
+        .expect("malformed fill should classify without panicking");
+
+    assert_eq!(negative_cost.status(), BoltV3BasketExecutionStatus::Stuck);
+    assert!(negative_cost.unresolved_real_exposure());
+    assert!(negative_cost.reservation_held());
+}
+
+#[test]
 fn same_venue_submit_uses_nt_order_list_contract_and_persists_client_ids_before_submit() {
     let contract = nt_order_management_contract();
     assert!(contract.order_list_type.ends_with("OrderList"));
@@ -858,6 +911,28 @@ fn restart_reconciliation_joins_client_id_then_venue_id_and_stucks_orphans() {
 }
 
 #[test]
+fn restart_reconciliation_stucks_submitting_baskets_without_complete_reports() {
+    let mut basket = reserved_basket();
+    basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-MISSING-REPORTS",
+            leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
+        )
+        .expect("command should build");
+
+    basket
+        .reconcile_restart(&[])
+        .expect("missing restart reports should classify without panicking");
+
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Stuck);
+    assert!(basket.unresolved_real_exposure());
+    assert!(basket.reservation_held());
+}
+
+#[test]
 fn restart_reconciliation_rejects_non_strategy_or_cross_instrument_reports() {
     let mut external = reserved_basket();
     external
@@ -907,6 +982,67 @@ fn restart_reconciliation_rejects_non_strategy_or_cross_instrument_reports() {
         BoltV3BasketExecutionStatus::Stuck
     );
     assert!(wrong_instrument.unresolved_real_exposure());
+}
+
+#[test]
+fn restart_reconciliation_rejects_duplicate_or_negative_reports() {
+    let mut duplicate = reserved_basket();
+    duplicate
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-DUPLICATE-REPORT",
+            leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
+        )
+        .expect("command should build");
+    duplicate
+        .reconcile_restart(&[
+            BoltV3BasketRestartReport {
+                instrument_id: "YES.POLYMARKET".to_string(),
+                client_order_id: Some("COID-YES".to_string()),
+                venue_order_id: None,
+                filled_quantity: dec("0.5"),
+                filled_cost: dec("0.22"),
+                report_class: BoltV3ExternalReportClass::StrategyOwned,
+            },
+            BoltV3BasketRestartReport {
+                instrument_id: "YES.POLYMARKET".to_string(),
+                client_order_id: Some("COID-YES".to_string()),
+                venue_order_id: None,
+                filled_quantity: dec("1.0"),
+                filled_cost: dec("0.44"),
+                report_class: BoltV3ExternalReportClass::StrategyOwned,
+            },
+        ])
+        .expect("duplicate report should classify without panicking");
+
+    assert_eq!(duplicate.status(), BoltV3BasketExecutionStatus::Stuck);
+    assert!(duplicate.unresolved_real_exposure());
+
+    let mut negative = reserved_basket();
+    negative
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-NEGATIVE-REPORT",
+            leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
+        )
+        .expect("command should build");
+    negative
+        .reconcile_restart(&[BoltV3BasketRestartReport {
+            instrument_id: "YES.POLYMARKET".to_string(),
+            client_order_id: Some("COID-YES".to_string()),
+            venue_order_id: None,
+            filled_quantity: dec("1.0"),
+            filled_cost: dec("-0.01"),
+            report_class: BoltV3ExternalReportClass::StrategyOwned,
+        }])
+        .expect("negative report should classify without panicking");
+
+    assert_eq!(negative.status(), BoltV3BasketExecutionStatus::Stuck);
+    assert!(negative.unresolved_real_exposure());
 }
 
 #[test]

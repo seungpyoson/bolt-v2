@@ -36,6 +36,7 @@ STRATEGY_SOURCE_ROOTS = (
     # producer of that table, so it belongs under the same tamper-evidence as
     # the consumer (`config.rs`) that validates them.
     "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+    "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
     # The shared policy is the only approved Bolt-v3 strategy-originated NT
     # submit/cancel mutation boundary.
     "src/bolt_v3_order_execution.rs",
@@ -49,6 +50,7 @@ STRATEGY_SOURCE_ROOT = STRATEGY_SOURCE_ROOTS[0]
 SUBMIT_ADMISSION_SOURCE_ROOTS = ("src/bolt_v3_submit_admission.rs",)
 SUBMIT_ADMISSION_SOURCE_ROOT = SUBMIT_ADMISSION_SOURCE_ROOTS[0]
 OUTCOME_GROUP_SOURCE_ROOTS = (
+    "src/bolt_v3_atomic_io.rs",
     "src/bolt_v3_outcome_groups.rs",
     "src/bolt_v3_outcome_group_sources.rs",
     "src/bolt_v3_outcome_group_polymarket.rs",
@@ -58,13 +60,14 @@ OUTCOME_GROUP_SOURCE_ROOTS = (
     "src/bolt_v3_basket_execution.rs",
     "src/bolt_v3_basket_store.rs",
     "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
+    "src/bolt_v3_market_families/outcome_group.rs",
     "src/strategy_runtime_bindings.rs",
     "src/strategies/complete_set_arbitrage",
 )
 MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024
 
 
-def source_files(relative_root: str) -> list[Path]:
+def source_files(relative_root: str, repo_root: Path | None = None) -> list[Path]:
     """Return the gated root's `.rs` files in canonical order.
 
     IDENTITY case (the root is a regular `.rs` file): a single-element list with
@@ -72,7 +75,8 @@ def source_files(relative_root: str) -> list[Path]:
     lexicographically by the relative path's raw POSIX bytes — the same canonical
     order the Rust walk uses for framing and hashing.
     """
-    root = REPO_ROOT / relative_root
+    resolved_repo_root = REPO_ROOT if repo_root is None else repo_root
+    root = resolved_repo_root / relative_root
     if root.is_symlink():
         raise ValueError(f"source root is a symlink: {root}")
     if root.is_file():
@@ -110,14 +114,17 @@ def _normalized_relative_root(relative_root: str) -> str:
     return "/".join(parts)
 
 
-def source_set_files(relative_roots: tuple[str, ...]) -> list[Path]:
+def source_set_files(
+    relative_roots: tuple[str, ...], repo_root: Path | None = None
+) -> list[Path]:
     """Return every source-set `.rs` file in canonical repo-relative order."""
+    resolved_repo_root = REPO_ROOT if repo_root is None else repo_root
     ordered: list[tuple[bytes, Path]] = []
     for relative_root in relative_roots:
         root_label = _normalized_relative_root(relative_root)
-        root = REPO_ROOT / relative_root
+        root = resolved_repo_root / relative_root
         root_is_file = root.is_file()
-        for path in source_files(relative_root):
+        for path in source_files(relative_root, repo_root=resolved_repo_root):
             if root_is_file:
                 label = root_label
             else:

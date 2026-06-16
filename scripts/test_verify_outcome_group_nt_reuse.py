@@ -140,7 +140,15 @@ def write_fixture(
     evidence.parent.mkdir(parents=True, exist_ok=True)
     evidence.write_text(ledger_text if ledger_text is not None else valid_ledger(), encoding="utf-8")
 
-    for rel, source in (sources or {}).items():
+    default_sources = {}
+    for relative_root in VERIFIER.OUTCOME_GROUP_SOURCE_ROOTS:
+        if relative_root.endswith(".rs"):
+            default_sources[relative_root] = good_execution_source()
+        else:
+            default_sources[f"{relative_root}/mod.rs"] = good_execution_source()
+
+    default_sources.update(sources or {})
+    for rel, source in default_sources.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(textwrap.dedent(source), encoding="utf-8")
@@ -171,6 +179,24 @@ class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
             any(needle in finding for finding in findings),
             f"expected finding containing {needle!r}, got {findings!r}",
         )
+
+    def test_outcome_group_source_files_use_shared_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_fixture(root)
+
+            actual = [
+                path.relative_to(root).as_posix()
+                for path in VERIFIER.outcome_group_source_files(root)
+            ]
+            expected = [
+                path.relative_to(root).as_posix()
+                for path in VERIFIER.source_set_files(
+                    VERIFIER.OUTCOME_GROUP_SOURCE_ROOTS, repo_root=root
+                )
+            ]
+
+        self.assertEqual(actual, expected)
 
     def test_missing_required_capability_fails(self) -> None:
         ledger = remove_capability(valid_ledger(), "provider_discovery")
@@ -260,10 +286,21 @@ class OutcomeGroupNtReuseVerifierTests(unittest.TestCase):
 
         self.assert_has_finding(findings, "direct venue submit path")
 
+    def test_complete_set_archetype_is_not_treated_as_execution_shell(self) -> None:
+        findings = self.collect(
+            sources={
+                "src/bolt_v3_archetypes/complete_set_arbitrage.rs": """
+                    pub fn validate_strategy() {}
+                """
+            }
+        )
+
+        self.assertEqual(findings, [])
+
     def test_direct_venue_cancel_path_fails(self) -> None:
         findings = self.collect(
             sources={
-                "src/bolt_v3_basket_repair.rs": """
+                "src/strategies/complete_set_arbitrage/repair.rs": """
                     fn cancel_direct(clob: &PolymarketClobClient, order_id: &str) {
                         clob.cancel_order(order_id);
                     }

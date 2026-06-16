@@ -146,11 +146,11 @@ mod tests {
     // registry-owned canonical source stream. The full re-derivation trail
     // belongs in git history, not in this invariant comment.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "eae3b78df034e8acf124511093d28d54aba709109775b1ab3ee3bda09c0f59ee";
+        "ea5bab18e7668d260014795e002fda5b6aa7f50cf4ec5c594edbdf95a6f5c7c6";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "4a2a9cc9d5dde094e3dc64de1ff94d10f012840a3d2318676748f1e7317394b3";
+        "6dc3fbab1f3d2580788858d8bfd6c9814e3d41b3254e91f4a03878dee3293c5d";
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "a3a9980429189e0c70239be028c71ecf4ede9cedba37fe9fcf0863aca36b694b";
+        "844cb0ba4d5ed45d976ba70c60bcc03980c4011635daa648329398e9fd7ff192";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -282,6 +282,7 @@ mod tests {
                 "src/strategies/binary_oracle_edge_taker",
                 "src/strategies/complete_set_arbitrage",
                 "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+                "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
                 "src/bolt_v3_order_execution.rs",
                 "src/bolt_v3_book_sizing.rs",
                 "src/bolt_v3_binary_outcome_edge.rs",
@@ -297,6 +298,7 @@ mod tests {
         assert_eq!(
             registry_relative_roots(OUTCOME_GROUP_KEY),
             &[
+                "src/bolt_v3_atomic_io.rs",
                 "src/bolt_v3_outcome_groups.rs",
                 "src/bolt_v3_outcome_group_sources.rs",
                 "src/bolt_v3_outcome_group_polymarket.rs",
@@ -306,6 +308,7 @@ mod tests {
                 "src/bolt_v3_basket_execution.rs",
                 "src/bolt_v3_basket_store.rs",
                 "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
+                "src/bolt_v3_market_families/outcome_group.rs",
                 "src/strategy_runtime_bindings.rs",
                 "src/strategies/complete_set_arbitrage",
             ]
@@ -323,6 +326,15 @@ mod tests {
             registry_relative_roots(OUTCOME_GROUP_KEY).contains(&complete_set_root),
             "complete-set shell is the first outcome-group consumer and must stay under outcome-group source integrity"
         );
+        let complete_set_archetype = "src/bolt_v3_archetypes/complete_set_arbitrage.rs";
+        assert!(
+            registry_relative_roots(STRATEGY_KEY).contains(&complete_set_archetype),
+            "complete-set archetype produces registered strategy runtime config and must stay under strategy source integrity"
+        );
+        assert!(
+            registry_relative_roots(OUTCOME_GROUP_KEY).contains(&complete_set_archetype),
+            "complete-set archetype owns outcome-group runtime parameters and must stay under outcome-group source integrity"
+        );
     }
 
     #[test]
@@ -335,9 +347,11 @@ mod tests {
             files,
             vec![
                 "src/bolt_v3_archetypes/complete_set_arbitrage.rs".to_string(),
+                "src/bolt_v3_atomic_io.rs".to_string(),
                 "src/bolt_v3_basket_admission.rs".to_string(),
                 "src/bolt_v3_basket_execution.rs".to_string(),
                 "src/bolt_v3_basket_store.rs".to_string(),
+                "src/bolt_v3_market_families/outcome_group.rs".to_string(),
                 "src/bolt_v3_outcome_group_hyperliquid.rs".to_string(),
                 "src/bolt_v3_outcome_group_polymarket.rs".to_string(),
                 "src/bolt_v3_outcome_group_scanner.rs".to_string(),
@@ -418,6 +432,9 @@ mod tests {
         assert_eq!(sha256_hex_lower(&framed), GOLDEN_STRATEGY_DIGEST);
 
         for (start, end) in spans {
+            if start == end {
+                continue;
+            }
             let mut tampered = framed.clone();
             tampered[start] ^= 0x01; // flip first byte of this file's content
             assert_ne!(
@@ -450,6 +467,9 @@ mod tests {
         assert_eq!(sha256_hex_lower(&framed), GOLDEN_OUTCOME_GROUP_DIGEST);
 
         for (start, end) in spans {
+            if start == end {
+                continue;
+            }
             let mut tampered = framed.clone();
             tampered[start] ^= 0x01;
             assert_ne!(

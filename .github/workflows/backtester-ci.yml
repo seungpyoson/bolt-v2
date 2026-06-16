@@ -30,6 +30,11 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
+    # Explicit types are required because the default set (opened, synchronize,
+    # reopened) does not fire on base retargets (edited) or draft-to-ready
+    # transitions (ready_for_review). Both can leave this always-present gate
+    # unmet for a PR that ends up targeting main.
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches: [main]
 

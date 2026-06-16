@@ -3,7 +3,9 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    # edited catches base retargets to main; without it a PR created against
+    # another branch and later retargeted to main would not trigger CI.
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
     # paths-ignore is intentionally narrow: only explicitly-listed root-level
     # agent docs and pure-config dirs whose contents are NOT consumed by any
     # build/test/lint script. Do NOT add '**.md' or 'docs/**' — both contain

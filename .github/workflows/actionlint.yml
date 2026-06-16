@@ -12,6 +12,14 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
+    # Explicit types are required because the default set (opened, synchronize,
+    # reopened) does not fire when a PR is retargeted to main (edited) or moved
+    # from draft to ready (ready_for_review). Both transitions were observed on
+    # #757 and left this merge gate unmet.
+    # Note: ci.yml includes converted_to_draft because it defers some lanes when
+    # a PR is in draft. actionlint has no draft-deferral path, so we deliberately
+    # omit converted_to_draft and instead use edited to catch base retargets.
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches: [main]
 

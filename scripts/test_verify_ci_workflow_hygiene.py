@@ -165,7 +165,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
     paths-ignore:
       - 'AGENTS.md'
       - 'CLAUDE.md'
@@ -1316,19 +1316,27 @@ def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
             "pull_request types must include ready_for_review",
             replace_once(
                 workflow,
-                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
-                "types: [opened, synchronize, reopened, converted_to_draft]",
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]",
+                "types: [opened, synchronize, reopened, converted_to_draft, edited]",
             ),
         ),
         (
             "pull_request types must include converted_to_draft",
             replace_once(
                 workflow,
-                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
-                "types: [opened, synchronize, reopened, ready_for_review]",
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]",
+                "types: [opened, synchronize, reopened, ready_for_review, edited]",
             ),
         ),
-        ("missing required job ci-policy", without_job(workflow, "ci-policy")),
+        (
+            "pull_request types must include edited",
+            replace_once(
+                workflow,
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]",
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
+            ),
+        ),
+        ("missing required job ci-policy", without_job(workflow, "ci-policy"))
     ]
     for fragment, mutated_workflow in cases:
         errors = verifier.verify_workflow(mutated_workflow)
@@ -6257,8 +6265,8 @@ def main() -> int:
         "pull_request paths-ignore must match baseline",
         replace_once(
             BASE_WORKFLOW,
-            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]\n    paths-ignore:\n",
-            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]\n    # paths-ignore:\n",
+            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]\n    paths-ignore:\n",
+            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]\n    # paths-ignore:\n",
         ),
     )
     assert_error(

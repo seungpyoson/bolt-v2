@@ -817,7 +817,7 @@ def workflow_pull_request_type_errors(workflow_text: str) -> list[str]:
                     break
                 types.add(child_stripped.removeprefix("- ").strip().strip("'\""))
     errors: list[str] = []
-    for required_type in ("ready_for_review", "converted_to_draft"):
+    for required_type in ("ready_for_review", "converted_to_draft", "edited"):
         if required_type not in types:
             errors.append(f"pull_request types must include {required_type}")
     return errors

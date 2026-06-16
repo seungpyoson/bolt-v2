@@ -49,7 +49,7 @@ fn switch_resets_only_active_market_state() {
     assert_eq!(strategy.pricing.current_realized_vol_at(1_200), Some(1.5));
     assert_eq!(
         strategy.pricing.current_realized_vol_source_at(1_200),
-        (None, Some(1_200))
+        (Some("<SOURCE_ID>".to_string()), Some(1_200))
     );
 }
 

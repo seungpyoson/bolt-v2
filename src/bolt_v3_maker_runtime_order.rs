@@ -9,7 +9,8 @@ use anyhow::{Context, Result};
 
 use crate::{
     bolt_v3_maker_order_compile::{
-        MakerOrderCompileBlockReason, MakerOrderCompileInput, compile_maker_order_intent,
+        MakerCompiledOrderCommand, MakerOrderCompileBlockReason, MakerOrderCompileInput,
+        compile_maker_order_intent,
     },
     bolt_v3_maker_order_dispatch::{
         MakerOrderCommandSink, MakerOrderDispatchInput, MakerOrderDispatchOutcome,
@@ -50,16 +51,40 @@ pub fn dispatch_maker_runtime_order_plan(
     input: MakerRuntimeOrderDispatchInput<'_>,
     sink: &mut impl MakerOrderCommandSink,
 ) -> Result<MakerRuntimeOrderDispatchOutcome> {
+    dispatch_maker_runtime_order_plan_with_command_router(
+        input,
+        &mut |command, submit_order_prefix| {
+            dispatch_maker_order_command(
+                MakerOrderDispatchInput {
+                    command,
+                    submit_order_prefix,
+                },
+                sink,
+            )
+        },
+    )
+}
+
+pub fn dispatch_maker_runtime_order_plan_with_command_router(
+    input: MakerRuntimeOrderDispatchInput<'_>,
+    route_command: &mut impl FnMut(
+        &MakerCompiledOrderCommand,
+        &str,
+    ) -> Result<MakerOrderDispatchOutcome>,
+) -> Result<MakerRuntimeOrderDispatchOutcome> {
     Ok(MakerRuntimeOrderDispatchOutcome {
-        yes: dispatch_leg(input, &input.order_plan.yes, sink)?,
-        no: dispatch_leg(input, &input.order_plan.no, sink)?,
+        yes: dispatch_leg(input, &input.order_plan.yes, route_command)?,
+        no: dispatch_leg(input, &input.order_plan.no, route_command)?,
     })
 }
 
 fn dispatch_leg(
     input: MakerRuntimeOrderDispatchInput<'_>,
     leg_plan: &MakerLegOrderPlan,
-    sink: &mut impl MakerOrderCommandSink,
+    route_command: &mut impl FnMut(
+        &MakerCompiledOrderCommand,
+        &str,
+    ) -> Result<MakerOrderDispatchOutcome>,
 ) -> Result<MakerRuntimeLegOrderDispatchOutcome> {
     if let Some(reason) = leg_plan.blocked_by {
         return Ok(blocked(
@@ -89,13 +114,7 @@ fn dispatch_leg(
         ));
     };
 
-    let dispatch = dispatch_maker_order_command(
-        MakerOrderDispatchInput {
-            command,
-            submit_order_prefix: input.submit_order_prefix,
-        },
-        sink,
-    )?;
+    let dispatch = route_command(command, input.submit_order_prefix)?;
     Ok(MakerRuntimeLegOrderDispatchOutcome {
         dispatch: Some(dispatch),
         blocked_by: None,

@@ -42,7 +42,7 @@ use crate::bolt_v3_requote_budget::{CANCEL_RESUBMIT_REST_COST, RequoteBudget, Re
 /// floor). A `min_interval_ms` at or above a sliding window is NOT rejected — it
 /// is a valid, conservative cadence: the first reservation is granted and later
 /// reservations are granted once the interval elapses, so the maker still quotes.
-pub(crate) fn build_requote_budget_pair(
+pub fn build_requote_budget_pair(
     submit_rate: &str,
     rest_cap_per_minute: u32,
     min_interval_ms: u64,

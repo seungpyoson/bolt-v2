@@ -15,13 +15,17 @@ use bolt_v2::{
     },
 };
 use futures_util::{FutureExt, future::BoxFuture};
+use nautilus_common::{cache::Cache, clock::TestClock};
+use nautilus_core::UnixNanos;
 use nautilus_model::{
     enums::{OrderSide, OrderType, TimeInForce},
-    identifiers::{ClientOrderId, InstrumentId, Venue},
+    identifiers::{ClientOrderId, InstrumentId, TraderId, Venue},
     types::{Price, Quantity},
 };
+use nautilus_portfolio::portfolio::Portfolio;
+use nautilus_trading::Strategy;
 use rust_decimal::Decimal;
-use std::sync::Arc;
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 #[test]
 fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
@@ -31,6 +35,7 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
         maker_config(),
         maker_context(writer.clone(), admission.clone()),
     );
+    register_maker_for_order_factory(&mut maker);
     let command = MakerCompiledOrderCommand::Submit {
         leg: Leg::Yes,
         template: Box::new(maker_limit_post_only_template()),
@@ -97,6 +102,21 @@ fn maker_context(
         BoltV3OrderExecutionPolicy::shadow(),
         Venue::from("MAKER.TEST"),
     )
+}
+
+fn register_maker_for_order_factory(maker: &mut BinaryOracleMaker) {
+    let clock = Rc::new(RefCell::new(TestClock::new()));
+    clock.borrow_mut().set_time(UnixNanos::from(1_u64));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let portfolio = Rc::new(RefCell::new(Portfolio::new(
+        cache.clone(),
+        clock.clone(),
+        None,
+    )));
+    maker
+        .core_mut()
+        .register(TraderId::from("TRADER-001"), clock, cache, portfolio)
+        .expect("maker test strategy should register with NT core");
 }
 
 fn maker_config() -> BinaryOracleMakerConfig {

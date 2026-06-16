@@ -168,6 +168,7 @@ mod tests {
             strategy_id: "binary_oracle_maker-001".to_string(),
             order_id_tag: "001".to_string(),
             oms_type: "netting".to_string(),
+            client_id: "maker_execution_client".to_string(),
             trade_flow_window_secs,
             trade_flow_max_samples,
             mu_min_classified_samples,

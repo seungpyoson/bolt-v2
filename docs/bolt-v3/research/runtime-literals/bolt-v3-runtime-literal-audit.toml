@@ -15722,6 +15722,14 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the maker strategy config schema field name, populated into the runtime config table from the bolt-v3 TOML oms_type; mirrors the taker archetype's oms_type table key."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"client_id"'''
+context = '''"client_id".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the maker strategy config schema field name populated from the configured bolt-v3 TOML execution_client_id; the client value remains TOML-owned and venue-generic."
+
+[[allowed]]
 path = "src/strategies/binary_oracle_maker/config.rs"
 kind = "string"
 literal = '''"wrong_type"'''
@@ -15752,6 +15760,14 @@ literal = '''"missing_oms_type"'''
 context = '''const MISSING_OMS_TYPE_CODE: &str = "missing_oms_type";'''
 classification = "strategy_runtime_validation_code"
 reason = "This validation code labels a missing required maker oms_type envelope field; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"missing_client_id"'''
+context = '''const MISSING_CLIENT_ID_CODE: &str = "missing_client_id";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a missing required maker execution client field; it is a stable diagnostic tag, not an operator runtime value."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_maker/config.rs"
@@ -15792,6 +15808,14 @@ literal = '''"oms_type"'''
 context = '''const OMS_TYPE_FIELD: &str = "oms_type";'''
 classification = "strategy_config_field_name"
 reason = "This is the stable maker oms_type config field label used in validation diagnostics; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"client_id"'''
+context = '''const CLIENT_ID_FIELD: &str = "client_id";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable maker execution-client config field label used in validation diagnostics; the runtime value remains TOML-owned."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_maker/mod.rs"

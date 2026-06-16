@@ -37,6 +37,8 @@ pub struct BinaryOracleMakerConfig {
     pub order_id_tag: String,
     /// The order-management-system type, parsed as a NautilusTrader `OmsType`.
     pub oms_type: String,
+    /// The configured execution client id used for submit/cancel routing context.
+    pub client_id: String,
     /// Signed-trade-flow retention window in seconds (μ estimator input).
     pub trade_flow_window_secs: u64,
     /// Signed-trade-flow retention sample cap (μ estimator input).
@@ -63,12 +65,14 @@ const WRONG_TYPE_CODE: &str = "wrong_type";
 const MISSING_STRATEGY_ID_CODE: &str = "missing_strategy_id";
 const MISSING_ORDER_ID_TAG_CODE: &str = "missing_order_id_tag";
 const MISSING_OMS_TYPE_CODE: &str = "missing_oms_type";
+const MISSING_CLIENT_ID_CODE: &str = "missing_client_id";
 const INVALID_OMS_TYPE_CODE: &str = "invalid_oms_type";
 const UNKNOWN_FIELD_CODE: &str = "unknown_field";
 
 const STRATEGY_ID_FIELD: &str = "strategy_id";
 const ORDER_ID_TAG_FIELD: &str = "order_id_tag";
 const OMS_TYPE_FIELD: &str = "oms_type";
+const CLIENT_ID_FIELD: &str = "client_id";
 const TRADE_FLOW_WINDOW_SECS_FIELD: &str = "trade_flow_window_secs";
 const TRADE_FLOW_MAX_SAMPLES_FIELD: &str = "trade_flow_max_samples";
 const MU_MIN_CLASSIFIED_SAMPLES_FIELD: &str = "mu_min_classified_samples";
@@ -109,6 +113,7 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
             STRATEGY_ID_FIELD
                 | ORDER_ID_TAG_FIELD
                 | OMS_TYPE_FIELD
+                | CLIENT_ID_FIELD
                 | TRADE_FLOW_WINDOW_SECS_FIELD
                 | TRADE_FLOW_MAX_SAMPLES_FIELD
                 | MU_MIN_CLASSIFIED_SAMPLES_FIELD
@@ -143,6 +148,13 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
         field_prefix,
         OMS_TYPE_FIELD,
         MISSING_OMS_TYPE_CODE,
+        errors,
+    );
+    validate_string_field(
+        table,
+        field_prefix,
+        CLIENT_ID_FIELD,
+        MISSING_CLIENT_ID_CODE,
         errors,
     );
     validate_oms_type_parses(table, field_prefix, errors);
@@ -205,6 +217,7 @@ mod tests {
             strategy_id = "BINARY-ORACLE-MAKER-001"
             order_id_tag = "001"
             oms_type = "netting"
+            client_id = "maker_execution_client"
             trade_flow_window_secs = 600
             trade_flow_max_samples = 1000
             mu_min_classified_samples = 4
@@ -221,6 +234,7 @@ mod tests {
         assert_eq!(config.strategy_id, "BINARY-ORACLE-MAKER-001");
         assert_eq!(config.order_id_tag, "001");
         assert_eq!(config.oms_type, "netting");
+        assert_eq!(config.client_id, "maker_execution_client");
         assert_eq!(config.trade_flow_window_secs, 600);
         assert_eq!(config.trade_flow_max_samples, 1000);
         assert_eq!(config.mu_min_classified_samples, 4);
@@ -245,6 +259,7 @@ mod tests {
             strategy_id = "BINARY-ORACLE-MAKER-001"
             order_id_tag = "001"
             oms_type = "netting"
+            client_id = "maker_execution_client"
             trade_flow_window_secs = 600
             trade_flow_max_samples = 1000
             mu_min_classified_samples = 4
@@ -280,6 +295,7 @@ mod tests {
             strategy_id = "BINARY-ORACLE-MAKER-001"
             order_id_tag = "001"
             oms_type = "not-an-oms-type"
+            client_id = "maker_execution_client"
         }
         .into();
         let mut errors = Vec::new();
@@ -316,6 +332,7 @@ mod tests {
             strategy_id = "BINARY-ORACLE-MAKER-001"
             order_id_tag = "001"
             oms_type = "netting"
+            client_id = "maker_execution_client"
             unexpected = "value"
         }
         .into();

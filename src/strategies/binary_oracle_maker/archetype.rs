@@ -184,8 +184,9 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
 /// provider and execution venue from the loaded config, build a
 /// `StrategyBuildContext`, then hand the flat raw config table to the shared
 /// `production_strategy_registry()`. The raw table carries the NautilusTrader
-/// envelope fields (`strategy_id`, `order_id_tag`, `oms_type`) plus the μ runtime
-/// knobs `raw_maker_config` threads from the operator `[parameters.runtime]` block.
+/// envelope fields (`strategy_id`, `order_id_tag`, `oms_type`, `client_id`) plus
+/// the μ runtime knobs `raw_maker_config` threads from the operator
+/// `[parameters.runtime]` block.
 pub fn register_runtime_strategy(
     node: &mut nautilus_live::node::LiveNode,
     context: StrategyRegistrationContext<'_>,
@@ -237,8 +238,10 @@ pub fn register_runtime_strategy(
 /// strategy id is `<strategy_archetype>-<order_id_tag>` (validated as an NT
 /// `StrategyId`), mirroring the taker's `nt_strategy_id`; `oms_type` is the
 /// lowercased NT enum display, matching how the maker config deserializes it.
-/// The μ runtime knobs are read from the operator `[parameters.runtime]` block
-/// and threaded in flat under the same names `BinaryOracleMakerConfig` consumes.
+/// `client_id` is the configured execution client id the runtime submit/cancel
+/// bridge passes into NT routing context. The μ runtime knobs are read from the
+/// operator `[parameters.runtime]` block and threaded in flat under the same
+/// names `BinaryOracleMakerConfig` consumes.
 fn raw_maker_config(strategy: &LoadedStrategy) -> Result<Value, String> {
     if strategy.config.strategy_archetype.as_str() != KEY {
         return Err(format!(
@@ -269,6 +272,10 @@ fn raw_maker_config(strategy: &LoadedStrategy) -> Result<Value, String> {
     table.insert(
         "oms_type".to_string(),
         Value::String(strategy.config.oms_type.to_string().to_ascii_lowercase()),
+    );
+    table.insert(
+        "client_id".to_string(),
+        Value::String(strategy.config.execution_client_id.to_string()),
     );
     insert_runtime_knobs(&mut table, runtime)?;
     Ok(Value::Table(table))
@@ -621,9 +628,14 @@ mod tests {
         );
         table.insert("order_id_tag".to_string(), Value::String("001".to_string()));
         table.insert("oms_type".to_string(), Value::String("netting".to_string()));
+        table.insert(
+            "client_id".to_string(),
+            Value::String("maker_execution_client".to_string()),
+        );
         insert_runtime_knobs(&mut table, &valid_runtime()).expect("knobs thread");
         let config =
             parse_config(&Value::Table(table)).expect("flat table parses into the consumer config");
+        assert_eq!(config.client_id, "maker_execution_client");
         assert_eq!(config.trade_flow_window_secs, 600);
         assert_eq!(config.trade_flow_max_samples, 1000);
         assert_eq!(config.mu_min_classified_samples, 4);

@@ -899,22 +899,22 @@ mod tests {
     fn market_slug_filters_include_static_binary_event_targets_for_matching_client() {
         let mut plan = MarketIdentityPlan::empty();
         plan.push_target(StaticBinaryEventTargetPlan {
-            strategy_instance_id: "world-cup-spain".to_string(),
-            configured_target_id: "world-cup-spain-outright".to_string(),
+            strategy_instance_id: "sample-static-alpha".to_string(),
+            configured_target_id: "sample-static-alpha-target".to_string(),
             execution_client_id: "polymarket_main".to_string(),
-            event_key: "world_cup_2026".to_string(),
-            market_slug: "will-spain-win-the-2026-fifa-world-cup".to_string(),
-            condition_id: Some("condition-world-cup-spain".to_string()),
+            event_key: "sample_event_2026".to_string(),
+            market_slug: "will-sample-alpha-resolve-yes".to_string(),
+            condition_id: Some("condition-sample-alpha".to_string()),
             yes_outcome: "Yes".to_string(),
             no_outcome: "No".to_string(),
         });
         plan.push_target(StaticBinaryEventTargetPlan {
-            strategy_instance_id: "world-cup-france".to_string(),
-            configured_target_id: "world-cup-france-outright".to_string(),
+            strategy_instance_id: "sample-static-beta".to_string(),
+            configured_target_id: "sample-static-beta-target".to_string(),
             execution_client_id: "polymarket_secondary".to_string(),
-            event_key: "world_cup_2026".to_string(),
-            market_slug: "will-france-win-the-2026-fifa-world-cup".to_string(),
-            condition_id: Some("condition-world-cup-france".to_string()),
+            event_key: "sample_event_2026".to_string(),
+            market_slug: "will-sample-beta-resolve-yes".to_string(),
+            condition_id: Some("condition-sample-beta".to_string()),
             yes_outcome: "Yes".to_string(),
             no_outcome: "No".to_string(),
         });
@@ -929,10 +929,7 @@ mod tests {
             .flat_map(|filter| filter.market_slugs().unwrap_or_default())
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            slugs,
-            vec!["will-spain-win-the-2026-fifa-world-cup".to_string()]
-        );
+        assert_eq!(slugs, vec!["will-sample-alpha-resolve-yes".to_string()]);
     }
 }
 

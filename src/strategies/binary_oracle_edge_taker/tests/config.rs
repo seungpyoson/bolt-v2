@@ -838,7 +838,7 @@ fn builder_accepts_static_binary_event_market_family_with_configured_outcomes() 
     );
     assert_eq!(
         config.static_condition_id.as_deref(),
-        Some("condition-world-cup-spain")
+        Some("condition-sample-event")
     );
     assert_eq!(config.static_yes_outcome.as_deref(), Some("Yes"));
     assert_eq!(config.static_no_outcome.as_deref(), Some("No"));
@@ -940,12 +940,12 @@ fn static_binary_event_raw_config() -> Value {
     );
     table.insert(
         "underlying_asset".to_string(),
-        Value::String("world_cup_2026".to_string()),
+        Value::String("sample_event_2026".to_string()),
     );
     table.insert("cadence_seconds".to_string(), Value::Integer(1));
     table.insert(
         "cadence_slug_token".to_string(),
-        Value::String("will-spain-win-the-2026-fifa-world-cup".to_string()),
+        Value::String("will-sample-event-resolve-yes".to_string()),
     );
     table.insert(
         "market_selection_rule".to_string(),
@@ -953,7 +953,7 @@ fn static_binary_event_raw_config() -> Value {
     );
     table.insert(
         "static_condition_id".to_string(),
-        Value::String("condition-world-cup-spain".to_string()),
+        Value::String("condition-sample-event".to_string()),
     );
     table.insert(
         "static_yes_outcome".to_string(),

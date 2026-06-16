@@ -857,7 +857,7 @@ mod tests {
             validation_bindings()
                 .iter()
                 .any(|binding| binding.key == "static_binary_event"),
-            "World Cup static Polymarket events must be selectable through the production market-family registry"
+            "Static Polymarket binary events must be selectable through the production market-family registry"
         );
     }
 

@@ -602,11 +602,11 @@ mod tests {
         types::{Currency, Price, Quantity},
     };
 
-    const TEST_EVENT_KEY: &str = "world_cup_2026";
-    const TEST_MARKET_SLUG: &str = "will-spain-win-the-2026-fifa-world-cup";
-    const TEST_MARKET_ID: &str = "world-cup-spain-outright";
-    const TEST_CONDITION_ID: &str = "condition-world-cup-spain";
-    const TEST_QUESTION_ID: &str = "question-world-cup-spain";
+    const TEST_EVENT_KEY: &str = "sample_event_2026";
+    const TEST_MARKET_SLUG: &str = "will-sample-event-resolve-yes";
+    const TEST_MARKET_ID: &str = "sample-event-yes-no";
+    const TEST_CONDITION_ID: &str = "condition-sample-event";
+    const TEST_QUESTION_ID: &str = "question-sample-event";
     const TEST_YES_OUTCOME: &str = "Yes";
     const TEST_NO_OUTCOME: &str = "No";
     const NANOS_PER_MILLI_U64: u64 = 1_000_000;
@@ -614,12 +614,12 @@ mod tests {
     #[test]
     fn target_runtime_fields_project_configured_static_selection_metadata() {
         let target = toml::toml! {
-            configured_target_id = "world-cup-spain-outright"
+            configured_target_id = "sample-event-yes-no"
             kind = "static_market"
             rotating_market_family = "static_binary_event"
-            event_key = "world_cup_2026"
-            market_slug = "will-spain-win-the-2026-fifa-world-cup"
-            condition_id = "condition-world-cup-spain"
+            event_key = "sample_event_2026"
+            market_slug = "will-sample-event-resolve-yes"
+            condition_id = "condition-sample-event"
             yes_outcome = "Yes"
             no_outcome = "No"
             fair_probability_source = "reference_current_price"
@@ -632,7 +632,7 @@ mod tests {
 
         let runtime = target_runtime_fields(&target).expect("static target should project");
 
-        assert_eq!(runtime.configured_target_id, "world-cup-spain-outright");
+        assert_eq!(runtime.configured_target_id, "sample-event-yes-no");
         assert_eq!(runtime.target_kind, "static_market");
         assert_eq!(runtime.rotating_market_family, KEY);
         assert_eq!(runtime.underlying_asset, TEST_EVENT_KEY);
@@ -668,7 +668,7 @@ mod tests {
                 30_000,
             ),
             test_binary_option(
-                "WORLD-CUP-SPAIN-NO.POLYMARKET",
+                "SAMPLE-EVENT-NO.POLYMARKET",
                 TEST_MARKET_SLUG,
                 TEST_MARKET_ID,
                 TEST_CONDITION_ID,
@@ -678,7 +678,7 @@ mod tests {
                 30_000,
             ),
             test_binary_option(
-                "WORLD-CUP-SPAIN-YES.POLYMARKET",
+                "SAMPLE-EVENT-YES.POLYMARKET",
                 TEST_MARKET_SLUG,
                 TEST_MARKET_ID,
                 TEST_CONDITION_ID,
@@ -689,10 +689,10 @@ mod tests {
             ),
             test_binary_option(
                 "WRONG-SLUG-NO.POLYMARKET",
-                "will-france-win-the-2026-fifa-world-cup",
-                "world-cup-france-outright",
-                "condition-world-cup-france",
-                "question-world-cup-france",
+                "will-other-sample-event-resolve-yes",
+                "other-sample-event-yes-no",
+                "condition-other-sample-event",
+                "question-other-sample-event",
                 TEST_NO_OUTCOME,
                 1_000,
                 30_000,

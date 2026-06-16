@@ -1,8 +1,8 @@
-# World Cup MM Static Event Implementation Plan
+# Static Polymarket Binary Event Implementation Plan
 
 > **For agentic workers:** `AGENTS.md` governs implementation and verification. Use evidence-driven checks, local non-compile gates, and exact-head PR CI for Rust compile/test proof.
 
-**Goal:** Add config-driven static binary-event market selection and Polymarket slug filtering as the first World Cup MM implementation slice.
+**Goal:** Add config-driven static binary-event market selection and Polymarket slug filtering. The original operator use case is World Cup market making, but the implementation is a generic static Polymarket binary event selector.
 
 **Architecture:** Introduce a `static_binary_event` market-family binding parallel to `updown`, reusing the existing `MarketFamilyValidationBinding` registry. Polymarket adapter mapping will collect slug filters from both rotating `updown` targets and static event targets. The strategy runtime config gains optional static-event fields for configured condition and YES/NO outcome labels. The shared maker quote/order pipeline remains PR 716 scope; this slice only binds the static family to the existing registry hook surface.
 
@@ -24,11 +24,11 @@
 Add tests proving that a target shaped like this selects matching `BinaryOption` instruments:
 
 ```toml
-configured_target_id = "world_cup_fixture"
+configured_target_id = "sample_binary_event"
 kind = "static_market"
 rotating_market_family = "static_binary_event"
-event_key = "world_cup"
-market_slug = "configured-world-cup-market"
+event_key = "sample_event"
+market_slug = "configured-binary-event-market"
 condition_id = "configured-condition-id"
 yes_outcome = "Yes"
 no_outcome = "No"
@@ -198,7 +198,7 @@ git diff origin/main --name-status
 rg -n "bolt_v3_reference_price|chainlink_reference|bolt_v3_maker_order|bolt_v3_maker_quote|maker_runtime" <changed-files>
 ```
 
-Expected: the diff contains only World Cup static-event selection/filtering/docs and no PR 730 or PR 716 implementation leakage.
+Expected: the diff contains only static Polymarket binary-event selection/filtering/docs and no PR 730 or PR 716 implementation leakage.
 
 - [ ] **Step 4: Exact-head CI**
 

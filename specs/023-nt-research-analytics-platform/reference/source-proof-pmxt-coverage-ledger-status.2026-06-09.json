@@ -18,6 +18,12 @@
     "source_proof_status": "pending",
     "table_family": "order_book_snapshot_deltas"
   },
+  "committed_input_hashes": {
+    "pending_source_fixture": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
+      "sha256": "c4220593b6fe58023561c61e10c58916c3251988ed613a37991e8ebcff4fa15f"
+    }
+  },
   "ledger_run": {
     "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin backfill_coverage_ledger -- --spec /private/tmp/bte-pmxt-coverage-ledger-source-proof-20260609/pmxt-coverage-ledger.toml",
     "spec_path": "/private/tmp/bte-pmxt-coverage-ledger-source-proof-20260609/pmxt-coverage-ledger.toml",
@@ -70,5 +76,10 @@
     "Accept a durable Polymarket SourceProofReport before any coverage ledger can become canonical-ready.",
     "Record expanded coverage, retention/freshness, completeness, storage, and exact accepted-window cost evidence under that accepted source proof.",
     "Prove dynamic tick-size replay or accept a source-proof-bound no-tick-size-change exclusion policy before broad L2 replay claims."
-  ]
+  ],
+  "guard_verification": {
+    "script": "repo://scripts/verify_bte_022_pmxt_coverage_ledger.py",
+    "self_test": "repo://scripts/test_verify_bte_022_pmxt_coverage_ledger.py",
+    "source_fence_static": true
+  }
 }

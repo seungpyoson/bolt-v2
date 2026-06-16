@@ -148,6 +148,10 @@ verify-bte-022-pmxt-durable-source: check-workspace
     python3 scripts/test_verify_bte_022_pmxt_durable_source.py
     python3 scripts/verify_bte_022_pmxt_durable_source.py
 
+verify-bte-022-pmxt-coverage-ledger: check-workspace
+    python3 scripts/test_verify_bte_022_pmxt_coverage_ledger.py
+    python3 scripts/verify_bte_022_pmxt_coverage_ledger.py
+
 verify-bte-022-pmxt-dynamic-tick-size: check-workspace
     python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py
     python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py
@@ -305,6 +309,8 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_023_status_legend_registry.py
     python3 scripts/test_verify_bte_022_pmxt_durable_source.py
     python3 scripts/verify_bte_022_pmxt_durable_source.py
+    python3 scripts/test_verify_bte_022_pmxt_coverage_ledger.py
+    python3 scripts/verify_bte_022_pmxt_coverage_ledger.py
     python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py
     python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py
     python3 scripts/test_verify_dashboard_customer_jobs.py

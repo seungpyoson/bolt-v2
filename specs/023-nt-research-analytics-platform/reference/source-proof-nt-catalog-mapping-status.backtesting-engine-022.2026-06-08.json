@@ -443,7 +443,7 @@
   "remaining_blockers": [
     {
       "blocker": "expanded_tranche_coverage_and_cost_unproven",
-      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-coverage-ledger-status.2026-06-09.json records the manifest-only PMXT coverage ledger as rejected evidence: coverage_axis=timestamp_received and table_family=order_book_snapshot_deltas were derived from SourceProofReport metadata without payload download, raw manifest mutation, or venue-specific code, but accepted expanded coverage/cost remains unproven because both records are rejected under pending source proof."
+      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-coverage-ledger-status.2026-06-09.json records the manifest-only PMXT coverage ledger as rejected evidence: coverage_axis=timestamp_received and table_family=order_book_snapshot_deltas were derived from SourceProofReport metadata without payload download, raw manifest mutation, or venue-specific code, but accepted expanded coverage/cost remains unproven because both records are rejected under pending source proof. STATIC-GATED scripts/verify_bte_022_pmxt_coverage_ledger.py rejects drift from the pending source fixture, rejected coverage-ledger records, accepted/canonical-ready coverage claims, BTE-022 close claims, and source-fence wiring gaps."
     },
     {
       "blocker": "dynamic_tick_size_replay_unproven",

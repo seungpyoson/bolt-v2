@@ -32,6 +32,8 @@ PMXT_CONVERSION_QUEUE_SPEC = (
 PMXT_SOURCE_PROOF_FIXTURE = (
     REFERENCE_ROOT / "source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
 )
+SOURCE_PROOF_ACCEPTANCE_CONTRACT = Path("crates/backtesting-vertical-slice/src/source_proof.rs")
+SOURCE_PROOF_ADMISSIBILITY_CONTRACT = Path("crates/backtesting-vertical-slice/src/source_proof_admissibility.rs")
 VENUE_LEDGER_SPEC = (
     REFERENCE_ROOT
     / "venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml"
@@ -96,6 +98,9 @@ STATUS_HASH_TARGETS = (
     (("committed_input_hashes", "conversion_queue_spec"), PMXT_CONVERSION_QUEUE_SPEC),
     (("committed_input_hashes", "venue_acceptance_ledger_spec"), VENUE_LEDGER_SPEC),
     (("committed_input_hashes", "pending_source_fixture"), PMXT_SOURCE_PROOF_FIXTURE),
+    (("source_proof_admissibility_status", "proof_fixture"), PMXT_SOURCE_PROOF_FIXTURE),
+    (("source_proof_admissibility_status", "acceptance_contract"), SOURCE_PROOF_ACCEPTANCE_CONTRACT),
+    (("source_proof_admissibility_status", "admissibility_contract"), SOURCE_PROOF_ADMISSIBILITY_CONTRACT),
 )
 PMXT_SOURCE_PROOF_SPEC_KEYS = (
     "claim_limit",
@@ -152,6 +157,7 @@ DURABLE_STATUS_KEYS = (
     "schema_version",
     "source_accepted_proof_count",
     "source_binding",
+    "source_proof_admissibility_status",
     "source_proof_count",
     "source_proof_set_spec",
     "task_id",
@@ -171,6 +177,22 @@ DURABLE_STATUS_COMMITTED_INPUT_HASHES_KEYS = (
     "pending_source_fixture",
     "source_universe_manifest",
     "venue_acceptance_ledger_spec",
+)
+DURABLE_STATUS_SOURCE_PROOF_ADMISSIBILITY_KEYS = (
+    "acceptance_contract",
+    "acceptance_error",
+    "admissibility_contract",
+    "blocking_issues",
+    "current_contract_deserializes",
+    "expected_record_status",
+    "missing_current_contract_fields",
+    "proof_fixture",
+    "proof_uri",
+    "source_binding",
+    "source_proof_id",
+    "source_selection_status",
+    "status",
+    "usage_scope",
 )
 DURABLE_STATUS_HASH_ENTRY_KEYS = ("path", "sha256")
 DURABLE_STATUS_MANIFEST_SCOPE_KEYS = (
@@ -215,6 +237,7 @@ BTE_DURABLE_GUARD_EVIDENCE = (
     "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml explicitly lists missing_accepted_source_proof on pmxt-polymarket-full-current-data while source_accepted_proof_count remains 0.",
     "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml keeps pmxt-polymarket-full-current-data blocked while repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json pins source_accepted_proof_count=0.",
     "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json records the source-controlled PMXT durable-source guard: one pending proof in the committed TOML spec, zero accepted proofs, generated bulk JSON evicted by policy, and source-fence static coverage via scripts/verify_bte_022_pmxt_durable_source.py.",
+    "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json source-fences the PMXT pending fixture against crates/backtesting-vertical-slice/src/source_proof_admissibility.rs and crates/backtesting-vertical-slice/src/source_proof.rs as current_contract_rejected with missing_current_contract_field=acceptance_scope and acceptance_failed because one_off_backfill_data source proofs cannot be accepted as canonical source proof input.",
     "STATIC-GATED scripts/verify_bte_022_pmxt_durable_source.py rejects drift from pending/one_off_backfill_data PMXT source proof state, missing pmxt-polymarket-full-current-data blocking issues, BTE-022 close claims, and source-fence wiring gaps.",
 )
 BTE_DURABLE_GUARD_CLAIM_LIMITS = (
@@ -259,6 +282,19 @@ BTE_STATUS_DECISION = (
     "Do not start broad PMXT backfill. PMXT may proceed only as one-off backfill evidence after the chosen selected-source sample is "
     "converted into NT-native data classes, written to ParquetDataCatalog under the artifact root, queried back, consumed by BacktestNode, "
     "and bound to a result contract."
+)
+SOURCE_PROOF_ACCEPTANCE_SNIPPETS = (
+    "fn validate_source_selection(proof: &SourceProofReport) -> Result<(), AcceptanceError>",
+    "proof.usage_scope == SourceProofUsageScope::OneOffBackfillData",
+    "return Err(AcceptanceError::OneOffBackfillDataNotCanonical);",
+    "one_off_backfill_data source proofs cannot be accepted as canonical source proof input",
+)
+SOURCE_PROOF_ADMISSIBILITY_SNIPPETS = (
+    '"acceptance_scope",',
+    "SourceProofAdmissibilityIssue::MissingCurrentContractField",
+    "SourceProofAdmissibilityStatus::CurrentContractRejected",
+    "SourceProofAdmissibilityIssue::AcceptanceFailed",
+    "acceptance_error: Some(error.to_string())",
 )
 
 
@@ -334,6 +370,11 @@ def require_equal(rel_path: Path, label: str, actual: object, expected: object, 
 def require_contains(rel_path: Path, label: str, values: object, expected: str, findings: list[str]) -> None:
     if not isinstance(values, list) or expected not in values:
         findings.append(f"{rel_path}: {label} must include `{expected}`")
+
+
+def require_text_contains(rel_path: Path, label: str, text: str, expected: str, findings: list[str]) -> None:
+    if expected not in text:
+        findings.append(f"{rel_path}: {label} must contain `{expected}`")
 
 
 def require_list_equal(rel_path: Path, label: str, actual: object, expected: tuple[str, ...], findings: list[str]) -> None:
@@ -453,7 +494,7 @@ def check_status_hashes(root: Path, durable_status: dict, findings: list[str]) -
     for key_path, rel_path in STATUS_HASH_TARGETS:
         entry = nested_mapping(durable_status, key_path, PMXT_DURABLE_STATUS, findings)
         label = ".".join(key_path)
-        if key_path[0] == "committed_input_hashes":
+        if key_path[0] in {"committed_input_hashes", "source_proof_admissibility_status"}:
             require_keys_equal(PMXT_DURABLE_STATUS, label, entry, DURABLE_STATUS_HASH_ENTRY_KEYS, findings)
         require_equal(PMXT_DURABLE_STATUS, f"{label}.path", entry.get("path"), repo_uri(rel_path), findings)
         require_equal(
@@ -501,6 +542,111 @@ def check_durable_status_artifact(durable_status: dict, findings: list[str]) -> 
         findings,
     )
     require_equal(PMXT_DURABLE_STATUS, "source_proof_set_spec.fidelity_class", source_proof_status.get("fidelity_class"), "L2_REPLAY", findings)
+
+    admissibility_status = nested_mapping(
+        durable_status,
+        ("source_proof_admissibility_status",),
+        PMXT_DURABLE_STATUS,
+        findings,
+    )
+    require_keys_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_admissibility_status",
+        admissibility_status,
+        DURABLE_STATUS_SOURCE_PROOF_ADMISSIBILITY_KEYS,
+        findings,
+    )
+    for hash_key in ("proof_fixture", "acceptance_contract", "admissibility_contract"):
+        hash_entry = nested_mapping(
+            admissibility_status,
+            (hash_key,),
+            PMXT_DURABLE_STATUS,
+            findings,
+        )
+        require_keys_equal(
+            PMXT_DURABLE_STATUS,
+            f"source_proof_admissibility_status.{hash_key}",
+            hash_entry,
+            DURABLE_STATUS_HASH_ENTRY_KEYS,
+            findings,
+        )
+    require_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_admissibility_status.status",
+        admissibility_status.get("status"),
+        "source_fenced_current_contract_rejected",
+        findings,
+    )
+    require_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_admissibility_status.proof_uri",
+        admissibility_status.get("proof_uri"),
+        repo_uri(PMXT_SOURCE_PROOF_FIXTURE),
+        findings,
+    )
+    require_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_admissibility_status.current_contract_deserializes",
+        admissibility_status.get("current_contract_deserializes"),
+        True,
+        findings,
+    )
+    require_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_admissibility_status.expected_record_status",
+        admissibility_status.get("expected_record_status"),
+        "current_contract_rejected",
+        findings,
+    )
+    require_list_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_admissibility_status.blocking_issues",
+        admissibility_status.get("blocking_issues"),
+        ("missing_current_contract_field", "acceptance_failed"),
+        findings,
+    )
+    require_list_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_admissibility_status.missing_current_contract_fields",
+        admissibility_status.get("missing_current_contract_fields"),
+        ("acceptance_scope",),
+        findings,
+    )
+    require_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_admissibility_status.acceptance_error",
+        admissibility_status.get("acceptance_error"),
+        "one_off_backfill_data source proofs cannot be accepted as canonical source proof input",
+        findings,
+    )
+    require_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_admissibility_status.usage_scope",
+        admissibility_status.get("usage_scope"),
+        "one_off_backfill_data",
+        findings,
+    )
+    require_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_admissibility_status.source_selection_status",
+        admissibility_status.get("source_selection_status"),
+        "PENDING_MORE_PROOF",
+        findings,
+    )
+    require_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_admissibility_status.source_binding",
+        admissibility_status.get("source_binding"),
+        "polymarket-parquet-archive-index",
+        findings,
+    )
+    require_equal(
+        PMXT_DURABLE_STATUS,
+        "source_proof_admissibility_status.source_proof_id",
+        admissibility_status.get("source_proof_id"),
+        "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
+        findings,
+    )
 
     committed_input_hashes = nested_mapping(durable_status, ("committed_input_hashes",), PMXT_DURABLE_STATUS, findings)
     require_keys_equal(PMXT_DURABLE_STATUS, "committed_input_hashes", committed_input_hashes, DURABLE_STATUS_COMMITTED_INPUT_HASHES_KEYS, findings)
@@ -626,6 +772,19 @@ def scan_root(root: Path) -> list[str]:
     durable_status = read_json(root, PMXT_DURABLE_STATUS, findings)
     gitignore = read_text(root, GITIGNORE, findings)
     justfile = read_text(root, JUSTFILE, findings)
+    source_proof_contract = read_text(root, SOURCE_PROOF_ACCEPTANCE_CONTRACT, findings)
+    admissibility_contract = read_text(root, SOURCE_PROOF_ADMISSIBILITY_CONTRACT, findings)
+
+    for snippet in SOURCE_PROOF_ACCEPTANCE_SNIPPETS:
+        require_text_contains(SOURCE_PROOF_ACCEPTANCE_CONTRACT, "PMXT source-proof acceptance guard", source_proof_contract, snippet, findings)
+    for snippet in SOURCE_PROOF_ADMISSIBILITY_SNIPPETS:
+        require_text_contains(
+            SOURCE_PROOF_ADMISSIBILITY_CONTRACT,
+            "PMXT source-proof admissibility classification",
+            admissibility_contract,
+            snippet,
+            findings,
+        )
 
     require_keys_equal(PMXT_SOURCE_PROOF_SPEC, "top-level", proof_spec, PMXT_SOURCE_PROOF_SPEC_KEYS, findings)
     require_equal(PMXT_SOURCE_PROOF_SPEC, "status", proof_spec.get("status"), "pending", findings)
@@ -719,6 +878,20 @@ def scan_root(root: Path) -> list[str]:
         ONE_OFF_FIXTURE_PENDING_CHECKS,
         findings,
     )
+    admissibility_status = nested_mapping(
+        durable_status,
+        ("source_proof_admissibility_status",),
+        PMXT_DURABLE_STATUS,
+        findings,
+    )
+    for label in ("source_proof_id", "source_binding", "usage_scope", "source_selection_status"):
+        require_equal(
+            PMXT_DURABLE_STATUS,
+            f"source_proof_admissibility_status.{label}",
+            admissibility_status.get(label),
+            fixture.get(label),
+            findings,
+        )
 
     pmxt_full_universes = find_pmxt_full_universes(venue_ledger, findings)
     if len(pmxt_full_universes) != 1:

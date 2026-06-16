@@ -162,6 +162,8 @@ def source_fixture_json(*, usage_scope: str = "one_off_backfill_data") -> str:
         for name, outcome in checks.items()
     )
     return f"""{{
+  "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
+  "source_binding": "polymarket-parquet-archive-index",
   "status": "pending",
   "source_selection_status": "PENDING_MORE_PROOF",
   "usage_scope": "{usage_scope}",
@@ -202,6 +204,7 @@ def bte_status_json(*, can_close: bool = False) -> str:
             "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml explicitly lists missing_accepted_source_proof on pmxt-polymarket-full-current-data while source_accepted_proof_count remains 0.",
             "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml keeps pmxt-polymarket-full-current-data blocked while repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json pins source_accepted_proof_count=0.",
             "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json records the source-controlled PMXT durable-source guard: one pending proof in the committed TOML spec, zero accepted proofs, generated bulk JSON evicted by policy, and source-fence static coverage via scripts/verify_bte_022_pmxt_durable_source.py.",
+            "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json source-fences the PMXT pending fixture against crates/backtesting-vertical-slice/src/source_proof_admissibility.rs and crates/backtesting-vertical-slice/src/source_proof.rs as current_contract_rejected with missing_current_contract_field=acceptance_scope and acceptance_failed because one_off_backfill_data source proofs cannot be accepted as canonical source proof input.",
             "STATIC-GATED scripts/verify_bte_022_pmxt_durable_source.py rejects drift from pending/one_off_backfill_data PMXT source proof state, missing pmxt-polymarket-full-current-data blocking issues, BTE-022 close claims, and source-fence wiring gaps.",
         ],
         "claim_limits": [
@@ -283,6 +286,8 @@ def durable_status_json(root: Path) -> str:
         "specs/023-nt-research-analytics-platform/reference/"
         "source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
     )
+    acceptance_contract = "crates/backtesting-vertical-slice/src/source_proof.rs"
+    admissibility_contract = "crates/backtesting-vertical-slice/src/source_proof_admissibility.rs"
     return f"""{{
   "schema_version": "source-proof-pmxt-durable-source-selection-status.v1",
   "task_id": "BACKTESTING_ENGINE-022",
@@ -296,6 +301,36 @@ def durable_status_json(root: Path) -> str:
     "source_selection_status": "PENDING_MORE_PROOF",
     "usage_scope": "one_off_backfill_data",
     "fidelity_class": "L2_REPLAY"
+  }},
+  "source_proof_admissibility_status": {{
+    "status": "source_fenced_current_contract_rejected",
+    "proof_uri": "repo://{pending_source_fixture}",
+    "proof_fixture": {{
+      "path": "repo://{pending_source_fixture}",
+      "sha256": "{file_sha256(root, pending_source_fixture)}"
+    }},
+    "admissibility_contract": {{
+      "path": "repo://{admissibility_contract}",
+      "sha256": "{file_sha256(root, admissibility_contract)}"
+    }},
+    "acceptance_contract": {{
+      "path": "repo://{acceptance_contract}",
+      "sha256": "{file_sha256(root, acceptance_contract)}"
+    }},
+    "current_contract_deserializes": true,
+    "expected_record_status": "current_contract_rejected",
+    "missing_current_contract_fields": [
+      "acceptance_scope"
+    ],
+    "blocking_issues": [
+      "missing_current_contract_field",
+      "acceptance_failed"
+    ],
+    "acceptance_error": "one_off_backfill_data source proofs cannot be accepted as canonical source proof input",
+    "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
+    "source_binding": "polymarket-parquet-archive-index",
+    "usage_scope": "one_off_backfill_data",
+    "source_selection_status": "PENDING_MORE_PROOF"
   }},
   "committed_input_hashes": {{
     "source_universe_manifest": {{
@@ -439,6 +474,29 @@ def write_complete_fixture(root: Path) -> None:
             "source-fence-static:\n"
             "    python3 scripts/test_verify_bte_022_pmxt_durable_source.py\n"
             "    python3 scripts/verify_bte_022_pmxt_durable_source.py\n"
+        ),
+    )
+    write_file(
+        root,
+        "crates/backtesting-vertical-slice/src/source_proof.rs",
+        (
+            "fn validate_source_selection(proof: &SourceProofReport) -> Result<(), AcceptanceError> {\n"
+            "    if proof.usage_scope == SourceProofUsageScope::OneOffBackfillData {\n"
+            "        return Err(AcceptanceError::OneOffBackfillDataNotCanonical);\n"
+            "    }\n"
+            "}\n"
+            "\"one_off_backfill_data source proofs cannot be accepted as canonical source proof input\"\n"
+        ),
+    )
+    write_file(
+        root,
+        "crates/backtesting-vertical-slice/src/source_proof_admissibility.rs",
+        (
+            '"acceptance_scope",\n'
+            "SourceProofAdmissibilityIssue::MissingCurrentContractField;\n"
+            "SourceProofAdmissibilityStatus::CurrentContractRejected;\n"
+            "SourceProofAdmissibilityIssue::AcceptanceFailed;\n"
+            "acceptance_error: Some(error.to_string());\n"
         ),
     )
     write_file(
@@ -746,10 +804,30 @@ def test_durable_status_nested_acceptance_drift_is_a_finding() -> None:
     assert any("source_proof_set_spec.usage_scope" in finding for finding in findings)
 
 
+def test_durable_status_admissibility_drift_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        durable_status = json.loads(durable_status_json(root))
+        admissibility_status = durable_status["source_proof_admissibility_status"]
+        admissibility_status["expected_record_status"] = "accept_ready"
+        admissibility_status["missing_current_contract_fields"] = []
+        admissibility_status["blocking_issues"] = []
+        admissibility_status["acceptance_error"] = None
+        write_file(root, str(verifier.PMXT_DURABLE_STATUS), json.dumps(durable_status, indent=2) + "\n")
+        findings = verifier.scan_root(root)
+    assert any("source_proof_admissibility_status.expected_record_status" in finding for finding in findings)
+    assert any("source_proof_admissibility_status.missing_current_contract_fields" in finding for finding in findings)
+    assert any("source_proof_admissibility_status.blocking_issues" in finding for finding in findings)
+    assert any("source_proof_admissibility_status.acceptance_error" in finding for finding in findings)
+
+
 def test_durable_status_empty_nested_block_is_a_finding() -> None:
     verifier = load_verifier()
     nested_keys = (
         "source_proof_set_spec",
+        "source_proof_admissibility_status",
         "committed_input_hashes",
         "manifest_scope",
         "generated_artifact_policy",
@@ -950,6 +1028,7 @@ def main() -> int:
         test_malformed_source_binding_is_a_finding,
         test_status_hash_drift_is_a_finding,
         test_durable_status_nested_acceptance_drift_is_a_finding,
+        test_durable_status_admissibility_drift_is_a_finding,
         test_durable_status_empty_nested_block_is_a_finding,
         test_durable_status_remaining_blockers_drift_is_a_finding,
         test_bte_status_remaining_blockers_drift_is_a_finding,

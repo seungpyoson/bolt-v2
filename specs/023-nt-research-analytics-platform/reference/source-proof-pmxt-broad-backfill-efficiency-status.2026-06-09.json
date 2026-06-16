@@ -13,7 +13,7 @@
     },
     "durable_source_selection_status": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json",
-      "sha256": "7201f58aac2855ac3dbd0438595c24a8b89d83a632c53fcbb223b543964d7b9d"
+      "sha256": "04fe7cd3988beded4f4054e35f6ad9558ee03a0e27d7849d5b55febdae25656e"
     },
     "dynamic_tick_size_replay_status": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-dynamic-tick-size-replay-status.2026-06-16.json",

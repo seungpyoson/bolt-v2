@@ -748,7 +748,6 @@ mod tests {
     const TEST_BENCHMARK_PRICE: f64 = 3300.5;
     const TEST_WINDOW_OPEN_UNIX_SECONDS: u64 = 1_700_000_000;
     const TEST_WINDOW_CLOSE_UNIX_SECONDS: u64 = 1_700_000_900;
-    const TEST_OBSERVATIONS_SECONDS: u32 = 1_700_000_001;
     const TEST_TS_INIT_NANOS: u64 = 1_700_000_500_000_000_000;
     const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
@@ -830,6 +829,12 @@ mod tests {
         .expect("report source JSON should serialize")
     }
 
+    fn observations_after(valid_from_seconds: u32) -> u32 {
+        valid_from_seconds
+            .checked_add(1)
+            .expect("test observation timestamp should fit u32")
+    }
+
     #[test]
     fn decoded_report_maps_to_index_price_on_resolution_instrument_at_window_open() {
         let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
@@ -840,7 +845,7 @@ mod tests {
         let report_bytes = report_source_json(
             TEST_FEED_ID,
             valid_from_seconds,
-            TEST_OBSERVATIONS_SECONDS,
+            observations_after(valid_from_seconds),
             TEST_BENCHMARK_PRICE,
             TEST_DECIMAL_SCALE,
         );
@@ -891,7 +896,7 @@ mod tests {
         let report_bytes = report_source_json(
             TEST_FEED_ID,
             valid_from_seconds,
-            TEST_OBSERVATIONS_SECONDS,
+            observations_after(valid_from_seconds),
             TEST_BENCHMARK_PRICE,
             TEST_DECIMAL_SCALE,
         );
@@ -970,7 +975,7 @@ mod tests {
         let report_bytes = report_source_json(
             TEST_FEED_ID,
             stale_valid_from_seconds,
-            TEST_OBSERVATIONS_SECONDS,
+            observations_after(stale_valid_from_seconds),
             TEST_BENCHMARK_PRICE,
             TEST_DECIMAL_SCALE,
         );
@@ -1002,7 +1007,7 @@ mod tests {
         let report_bytes = report_source_json(
             TEST_FEED_ID,
             stale_valid_from_seconds,
-            TEST_OBSERVATIONS_SECONDS,
+            observations_after(stale_valid_from_seconds),
             TEST_BENCHMARK_PRICE,
             TEST_DECIMAL_SCALE,
         );

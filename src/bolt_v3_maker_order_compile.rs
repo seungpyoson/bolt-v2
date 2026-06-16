@@ -37,6 +37,11 @@ pub enum MakerCompiledOrderCommand {
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
     },
+    CancelAll {
+        leg: Option<Leg>,
+        instrument_id: InstrumentId,
+        order_side: Option<nautilus_model::enums::OrderSide>,
+    },
     Modify {
         leg: Leg,
         instrument_id: InstrumentId,
@@ -88,6 +93,15 @@ pub fn compile_maker_order_intent(input: MakerOrderCompileInput<'_>) -> MakerOrd
             leg: *leg,
             instrument_id: *instrument_id,
             client_order_id: nt_client_order_id(order_identity),
+        }),
+        MakerOrderIntent::CancelAll {
+            leg,
+            instrument_id,
+            order_side,
+        } => compiled(MakerCompiledOrderCommand::CancelAll {
+            leg: *leg,
+            instrument_id: *instrument_id,
+            order_side: *order_side,
         }),
         MakerOrderIntent::Modify {
             leg,

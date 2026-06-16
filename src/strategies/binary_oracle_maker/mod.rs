@@ -27,10 +27,7 @@ use crate::{
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig},
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
     bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
-    bolt_v3_maker_order_plan::{
-        MakerLegOrderPlan, MakerMarketActionOrderInput, MakerOrderPlan,
-        maker_order_intent_from_market_action,
-    },
+    bolt_v3_maker_order_plan::{MakerMarketActionOrderInput, maker_order_plan_from_market_action},
     bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
     bolt_v3_maker_runtime_order::{
         MakerRuntimeLegOrderDispatchOutcome, MakerRuntimeOrderDispatchInput,
@@ -141,6 +138,7 @@ pub struct BinaryOracleMakerMarketActionRouteInput<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerMarketActionRouteOutcome {
     pub order: MakerRuntimeLegOrderDispatchOutcome,
+    pub orders: MakerRuntimeOrderDispatchOutcome,
 }
 
 impl std::fmt::Debug for BinaryOracleMaker {
@@ -339,29 +337,8 @@ impl BinaryOracleMaker {
             submit_lifecycle_policy,
         } = input;
 
-        let action_leg = match action.action {
-            MarketAction::Leg { leg, .. } => Some(leg),
-            MarketAction::CancelAllBothLegs | MarketAction::CancelAllOneSide { .. } => None,
-        };
-        let leg_order_plan = maker_order_intent_from_market_action(action);
-        let no_order = MakerLegOrderPlan {
-            intent: None,
-            blocked_by: None,
-        };
-        let order_plan = match action_leg {
-            Some(Leg::Yes) => MakerOrderPlan {
-                yes: leg_order_plan,
-                no: no_order,
-            },
-            Some(Leg::No) => MakerOrderPlan {
-                yes: no_order,
-                no: leg_order_plan,
-            },
-            None => MakerOrderPlan {
-                yes: leg_order_plan,
-                no: no_order,
-            },
-        };
+        let action_kind = action.action;
+        let order_plan = maker_order_plan_from_market_action(action);
 
         let mut route_command = |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
             self.route_maker_order_command(
@@ -381,12 +358,15 @@ impl BinaryOracleMaker {
             },
             &mut route_command,
         )?;
-        let order = match action_leg {
-            Some(Leg::No) => orders.no,
-            Some(Leg::Yes) | None => orders.yes,
+        let order = match action_kind {
+            MarketAction::Leg { leg: Leg::No, .. }
+            | MarketAction::CancelAllOneSide { leg: Leg::No } => orders.no.clone(),
+            MarketAction::Leg { leg: Leg::Yes, .. }
+            | MarketAction::CancelAllOneSide { leg: Leg::Yes }
+            | MarketAction::CancelAllBothLegs => orders.yes.clone(),
         };
 
-        Ok(BinaryOracleMakerMarketActionRouteOutcome { order })
+        Ok(BinaryOracleMakerMarketActionRouteOutcome { order, orders })
     }
 }
 

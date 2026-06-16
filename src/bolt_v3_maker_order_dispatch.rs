@@ -7,6 +7,7 @@
 use anyhow::Result;
 use nautilus_common::factories::OrderFactory;
 use nautilus_model::{
+    enums::OrderSide,
     identifiers::{ClientOrderId, InstrumentId},
     orders::{Order, OrderAny},
     types::{Price, Quantity},
@@ -37,6 +38,11 @@ pub enum MakerOrderDispatchOutcome {
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
     },
+    CanceledAll {
+        leg: Option<Leg>,
+        instrument_id: InstrumentId,
+        order_side: Option<OrderSide>,
+    },
     Modified {
         leg: Leg,
         instrument_id: InstrumentId,
@@ -56,6 +62,13 @@ pub trait MakerOrderCommandSink {
         leg: Leg,
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
+    ) -> Result<()>;
+
+    fn cancel_all_maker_orders(
+        &mut self,
+        leg: Option<Leg>,
+        instrument_id: InstrumentId,
+        order_side: Option<OrderSide>,
     ) -> Result<()>;
 
     fn modify_maker_order(
@@ -108,6 +121,18 @@ pub fn dispatch_maker_order_command(
                 leg: *leg,
                 instrument_id: *instrument_id,
                 client_order_id: *client_order_id,
+            })
+        }
+        MakerCompiledOrderCommand::CancelAll {
+            leg,
+            instrument_id,
+            order_side,
+        } => {
+            sink.cancel_all_maker_orders(*leg, *instrument_id, *order_side)?;
+            Ok(MakerOrderDispatchOutcome::CanceledAll {
+                leg: *leg,
+                instrument_id: *instrument_id,
+                order_side: *order_side,
             })
         }
         MakerCompiledOrderCommand::Modify {

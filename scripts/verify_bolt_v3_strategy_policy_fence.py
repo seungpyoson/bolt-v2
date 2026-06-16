@@ -69,6 +69,7 @@ NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
     # Private Bolt wrapper names stay fenced everywhere outside the policy module.
     "submit_order_via_nt",
     "cancel_order_via_nt",
+    "cancel_all_orders_via_nt",
     # Near-neighbor variants are fenced before a future NT bump can use them.
     "submit_order_with_params",
     "submit_order_list_with_params",
@@ -252,6 +253,12 @@ ALLOWED_DIRECT_NT_MUTATION_PATHS = frozenset(
     }
 )
 
+ALLOWED_KILL_SWITCH_ACTION_BYPASS_PATHS = frozenset(
+    {
+        "src/bolt_v3_order_execution.rs",
+    }
+)
+
 ALLOWED_EXECUTION_POLICY_TYPE_REFERENCE_PATHS = frozenset(
     {
         "src/bolt_v3_config.rs",
@@ -379,6 +386,11 @@ def find_violations_in_text(
         if (
             rule.label == "direct NT venue mutation call"
             and path in ALLOWED_DIRECT_NT_MUTATION_PATHS
+        ):
+            continue
+        if (
+            rule.label == "direct kill-switch action bypass"
+            and path in ALLOWED_KILL_SWITCH_ACTION_BYPASS_PATHS
         ):
             continue
         if (

@@ -36,6 +36,15 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             if violation.label == "direct NT venue mutation call"
         ]
 
+    def kill_switch_action_violations_for(
+        self, source: str, path: str = "src/strategies/probe.rs"
+    ) -> list[object]:
+        return [
+            violation
+            for violation in self.violations_for(source, path=path)
+            if violation.label == "direct kill-switch action bypass"
+        ]
+
     def test_detects_removed_policy_hardcodes(self) -> None:
         labels = self.labels_for(
             """
@@ -148,12 +157,13 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             """
             self.submit_order_via_nt(order, context)?;
             self.cancel_order_via_nt(client_order_id, Some(client_id), None)?;
+            self.cancel_all_orders_via_nt(instrument_id, None, Some(client_id), None)?;
             """
         )
 
         self.assertEqual(
             len(direct_violations),
-            2,
+            3,
             "private NT sink wrapper names must still be fenced outside the policy module",
         )
 
@@ -339,6 +349,7 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         source = """
         self.submit_order(order, None, Some(client_id), None)?;
         self.submit_order_via_nt(order, context)?;
+        self.cancel_all_orders_via_nt(instrument_id, None, Some(client_id), None)?;
         """
 
         self.assertEqual(
@@ -348,8 +359,27 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         )
         self.assertEqual(
             len(self.direct_nt_violations_for(source, path="src/strategies/future.rs")),
-            2,
+            3,
             "the same calls must be rejected from strategy code",
+        )
+
+    def test_cancel_all_allowlist_is_exactly_the_policy_module(self) -> None:
+        source = """
+        self.cancel_all_orders(instrument_id, None, Some(client_id), None)?;
+        self.cancel_all_orders_via_nt(instrument_id, None, Some(client_id), None)?;
+        """
+
+        self.assertEqual(
+            self.kill_switch_action_violations_for(
+                source, path="src/bolt_v3_order_execution.rs"
+            ),
+            [],
+            "the policy module is the only cancel-all mutation allowlist path",
+        )
+        self.assertEqual(
+            len(self.kill_switch_action_violations_for(source)),
+            1,
+            "the same cancel-all names must be rejected from strategy code",
         )
 
     def test_mutation_fence_scans_all_production_src_files(self) -> None:

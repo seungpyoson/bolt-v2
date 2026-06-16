@@ -13,7 +13,9 @@ use crate::{
     bolt_v3_maker_quote_plan::{MakerQuotePlan, MakerQuotePlanInputs, plan_maker_quote_targets},
     bolt_v3_maker_quote_set::{QuoteSetDecision, QuoteSetInput, drive_binary_quote_set},
     bolt_v3_maker_reservation::BuyCommitment,
+    bolt_v3_market_families::{FairProbabilityInputs, fair_probability_up_for_family},
     bolt_v3_quote_lifecycle::MarketQuote,
+    bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
     bolt_v3_requote_budget::RequoteBudgetPair,
 };
 
@@ -44,6 +46,27 @@ pub struct MakerRuntimeOrderPlanInput {
     pub no: MakerLegBinding,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MakerRuntimeReferenceFairValueInput<'a> {
+    pub family_key: &'a str,
+    pub interval_start_ms: u64,
+    pub interval_end_ms: u64,
+    pub now_ms: u64,
+    pub reference_quotes: &'a [ReferenceQuote],
+    pub strike_price: f64,
+    pub seconds_to_market_end: u64,
+    pub realized_vol: f64,
+    pub pricing_kurtosis: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MakerRuntimeReferenceFairValue {
+    pub source_id: String,
+    pub reference_current_price: f64,
+    pub failed_over: bool,
+    pub fair_probability_up: f64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MakerRuntimeQuoteDecision {
     pub quote_plan: Option<MakerQuotePlan>,
@@ -55,6 +78,35 @@ pub struct MakerRuntimeQuoteDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MakerRuntimeQuoteBlockReason {
     QuotePlanUnavailable,
+}
+
+pub fn maker_reference_current_price_fair_value(
+    selector: &mut ReferencePriceSelector,
+    input: MakerRuntimeReferenceFairValueInput<'_>,
+) -> Option<MakerRuntimeReferenceFairValue> {
+    let selection = selector.select(
+        input.interval_start_ms,
+        input.interval_end_ms,
+        input.now_ms,
+        input.reference_quotes,
+    )?;
+    let fair_probability_up = fair_probability_up_for_family(
+        input.family_key,
+        &FairProbabilityInputs {
+            spot_price: selection.price(),
+            strike_price: input.strike_price,
+            seconds_to_market_end: input.seconds_to_market_end,
+            realized_vol: input.realized_vol,
+            pricing_kurtosis: input.pricing_kurtosis,
+        },
+    )?;
+
+    Some(MakerRuntimeReferenceFairValue {
+        source_id: selection.source_id().to_string(),
+        reference_current_price: selection.price(),
+        failed_over: selection.failed_over(),
+        fair_probability_up,
+    })
 }
 
 pub fn plan_maker_runtime_quote(

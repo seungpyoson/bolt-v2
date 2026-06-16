@@ -794,8 +794,6 @@ kind = "static_outcome_group"
 rotating_market_family = "outcome_group"
 group_sources = ["poly_world_cup"]
 
-[reference_data]
-
 [signal_data]
 
 [parameters.runtime]

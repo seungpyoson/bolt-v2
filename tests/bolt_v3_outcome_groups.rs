@@ -344,7 +344,7 @@ fn duplicate_source_native_grouping_identity_with_conflicting_payouts_rejects() 
     second
         .payout_matrix
         .payout_per_unit_by_state
-        .insert("home".to_string(), vec![dec(0), dec(1), dec(1), dec(0)]);
+        .insert("home".to_string(), vec![dec(1), dec(1), dec(1), dec(0)]);
     second.metadata_fingerprint = expected_metadata_fingerprint(&second);
 
     let result = validate_grouping_identity_set([first, second].iter());

@@ -998,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_static_event_when_runtime_outcome_labels_are_missing_or_identical() {
+    fn rejects_static_event_when_runtime_outcome_labels_are_missing() {
         assert!(
             select_binary_option_market(
                 MarketSelectionTarget {
@@ -1023,18 +1023,6 @@ mod tests {
             .is_none(),
             "runtime selection must fail closed without a no label"
         );
-        assert!(
-            select_binary_option_market(
-                MarketSelectionTarget {
-                    static_no_outcome: Some(TEST_YES_OUTCOME),
-                    ..static_selection_target()
-                },
-                &[],
-                10_000
-            )
-            .is_none(),
-            "runtime selection must fail closed when yes/no labels are identical"
-        );
     }
 
     #[test]
@@ -1053,6 +1041,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn selected_market_requirement_rejects_identical_static_outcome_instruments() {
+        let mut selected = selected_market_fixture();
+        selected.down_instrument_id = selected.up_instrument_id;
+
+        let error = selected_market_requirement(&static_target_block(), &selected, 700_000)
+            .expect_err("identical yes/no instruments must fail closed");
+
+        assert!(
+            error.to_string().contains("distinct yes/no outcomes"),
+            "expected distinct-outcome rejection, got: {error}"
+        );
+    }
+
+    #[test]
+    fn selected_market_requirement_rejects_static_outcome_venue_mismatch() {
+        let mut selected = selected_market_fixture();
+        selected.down_instrument_id = InstrumentId::from("SAMPLE-EVENT-NO.SIM");
+
+        let error = selected_market_requirement(&static_target_block(), &selected, 700_000)
+            .expect_err("yes/no venue mismatch must fail closed");
+
+        assert!(
+            error.to_string().contains("venues must match"),
+            "expected venue-mismatch rejection, got: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_static_target_rejects_invalid_event_key_and_market_slug_shapes() {
+        for (field, value, expected) in [
+            ("event_key", "", "target.event_key must not be empty"),
+            ("event_key", "Sample_Event_2026", "lowercase ASCII"),
+            ("event_key", "sample-event-2026", "lowercase ASCII"),
+            ("event_key", "sample/event/2026", "lowercase ASCII"),
+            ("market_slug", "", "target.market_slug must not be empty"),
+            ("market_slug", "Will-Sample-Event", "lowercase ASCII"),
+            ("market_slug", "will_sample_event", "lowercase ASCII"),
+            ("market_slug", "https://sample-event", "lowercase ASCII"),
+        ] {
+            let mut target = static_target_block();
+            set_static_target_string(&mut target, field, value);
+
+            assert_validation_error_contains(
+                validate_target_block("strategy `sample-static-event`", &target),
+                expected,
+            );
+        }
+
+        let mut target = static_target_block();
+        set_static_target_string(&mut target, "no_outcome", TEST_YES_OUTCOME);
+        assert_validation_error_contains(
+            validate_target_block("strategy `sample-static-event`", &target),
+            "target.yes_outcome and target.no_outcome must be distinct",
+        );
+    }
+
     fn static_selection_target() -> MarketSelectionTarget<'static> {
         MarketSelectionTarget {
             family_key: KEY,
@@ -1063,6 +1108,57 @@ mod tests {
             static_yes_outcome: Some(TEST_YES_OUTCOME),
             static_no_outcome: Some(TEST_NO_OUTCOME),
         }
+    }
+
+    fn static_target_block() -> toml::Value {
+        toml::toml! {
+            configured_target_id = "sample-event-yes-no"
+            kind = "static_market"
+            rotating_market_family = "static_binary_event"
+            event_key = "sample_event_2026"
+            market_slug = "will-sample-event-resolve-yes"
+            condition_id = "condition-sample-event"
+            yes_outcome = "Yes"
+            no_outcome = "No"
+            fair_probability_source = "reference_current_price"
+            selection_window_secs = 1
+            market_selection_rule = "configured_static"
+            retry_interval_secs = 5
+            blocked_after_secs = 60
+        }
+        .into()
+    }
+
+    fn selected_market_fixture() -> SelectedBinaryOptionMarket {
+        SelectedBinaryOptionMarket {
+            market_id: TEST_MARKET_ID.to_string(),
+            instrument_id: InstrumentId::from("SAMPLE-EVENT-YES.POLYMARKET"),
+            up_instrument_id: InstrumentId::from("SAMPLE-EVENT-YES.POLYMARKET"),
+            down_instrument_id: InstrumentId::from("SAMPLE-EVENT-NO.POLYMARKET"),
+            selection_outcome: MarketSelectionOutcome::Current,
+            start_timestamp_milliseconds: 1_000,
+            expiration_timestamp_milliseconds: 30_000,
+            seconds_to_end: 20,
+            source_identity: SelectedMarketSourceIdentity {
+                condition_id: TEST_CONDITION_ID.to_string(),
+                market_slug: TEST_MARKET_SLUG.to_string(),
+                question_id: TEST_QUESTION_ID.to_string(),
+            },
+        }
+    }
+
+    fn set_static_target_string(target: &mut toml::Value, field: &str, value: &str) {
+        target
+            .as_table_mut()
+            .expect("static target should be a table")
+            .insert(field.to_string(), toml::Value::String(value.to_string()));
+    }
+
+    fn assert_validation_error_contains(errors: Vec<String>, expected: &str) {
+        assert!(
+            errors.iter().any(|error| error.contains(expected)),
+            "expected validation error containing `{expected}`, got: {errors:?}"
+        );
     }
 
     #[allow(clippy::too_many_arguments)]

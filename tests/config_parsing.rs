@@ -7177,6 +7177,26 @@ fn rejects_zero_runtime_capture_start_poll_interval() {
 }
 
 #[test]
+fn rejects_zero_persistence_min_free_bytes() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "runtime_capture_start_poll_interval_ms = 50",
+        "min_free_bytes = 0\nruntime_capture_start_poll_interval_ms = 50",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero min-free-bytes fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|m| {
+            m.contains("persistence.min_free_bytes") && m.contains("must be a positive integer")
+        }),
+        "expected positive-integer min-free-bytes validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_absolute_decision_evidence_order_intents_relative_path() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

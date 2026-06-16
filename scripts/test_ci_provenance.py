@@ -434,6 +434,16 @@ def required_job_payloads(build_conclusion: object = "success") -> list[dict[str
     ]
 
 
+def with_required_job_conclusion(
+    jobs: list[dict[str, object]], name: str, conclusion: object
+) -> list[dict[str, object]]:
+    for job in jobs:
+        if job["name"] == name:
+            job["conclusion"] = conclusion
+            return jobs
+    raise AssertionError(f"required job not found: {name}")
+
+
 def artifact_zip(record: dict[str, object]) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -1484,20 +1494,17 @@ def assert_nextest_archive_job_failures_rejected() -> None:
             "missing required job nextest archive",
             lambda: module.validate_job_evidence({"jobs": missing_archive}, loaded, record, deploy_reuse_requested=True),
         )
-        failed_archive = required_job_payloads()
-        failed_archive[7] = job_payload("nextest archive", "failure")
+        failed_archive = with_required_job_conclusion(required_job_payloads(), "nextest archive", "failure")
         assert_raises(
             "nextest archive",
             lambda: module.validate_job_evidence({"jobs": failed_archive}, loaded, record, deploy_reuse_requested=True),
         )
-        neutral_archive = required_job_payloads()
-        neutral_archive[7] = job_payload("nextest archive", "neutral")
+        neutral_archive = with_required_job_conclusion(required_job_payloads(), "nextest archive", "neutral")
         assert_raises(
             "neutral",
             lambda: module.validate_job_evidence({"jobs": neutral_archive}, loaded, record, deploy_reuse_requested=True),
         )
-        null_archive = required_job_payloads()
-        null_archive[7] = job_payload("nextest archive", None)
+        null_archive = with_required_job_conclusion(required_job_payloads(), "nextest archive", None)
         assert_raises(
             "None",
             lambda: module.validate_job_evidence({"jobs": null_archive}, loaded, record, deploy_reuse_requested=True),

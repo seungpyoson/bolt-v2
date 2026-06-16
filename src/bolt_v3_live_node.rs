@@ -107,7 +107,8 @@ use crate::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
     bolt_v3_config::{
-        BoltV3RootConfig, CapitalPoolBlock, LoadedBoltV3Config, resolve_root_relative_path,
+        BoltV3RootConfig, CapitalPoolBlock, LoadedBoltV3Config, LoadedStrategy,
+        resolve_root_relative_path,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,

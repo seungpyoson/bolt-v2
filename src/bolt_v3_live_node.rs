@@ -7982,8 +7982,8 @@ configured_source_param = "configured-value"
             panic!("expected LiveTransportScope error for malformed target");
         };
         assert!(
-            reason.contains("target.gate_subscriptions") && reason.contains("could not be parsed"),
-            "malformed target error should identify gate subscription parsing: {reason}"
+            reason.contains("gate_subscriptions") && reason.contains("not-a-bool"),
+            "malformed target error should identify the gate subscription field: {reason}"
         );
     }
 

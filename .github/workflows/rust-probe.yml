@@ -1,4 +1,5 @@
 name: Rust Probe
+run-name: Rust Probe ${{ inputs.probe_id }} ${{ inputs.mode }} @ ${{ inputs.ref }}
 
 # Manual-only: run one constrained Rust compile/test probe on an ephemeral runner.
 # This workflow is debugging feedback only and is not merge proof.
@@ -7,18 +8,25 @@ on:
   workflow_dispatch:
     inputs:
       runner_tier:
-        description: Ubicloud runner tier to use
-        required: true
-        type: choice
-        default: heavy
-        options:
-          - heavy
-          - light
-      ref:
-        description: Git ref to checkout (branch, tag, or SHA)
+        description: Wrapper-selected Ubicloud runner tier from policy
         required: true
         type: string
-        default: main
+      job_timeout_minutes:
+        description: Wrapper-selected job timeout from policy
+        required: true
+        type: string
+      ref:
+        description: Exact pushed Git SHA to checkout
+        required: true
+        type: string
+      expected_sha:
+        description: Exact pushed Git SHA the runner must verify after checkout
+        required: true
+        type: string
+      probe_id:
+        description: Wrapper-generated probe correlation id
+        required: true
+        type: string
       mode:
         description: Probe mode to run
         required: true
@@ -42,7 +50,7 @@ on:
         default: ""
 
 concurrency:
-  group: rust-probe
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -54,14 +62,44 @@ permissions:
   contents: read
 
 jobs:
+  probe-unsupported-runner-tier:
+    name: probe-unsupported-runner-tier
+    if: ${{ inputs.runner_tier != 'heavy' && inputs.runner_tier != 'light' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+    timeout-minutes: 1
+    steps:
+      - name: Reject unsupported runner tier
+        shell: bash
+        env:
+          RUST_PROBE_RUNNER_TIER: ${{ inputs.runner_tier }}
+        run: |
+          printf "Unsupported Rust Probe runner_tier: %s\n" "$RUST_PROBE_RUNNER_TIER" >&2
+          exit 1
+
+  probe-unsupported-job-timeout:
+    name: probe-unsupported-job-timeout
+    if: ${{ (inputs.runner_tier == 'heavy' && inputs.job_timeout_minutes != '60') || (inputs.runner_tier == 'light' && inputs.job_timeout_minutes != '60') }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+    timeout-minutes: 1
+    steps:
+      - name: Reject unsupported job timeout
+        shell: bash
+        env:
+          RUST_PROBE_JOB_TIMEOUT_MINUTES: ${{ inputs.job_timeout_minutes }}
+        run: |
+          printf "Unsupported Rust Probe job_timeout_minutes: %s\n" "$RUST_PROBE_JOB_TIMEOUT_MINUTES" >&2
+          exit 1
+
   probe-heavy:
     name: probe-heavy
-    if: ${{ inputs.runner_tier == 'heavy' }}
+    if: ${{ inputs.runner_tier == 'heavy' && inputs.job_timeout_minutes == '60' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 1
 
       - name: Setup environment
         id: setup
@@ -85,16 +123,20 @@ jobs:
           RUST_PROBE_MODE: ${{ inputs.mode }}
           RUST_PROBE_TEST_TARGET: ${{ inputs.test_target }}
           RUST_PROBE_TEST_NAME: ${{ inputs.test_name }}
+          RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RUST_PROBE_ID: ${{ inputs.probe_id }}
         run: bash .github/scripts/run-rust-probe.sh
 
   probe-light:
     name: probe-light
-    if: ${{ inputs.runner_tier == 'light' }}
+    if: ${{ inputs.runner_tier == 'light' && inputs.job_timeout_minutes == '60' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+    timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 1
 
       - name: Setup environment
         id: setup
@@ -118,4 +160,6 @@ jobs:
           RUST_PROBE_MODE: ${{ inputs.mode }}
           RUST_PROBE_TEST_TARGET: ${{ inputs.test_target }}
           RUST_PROBE_TEST_NAME: ${{ inputs.test_name }}
+          RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RUST_PROBE_ID: ${{ inputs.probe_id }}
         run: bash .github/scripts/run-rust-probe.sh

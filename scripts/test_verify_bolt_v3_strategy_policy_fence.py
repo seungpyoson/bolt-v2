@@ -296,6 +296,45 @@ class StrategyPolicyFenceTests(unittest.TestCase):
 
         self.assertIn("registered strategy outside strategy module tree", labels)
 
+    def test_maker_strategy_must_not_depend_on_taker_pricing_internals(self) -> None:
+        labels = {
+            violation.label
+            for violation in self.violations_for(
+                """
+                use crate::bolt_v3_taker_pricing::{TakerPricingConfig, TakerPricingState};
+                use super::super::bolt_v3_taker_pricing::VenueTimingState;
+                """,
+                path="src/strategies/binary_oracle_maker/mod.rs",
+            )
+        }
+
+        self.assertIn("maker dependency on taker pricing internals", labels)
+
+    def test_maker_strategy_can_depend_on_shared_pricing_and_quote_plan(self) -> None:
+        labels = {
+            violation.label
+            for violation in self.violations_for(
+                """
+                use crate::bolt_v3_fair_value_pricing::FairValuePricingState;
+                use crate::bolt_v3_maker_quote_plan::plan_maker_quote_targets;
+                """,
+                path="src/strategies/binary_oracle_maker/mod.rs",
+            )
+        }
+
+        self.assertNotIn("maker dependency on taker pricing internals", labels)
+
+    def test_taker_strategy_can_depend_on_taker_pricing_internals(self) -> None:
+        labels = {
+            violation.label
+            for violation in self.violations_for(
+                "use crate::bolt_v3_taker_pricing::TakerPricingState;\n",
+                path="src/strategies/binary_oracle_edge_taker/mod.rs",
+            )
+        }
+
+        self.assertNotIn("maker dependency on taker pricing internals", labels)
+
     def test_direct_nt_mutation_allowlist_is_exactly_the_policy_module(self) -> None:
         source = """
         self.submit_order(order, None, Some(client_id), None)?;

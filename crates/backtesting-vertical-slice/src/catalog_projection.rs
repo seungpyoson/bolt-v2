@@ -47,9 +47,8 @@ use super::{
     canonical_market_data::{
         CanonicalBarRow, CanonicalBarSpec, CanonicalBarsTable, CanonicalIndexPriceRow,
         CanonicalIndexPricesTable, CanonicalMarkPriceRow, CanonicalMarkPricesTable,
-        CanonicalOrderBookDeltaRow,
-        CanonicalOrderBookDeltasTable, CanonicalQuoteRow, CanonicalQuotesTable, DeltaAction,
-        DeltaSide,
+        CanonicalOrderBookDeltaRow, CanonicalOrderBookDeltasTable, CanonicalQuoteRow,
+        CanonicalQuotesTable, DeltaAction, DeltaSide,
     },
     canonical_trades::{CanonicalTradesTable, TradeAggressorSide},
     source_proof::SourceProofFidelityClass,
@@ -4561,12 +4560,9 @@ max_notional = "200000"
     fn binary_option_bar_catalog_projection_round_trips_through_nt_catalog() {
         let table = binary_option_bars_table();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let projection = project_canonical_bars_to_catalog(
-            &table,
-            &binary_option_spec(),
-            dir.path(),
-        )
-        .expect("project binary-option bars");
+        let projection =
+            project_canonical_bars_to_catalog(&table, &binary_option_spec(), dir.path())
+                .expect("project binary-option bars");
         assert_eq!(projection.trade_count, table.rows.len());
         assert_eq!(projection.data_type, NT_DATA_TYPE_BAR);
         assert_eq!(projection.nt_instrument_id, "YES.TESTVENUE");

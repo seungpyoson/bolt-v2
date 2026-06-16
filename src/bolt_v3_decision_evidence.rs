@@ -20,7 +20,7 @@ use crate::bolt_v3_realized_volatility::{
     RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 10;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 11;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";
@@ -369,7 +369,9 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub price_to_beat_value: String,
     pub reference_quote_ts_event: u64,
     pub spot_price: String,
-    pub reference_fair_value: Option<String>,
+    pub reference_current_price: Option<String>,
+    pub reference_current_price_source_id: Option<String>,
+    pub reference_current_price_failed_over: Option<bool>,
     pub realized_volatility: String,
     pub realized_volatility_surface_id: String,
     pub realized_volatility_as_of_ms: Option<u64>,
@@ -631,6 +633,7 @@ pub fn read_latest_entry_decision_evidence_chain(
     let mut intents = BTreeMap::<String, BoltV3OrderIntentEvidence>::new();
     let mut admissions = BTreeMap::<String, BoltV3AdmissionDecisionEvidence>::new();
     let mut latest = None;
+    let mut first_older_schema_index = None;
     for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
         if line.is_empty() {
             continue;
@@ -639,6 +642,10 @@ pub fn read_latest_entry_decision_evidence_chain(
             serde_json::from_slice(line).with_context(|| {
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
+        if header.schema_version < BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION {
+            first_older_schema_index.get_or_insert(index);
+            continue;
+        }
         match header.kind.as_str() {
             "strategy_input_snapshot" => {
                 header.validate(
@@ -766,7 +773,20 @@ pub fn read_latest_entry_decision_evidence_chain(
             }
         }
     }
-    latest.ok_or_else(|| anyhow!("bolt-v3 decision evidence has no complete entry decision chain"))
+    match latest {
+        Some(chain) => Ok(chain),
+        None => {
+            if let Some(index) = first_older_schema_index {
+                Err(anyhow!(
+                    "bolt-v3 decision evidence schema_version mismatch at line index {index}"
+                ))
+            } else {
+                Err(anyhow!(
+                    "bolt-v3 decision evidence has no complete entry decision chain"
+                ))
+            }
+        }
+    }
 }
 
 pub fn read_submit_reservation_recovery_evidence(
@@ -1558,6 +1578,33 @@ mod tests {
     }
 
     #[test]
+    fn old_strategy_input_snapshot_schema_with_reference_fair_value_is_rejected() {
+        let line = br#"{
+            "schema_version":9,
+            "recorded_at_utc_ns":1,
+            "gate_id":"bolt_v3.strategy_input_snapshot",
+            "gate_version":"0.1.0",
+            "kind":"strategy_input_snapshot",
+            "snapshot":{"reference_fair_value":"100.0"}
+        }"#;
+        let header: DecisionEvidenceEnvelopeHeader =
+            serde_json::from_slice(line).expect("old envelope header should parse");
+
+        let err = header
+            .validate(
+                BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
+                BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+                0,
+            )
+            .expect_err("old v9 strategy-input snapshots must fail the schema gate");
+
+        assert!(
+            err.to_string().contains("schema_version mismatch"),
+            "old evidence should fail on schema version, got: {err:#}"
+        );
+    }
+
+    #[test]
     fn encode_order_intent_line_wraps_intent_with_metadata() {
         let intent = BoltV3OrderIntentEvidence {
             strategy_id: "strategy-one".to_string(),
@@ -1738,7 +1785,9 @@ mod tests {
             price_to_beat_value: "3100".to_string(),
             reference_quote_ts_event: 1200,
             spot_price: "3100.5".to_string(),
-            reference_fair_value: Some("3100.5".to_string()),
+            reference_current_price: Some("3100.5".to_string()),
+            reference_current_price_source_id: Some("chainlink_primary".to_string()),
+            reference_current_price_failed_over: Some(false),
             realized_volatility: "1.5".to_string(),
             realized_volatility_surface_id: String::new(),
             realized_volatility_as_of_ms: None,
@@ -1801,9 +1850,14 @@ mod tests {
                 .as_object()
                 .expect("snapshot should encode as an object")
                 .len(),
-            51
+            53
         );
         assert_eq!(snapshot_field["price_to_beat_source"], "source-one");
+        assert_eq!(
+            snapshot_field["reference_current_price_source_id"],
+            "chainlink_primary"
+        );
+        assert_eq!(snapshot_field["reference_current_price_failed_over"], false);
         assert_eq!(snapshot_field["reference_quote_ts_event"], 1200);
         assert_eq!(snapshot_field["client_order_id"], "client-order-one");
     }

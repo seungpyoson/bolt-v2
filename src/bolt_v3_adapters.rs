@@ -410,7 +410,10 @@ mod tests {
     };
 
     use crate::bolt_v3_config::load_bolt_v3_config;
-    use crate::bolt_v3_market_families::updown::{self, UpdownTargetPlan};
+    use crate::bolt_v3_market_families::{
+        static_binary_event::{self, StaticBinaryEventTargetPlan},
+        updown::{self, UpdownTargetPlan},
+    };
     use crate::bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderBinding, ProviderResolvedSecrets,
         ProviderSecretResolveContext, ResolvedClientSecrets, SsmSecretResolver,
@@ -677,6 +680,52 @@ mod tests {
             .expect("fake provider client should map");
         assert!(fake.data.is_none());
         assert!(fake.execution.is_none());
+    }
+
+    #[test]
+    fn polymarket_binding_accepts_static_binary_event_target() {
+        let loaded = fixture_loaded_config();
+        let resolved = fixture_resolved_secrets();
+        let mut plan = MarketIdentityPlan::empty();
+        plan.push_target(StaticBinaryEventTargetPlan {
+            strategy_instance_id: "sample-static-event".to_string(),
+            configured_target_id: "sample-static-event-target".to_string(),
+            execution_client_id: "polymarket_main".to_string(),
+            event_key: "sample_event_2026".to_string(),
+            market_slug: "will-sample-event-resolve-yes".to_string(),
+            condition_id: Some("condition-sample-event".to_string()),
+            yes_outcome: "Yes".to_string(),
+            no_outcome: "No".to_string(),
+        });
+
+        let configs = map_bolt_v3_adapters_with_market_identity(
+            &loaded,
+            &resolved,
+            &plan,
+            Arc::new(|| 1_746_000_000),
+        )
+        .expect("polymarket provider binding should support static_binary_event targets");
+
+        let data = configs
+            .clients
+            .get("polymarket_main")
+            .expect("polymarket_main must map")
+            .data
+            .as_ref()
+            .expect("polymarket data config must map")
+            .config_as::<PolymarketDataClientConfig>()
+            .expect("polymarket data config should downcast to NT config");
+        let slugs = data
+            .filters
+            .iter()
+            .flat_map(|filter| filter.market_slugs().unwrap_or_default())
+            .collect::<Vec<_>>();
+
+        assert_eq!(slugs, vec!["will-sample-event-resolve-yes".to_string()]);
+        assert!(
+            polymarket::SUPPORTED_MARKET_FAMILIES.contains(&static_binary_event::KEY),
+            "provider allowlist must keep the adapter mapping path reachable"
+        );
     }
 
     #[test]

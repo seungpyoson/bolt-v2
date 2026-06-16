@@ -111,7 +111,7 @@ pub fn normalize_base_order_quantity(quantity: Decimal) -> Option<Decimal> {
 /// probes); the full shared REST budget is the venue egress-capability contract
 /// tracked in #501.
 pub const MAX_REST_REQUESTS_PER_ORDER_COMMAND: u32 = 2;
-pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
+pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY, static_binary_event::KEY];
 const URL_SAFE_BASE64_BLOCK_WIDTH: usize = 4;
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,

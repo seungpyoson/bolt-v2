@@ -607,6 +607,9 @@ mod tests {
     const TEST_MARKET_ID: &str = "sample-event-yes-no";
     const TEST_CONDITION_ID: &str = "condition-sample-event";
     const TEST_QUESTION_ID: &str = "question-sample-event";
+    const TEST_OTHER_MARKET_ID: &str = "other-sample-event-yes-no";
+    const TEST_OTHER_CONDITION_ID: &str = "condition-other-sample-event";
+    const TEST_OTHER_QUESTION_ID: &str = "question-other-sample-event";
     const TEST_YES_OUTCOME: &str = "Yes";
     const TEST_NO_OUTCOME: &str = "No";
     const NANOS_PER_MILLI_U64: u64 = 1_000_000;
@@ -690,9 +693,9 @@ mod tests {
             test_binary_option(
                 "WRONG-SLUG-NO.POLYMARKET",
                 "will-other-sample-event-resolve-yes",
-                "other-sample-event-yes-no",
-                "condition-other-sample-event",
-                "question-other-sample-event",
+                TEST_OTHER_MARKET_ID,
+                TEST_OTHER_CONDITION_ID,
+                TEST_OTHER_QUESTION_ID,
                 TEST_NO_OUTCOME,
                 1_000,
                 30_000,
@@ -751,6 +754,302 @@ mod tests {
         assert!(
             select_binary_option_market(static_selection_target(), &instruments, 10_000).is_none(),
             "condition_id is config-owned and must disambiguate same-slug instruments"
+        );
+    }
+
+    #[test]
+    fn rejects_static_event_when_duplicate_configured_yes_outcomes_match() {
+        let instruments = vec![
+            test_binary_option(
+                "SAMPLE-EVENT-YES.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_YES_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-YES.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_YES_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-NO.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_NO_OUTCOME,
+                1_000,
+                30_000,
+            ),
+        ];
+
+        assert!(
+            select_binary_option_market(static_selection_target(), &instruments, 10_000).is_none(),
+            "duplicate matching yes outcomes must make selection ambiguous"
+        );
+    }
+
+    #[test]
+    fn rejects_static_event_when_duplicate_configured_no_outcomes_match() {
+        let instruments = vec![
+            test_binary_option(
+                "SAMPLE-EVENT-YES.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_YES_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-NO.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_NO_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-NO.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_NO_OUTCOME,
+                1_000,
+                30_000,
+            ),
+        ];
+
+        assert!(
+            select_binary_option_market(static_selection_target(), &instruments, 10_000).is_none(),
+            "duplicate matching no outcomes must make selection ambiguous"
+        );
+    }
+
+    #[test]
+    fn rejects_static_event_when_one_configured_outcome_side_is_missing() {
+        let lone_yes = vec![test_binary_option(
+            "SAMPLE-EVENT-YES.POLYMARKET",
+            TEST_MARKET_SLUG,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_YES_OUTCOME,
+            1_000,
+            30_000,
+        )];
+        let lone_no = vec![test_binary_option(
+            "SAMPLE-EVENT-NO.POLYMARKET",
+            TEST_MARKET_SLUG,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_NO_OUTCOME,
+            1_000,
+            30_000,
+        )];
+
+        assert!(
+            select_binary_option_market(static_selection_target(), &lone_yes, 10_000).is_none(),
+            "a static event must not select without the configured no outcome"
+        );
+        assert!(
+            select_binary_option_market(static_selection_target(), &lone_no, 10_000).is_none(),
+            "a static event must not select without the configured yes outcome"
+        );
+    }
+
+    #[test]
+    fn rejects_static_event_when_yes_no_identity_fields_disagree() {
+        let target_without_condition = MarketSelectionTarget {
+            static_condition_id: None,
+            ..static_selection_target()
+        };
+        let market_id_mismatch = vec![
+            test_binary_option(
+                "SAMPLE-EVENT-YES.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_YES_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-NO.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_OTHER_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_NO_OUTCOME,
+                1_000,
+                30_000,
+            ),
+        ];
+        let condition_id_mismatch = vec![
+            test_binary_option(
+                "SAMPLE-EVENT-YES.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_YES_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-NO.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_OTHER_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_NO_OUTCOME,
+                1_000,
+                30_000,
+            ),
+        ];
+        let question_id_mismatch = vec![
+            test_binary_option(
+                "SAMPLE-EVENT-YES.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_YES_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-NO.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_OTHER_QUESTION_ID,
+                TEST_NO_OUTCOME,
+                1_000,
+                30_000,
+            ),
+        ];
+
+        assert!(
+            select_binary_option_market(target_without_condition, &market_id_mismatch, 10_000)
+                .is_none(),
+            "yes/no instruments with different market IDs must not be paired"
+        );
+        assert!(
+            select_binary_option_market(target_without_condition, &condition_id_mismatch, 10_000)
+                .is_none(),
+            "yes/no instruments with different condition IDs must not be paired"
+        );
+        assert!(
+            select_binary_option_market(target_without_condition, &question_id_mismatch, 10_000)
+                .is_none(),
+            "yes/no instruments with different question IDs must not be paired"
+        );
+    }
+
+    #[test]
+    fn rejects_static_event_at_or_after_expiration() {
+        let instruments = vec![
+            test_binary_option(
+                "SAMPLE-EVENT-YES.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_YES_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-NO.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_NO_OUTCOME,
+                1_000,
+                30_000,
+            ),
+        ];
+
+        assert!(
+            select_binary_option_market(static_selection_target(), &instruments, 30_000).is_none(),
+            "expiration equality must fail closed"
+        );
+        assert!(
+            select_binary_option_market(static_selection_target(), &instruments, 30_001).is_none(),
+            "past expiration must fail closed"
+        );
+    }
+
+    #[test]
+    fn rejects_static_event_when_runtime_outcome_labels_are_missing_or_identical() {
+        assert!(
+            select_binary_option_market(
+                MarketSelectionTarget {
+                    static_yes_outcome: None,
+                    ..static_selection_target()
+                },
+                &[],
+                10_000
+            )
+            .is_none(),
+            "runtime selection must fail closed without a yes label"
+        );
+        assert!(
+            select_binary_option_market(
+                MarketSelectionTarget {
+                    static_no_outcome: None,
+                    ..static_selection_target()
+                },
+                &[],
+                10_000
+            )
+            .is_none(),
+            "runtime selection must fail closed without a no label"
+        );
+        assert!(
+            select_binary_option_market(
+                MarketSelectionTarget {
+                    static_no_outcome: Some(TEST_YES_OUTCOME),
+                    ..static_selection_target()
+                },
+                &[],
+                10_000
+            )
+            .is_none(),
+            "runtime selection must fail closed when yes/no labels are identical"
+        );
+    }
+
+    #[test]
+    fn fair_probability_remains_unavailable_until_reference_price_runtime_exists() {
+        let inputs = FairProbabilityInputs {
+            spot_price: 0.5,
+            strike_price: 0.5,
+            seconds_to_market_end: 60,
+            realized_vol: 0.0,
+            pricing_kurtosis: 0.0,
+        };
+
+        assert!(
+            super::super::fair_probability_up_for_family(KEY, &inputs).is_none(),
+            "static_binary_event must stay untradeable until PR730 supplies fair probability"
         );
     }
 

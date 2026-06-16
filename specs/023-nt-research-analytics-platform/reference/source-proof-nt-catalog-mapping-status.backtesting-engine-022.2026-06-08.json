@@ -46,7 +46,7 @@
       "decision": "Source-catalog mapping readiness now carries and checks source_proof_id/source_proof_version plus per-required-NT-data-class evidence refs, so broad backfill execution readiness cannot reuse a stale or status-only mapping report for the same source binding/table family.",
       "binance_ready_report_hash": "3d7e1a378377c1c0a2cba355a1f0a7f73b2e6018746a7a287ecb0ca0a62bbd9d",
       "pmxt_blocked_report_hash": "2ff85429bfe00dfa7a680b16f726e0221afe7ddf96cd4eb9b10b2598e2ef9c6b",
-      "catalog_mapping_evaluation_hash": "f68626462e7d7e5194411573b37ca82042dd39fe3a9231b85c282f34a3224cb9"
+      "catalog_mapping_evaluation_hash": "b316ae3e76d26a50dbdc0f73f321b9799c24816f704a38560db6f577d7e36881"
     }
   },
   "nt_capability_evidence": [
@@ -105,11 +105,11 @@
       "evidence": "nt://crates/adapters/polymarket/src/http/data_api.rs:55"
     },
     {
-      "limitation": "The manifest/data-config path now maps TradeTick, OrderBookDelta, InstrumentStatus, and InstrumentClose plus configured instrument_ids. InstrumentStatus and InstrumentClose are auxiliary catalog streams and do not prove timed InstrumentAny instrument-definition replay, PMXT source-row projection, or BacktestNode consumption of a verified broad PMXT L2 catalog.",
+      "limitation": "The manifest/data-config path now maps TradeTick, OrderBookDelta, Bar, QuoteTick, IndexPriceUpdate, MarkPriceUpdate, InstrumentStatus, and InstrumentClose plus configured instrument_ids. InstrumentStatus and InstrumentClose are auxiliary catalog streams and do not prove timed InstrumentAny instrument-definition replay, PMXT source-row projection, or BacktestNode consumption of a verified broad PMXT L2 catalog.",
       "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1448, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1524, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1762, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1991"
     },
     {
-      "limitation": "The catalog hash/read-back path covers an NT-native BinaryOption, OrderBookDelta, and TradeTick fixture. PMXT has one-off selected-source OrderBookDelta and TradeTick projection/read-back paths plus a refreshed concrete artifact-root/result-contract run for bounded evidence only; this is not a reusable broad backfill adapter. The older /private/tmp mixed artifact remains stale under the current [[catalog_inputs]] manifest schema.",
+      "limitation": "The catalog hash/read-back path covers NT-native BinaryOption TradeTick, OrderBookDelta, and Bar fixture coverage. PMXT has one-off selected-source OrderBookDelta and TradeTick projection/read-back paths plus a refreshed concrete artifact-root/result-contract run for bounded evidence only; this is not a reusable broad backfill adapter. The older /private/tmp mixed artifact remains stale under the current [[catalog_inputs]] manifest schema.",
       "evidence": "repo://crates/backtesting-vertical-slice/src/catalog_projection.rs:313, repo://crates/backtesting-vertical-slice/src/catalog_projection.rs:777"
     }
   ],
@@ -144,7 +144,8 @@
         "Bar",
         "TradeTick"
       ],
-      "status": "lower_fidelity_candidate_only_no_catalog_proof"
+      "status": "staged_binary_option_bar_catalog_mapping_source_fenced",
+      "required_path": "Keep Kalshi official historical API as a pending lower-fidelity candidate until accepted source proof, raw candlestick-to-canonical-Bar normalization, license/coverage/completeness/cost checks, and any claimed historical L2 evidence are committed."
     },
     {
       "source_binding": "hyperliquid-hip4-outcome-meta",

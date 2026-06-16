@@ -156,6 +156,10 @@ verify-bte-022-pmxt-dynamic-tick-size: check-workspace
     python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py
     python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py
 
+verify-bte-022-binary-option-bar-catalog: check-workspace
+    python3 scripts/test_verify_bte_022_binary_option_bar_catalog.py
+    python3 scripts/verify_bte_022_binary_option_bar_catalog.py
+
 verify-bte-022-pmxt-broad-backfill-efficiency: check-workspace
     python3 scripts/test_verify_bte_022_pmxt_broad_backfill_efficiency.py
     python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py
@@ -317,6 +321,8 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/verify_bte_022_pmxt_coverage_ledger.py
     python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py
     python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py
+    python3 scripts/test_verify_bte_022_binary_option_bar_catalog.py
+    python3 scripts/verify_bte_022_binary_option_bar_catalog.py
     python3 scripts/test_verify_bte_022_pmxt_broad_backfill_efficiency.py
     python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py
     python3 scripts/test_verify_dashboard_customer_jobs.py

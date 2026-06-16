@@ -2,7 +2,7 @@
   "schema_version": "source-catalog-mapping-readiness-report.v2",
   "readiness_id": "polymarket-parquet-archive-index-canonical-source-catalog-mapping-readiness",
   "status": "blocked",
-  "catalog_mapping_evaluation_hash": "f68626462e7d7e5194411573b37ca82042dd39fe3a9231b85c282f34a3224cb9",
+  "catalog_mapping_evaluation_hash": "b316ae3e76d26a50dbdc0f73f321b9799c24816f704a38560db6f577d7e36881",
   "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
   "source_proof_version": 1,
   "source_binding": "polymarket-parquet-archive-index",

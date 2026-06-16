@@ -491,9 +491,10 @@ mod tests {
     use rust_decimal::Decimal;
 
     use super::{
-        BoltV3CancelRoutingOutcome, BoltV3MakerOrderRuntime, BoltV3NtVenueMutationSink,
-        BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy, BoltV3SubmitContext,
-        BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
+        BoltV3CancelRoutingOutcome, BoltV3MakerOrderRoutingContext, BoltV3MakerOrderRuntime,
+        BoltV3NtVenueMutationSink, BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy,
+        BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
+        route_maker_order_command_with_runtime,
     };
     use crate::{
         bolt_v3_capital_reservation::CapitalPoolSnapshot,

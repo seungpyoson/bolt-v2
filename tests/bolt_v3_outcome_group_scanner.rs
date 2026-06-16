@@ -387,6 +387,38 @@ fn scanner_rejects_non_positive_cost_edge_threshold_and_invalid_price_scale() {
     );
 }
 
+#[test]
+fn scanner_rejects_sell_candidates_before_payout_evaluation() {
+    let group = fixture_group();
+    let sell_candidate = OutcomeGroupCandidateLeg {
+        order_side: OrderSide::Sell,
+        ..candidate("home-positive", dec!(0.4))
+    };
+    let result = scan_outcome_group_candidate(scan_input(
+        &group,
+        fees(&group, dec!(0)),
+        vec![sell_candidate],
+        books([book(
+            "home-positive",
+            "0.39",
+            "20",
+            "0.40",
+            "20",
+            Some(1_000),
+        )]),
+    ));
+
+    assert!(!result.admissible);
+    assert_eq!(
+        result.block_reason,
+        Some(OutcomeGroupScanBlockReason::UnsupportedOrderSide)
+    );
+    assert!(
+        result.leg_costs.is_empty(),
+        "sell candidates must not reach pricing or payout evaluation"
+    );
+}
+
 fn scan_input<'a>(
     group: &'a OutcomeGroup,
     fee_bps: BTreeMap<InstrumentId, Decimal>,

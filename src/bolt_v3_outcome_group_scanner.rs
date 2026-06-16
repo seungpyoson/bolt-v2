@@ -247,6 +247,9 @@ fn scan_outcome_group_candidate_inner(
 
     let mut quantities_by_leg = BTreeMap::<String, Decimal>::new();
     for candidate in &input.candidate_legs {
+        if candidate.order_side != OrderSide::Buy {
+            return Err((OutcomeGroupScanBlockReason::UnsupportedOrderSide, evidence));
+        }
         if candidate.target_notional <= Decimal::ZERO {
             return Err((OutcomeGroupScanBlockReason::InvalidCost, evidence));
         }

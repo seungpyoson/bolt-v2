@@ -5,9 +5,10 @@
 //! validates. Slice 2 adds the μ (informed-fraction) runtime state ([`mu`]): the
 //! maker overrides `on_trade` to feed each instrument's signed trade-flow buffer,
 //! from which the shared estimator and fail-closed health gate derive μ. Slice
-//! 6c adds the strategy-owned shell method that routes compiled maker commands
-//! through the shared execution/admission policy; the strategy still has no
-//! autonomous subscription or quote loop until later runtime slices. The
+//! 6c adds the strategy-owned shell method that routes a caller-resolved maker
+//! quote tick through the shared quote planner, order compiler, and
+//! execution/admission policy; the strategy still has no autonomous subscription
+//! or quote loop until later runtime slices. The
 //! NautilusTrader surface (`core: StrategyCore`, `nautilus_strategy!`, the
 //! `StrategyBuilder` impl) mirrors `binary_oracle_edge_taker` *structurally* —
 //! it does not copy taker behaviour.
@@ -26,10 +27,20 @@ use crate::{
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig},
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
     bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
+    bolt_v3_maker_runtime_order::{
+        MakerRuntimeOrderDispatchInput, MakerRuntimeOrderDispatchOutcome,
+        dispatch_maker_runtime_order_plan_with_command_router,
+    },
+    bolt_v3_maker_runtime_quote::{
+        MakerRuntimeQuoteDecision, MakerRuntimeQuoteInput, plan_maker_runtime_quote,
+    },
     bolt_v3_order_execution::{
         BoltV3MakerOrderRoutingContext,
         route_maker_order_command as route_maker_order_command_through_policy,
     },
+    bolt_v3_order_intent::NtOrderTemplate,
+    bolt_v3_quote_lifecycle::MarketQuote,
+    bolt_v3_requote_budget::RequoteBudgetPair,
     bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::mu::MakerMuState,
@@ -59,6 +70,23 @@ pub struct BinaryOracleMaker {
     config: BinaryOracleMakerConfig,
     context: StrategyBuildContext,
     mu: MakerMuState,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryOracleMakerRuntimeQuoteRouteInput<'a> {
+    pub quote: MakerRuntimeQuoteInput<'a>,
+    pub submit_template: &'a NtOrderTemplate,
+    pub price_precision: u8,
+    pub quantity_precision: u8,
+    pub submit_order_prefix: &'a str,
+    pub max_fee_bps: Decimal,
+    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryOracleMakerRuntimeQuoteRouteOutcome {
+    pub quote: MakerRuntimeQuoteDecision,
+    pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
 }
 
 impl std::fmt::Debug for BinaryOracleMaker {
@@ -125,6 +153,53 @@ impl BinaryOracleMaker {
                 submit_order_prefix,
             },
         )
+    }
+
+    pub fn route_maker_runtime_quote(
+        &mut self,
+        market: &mut MarketQuote,
+        budget: &mut RequoteBudgetPair,
+        input: BinaryOracleMakerRuntimeQuoteRouteInput<'_>,
+    ) -> Result<BinaryOracleMakerRuntimeQuoteRouteOutcome> {
+        let BinaryOracleMakerRuntimeQuoteRouteInput {
+            quote,
+            submit_template,
+            price_precision,
+            quantity_precision,
+            submit_order_prefix,
+            max_fee_bps,
+            submit_lifecycle_policy,
+        } = input;
+
+        let quote_decision = plan_maker_runtime_quote(market, budget, quote);
+        let orders = if let Some(order_plan) = quote_decision.order_plan.as_ref() {
+            let mut route_command =
+                |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
+                    self.route_maker_order_command(
+                        command,
+                        submit_order_prefix,
+                        max_fee_bps,
+                        submit_lifecycle_policy,
+                    )
+                };
+            Some(dispatch_maker_runtime_order_plan_with_command_router(
+                MakerRuntimeOrderDispatchInput {
+                    order_plan,
+                    submit_template,
+                    price_precision,
+                    quantity_precision,
+                    submit_order_prefix,
+                },
+                &mut route_command,
+            )?)
+        } else {
+            None
+        };
+
+        Ok(BinaryOracleMakerRuntimeQuoteRouteOutcome {
+            quote: quote_decision,
+            orders,
+        })
     }
 }
 

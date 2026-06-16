@@ -34,6 +34,7 @@ POLICY_ROWS = (
     "draft_pr_synchronize",
     "draft_pr_opened",
     "draft_pr_reopened",
+    "draft_pr_edited",
     "converted_to_draft",
     "ready_pr",
     "ready_for_review",
@@ -396,6 +397,9 @@ def evaluate_ci_policy(
         elif event_action == "reopened":
             path = config.policy["draft_pr_reopened"]
             reason = "draft_pr_reopened"
+        elif event_action == "edited":
+            path = config.policy["draft_pr_edited"]
+            reason = "draft_pr_edited"
         elif event_action == "converted_to_draft":
             path = config.policy["converted_to_draft"]
             reason = "converted_to_draft"

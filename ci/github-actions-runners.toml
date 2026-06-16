@@ -165,6 +165,7 @@ retention_days = 30
 draft_pr_synchronize = "defer"
 draft_pr_opened = "defer"
 draft_pr_reopened = "defer"
+draft_pr_edited = "defer"
 converted_to_draft = "defer"
 ready_pr = "full"
 ready_for_review = "full"

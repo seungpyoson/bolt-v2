@@ -24,7 +24,7 @@ JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_bte_022_pmxt_broad_backfill_efficiency.py",
     "python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py",
 )
-JUSTFILE_RECIPES = ("verify-bte-022-pmxt-broad-backfill-efficiency", "source-fence-static")
+JUSTFILE_RECIPES = ("verify-bte-022-pmxt-broad-backfill-efficiency", "source-fence-static-inner")
 
 STATUS_INPUTS = (
     ("coverage_ledger_status", PMXT_COVERAGE_STATUS),

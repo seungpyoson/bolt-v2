@@ -54,8 +54,8 @@ fn non_signal_quote_tick_does_not_update_reference_current_price_or_signal() {
         .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_200))
         .expect("non-signal quote should process without mutating pricing");
 
-    assert_eq!(strategy.pricing.last_reference_current_price, None);
-    assert_eq!(strategy.pricing.fast_spot, None);
+    assert_eq!(strategy.pricing.last_reference_current_price(), None);
+    assert_eq!(strategy.pricing.selected_pricing_spot().cloned(), None);
     assert!(!strategy.pricing.lead_quality_policy_applied);
 }
 
@@ -70,9 +70,9 @@ fn signal_quote_tick_updates_pricing_from_configured_signal_data() {
         .on_quote(&quote_tick("SIGNAL.SOURCE", 100.5, 102.5, 1_200))
         .expect("signal quote should process");
 
-    assert_eq!(strategy.pricing.last_reference_current_price, Some(101.0));
+    assert_eq!(strategy.pricing.last_reference_current_price(), Some(101.0));
     assert_eq!(
-        strategy.pricing.fast_spot,
+        strategy.pricing.selected_pricing_spot().cloned(),
         Some(fast_spot("signal_data_client", 101.5, 1_200))
     );
     assert!(strategy.pricing.lead_quality_policy_applied);
@@ -84,7 +84,9 @@ fn signal_quote_tick_does_not_warm_active_reference_state() {
     let mut market = candidate_market("market-1", 1_000);
     market.price_to_beat = Some(3_100.0);
     strategy.apply_selection_snapshot(selection_snapshot(1_000, SelectionState::Active { market }));
-    strategy.pricing.last_reference_current_price = Some(3_101.0);
+    strategy
+        .pricing
+        .set_last_reference_fair_value(Some(3_101.0));
 
     strategy
         .on_quote(&quote_tick("SIGNAL.SOURCE", 3_102.0, 3_104.0, 1_200))
@@ -94,7 +96,7 @@ fn signal_quote_tick_does_not_warm_active_reference_state() {
     assert_eq!(strategy.active.last_reference_ts_ms, None);
     assert_eq!(strategy.active.warmup_count, INITIAL_COUNTER_U64);
     assert_eq!(
-        strategy.pricing.fast_spot,
+        strategy.pricing.selected_pricing_spot().cloned(),
         Some(fast_spot("signal_data_client", 3_103.0, 1_200))
     );
 }
@@ -107,8 +109,8 @@ fn non_reference_quote_tick_does_not_update_pricing() {
         .on_quote(&quote_tick("OTHER.SOURCE", 100.0, 102.0, 1_200))
         .expect("non-reference quote should be ignored");
 
-    assert_eq!(strategy.pricing.last_reference_current_price, None);
-    assert_eq!(strategy.pricing.fast_spot, None);
+    assert_eq!(strategy.pricing.last_reference_current_price(), None);
+    assert_eq!(strategy.pricing.selected_pricing_spot().cloned(), None);
 }
 
 #[test]
@@ -122,7 +124,7 @@ fn pricing_state_requires_fast_spot_for_pricing_and_keeps_reference_separate() {
         config.lead_jitter_max_ms,
     );
     assert_eq!(pricing.spot_price(), None);
-    assert_eq!(pricing.last_reference_current_price, Some(3_100.0));
+    assert_eq!(pricing.last_reference_current_price(), Some(3_100.0));
 
     let snapshot = ReferenceSnapshot {
         ts_ms: 1_100,
@@ -165,11 +167,11 @@ fn pricing_state_reference_snapshot_rejects_stale_fair_value() {
     );
 
     assert_eq!(
-        pricing.last_reference_current_price,
+        pricing.last_reference_current_price(),
         Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE)
     );
     assert_eq!(
-        pricing.last_reference_current_price_ts_ms,
+        pricing.last_reference_current_price_ts_ms(),
         Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS)
     );
 }
@@ -206,15 +208,15 @@ fn pricing_state_reference_snapshot_processes_signal_candidates_when_fair_value_
     );
 
     assert_eq!(
-        pricing.last_reference_current_price,
+        pricing.last_reference_current_price(),
         Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE)
     );
     assert_eq!(
-        pricing.last_reference_current_price_ts_ms,
+        pricing.last_reference_current_price_ts_ms(),
         Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS)
     );
     assert_eq!(
-        pricing.fast_spot,
+        pricing.selected_pricing_spot().cloned(),
         Some(fast_spot(
             signal_venue,
             TEST_PRICING_SNAPSHOT_FRESH_SIGNAL_PRICE,
@@ -270,10 +272,10 @@ fn pricing_state_applies_lead_quality_thresholds() {
         config.lead_jitter_max_ms,
     );
 
-    assert!(pricing.fast_spot.is_none());
+    assert!(pricing.selected_pricing_spot().is_none());
     assert!(pricing.fast_venue_incoherent);
     assert_eq!(pricing.spot_price(), None);
-    assert_eq!(pricing.last_reference_current_price, Some(3_100.0));
+    assert_eq!(pricing.last_reference_current_price(), Some(3_100.0));
 }
 
 #[test]
@@ -309,16 +311,18 @@ fn pricing_state_clears_fast_spot_when_no_fast_venue_remains() {
         config.lead_jitter_max_ms,
     );
 
-    assert!(pricing.fast_spot.is_none());
+    assert!(pricing.selected_pricing_spot().is_none());
     assert_eq!(pricing.spot_price(), None);
-    assert_eq!(pricing.last_reference_current_price, Some(3_101.0));
+    assert_eq!(pricing.last_reference_current_price(), Some(3_101.0));
 }
 
 #[test]
 fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy.pricing.fast_spot = None;
-    strategy.pricing.last_reference_current_price = Some(3_101.0);
+    strategy.pricing.set_selected_pricing_spot(None);
+    strategy
+        .pricing
+        .set_last_reference_fair_value(Some(3_101.0));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -333,15 +337,20 @@ fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
         vec![EntryPricingBlockReason::SpotPriceMissing]
     );
     assert_eq!(fields.realized_vol, Some(2.5));
-    assert_eq!(fields.realized_vol_source_venue, None);
+    assert_eq!(
+        fields.realized_vol_source_venue.as_deref(),
+        Some("<SOURCE_ID>")
+    );
     assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
 }
 
 #[test]
 fn entry_evaluation_blocks_when_realized_vol_is_not_ready() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_101.0, 1_200));
-    strategy.pricing.latest_realized_vol_snapshot = None;
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_101.0, 1_200)));
+    strategy.pricing.clear_latest_realized_vol_snapshot();
 
     let decision = strategy.entry_evaluation_at(1_200);
 
@@ -506,7 +515,9 @@ fn reference_spot_spike_sets_cooldown_and_blocks_then_allows_entry() {
     assert_eq!(strategy.config.spike_guard_cooldown_secs, 5);
 
     // Seed a previous reference-spot observation so the next one has a baseline.
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 100.0, 1_000)));
 
     // A jump from 100.0 -> 110.0 is a 10% single-step move, >= the 5% threshold.
     strategy.pricing.observe_signal_quote(
@@ -546,7 +557,9 @@ fn reference_spot_spike_sets_cooldown_and_blocks_then_allows_entry() {
 fn sub_threshold_reference_spot_move_does_not_arm_spike_cooldown() {
     let mut strategy = ready_to_trade_strategy();
     strategy.pricing.spike_until_ms = None;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 100.0, 1_000)));
 
     // A 2% move (100.0 -> 102.0) is below the 5% threshold.
     strategy.pricing.observe_signal_quote(
@@ -569,7 +582,7 @@ fn sub_threshold_reference_spot_move_does_not_arm_spike_cooldown() {
 #[test]
 fn spike_detection_requires_a_valid_previous_observation() {
     let mut strategy = ready_to_trade_strategy();
-    strategy.pricing.fast_spot = None;
+    strategy.pricing.set_selected_pricing_spot(None);
     strategy.pricing.spike_until_ms = None;
 
     // First observation has no baseline; a spike cannot be inferred.
@@ -593,7 +606,9 @@ fn spike_cooldown_deadline_only_extends_never_retracts() {
 
     // Pre-arm an active cooldown deadline at 7_000ms with a seeded baseline.
     strategy.pricing.spike_until_ms = Some(7_000);
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 100.0, 1_000)));
 
     // Out-of-order spike: 100 -> 130 (30% >= 5% threshold) at an earlier ts
     // (1_500ms). Its naive deadline 1_500 + 5_000 = 6_500ms is before the
@@ -610,7 +625,9 @@ fn spike_cooldown_deadline_only_extends_never_retracts() {
 
     // A later spike further into the future extends the deadline forward.
     // Reset the baseline so detection is independent of eligibility chaining.
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 100.0, 1_000)));
     strategy.pricing.observe_signal_quote(
         &fast_spot("bybit", 130.0, 4_000),
         &taker_pricing_config(&strategy.config),
@@ -645,8 +662,10 @@ fn task5_exit_decision_uses_hysteresis_boundary_and_fails_closed() {
 #[test]
 fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_101.0, 1_200));
-    strategy.pricing.latest_realized_vol_snapshot = None;
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_101.0, 1_200)));
+    strategy.pricing.clear_latest_realized_vol_snapshot();
 
     let decision = strategy.entry_evaluation_at(1_200);
 
@@ -662,7 +681,9 @@ fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
 fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.4, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.4, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -724,7 +745,9 @@ fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap
     strategy.config.vwap_depth_limit_bps = 0;
     strategy.config.slippage_buffer_bps = 0;
     strategy.config.edge_threshold_basis_points = 0;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -781,7 +804,9 @@ fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
     strategy.config.vwap_depth_limit_bps = 0;
     strategy.config.edge_threshold_basis_points = 0;
     strategy.config.slippage_buffer_bps = 0;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -849,7 +874,9 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
     strategy.active.warmup_count = 2;
     strategy.active.last_reference_ts_ms = Some(1_200);
     strategy.active.fast_venue_incoherent = false;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_500.0, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_500.0, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
@@ -935,7 +962,9 @@ fn sized_acceptance_rejects_notional_unsupported_by_final_repriced_edge() {
         strategy.config.book_impact_cap_bps = 5_000;
         strategy.config.edge_threshold_basis_points = 0;
         strategy.config.slippage_buffer_bps = 0;
-        strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+        strategy
+            .pricing
+            .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
         strategy
             .pricing
             .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1072,7 +1101,9 @@ fn sized_acceptance_keeps_first_pass_size_when_repriced_resize_is_within_toleran
     strategy.config.book_impact_cap_bps = 5_000;
     strategy.config.edge_threshold_basis_points = 0;
     strategy.config.slippage_buffer_bps = 0;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1170,7 +1201,9 @@ fn executable_edge_fee_uses_exact_size_vwap_price_not_limit_price() {
     strategy.active.warmup_count = 2;
     strategy.active.last_reference_ts_ms = Some(1_200);
     strategy.active.fast_venue_incoherent = false;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1221,7 +1254,9 @@ fn executable_edge_fee_requires_cached_instrument_in_test_builds() {
     strategy.active.warmup_count = 2;
     strategy.active.last_reference_ts_ms = Some(1_200);
     strategy.active.fast_venue_incoherent = false;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1254,7 +1289,9 @@ fn executable_edge_blocks_unsupported_post_only_entry_shape() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1288,7 +1325,9 @@ fn entry_submission_caps_quantity_to_limit_price_liability() {
     strategy.config.vwap_depth_limit_bps = 2_000;
     strategy.config.slippage_buffer_bps = 0;
     strategy.config.edge_threshold_basis_points = 0;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1400,7 +1439,9 @@ fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
             ),
         ],
     );
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.4, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.4, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1422,7 +1463,9 @@ fn task6_entry_evaluation_requires_live_uncertainty_components() {
     let mut strategy =
         ready_to_trade_strategy_with_live_fees(Decimal::new(250, 2), Decimal::new(250, 2));
     register_test_strategy_with_active_instruments(&mut strategy);
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.4, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.4, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1442,7 +1485,9 @@ fn task6_entry_evaluation_requires_live_uncertainty_components() {
 fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1453,7 +1498,9 @@ fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
 
     strategy.config.theta_decay_factor = 100.0;
     strategy.active.last_reference_ts_ms = Some(291_000);
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 291_000));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 291_000)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 291_000);
@@ -1510,7 +1557,10 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
     assert_eq!(fields.reference_current_price, Some(3_100.5));
     assert_eq!(fields.interval_open, Some(3_100.0));
     assert_eq!(fields.realized_vol, Some(2.5));
-    assert_eq!(fields.realized_vol_source_venue, None);
+    assert_eq!(
+        fields.realized_vol_source_venue.as_deref(),
+        Some("<SOURCE_ID>")
+    );
     assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
     assert_eq!(fields.fair_probability_up, evaluation.fair_probability_up);
     assert_eq!(fields.selected_side, evaluation.selected_side);
@@ -1597,7 +1647,9 @@ fn task6_exit_decision_requires_live_uncertainty_components() {
         open_position,
         ManagedPositionOrigin::StrategyEntry,
     );
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);

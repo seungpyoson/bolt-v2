@@ -23,10 +23,10 @@ GATE_NEEDS = "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch6
 GATE_NAME = """name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
-          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'gate-deferred'
           || 'gate' }}"""
-GATE_DEFER_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}\""""
+GATE_DEFER_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
 GATE_DEFER_CONTEXT_GUARD = """            if [[ "$defer_run_context" != "true" ]]; then
               echo "deferred CI policy outside deferred draft PR context"
               exit 1
@@ -123,6 +123,7 @@ retention_days = 30
 draft_pr_synchronize = "defer"
 draft_pr_opened = "defer"
 draft_pr_reopened = "defer"
+draft_pr_edited = "defer"
 converted_to_draft = "defer"
 ready_pr = "full"
 ready_for_review = "full"
@@ -165,7 +166,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
     paths-ignore:
       - 'AGENTS.md'
       - 'CLAUDE.md'
@@ -194,7 +195,7 @@ concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
-        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
         || github.event_name == 'pull_request'
         && format('pr-{0}-full', github.event.number)
@@ -667,7 +668,7 @@ jobs:
     name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
-          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'gate-deferred'
           || 'gate' }}
     needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
@@ -721,7 +722,7 @@ jobs:
           if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
             exit 1
           fi
-          defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}"
+          defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}"
           if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
             if [[ "$defer_run_context" != "true" ]]; then
               echo "deferred CI policy outside deferred draft PR context"
@@ -1208,6 +1209,10 @@ check_name = "test"
             valid.replace('draft_pr_reopened = "defer"', 'draft_pr_reopened = "full"'),
         ),
         (
+            "ci_provenance.policy.draft_pr_edited must be defer",
+            valid.replace('draft_pr_edited = "defer"', 'draft_pr_edited = "full"'),
+        ),
+        (
             "ci_provenance.policy.converted_to_draft must be defer",
             valid.replace('converted_to_draft = "defer"', 'converted_to_draft = "full"'),
         ),
@@ -1290,8 +1295,10 @@ on:
     types:
     - opened
     - synchronize
+    - reopened
     - ready_for_review
     - converted_to_draft
+    - edited
   push:
     branches: [main]
 """
@@ -1316,19 +1323,27 @@ def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
             "pull_request types must include ready_for_review",
             replace_once(
                 workflow,
-                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
-                "types: [opened, synchronize, reopened, converted_to_draft]",
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]",
+                "types: [opened, synchronize, reopened, converted_to_draft, edited]",
             ),
         ),
         (
             "pull_request types must include converted_to_draft",
             replace_once(
                 workflow,
-                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
-                "types: [opened, synchronize, reopened, ready_for_review]",
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]",
+                "types: [opened, synchronize, reopened, ready_for_review, edited]",
             ),
         ),
-        ("missing required job ci-policy", without_job(workflow, "ci-policy")),
+        (
+            "pull_request types must include edited",
+            replace_once(
+                workflow,
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]",
+                "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]",
+            ),
+        ),
+        ("missing required job ci-policy", without_job(workflow, "ci-policy"))
     ]
     for fragment, mutated_workflow in cases:
         errors = verifier.verify_workflow(mutated_workflow)
@@ -1513,7 +1528,7 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
     cancel_in_progress_for_draft_pr_and_dispatch = """  cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
-        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         || github.event_name == 'workflow_dispatch' }}
 """
     cases = [
@@ -1904,6 +1919,25 @@ def assert_backtester_detect_includes_runner_config() -> None:
         raise AssertionError(f"backtester detector path check must pass when present, got: {good_errors}")
 
 
+def assert_backtester_ci_requires_pr_event_types() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/backtester-ci.yml"
+    workflow = repo_workflow_text(workflow_name)
+    errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
+    if any("pull_request types must include" in error for error in errors):
+        raise AssertionError(f"backtester-ci workflow must satisfy PR type policy, got: {errors}")
+    for missing_type, fragment in (
+        ("ready_for_review", "types: [opened, synchronize, reopened, edited]"),
+        ("edited", "types: [opened, synchronize, reopened, ready_for_review]"),
+    ):
+        bad = replace_once(workflow, "types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
+        bad_errors = verifier.verify_repo_automation_texts({workflow_name: bad})
+        if not any(f"pull_request types must include {missing_type}" in error for error in bad_errors):
+            raise AssertionError(
+                f"backtester-ci workflow must require {missing_type} in pull_request types, got: {bad_errors}"
+            )
+
+
 def assert_actionlint_rejects_stale_config_variables() -> None:
     verifier = load_verifier()
     actionlint = (REPO_ROOT / ".github" / "actionlint.yaml").read_text(encoding="utf-8")
@@ -1923,13 +1957,55 @@ def assert_actionlint_rejects_stale_config_variables() -> None:
         raise AssertionError(f"actionlint contract must reject stale config variables, got: {errors}")
 
 
+def assert_actionlint_requires_pr_event_types() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/actionlint.yml"
+    workflow = repo_workflow_text(workflow_name)
+    errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
+    if any("pull_request types must include" in error for error in errors):
+        raise AssertionError(f"actionlint workflow must satisfy PR type policy, got: {errors}")
+    for missing_type, fragment in (
+        ("ready_for_review", "types: [opened, synchronize, reopened, edited]"),
+        ("edited", "types: [opened, synchronize, reopened, ready_for_review]"),
+    ):
+        bad = replace_once(workflow, f"types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
+        bad_errors = verifier.verify_repo_automation_texts({workflow_name: bad})
+        if not any(f"pull_request types must include {missing_type}" in error for error in bad_errors):
+            raise AssertionError(
+                f"actionlint workflow must require {missing_type} in pull_request types, got: {bad_errors}"
+            )
+
+
+def assert_ci_docs_pass_stub_requires_pr_event_types() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/ci-docs-pass-stub.yml"
+    workflow = repo_workflow_text(workflow_name)
+    errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
+    if any("pull_request types must include" in error for error in errors):
+        raise AssertionError(f"ci-docs-pass-stub workflow must satisfy PR type policy, got: {errors}")
+    for missing_type, fragment in (
+        ("ready_for_review", "types: [opened, synchronize, reopened, edited]"),
+        ("edited", "types: [opened, synchronize, reopened, ready_for_review]"),
+    ):
+        bad = replace_once(workflow, "types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
+        bad_errors = verifier.verify_repo_automation_texts({workflow_name: bad})
+        if not any(f"pull_request types must include {missing_type}" in error for error in bad_errors):
+            raise AssertionError(
+                f"ci-docs-pass-stub workflow must require {missing_type} in pull_request types, got: {bad_errors}"
+            )
+
+
 def assert_source_fence_static_ignores_comments() -> None:
     verifier = load_verifier()
     justfile_text = """
 source-fence-static:
+    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner
+
+source-fence-static-inner: require-local-verification-gate
     # cargo fetch and scripts/verify_runtime_capture_yaml.py stay in source-fence
     # python3 scripts/rust_verification.py cargo --repo . -- test stays remote-only
     python3 scripts/test_verify_runtime_capture_yaml.py
+    python3 scripts/test_local_verification_gate.py
     python3 scripts/test_lane_governor.py
     python3 scripts/test_verify_lane_governance.py
     python3 scripts/verify_lane_governance.py
@@ -1950,6 +2026,39 @@ source-fence: source-fence-static
     if not any("must not invoke wrapper-routed Cargo" in error for error in bad_errors):
         raise AssertionError(f"source-fence-static active wrapper cargo must still fail, got: {bad_errors}")
 
+    ungated = justfile_text.replace(
+        "    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner\n\n",
+        "",
+    )
+    ungated_errors = verifier.verify_source_fence_static_recipe(ungated)
+    if not any("must run through scripts/local_verification_gate.py" in error for error in ungated_errors):
+        raise AssertionError(f"source-fence-static must require the local gate, got: {ungated_errors}")
+
+    extra_public_work = justfile_text.replace(
+        "    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner",
+        "    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner\n"
+        "    python3 scripts/verify_lane_governance.py",
+    )
+    extra_public_errors = verifier.verify_source_fence_static_recipe(extra_public_work)
+    if not any("source-fence-static must contain only the local verification gate command" in error for error in extra_public_errors):
+        raise AssertionError(f"source-fence-static public recipe extra work was silent, got: {extra_public_errors}")
+
+    nested_public_gate = justfile_text.replace(
+        "    python3 scripts/test_local_verification_gate.py",
+        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner",
+    )
+    nested_public_errors = verifier.verify_source_fence_static_recipe(nested_public_gate)
+    if not any("source-fence-static-inner must not invoke local verification gate recipes" in error for error in nested_public_errors):
+        raise AssertionError(f"source-fence-static nested gate call was silent, got: {nested_public_errors}")
+
+    nested_public_dependency = justfile_text.replace(
+        "source-fence-static-inner: require-local-verification-gate",
+        "source-fence-static-inner: require-local-verification-gate fmt-check",
+    )
+    nested_dependency_errors = verifier.verify_source_fence_static_recipe(nested_public_dependency)
+    if not any("source-fence-static-inner must not depend on local verification gate recipes" in error for error in nested_dependency_errors):
+        raise AssertionError(f"source-fence-static nested gate dependency was silent, got: {nested_dependency_errors}")
+
     missing_lane_check = justfile_text.replace("    python3 scripts/verify_lane_governance.py\n", "")
     missing_errors = verifier.verify_source_fence_static_recipe(missing_lane_check)
     if not any("must run python3 scripts/verify_lane_governance.py" in error for error in missing_errors):
@@ -1962,6 +2071,67 @@ source-fence: source-fence-static
     commented_errors = verifier.verify_source_fence_static_recipe(commented_lane_test)
     if not any("must run python3 scripts/test_lane_governor.py" in error for error in commented_errors):
         raise AssertionError(f"source-fence-static comments must not satisfy lane test wiring, got: {commented_errors}")
+
+
+def assert_local_verification_gate_recipes_are_enforced() -> None:
+    verifier = load_verifier()
+    justfile_text = """
+fmt-check:
+    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner
+
+fmt-check-inner: require-local-verification-gate check-workspace
+    python3 scripts/rust_verification.py cargo --repo . -- fmt --check
+
+ci-lint-workflow:
+    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner
+
+ci-lint-workflow-inner: require-local-verification-gate
+    python3 scripts/test_verify_ci_workflow_hygiene.py
+"""
+    errors = verifier.verify_local_verification_gate_recipes(justfile_text)
+    if errors:
+        raise AssertionError(f"local gate recipe wiring should pass, got: {errors}")
+
+    ungated = justfile_text.replace(
+        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner",
+        "    python3 scripts/rust_verification.py cargo --repo . -- fmt --check",
+    )
+    ungated_errors = verifier.verify_local_verification_gate_recipes(ungated)
+    if not any("justfile fmt-check must run through scripts/local_verification_gate.py" in error for error in ungated_errors):
+        raise AssertionError(f"fmt-check gate drift was silent, got: {ungated_errors}")
+
+    extra_public_work = justfile_text.replace(
+        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner",
+        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner\n"
+        "    python3 scripts/test_verify_ci_workflow_hygiene.py",
+    )
+    extra_public_errors = verifier.verify_local_verification_gate_recipes(extra_public_work)
+    if not any("justfile fmt-check must contain only the local verification gate command" in error for error in extra_public_errors):
+        raise AssertionError(f"fmt-check public recipe extra work was silent, got: {extra_public_errors}")
+
+    nested_public_gate = justfile_text.replace(
+        "    python3 scripts/test_verify_ci_workflow_hygiene.py",
+        "    just fmt-check",
+    )
+    nested_public_errors = verifier.verify_local_verification_gate_recipes(nested_public_gate)
+    if not any("justfile ci-lint-workflow-inner must not invoke local verification gate recipes" in error for error in nested_public_errors):
+        raise AssertionError(f"ci-lint-workflow nested public gate call was silent, got: {nested_public_errors}")
+
+    nested_public_dependency = justfile_text.replace(
+        "ci-lint-workflow-inner: require-local-verification-gate",
+        "ci-lint-workflow-inner: require-local-verification-gate fmt-check",
+    )
+    nested_dependency_errors = verifier.verify_local_verification_gate_recipes(nested_public_dependency)
+    if not any("justfile ci-lint-workflow-inner must not depend on local verification gate recipes" in error for error in nested_dependency_errors):
+        raise AssertionError(f"ci-lint-workflow nested public gate dependency was silent, got: {nested_dependency_errors}")
+
+    missing_guard = justfile_text.replace(
+        "fmt-check-inner: require-local-verification-gate check-workspace",
+        "fmt-check-inner: check-workspace",
+    )
+    missing_guard_errors = verifier.verify_local_verification_gate_recipes(missing_guard)
+    if not any("justfile fmt-check-inner must require the local verification gate" in error for error in missing_guard_errors):
+        raise AssertionError(f"fmt-check inner guard drift was silent, got: {missing_guard_errors}")
 
 
 def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
@@ -1985,7 +2155,7 @@ def without_pr_concurrency(workflow: str) -> str:
   group: >-
     ${{ github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
-        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
         || github.event_name == 'pull_request'
         && format('pr-{0}-full', github.event.number)
@@ -5458,7 +5628,7 @@ def main() -> int:
             """cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
-        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         || github.event_name == 'workflow_dispatch' }}""",
         ),
     )
@@ -5469,7 +5639,7 @@ def main() -> int:
             """  group: >-
     ${{ github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
-        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
         || github.event_name == 'pull_request'
         && format('pr-{0}-full', github.event.number)
@@ -6257,8 +6427,8 @@ def main() -> int:
         "pull_request paths-ignore must match baseline",
         replace_once(
             BASE_WORKFLOW,
-            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]\n    paths-ignore:\n",
-            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]\n    # paths-ignore:\n",
+            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]\n    paths-ignore:\n",
+            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]\n    # paths-ignore:\n",
         ),
     )
     assert_error(
@@ -7533,8 +7703,12 @@ def main() -> int:
     assert_sync_public_key_uses_stdin()
     assert_security_key_public_prefix_is_validated()
     assert_backtester_detect_includes_runner_config()
+    assert_backtester_ci_requires_pr_event_types()
     assert_actionlint_rejects_stale_config_variables()
+    assert_actionlint_requires_pr_event_types()
+    assert_ci_docs_pass_stub_requires_pr_event_types()
     assert_source_fence_static_ignores_comments()
+    assert_local_verification_gate_recipes_are_enforced()
     assert_rust_verification_policy_parse_errors_are_domain_specific()
     assert_ci_policy_matrix()
     assert_pull_request_type_parser_accepts_block_list_indentation()

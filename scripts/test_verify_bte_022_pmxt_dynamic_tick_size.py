@@ -382,7 +382,7 @@ def justfile_text(*, include_dynamic: bool = True) -> str:
     )
     return (
         (dynamic if include_dynamic else "")
-        + "source-fence-static: check-workspace\n"
+        + "source-fence-static-inner: check-workspace\n"
         + "    python3 scripts/test_verify_bte_022_pmxt_durable_source.py\n"
         + ("    python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py\n" if not include_dynamic else source_fence_dynamic)
     )
@@ -676,7 +676,7 @@ def assert_justfile_wiring_is_a_finding() -> None:
         root = Path(tmp)
         populate(root, module, justfile=justfile_text(include_dynamic=False))
         findings = module.scan_root(root)
-        if not any("source-fence-static" in finding for finding in findings):
+        if not any("source-fence-static-inner" in finding for finding in findings):
             raise AssertionError(f"expected source-fence wiring finding, got {findings}")
 
 

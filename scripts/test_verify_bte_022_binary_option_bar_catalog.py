@@ -73,7 +73,7 @@ def test_justfile_requires_source_fence_wiring(module) -> None:
     )
     findings: list[str] = []
     module.verify_justfile(justfile, findings)
-    assert_finding(findings, "source-fence-static")
+    assert_finding(findings, "source-fence-static-inner")
 
 
 def main() -> int:

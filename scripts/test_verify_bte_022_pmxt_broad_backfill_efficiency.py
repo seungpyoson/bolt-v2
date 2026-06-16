@@ -158,7 +158,7 @@ def test_justfile_wiring_is_a_finding() -> None:
         justfile = justfile.replace("    python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py\n", "")
         (root / module.JUSTFILE).write_text(justfile, encoding="utf-8")
         findings = module.scan_root(root)
-    assert_contains(findings, "source-fence-static")
+    assert_contains(findings, "source-fence-static-inner")
 
 
 def test_cli_fails_with_actionable_output() -> None:

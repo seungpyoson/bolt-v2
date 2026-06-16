@@ -154,6 +154,7 @@ CI_PROVENANCE_POLICY_ROWS = (
     "draft_pr_synchronize",
     "draft_pr_opened",
     "draft_pr_reopened",
+    "draft_pr_edited",
     "converted_to_draft",
     "ready_pr",
     "ready_for_review",
@@ -166,6 +167,7 @@ CI_PROVENANCE_POLICY_EXPECTED = {
     "draft_pr_synchronize": "defer",
     "draft_pr_opened": "defer",
     "draft_pr_reopened": "defer",
+    "draft_pr_edited": "defer",
     "converted_to_draft": "defer",
     "ready_pr": "full",
     "ready_for_review": "full",
@@ -761,6 +763,9 @@ def evaluate_ci_policy(
         elif action == "reopened":
             path = str(policy["draft_pr_reopened"])
             reason = "draft_pr_reopened"
+        elif action == "edited":
+            path = str(policy["draft_pr_edited"])
+            reason = "draft_pr_edited"
         elif action == "converted_to_draft":
             path = str(policy["converted_to_draft"])
             reason = "converted_to_draft"
@@ -803,7 +808,10 @@ def parse_inline_yaml_list(value: str) -> set[str]:
     return {item.strip().strip("'\"") for item in stripped[1:-1].split(",") if item.strip()}
 
 
-def workflow_pull_request_type_errors(workflow_text: str) -> list[str]:
+def workflow_pull_request_type_errors(
+    workflow_text: str,
+    required_types: tuple[str, ...] = ("ready_for_review", "converted_to_draft", "edited"),
+) -> list[str]:
     block = workflow_trigger_block(workflow_text, "pull_request")
     types: set[str] = set()
     for index, line in enumerate(block):
@@ -817,7 +825,7 @@ def workflow_pull_request_type_errors(workflow_text: str) -> list[str]:
                     break
                 types.add(child_stripped.removeprefix("- ").strip().strip("'\""))
     errors: list[str] = []
-    for required_type in ("ready_for_review", "converted_to_draft"):
+    for required_type in required_types:
         if required_type not in types:
             errors.append(f"pull_request types must include {required_type}")
     return errors
@@ -4465,6 +4473,75 @@ def just_recipe_blocks(justfile_text: str) -> dict[str, tuple[list[str], list[st
     return recipes
 
 
+def active_recipe_lines(recipes: dict[str, tuple[list[str], list[str]]], name: str) -> list[str]:
+    return [line for line in (strip_comment(raw_line).strip() for raw_line in recipes[name][1]) if line]
+
+
+LOCAL_VERIFICATION_GATE_RECIPES = (
+    "fmt-check",
+    "source-fence-static",
+    "ci-lint-workflow",
+)
+
+
+def local_verification_inner_errors(
+    recipes: dict[str, tuple[list[str], list[str]]],
+    inner_name: str,
+) -> list[str]:
+    if inner_name not in recipes:
+        return []
+    errors: list[str] = []
+    dependencies, _body = recipes[inner_name]
+    if any(dependency in LOCAL_VERIFICATION_GATE_RECIPES for dependency in dependencies):
+        errors.append(f"justfile {inner_name} must not depend on local verification gate recipes")
+    for line in active_recipe_lines(recipes, inner_name):
+        if "scripts/local_verification_gate.py" in line:
+            errors.append(f"justfile {inner_name} must not invoke local verification gate recipes")
+            continue
+        for recipe_name in LOCAL_VERIFICATION_GATE_RECIPES:
+            if re.search(rf"\bjust\s+{re.escape(recipe_name)}\b", line):
+                errors.append(f"justfile {inner_name} must not invoke local verification gate recipes")
+                break
+    return errors
+
+
+def gated_inner_recipe_name(
+    recipes: dict[str, tuple[list[str], list[str]]],
+    public_name: str,
+    inner_name: str,
+    errors: list[str],
+) -> str:
+    if public_name not in recipes:
+        errors.append(f"justfile {public_name} recipe is required")
+        return public_name
+    public_lines = active_recipe_lines(recipes, public_name)
+    gate_command = f"python3 scripts/local_verification_gate.py {public_name} -- just {inner_name}"
+    if gate_command not in public_lines:
+        errors.append(f"justfile {public_name} must run through scripts/local_verification_gate.py")
+        return public_name
+    if public_lines != [gate_command]:
+        errors.append(f"justfile {public_name} must contain only the local verification gate command")
+    if inner_name not in recipes:
+        errors.append(f"justfile {inner_name} recipe is required")
+        return public_name
+    inner_dependencies, _inner_body = recipes[inner_name]
+    if "require-local-verification-gate" not in inner_dependencies:
+        errors.append(f"justfile {inner_name} must require the local verification gate")
+    errors.extend(local_verification_inner_errors(recipes, inner_name))
+    return inner_name
+
+
+def verify_local_verification_gate_recipes(justfile_text: str) -> list[str]:
+    recipes = just_recipe_blocks(justfile_text)
+    errors: list[str] = []
+    for public_name, inner_name in (
+        ("fmt-check", "fmt-check-inner"),
+        ("ci-lint-workflow", "ci-lint-workflow-inner"),
+    ):
+        gated_inner_recipe_name(recipes, public_name, inner_name, errors)
+    return errors
+
+
 def verify_source_fence_static_recipe(justfile_text: str) -> list[str]:
     recipes = just_recipe_blocks(justfile_text)
     errors: list[str] = []
@@ -4477,15 +4554,20 @@ def verify_source_fence_static_recipe(justfile_text: str) -> list[str]:
     source_fence_dependencies, source_fence_body = recipes["source-fence"]
     if "source-fence-static" not in source_fence_dependencies:
         errors.append("justfile source-fence must depend on source-fence-static")
-    static_lines = [
-        line for line in (strip_comment(raw_line).strip() for raw_line in recipes["source-fence-static"][1]) if line
-    ]
+    static_recipe_name = gated_inner_recipe_name(
+        recipes,
+        "source-fence-static",
+        "source-fence-static-inner",
+        errors,
+    )
+    static_lines = active_recipe_lines(recipes, static_recipe_name)
     static_body = "\n".join(static_lines)
     if command_has_managed_compile_heavy_invocation(static_body) or re.search(r"\brust_verification\.py\b[^\n]*\bcargo\b", static_body):
         errors.append("justfile source-fence-static must not invoke wrapper-routed Cargo")
     if "cargo fetch" in static_body or re.search(r"\bscripts/verify_runtime_capture_yaml\.py\b", static_body):
         errors.append("justfile source-fence-static must stop before cargo fetch and runtime capture verification")
     for command in (
+        "python3 scripts/test_local_verification_gate.py",
         "python3 scripts/test_lane_governor.py",
         "python3 scripts/test_verify_lane_governance.py",
         "python3 scripts/verify_lane_governance.py",
@@ -7419,12 +7501,12 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
 GATE_TAG_REUSE_CONDITION = '"$policy_path" == "tag_reuse"'
 GATE_FULL_CONDITION = '"$policy_path" == "full"'
 GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
-GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}\""""
+GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
 GATE_DEFER_CONTEXT_FAILURE_CONDITION = '"$defer_run_context" != "true"'
 GATE_DEFERRED_NAME_EXPRESSION = """name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
-          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'gate-deferred'
           || 'gate' }}"""
 
@@ -8623,6 +8705,39 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
             errors,
             (f"{file_name}: {error}" for error in backtester_detect_path_errors(file_name, text)),
         )
+        if file_name == "actionlint.yml" or file_name.endswith("/actionlint.yml"):
+            add_unique_errors(
+                errors,
+                (
+                    f"{file_name}: {error}"
+                    for error in workflow_pull_request_type_errors(
+                        text,
+                        required_types=("ready_for_review", "edited"),
+                    )
+                ),
+            )
+        if file_name == "backtester-ci.yml" or file_name.endswith("/backtester-ci.yml"):
+            add_unique_errors(
+                errors,
+                (
+                    f"{file_name}: {error}"
+                    for error in workflow_pull_request_type_errors(
+                        text,
+                        required_types=("ready_for_review", "edited"),
+                    )
+                ),
+            )
+        if file_name == "ci-docs-pass-stub.yml" or file_name.endswith("/ci-docs-pass-stub.yml"):
+            add_unique_errors(
+                errors,
+                (
+                    f"{file_name}: {error}"
+                    for error in workflow_pull_request_type_errors(
+                        text,
+                        required_types=("ready_for_review", "edited"),
+                    )
+                ),
+            )
         automation_texts = [text, *yaml_run_shell_texts(uncommented_text(text.splitlines()))]
         for automation_text in automation_texts:
             add_unique_errors(
@@ -9254,6 +9369,7 @@ def main() -> int:
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())
     if "justfile" in repo_automation_texts:
+        errors.extend(verify_local_verification_gate_recipes(repo_automation_texts["justfile"]))
         errors.extend(verify_source_fence_static_recipe(repo_automation_texts["justfile"]))
     if DEFAULT_NO_MISTAKES_CONFIG.exists():
         errors.extend(verify_no_mistakes_config(DEFAULT_NO_MISTAKES_CONFIG.read_text()))

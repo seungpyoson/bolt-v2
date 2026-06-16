@@ -89,7 +89,7 @@ JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_bte_022_pmxt_durable_source.py",
     "python3 scripts/verify_bte_022_pmxt_durable_source.py",
 )
-JUSTFILE_RECIPES = ("verify-bte-022-pmxt-durable-source", "source-fence-static")
+JUSTFILE_RECIPES = ("verify-bte-022-pmxt-durable-source", "source-fence-static-inner")
 STATUS_HASH_TARGETS = (
     (("source_proof_set_spec",), PMXT_SOURCE_PROOF_SPEC),
     (("committed_input_hashes", "source_universe_manifest"), PMXT_SOURCE_MANIFEST),

@@ -750,7 +750,9 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
     strategy.active.books.down.best_ask = Some(0.45);
     strategy.active.books.down.liquidity_available = Some(5_000.0);
     strategy.active.fast_venue_incoherent = false;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.5, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
@@ -816,7 +818,9 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
     strategy.active.books.down.best_ask = Some(0.49);
     strategy.active.books.down.liquidity_available = Some(5_000.0);
     strategy.active.fast_venue_incoherent = false;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.5, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);

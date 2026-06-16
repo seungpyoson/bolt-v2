@@ -140,6 +140,49 @@ handle = lane_governor.acquire(
 print("acquired", time.time())
 """
 
+FAIL_FAST_RUNNER = """
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+lock_dir = sys.argv[2]
+t0 = time.monotonic()
+lane_governor.acquire(
+    "fail-fast-runner", lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=30, heartbeat_seconds=1, poll_interval_seconds=0.1,
+    fail_fast=True,
+)
+print("unexpected-acquired", time.monotonic() - t0)
+"""
+
+LOCAL_GATE_HOLD_RUNNER = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+lock_dir, sentinel, hold = sys.argv[2], sys.argv[3], float(sys.argv[4])
+handle = lane_governor.acquire(
+    "local-gate:external", lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=30, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+Path(sentinel).write_text(str(time.time()), encoding="utf-8")
+time.sleep(hold)
+print("released", time.time())
+"""
+
+FORGED_GATE_ENV_RUNNER = """
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+lock_dir = sys.argv[2]
+os.environ[lane_governor.LOCAL_VERIFICATION_GATE_ENV] = "1"
+t0 = time.monotonic()
+lane_governor.acquire(
+    "forged-gate-env-runner", lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=1, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+print("unexpected-acquired", time.monotonic() - t0)
+"""
+
 # Parent: acquire, then spawn a child runner WITH A SCRUBBED ENV that attempts
 # acquire on the same lock dir. The child must pass through (ancestor holds).
 PARENT_CHILD_RUNNER = """
@@ -224,6 +267,19 @@ result = lane_governor.acquire(
     acquire_timeout_seconds=20, heartbeat_seconds=1, poll_interval_seconds=0.1,
 )
 print("ci-result", result is None, time.monotonic() - t0)
+"""
+
+CI_FAIL_FAST_RUNNER = """
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+t0 = time.monotonic()
+result = lane_governor.acquire(
+    "ci-fail-fast-runner", lock_dir=sys.argv[2],
+    acquire_timeout_seconds=20, heartbeat_seconds=1, poll_interval_seconds=0.1,
+    fail_fast=True,
+)
+print("ci-fail-fast-result", result is None, time.monotonic() - t0)
 """
 
 CI_FALSE_RUNNER = """
@@ -335,6 +391,39 @@ def test_timeout_fails_loud_with_holder_info() -> None:
         assert str(holder.pid) in err, "timeout message must name the holding pid"
 
 
+def test_fail_fast_refuses_busy_lane_without_queueing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(HOLD_RUNNER, tmp, str(sentinel), "10")
+        _wait_for(sentinel)
+        start = time.monotonic()
+        waiter = _spawn(FAIL_FAST_RUNNER, tmp)
+        out, err = waiter.communicate(timeout=10)
+        elapsed = time.monotonic() - start
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert waiter.returncode == 1, f"fail-fast waiter must refuse busy lane: {out}"
+        assert elapsed < 2.0, f"fail-fast waiter queued for {elapsed:.2f}s"
+        assert "already running" in err
+        assert "hold-runner" in err
+        assert str(holder.pid) in err
+
+
+def test_release_closes_and_unregisters_held_handle() -> None:
+    lane_governor = _load("lane_governor")
+    with tempfile.TemporaryDirectory() as tmp:
+        baseline = len(lane_governor._HELD_HANDLES)
+        handle = lane_governor.acquire("release-runner", lock_dir=tmp, honor_ci_env=False)
+        assert handle in lane_governor._HELD_HANDLES
+        lane_governor.release(handle)
+        assert handle.closed
+        assert handle not in lane_governor._HELD_HANDLES
+
+        reacquired = lane_governor.acquire("release-runner-2", lock_dir=tmp, honor_ci_env=False)
+        lane_governor.release(reacquired)
+        assert len(lane_governor._HELD_HANDLES) == baseline
+
+
 def test_unrelated_holder_does_not_reenter() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         sentinel = Path(tmp) / "held"
@@ -346,6 +435,20 @@ def test_unrelated_holder_does_not_reenter() -> None:
         holder.communicate(timeout=10)
         assert waiter.returncode == 1, f"unrelated holder must not pass through: {out}"
         assert "FAILED to acquire" in err
+
+
+def test_forged_gate_env_does_not_reenter_unrelated_local_gate_holder() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(LOCAL_GATE_HOLD_RUNNER, tmp, str(sentinel), "10")
+        _wait_for(sentinel)
+        waiter = _spawn(FORGED_GATE_ENV_RUNNER, tmp)
+        out, err = waiter.communicate(timeout=10)
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert waiter.returncode == 1, f"unrelated local gate holder must not pass through: {out}"
+        assert "FAILED to acquire" in err
+        assert "local-gate:external" in err
 
 
 def test_unexpected_flock_error_fails_immediately() -> None:
@@ -415,6 +518,23 @@ def test_ci_env_bypasses_lock() -> None:
         assert elapsed < 5.0, "CI bypass must not wait"
 
 
+def test_ci_env_bypasses_fail_fast_lock() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(HOLD_RUNNER, tmp, str(sentinel), "10")
+        _wait_for(sentinel)
+        env = dict(os.environ)
+        env["GITHUB_ACTIONS"] = "true"
+        ci = _spawn(CI_FAIL_FAST_RUNNER, tmp, env=env)
+        out, err = ci.communicate(timeout=20)
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert ci.returncode == 0, err
+        flag, elapsed = out.split()[1], float(out.split()[2])
+        assert flag == "True", "CI bypass must return None before fail-fast lock refusal"
+        assert elapsed < 5.0, "CI fail-fast bypass must not wait"
+
+
 def test_ci_false_env_does_not_bypass_lock() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         sentinel = Path(tmp) / "held"
@@ -473,11 +593,15 @@ def main() -> int:
         test_second_acquire_queues_until_release,
         test_holder_metadata_written,
         test_timeout_fails_loud_with_holder_info,
+        test_fail_fast_refuses_busy_lane_without_queueing,
+        test_release_closes_and_unregisters_held_handle,
         test_unrelated_holder_does_not_reenter,
+        test_forged_gate_env_does_not_reenter_unrelated_local_gate_holder,
         test_unexpected_flock_error_fails_immediately,
         test_scrubbed_env_child_reenters_while_parent_holds,
         test_scrubbed_env_grandchild_reenters_while_grandparent_holds,
         test_ci_env_bypasses_lock,
+        test_ci_env_bypasses_fail_fast_lock,
         test_ci_false_env_does_not_bypass_lock,
         test_help_invocation_bypasses_lock,
         test_help_invocation_bypasses_policy_load,

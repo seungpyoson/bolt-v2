@@ -35,7 +35,7 @@ JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_bte_022_pmxt_coverage_ledger.py",
     "python3 scripts/verify_bte_022_pmxt_coverage_ledger.py",
 )
-JUSTFILE_RECIPES = ("verify-bte-022-pmxt-coverage-ledger", "source-fence-static")
+JUSTFILE_RECIPES = ("verify-bte-022-pmxt-coverage-ledger", "source-fence-static-inner")
 
 COVERAGE_STATUS_KEYS = (
     "claim_limits",

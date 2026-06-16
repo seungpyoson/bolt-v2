@@ -244,13 +244,13 @@ def justfile_text(*, include_coverage: bool = True) -> str:
         "    python3 scripts/verify_bte_022_pmxt_coverage_ledger.py\n\n"
     )
     source_fence = (
-        "source-fence-static: check-workspace\n"
+        "source-fence-static-inner: check-workspace\n"
         "    python3 scripts/test_verify_bte_022_pmxt_coverage_ledger.py\n"
         "    python3 scripts/verify_bte_022_pmxt_coverage_ledger.py\n"
     )
     if include_coverage:
         return recipe + source_fence
-    return "source-fence-static: check-workspace\n    python3 scripts/verify_bte_022_pmxt_coverage_ledger.py\n"
+    return "source-fence-static-inner: check-workspace\n    python3 scripts/verify_bte_022_pmxt_coverage_ledger.py\n"
 
 
 def populate(root: Path, module, **overrides) -> None:
@@ -404,7 +404,7 @@ def assert_justfile_wiring_is_a_finding() -> None:
         root = Path(tmp)
         populate(root, module, justfile=justfile_text(include_coverage=False))
         findings = module.scan_root(root)
-        if not any("source-fence-static" in finding for finding in findings):
+        if not any("source-fence-static-inner" in finding for finding in findings):
             raise AssertionError(f"expected source-fence wiring finding, got {findings}")
 
 

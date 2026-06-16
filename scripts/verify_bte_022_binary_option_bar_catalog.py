@@ -224,12 +224,12 @@ def verify_justfile(justfile_text: str, findings: list[str]) -> None:
     recipe = recipe_body(justfile_text, "verify-bte-022-binary-option-bar-catalog")
     if not recipe:
         findings.append(f"{JUSTFILE}: missing verify-bte-022-binary-option-bar-catalog recipe")
-    source_fence = recipe_body(justfile_text, "source-fence-static")
+    source_fence = recipe_body(justfile_text, "source-fence-static-inner")
     for command in REQUIRED_SOURCE_FENCE_COMMANDS:
         if command not in recipe:
             findings.append(f"{JUSTFILE}: verify-bte-022-binary-option-bar-catalog must run {command}")
         if command not in source_fence:
-            findings.append(f"{JUSTFILE}: source-fence-static must run {command}")
+            findings.append(f"{JUSTFILE}: source-fence-static-inner must run {command}")
 
 
 def verify() -> list[str]:

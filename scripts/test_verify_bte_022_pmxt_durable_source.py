@@ -477,7 +477,7 @@ def write_complete_fixture(root: Path) -> None:
             "verify-bte-022-pmxt-durable-source:\n"
             "    python3 scripts/test_verify_bte_022_pmxt_durable_source.py\n"
             "    python3 scripts/verify_bte_022_pmxt_durable_source.py\n"
-            "source-fence-static:\n"
+            "source-fence-static-inner:\n"
             "    python3 scripts/test_verify_bte_022_pmxt_durable_source.py\n"
             "    python3 scripts/verify_bte_022_pmxt_durable_source.py\n"
         ),
@@ -990,13 +990,13 @@ def test_source_fence_command_outside_recipe_is_a_finding() -> None:
                 "    python3 scripts/verify_bte_022_pmxt_durable_source.py\n"
                 "other:\n"
                 "    python3 scripts/test_verify_bte_022_pmxt_durable_source.py\n"
-                "source-fence-static:\n"
+                "source-fence-static-inner:\n"
                 "    python3 scripts/verify_bte_022_pmxt_durable_source.py\n"
             ),
         )
         findings = verifier.scan_root(root)
     assert any(
-        "source-fence-static must run python3 scripts/test_verify_bte_022_pmxt_durable_source.py" in finding
+        "source-fence-static-inner must run python3 scripts/test_verify_bte_022_pmxt_durable_source.py" in finding
         for finding in findings
     )
 

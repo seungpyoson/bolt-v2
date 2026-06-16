@@ -49,7 +49,7 @@ JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py",
     "python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py",
 )
-JUSTFILE_RECIPES = ("verify-bte-022-pmxt-dynamic-tick-size", "source-fence-static")
+JUSTFILE_RECIPES = ("verify-bte-022-pmxt-dynamic-tick-size", "source-fence-static-inner")
 STATUS_HASH_TARGETS = (
     (("committed_input_hashes", "tick_size_change_status"), PMXT_TICK_STATUS),
     (("committed_input_hashes", "timed_instrument_replay_audit"), PMXT_TIMED_AUDIT),

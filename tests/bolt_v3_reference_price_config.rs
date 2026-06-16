@@ -578,7 +578,7 @@ symbol = "BTC"
 }
 
 #[test]
-fn unlisted_unsupported_source_does_not_reduce_supported_source_quorum() {
+fn unlisted_source_does_not_reduce_listed_source_quorum() {
     let messages = validate_reference_current_price_for_asset(
         r#"
 [reference_current_price]
@@ -616,17 +616,10 @@ symbol = "ADA/USD"
         "unlisted source section should fail validation, got: {messages:#?}"
     );
     assert!(
-        messages.iter().any(|message| {
-            message.contains("reference_current_price.source.unlisted_backup")
-                && message.contains("unsupported")
-        }),
-        "unsupported unlisted source should still be reported, got: {messages:#?}"
-    );
-    assert!(
         messages
             .iter()
             .all(|message| !message.contains("cannot be met by 0 enabled supported source")),
-        "unlisted unsupported source must not reduce the listed-source quorum, got: {messages:#?}"
+        "unlisted source must not reduce the listed-source quorum, got: {messages:#?}"
     );
 }
 

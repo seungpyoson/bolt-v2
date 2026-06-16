@@ -1333,7 +1333,7 @@ mod tests {
         // half-spread-scaled target (5.0 * band.half_spread() ~= $0.2401 for this
         // fixture: reference max_half_spread 1.0 makes edge_scale == half_spread,
         // well below the $5 cap), NOT the raw cap. This is the ONLY test that
-        // exercises the live updown call site, so it must catch both an
+        // exercises the registered-family call site, so it must catch both an
         // edge-ignoring constant-cap sizer ($5.0) and a call-site edge/reference
         // arg transpose (also $5.0); the primitive's own unit tests call it with a
         // fixed arg order and structurally cannot detect a transposed call.

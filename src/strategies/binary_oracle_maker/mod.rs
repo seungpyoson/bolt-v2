@@ -54,12 +54,21 @@ pub const KEY: &str = "binary_oracle_maker";
 /// runtime state. Compiled maker order commands route through the shared
 /// execution policy using the retained build context; pricing/exposure loops
 /// arrive in later slices.
-#[derive(Debug)]
 pub struct BinaryOracleMaker {
     core: StrategyCore,
     config: BinaryOracleMakerConfig,
     context: StrategyBuildContext,
     mu: MakerMuState,
+}
+
+impl std::fmt::Debug for BinaryOracleMaker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BinaryOracleMaker")
+            .field("core", &self.core)
+            .field("config", &self.config)
+            .field("mu", &self.mu)
+            .finish_non_exhaustive()
+    }
 }
 
 impl BinaryOracleMaker {

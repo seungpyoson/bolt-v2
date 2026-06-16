@@ -315,6 +315,8 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         fair_probability_up: outcome_group::fair_probability_up,
         maker_quote_targets: unsupported_maker_quote_targets,
         maker_settlement_payout: unsupported_maker_settlement_payout,
+        maker_settlement_payout_from_reference_prices:
+            unsupported_maker_settlement_payout_from_reference_prices,
         maker_binary_fee_curve: unsupported_maker_binary_fee_curve,
     },
     MarketFamilyValidationBinding {

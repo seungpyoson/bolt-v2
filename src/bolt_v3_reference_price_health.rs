@@ -592,17 +592,30 @@ mod tests {
         let plan = reference_current_price_health_plan(&loaded)
             .expect("reference_current_price health plan should build");
 
-        assert_eq!(plan.client_keys, vec!["chainlink_reference"]);
+        assert_eq!(
+            plan.client_keys,
+            vec!["chainlink_reference", "polyresearch_reference"]
+        );
         assert_eq!(plan.observation_timeout_ms, 2000);
-        assert_eq!(plan.targets.len(), 1);
-        let target = &plan.targets[0];
-        assert_eq!(target.strategy_instance_id, "configured_updown_main");
-        assert_eq!(target.source_id, "chainlink_primary");
-        assert_eq!(target.asset, "CONFIGURED_ASSET");
-        assert_eq!(target.provider, "chainlink_ws");
-        assert_eq!(target.client_key, "chainlink_reference");
-        assert_eq!(target.provider_instrument, "CONFIGURED_ASSET-USD.CHAINLINK");
-        assert!(!target.required);
+        assert_eq!(plan.targets.len(), 2);
+        assert!(plan.targets.iter().any(|target| {
+            target.strategy_instance_id == "configured_updown_main"
+                && target.source_id == "chainlink_primary"
+                && target.asset == "CONFIGURED_ASSET"
+                && target.provider == "chainlink_ws"
+                && target.client_key == "chainlink_reference"
+                && target.provider_instrument == "CONFIGURED_ASSET-USD.CHAINLINK"
+                && !target.required
+        }));
+        assert!(plan.targets.iter().any(|target| {
+            target.strategy_instance_id == "configured_updown_main"
+                && target.source_id == "polyresearch_backup"
+                && target.asset == "CONFIGURED_ASSET"
+                && target.provider == "polyresearch_ws"
+                && target.client_key == "polyresearch_reference"
+                && target.provider_instrument == "CONFIGURED_ASSET/USD"
+                && !target.required
+        }));
     }
 
     #[test]
@@ -918,10 +931,18 @@ mod tests {
             loaded,
         };
 
-        assert_eq!(health_run.plan.client_keys, vec!["chainlink_reference"]);
+        assert_eq!(
+            health_run.plan.client_keys,
+            vec!["chainlink_reference", "polyresearch_reference"]
+        );
         assert_eq!(
             sorted_strings(health_run.runtime.registered_data_client_ids()),
-            vec!["chainlink_reference", "okx_data", "polymarket_main"],
+            vec![
+                "chainlink_reference",
+                "okx_data",
+                "polymarket_main",
+                "polyresearch_reference"
+            ],
             "health must prepare all strategy-bound transport data clients"
         );
         assert_eq!(

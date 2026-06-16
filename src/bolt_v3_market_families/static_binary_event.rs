@@ -1026,19 +1026,39 @@ mod tests {
     }
 
     #[test]
-    fn fair_probability_remains_unavailable_until_reference_price_runtime_exists() {
-        let inputs = FairProbabilityInputs {
-            spot_price: 0.5,
-            strike_price: 0.5,
-            seconds_to_market_end: 60,
-            realized_vol: 0.0,
-            pricing_kurtosis: 0.0,
-        };
-
-        assert!(
-            super::super::fair_probability_up_for_family(KEY, &inputs).is_none(),
-            "static_binary_event must stay untradeable until PR730 supplies fair probability"
+    fn fair_probability_uses_reference_current_price_probability() {
+        let fair_probability = super::super::fair_probability_up_for_family(
+            KEY,
+            &FairProbabilityInputs {
+                spot_price: 0.63,
+                strike_price: f64::NAN,
+                seconds_to_market_end: 0,
+                realized_vol: f64::NAN,
+                pricing_kurtosis: f64::NAN,
+            },
         );
+
+        assert_eq!(fair_probability, Some(0.63));
+    }
+
+    #[test]
+    fn fair_probability_fails_closed_on_non_probability_reference_price() {
+        for spot_price in [-0.01, 1.01, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                super::super::fair_probability_up_for_family(
+                    KEY,
+                    &FairProbabilityInputs {
+                        spot_price,
+                        strike_price: 0.5,
+                        seconds_to_market_end: 60,
+                        realized_vol: 0.0,
+                        pricing_kurtosis: 0.0,
+                    },
+                ),
+                None,
+                "static binary fair probability must reject {spot_price}"
+            );
+        }
     }
 
     #[test]

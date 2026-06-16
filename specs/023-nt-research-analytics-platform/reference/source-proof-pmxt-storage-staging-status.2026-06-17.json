@@ -1,0 +1,107 @@
+{
+  "schema_version": "source-proof-pmxt-storage-staging-status.v1",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "source_binding": "polymarket-parquet-archive-index",
+  "checked_at_utc": "2026-06-16T18:17:30Z",
+  "status": "partial_pmxt_artifact_root_storage_staged_source_proof_fixture_unstaged",
+  "bte_022_can_close": false,
+  "raw_sample_download_verification": {
+    "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+    "local_path": "/private/tmp/pmxt-polymarket_orderbook_2026-05-20T22.parquet",
+    "bytes": 361365244,
+    "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "fixture_raw_sample_hash": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567"
+  },
+  "staged_artifacts": [
+    {
+      "id": "raw_sample",
+      "status": "present",
+      "source": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+      "s3_uri": "s3://bolt-parquet/backfill-staging/pmxt/raw/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-05-20T22:00:00Z/object=etag-f99d7c5ea0f65a4ffbb0a51c7a948c0f-44.parquet",
+      "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+      "head_object": {
+        "content_length": 361365244,
+        "etag": "\"f99d7c5ea0f65a4ffbb0a51c7a948c0f-44\"",
+        "last_modified": "2026-06-16T18:16:13+00:00"
+      }
+    },
+    {
+      "id": "schema_sample",
+      "status": "present",
+      "repo_path": "specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json",
+      "s3_uri": "s3://bolt-parquet/backfill-staging/pmxt/source-proofs/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-05-20T22:00:00Z/schema/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json",
+      "sha256": "109db55890bc17a06963cf415b9f9dc6c14982a5e624cd6e7fc8f93e97817965",
+      "head_object": {
+        "content_length": 4640,
+        "etag": "\"5e5302ed5ba634be6147f41a50db5f23\"",
+        "last_modified": "2026-06-16T18:17:03+00:00"
+      }
+    },
+    {
+      "id": "source_universe_manifest",
+      "status": "present",
+      "repo_path": "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
+      "s3_uri": "s3://bolt-parquet/backfill-staging/pmxt/source-proofs/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-05-20T22:00:00Z/manifest/source-universe-object-manifest.json",
+      "sha256": "1fc294c059bf0c13dfab528b80a8bc19a2fb1534fbe6bac2301197211e2239a6",
+      "head_object": {
+        "content_length": 1183656,
+        "etag": "\"86318ae203d219b1f5cd7ccdb38459c9\"",
+        "last_modified": "2026-06-16T18:17:07+00:00"
+      }
+    },
+    {
+      "id": "category_manifest",
+      "status": "present",
+      "repo_path": "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/category-manifests/pmxt-polymarket-v2-object-manifest-orderbook.json",
+      "s3_uri": "s3://bolt-parquet/backfill-staging/pmxt/source-proofs/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-05-20T22:00:00Z/manifest/pmxt-polymarket-v2-object-manifest-orderbook.json",
+      "sha256": "807108d31702a59a3a1cf6036fca817428f5f950ef8fad3f3bb2f335ac5a5a18",
+      "head_object": {
+        "content_length": 1182838,
+        "etag": "\"3e9d6a9d2d7147faeee831d55f0adf27\"",
+        "last_modified": "2026-06-16T18:17:06+00:00"
+      }
+    },
+    {
+      "id": "archive_index_manifest",
+      "status": "present",
+      "repo_path": "specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/pmxt-polymarket-v2-current/manifest/source-archive-index-manifest.json",
+      "s3_uri": "s3://bolt-parquet/backfill-staging/pmxt/source-proofs/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-05-20T22:00:00Z/manifest/source-archive-index-manifest.json",
+      "sha256": "dc76ed0a60f55e0a0f2c082b5aa6031ac89f8bd869c7c039a4f1d294a6552ed9",
+      "head_object": {
+        "content_length": 614625,
+        "etag": "\"29a16340aeb09ccfdac5c5d215a9717f\"",
+        "last_modified": "2026-06-16T18:17:06+00:00"
+      }
+    },
+    {
+      "id": "source_proof_fixture",
+      "status": "not_found",
+      "repo_path": "specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
+      "s3_uri": "s3://bolt-parquet/backfill-staging/pmxt/source-proofs/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-05-20T22:00:00Z/proof/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
+      "sha256": "0ce36fc546f7da91a8b174e54bce7ec81dbc94e6f8459d49cf20483dd2732ce0",
+      "head_object": {
+        "exit_code": 254,
+        "error_code": "NotFound",
+        "observed_error": "An error occurred (404) when calling the HeadObject operation: Not Found"
+      },
+      "upload_status": "blocked_by_approval_reviewer",
+      "upload_blocker": "explicit user approval required before uploading workspace source-proof fixture to S3"
+    }
+  ],
+  "current_acceptance_blockers": [
+    "source_proof_fixture_not_staged_to_s3",
+    "current_source_proof_raw_sample_uri_is_https_not_staged_s3",
+    "current_source_proof_schema_sample_uri_is_repo_uri_not_staged_s3",
+    "current_source_proof_usage_scope_is_one_off_backfill_data",
+    "current_source_proof_storage_check_outcome_is_pending",
+    "instrument_universe_coverage_retention_freshness_completeness_and_cost_checks_remain_pending",
+    "source_selection_status_is_pending_more_proof"
+  ],
+  "decision": "The PMXT raw sample, schema inspection, source-universe manifest, category manifest, and archive-index manifest are now staged and HeadObject-present under the artifact root. Do not accept the PMXT source proof, canonicalize the source, authorize broad backfill, or close BACKTESTING_ENGINE-022 because the source-proof fixture itself is not staged, the committed source proof still uses HTTPS/repo URIs, remains one_off_backfill_data, and retains pending source-proof checks.",
+  "guard_verification": {
+    "script": "repo://scripts/verify_bte_022_pmxt_storage_proof.py",
+    "self_test": "repo://scripts/test_verify_bte_022_pmxt_storage_proof.py",
+    "just_recipe": "verify-bte-022-pmxt-storage-proof",
+    "source_fence_static_recipe": "source-fence-static-inner"
+  }
+}

@@ -13,11 +13,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REFERENCE_ROOT = Path("specs/023-nt-research-analytics-platform/reference")
 PMXT_STORAGE_STATUS = REFERENCE_ROOT / "source-proof-pmxt-storage-proof-status.2026-06-17.json"
+PMXT_STORAGE_STAGING_STATUS = (
+    REFERENCE_ROOT / "source-proof-pmxt-storage-staging-status.2026-06-17.json"
+)
 BTE_022_STATUS = (
     REFERENCE_ROOT / "source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json"
 )
 PMXT_SOURCE_PROOF_FIXTURE = (
     REFERENCE_ROOT / "source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
+)
+PMXT_SCHEMA_SAMPLE = (
+    REFERENCE_ROOT / "source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json"
 )
 PMXT_SOURCE_MANIFEST = (
     REFERENCE_ROOT
@@ -36,8 +42,16 @@ JUSTFILE = Path("justfile")
 EXPECTED_SAMPLE_URL = "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet"
 EXPECTED_SOURCE_BINDING = "polymarket-parquet-archive-index"
 EXPECTED_STATUS = "blocked_pmxt_artifact_root_storage_unproven"
+EXPECTED_STAGING_STATUS = "partial_pmxt_artifact_root_storage_staged_source_proof_fixture_unstaged"
 EXPECTED_CHECKED_AT_UTC = "2026-06-16T17:34:15Z"
+EXPECTED_STAGING_CHECKED_AT_UTC = "2026-06-16T18:17:30Z"
 EXPECTED_TASK_ID = "BACKTESTING_ENGINE-022"
+RAW_SAMPLE_S3_URI = "s3://bolt-parquet/backfill-staging/pmxt/raw/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-05-20T22:00:00Z/object=etag-f99d7c5ea0f65a4ffbb0a51c7a948c0f-44.parquet"
+SCHEMA_SAMPLE_S3_URI = "s3://bolt-parquet/backfill-staging/pmxt/source-proofs/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-05-20T22:00:00Z/schema/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json"
+SOURCE_UNIVERSE_MANIFEST_S3_URI = "s3://bolt-parquet/backfill-staging/pmxt/source-proofs/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-05-20T22:00:00Z/manifest/source-universe-object-manifest.json"
+CATEGORY_MANIFEST_S3_URI = "s3://bolt-parquet/backfill-staging/pmxt/source-proofs/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-05-20T22:00:00Z/manifest/pmxt-polymarket-v2-object-manifest-orderbook.json"
+ARCHIVE_INDEX_MANIFEST_S3_URI = "s3://bolt-parquet/backfill-staging/pmxt/source-proofs/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-05-20T22:00:00Z/manifest/source-archive-index-manifest.json"
+SOURCE_PROOF_FIXTURE_S3_URI = "s3://bolt-parquet/backfill-staging/pmxt/source-proofs/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-05-20T22:00:00Z/proof/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
 EXPECTED_SCHEMA_COLUMNS = (
     "timestamp_received",
     "timestamp",
@@ -134,15 +148,52 @@ S3_HEAD_KEYS = (
     "observed_error",
 )
 GUARD_VERIFICATION_KEYS = ("script", "self_test", "just_recipe", "source_fence_static_recipe")
+STAGING_TOP_LEVEL_KEYS = (
+    "schema_version",
+    "task_id",
+    "source_binding",
+    "checked_at_utc",
+    "status",
+    "bte_022_can_close",
+    "raw_sample_download_verification",
+    "staged_artifacts",
+    "current_acceptance_blockers",
+    "decision",
+    "guard_verification",
+)
+RAW_DOWNLOAD_KEYS = ("source_url", "local_path", "bytes", "sha256", "fixture_raw_sample_hash")
+STAGED_ARTIFACT_KEYS = ("id", "status", "source", "s3_uri", "sha256", "head_object")
+STAGED_REPO_ARTIFACT_KEYS = ("id", "status", "repo_path", "s3_uri", "sha256", "head_object")
+STAGED_FIXTURE_ARTIFACT_KEYS = (
+    "id",
+    "status",
+    "repo_path",
+    "s3_uri",
+    "sha256",
+    "head_object",
+    "upload_status",
+    "upload_blocker",
+)
+HEAD_PRESENT_KEYS = ("content_length", "etag", "last_modified")
+HEAD_NOT_FOUND_KEYS = ("exit_code", "error_code", "observed_error")
 HASH_TARGETS = {
     "pmxt_source_proof_fixture": PMXT_SOURCE_PROOF_FIXTURE,
     "pmxt_source_universe_manifest": PMXT_SOURCE_MANIFEST,
     "pmxt_category_manifest": PMXT_CATEGORY_MANIFEST,
     "pmxt_archive_index_manifest": PMXT_ARCHIVE_INDEX_MANIFEST,
 }
+STAGED_REPO_ARTIFACTS = {
+    "schema_sample": (PMXT_SCHEMA_SAMPLE, SCHEMA_SAMPLE_S3_URI),
+    "source_universe_manifest": (PMXT_SOURCE_MANIFEST, SOURCE_UNIVERSE_MANIFEST_S3_URI),
+    "category_manifest": (PMXT_CATEGORY_MANIFEST, CATEGORY_MANIFEST_S3_URI),
+    "archive_index_manifest": (PMXT_ARCHIVE_INDEX_MANIFEST, ARCHIVE_INDEX_MANIFEST_S3_URI),
+}
 BTE_DURABLE_BLOCKER_SNIPPETS = (
     "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-storage-proof-status.2026-06-17.json",
-    "HeadObject 404",
+    "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-storage-staging-status.2026-06-17.json",
+    "prior manifest-planned raw sample S3 URI HeadObject 404",
+    "raw sample S3 staging now HeadObject-present",
+    "source-proof fixture staging remains blocked",
     "schema_sample_uri",
     "STATIC-GATED scripts/verify_bte_022_pmxt_storage_proof.py",
 )
@@ -177,6 +228,14 @@ def file_sha256(root: Path, rel_path: Path, findings: list[str]) -> str:
     except OSError as exc:
         findings.append(f"{rel_path}: unable to hash file: {exc}")
         return ""
+
+
+def file_size(root: Path, rel_path: Path, findings: list[str]) -> int:
+    try:
+        return (root / rel_path).stat().st_size
+    except OSError as exc:
+        findings.append(f"{rel_path}: unable to stat file: {exc}")
+        return -1
 
 
 def repo_uri(rel_path: Path) -> str:
@@ -456,6 +515,194 @@ def check_guard_verification(status: dict, justfile: str, findings: list[str]) -
                 findings.append(f"{JUSTFILE}: {recipe} missing command {command!r}")
 
 
+def artifact_by_id(status: dict, artifact_id: str, findings: list[str]) -> dict:
+    artifacts = status.get("staged_artifacts")
+    if not isinstance(artifacts, list):
+        findings.append(f"{PMXT_STORAGE_STAGING_STATUS}: staged_artifacts expected list")
+        return {}
+    matches = [artifact for artifact in artifacts if isinstance(artifact, dict) and artifact.get("id") == artifact_id]
+    if len(matches) != 1:
+        findings.append(
+            f"{PMXT_STORAGE_STAGING_STATUS}: staged_artifacts expected exactly one id={artifact_id!r}, found {len(matches)}"
+        )
+        return {}
+    return matches[0]
+
+
+def check_head_present(artifact_id: str, head: dict, content_length: int, etag: str, findings: list[str]) -> None:
+    require_keys_equal(PMXT_STORAGE_STAGING_STATUS, f"{artifact_id}.head_object", head, HEAD_PRESENT_KEYS, findings)
+    require_equal(
+        PMXT_STORAGE_STAGING_STATUS,
+        f"{artifact_id}.head_object.content_length",
+        head.get("content_length"),
+        content_length,
+        findings,
+    )
+    require_equal(PMXT_STORAGE_STAGING_STATUS, f"{artifact_id}.head_object.etag", head.get("etag"), etag, findings)
+    require_text_contains(
+        PMXT_STORAGE_STAGING_STATUS,
+        f"{artifact_id}.head_object.last_modified",
+        head.get("last_modified"),
+        "2026-06-16T18:",
+        findings,
+    )
+
+
+def check_storage_staging_status(root: Path, staging_status: dict, fixture: dict, category_manifest: dict, findings: list[str]) -> None:
+    require_keys_equal(PMXT_STORAGE_STAGING_STATUS, "top-level", staging_status, STAGING_TOP_LEVEL_KEYS, findings)
+    require_equal(
+        PMXT_STORAGE_STAGING_STATUS,
+        "schema_version",
+        staging_status.get("schema_version"),
+        "source-proof-pmxt-storage-staging-status.v1",
+        findings,
+    )
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "task_id", staging_status.get("task_id"), EXPECTED_TASK_ID, findings)
+    require_equal(
+        PMXT_STORAGE_STAGING_STATUS,
+        "source_binding",
+        staging_status.get("source_binding"),
+        EXPECTED_SOURCE_BINDING,
+        findings,
+    )
+    require_equal(
+        PMXT_STORAGE_STAGING_STATUS,
+        "checked_at_utc",
+        staging_status.get("checked_at_utc"),
+        EXPECTED_STAGING_CHECKED_AT_UTC,
+        findings,
+    )
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "status", staging_status.get("status"), EXPECTED_STAGING_STATUS, findings)
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "bte_022_can_close", staging_status.get("bte_022_can_close"), False, findings)
+
+    planned = find_record(
+        PMXT_CATEGORY_MANIFEST,
+        category_manifest.get("payload_records"),
+        "source_url",
+        EXPECTED_SAMPLE_URL,
+        "payload_records",
+        findings,
+    )
+    raw_download = nested_mapping(staging_status, "raw_sample_download_verification", PMXT_STORAGE_STAGING_STATUS, findings)
+    require_keys_equal(PMXT_STORAGE_STAGING_STATUS, "raw_sample_download_verification", raw_download, RAW_DOWNLOAD_KEYS, findings)
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "raw_sample_download_verification.source_url", raw_download.get("source_url"), EXPECTED_SAMPLE_URL, findings)
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "raw_sample_download_verification.bytes", raw_download.get("bytes"), planned.get("bytes"), findings)
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "raw_sample_download_verification.sha256", raw_download.get("sha256"), fixture.get("raw_sample_hash"), findings)
+    require_equal(
+        PMXT_STORAGE_STAGING_STATUS,
+        "raw_sample_download_verification.fixture_raw_sample_hash",
+        raw_download.get("fixture_raw_sample_hash"),
+        fixture.get("raw_sample_hash"),
+        findings,
+    )
+
+    raw = artifact_by_id(staging_status, "raw_sample", findings)
+    require_keys_equal(PMXT_STORAGE_STAGING_STATUS, "raw_sample", raw, STAGED_ARTIFACT_KEYS, findings)
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "raw_sample.status", raw.get("status"), "present", findings)
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "raw_sample.source", raw.get("source"), EXPECTED_SAMPLE_URL, findings)
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "raw_sample.s3_uri", raw.get("s3_uri"), RAW_SAMPLE_S3_URI, findings)
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "raw_sample.sha256", raw.get("sha256"), fixture.get("raw_sample_hash"), findings)
+    check_head_present(
+        "raw_sample",
+        nested_mapping(raw, "head_object", PMXT_STORAGE_STAGING_STATUS, findings),
+        planned.get("bytes"),
+        planned.get("source_hash"),
+        findings,
+    )
+
+    for artifact_id, (rel_path, s3_uri) in STAGED_REPO_ARTIFACTS.items():
+        artifact = artifact_by_id(staging_status, artifact_id, findings)
+        require_keys_equal(PMXT_STORAGE_STAGING_STATUS, artifact_id, artifact, STAGED_REPO_ARTIFACT_KEYS, findings)
+        require_equal(PMXT_STORAGE_STAGING_STATUS, f"{artifact_id}.status", artifact.get("status"), "present", findings)
+        require_equal(PMXT_STORAGE_STAGING_STATUS, f"{artifact_id}.repo_path", artifact.get("repo_path"), rel_path.as_posix(), findings)
+        require_equal(PMXT_STORAGE_STAGING_STATUS, f"{artifact_id}.s3_uri", artifact.get("s3_uri"), s3_uri, findings)
+        require_equal(
+            PMXT_STORAGE_STAGING_STATUS,
+            f"{artifact_id}.sha256",
+            artifact.get("sha256"),
+            file_sha256(root, rel_path, findings),
+            findings,
+        )
+        require_equal(
+            PMXT_STORAGE_STAGING_STATUS,
+            f"{artifact_id}.head_object.content_length",
+            nested_mapping(artifact, "head_object", PMXT_STORAGE_STAGING_STATUS, findings).get("content_length"),
+            file_size(root, rel_path, findings),
+            findings,
+        )
+        require_text_contains(
+            PMXT_STORAGE_STAGING_STATUS,
+            f"{artifact_id}.head_object.last_modified",
+            nested_mapping(artifact, "head_object", PMXT_STORAGE_STAGING_STATUS, findings).get("last_modified"),
+            "2026-06-16T18:",
+            findings,
+        )
+
+    fixture_artifact = artifact_by_id(staging_status, "source_proof_fixture", findings)
+    require_keys_equal(
+        PMXT_STORAGE_STAGING_STATUS,
+        "source_proof_fixture",
+        fixture_artifact,
+        STAGED_FIXTURE_ARTIFACT_KEYS,
+        findings,
+    )
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "source_proof_fixture.status", fixture_artifact.get("status"), "not_found", findings)
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "source_proof_fixture.repo_path", fixture_artifact.get("repo_path"), PMXT_SOURCE_PROOF_FIXTURE.as_posix(), findings)
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "source_proof_fixture.s3_uri", fixture_artifact.get("s3_uri"), SOURCE_PROOF_FIXTURE_S3_URI, findings)
+    require_equal(
+        PMXT_STORAGE_STAGING_STATUS,
+        "source_proof_fixture.sha256",
+        fixture_artifact.get("sha256"),
+        file_sha256(root, PMXT_SOURCE_PROOF_FIXTURE, findings),
+        findings,
+    )
+    fixture_head = nested_mapping(fixture_artifact, "head_object", PMXT_STORAGE_STAGING_STATUS, findings)
+    require_keys_equal(PMXT_STORAGE_STAGING_STATUS, "source_proof_fixture.head_object", fixture_head, HEAD_NOT_FOUND_KEYS, findings)
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "source_proof_fixture.head_object.exit_code", fixture_head.get("exit_code"), 254, findings)
+    require_equal(PMXT_STORAGE_STAGING_STATUS, "source_proof_fixture.head_object.error_code", fixture_head.get("error_code"), "NotFound", findings)
+    require_text_contains(PMXT_STORAGE_STAGING_STATUS, "source_proof_fixture.head_object.observed_error", fixture_head.get("observed_error"), "404", findings)
+    require_equal(
+        PMXT_STORAGE_STAGING_STATUS,
+        "source_proof_fixture.upload_status",
+        fixture_artifact.get("upload_status"),
+        "blocked_by_approval_reviewer",
+        findings,
+    )
+    require_text_contains(
+        PMXT_STORAGE_STAGING_STATUS,
+        "source_proof_fixture.upload_blocker",
+        fixture_artifact.get("upload_blocker"),
+        "explicit user approval",
+        findings,
+    )
+
+    expected_blockers = (
+        "source_proof_fixture_not_staged_to_s3",
+        "current_source_proof_raw_sample_uri_is_https_not_staged_s3",
+        "current_source_proof_schema_sample_uri_is_repo_uri_not_staged_s3",
+        "current_source_proof_usage_scope_is_one_off_backfill_data",
+        "current_source_proof_storage_check_outcome_is_pending",
+        "instrument_universe_coverage_retention_freshness_completeness_and_cost_checks_remain_pending",
+        "source_selection_status_is_pending_more_proof",
+    )
+    require_list_equal(
+        PMXT_STORAGE_STAGING_STATUS,
+        "current_acceptance_blockers",
+        staging_status.get("current_acceptance_blockers"),
+        expected_blockers,
+        findings,
+    )
+    decision = staging_status.get("decision")
+    for snippet in (
+        "raw sample, schema inspection, source-universe manifest, category manifest, and archive-index manifest are now staged",
+        "source-proof fixture itself is not staged",
+        "Do not accept the PMXT source proof",
+        "one_off_backfill_data",
+    ):
+        require_text_contains(PMXT_STORAGE_STAGING_STATUS, "decision", decision, snippet, findings)
+    check_guard_verification(staging_status, read_text(root, JUSTFILE, findings), findings)
+
+
 def check_bte_status(bte_status: dict, findings: list[str]) -> None:
     require_equal(BTE_022_STATUS, "bte_022_can_close", bte_status.get("bte_022_can_close"), False, findings)
     blockers = bte_status.get("remaining_blockers")
@@ -478,6 +725,7 @@ def check_bte_status(bte_status: dict, findings: list[str]) -> None:
 def scan_root(root: Path) -> list[str]:
     findings: list[str] = []
     status = read_json(root, PMXT_STORAGE_STATUS, findings)
+    staging_status = read_json(root, PMXT_STORAGE_STAGING_STATUS, findings)
     fixture = read_json(root, PMXT_SOURCE_PROOF_FIXTURE, findings)
     source_manifest = read_json(root, PMXT_SOURCE_MANIFEST, findings)
     category_manifest = read_json(root, PMXT_CATEGORY_MANIFEST, findings)
@@ -501,6 +749,7 @@ def scan_root(root: Path) -> list[str]:
     check_s3_head(status, findings)
     check_blockers_and_decision(status, findings)
     check_guard_verification(status, justfile, findings)
+    check_storage_staging_status(root, staging_status, fixture, category_manifest, findings)
     check_bte_status(bte_status, findings)
     return findings
 

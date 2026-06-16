@@ -4469,6 +4469,31 @@ def active_recipe_lines(recipes: dict[str, tuple[list[str], list[str]]], name: s
     return [line for line in (strip_comment(raw_line).strip() for raw_line in recipes[name][1]) if line]
 
 
+LOCAL_VERIFICATION_GATE_RECIPES = (
+    "fmt-check",
+    "source-fence-static",
+    "ci-lint-workflow",
+)
+
+
+def local_verification_inner_errors(
+    recipes: dict[str, tuple[list[str], list[str]]],
+    inner_name: str,
+) -> list[str]:
+    if inner_name not in recipes:
+        return []
+    errors: list[str] = []
+    for line in active_recipe_lines(recipes, inner_name):
+        if "scripts/local_verification_gate.py" in line:
+            errors.append(f"justfile {inner_name} must not invoke local verification gate recipes")
+            continue
+        for recipe_name in LOCAL_VERIFICATION_GATE_RECIPES:
+            if re.search(rf"\bjust\s+{re.escape(recipe_name)}\b", line):
+                errors.append(f"justfile {inner_name} must not invoke local verification gate recipes")
+                break
+    return errors
+
+
 def gated_inner_recipe_name(
     recipes: dict[str, tuple[list[str], list[str]]],
     public_name: str,
@@ -4483,12 +4508,15 @@ def gated_inner_recipe_name(
     if gate_command not in public_lines:
         errors.append(f"justfile {public_name} must run through scripts/local_verification_gate.py")
         return public_name
+    if public_lines != [gate_command]:
+        errors.append(f"justfile {public_name} must contain only the local verification gate command")
     if inner_name not in recipes:
         errors.append(f"justfile {inner_name} recipe is required")
         return public_name
     inner_dependencies, _inner_body = recipes[inner_name]
     if "require-local-verification-gate" not in inner_dependencies:
         errors.append(f"justfile {inner_name} must require the local verification gate")
+    errors.extend(local_verification_inner_errors(recipes, inner_name))
     return inner_name
 
 

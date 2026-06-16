@@ -1962,6 +1962,23 @@ source-fence: source-fence-static
     if not any("must run through scripts/local_verification_gate.py" in error for error in ungated_errors):
         raise AssertionError(f"source-fence-static must require the local gate, got: {ungated_errors}")
 
+    extra_public_work = justfile_text.replace(
+        "    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner",
+        "    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner\n"
+        "    python3 scripts/verify_lane_governance.py",
+    )
+    extra_public_errors = verifier.verify_source_fence_static_recipe(extra_public_work)
+    if not any("source-fence-static must contain only the local verification gate command" in error for error in extra_public_errors):
+        raise AssertionError(f"source-fence-static public recipe extra work was silent, got: {extra_public_errors}")
+
+    nested_public_gate = justfile_text.replace(
+        "    python3 scripts/test_local_verification_gate.py",
+        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner",
+    )
+    nested_public_errors = verifier.verify_source_fence_static_recipe(nested_public_gate)
+    if not any("source-fence-static-inner must not invoke local verification gate recipes" in error for error in nested_public_errors):
+        raise AssertionError(f"source-fence-static nested gate call was silent, got: {nested_public_errors}")
+
     missing_lane_check = justfile_text.replace("    python3 scripts/verify_lane_governance.py\n", "")
     missing_errors = verifier.verify_source_fence_static_recipe(missing_lane_check)
     if not any("must run python3 scripts/verify_lane_governance.py" in error for error in missing_errors):
@@ -2002,6 +2019,23 @@ ci-lint-workflow-inner: require-local-verification-gate
     ungated_errors = verifier.verify_local_verification_gate_recipes(ungated)
     if not any("justfile fmt-check must run through scripts/local_verification_gate.py" in error for error in ungated_errors):
         raise AssertionError(f"fmt-check gate drift was silent, got: {ungated_errors}")
+
+    extra_public_work = justfile_text.replace(
+        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner",
+        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner\n"
+        "    python3 scripts/test_verify_ci_workflow_hygiene.py",
+    )
+    extra_public_errors = verifier.verify_local_verification_gate_recipes(extra_public_work)
+    if not any("justfile fmt-check must contain only the local verification gate command" in error for error in extra_public_errors):
+        raise AssertionError(f"fmt-check public recipe extra work was silent, got: {extra_public_errors}")
+
+    nested_public_gate = justfile_text.replace(
+        "    python3 scripts/test_verify_ci_workflow_hygiene.py",
+        "    just fmt-check",
+    )
+    nested_public_errors = verifier.verify_local_verification_gate_recipes(nested_public_gate)
+    if not any("justfile ci-lint-workflow-inner must not invoke local verification gate recipes" in error for error in nested_public_errors):
+        raise AssertionError(f"ci-lint-workflow nested public gate call was silent, got: {nested_public_errors}")
 
     missing_guard = justfile_text.replace(
         "fmt-check-inner: require-local-verification-gate check-workspace",

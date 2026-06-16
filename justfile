@@ -112,6 +112,7 @@ verify-runtime-capture-yaml: test-verify-runtime-capture-yaml
 fmt-check: check-workspace require-rust-verification-owner
     python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner
 
+[private]
 fmt-check-inner: require-local-verification-gate check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check
 
@@ -190,6 +191,7 @@ ci-runner-minutes *args:
 source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner
 
+[private]
 source-fence-static-inner: require-local-verification-gate check-workspace require-rust-verification-owner
     python3 scripts/test_verify_bolt_v3_runtime_literals.py
     python3 scripts/verify_bolt_v3_runtime_literals.py
@@ -257,7 +259,8 @@ live-resolve: require-live-root require-rust-verification-owner
 ci-lint-workflow: check-workspace require-rust-verification-owner
     python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner
 
-ci-lint-workflow-inner: require-local-verification-gate
+[private]
+ci-lint-workflow-inner: require-local-verification-gate check-workspace require-rust-verification-owner
     #!/usr/bin/env bash
     set -euo pipefail
     shopt -s nullglob

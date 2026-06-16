@@ -113,6 +113,32 @@ Path(sys.argv[3]).write_text("ok", encoding="utf-8")
         assert marker.read_text(encoding="utf-8") == "ok"
 
 
+def test_child_verifier_reenters_parent_gate_without_extra_poll_sleep() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "child-elapsed"
+        child_code = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+t0 = time.monotonic()
+lane_governor.acquire(
+    "child-verifier", lock_dir=sys.argv[2], honor_ci_env=False,
+    acquire_timeout_seconds=5, heartbeat_seconds=5, poll_interval_seconds=1,
+)
+Path(sys.argv[3]).write_text(str(time.monotonic() - t0), encoding="utf-8")
+"""
+        rc = GATE.run_gate(
+            "source-fence-static",
+            [sys.executable, "-c", child_code, str(SCRIPTS_DIR), tmp, str(marker)],
+            lock_dir=tmp,
+            honor_ci_env=False,
+        )
+        assert rc == 0
+        elapsed = float(marker.read_text(encoding="utf-8"))
+        assert elapsed < 0.5, f"child gate re-entry must not sleep for a poll interval: {elapsed:.2f}s"
+
+
 def test_gate_keeps_acquired_handle_alive_until_child_exits() -> None:
     closed: list[str] = []
     released: list[str] = []
@@ -150,6 +176,7 @@ def main() -> int:
     tests = [
         test_busy_gate_refuses_without_running_child,
         test_child_verifier_reenters_under_parent_gate,
+        test_child_verifier_reenters_parent_gate_without_extra_poll_sleep,
         test_gate_keeps_acquired_handle_alive_until_child_exits,
     ]
     for test in tests:

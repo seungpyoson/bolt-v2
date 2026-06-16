@@ -17,7 +17,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import lane_governor
 
 
-GATE_ENV = "BOLT_LOCAL_VERIFICATION_GATE"
+GATE_ENV = lane_governor.LOCAL_VERIFICATION_GATE_ENV
 
 
 def run_gate(
@@ -50,8 +50,7 @@ def run_gate(
     try:
         return subprocess.run(list(command), env=env, check=False).returncode
     finally:
-        if held_handle is not None:
-            held_handle.close()
+        lane_governor.release(held_handle)
 
 
 def main(argv: Sequence[str]) -> int:

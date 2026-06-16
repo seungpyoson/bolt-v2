@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
     bolt_v3_instrument_filters::InstrumentFilterError,
+    bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
 };
@@ -89,7 +90,7 @@ pub struct MarketFamilyValidationBinding {
     /// `None` as "pricing unavailable").
     pub fair_probability_up: fn(&FairProbabilityInputs) -> Option<f64>,
     pub maker_quote_targets: fn(FamilyQuoteInputs) -> Option<QuoteTargets>,
-    pub maker_settlement_payout: fn(OutcomeSide, Leg) -> Option<f64>,
+    pub maker_settlement_payout: fn(BinarySettlementPayout, Leg) -> Option<f64>,
     pub maker_binary_fee_curve: fn(f64, f64) -> Option<f64>,
 }
 
@@ -357,7 +358,7 @@ fn unsupported_maker_quote_targets(_inputs: FamilyQuoteInputs) -> Option<QuoteTa
     None
 }
 
-fn unsupported_maker_settlement_payout(_outcome: OutcomeSide, _leg: Leg) -> Option<f64> {
+fn unsupported_maker_settlement_payout(_payout: BinarySettlementPayout, _leg: Leg) -> Option<f64> {
     None
 }
 
@@ -513,27 +514,22 @@ pub fn maker_quote_targets_for_family_with_bindings(
 
 pub fn maker_settlement_payout_for_family(
     family_key: &str,
-    outcome: OutcomeSide,
+    payout: BinarySettlementPayout,
     leg: Leg,
 ) -> Option<f64> {
-    maker_settlement_payout_for_family_with_bindings(
-        family_key,
-        outcome,
-        leg,
-        validation_bindings(),
-    )
+    maker_settlement_payout_for_family_with_bindings(family_key, payout, leg, validation_bindings())
 }
 
 pub fn maker_settlement_payout_for_family_with_bindings(
     family_key: &str,
-    outcome: OutcomeSide,
+    payout: BinarySettlementPayout,
     leg: Leg,
     bindings: &[MarketFamilyValidationBinding],
 ) -> Option<f64> {
     bindings
         .iter()
         .find(|binding| binding.key == family_key)
-        .and_then(|binding| (binding.maker_settlement_payout)(outcome, leg))
+        .and_then(|binding| (binding.maker_settlement_payout)(payout, leg))
 }
 
 pub fn maker_binary_fee_curve_for_family(
@@ -1018,7 +1014,7 @@ mod tests {
         None
     }
 
-    fn fake_maker_settlement_payout(_outcome: OutcomeSide, _leg: Leg) -> Option<f64> {
+    fn fake_maker_settlement_payout(_payout: BinarySettlementPayout, _leg: Leg) -> Option<f64> {
         None
     }
 
@@ -1351,20 +1347,23 @@ mod tests {
 
     #[test]
     fn maker_settlement_and_fee_curve_route_through_canonical_updown_family_binding() {
+        let up_payout = BinarySettlementPayout::new(1.0, 0.0).expect("terminal up payout");
+        let down_payout = BinarySettlementPayout::new(0.0, 1.0).expect("terminal down payout");
+
         assert_eq!(
-            maker_settlement_payout_for_family(updown::KEY, OutcomeSide::Up, Leg::Yes),
+            maker_settlement_payout_for_family(updown::KEY, up_payout, Leg::Yes),
             Some(1.0)
         );
         assert_eq!(
-            maker_settlement_payout_for_family(updown::KEY, OutcomeSide::Up, Leg::No),
+            maker_settlement_payout_for_family(updown::KEY, up_payout, Leg::No),
             Some(0.0)
         );
         assert_eq!(
-            maker_settlement_payout_for_family(updown::KEY, OutcomeSide::Down, Leg::No),
+            maker_settlement_payout_for_family(updown::KEY, down_payout, Leg::No),
             Some(1.0)
         );
         assert_eq!(
-            maker_settlement_payout_for_family(updown::KEY, OutcomeSide::Down, Leg::Yes),
+            maker_settlement_payout_for_family(updown::KEY, down_payout, Leg::Yes),
             Some(0.0)
         );
 
@@ -1377,11 +1376,10 @@ mod tests {
 
     #[test]
     fn unknown_family_maker_write_side_dispatch_fails_closed() {
+        let payout = BinarySettlementPayout::new(1.0, 0.0).expect("terminal payout");
+
         assert!(maker_quote_targets_for_family("missing_family", fixture_quote_inputs()).is_none());
-        assert!(
-            maker_settlement_payout_for_family("missing_family", OutcomeSide::Up, Leg::Yes)
-                .is_none()
-        );
+        assert!(maker_settlement_payout_for_family("missing_family", payout, Leg::Yes).is_none());
         assert!(maker_binary_fee_curve_for_family("missing_family", 0.02, 0.5).is_none());
     }
 

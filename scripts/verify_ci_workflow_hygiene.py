@@ -803,7 +803,10 @@ def parse_inline_yaml_list(value: str) -> set[str]:
     return {item.strip().strip("'\"") for item in stripped[1:-1].split(",") if item.strip()}
 
 
-def workflow_pull_request_type_errors(workflow_text: str) -> list[str]:
+def workflow_pull_request_type_errors(
+    workflow_text: str,
+    required_types: tuple[str, ...] = ("ready_for_review", "converted_to_draft", "edited"),
+) -> list[str]:
     block = workflow_trigger_block(workflow_text, "pull_request")
     types: set[str] = set()
     for index, line in enumerate(block):
@@ -817,7 +820,7 @@ def workflow_pull_request_type_errors(workflow_text: str) -> list[str]:
                     break
                 types.add(child_stripped.removeprefix("- ").strip().strip("'\""))
     errors: list[str] = []
-    for required_type in ("ready_for_review", "converted_to_draft", "edited"):
+    for required_type in required_types:
         if required_type not in types:
             errors.append(f"pull_request types must include {required_type}")
     return errors
@@ -7419,12 +7422,12 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
 GATE_TAG_REUSE_CONDITION = '"$policy_path" == "tag_reuse"'
 GATE_FULL_CONDITION = '"$policy_path" == "full"'
 GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
-GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}\""""
+GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
 GATE_DEFER_CONTEXT_FAILURE_CONDITION = '"$defer_run_context" != "true"'
 GATE_DEFERRED_NAME_EXPRESSION = """name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
-          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'gate-deferred'
           || 'gate' }}"""
 
@@ -8623,6 +8626,28 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
             errors,
             (f"{file_name}: {error}" for error in backtester_detect_path_errors(file_name, text)),
         )
+        if file_name == "actionlint.yml" or file_name.endswith("/actionlint.yml"):
+            add_unique_errors(
+                errors,
+                (
+                    f"{file_name}: {error}"
+                    for error in workflow_pull_request_type_errors(
+                        text,
+                        required_types=("ready_for_review", "edited"),
+                    )
+                ),
+            )
+        if file_name == "backtester-ci.yml" or file_name.endswith("/backtester-ci.yml"):
+            add_unique_errors(
+                errors,
+                (
+                    f"{file_name}: {error}"
+                    for error in workflow_pull_request_type_errors(
+                        text,
+                        required_types=("ready_for_review", "edited"),
+                    )
+                ),
+            )
         automation_texts = [text, *yaml_run_shell_texts(uncommented_text(text.splitlines()))]
         for automation_text in automation_texts:
             add_unique_errors(

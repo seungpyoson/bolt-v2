@@ -31,9 +31,16 @@ on:
   pull_request:
     branches: [main]
     # Explicit types are required because the default set (opened, synchronize,
-    # reopened) does not fire on base retargets (edited) or draft-to-ready
-    # transitions (ready_for_review). Both can leave this always-present gate
+    # reopened) does not fire on draft-to-ready transitions (ready_for_review)
+    # or base-ref changes (edited). Both can leave this always-reported check
     # unmet for a PR that ends up targeting main.
+    # Note: GitHub's edited event fires on ANY PR edit (title, body, base ref),
+    # not only retargets, so this also re-runs the workflow on title/body edits.
+    # We accept that cost because there is no narrower event for base-ref
+    # changes.
+    # Note: ci.yml includes converted_to_draft because it defers some lanes when
+    # a PR is in draft. backtester-ci has no draft-deferral path, so we
+    # deliberately omit converted_to_draft.
     types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches: [main]

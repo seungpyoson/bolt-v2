@@ -108,7 +108,7 @@ fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
         strategy.execution_client_id,
         nautilus_model::identifiers::ClientId::from("polymarket_main")
     );
-    assert!(strategy.reference_data.is_empty());
+    assert!(!strategy.signal_data.is_empty());
 
     let data_engine = &loaded.root.nautilus.data_engine;
     let exec_engine = &loaded.root.nautilus.exec_engine;
@@ -329,10 +329,10 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
         );
         // The OFFLINE `resolution_oracle_primary` gate-provider mapping must stay
         // a single generic placeholder (#551 removes it). The new live
-        // `[clients.chainlink_strike]` source carries the real asset-specific
-        // feeds, so these checks are scoped to the gate-provider binding's
+        // Root `chainlink_data_streams.feed_bindings` carries the real
+        // asset-specific feeds, so these checks are scoped to the gate-provider binding's
         // `feed_id`, not a whole-file substring (which now legitimately contains
-        // the BTC feed under the live client block).
+        // the BTC feed under the root feed catalog).
         let gate_feed_id = feed_bindings[0]
             .get("feed_id")
             .and_then(toml::Value::as_str)
@@ -356,7 +356,7 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
 }
 
 #[test]
-fn shipped_chainlink_strike_client_pins_each_asset_feed_binding() {
+fn shipped_chainlink_data_streams_pins_each_asset_feed_binding() {
     // Drift guard for the LIVE strike feed bindings. The validFrom/feed_id/schema
     // decode checks cannot detect a cross-asset substitution (a feed_id is always
     // internally consistent with its own report), so a copy-paste swap pointing
@@ -378,17 +378,15 @@ fn shipped_chainlink_strike_client_pins_each_asset_feed_binding() {
         .expect("root config should be readable");
     let parsed = toml::from_str::<toml::Value>(&source).expect("root TOML should parse");
     let feed_bindings = parsed
-        .get("clients")
-        .and_then(|value| value.get("chainlink_strike"))
-        .and_then(|value| value.get("data"))
+        .get("chainlink_data_streams")
         .and_then(|value| value.get("feed_bindings"))
         .and_then(toml::Value::as_array)
-        .expect("root config should declare live chainlink_strike feed bindings");
+        .expect("root config should declare live Chainlink Data Streams feed bindings");
 
     assert_eq!(
         feed_bindings.len(),
         expected.len(),
-        "the live chainlink_strike client must ship exactly one feed binding per supported asset"
+        "the live Chainlink Data Streams catalog must ship exactly one feed binding per supported asset"
     );
 
     let mut seen_feed_ids = std::collections::HashSet::new();
@@ -403,7 +401,7 @@ fn shipped_chainlink_strike_client_pins_each_asset_feed_binding() {
             .expect("feed binding should declare feed_id");
         assert_eq!(
             actual_instrument, *instrument_id,
-            "live chainlink_strike feed bindings must stay in the pinned per-asset order"
+            "live Chainlink Data Streams feed bindings must stay in the pinned per-asset order"
         );
         assert_eq!(
             actual_feed, *feed_id,
@@ -438,52 +436,6 @@ fn shipped_chainlink_strike_client_pins_each_asset_feed_binding() {
 }
 
 #[test]
-fn bolt_v3_reference_data_instrument_id_uses_nt_typed_identifier() {
-    // `ReferenceDataBlock.instrument_id` is typed as
-    // `nautilus_model::identifiers::InstrumentId`. The strategy block is
-    // parsed via `toml::from_str(&content)` directly (borrowed source),
-    // so NT's `impl_serialization_for_identifier!` macro runs and routes
-    // through `InstrumentId::new_checked`, eliminating the bolt-side
-    // runtime empty / non-empty guard.
-    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
-    use nautilus_model::identifiers::InstrumentId;
-
-    let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_fixture_with_reference_data(
-        "reference_data_client",
-        "REFERENCE.SOURCE",
-    ))
-    .expect("strategy with optional reference_data should parse");
-
-    let reference = strategy
-        .reference_data
-        .get("primary")
-        .expect("strategy should have reference_data.primary");
-    let instrument_id: InstrumentId = reference.instrument_id;
-    assert_eq!(instrument_id.to_string(), "REFERENCE.SOURCE");
-}
-
-#[test]
-fn bolt_v3_reference_data_instrument_id_rejects_empty_string_at_parse_time() {
-    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
-
-    let mutated = strategy_fixture_with_reference_data("reference_data_client", "");
-    let err = toml::from_str::<BoltV3StrategyConfig>(&mutated)
-        .expect_err("empty instrument_id should be rejected by NT InstrumentId serde");
-    let rendered = err.to_string();
-    assert!(
-        rendered.contains("InstrumentId"),
-        "rejection should cite the NT InstrumentId parser, got: {rendered}"
-    );
-    assert!(
-        rendered.contains("empty")
-            || rendered.contains("invalid")
-            || rendered.contains("missing")
-            || rendered.contains("separator"),
-        "rejection should explain the empty instrument_id, got: {rendered}"
-    );
-}
-
-#[test]
 fn bolt_v3_strategy_execution_client_id_uses_nt_typed_identifier() {
     // `BoltV3StrategyConfig.execution_client_id` is typed as
     // `nautilus_model::identifiers::ClientId`. The strategy block is
@@ -501,8 +453,7 @@ fn bolt_v3_strategy_execution_client_id_uses_nt_typed_identifier() {
     let execution_client_id: ClientId = strategy.execution_client_id;
     assert_eq!(execution_client_id, ClientId::from("polymarket_main"));
 
-    assert!(strategy.reference_data.is_empty());
-    let _typed_client_id_check = ClientId::from("reference_data_client");
+    assert!(!strategy.signal_data.is_empty());
 }
 
 #[test]
@@ -523,20 +474,6 @@ fn bolt_v3_strategy_execution_client_id_rejects_empty_string_at_parse_time() {
     assert!(
         rendered.contains("empty") || rendered.contains("invalid"),
         "rejection should explain the empty execution_client_id, got: {rendered}"
-    );
-}
-
-#[test]
-fn bolt_v3_reference_data_data_client_id_rejects_empty_string_at_parse_time() {
-    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
-
-    let mutated = strategy_fixture_with_reference_data("", "REFERENCE.SOURCE");
-    let err = toml::from_str::<BoltV3StrategyConfig>(&mutated)
-        .expect_err("empty data_client_id should be rejected by NT ClientId serde");
-    let rendered = err.to_string();
-    assert!(
-        rendered.contains("empty") || rendered.contains("invalid"),
-        "rejection should explain the empty data_client_id, got: {rendered}"
     );
 }
 
@@ -704,73 +641,6 @@ fn bolt_v3_polymarket_client_rejects_execution_without_data_block_with_client_vo
     assert!(
         !rendered.contains("data-capable venue"),
         "rejection must not regress to stale `data-capable venue` vocabulary, got: {rendered}"
-    );
-}
-
-#[test]
-fn bolt_v3_reference_data_client_id_rejects_execution_only_client_with_client_vocabulary() {
-    use bolt_v2::{
-        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
-        bolt_v3_validate::validate_strategies,
-    };
-
-    let data_block = "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream-sbe.binance.com/ws\" # NT: BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n";
-    let root: BoltV3RootConfig =
-        toml::from_str(&replace_in_binance_reference_fixture(data_block, ""))
-            .expect("execution-only binance fixture should parse");
-    let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_fixture_with_reference_data(
-        "binance_reference",
-        "REFERENCE.SOURCE",
-    ))
-    .expect("strategy fixture should parse");
-    let loaded = vec![LoadedStrategy {
-        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
-        relative_path: "strategies/binary_oracle.toml".to_string(),
-        config: strategy,
-    }];
-    let messages = validate_strategies(&root, &loaded);
-    let rendered = messages.join("\n");
-    assert!(rendered.contains("reference_data.primary.data_client_id `binance_reference`"));
-    assert!(rendered.contains("data-capable client"));
-    assert!(rendered.contains("referenced client has no [data] block"));
-    assert!(!rendered.contains("data-capable venue"));
-    assert!(!rendered.contains("referenced venue"));
-}
-
-#[test]
-fn bolt_v3_reference_data_rejects_same_instrument_across_distinct_data_clients() {
-    use bolt_v2::{
-        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
-        bolt_v3_validate::validate_strategies,
-    };
-
-    let stable_root: BoltV3RootConfig =
-        toml::from_str(&fixture_root_with_binance_reference_client())
-            .expect("stable root should parse");
-    let mutated_strategy = format!(
-        "{}\n[reference_data.primary]\ndata_client_id = \"binance_reference\"\ninstrument_id = \"REFERENCE.SOURCE\"\n\n[reference_data.secondary]\ndata_client_id = \"polymarket_main\"\ninstrument_id = \"REFERENCE.SOURCE\"\n",
-        std::fs::read_to_string(support::repo_path(
-            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-        ))
-        .expect("strategy fixture should be readable")
-    );
-    let strategy: BoltV3StrategyConfig = toml::from_str(&mutated_strategy)
-        .expect("duplicate reference instrument strategy should parse");
-    let loaded = vec![LoadedStrategy {
-        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
-        relative_path: "strategies/binary_oracle.toml".to_string(),
-        config: strategy,
-    }];
-
-    let messages = validate_strategies(&stable_root, &loaded);
-    let rendered = messages.join("\n");
-
-    assert!(
-        rendered.contains("reference_data.secondary.instrument_id `REFERENCE.SOURCE`")
-            && rendered.contains("binance_reference")
-            && rendered.contains("polymarket_main")
-            && rendered.contains("QuoteTick does not carry data_client_id"),
-        "expected same-instrument/distinct-client rejection, got: {messages:#?}"
     );
 }
 
@@ -3534,7 +3404,7 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     assert_eq!(parameters.entry_order.time_in_force, TimeInForce::Fok);
     assert_eq!(parameters.exit_order.order_type, OrderType::Market);
     assert_eq!(parameters.exit_order.time_in_force, TimeInForce::Ioc);
-    assert!(strategy.reference_data.is_empty());
+    assert!(!strategy.signal_data.is_empty());
 }
 
 #[test]
@@ -5009,7 +4879,7 @@ transport_backend = "sockudo"
 }
 
 #[test]
-fn rejects_binance_reference_data_client_missing_secrets_block() {
+fn rejects_binance_reference_client_missing_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let toml_text = fixture_root_with_binance_reference_client()
@@ -5023,7 +4893,7 @@ fn rejects_binance_reference_data_client_missing_secrets_block() {
         messages.iter().any(|m| m.contains("binance_reference")
             && m.contains("[data]")
             && m.contains("required [secrets] block")),
-        "expected missing-secrets failure for binance reference-data client, got: {messages:#?}"
+        "expected missing-secrets failure for binance reference client, got: {messages:#?}"
     );
     assert!(rendered.contains("Binance reference-data client"));
     assert!(!rendered.contains("Binance reference-data venue"));
@@ -6737,7 +6607,7 @@ fn binance_reference_root_fixture() -> String {
     support::repo_text("tests/fixtures/bolt_v3/binance_reference_root.toml")
 }
 
-fn binance_reference_data_block() -> String {
+fn binance_reference_client_data_block() -> String {
     let fixture = binance_reference_root_fixture();
     let start = fixture
         .find("[clients.binance_reference.data]")
@@ -6763,16 +6633,6 @@ fn replace_in_binance_reference_fixture(needle: &str, replacement: &str) -> Stri
         "binance validation fixture must contain `{needle}` for this test to mutate"
     );
     fixture.replace(needle, replacement)
-}
-
-fn strategy_fixture_with_reference_data(data_client_id: &str, instrument_id: &str) -> String {
-    let fixture = std::fs::read_to_string(support::repo_path(
-        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-    ))
-    .expect("strategy fixture should be readable");
-    format!(
-        "{fixture}\n[reference_data.primary]\ndata_client_id = \"{data_client_id}\"\ninstrument_id = \"{instrument_id}\"\n"
-    )
 }
 
 fn fixture_root_with_gate_providers(gate_providers_toml: &str) -> String {
@@ -7799,7 +7659,7 @@ fn rejects_non_positive_nt_risk_max_notional_map_values() {
 fn rejects_orphan_secrets_block_without_data_or_execution() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let data_block = binance_reference_data_block();
+    let data_block = binance_reference_client_data_block();
     let mutated = replace_in_binance_reference_fixture(&data_block, "");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("orphan-secrets fixture should parse");

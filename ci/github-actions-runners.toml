@@ -49,6 +49,8 @@ debug-heavy = "managed_heavy"
 debug-light = "managed_light"
 
 [workflows.rust_probe]
+probe-unsupported-runner-tier = "managed_light"
+probe-unsupported-job-timeout = "managed_light"
 probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 

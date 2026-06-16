@@ -471,22 +471,6 @@ reason = "This is an existing taker strategy config schema field name; the value
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"reference_instrument_id"'''
-context = '''"reference_instrument_id",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is an existing taker strategy config schema field name, populated from the configured bolt-v3 TOML reference_data role instrument_id."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"reference_venue"'''
-context = '''"reference_venue",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is the existing taker StrategyConfig field name populated from the configured reference_data data_client_id role."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
 literal = '''"signal_instrument_id"'''
 context = '''"signal_instrument_id",'''
 classification = "strategy_runtime_schema_field"
@@ -551,26 +535,10 @@ reason = "This diagnostic reports a config-to-existing-strategy numeric conversi
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"allows at most one [reference_data.<role>] block; got roles [{}]"'''
-context = '''"allows at most one [reference_data.<role>] block; got roles [{}]",'''
-classification = "strategy_archetype_diagnostic_template"
-reason = "This diagnostic rejects ambiguous legacy reference_data role wiring before deriving runtime config; it is not a runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
 literal = '''"allows at most one [signal_data.<role>] block; got roles [{}]"'''
 context = '''"allows at most one [signal_data.<role>] block; got roles [{}]",'''
 classification = "strategy_archetype_diagnostic_template"
 reason = "This diagnostic rejects ambiguous signal_data role wiring before deriving runtime config; it is not a runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"'''
-context = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"'''
-classification = "strategy_archetype_diagnostic_template"
-reason = "This validation diagnostic rejects ambiguous legacy reference_data role wiring; it is not a runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -723,14 +691,6 @@ literal = '''b"bolt-v3.config-bundle.v1\n"'''
 context = '''const CONFIG_BUNDLE_CHECKSUM_DOMAIN: &[u8] = b"bolt-v3.config-bundle.v1\n";'''
 classification = "config_bundle_checksum_domain_separator"
 reason = "This domain separator pins the config-bundle checksum format used to bind strategy-free readiness to the loaded TOML bundle."
-
-[[allowed]]
-path = "src/bolt_v3_decision_evidence.rs"
-kind = "number"
-literal = '''10'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 10;'''
-classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v10 adds position-sizer recovery evidence records and loss-governor/position-sizer admission outcomes; it is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -7199,22 +7159,6 @@ reason = "This is the standard zero padding byte for HMAC keys shorter than the 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"feed_bindings"'''
-context = '''.and_then(|data| data.get("feed_bindings"))'''
-classification = "strategy_archetype_resolution_schema_field"
-reason = "Binary-oracle resolution-data binding schema/config field name read from the configured bolt-v3 TOML target, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"instrument_id `{}` has no matching feed_binding in client `{}` (data.feed_bindings)"'''
-context = '''"instrument_id `{}` has no matching feed_binding in client `{}` (data.feed_bindings)",'''
-classification = "strategy_archetype_diagnostic"
-reason = "Config-load validation diagnostic for the resolution-data binding; interpolated values come from the configured client and target."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
 literal = '''"instrument_id"'''
 context = '''.and_then(|binding| binding.get("instrument_id"))'''
 classification = "strategy_archetype_resolution_schema_field"
@@ -7455,86 +7399,6 @@ reason = "Config-load validation diagnostic for resolution-oracle feed-binding c
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
-literal = '''"reference_venue"'''
-context = '''"reference_venue"'''
-classification = "strategy_runtime_schema_field"
-reason = "This is the existing taker StrategyConfig field name for the configured reference data client id."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_venue"'''
-context = '''Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);'''
-classification = "strategy_runtime_schema_field"
-reason = "This validates the existing taker StrategyConfig field name for the configured reference data client id."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_venue"'''
-context = '''if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {'''
-classification = "strategy_runtime_schema_field"
-reason = "This enforces paired configured reference data fields in the existing taker config schema."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_venue"'''
-context = '''let missing = if table.contains_key("reference_venue") {'''
-classification = "strategy_runtime_schema_field"
-reason = "This builds a diagnostic for the paired configured reference data fields in the existing taker config schema."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_venue"'''
-context = '''| "reference_venue"'''
-classification = "strategy_runtime_schema_field"
-reason = "This whitelists the existing taker StrategyConfig field name while rejecting unknown runtime config fields."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_instrument_id"'''
-context = '''"reference_instrument_id"'''
-classification = "strategy_runtime_schema_field"
-reason = "This is the existing taker StrategyConfig field name for the configured reference instrument id."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_instrument_id"'''
-context = '''"reference_instrument_id",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is the existing taker StrategyConfig field name for the configured reference instrument id."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_instrument_id"'''
-context = '''if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {'''
-classification = "strategy_runtime_schema_field"
-reason = "This enforces paired configured reference data fields in the existing taker config schema."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_instrument_id"'''
-context = '''| "reference_instrument_id"'''
-classification = "strategy_runtime_schema_field"
-reason = "This whitelists the existing taker StrategyConfig field name while rejecting unknown runtime config fields."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"missing_reference_data_pair"'''
-context = '''"missing_reference_data_pair",'''
-classification = "strategy_runtime_validation_code"
-reason = "This validation code labels a missing paired reference data field; it is not a runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
 literal = '''"signal_venue"'''
 context = '''Self::validate_optional_string_field(table, field_prefix, "signal_venue", errors);'''
 classification = "strategy_runtime_schema_field"
@@ -7595,14 +7459,6 @@ literal = '''0'''
 context = '''const INITIAL_COUNTER_U64: u64 = 0;'''
 classification = "strategy_state_invariant"
 reason = "This is a named initial counter invariant for strategy state, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
-kind = "number"
-literal = '''1'''
-context = '''const COUNTER_INCREMENT: usize = 1;'''
-classification = "strategy_state_invariant"
-reason = "This is a named counter increment invariant for strategy state, not an operator runtime value."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
@@ -8507,14 +8363,6 @@ literal = '''0'''
 context = '''window_open_unix_seconds: 0,'''
 classification = "strategy_state_invariant"
 reason = "Sentinel placeholder: a resolution-strike unsubscribe event carries no window-open boundary, so the test-only recorder field is zero; not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polyresearch.rs"
-kind = "string"
-literal = '''"apiKey"'''
-context = '''const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "apiKey";'''
-classification = "provider_protocol_field"
-reason = "PolyResearch WebSocket authentication query-key name proven by secret-safe live handshake evidence; this is a provider protocol field, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polyresearch.rs"
@@ -14696,3 +14544,1171 @@ literal = '''"duplicate {record_kind} decision evidence for client_order_id {cli
 context = '''"duplicate {record_kind} decision evidence for client_order_id {client_order_id} at line {line_number}; cannot disambiguate would-be trades"'''
 classification = "shadow_pnl_duplicate_decision_evidence_diagnostic_template"
 reason = "Fail-loud diagnostic rejecting a second decision-evidence record for an already-seen client_order_id so would-be trades cannot be silently disambiguated; error-message template, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"asset"'''
+context = '''"asset",'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"block"'''
+context = '''crate::bolt_v3_config::ReferencePriceDriftPolicy::Block => "block",'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"block"'''
+context = '''crate::bolt_v3_config::ReferencePriceStalePolicy::Block => "block",'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"client_id"'''
+context = '''insert_string(&mut source_table, "client_id", source.client_id.to_string());'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"drift_policy"'''
+context = '''"drift_policy",'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"enabled"'''
+context = '''insert_bool(&mut source_table, "enabled", source.enabled);'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"first_valid_per_interval"'''
+context = '''"first_valid_per_interval"'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"instrument_id `{}` has no matching feed_binding in root chainlink_data_streams.feed_bindings for client `{}`"'''
+context = '''"instrument_id `{}` has no matching feed_binding in root chainlink_data_streams.feed_bindings for client `{}`",'''
+classification = "binary_oracle_reference_validation_diagnostic"
+reason = "Config-load validation diagnostic for reference/resolution bindings; interpolated values come from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"instrument_id"'''
+context = '''insert_string(&mut source_table, "instrument_id", instrument_id.clone());'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"max_source_age_ms"'''
+context = '''"max_source_age_ms",'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"max_source_drift_bps"'''
+context = '''"max_source_drift_bps",'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"min_valid_sources"'''
+context = '''"min_valid_sources",'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"observe"'''
+context = '''crate::bolt_v3_config::ReferencePriceDriftPolicy::Observe => "observe",'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"provider"'''
+context = '''"provider",'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_current_price"'''
+context = '''"reference_current_price".to_string(),'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_current_price.min_valid_sources"'''
+context = '''"reference_current_price.min_valid_sources",'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"selection_policy"'''
+context = '''"selection_policy",'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"source"'''
+context = '''reference_table.insert("source".to_string(), Value::Table(source_tables));'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"sources"'''
+context = '''"sources",'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"stale_policy"'''
+context = '''"stale_policy",'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"symbol"'''
+context = '''insert_string(&mut source_table, "symbol", symbol.clone());'''
+classification = "binary_oracle_reference_current_price_runtime_schema"
+reason = "Runtime config schema key or enum label for reference_current_price passed from validated TOML into the strategy."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = '''11'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 11;'''
+classification = "decision_evidence_schema_contract"
+reason = "Decision-evidence JSONL schema/control literal; it defines audit-record compatibility, not operator runtime configuration."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 decision evidence has no complete entry decision chain"'''
+context = '''"bolt-v3 decision evidence has no complete entry decision chain"'''
+classification = "decision_evidence_schema_contract"
+reason = "Decision-evidence JSONL schema/control literal; it defines audit-record compatibility, not operator runtime configuration."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"feed_bindings"'''
+context = '''"feed_bindings".to_string(),'''
+classification = "chainlink_root_catalog_schema"
+reason = "Root-owned Chainlink feed catalog schema key; actual feed ids remain configured in TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"feed_bindings"'''
+context = '''if table.contains_key("feed_bindings") {'''
+classification = "chainlink_root_catalog_schema"
+reason = "Root-owned Chainlink feed catalog schema key; actual feed ids remain configured in TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''if !data.reconnect_backoff_factor.is_finite() || data.reconnect_backoff_factor <= 0.0 {'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''","'''
+context = '''&feed_ids.join(","),'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"/"'''
+context = '''|| !(path.is_empty() || path == "/")'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"/"'''
+context = '''|| value == "/"'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"//"'''
+context = '''|| value.starts_with("//")'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"CHAINLINK_REFERENCE_PRICE"'''
+context = '''pub const KEY: &str = "CHAINLINK_REFERENCE_PRICE";'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"Chainlink reference subscription data_type metadata is inconsistent"'''
+context = '''"Chainlink reference subscription data_type metadata is inconsistent".to_string(),'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"Chainlink reference-price source"'''
+context = '''consumer: "Chainlink reference-price source",'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"ChainlinkReferencePriceClientConfig"'''
+context = '''const CONFIG_TYPE: &str = "ChainlinkReferencePriceClientConfig";'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''"api_key_ssm_parameter",'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''("api_key_ssm_parameter", &secrets.api_key_ssm_parameter),'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''field_name: "api_key_ssm_parameter",'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_parameter", "api_secret_ssm_parameter"];'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_secret_ssm_parameter"'''
+context = '''"api_secret_ssm_parameter",'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_secret_ssm_parameter"'''
+context = '''"api_secret_ssm_parameter",'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_secret_ssm_parameter"'''
+context = '''field_name: "api_secret_ssm_parameter",'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_secret_ssm_parameter"'''
+context = '''pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_parameter", "api_secret_ssm_parameter"];'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"chainlink_ws"'''
+context = '''pub const REFERENCE_PRICE_PROVIDER_KEY: &str = "chainlink_ws";'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"data_type"'''
+context = '''let asset = required_reference_field(metadata, REFERENCE_PRICE_ASSET_PARAM, "data_type")?;'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"data_type"'''
+context = '''let provider = required_reference_field(metadata, REFERENCE_PRICE_PROVIDER_PARAM, "data_type")?;'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"data_type"'''
+context = '''required_reference_field(metadata, REFERENCE_PRICE_SOURCE_KEY_PARAM, "data_type")?;'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"feedIDs"'''
+context = '''const CHAINLINK_REFERENCE_FEED_IDS_QUERY_FIELD: &str = "feedIDs";'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"params"'''
+context = '''let actual = required_reference_field(params, key, "params")?;'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"params"'''
+context = '''required_reference_field(params, REFERENCE_PRICE_INSTRUMENT_ID_PARAM, "params")?;'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"reconnect_delay_initial_ms"'''
+context = '''"reconnect_delay_initial_ms",'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"wss"'''
+context = '''|| url.scheme() != "wss"'''
+classification = "chainlink_reference_provider_contract"
+reason = "Chainlink reference-price provider protocol/config literal; operator-selected feeds and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "number"
+literal = '''0'''
+context = '''PolyResearchReconnectMaxAttempts::Limited(0)'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "number"
+literal = '''0'''
+context = '''let provider_subscription_generation = Arc::new(AtomicU64::new(0));'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "number"
+literal = '''0'''
+context = '''provider_subscription_generation: Arc::new(AtomicU64::new(0)),'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''if !data.reconnect_backoff_factor.is_finite() || data.reconnect_backoff_factor <= 0.0 {'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "number"
+literal = '''1'''
+context = '''.fetch_add(1, Ordering::SeqCst);'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "number"
+literal = '''1'''
+context = '''provider_subscription_generation.fetch_add(1, Ordering::SeqCst);'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"POLYRESEARCH_REFERENCE_PRICE"'''
+context = '''pub const KEY: &str = "POLYRESEARCH_REFERENCE_PRICE";'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"PolyResearch reference subscription {} metadata is inconsistent"'''
+context = '''"PolyResearch reference subscription {} metadata is inconsistent",'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"PolyResearch reference-price source"'''
+context = '''consumer: "PolyResearch reference-price source",'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"PolyResearchReferencePriceClientConfig"'''
+context = '''const CONFIG_TYPE: &str = "PolyResearchReferencePriceClientConfig";'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"apiKey"'''
+context = '''const POLYRESEARCH_LEGACY_API_KEY_QUERY_FIELD: &str = "apiKey";'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''"api_key_ssm_parameter",'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''"api_key_ssm_parameter",'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''field_name: "api_key_ssm_parameter",'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_parameter"];'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"chainlink"'''
+context = '''const POLYRESEARCH_REFERENCE_SUBSCRIPTION_TYPE: &str = "chainlink";'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"key"'''
+context = '''const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "key";'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"nautilus_network::websocket::client"'''
+context = '''pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_network::websocket::client"];'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"polyresearch_ws"'''
+context = '''pub const REFERENCE_PRICE_PROVIDER_KEY: &str = "polyresearch_ws";'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"price_feed"'''
+context = '''const POLYRESEARCH_PRICE_FEED_FRAME_TYPE: &str = "price_feed";'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"reconnect_delay_initial_ms"'''
+context = '''"reconnect_delay_initial_ms",'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"subscribe"'''
+context = '''const POLYRESEARCH_SUBSCRIBE_ACTION: &str = "subscribe";'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"subscribed"'''
+context = '''const POLYRESEARCH_SUBSCRIBED_FRAME_TYPE: &str = "subscribed";'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"unlimited"'''
+context = '''Wire::Text(value) if value == "unlimited" => Ok(Self::Unlimited),'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"unsubscribe"'''
+context = '''const POLYRESEARCH_UNSUBSCRIBE_ACTION: &str = "unsubscribe";'''
+classification = "polyresearch_reference_provider_contract"
+reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''value.is_finite() && value > 0.0'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "number"
+literal = '''1'''
+context = '''for rhs in quotes.iter().skip(index + 1) {'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "number"
+literal = '''10_000.0'''
+context = '''let drift_bps = ((lhs.price - rhs.price).abs() / denominator) * 10_000.0;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"BoltV3ReferencePriceUpdate"'''
+context = '''const REFERENCE_PRICE_UPDATE_TYPE: &str = "BoltV3ReferencePriceUpdate";'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"api-key "'''
+context = '''|| value_lower.starts_with("api-key ")'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"api_key"'''
+context = '''|| key_lower.contains("api_key")'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"apikey "'''
+context = '''|| value_lower.starts_with("apikey ")'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"apikey"'''
+context = '''|| key_lower.contains("apikey")'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"asset"'''
+context = '''const REFERENCE_PRICE_ASSET_METADATA_FIELD: &str = "asset";'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"auth"'''
+context = '''key_lower == "auth"'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"auth_header"'''
+context = '''|| key_lower.contains("auth_header")'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"auth_rejected"'''
+context = '''Self::AuthRejected => "auth_rejected",'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"authorization"'''
+context = '''|| key_lower.contains("authorization")'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"available"'''
+context = '''Self::Available => "available",'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"basic "'''
+context = '''|| value_lower.starts_with("basic ")'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"bearer "'''
+context = '''value_lower.starts_with("bearer ")'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"credential"'''
+context = '''|| key_lower.contains("credential")'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"disabled"'''
+context = '''Self::Disabled => "disabled",'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"disconnected"'''
+context = '''Self::Disconnected => "disconnected",'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"drift_exceeded"'''
+context = '''Self::DriftExceeded => "drift_exceeded",'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"instrument_id"'''
+context = '''pub const REFERENCE_PRICE_INSTRUMENT_ID_PARAM: &str = "instrument_id";'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"key"'''
+context = '''validate_provenance_component(key, "key")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"malformed_frame"'''
+context = '''Self::MalformedFrame => "malformed_frame",'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"normalized reference quote constructor mirrors the provider contract fields including provenance"'''
+context = '''reason = "normalized reference quote constructor mirrors the provider contract fields including provenance"'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"normalized reference quote constructor mirrors the provider contract fields"'''
+context = '''reason = "normalized reference quote constructor mirrors the provider contract fields"'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"normalized reference-price custom data carries explicit provider, price, and timing fields"'''
+context = '''reason = "normalized reference-price custom data carries explicit provider, price, and timing fields"'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"normalized reference-price custom data carries explicit provider, price, timing, and provenance fields"'''
+context = '''reason = "normalized reference-price custom data carries explicit provider, price, timing, and provenance fields"'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"observed_ts_ms"'''
+context = '''let ts_event = reference_timestamp_ms_to_unix_nanos(observed_ts_ms, "observed_ts_ms")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"password"'''
+context = '''|| key_lower.contains("password")'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"provider"'''
+context = '''const REFERENCE_PRICE_PROVIDER_METADATA_FIELD: &str = "provider";'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"received_ts_ms"'''
+context = '''let ts_init = reference_timestamp_ms_to_unix_nanos(received_ts_ms, "received_ts_ms")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"secret"'''
+context = '''|| key_lower.contains("secret")'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"silent"'''
+context = '''Self::Silent => "silent",'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"source_key"'''
+context = '''const REFERENCE_PRICE_SOURCE_KEY_METADATA_FIELD: &str = "source_key";'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"stale"'''
+context = '''Self::Stale => "stale",'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"subscription_rejected"'''
+context = '''Self::SubscriptionRejected => "subscription_rejected",'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"symbol"'''
+context = '''pub const REFERENCE_PRICE_SYMBOL_PARAM: &str = "symbol";'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"token "'''
+context = '''|| value_lower.starts_with("token ")'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"token"'''
+context = '''|| key_lower.contains("token")'''
+classification = "reference_price_secret_redaction_guard"
+reason = "Reference-price credential-redaction guard literal; it prevents credential disclosure and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"unsupported_symbol"'''
+context = '''Self::UnsupportedSymbol => "unsupported_symbol",'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"value"'''
+context = '''validate_provenance_component(value, "value")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''", "'''
+context = '''missing_client_keys.join(", ")'''
+classification = "reference_current_price_health_contract"
+reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''", "'''
+context = '''registered_strategy_ids.join(", ")'''
+classification = "reference_current_price_health_contract"
+reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"no enabled reference_current_price sources are configured"'''
+context = '''"no enabled reference_current_price sources are configured"'''
+classification = "reference_current_price_health_contract"
+reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"no reference_current_price custom data was observed before the configured health bound"'''
+context = '''"no reference_current_price custom data was observed before the configured health bound";'''
+classification = "reference_current_price_health_contract"
+reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"not_observed"'''
+context = '''const SOURCE_UPDATE_OBSERVATION_STATUS_NOT_OBSERVED: &str = "not_observed";'''
+classification = "reference_current_price_health_contract"
+reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"observed"'''
+context = '''const SOURCE_UPDATE_OBSERVATION_STATUS_OBSERVED: &str = "observed";'''
+classification = "reference_current_price_health_contract"
+reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"received reference_current_price custom data before the configured health bound"'''
+context = '''"received reference_current_price custom data before the configured health bound";'''
+classification = "reference_current_price_health_contract"
+reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"reference_current_price health registered strategies: {}"'''
+context = '''"reference_current_price health registered strategies: {}",'''
+classification = "reference_current_price_health_contract"
+reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"strategy `{}` lists reference_current_price source `{source_id}` without a matching source block"'''
+context = '''"strategy `{}` lists reference_current_price source `{source_id}` without a matching source block",'''
+classification = "reference_current_price_health_contract"
+reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"strategy-free live node exited before reference_current_price custom data was observed"'''
+context = '''"strategy-free live node exited before reference_current_price custom data was observed";'''
+classification = "reference_current_price_health_contract"
+reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"timed_out"'''
+context = '''const SOURCE_UPDATE_OBSERVATION_STATUS_TIMED_OUT: &str = "timed_out";'''
+classification = "reference_current_price_health_contract"
+reason = "Reference-current-price health output/status literal; it reports observed runtime state and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''1'''
+context = '''valid_enabled_sources = valid_enabled_sources.saturating_sub(1);'''
+classification = "reference_current_price_validation_diagnostic"
+reason = "Reference-current-price validation diagnostic; interpolated values come from configured TOML."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"{context}: reference_current_price.min_valid_sources {} exceeds enabled source count {}"'''
+context = '''"{context}: reference_current_price.min_valid_sources {} exceeds enabled source count {}",'''
+classification = "reference_current_price_validation_diagnostic"
+reason = "Reference-current-price validation diagnostic; interpolated values come from configured TOML."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"{context}: reference_current_price.source.{source_id} uses the same physical reference feed as reference_current_price.source.{existing_source_id}: provider `{}`, client_id `{}`, identifier `{identifier}`"'''
+context = '''"{context}: reference_current_price.source.{source_id} uses the same physical reference feed as reference_current_price.source.{existing_source_id}: provider `{}`, client_id `{}`, identifier `{identifier}`",'''
+classification = "reference_current_price_validation_diagnostic"
+reason = "Reference-current-price validation diagnostic; interpolated values come from configured TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"reference_current_price"'''
+context = '''Self::validate_optional_table_field(table, field_prefix, "reference_current_price", errors);'''
+classification = "strategy_reference_current_price_schema"
+reason = "Strategy runtime config schema key for reference_current_price; values are supplied by validated TOML."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"custom-data subscription references unregistered data client {client_id}"'''
+context = '''"custom-data subscription references unregistered data client {client_id}"'''
+classification = "strategy_free_custom_data_diagnostic"
+reason = "Strategy-free reference health diagnostic for a custom-data subscription whose client id was not registered; the client id comes from validated TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/report.rs"
+kind = "number"
+literal = '''7'''
+context = '''const CHAINLINK_REPORT_V3_BID_PRICE_WORD_INDEX: usize = 7;'''
+classification = "chainlink_report_protocol_layout"
+reason = "Fixed Chainlink Data Streams V3 ABI word index for bid price decoding; the selected feed remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/report.rs"
+kind = "number"
+literal = '''8'''
+context = '''const CHAINLINK_REPORT_V3_ASK_PRICE_WORD_INDEX: usize = 8;'''
+classification = "chainlink_report_protocol_layout"
+reason = "Fixed Chainlink Data Streams V3 ABI word index for ask price decoding; the selected feed remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"reference_current_price"'''
+context = '''| "reference_current_price"'''
+classification = "strategy_reference_current_price_schema"
+reason = "Strategy runtime config schema key for reference_current_price; values are supplied by validated TOML."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"asset"'''
+context = '''validate_reference_identity_field(&asset, "asset")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"asset"'''
+context = '''validate_reference_identity_field(&asset, "asset")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"asset"'''
+context = '''validate_reference_identity_field(asset, "asset")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"provider"'''
+context = '''validate_reference_identity_field(&provider, "provider")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"provider"'''
+context = '''validate_reference_identity_field(provider, "provider")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"provider_instrument"'''
+context = '''validate_reference_identity_field(&provider_instrument, "provider_instrument")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"provider_instrument"'''
+context = '''validate_reference_identity_field(&provider_instrument, "provider_instrument")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''validate_reference_identity_field(&source_id, "source_id")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''validate_reference_identity_field(&source_id, "source_id")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''validate_reference_identity_field(source_id, "source_id")?;'''
+classification = "reference_price_data_contract"
+reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."

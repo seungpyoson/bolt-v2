@@ -14,6 +14,8 @@ workspace="${GITHUB_WORKSPACE:-}"
 mode="${RUST_PROBE_MODE:-}"
 test_target="${RUST_PROBE_TEST_TARGET:-}"
 test_name="${RUST_PROBE_TEST_NAME:-}"
+expected_sha="${RUST_PROBE_EXPECTED_SHA:-}"
+probe_id="${RUST_PROBE_ID:-}"
 
 if [ -z "$workspace" ]; then
   reject "GITHUB_WORKSPACE is required"
@@ -26,6 +28,21 @@ fi
 # become a leading cargo or nextest option such as --help.
 target_regex='^[A-Za-z0-9_][A-Za-z0-9_.-]*$'
 name_regex='^[A-Za-z0-9_][A-Za-z0-9_:.@/-]*$'
+sha_regex='^[0-9a-fA-F]{40}$'
+probe_id_regex='^[A-Za-z0-9][A-Za-z0-9_.-]*$'
+
+if [ -z "$expected_sha" ]; then
+  reject "RUST_PROBE_EXPECTED_SHA is required"
+fi
+if [[ ! "$expected_sha" =~ $sha_regex ]]; then
+  reject "RUST_PROBE_EXPECTED_SHA must be a full 40-character hex SHA"
+fi
+if [ -z "$probe_id" ]; then
+  reject "RUST_PROBE_ID is required"
+fi
+if [[ ! "$probe_id" =~ $probe_id_regex ]]; then
+  reject "RUST_PROBE_ID must match $probe_id_regex"
+fi
 
 require_target() {
   if [ -z "$test_target" ]; then
@@ -88,9 +105,18 @@ case "$mode" in
     ;;
 esac
 
+cd "$workspace"
+actual_sha="$(git rev-parse HEAD)"
+expected_sha_lower="$(printf '%s' "$expected_sha" | tr '[:upper:]' '[:lower:]')"
+actual_sha_lower="$(printf '%s' "$actual_sha" | tr '[:upper:]' '[:lower:]')"
+if [ "$actual_sha_lower" != "$expected_sha_lower" ]; then
+  reject "checked-out SHA does not match RUST_PROBE_EXPECTED_SHA: actual=$actual_sha expected=$expected_sha"
+fi
+
+echo "Rust Probe id: $probe_id"
+echo "Rust Probe checkout SHA: $actual_sha_lower"
 echo "Rust Probe mode: $mode"
 echo "Rust Probe test_target: ${test_target:-<empty>}"
 echo "Rust Probe test_name: ${test_name:-<empty>}"
 
-cd "$workspace"
 python3 "$workspace/scripts/rust_verification.py" cargo --repo "$workspace" -- "${probe_args[@]}"

@@ -31,7 +31,7 @@ use rust_decimal::Decimal;
 
 struct NoopFeeProvider;
 
-const EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 10;
+const EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 11;
 const PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 9;
 
 impl FeeProvider for NoopFeeProvider {
@@ -45,7 +45,7 @@ impl FeeProvider for NoopFeeProvider {
 }
 
 #[test]
-fn decision_evidence_schema_version_tracks_position_sizer_recovery_records() {
+fn decision_evidence_schema_version_tracks_reference_price_and_position_sizer_records() {
     assert_eq!(
         BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
         EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION
@@ -125,7 +125,9 @@ fn strategy_input_snapshot_with_realized_volatility_snapshot() -> BoltV3Strategy
         price_to_beat_value: "3100".to_string(),
         reference_quote_ts_event: 1200,
         spot_price: "3100.5".to_string(),
-        reference_fair_value: Some("3100.5".to_string()),
+        reference_current_price: Some("3100.5".to_string()),
+        reference_current_price_source_id: Some("chainlink_primary".to_string()),
+        reference_current_price_failed_over: Some(false),
         realized_volatility: "2.5".to_string(),
         realized_volatility_surface_id: "<surface_id>".to_string(),
         realized_volatility_as_of_ms: Some(1200),
@@ -465,7 +467,9 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         price_to_beat_value: "3100".to_string(),
         reference_quote_ts_event: 1200,
         spot_price: "3100.5".to_string(),
-        reference_fair_value: Some("3100.5".to_string()),
+        reference_current_price: Some("3100.5".to_string()),
+        reference_current_price_source_id: Some("chainlink_primary".to_string()),
+        reference_current_price_failed_over: Some(false),
         realized_volatility: "1.5".to_string(),
         realized_volatility_surface_id: String::new(),
         realized_volatility_as_of_ms: None,

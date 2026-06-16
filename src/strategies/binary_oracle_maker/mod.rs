@@ -455,10 +455,10 @@ mod tests {
     use super::*;
     use crate::{
         bolt_v3_decision_evidence::{
-            BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
-            BoltV3OrderIntentEvidence, BoltV3PositionSizerRebuildAuditEvidence,
-            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-            BoltV3SubmitReservationMetadataEvidence,
+            BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
+            BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+            BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+            BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         },
         bolt_v3_maker_mu_estimator::MuHealthReason,
         bolt_v3_numeric::NANOS_PER_MILLI_U64,
@@ -517,6 +517,13 @@ mod tests {
         fn record_admission_decision(
             &self,
             _decision: &BoltV3AdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_basket_admission_decision(
+            &self,
+            _decision: &BoltV3BasketAdmissionDecisionEvidence,
         ) -> Result<()> {
             Ok(())
         }

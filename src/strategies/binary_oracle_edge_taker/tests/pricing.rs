@@ -337,7 +337,10 @@ fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
         vec![EntryPricingBlockReason::SpotPriceMissing]
     );
     assert_eq!(fields.realized_vol, Some(2.5));
-    assert_eq!(fields.realized_vol_source_venue, None);
+    assert_eq!(
+        fields.realized_vol_source_venue.as_deref(),
+        Some("<SOURCE_ID>")
+    );
     assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
 }
 
@@ -1554,7 +1557,10 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
     assert_eq!(fields.reference_current_price, Some(3_100.5));
     assert_eq!(fields.interval_open, Some(3_100.0));
     assert_eq!(fields.realized_vol, Some(2.5));
-    assert_eq!(fields.realized_vol_source_venue, None);
+    assert_eq!(
+        fields.realized_vol_source_venue.as_deref(),
+        Some("<SOURCE_ID>")
+    );
     assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
     assert_eq!(fields.fair_probability_up, evaluation.fair_probability_up);
     assert_eq!(fields.selected_side, evaluation.selected_side);

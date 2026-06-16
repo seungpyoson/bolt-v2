@@ -142,7 +142,10 @@ fn taker_pricing_consumes_realized_vol_snapshot_without_internal_estimator_warmu
         result.realized_vol_surface_id.as_deref(),
         Some("<surface_id>")
     );
-    assert_eq!(result.realized_vol_source_venue, None);
+    assert_eq!(
+        result.realized_vol_source_venue.as_deref(),
+        Some("<SOURCE_ID_A>")
+    );
     assert_eq!(result.realized_vol_source_ts_ms, Some(1_000));
 }
 
@@ -268,7 +271,10 @@ fn taker_pricing_returns_current_rv_source_theta_and_fair_probabilities() {
         result.realized_vol_surface_id.as_deref(),
         Some("<surface_id>")
     );
-    assert_eq!(result.realized_vol_source_venue, None);
+    assert_eq!(
+        result.realized_vol_source_venue.as_deref(),
+        Some("<SOURCE_ID_A>")
+    );
     assert_eq!(result.realized_vol_source_ts_ms, Some(4_000));
     assert_close(result.theta_scaled_min_edge_bps, 10.0);
     assert!(result.fair_probability_up.is_finite());
@@ -410,7 +416,7 @@ fn taker_pricing_accepts_source_owned_realized_vol_seed_without_strategy_estimat
     assert_eq!(pricing.current_realized_vol_at(1_000), Some(2.5));
     assert_eq!(
         pricing.current_realized_vol_source_at(1_000),
-        (None, Some(1_000))
+        (Some("reference".to_string()), Some(1_000))
     );
 
     seed_ready_realized_vol(&mut pricing, Some("older".to_string()), 3.0, 999);
@@ -418,7 +424,7 @@ fn taker_pricing_accepts_source_owned_realized_vol_seed_without_strategy_estimat
     assert_eq!(pricing.current_realized_vol_at(1_000), Some(2.5));
     assert_eq!(
         pricing.current_realized_vol_source_at(1_000),
-        (None, Some(1_000))
+        (Some("reference".to_string()), Some(1_000))
     );
 
     seed_ready_realized_vol(&mut pricing, None, 3.0, 1_001);
@@ -434,7 +440,7 @@ fn taker_pricing_accepts_source_owned_realized_vol_seed_without_strategy_estimat
     assert_eq!(pricing.current_realized_vol_at(1_002), Some(0.0));
     assert_eq!(
         pricing.current_realized_vol_source_at(1_002),
-        (None, Some(1_002))
+        (Some("zero".to_string()), Some(1_002))
     );
 }
 
@@ -450,6 +456,6 @@ fn taker_pricing_rejects_invalid_source_owned_realized_vol_seed() {
     assert_eq!(pricing.current_realized_vol_at(1_002), Some(2.5));
     assert_eq!(
         pricing.current_realized_vol_source_at(1_002),
-        (None, Some(1_000))
+        (Some("reference".to_string()), Some(1_000))
     );
 }

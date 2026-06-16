@@ -196,7 +196,7 @@ impl FairValuePricingState {
 
     pub fn current_realized_vol_source_at(&self, now_ms: u64) -> (Option<String>, Option<u64>) {
         self.current_surfaced_realized_vol_snapshot_at(&self.realized_volatility_surface_id, now_ms)
-            .map_or((None, None), |snapshot| (None, Some(snapshot.as_of_ms)))
+            .map_or((None, None), realized_vol_source_evidence)
     }
 
     pub fn fair_value_inputs_at(
@@ -300,7 +300,8 @@ impl FairValuePricingState {
         let surface_id = config.realized_volatility_surface_id;
         self.current_surfaced_realized_vol_snapshot_at(surface_id, now_ms)
             .map_or((None, None, None), |snapshot| {
-                (Some(surface_id.to_string()), None, Some(snapshot.as_of_ms))
+                let (source_venue, source_ts_ms) = realized_vol_source_evidence(snapshot);
+                (Some(surface_id.to_string()), source_venue, source_ts_ms)
             })
     }
 
@@ -361,4 +362,11 @@ impl FairValuePricingState {
             config_fingerprint: String::new(),
         });
     }
+}
+
+fn realized_vol_source_evidence(snapshot: &RealizedVolSnapshot) -> (Option<String>, Option<u64>) {
+    (
+        snapshot.sources_used.first().cloned(),
+        Some(snapshot.as_of_ms),
+    )
 }

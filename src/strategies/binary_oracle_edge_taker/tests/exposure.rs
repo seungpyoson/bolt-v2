@@ -2337,7 +2337,10 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
     assert_eq!(fields.seconds_to_expiry, Some(299));
     assert_eq!(fields.fair_probability_up, None);
     assert_eq!(fields.hold_ev_bps, None);
-    assert_eq!(fields.realized_vol_source_venue, None);
+    assert_eq!(
+        fields.realized_vol_source_venue.as_deref(),
+        Some("<SOURCE_ID>")
+    );
     assert_eq!(fields.realized_vol_source_ts_ms, Some(2_000));
     assert_eq!(fields.up_fee_bps, Some(1.0));
     assert_eq!(fields.down_fee_bps, Some(2.0));

@@ -455,11 +455,7 @@ impl TakerPricingState {
         request: TakerPricingRequest,
     ) -> Result<FairValuePricingInputs, Vec<FairValuePricingBlockReason>> {
         self.fair_value.fair_value_inputs_at(
-            &FairValuePricingConfig {
-                realized_volatility_surface_id: config.realized_volatility_surface_id.as_str(),
-                pricing_kurtosis: config.pricing_kurtosis,
-                market_family: config.rotating_market_family,
-            },
+            &fair_value_config(config),
             FairValuePricingRequest {
                 now_ms: request.now_ms,
                 strike_price: request.strike_price,
@@ -474,11 +470,7 @@ impl TakerPricingState {
         request: TakerPricingRequest,
     ) -> Result<FairValuePricingResult, Vec<FairValuePricingBlockReason>> {
         self.fair_value.fair_value_pricing_at(
-            &FairValuePricingConfig {
-                realized_volatility_surface_id: config.realized_volatility_surface_id.as_str(),
-                pricing_kurtosis: config.pricing_kurtosis,
-                market_family: config.rotating_market_family,
-            },
+            &fair_value_config(config),
             FairValuePricingRequest {
                 now_ms: request.now_ms,
                 strike_price: request.strike_price,
@@ -493,15 +485,8 @@ impl TakerPricingState {
         now_ms: u64,
         inputs: FairValuePricingInputs,
     ) -> Result<FairValuePricingResult, Vec<FairValuePricingBlockReason>> {
-        self.fair_value.fair_value_pricing_from_inputs(
-            &FairValuePricingConfig {
-                realized_volatility_surface_id: config.realized_volatility_surface_id.as_str(),
-                pricing_kurtosis: config.pricing_kurtosis,
-                market_family: config.rotating_market_family,
-            },
-            now_ms,
-            inputs,
-        )
+        self.fair_value
+            .fair_value_pricing_from_inputs(&fair_value_config(config), now_ms, inputs)
     }
 
     /// Arm the spike cooldown when a new signal-price observation jumps past
@@ -547,6 +532,14 @@ impl TakerPricingState {
         timing.last_observed_ts_ms = Some(observed_ts_ms);
         timing.last_interval_ms = current_interval_ms;
         jitter_ms
+    }
+}
+
+fn fair_value_config(config: &TakerPricingConfig<'_>) -> FairValuePricingConfig<'_> {
+    FairValuePricingConfig {
+        realized_volatility_surface_id: config.realized_volatility_surface_id.as_str(),
+        pricing_kurtosis: config.pricing_kurtosis,
+        market_family: config.rotating_market_family,
     }
 }
 

@@ -15778,6 +15778,14 @@ classification = "strategy_runtime_validation_code"
 reason = "This validation code labels a maker oms_type envelope value that is a string but does not parse as a NautilusTrader OmsType (so the build-path .expect can never fire on operator input); it is a stable diagnostic tag, not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_maker_runtime_order.rs"
+kind = "string"
+literal = '''"maker order compiler returned neither command nor block reason"'''
+context = '''.context("maker order compiler returned neither command nor block reason")?;'''
+classification = "maker_runtime_order_invariant_diagnostic"
+reason = "Fail-closed invariant diagnostic for an impossible maker order-compiler state where neither a command nor a typed block reason is returned; it carries no operator runtime value."
+
+[[allowed]]
 path = "src/strategies/binary_oracle_maker/config.rs"
 kind = "string"
 literal = '''"unknown_field"'''

@@ -166,8 +166,6 @@ def assert_workflow_contract() -> None:
         raise AssertionError("rust-probe concurrency must be branch-scoped")
     if "run-name:" not in text or "${{ inputs.probe_id }}" not in text:
         raise AssertionError("rust-probe run-name must include probe_id")
-    if "\n    timeout-minutes: 60" in text:
-        raise AssertionError("rust-probe timeout-minutes must come from [remote_probe.workflow_timeouts]")
     guard_timeout = remote_probe["guard_timeout_minutes"]
 
     unsupported_marker = "  probe-unsupported-runner-tier:\n"
@@ -227,6 +225,8 @@ def assert_workflow_contract() -> None:
         expected_if = f"if: ${{{{ inputs.runner_tier == '{tier}' && inputs.job_timeout_minutes == '{expected_timeout}' }}}}"
         if expected_if not in block:
             raise AssertionError(f"{job} must require its TOML-declared timeout before running")
+        if f"timeout-minutes: {expected_timeout}" in block:
+            raise AssertionError(f"{job} timeout-minutes must not hardcode its TOML-declared timeout")
         if "timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}" not in block:
             raise AssertionError(f"{job} timeout-minutes must be wrapper-provided from policy")
         if "fetch-depth: 1" not in block:

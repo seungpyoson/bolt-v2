@@ -15,7 +15,8 @@ use std::{path::Path, str::FromStr, sync::Arc};
 use anyhow::{Context, Result, bail, ensure};
 use bolt_v2::{
     bolt_v3_decision_evidence::{
-        BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+        BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
+        BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
     },
@@ -94,6 +95,13 @@ impl BoltV3DecisionEvidenceWriter for BacktestDecisionEvidenceWriter {
     }
 
     fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()> {
         Ok(())
     }
 

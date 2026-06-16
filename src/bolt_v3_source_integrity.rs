@@ -146,7 +146,7 @@ mod tests {
     // registry-owned canonical source stream. The full re-derivation trail
     // belongs in git history, not in this invariant comment.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "ab327aa71091b1d391a6b0b87bc02a371c5bc075da38128212de334df2c8f4bd";
+        "aa958d8905785e0b88e05d9d9b6d90b4ea3474d7c3e083fb1c6d4562def3910b";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "88619771c32b874741b5396751cfd28ead044145d1e8d184374a38f7c23802ab";
 

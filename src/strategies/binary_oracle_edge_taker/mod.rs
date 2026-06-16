@@ -1369,9 +1369,12 @@ impl BinaryOracleEdgeTaker {
             .context
             .realized_volatility_index_subscription_requests_for_surface(&surface_id);
 
-        // Config validation rejects a *missing* surface, but a KNOWN surface with zero enabled
-        // sources is not rejected and would leave pricing silently `RealizedVolNotReady` forever.
-        // Surface that once per startup so an operator sees the misconfiguration directly.
+        // Defense-in-depth: make a zero-subscription configured surface observable. For a
+        // validated config this is typically unreachable (policy requires at least one enabled
+        // quorum source), but it catches a surface whose sources are all disabled, or a
+        // validation regression, which would otherwise leave pricing silently
+        // `RealizedVolNotReady`. Pricing fails closed regardless; this warning is the only
+        // operator signal.
         if quote_requests.is_empty() && trade_requests.is_empty() && index_requests.is_empty() {
             log::warn!(
                 "binary_oracle_edge_taker configured RV surface `{}` has no enabled subscribable sources; pricing will stay RealizedVolNotReady (strategy_id={})",

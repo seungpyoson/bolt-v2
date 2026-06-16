@@ -157,33 +157,6 @@ impl StrategyBuildContext {
         self.execution_venue
     }
 
-    pub fn realized_volatility_quote_subscription_requests(
-        &self,
-    ) -> Vec<(InstrumentId, Option<ClientId>)> {
-        self.realized_volatility_runtime
-            .lock()
-            .expect("realized-volatility runtime lock should not be poisoned")
-            .quote_subscription_requests()
-    }
-
-    pub fn realized_volatility_trade_subscription_requests(
-        &self,
-    ) -> Vec<(InstrumentId, Option<ClientId>)> {
-        self.realized_volatility_runtime
-            .lock()
-            .expect("realized-volatility runtime lock should not be poisoned")
-            .trade_subscription_requests()
-    }
-
-    pub fn realized_volatility_index_subscription_requests(
-        &self,
-    ) -> Vec<(InstrumentId, Option<ClientId>)> {
-        self.realized_volatility_runtime
-            .lock()
-            .expect("realized-volatility runtime lock should not be poisoned")
-            .index_subscription_requests()
-    }
-
     /// Subscription requests scoped to a single configured surface. A strategy must use this
     /// (with its configured `realized_volatility_surface_id`) so it only subscribes the RV
     /// feeds it prices against, even when the root config defines many surfaces.

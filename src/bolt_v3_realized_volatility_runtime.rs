@@ -200,27 +200,6 @@ impl RealizedVolSurfaceRuntime {
         union.into_iter().collect()
     }
 
-    pub fn quote_subscription_requests(&self) -> Vec<(InstrumentId, Option<ClientId>)> {
-        quote_trade_index_requests(
-            &self.subscription_requests(),
-            RealizedVolSubscriptionKind::Quotes,
-        )
-    }
-
-    pub fn trade_subscription_requests(&self) -> Vec<(InstrumentId, Option<ClientId>)> {
-        quote_trade_index_requests(
-            &self.subscription_requests(),
-            RealizedVolSubscriptionKind::Trades,
-        )
-    }
-
-    pub fn index_subscription_requests(&self) -> Vec<(InstrumentId, Option<ClientId>)> {
-        quote_trade_index_requests(
-            &self.subscription_requests(),
-            RealizedVolSubscriptionKind::IndexPrices,
-        )
-    }
-
     /// Subscriptions belonging to a single configured surface. Returns an empty `Vec` for an
     /// unknown surface, which leaves pricing `RealizedVolNotReady` (fail-closed); config
     /// validation already rejects unknown configured surfaces at load time.

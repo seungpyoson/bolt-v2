@@ -109,6 +109,10 @@ pub struct TakerPricingState {
     pub(crate) last_reference_current_price_ts_ms: Option<u64>,
     pub(crate) fast_spot: Option<FastSpotObservation>,
     pub(crate) realized_volatility_surface_id: String,
+    // Latest RV snapshot per `surface_id`. The shared runtime routes ticks by instrument, so a
+    // strategy may observe (and store here) snapshots for surfaces it does not price; those
+    // entries are never read by this strategy and are bounded by the number of configured
+    // surfaces. Intentional until #775 lands surface-scoped engine routing.
     pub(crate) latest_realized_vol_snapshots: BTreeMap<String, RealizedVolSnapshot>,
     pub(crate) venue_timing: BTreeMap<String, VenueTimingState>,
     pub(crate) last_lead_gap_probability: Option<f64>,

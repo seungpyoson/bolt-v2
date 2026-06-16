@@ -480,3 +480,37 @@ fn equal_timestamp_snapshot_replaces_and_older_snapshot_is_rejected_per_surface(
     ));
     assert_eq!(pricing.current_realized_vol_at(100), Some(2.0));
 }
+
+/// #770 multi-instance readiness non-interference: two pricing states configured for
+/// different surfaces, both fed by the same shared runtime (so both observe every published
+/// snapshot). Each must read only its own configured surface; one surface's snapshot must not
+/// affect the other instance's readiness, and a newer foreign snapshot must not evict the
+/// configured surface's value.
+#[test]
+fn two_pricing_instances_with_distinct_configured_surfaces_do_not_interfere() {
+    let mut config_a = pricing_config();
+    config_a.realized_volatility_surface_id = "<surface_a>".to_string();
+    let mut config_b = pricing_config();
+    config_b.realized_volatility_surface_id = "<surface_b>".to_string();
+    let mut pricing_a = TakerPricingState::from_config(&config_a);
+    let mut pricing_b = TakerPricingState::from_config(&config_b);
+
+    // Shared runtime publishes surface A's snapshot to BOTH instances.
+    let snap_a = realized_vol_snapshot_for_surface("<surface_a>", 1.5, 100);
+    pricing_a.observe_realized_vol_snapshot(snap_a.clone());
+    pricing_b.observe_realized_vol_snapshot(snap_a);
+
+    // Instance A reads its configured surface; instance B (configured for surface_b) is not
+    // ready yet, and surface A's snapshot does NOT make B ready.
+    assert_eq!(pricing_a.current_realized_vol_at(101), Some(1.5));
+    assert_eq!(pricing_b.current_realized_vol_at(101), None);
+
+    // Shared runtime publishes surface B's snapshot (newer ts) to BOTH. Must not evict A.
+    let snap_b = realized_vol_snapshot_for_surface("<surface_b>", 2.5, 200);
+    pricing_a.observe_realized_vol_snapshot(snap_b.clone());
+    pricing_b.observe_realized_vol_snapshot(snap_b);
+
+    // Each instance reads only its own configured surface; no cross-surface interference.
+    assert_eq!(pricing_a.current_realized_vol_at(201), Some(1.5));
+    assert_eq!(pricing_b.current_realized_vol_at(201), Some(2.5));
+}

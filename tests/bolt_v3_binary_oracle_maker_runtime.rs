@@ -6,20 +6,22 @@ use bolt_v2::{
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
     bolt_v3_maker_order_dispatch::MakerOrderDispatchOutcome,
-    bolt_v3_maker_order_plan::MakerLegBinding,
+    bolt_v3_maker_order_plan::{MakerLegBinding, MakerMarketActionOrderInput},
     bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
     bolt_v3_maker_rate_budget::build_requote_budget_pair,
     bolt_v3_maker_runtime_quote::{
         MakerRuntimeOrderPlanInput, MakerRuntimeQuoteInput, MakerRuntimeQuoteSetInput,
+        plan_maker_runtime_quote,
     },
     bolt_v3_market_families::static_binary_event,
     bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
-    bolt_v3_quote_lifecycle::{Leg, MarketState},
+    bolt_v3_quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketState},
     bolt_v3_submit_admission::{BoltV3SubmitAdmissionState, BoltV3SubmitLifecyclePolicy},
     strategies::{
         binary_oracle_maker::{
-            BinaryOracleMaker, BinaryOracleMakerConfig, BinaryOracleMakerRuntimeQuoteRouteInput,
+            BinaryOracleMaker, BinaryOracleMakerConfig, BinaryOracleMakerMarketActionRouteInput,
+            BinaryOracleMakerRuntimeQuoteRouteInput,
         },
         registry::{FeeProvider, StrategyBuildContext},
     },
@@ -162,6 +164,129 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
     assert_eq!(records[1].strategy_id, "maker-strategy");
     assert_eq!(records[1].instrument_id, "NO.RUNTIME");
     assert_eq!(writer.admission_decisions().len(), 2);
+}
+
+#[test]
+fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config(),
+        maker_context(writer.clone(), admission.clone()),
+    );
+    register_maker_for_order_factory(&mut maker);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    assert_eq!(
+        market.on_leg_event(
+            Leg::Yes,
+            LegEvent::QuoteTrigger {
+                requote_needed: false
+            }
+        ),
+        Some(MarketAction::Leg {
+            leg: Leg::Yes,
+            action: LifecycleAction::Submit,
+        })
+    );
+    assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Accepted), None);
+
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+    let mut quote_set = quote_set_inputs();
+    quote_set.yes_resting_price = Some(0.40);
+    let decision = plan_maker_runtime_quote(
+        &mut market,
+        &mut budget,
+        MakerRuntimeQuoteInput {
+            quote_plan: quote_plan_inputs(static_binary_event::KEY),
+            quote_set,
+            order_plan: MakerRuntimeOrderPlanInput {
+                yes: MakerLegBinding {
+                    instrument_id: InstrumentId::from("YES.RUNTIME"),
+                    active_order: Some(order_identity("MAKER-YES-1", 1)),
+                    next_order: Some(order_identity("MAKER-YES-2", 2)),
+                },
+                no: MakerLegBinding {
+                    instrument_id: InstrumentId::from("NO.RUNTIME"),
+                    active_order: None,
+                    next_order: Some(order_identity("MAKER-NO-1", 1)),
+                },
+            },
+        },
+    );
+    let targets = decision
+        .quote_plan
+        .as_ref()
+        .expect("requote should have quote targets")
+        .targets;
+    let submit_commands_before_cancel_confirm = budget.submit_commands_in_window();
+    let rest_cost_before_cancel_confirm = budget.rest_cost_in_window();
+    let action = market
+        .on_leg_event(Leg::Yes, LegEvent::Canceled)
+        .expect("cancel confirmation should emit pre-paid replacement submit");
+
+    assert_eq!(
+        budget.submit_commands_in_window(),
+        submit_commands_before_cancel_confirm
+    );
+    assert_eq!(
+        budget.rest_cost_in_window(),
+        rest_cost_before_cancel_confirm
+    );
+
+    let outcome = maker
+        .route_maker_market_action(BinaryOracleMakerMarketActionRouteInput {
+            action: MakerMarketActionOrderInput {
+                action,
+                targets,
+                yes_quantity: quote_set.yes_quantity,
+                no_quantity: quote_set.no_quantity,
+                yes: MakerLegBinding {
+                    instrument_id: InstrumentId::from("YES.RUNTIME"),
+                    active_order: None,
+                    next_order: Some(order_identity("MAKER-YES-2", 2)),
+                },
+                no: MakerLegBinding {
+                    instrument_id: InstrumentId::from("NO.RUNTIME"),
+                    active_order: None,
+                    next_order: Some(order_identity("MAKER-NO-1", 1)),
+                },
+            },
+            submit_template: &maker_limit_post_only_template(),
+            price_precision: 2,
+            quantity_precision: 2,
+            submit_order_prefix: "maker_submit",
+            max_fee_bps: Decimal::ZERO,
+            submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+        })
+        .expect("maker should route pre-paid replacement submit through shared context");
+
+    assert_eq!(
+        outcome.order.dispatch,
+        Some(MakerOrderDispatchOutcome::Submitted {
+            leg: Leg::Yes,
+            instrument_id: InstrumentId::from("YES.RUNTIME"),
+            client_order_id: ClientOrderId::from("MAKER-YES-2"),
+            price: Price::new(targets.leg_a.price, 2),
+            quantity: Quantity::new(quote_set.yes_quantity, 2),
+        })
+    );
+    assert_eq!(
+        budget.submit_commands_in_window(),
+        submit_commands_before_cancel_confirm
+    );
+    assert_eq!(
+        budget.rest_cost_in_window(),
+        rest_cost_before_cancel_confirm
+    );
+    assert_eq!(admission.admitted_order_count(), 0);
+
+    let records = writer.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].strategy_id, "maker-strategy");
+    assert_eq!(records[0].instrument_id, "YES.RUNTIME");
+    assert_eq!(records[0].client_order_id, "MAKER-YES-2");
+    assert_eq!(writer.admission_decisions().len(), 1);
 }
 
 #[derive(Debug)]

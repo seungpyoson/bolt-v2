@@ -29,7 +29,7 @@ use toml::{Value, map::Map};
 
 use nautilus_model::identifiers::StrategyId;
 
-use crate::bolt_v3_config::{BoltV3StrategyConfig, LoadedStrategy};
+use crate::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy};
 use crate::bolt_v3_providers::resolve_fee_provider;
 use crate::bolt_v3_strategy_registration::{
     BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
@@ -86,6 +86,7 @@ struct RuntimeParametersBlock {
 /// unused until later slices add notional parameters.
 pub fn validate_strategy(
     context: &str,
+    _root: &BoltV3RootConfig,
     strategy: &BoltV3StrategyConfig,
     _default_max_notional: Option<&Decimal>,
 ) -> Vec<String> {

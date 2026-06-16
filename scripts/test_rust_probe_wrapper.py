@@ -398,7 +398,6 @@ def assert_dispatch_uses_declared_workflow_inputs() -> None:
 
 def assert_cancelled_probe_is_superseded_not_code_failure() -> None:
     owner = load_owner_module()
-    policy = owner.remote_probe_policy({"remote_probe": valid_remote_probe()})
     run = {
         "databaseId": 42,
         "status": "completed",
@@ -408,12 +407,43 @@ def assert_cancelled_probe_is_superseded_not_code_failure() -> None:
     }
     stderr = io.StringIO()
     with contextlib.redirect_stderr(stderr):
-        result = owner.evaluate_rust_probe_run(run, head=HEAD, probe_id="probe-123", remote_policy=policy)
+        result = owner.evaluate_rust_probe_run(run, head=HEAD, probe_id="probe-123")
     if result != 2:
         raise AssertionError((result, stderr.getvalue()))
     output = stderr.getvalue()
     if "superseded" not in output or "failed for" in output:
         raise AssertionError(output)
+
+
+def assert_rust_probe_polling_errors_fail_closed() -> None:
+    owner = load_owner_module()
+    policy = owner.remote_probe_policy({"remote_probe": valid_remote_probe()})
+    original_run_capture = owner.run_capture
+
+    def invalid_json(argv: list[str], *, repo: pathlib.Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 0, "{", "")
+
+    def os_error(_argv: list[str], *, repo: pathlib.Path) -> subprocess.CompletedProcess[str]:
+        raise OSError("network unavailable")
+
+    try:
+        owner.run_capture = invalid_json
+        runs, error = owner.rust_probe_run_list(REPO_ROOT, policy, branch=BRANCH)
+        if runs is not None or error is None or "returned invalid JSON" not in error:
+            raise AssertionError((runs, error))
+        run, error = owner.workflow_run_view(REPO_ROOT, 123)
+        if run is not None or error is None or "returned invalid JSON" not in error:
+            raise AssertionError((run, error))
+
+        owner.run_capture = os_error
+        runs, error = owner.rust_probe_run_list(REPO_ROOT, policy, branch=BRANCH)
+        if runs is not None or error is None or "could not run" not in error:
+            raise AssertionError((runs, error))
+        run, error = owner.workflow_run_view(REPO_ROOT, 123)
+        if run is not None or error is None or "could not run" not in error:
+            raise AssertionError((run, error))
+    finally:
+        owner.run_capture = original_run_capture
 
 
 def assert_probe_run_matching_is_prefix_anchored() -> None:
@@ -508,6 +538,7 @@ def main() -> int:
     assert_preconditions_are_pr_free_and_exact_upstream()
     assert_dispatch_uses_declared_workflow_inputs()
     assert_cancelled_probe_is_superseded_not_code_failure()
+    assert_rust_probe_polling_errors_fail_closed()
     assert_probe_run_matching_is_prefix_anchored()
     assert_cmd_rust_probe_dispatches_and_reports_not_proof()
     print("OK: Rust Probe wrapper self-tests passed.")

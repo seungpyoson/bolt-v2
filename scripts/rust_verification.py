@@ -2554,6 +2554,8 @@ def load_json_command(argv: list[str], *, repo: pathlib.Path) -> tuple[Any | Non
         result = run_capture(argv, repo=repo)
     except FileNotFoundError:
         return None, f"{pathlib.Path(argv[0]).name} is required for remote verification"
+    except OSError as exc:
+        return None, f"{pathlib.Path(argv[0]).name} could not run: {exc}"
     if result.returncode != 0:
         return None, command_error(argv, result)
     try:
@@ -2670,7 +2672,7 @@ def ensure_clean_pushed_head_preconditions(
     if error is not None:
         return None, None, error
     if upstream is None:
-        hint = "git push -u origin HEAD" if branch else "push this branch and set an upstream"
+        hint = "git push -u origin HEAD"
         return None, None, f"{command_name} requires pushed HEAD with an upstream; run: {hint}"
     if upstream != head:
         return None, None, f"{command_name} requires HEAD to be pushed to the upstream branch"
@@ -3266,9 +3268,7 @@ def evaluate_rust_probe_run(
     *,
     head: str,
     probe_id: str,
-    remote_policy: dict[str, Any],
 ) -> int | None:
-    del remote_policy
     state = workflow_run_state(run)
     if state == "pending":
         return None
@@ -3324,7 +3324,7 @@ def wait_for_rust_probe_run(
                 return verify_remote_fail(f"no matching Rust Probe workflow run appeared for probe_id {probe_id}")
             time.sleep(interval)
             continue
-        result = evaluate_rust_probe_run(run, head=head, probe_id=probe_id, remote_policy=remote_policy)
+        result = evaluate_rust_probe_run(run, head=head, probe_id=probe_id)
         if result is not None:
             return result
         time.sleep(interval)

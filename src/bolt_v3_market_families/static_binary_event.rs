@@ -705,11 +705,11 @@ mod tests {
         assert_eq!(selected.market_id, TEST_MARKET_ID);
         assert_eq!(
             selected.up_instrument_id,
-            InstrumentId::from("WORLD-CUP-SPAIN-YES.POLYMARKET")
+            InstrumentId::from("SAMPLE-EVENT-YES.POLYMARKET")
         );
         assert_eq!(
             selected.down_instrument_id,
-            InstrumentId::from("WORLD-CUP-SPAIN-NO.POLYMARKET")
+            InstrumentId::from("SAMPLE-EVENT-NO.POLYMARKET")
         );
         assert_eq!(selected.source_identity.condition_id, TEST_CONDITION_ID);
         assert_eq!(selected.source_identity.market_slug, TEST_MARKET_SLUG);

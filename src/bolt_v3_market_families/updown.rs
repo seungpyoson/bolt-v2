@@ -93,6 +93,20 @@ pub fn maker_settlement_payout(payout: BinarySettlementPayout, leg: Leg) -> Opti
     super::binary_outcome::maker_settlement_payout(payout, leg)
 }
 
+pub fn maker_settlement_payout_from_reference_prices(
+    close_price: f64,
+    strike_price: f64,
+) -> Option<BinarySettlementPayout> {
+    if !is_positive_finite(close_price) || !is_positive_finite(strike_price) {
+        return None;
+    }
+    if close_price >= strike_price {
+        BinarySettlementPayout::new(UNIT_F64, ZERO_F64)
+    } else {
+        BinarySettlementPayout::new(ZERO_F64, UNIT_F64)
+    }
+}
+
 pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
     super::binary_outcome::maker_binary_fee_curve(fee_rate, price)
 }

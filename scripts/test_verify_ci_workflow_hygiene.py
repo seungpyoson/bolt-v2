@@ -1290,8 +1290,10 @@ on:
     types:
     - opened
     - synchronize
+    - reopened
     - ready_for_review
     - converted_to_draft
+    - edited
   push:
     branches: [main]
 """

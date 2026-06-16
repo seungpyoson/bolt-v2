@@ -37,7 +37,12 @@ pub use collateral_accounting_source::materialize_clob_v2_collateral_accounting_
 pub use fee_behavior_source::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources;
 pub use venue_account_state_source::materialize_venue_account_state_source_from_configured_account_queries;
 
-use std::{any::Any, collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    any::Any,
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use nautilus_core::string::secret::REDACTED;
 use nautilus_model::identifiers::AccountId;
@@ -819,6 +824,10 @@ fn build_instrument_filters_for_client(
     client_key: &str,
     clock: BoltV3MarketClockFn,
 ) -> Result<Vec<Arc<dyn InstrumentFilter>>, BoltV3AdapterMappingError> {
+    // All filters composed here must remain fetch-only filters. NT applies
+    // `accept` predicates as an intersection across filters, so adding a
+    // predicate-style filter here would turn independent target families into
+    // a data-starvation path.
     let mut filters = updown::target_plans(plan)
         .filter(|target| target.execution_client_id == client_key)
         .map(|target| build_market_slug_filter(target, clock.clone()))
@@ -878,11 +887,15 @@ fn build_outcome_group_filters_for_client(
         .map(|source| (source.source_id.as_str(), source))
         .collect::<BTreeMap<_, _>>();
     let mut filters = Vec::new();
+    let mut added_source_ids = BTreeSet::new();
 
     for target in
         outcome_group::target_plans(plan).filter(|target| target.execution_client_id == client_key)
     {
         for source_id in &target.group_sources {
+            if !added_source_ids.insert(source_id.as_str()) {
+                continue;
+            }
             let source = sources_by_id.get(source_id.as_str()).ok_or_else(|| {
                 BoltV3AdapterMappingError::ValidationInvariant {
                     client_key: client_key.to_string(),
@@ -986,7 +999,11 @@ fn build_gamma_query_filter(
         "outcome_group_sources.gamma_query.max_markets",
         query.max_markets,
     )?;
-    if let Some(event_query) = query.event_query.as_ref() {
+    if let Some(event_query) = query
+        .event_query
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
         let params = gamma_market_params(
             client_key,
             "outcome_group_sources.gamma_query.max_markets",
@@ -1002,6 +1019,17 @@ fn build_gamma_query_filter(
         .or(query.market_query.as_ref())
         .filter(|value| !value.trim().is_empty())
     {
+        if query
+            .sports_market_types
+            .as_ref()
+            .is_some_and(|values| !values.is_empty())
+        {
+            return Err(BoltV3AdapterMappingError::ValidationInvariant {
+                client_key: client_key.to_string(),
+                field: "outcome_group_sources.gamma_query.sports_market_types",
+                message: "cannot be combined with search or market_query".to_string(),
+            });
+        }
         return Ok(Arc::new(SearchFilter::new(GetSearchParams {
             q: Some(search.clone()),
             events_status: None,
@@ -1012,6 +1040,17 @@ fn build_gamma_query_filter(
             page: None,
             keep_closed_markets: None,
         })));
+    }
+    if query
+        .tag_id
+        .as_ref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: stringify!(outcome_group_sources.gamma_query),
+            message: "must include at least one bounded selector".to_string(),
+        });
     }
 
     Ok(Arc::new(GammaQueryFilter::new(gamma_market_params(

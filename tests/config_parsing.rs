@@ -5655,6 +5655,14 @@ fn outcome_group_root_validation_fails_closed_on_source_shape_errors() {
         "search = \"world cup\"\nmax_markets = 20",
         "max_markets = 20",
     );
+    let sports_only_query = valid_polymarket_gamma_query_source_toml().replace(
+        "search = \"world cup\"\nmax_markets = 20",
+        "sports_market_types = [\"moneyline\"]\nmax_markets = 20",
+    );
+    let search_with_sports_query = valid_polymarket_gamma_query_source_toml().replace(
+        "search = \"world cup\"\nmax_markets = 20",
+        "search = \"world cup\"\nsports_market_types = [\"moneyline\"]\nmax_markets = 20",
+    );
     let non_positive_min_quantity = valid_polymarket_event_source_toml().replace(
         "default_min_quantity = \"5\"",
         "default_min_quantity = \"0\"",
@@ -5694,6 +5702,16 @@ fn outcome_group_root_validation_fails_closed_on_source_shape_errors() {
             "unbounded query",
             unbounded_query.as_str(),
             "outcome_group_sources.poly_gamma_query.gamma_query must include at least one bounded selector",
+        ),
+        (
+            "sports-only query",
+            sports_only_query.as_str(),
+            "outcome_group_sources.poly_gamma_query.gamma_query must include at least one bounded selector",
+        ),
+        (
+            "search query with sports market types",
+            search_with_sports_query.as_str(),
+            "outcome_group_sources.poly_gamma_query.gamma_query.sports_market_types cannot be combined with search or market_query",
         ),
         (
             "missing freshness",

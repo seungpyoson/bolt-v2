@@ -18,10 +18,10 @@
 //!
 //! ## Input seam — top-of-book levels are fed in, not reconstructed here
 //!
-//! `order_book_depths` is DISABLED on the Polymarket adapter (it streams L2
-//! deltas only), so the best-bid/best-ask price+size levels this module consumes
-//! are reconstructed one layer up — the live shell maintains the order book from
-//! the L2 delta stream and extracts the top of book before calling in. This pure
+//! Some venue adapters stream L2 deltas rather than complete depth snapshots, so
+//! the best-bid/best-ask price+size levels this module consumes are
+//! reconstructed one layer up — the live shell maintains the order book from the
+//! L2 delta stream and extracts the top of book before calling in. This pure
 //! module deliberately knows nothing about that reconstruction: it takes the
 //! already-extracted `best_bid`, `best_ask`, `bid_size`, `ask_size` scalars. The
 //! L2 → top-of-book seam is the shell's job, NOT this module's.

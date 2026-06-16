@@ -35,6 +35,8 @@ use nautilus_model::{
 };
 use std::{cell::RefCell, rc::Rc};
 
+const TEST_REFERENCE_ASSET: &str = "reference_asset";
+
 #[test]
 fn runtime_quote_tick_uses_family_quote_plan_and_produces_order_intents() {
     let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
@@ -99,9 +101,20 @@ fn runtime_quote_tick_uses_family_quote_plan_and_produces_order_intents() {
 
 #[test]
 fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
-    let mut selector = ReferencePriceSelector::new("BTC", vec!["primary".to_string()], 1, 500, 25)
-        .expect("selector fixture should be valid");
-    let quotes = vec![reference_quote("BTC", "primary", 0.63, 1_000)];
+    let mut selector = ReferencePriceSelector::new(
+        TEST_REFERENCE_ASSET,
+        vec!["primary".to_string()],
+        1,
+        500,
+        25,
+    )
+    .expect("selector fixture should be valid");
+    let quotes = vec![reference_quote(
+        TEST_REFERENCE_ASSET,
+        "primary",
+        0.63,
+        1_000,
+    )];
 
     let fair = maker_reference_current_price_fair_value(
         &mut selector,
@@ -161,11 +174,11 @@ fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
 #[test]
 fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_blockers() {
     let quotes = vec![
-        reference_quote("BTC", "primary", 99.0, 1_000),
-        reference_quote("BTC", "backup", 101.0, 1_490),
+        reference_quote(TEST_REFERENCE_ASSET, "primary", 99.0, 1_000),
+        reference_quote(TEST_REFERENCE_ASSET, "backup", 101.0, 1_490),
     ];
     let mut selector = ReferencePriceSelector::new(
-        "BTC",
+        TEST_REFERENCE_ASSET,
         vec!["primary".to_string(), "backup".to_string()],
         1,
         100,
@@ -210,9 +223,14 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
         .expect("same updown fair-value inputs should price")
     );
 
-    let mut blocked_selector =
-        ReferencePriceSelector::new("BTC", vec!["primary".to_string()], 1, 100, 25)
-            .expect("selector fixture should be valid");
+    let mut blocked_selector = ReferencePriceSelector::new(
+        TEST_REFERENCE_ASSET,
+        vec!["primary".to_string()],
+        1,
+        100,
+        25,
+    )
+    .expect("selector fixture should be valid");
     let blocked = maker_reference_current_price_fair_value_decision(
         &mut blocked_selector,
         MakerRuntimeReferenceFairValueInput {

@@ -1,4 +1,4 @@
-//! Static binary-event market-family identity binding for configured Polymarket events.
+//! Static binary-event market-family identity binding for configured binary events.
 
 use std::{sync::Arc, time::Duration};
 
@@ -18,7 +18,7 @@ use super::{
     MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget, OutcomeSide,
     SelectedBinaryOptionMarket, SelectedMarketRequirement, SelectedMarketRequirementParts,
     SelectedMarketSourceIdentity, TargetRuntimeFields, selected_market_metadata_provenance_fields,
-    selected_market_requirement_error, selected_market_requirement_from_parts, updown,
+    selected_market_requirement_error, selected_market_requirement_from_parts,
 };
 
 pub const KEY: &str = "static_binary_event";
@@ -39,7 +39,7 @@ const METADATA_QUESTION_ID_FIELD: &str = "question_id";
 const METADATA_SOURCE_KIND_FIELD: &str = "source_kind";
 const METADATA_VENUE_FIELD: &str = "venue";
 const METADATA_YES_OUTCOME_FIELD: &str = "yes_outcome";
-const STATIC_RESOLUTION_KIND: &str = "polymarket_condition";
+const STATIC_RESOLUTION_KIND: &str = "static_binary_event_condition";
 const STATIC_VALUE_KIND: &str = "binary_outcome";
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -355,15 +355,15 @@ pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
 }
 
 pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
-    updown::maker_quote_targets(inputs)
+    super::binary_outcome::maker_quote_targets(inputs)
 }
 
 pub fn maker_settlement_payout(outcome: OutcomeSide, leg: Leg) -> Option<f64> {
-    updown::maker_settlement_payout(outcome, leg)
+    super::binary_outcome::maker_settlement_payout(outcome, leg)
 }
 
 pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
-    updown::maker_binary_fee_curve(fee_rate, price)
+    super::binary_outcome::maker_binary_fee_curve(fee_rate, price)
 }
 
 fn validate_static_target_block(context: &str, block: &TargetBlock) -> Vec<String> {

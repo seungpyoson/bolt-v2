@@ -4,6 +4,7 @@
 //! that owns its typed `[target]` fields, cadence checks, slug
 //! construction, and instrument-filter errors.
 
+mod binary_outcome;
 pub mod hyperliquid_instrument;
 pub mod outcome_group;
 pub mod static_binary_event;

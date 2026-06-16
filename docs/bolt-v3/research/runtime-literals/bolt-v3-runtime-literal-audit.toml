@@ -16243,10 +16243,10 @@ reason = "Selected-market requirement provenance source-kind label identifying N
 [[allowed]]
 path = "src/bolt_v3_market_families/static_binary_event.rs"
 kind = "string"
-literal = '''"polymarket_condition"'''
-context = '''const STATIC_RESOLUTION_KIND: &str = "polymarket_condition";'''
+literal = '''"static_binary_event_condition"'''
+context = '''const STATIC_RESOLUTION_KIND: &str = "static_binary_event_condition";'''
 classification = "selected_market_requirement_schema_value"
-reason = "Selected-market requirement resolution-kind label for a Polymarket condition ID selected from NT metadata."
+reason = "Selected-market requirement resolution-kind label for a configured static binary-event condition ID selected from NT metadata."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/static_binary_event.rs"

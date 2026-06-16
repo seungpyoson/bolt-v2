@@ -422,7 +422,10 @@ stdout_level = "INFO"
 fileout_level = "INFO"
 
 [persistence]
-catalog_directory = "/var/lib/bolt/catalog"
+catalog_directory = "/srv/bolt-v2/var/bolt-v3-live/catalog"
+required_catalog_prefix = "/srv/bolt-v2"
+# 10 GiB free-space floor for the live-node catalog filesystem.
+min_free_bytes = 10737418240
 runtime_capture_start_poll_interval_ms = 50
 
 [persistence.decision_evidence]

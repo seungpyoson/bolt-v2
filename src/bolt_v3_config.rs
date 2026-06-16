@@ -293,6 +293,8 @@ pub struct LoggingBlock {
 #[serde(deny_unknown_fields)]
 pub struct PersistenceBlock {
     pub catalog_directory: String,
+    pub required_catalog_prefix: Option<String>,
+    pub min_free_bytes: Option<u64>,
     pub runtime_capture_start_poll_interval_ms: u64,
     pub decision_evidence: DecisionEvidenceBlock,
     pub streaming: StreamingBlock,

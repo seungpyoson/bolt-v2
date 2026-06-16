@@ -3,8 +3,8 @@ set -euo pipefail
 
 BOLT_USER="${BOLT_USER:-bolt}"
 BOLT_GROUP="${BOLT_GROUP:-$BOLT_USER}"
-BOLT_HOME="${BOLT_HOME:-/srv/bolt-v2}"
-BOLT_INSTALL_ROOT="${BOLT_INSTALL_ROOT:-/opt/bolt-v2}"
+BOLT_HOME="/srv/bolt-v2"
+BOLT_INSTALL_ROOT="/opt/bolt-v2"
 BOLT_DATA_DEVICE="${BOLT_DATA_DEVICE:?set BOLT_DATA_DEVICE=/dev/<data-volume-device>}"
 BOLT_DATA_FS_TYPE="${BOLT_DATA_FS_TYPE:-ext4}"
 
@@ -59,7 +59,10 @@ install -d -o "${BOLT_USER}" -g "${BOLT_GROUP}" \
     "${BOLT_HOME}/var" \
     "${BOLT_HOME}/var/audit" \
     "${BOLT_HOME}/var/logs" \
-    "${BOLT_HOME}/var/raw"
+    "${BOLT_HOME}/var/raw" \
+    "${BOLT_HOME}/var/bolt-v3-live" \
+    "${BOLT_HOME}/var/bolt-v3-live/catalog" \
+    "${BOLT_HOME}/var/bolt-v3-live/reports"
 install -d -m 0755 "${BOLT_INSTALL_ROOT}"
 install -d -o root -g "${BOLT_GROUP}" -m 0750 "${BOLT_INSTALL_ROOT}/config"
 

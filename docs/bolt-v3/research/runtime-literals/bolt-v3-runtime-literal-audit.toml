@@ -1917,6 +1917,14 @@ classification = "config_validation_zero_rejection"
 reason = "Zero is the invalid lower-bound sentinel for the TOML-owned active position PnL entry cap; runtime capacity is still provided by config and must be positive."
 
 [[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''0'''
+context = '''.is_some_and(|min_free_bytes| min_free_bytes == 0)'''
+classification = "config_validation_zero_rejection"
+reason = "Zero is the invalid lower-bound sentinel for the TOML-owned live storage free-space floor; runtime capacity is still provided by config and must be positive."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "number"
 literal = '''2'''
@@ -13496,3 +13504,35 @@ literal = '''"static_yes_outcome"'''
 context = '''| "static_yes_outcome"'''
 classification = "strategy_runtime_schema_field"
 reason = "Static binary-event YES outcome field admitted by the strategy config schema."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"persistence.catalog_directory `{}` has {available_bytes} free bytes, below configured persistence.min_free_bytes {min_free_bytes}"'''
+context = '''"persistence.catalog_directory `{}` has {available_bytes} free bytes, below configured persistence.min_free_bytes {min_free_bytes}",'''
+classification = "ops_prestart_diagnostic_template"
+reason = "Fail-closed prestart diagnostic reporting measured filesystem bytes against the TOML-owned persistence.min_free_bytes floor."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"ops prestart check ok: catalog_directory={} available_bytes={} min_free_bytes={}"'''
+context = '''"ops prestart check ok: catalog_directory={} available_bytes={} min_free_bytes={}",'''
+classification = "ops_prestart_diagnostic_template"
+reason = "Operator prestart status line echoing the validated catalog path, measured free bytes, and TOML-owned free-space floor without exposing secrets."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"persistence.catalog_directory `{}` cannot be canonicalized before service start: {source}"'''
+context = '''"persistence.catalog_directory `{}` cannot be canonicalized before service start: {source}",'''
+classification = "ops_prestart_diagnostic_template"
+reason = "Fail-closed prestart diagnostic when the configured catalog directory cannot be resolved to a real filesystem path before startup."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''".bolt-v2-prestart-write-probe-{}"'''
+context = '''".bolt-v2-prestart-write-probe-{}",'''
+classification = "ops_prestart_probe_filename"
+reason = "Temporary prestart write-probe filename prefix under the TOML-owned catalog directory; it does not configure trading behavior."

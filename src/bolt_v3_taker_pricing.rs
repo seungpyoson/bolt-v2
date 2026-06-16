@@ -535,7 +535,12 @@ impl TakerPricingState {
     }
 }
 
-fn fair_value_config(config: &TakerPricingConfig<'_>) -> FairValuePricingConfig<'_> {
+fn fair_value_config<'config, 'family>(
+    config: &'config TakerPricingConfig<'family>,
+) -> FairValuePricingConfig<'config>
+where
+    'family: 'config,
+{
     FairValuePricingConfig {
         realized_volatility_surface_id: config.realized_volatility_surface_id.as_str(),
         pricing_kurtosis: config.pricing_kurtosis,

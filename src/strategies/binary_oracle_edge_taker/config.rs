@@ -15,6 +15,7 @@ use serde::Deserialize;
 use toml::Value;
 
 use crate::{
+    bolt_v3_config::ReferencePriceBlock,
     bolt_v3_market_families,
     bolt_v3_numeric::{BPS_DENOMINATOR, is_non_negative_finite, is_positive_finite},
     strategies::registry::ValidationError,
@@ -150,12 +151,11 @@ macro_rules! define_config_struct {
         #[serde(deny_unknown_fields)]
         pub(super) struct BinaryOracleEdgeTakerConfig {
             $( pub(super) $field: $ty, )+
-            pub(super) reference_venue: Option<String>,
-            pub(super) reference_instrument_id: Option<String>,
             pub(super) signal_venue: Option<String>,
             pub(super) signal_instrument_id: Option<String>,
             pub(super) resolution_client_id: Option<String>,
             pub(super) resolution_instrument_id: Option<String>,
+            pub(super) reference_current_price: Option<ReferencePriceBlock>,
             pub(super) realized_volatility_surface_id: String,
             pub(super) static_condition_id: Option<String>,
             pub(super) static_yes_outcome: Option<String>,
@@ -373,10 +373,6 @@ impl BinaryOracleEdgeTakerBuilder {
     ) -> Result<()> {
         for (field_name, instrument_id) in [
             (
-                "reference_instrument_id",
-                config.reference_instrument_id.as_deref(),
-            ),
-            (
                 "signal_instrument_id",
                 config.signal_instrument_id.as_deref(),
             ),
@@ -446,12 +442,11 @@ impl BinaryOracleEdgeTakerBuilder {
                 ENTRY_ORDER_FIELD
                     | EXIT_ORDER_FIELD
                     | FORCED_EXIT_ORDER_FIELD
-                    | "reference_venue"
-                    | "reference_instrument_id"
                     | "signal_venue"
                     | "signal_instrument_id"
                     | "resolution_client_id"
                     | "resolution_instrument_id"
+                    | "reference_current_price"
                     | REALIZED_VOLATILITY_SURFACE_ID_FIELD
                     | "static_condition_id"
                     | "static_yes_outcome"
@@ -488,13 +483,6 @@ impl BinaryOracleEdgeTakerBuilder {
             stringify!(risk_lambda),
             errors,
         );
-        Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);
-        Self::validate_optional_string_field(
-            table,
-            field_prefix,
-            "reference_instrument_id",
-            errors,
-        );
         Self::validate_optional_string_field(table, field_prefix, "signal_venue", errors);
         Self::validate_optional_string_field(table, field_prefix, "signal_instrument_id", errors);
         Self::validate_optional_string_field(table, field_prefix, "resolution_client_id", errors);
@@ -504,6 +492,7 @@ impl BinaryOracleEdgeTakerBuilder {
             "resolution_instrument_id",
             errors,
         );
+        Self::validate_optional_table_field(table, field_prefix, "reference_current_price", errors);
         Self::validate_optional_string_field(
             table,
             field_prefix,
@@ -523,12 +512,6 @@ impl BinaryOracleEdgeTakerBuilder {
         Self::validate_optional_instrument_id_field(
             table,
             field_prefix,
-            "reference_instrument_id",
-            errors,
-        );
-        Self::validate_optional_instrument_id_field(
-            table,
-            field_prefix,
             "signal_instrument_id",
             errors,
         );
@@ -538,19 +521,6 @@ impl BinaryOracleEdgeTakerBuilder {
             "resolution_instrument_id",
             errors,
         );
-        if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {
-            let missing = if table.contains_key("reference_venue") {
-                "reference_instrument_id"
-            } else {
-                "reference_venue"
-            };
-            Self::push_missing(
-                errors,
-                format!("{field_prefix}.{missing}"),
-                "missing_reference_data_pair",
-                BinaryOracleEdgeTakerFieldType::String,
-            );
-        }
         match (
             table.contains_key("signal_venue"),
             table.contains_key("signal_instrument_id"),
@@ -572,7 +542,7 @@ impl BinaryOracleEdgeTakerBuilder {
         // Resolution-strike binding is optional, but both-or-neither: a strategy
         // either declares the live Chainlink strike (resolution_client_id +
         // resolution_instrument_id) or neither (entry stays fail-closed). Mirrors
-        // the reference_data pair rule.
+        // the source-bound data pair rule.
         if table.contains_key("resolution_client_id")
             != table.contains_key("resolution_instrument_id")
         {
@@ -883,6 +853,24 @@ impl BinaryOracleEdgeTakerBuilder {
                 errors,
                 format!("{field_prefix}.{field_name}"),
                 BinaryOracleEdgeTakerFieldType::String,
+                value,
+            );
+        }
+    }
+
+    fn validate_optional_table_field(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        field_name: &'static str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        if let Some(value) = table.get(field_name)
+            && !BinaryOracleEdgeTakerFieldType::Table.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field_prefix}.{field_name}"),
+                BinaryOracleEdgeTakerFieldType::Table,
                 value,
             );
         }

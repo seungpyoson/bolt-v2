@@ -45,6 +45,7 @@ mod core_glue;
 mod exposure;
 mod orders_admission;
 mod pricing;
+mod reference_price;
 mod selection;
 mod source_evidence;
 mod trade_flow;

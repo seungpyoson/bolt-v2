@@ -361,15 +361,12 @@ pub enum ReferenceQuoteProvenance {
 
 Implement `CustomDataTrait` for `ReferenceQuote`, register JSON deserialization if catalog/replay coverage is required, and construct `DataType::new(REFERENCE_QUOTE_TYPE_NAME, metadata, Some(symbol))` for subscription. Reject non-positive or non-finite prices before state update.
 
-- [ ] **Step 3: Add PRR support limit in one place**
+- [ ] **Step 3: Keep PRR asset selection config-owned**
 
-Define:
-
-```rust
-pub const PRR_SUPPORTED_REFERENCE_SYMBOLS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];
-```
-
-Use this one constant for config validation, strategy validation, startup validation, and tests. PRR must fail validation for BNB/DOGE until PRR actually supports them.
+Do not ship a compiled PRR supported-asset allowlist. The operator-owned
+`[reference_current_price.source.<id>].symbol` value defines the subscribed
+asset, and validation must fail only when that configured symbol does not map to
+`reference_current_price.asset`.
 
 - [ ] **Step 4: Keep price_to_beat separate**
 

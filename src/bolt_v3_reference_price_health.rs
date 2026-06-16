@@ -660,15 +660,17 @@ mod tests {
         let subscriptions = reference_current_price_health_subscriptions(&plan)
             .expect("reference_current_price health subscriptions should build");
 
-        assert_eq!(subscriptions.len(), 1);
-        let subscription = &subscriptions[0];
-        assert_eq!(subscription.source_id, "chainlink_primary");
-        assert_eq!(subscription.provider, "chainlink_ws");
+        assert_eq!(subscriptions.len(), 2);
+        let chainlink_subscription = subscriptions
+            .iter()
+            .find(|subscription| subscription.source_id == "chainlink_primary")
+            .expect("chainlink_primary subscription should be present");
+        assert_eq!(chainlink_subscription.provider, "chainlink_ws");
         assert_eq!(
-            subscription.client_id,
+            chainlink_subscription.client_id,
             ClientId::from("chainlink_reference")
         );
-        let metadata = subscription
+        let metadata = chainlink_subscription
             .data_type
             .metadata()
             .expect("reference-current-price data type should carry metadata");
@@ -685,14 +687,53 @@ mod tests {
             Some("chainlink_ws")
         );
         assert_eq!(
-            subscription
+            chainlink_subscription
                 .params
                 .get_str(REFERENCE_PRICE_INSTRUMENT_ID_PARAM),
             Some("CONFIGURED_ASSET-USD.CHAINLINK")
         );
         assert_eq!(
-            subscription.params.get_str(REFERENCE_PRICE_SYMBOL_PARAM),
+            chainlink_subscription
+                .params
+                .get_str(REFERENCE_PRICE_SYMBOL_PARAM),
             None
+        );
+        let polyresearch_subscription = subscriptions
+            .iter()
+            .find(|subscription| subscription.source_id == "polyresearch_backup")
+            .expect("polyresearch_backup subscription should be present");
+        assert_eq!(polyresearch_subscription.provider, "polyresearch_ws");
+        assert_eq!(
+            polyresearch_subscription.client_id,
+            ClientId::from("polyresearch_reference")
+        );
+        let metadata = polyresearch_subscription
+            .data_type
+            .metadata()
+            .expect("reference-current-price data type should carry metadata");
+        assert_eq!(
+            metadata.get_str(REFERENCE_PRICE_ASSET_PARAM),
+            Some("CONFIGURED_ASSET")
+        );
+        assert_eq!(
+            metadata.get_str(REFERENCE_PRICE_SOURCE_KEY_PARAM),
+            Some("polyresearch_backup")
+        );
+        assert_eq!(
+            metadata.get_str(REFERENCE_PRICE_PROVIDER_PARAM),
+            Some("polyresearch_ws")
+        );
+        assert_eq!(
+            polyresearch_subscription
+                .params
+                .get_str(REFERENCE_PRICE_INSTRUMENT_ID_PARAM),
+            None
+        );
+        assert_eq!(
+            polyresearch_subscription
+                .params
+                .get_str(REFERENCE_PRICE_SYMBOL_PARAM),
+            Some("CONFIGURED_ASSET/USD")
         );
     }
 

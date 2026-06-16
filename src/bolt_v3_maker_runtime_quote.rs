@@ -62,9 +62,28 @@ pub struct MakerRuntimeReferenceFairValueInput<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MakerRuntimeReferenceFairValue {
     pub source_id: String,
+    pub reference_current_price_source_id: String,
     pub reference_current_price: f64,
     pub failed_over: bool,
+    pub reference_current_price_failed_over: bool,
+    pub spot_price: f64,
+    pub strike_price: f64,
+    pub seconds_to_market_end: u64,
+    pub realized_vol: f64,
+    pub pricing_kurtosis: f64,
     pub fair_probability_up: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MakerRuntimeReferenceFairValueDecision {
+    pub fair_value: Option<MakerRuntimeReferenceFairValue>,
+    pub blocked_by: Option<MakerRuntimeReferenceFairValueBlockReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MakerRuntimeReferenceFairValueBlockReason {
+    ReferenceCurrentPriceUnavailable,
+    FairProbabilityUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,29 +103,67 @@ pub fn maker_reference_current_price_fair_value(
     selector: &mut ReferencePriceSelector,
     input: MakerRuntimeReferenceFairValueInput<'_>,
 ) -> Option<MakerRuntimeReferenceFairValue> {
-    let selection = selector.select(
+    maker_reference_current_price_fair_value_decision(selector, input).fair_value
+}
+
+pub fn maker_reference_current_price_fair_value_decision(
+    selector: &mut ReferencePriceSelector,
+    input: MakerRuntimeReferenceFairValueInput<'_>,
+) -> MakerRuntimeReferenceFairValueDecision {
+    let Some(selection) = selector.select(
         input.interval_start_ms,
         input.interval_end_ms,
         input.now_ms,
         input.reference_quotes,
-    )?;
-    let fair_probability_up = fair_probability_up_for_family(
+    ) else {
+        return fair_value_blocked(
+            MakerRuntimeReferenceFairValueBlockReason::ReferenceCurrentPriceUnavailable,
+        );
+    };
+
+    let spot_price = selection.price();
+    let Some(fair_probability_up) = fair_probability_up_for_family(
         input.family_key,
         &FairProbabilityInputs {
-            spot_price: selection.price(),
+            spot_price,
             strike_price: input.strike_price,
             seconds_to_market_end: input.seconds_to_market_end,
             realized_vol: input.realized_vol,
             pricing_kurtosis: input.pricing_kurtosis,
         },
-    )?;
+    ) else {
+        return fair_value_blocked(
+            MakerRuntimeReferenceFairValueBlockReason::FairProbabilityUnavailable,
+        );
+    };
 
-    Some(MakerRuntimeReferenceFairValue {
-        source_id: selection.source_id().to_string(),
-        reference_current_price: selection.price(),
-        failed_over: selection.failed_over(),
-        fair_probability_up,
-    })
+    let source_id = selection.source_id().to_string();
+    let failed_over = selection.failed_over();
+    MakerRuntimeReferenceFairValueDecision {
+        fair_value: Some(MakerRuntimeReferenceFairValue {
+            source_id: source_id.clone(),
+            reference_current_price_source_id: source_id,
+            reference_current_price: spot_price,
+            failed_over,
+            reference_current_price_failed_over: failed_over,
+            spot_price,
+            strike_price: input.strike_price,
+            seconds_to_market_end: input.seconds_to_market_end,
+            realized_vol: input.realized_vol,
+            pricing_kurtosis: input.pricing_kurtosis,
+            fair_probability_up,
+        }),
+        blocked_by: None,
+    }
+}
+
+fn fair_value_blocked(
+    reason: MakerRuntimeReferenceFairValueBlockReason,
+) -> MakerRuntimeReferenceFairValueDecision {
+    MakerRuntimeReferenceFairValueDecision {
+        fair_value: None,
+        blocked_by: Some(reason),
+    }
 }
 
 pub fn plan_maker_runtime_quote(

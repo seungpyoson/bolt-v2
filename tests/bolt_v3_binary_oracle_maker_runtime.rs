@@ -248,7 +248,9 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
     assert_eq!(fair.realized_vol, fair_input.realized_vol);
     assert_eq!(fair.pricing_kurtosis, fair_input.pricing_kurtosis);
     assert_eq!(fair.reference_current_price, 100.05);
+    assert_eq!(fair.source_id, "backup");
     assert_eq!(fair.reference_current_price_source_id, "backup");
+    assert!(fair.failed_over);
     assert!(fair.reference_current_price_failed_over);
     assert_eq!(fair.fair_probability_up, expected_fair_probability_up);
     let quote_plan = outcome
@@ -320,6 +322,69 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
     assert_eq!(blocked_budget.submit_commands_in_window(), 0);
     assert_eq!(blocked_budget.rest_cost_in_window(), 0);
     assert_eq!(blocked_writer.records().len(), 0);
+
+    let unsupported_writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let unsupported_admission =
+        Arc::new(BoltV3SubmitAdmissionState::new(unsupported_writer.clone()));
+    let mut unsupported_maker = BinaryOracleMaker::new(
+        maker_config(),
+        maker_context(unsupported_writer.clone(), unsupported_admission),
+    );
+    register_maker_for_order_factory(&mut unsupported_maker);
+    let mut unsupported_selector = ReferencePriceSelector::new(
+        "BTC",
+        vec!["primary".to_string(), "backup".to_string()],
+        1,
+        100,
+        25,
+    )
+    .expect("selector fixture should be valid");
+    let mut unsupported_market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut unsupported_budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+
+    let unsupported = unsupported_maker
+        .route_maker_runtime_reference_quote(
+            &mut unsupported_market,
+            &mut unsupported_budget,
+            &mut unsupported_selector,
+            BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+                reference_fair_value: MakerRuntimeReferenceFairValueInput {
+                    family_key: "missing_family",
+                    ..fair_input
+                },
+                quote_plan: quote_plan_inputs(updown::KEY),
+                quote_set: quote_set_inputs(),
+                order_plan: order_plan_inputs(),
+                submit_template: &maker_limit_post_only_template(),
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+                max_fee_bps: Decimal::ZERO,
+                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            },
+        )
+        .expect("maker reference quote fair-value blocker should be a route outcome");
+
+    assert_eq!(unsupported.fair_value.fair_value, None);
+    assert_eq!(
+        unsupported.fair_value.blocked_by,
+        Some(MakerRuntimeReferenceFairValueBlockReason::FairProbabilityUnavailable)
+    );
+    assert_eq!(
+        unsupported.blocked_by,
+        Some(
+            BinaryOracleMakerRuntimeReferenceQuoteBlockReason::FairValue(
+                MakerRuntimeReferenceFairValueBlockReason::FairProbabilityUnavailable
+            )
+        )
+    );
+    assert_eq!(unsupported.quote, None);
+    assert_eq!(unsupported.orders, None);
+    assert_eq!(unsupported_market.market_state(), MarketState::Idle);
+    assert_eq!(unsupported_budget.submit_commands_in_window(), 0);
+    assert_eq!(unsupported_budget.rest_cost_in_window(), 0);
+    assert_eq!(unsupported_writer.records().len(), 0);
 }
 
 #[test]

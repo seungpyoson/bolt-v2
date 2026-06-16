@@ -6,7 +6,7 @@
 
 use crate::{
     bolt_v3_maker_event_fence::OrderIdentity,
-    bolt_v3_maker_quote_set::{QuoteSetDecision, QuoteSetLegDecision},
+    bolt_v3_maker_quote_set::QuoteSetDecision,
     bolt_v3_quote_lifecycle::{Leg, LifecycleAction, MarketAction},
     bolt_v3_quoting::{QuoteSide, QuoteTargets},
 };
@@ -22,6 +22,16 @@ pub struct MakerLegBinding {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MakerOrderPlanInput<'a> {
     pub quote_set: &'a QuoteSetDecision,
+    pub targets: QuoteTargets,
+    pub yes_quantity: f64,
+    pub no_quantity: f64,
+    pub yes: MakerLegBinding,
+    pub no: MakerLegBinding,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MakerMarketActionOrderInput {
+    pub action: MarketAction,
     pub targets: QuoteTargets,
     pub yes_quantity: f64,
     pub no_quantity: f64,
@@ -77,7 +87,7 @@ pub fn maker_order_intents_from_quote_set(input: MakerOrderPlanInput<'_>) -> Mak
     MakerOrderPlan {
         yes: maker_leg_order_intent(MakerLegOrderInput {
             expected_leg: Leg::Yes,
-            quote_leg: input.quote_set.yes,
+            action: input.quote_set.yes.control.action,
             quote_side: input.targets.leg_a.side,
             price: input.targets.leg_a.price,
             quantity: input.yes_quantity,
@@ -85,7 +95,7 @@ pub fn maker_order_intents_from_quote_set(input: MakerOrderPlanInput<'_>) -> Mak
         }),
         no: maker_leg_order_intent(MakerLegOrderInput {
             expected_leg: Leg::No,
-            quote_leg: input.quote_set.no,
+            action: input.quote_set.no.control.action,
             quote_side: input.targets.leg_b.side,
             price: input.targets.leg_b.price,
             quantity: input.no_quantity,
@@ -94,10 +104,36 @@ pub fn maker_order_intents_from_quote_set(input: MakerOrderPlanInput<'_>) -> Mak
     }
 }
 
+pub fn maker_order_intent_from_market_action(
+    input: MakerMarketActionOrderInput,
+) -> MakerLegOrderPlan {
+    match input.action {
+        MarketAction::Leg { leg: Leg::Yes, .. } => maker_leg_order_intent(MakerLegOrderInput {
+            expected_leg: Leg::Yes,
+            action: Some(input.action),
+            quote_side: input.targets.leg_a.side,
+            price: input.targets.leg_a.price,
+            quantity: input.yes_quantity,
+            binding: input.yes,
+        }),
+        MarketAction::Leg { leg: Leg::No, .. } => maker_leg_order_intent(MakerLegOrderInput {
+            expected_leg: Leg::No,
+            action: Some(input.action),
+            quote_side: input.targets.leg_b.side,
+            price: input.targets.leg_b.price,
+            quantity: input.no_quantity,
+            binding: input.no,
+        }),
+        MarketAction::CancelAllBothLegs | MarketAction::CancelAllOneSide { .. } => {
+            blocked(MakerOrderPlanBlockReason::UnsupportedMarketAction)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct MakerLegOrderInput {
     expected_leg: Leg,
-    quote_leg: QuoteSetLegDecision,
+    action: Option<MarketAction>,
     quote_side: QuoteSide,
     price: f64,
     quantity: f64,
@@ -105,7 +141,7 @@ struct MakerLegOrderInput {
 }
 
 fn maker_leg_order_intent(input: MakerLegOrderInput) -> MakerLegOrderPlan {
-    let Some(action) = input.quote_leg.control.action else {
+    let Some(action) = input.action else {
         return no_order_intent();
     };
 

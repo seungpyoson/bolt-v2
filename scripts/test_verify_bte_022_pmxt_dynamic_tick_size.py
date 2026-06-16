@@ -14,6 +14,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "verify_bte_022_pmxt_dynamic_tick_size.py"
 FIRST_SELECTION_KEY = "_".join(("selected", "first", "proof", "policy"))
+FIRST_SELECTION_PREDICATE_REF = f"{FIRST_SELECTION_KEY}.selector_predicate"
 
 
 def load_verifier():
@@ -81,7 +82,7 @@ def one_off_fixture(
         l2_replay_evidence["no_tick_size_change_universe_ref"] = (
             "repo://specs/023-nt-research-analytics-platform/reference/"
             "source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json "
-            "selected_first_proof_policy.selector_predicate"
+            f"{FIRST_SELECTION_PREDICATE_REF}"
         )
     if timed_ref:
         l2_replay_evidence["timed_instrument_epoch_replay_ref"] = (

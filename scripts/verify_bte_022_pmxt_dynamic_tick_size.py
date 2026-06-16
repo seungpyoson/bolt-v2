@@ -24,6 +24,7 @@ PMXT_SOURCE_PROOF_FIXTURE = REFERENCE_ROOT / "source-proof-fixture.binary-option
 PMXT_DYNAMIC_STATUS = REFERENCE_ROOT / "source-proof-pmxt-dynamic-tick-size-replay-status.2026-06-16.json"
 JUSTFILE = Path("justfile")
 FIRST_SELECTION_KEY = "_".join(("selected", "first", "proof", "policy"))
+FIRST_SELECTION_PREDICATE_REF = f"{FIRST_SELECTION_KEY}.selector_predicate"
 
 NT_REVISION = "6e059dcbb59ac1e582132fc431a581936c216c3c"
 JUSTFILE_COMMANDS = (
@@ -390,7 +391,7 @@ def check_one_off_fixture(fixture: dict[str, Any], findings: list[str]) -> None:
             PMXT_SOURCE_PROOF_FIXTURE,
             "l2_replay_evidence.no_tick_size_change_universe_ref",
             no_tick_ref,
-            "selected_first_proof_policy.selector_predicate",
+            FIRST_SELECTION_PREDICATE_REF,
             findings,
         )
         if "timed_instrument_epoch_replay_ref" in l2:

@@ -27,10 +27,7 @@ use nautilus_model::{
         Bar, BarSpecification, BarType, CatalogPathPrefix, IndexPriceUpdate, MarkPriceUpdate,
         OrderBookDelta, QuoteTick, TradeTick, order::BookOrder,
     },
-    enums::{
-        AggregationSource, AggressorSide, AssetClass, BarAggregation, BookAction, OrderSide,
-        PriceType,
-    },
+    enums::{AggregationSource, AggressorSide, AssetClass, BookAction, OrderSide, PriceType},
     identifiers::{InstrumentId, Symbol, TradeId},
     instruments::{
         BinaryOption, CryptoFuture, CryptoPerpetual, CurrencyPair, Instrument, InstrumentAny,
@@ -45,10 +42,10 @@ use ustr::Ustr;
 
 use super::{
     canonical_market_data::{
-        CanonicalBarRow, CanonicalBarSpec, CanonicalBarsTable, CanonicalIndexPriceRow,
-        CanonicalIndexPricesTable, CanonicalMarkPriceRow, CanonicalMarkPricesTable,
-        CanonicalOrderBookDeltaRow, CanonicalOrderBookDeltasTable, CanonicalQuoteRow,
-        CanonicalQuotesTable, DeltaAction, DeltaSide,
+        CanonicalBarRow, CanonicalBarsTable, CanonicalIndexPriceRow, CanonicalIndexPricesTable,
+        CanonicalMarkPriceRow, CanonicalMarkPricesTable, CanonicalOrderBookDeltaRow,
+        CanonicalOrderBookDeltasTable, CanonicalQuoteRow, CanonicalQuotesTable, DeltaAction,
+        DeltaSide,
     },
     canonical_trades::{CanonicalTradesTable, TradeAggressorSide},
     source_proof::SourceProofFidelityClass,
@@ -2714,6 +2711,7 @@ fn update_currency_pair_hash(hasher: &mut Sha256, instrument: &CurrencyPair) -> 
 mod tests {
     use super::*;
     use crate::{
+        canonical_market_data::CanonicalBarSpec,
         canonical_trades::{CanonicalInstrumentIdentity, normalize_sample_spot_tick_trades},
         source_proof::{
             AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
@@ -2723,6 +2721,7 @@ mod tests {
             TimeRange, select_accepted_dataset,
         },
     };
+    use nautilus_model::enums::BarAggregation;
 
     fn spec() -> SpotInstrumentSpec {
         SpotInstrumentSpec {

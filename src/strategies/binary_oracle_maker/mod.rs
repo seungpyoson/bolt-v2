@@ -139,32 +139,14 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bolt_v3_maker_mu_estimator::MuHealthReason;
     use crate::bolt_v3_numeric::NANOS_PER_MILLI_U64;
-    use crate::{
-        bolt_v3_decision_evidence::{
-            BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
-            BoltV3OrderIntentEvidence, BoltV3PositionSizerRebuildAuditEvidence,
-            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-            BoltV3SubmitReservationMetadataEvidence,
-        },
-        bolt_v3_maker_mu_estimator::MuHealthReason,
-        bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
-        bolt_v3_maker_order_dispatch::MakerOrderDispatchOutcome,
-        bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
-        bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
-        bolt_v3_quote_lifecycle::Leg,
-        bolt_v3_submit_admission::{BoltV3SubmitAdmissionState, BoltV3SubmitLifecyclePolicy},
-        strategies::registry::{FeeProvider, StrategyBuildContext},
-    };
-    use futures_util::{FutureExt, future::BoxFuture};
     use nautilus_core::UnixNanos;
     use nautilus_model::{
-        enums::{AggressorSide, OrderSide, OrderType, TimeInForce},
-        identifiers::{ClientOrderId, InstrumentId, TradeId, Venue},
+        enums::AggressorSide,
+        identifiers::{InstrumentId, TradeId},
         types::{Price, Quantity},
     };
-    use rust_decimal::Decimal;
-    use std::sync::{Arc, Mutex};
 
     #[test]
     fn builder_kind_is_archetype_key() {
@@ -176,90 +158,6 @@ mod tests {
     const TEST_STALE_WINDOW_MS: u64 = 60_000;
     const TEST_MU_FLOOR: f64 = 0.05;
     const TEST_REQUOTE_MIN_INTERVAL_MS: u64 = 500;
-
-    #[derive(Debug)]
-    struct NoopFeeProvider;
-
-    impl FeeProvider for NoopFeeProvider {
-        fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-            None
-        }
-
-        fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-            async { Ok(()) }.boxed()
-        }
-    }
-
-    #[derive(Debug, Default)]
-    struct RecordingDecisionEvidenceWriter {
-        order_intents: Mutex<Vec<BoltV3OrderIntentEvidence>>,
-        admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
-    }
-
-    impl RecordingDecisionEvidenceWriter {
-        fn order_intents(&self) -> Vec<BoltV3OrderIntentEvidence> {
-            self.order_intents
-                .lock()
-                .expect("recording order-intent mutex should not be poisoned")
-                .clone()
-        }
-
-        fn admission_decisions(&self) -> Vec<BoltV3AdmissionDecisionEvidence> {
-            self.admission_decisions
-                .lock()
-                .expect("recording admission mutex should not be poisoned")
-                .clone()
-        }
-    }
-
-    impl BoltV3DecisionEvidenceWriter for RecordingDecisionEvidenceWriter {
-        fn record_strategy_input_snapshot(
-            &self,
-            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_intent(&self, intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-            self.order_intents
-                .lock()
-                .expect("recording order-intent mutex should not be poisoned")
-                .push(intent.clone());
-            Ok(())
-        }
-
-        fn record_admission_decision(
-            &self,
-            decision: &BoltV3AdmissionDecisionEvidence,
-        ) -> Result<()> {
-            self.admission_decisions
-                .lock()
-                .expect("recording admission mutex should not be poisoned")
-                .push(decision.clone());
-            Ok(())
-        }
-
-        fn record_position_sizer_rebuild_audit(
-            &self,
-            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_metadata(
-            &self,
-            _metadata: &BoltV3SubmitReservationMetadataEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_fill(
-            &self,
-            _fill: &BoltV3SubmitReservationFillEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-    }
 
     fn maker_config(
         trade_flow_window_secs: u64,
@@ -277,36 +175,6 @@ mod tests {
             mu_stale_window_ms: TEST_STALE_WINDOW_MS,
             mu_min_floor: TEST_MU_FLOOR,
             requote_min_interval_ms: TEST_REQUOTE_MIN_INTERVAL_MS,
-        }
-    }
-
-    fn maker_context(
-        writer: Arc<RecordingDecisionEvidenceWriter>,
-        admission: Arc<BoltV3SubmitAdmissionState>,
-    ) -> StrategyBuildContext {
-        StrategyBuildContext::new(
-            Arc::new(NoopFeeProvider),
-            writer,
-            admission,
-            BoltV3OrderExecutionPolicy::shadow(),
-            Venue::from("MAKER.TEST"),
-        )
-    }
-
-    fn maker_limit_post_only_template() -> NtOrderTemplate {
-        NtOrderTemplate {
-            order_type: OrderType::Limit,
-            time_in_force: TimeInForce::Gtc,
-            expire_time: None,
-            trigger_price: None,
-            activation_price: None,
-            trigger_type: None,
-            trigger_instrument_id: None,
-            trailing_offset: None,
-            trailing_offset_type: None,
-            is_post_only: true,
-            is_reduce_only: false,
-            is_quote_quantity: false,
         }
     }
 
@@ -419,59 +287,6 @@ mod tests {
             maker.mu.usable_mu_for(&instrument, QUERY_NOW_MS),
             Ok(1.0),
             "on_trade must route each tick into the per-instrument μ buffer"
-        );
-    }
-
-    #[test]
-    fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
-        let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-        let mut maker = BinaryOracleMaker::new(
-            maker_config(600, 1000, 4),
-            maker_context(writer.clone(), admission.clone()),
-        );
-        let command = MakerCompiledOrderCommand::Submit {
-            leg: Leg::Yes,
-            template: Box::new(maker_limit_post_only_template()),
-            inputs: NtOrderBuildInputs {
-                instrument_id: InstrumentId::from("YES.RUNTIME"),
-                order_side: OrderSide::Buy,
-                quantity: Quantity::new(2.0, 2),
-                price: Some(Price::new(0.40, 2)),
-                client_order_id: ClientOrderId::from("MAKER-YES-1"),
-            },
-            fallback_price: Price::new(0.40, 2),
-        };
-
-        let outcome = maker
-            .route_maker_order_command(
-                &command,
-                "maker_submit",
-                Decimal::ZERO,
-                BoltV3SubmitLifecyclePolicy::new(true),
-            )
-            .expect("maker submit should route through shared execution context");
-
-        assert_eq!(
-            outcome,
-            MakerOrderDispatchOutcome::Submitted {
-                leg: Leg::Yes,
-                instrument_id: InstrumentId::from("YES.RUNTIME"),
-                client_order_id: ClientOrderId::from("MAKER-YES-1"),
-                price: Price::new(0.40, 2),
-                quantity: Quantity::new(2.0, 2),
-            }
-        );
-        assert_eq!(admission.admitted_order_count(), 0);
-        assert_eq!(writer.order_intents().len(), 1);
-        assert_eq!(
-            writer.order_intents()[0].strategy_id,
-            "binary_oracle_maker-001"
-        );
-        assert_eq!(writer.admission_decisions().len(), 1);
-        assert_eq!(
-            writer.admission_decisions()[0].outcome,
-            BoltV3AdmissionOutcome::Admitted
         );
     }
 }

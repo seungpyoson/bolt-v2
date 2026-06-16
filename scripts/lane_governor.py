@@ -145,6 +145,7 @@ def acquire(
     acquire_timeout_seconds: float | None = None,
     heartbeat_seconds: float | None = None,
     poll_interval_seconds: float | None = None,
+    fail_fast: bool = False,
 ):
     """Acquire the per-repo lane lock; return the held handle, or None.
 
@@ -201,6 +202,16 @@ def acquire(
             last_busy_holder_pid = holder_pid if isinstance(holder_pid, int) else None
             now = time.monotonic()
             waited = now - started
+            if fail_fast:
+                handle.close()
+                print(
+                    f"lane-governor: {label!r} not started because another local "
+                    f"verification lane is already running; held by pid "
+                    f"{holder.get('pid')} lane {holder.get('lane')!r}. "
+                    "Reuse that run or retry after it finishes.",
+                    file=sys.stderr,
+                )
+                raise LaneLockTimeout(1)
             if waited >= timeout:
                 handle.close()
                 print(

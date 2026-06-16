@@ -140,6 +140,20 @@ handle = lane_governor.acquire(
 print("acquired", time.time())
 """
 
+FAIL_FAST_RUNNER = """
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+lock_dir = sys.argv[2]
+t0 = time.monotonic()
+lane_governor.acquire(
+    "fail-fast-runner", lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=30, heartbeat_seconds=1, poll_interval_seconds=0.1,
+    fail_fast=True,
+)
+print("unexpected-acquired", time.monotonic() - t0)
+"""
+
 # Parent: acquire, then spawn a child runner WITH A SCRUBBED ENV that attempts
 # acquire on the same lock dir. The child must pass through (ancestor holds).
 PARENT_CHILD_RUNNER = """
@@ -335,6 +349,24 @@ def test_timeout_fails_loud_with_holder_info() -> None:
         assert str(holder.pid) in err, "timeout message must name the holding pid"
 
 
+def test_fail_fast_refuses_busy_lane_without_queueing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(HOLD_RUNNER, tmp, str(sentinel), "10")
+        _wait_for(sentinel)
+        start = time.monotonic()
+        waiter = _spawn(FAIL_FAST_RUNNER, tmp)
+        out, err = waiter.communicate(timeout=10)
+        elapsed = time.monotonic() - start
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert waiter.returncode == 1, f"fail-fast waiter must refuse busy lane: {out}"
+        assert elapsed < 2.0, f"fail-fast waiter queued for {elapsed:.2f}s"
+        assert "already running" in err
+        assert "hold-runner" in err
+        assert str(holder.pid) in err
+
+
 def test_unrelated_holder_does_not_reenter() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         sentinel = Path(tmp) / "held"
@@ -473,6 +505,7 @@ def main() -> int:
         test_second_acquire_queues_until_release,
         test_holder_metadata_written,
         test_timeout_fails_loud_with_holder_info,
+        test_fail_fast_refuses_busy_lane_without_queueing,
         test_unrelated_holder_does_not_reenter,
         test_unexpected_flock_error_fails_immediately,
         test_scrubbed_env_child_reenters_while_parent_holds,

@@ -4465,6 +4465,44 @@ def just_recipe_blocks(justfile_text: str) -> dict[str, tuple[list[str], list[st
     return recipes
 
 
+def active_recipe_lines(recipes: dict[str, tuple[list[str], list[str]]], name: str) -> list[str]:
+    return [line for line in (strip_comment(raw_line).strip() for raw_line in recipes[name][1]) if line]
+
+
+def gated_inner_recipe_name(
+    recipes: dict[str, tuple[list[str], list[str]]],
+    public_name: str,
+    inner_name: str,
+    errors: list[str],
+) -> str:
+    if public_name not in recipes:
+        errors.append(f"justfile {public_name} recipe is required")
+        return public_name
+    public_lines = active_recipe_lines(recipes, public_name)
+    gate_command = f"python3 scripts/local_verification_gate.py {public_name} -- just {inner_name}"
+    if gate_command not in public_lines:
+        errors.append(f"justfile {public_name} must run through scripts/local_verification_gate.py")
+        return public_name
+    if inner_name not in recipes:
+        errors.append(f"justfile {inner_name} recipe is required")
+        return public_name
+    inner_dependencies, _inner_body = recipes[inner_name]
+    if "require-local-verification-gate" not in inner_dependencies:
+        errors.append(f"justfile {inner_name} must require the local verification gate")
+    return inner_name
+
+
+def verify_local_verification_gate_recipes(justfile_text: str) -> list[str]:
+    recipes = just_recipe_blocks(justfile_text)
+    errors: list[str] = []
+    for public_name, inner_name in (
+        ("fmt-check", "fmt-check-inner"),
+        ("ci-lint-workflow", "ci-lint-workflow-inner"),
+    ):
+        gated_inner_recipe_name(recipes, public_name, inner_name, errors)
+    return errors
+
+
 def verify_source_fence_static_recipe(justfile_text: str) -> list[str]:
     recipes = just_recipe_blocks(justfile_text)
     errors: list[str] = []
@@ -4477,15 +4515,20 @@ def verify_source_fence_static_recipe(justfile_text: str) -> list[str]:
     source_fence_dependencies, source_fence_body = recipes["source-fence"]
     if "source-fence-static" not in source_fence_dependencies:
         errors.append("justfile source-fence must depend on source-fence-static")
-    static_lines = [
-        line for line in (strip_comment(raw_line).strip() for raw_line in recipes["source-fence-static"][1]) if line
-    ]
+    static_recipe_name = gated_inner_recipe_name(
+        recipes,
+        "source-fence-static",
+        "source-fence-static-inner",
+        errors,
+    )
+    static_lines = active_recipe_lines(recipes, static_recipe_name)
     static_body = "\n".join(static_lines)
     if command_has_managed_compile_heavy_invocation(static_body) or re.search(r"\brust_verification\.py\b[^\n]*\bcargo\b", static_body):
         errors.append("justfile source-fence-static must not invoke wrapper-routed Cargo")
     if "cargo fetch" in static_body or re.search(r"\bscripts/verify_runtime_capture_yaml\.py\b", static_body):
         errors.append("justfile source-fence-static must stop before cargo fetch and runtime capture verification")
     for command in (
+        "python3 scripts/test_local_verification_gate.py",
         "python3 scripts/test_lane_governor.py",
         "python3 scripts/test_verify_lane_governance.py",
         "python3 scripts/verify_lane_governance.py",
@@ -9254,6 +9297,7 @@ def main() -> int:
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())
     if "justfile" in repo_automation_texts:
+        errors.extend(verify_local_verification_gate_recipes(repo_automation_texts["justfile"]))
         errors.extend(verify_source_fence_static_recipe(repo_automation_texts["justfile"]))
     if DEFAULT_NO_MISTAKES_CONFIG.exists():
         errors.extend(verify_no_mistakes_config(DEFAULT_NO_MISTAKES_CONFIG.read_text()))

@@ -44,6 +44,14 @@ check-workspace:
 require-rust-verification-owner:
     python3 "{{rust_verification_owner}}" validate-policy --repo "{{repo_root}}" >/dev/null
 
+[private]
+require-local-verification-gate:
+    #!/usr/bin/env bash
+    if [ "${BOLT_LOCAL_VERIFICATION_GATE:-}" != "1" ]; then
+        echo "ERROR: run the public local verification recipe so scripts/local_verification_gate.py owns the lane"
+        exit 2
+    fi
+
 verify-bolt-v3-runtime-literals: check-workspace
     python3 scripts/test_verify_bolt_v3_runtime_literals.py
     python3 scripts/verify_bolt_v3_runtime_literals.py
@@ -101,7 +109,10 @@ test-verify-runtime-capture-yaml: check-workspace
 verify-runtime-capture-yaml: test-verify-runtime-capture-yaml
     python3 scripts/verify_runtime_capture_yaml.py
 
-fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks
+fmt-check: check-workspace require-rust-verification-owner
+    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner
+
+fmt-check-inner: require-local-verification-gate check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check
 
 fmt: check-workspace require-rust-verification-owner
@@ -177,6 +188,9 @@ ci-runner-minutes *args:
     python3 scripts/ubicloud_runner_minutes.py {{args}}
 
 source-fence-static: check-workspace require-rust-verification-owner
+    python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner
+
+source-fence-static-inner: require-local-verification-gate check-workspace require-rust-verification-owner
     python3 scripts/test_verify_bolt_v3_runtime_literals.py
     python3 scripts/verify_bolt_v3_runtime_literals.py
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
@@ -200,6 +214,7 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
     python3 scripts/verify_bolt_v3_no_exit_market_command.py
     python3 scripts/test_verify_runtime_capture_yaml.py
+    python3 scripts/test_local_verification_gate.py
     python3 scripts/test_lane_governor.py
     python3 scripts/test_verify_lane_governance.py
     python3 scripts/verify_lane_governance.py
@@ -239,7 +254,10 @@ live-resolve: require-live-root require-rust-verification-owner
     # Perform actual secret resolution against the bolt-v3 root config.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets resolve --config {{live_root}}
 
-ci-lint-workflow:
+ci-lint-workflow: check-workspace require-rust-verification-owner
+    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner
+
+ci-lint-workflow-inner: require-local-verification-gate
     #!/usr/bin/env bash
     set -euo pipefail
     shopt -s nullglob

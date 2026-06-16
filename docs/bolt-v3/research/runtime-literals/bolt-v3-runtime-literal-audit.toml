@@ -8047,6 +8047,14 @@ reason = "Fail-closed diagnostic for a source root that is neither a file nor a 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
 kind = '''string'''
+literal = '''"src/strategies/binary_oracle_maker"'''
+context = '''relative_roots: &["src/strategies/binary_oracle_maker"],'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the binary-oracle maker strategy source module; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
 literal = '''"strategy"'''
 context = '''pub const STRATEGY_KEY: &str = "strategy";'''
 classification = "gated_source_registry_key"
@@ -8067,6 +8075,14 @@ literal = '''"outcome_group"'''
 context = '''pub const OUTCOME_GROUP_KEY: &str = "outcome_group";'''
 classification = "gated_source_registry_key"
 reason = "Stable registry key for the shared outcome-group substrate source set; an internal registry identifier owned here, not an operator runtime value."
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"maker"'''
+context = '''pub const MAKER_KEY: &str = "maker";'''
+classification = "gated_source_registry_key"
+reason = "Stable registry key for the binary-oracle maker strategy source root; an internal registry identifier owned here, not an operator runtime value."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"

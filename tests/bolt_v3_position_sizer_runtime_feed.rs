@@ -1874,6 +1874,7 @@ fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attributio
 
     let mut third_request = sized_submit_request("client-order-3");
     third_request.notional = Decimal::new(4, 1);
+    third_request.order_quantity = Decimal::new(1, 0);
     third_request
         .position_sizing
         .as_mut()
@@ -2460,6 +2461,7 @@ fn sized_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
 
 fn sized_sell_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
     let mut request = sized_submit_request(client_order_id);
+    request.order_side = OrderSide::Sell;
     request
         .position_sizing
         .as_mut()

@@ -15,21 +15,17 @@
 //! root risk cap once and passes it in here as
 //! `default_max_notional_decimal`.
 //!
-//! Today bolt-v3 has a single archetype binding. When a second
-//! archetype is introduced, it adds its own per-archetype module and
-//! one entry in this root's binding list; core validation does not
-//! change.
+//! Each archetype adds its own per-archetype module and one entry in
+//! this root's binding list; core validation does not change.
 
 pub mod binary_oracle_edge_taker;
+pub mod complete_set_arbitrage;
 
 use std::collections::BTreeSet;
 
 use rust_decimal::Decimal;
 
-use crate::{
-    bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig},
-    bolt_v3_strategy_registration::StrategyRuntimeBinding,
-};
+use crate::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GateRole {
@@ -59,19 +55,19 @@ pub struct ArchetypeValidationBinding {
         fn(&str, &BoltV3RootConfig, &BoltV3StrategyConfig, Option<&Decimal>) -> Vec<String>,
 }
 
-const VALIDATION_BINDINGS: &[ArchetypeValidationBinding] = &[ArchetypeValidationBinding {
-    key: binary_oracle_edge_taker::KEY,
-    validate_strategy: binary_oracle_edge_taker::validate_strategy,
-}];
-
-const RUNTIME_BINDINGS: &[StrategyRuntimeBinding] = &[binary_oracle_edge_taker::RUNTIME_BINDING];
+const VALIDATION_BINDINGS: &[ArchetypeValidationBinding] = &[
+    ArchetypeValidationBinding {
+        key: binary_oracle_edge_taker::KEY,
+        validate_strategy: binary_oracle_edge_taker::validate_strategy,
+    },
+    ArchetypeValidationBinding {
+        key: complete_set_arbitrage::KEY,
+        validate_strategy: complete_set_arbitrage::validate_strategy,
+    },
+];
 
 pub fn validation_bindings() -> &'static [ArchetypeValidationBinding] {
     VALIDATION_BINDINGS
-}
-
-pub fn runtime_bindings() -> &'static [StrategyRuntimeBinding] {
-    RUNTIME_BINDINGS
 }
 
 pub fn validate_strategy_archetype(

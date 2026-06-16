@@ -249,6 +249,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
             {
                 *source_roots.STRATEGY_SOURCE_ROOTS,
                 source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,
+                *source_roots.OUTCOME_GROUP_SOURCE_ROOTS,
             },
         )
 
@@ -272,6 +273,24 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 key: SUBMIT_ADMISSION_KEY,
                 relative_roots: &["src/bolt_v3_submit_admission.rs"],
             },
+            GatedSourceRoot {
+                key: OUTCOME_GROUP_KEY,
+                relative_roots: &[
+                    "src/bolt_v3_atomic_io.rs",
+                    "src/bolt_v3_outcome_groups.rs",
+                    "src/bolt_v3_outcome_group_sources.rs",
+                    "src/bolt_v3_outcome_group_polymarket.rs",
+                    "src/bolt_v3_outcome_group_hyperliquid.rs",
+                    "src/bolt_v3_outcome_group_scanner.rs",
+                    "src/bolt_v3_basket_admission.rs",
+                    "src/bolt_v3_basket_execution.rs",
+                    "src/bolt_v3_basket_store.rs",
+                    "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
+                    "src/bolt_v3_market_families/outcome_group.rs",
+                    "src/strategy_runtime_bindings.rs",
+                    "src/strategies/complete_set_arbitrage",
+                ],
+            },
         """
 
         self.assertEqual(
@@ -279,6 +298,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
             {
                 *source_roots.STRATEGY_SOURCE_ROOTS,
                 source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,
+                *source_roots.OUTCOME_GROUP_SOURCE_ROOTS,
             },
         )
 

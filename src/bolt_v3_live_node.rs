@@ -88,6 +88,7 @@ use nautilus_model::{
     orders::{Order, OrderAny},
 };
 use rust_decimal::Decimal;
+use serde::Deserialize;
 use ustr::Ustr;
 use zeroize::Zeroizing;
 
@@ -106,10 +107,12 @@ use crate::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
     bolt_v3_config::{
-        BoltV3RootConfig, CapitalPoolBlock, LoadedBoltV3Config, resolve_root_relative_path,
+        BoltV3RootConfig, CapitalPoolBlock, LoadedBoltV3Config, LoadedStrategy,
+        resolve_root_relative_path,
     },
     bolt_v3_decision_evidence::{
-        BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+        BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
+        BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
@@ -2233,6 +2236,13 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
         Ok(())
     }
 
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn record_position_sizer_rebuild_audit(
         &self,
         _audit: &BoltV3PositionSizerRebuildAuditEvidence,
@@ -3379,7 +3389,7 @@ fn strategy_free_transport_adapter_configs(
 fn trade_transport_loaded_config(
     loaded: &LoadedBoltV3Config,
 ) -> Result<LoadedBoltV3Config, BoltV3LiveNodeError> {
-    let required_clients = trade_transport_client_keys(loaded);
+    let required_clients = trade_transport_client_keys(loaded)?;
     if required_clients.is_empty() {
         let mut transport_loaded = loaded.clone();
         transport_loaded.root.clients.clear();
@@ -3407,7 +3417,9 @@ fn trade_transport_loaded_config(
     Ok(transport_loaded)
 }
 
-fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> {
+fn trade_transport_client_keys(
+    loaded: &LoadedBoltV3Config,
+) -> Result<BTreeSet<String>, BoltV3LiveNodeError> {
     let mut client_keys = BTreeSet::new();
     for strategy in &loaded.strategies {
         client_keys.insert(strategy.config.execution_client_id.to_string());
@@ -3429,6 +3441,14 @@ fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> 
             client_keys.insert(resolution.data_client_id.to_string());
         }
     }
+    insert_outcome_group_source_client_keys(&mut client_keys, loaded)?;
+    insert_gate_provider_client_keys(&mut client_keys, loaded)?;
+    insert_realized_volatility_surface_client_keys(&mut client_keys, loaded);
+    insert_iv_source_client_keys(&mut client_keys, loaded);
+    Ok(client_keys)
+}
+
+fn insert_iv_source_client_keys(client_keys: &mut BTreeSet<String>, loaded: &LoadedBoltV3Config) {
     if let Some(iv_root) = loaded.root.iv.as_ref() {
         for profile in &iv_root.profiles {
             for source in &profile.sources {
@@ -3436,7 +3456,201 @@ fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> 
             }
         }
     }
-    client_keys
+}
+
+fn insert_outcome_group_source_client_keys(
+    client_keys: &mut BTreeSet<String>,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3LiveNodeError> {
+    let plan = crate::bolt_v3_market_families::market_identity_plan_from_config(loaded).map_err(
+        |source| BoltV3LiveNodeError::LiveTransportScope {
+            reason: source.to_string(),
+        },
+    )?;
+    let Some(sources) = loaded.root.outcome_group_sources.as_ref() else {
+        return Ok(());
+    };
+    for target in crate::bolt_v3_market_families::outcome_group::target_plans(&plan) {
+        for source_id in &target.group_sources {
+            if let Some(source) = sources.iter().find(|source| source.source_id == *source_id)
+                && source.enabled
+            {
+                client_keys.insert(source.client_id.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn insert_gate_provider_client_keys(
+    client_keys: &mut BTreeSet<String>,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3LiveNodeError> {
+    for strategy in &loaded.strategies {
+        let Some(target) = target_gate_references(strategy)? else {
+            continue;
+        };
+        let Some(subscriptions) = target.gate_subscriptions.as_ref() else {
+            continue;
+        };
+        let Some(providers) = loaded.root.gate_providers.as_ref() else {
+            return Err(BoltV3LiveNodeError::LiveTransportScope {
+                reason: format!(
+                    "strategy `{}` target.gate_subscriptions references gate providers but [gate_providers] is not configured",
+                    strategy.relative_path
+                ),
+            });
+        };
+        insert_gate_subscription_client_keys(
+            client_keys,
+            providers,
+            subscriptions,
+            strategy.relative_path.as_str(),
+        )?;
+    }
+    Ok(())
+}
+
+fn target_gate_references(
+    strategy: &LoadedStrategy,
+) -> Result<Option<TargetGateReferences>, BoltV3LiveNodeError> {
+    if strategy.config.target.as_table().is_none() {
+        return Ok(None);
+    }
+    strategy
+        .config
+        .target
+        .clone()
+        .try_into::<TargetGateReferences>()
+        .map(Some)
+        .map_err(|source| BoltV3LiveNodeError::LiveTransportScope {
+            reason: format!(
+                "strategy `{}` target.gate_subscriptions could not be parsed for trade transport scoping: {source}",
+                strategy.relative_path
+            ),
+        })
+}
+
+fn insert_gate_subscription_client_keys(
+    client_keys: &mut BTreeSet<String>,
+    providers: &BTreeMap<String, crate::bolt_v3_config::GateProviderBlock>,
+    subscriptions: &BTreeMap<String, TargetGateSubscriptionReferences>,
+    strategy_path: &str,
+) -> Result<(), BoltV3LiveNodeError> {
+    for subscription in subscriptions.values() {
+        let _ = (
+            subscription.required,
+            &subscription.allowed_provider_kinds,
+            &subscription.allowed_value_kinds,
+            subscription.allow_no_resolution,
+        );
+        if let Some(provider_ids) = &subscription.allowed_provider_ids {
+            for provider_id in provider_ids {
+                insert_gate_provider_client_key(
+                    client_keys,
+                    providers,
+                    provider_id,
+                    strategy_path,
+                )?;
+            }
+        }
+        if let Some(provider_ids) = &subscription.provider_preference {
+            for provider_id in provider_ids {
+                insert_gate_provider_client_key(
+                    client_keys,
+                    providers,
+                    provider_id,
+                    strategy_path,
+                )?;
+            }
+        }
+        if let Some(mappings) = &subscription.market_mappings {
+            for mapping in mappings {
+                let _ = (
+                    &mapping.family_key,
+                    &mapping.market_class,
+                    &mapping.resolution_kind,
+                    &mapping.resolution_identity,
+                    &mapping.value_kind,
+                );
+                if let Some(provider_id) = &mapping.provider_id {
+                    insert_gate_provider_client_key(
+                        client_keys,
+                        providers,
+                        provider_id,
+                        strategy_path,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct TargetGateReferences {
+    gate_subscriptions: Option<BTreeMap<String, TargetGateSubscriptionReferences>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TargetGateSubscriptionReferences {
+    required: Option<bool>,
+    allowed_provider_ids: Option<Vec<String>>,
+    allowed_provider_kinds: Option<Vec<String>>,
+    allowed_value_kinds: Option<Vec<String>>,
+    provider_preference: Option<Vec<String>>,
+    allow_no_resolution: Option<bool>,
+    market_mappings: Option<Vec<TargetGateMarketMappingReference>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TargetGateMarketMappingReference {
+    family_key: Option<String>,
+    market_class: Option<String>,
+    resolution_kind: Option<String>,
+    resolution_identity: Option<String>,
+    value_kind: Option<String>,
+    provider_id: Option<String>,
+}
+
+fn insert_gate_provider_client_key(
+    client_keys: &mut BTreeSet<String>,
+    providers: &BTreeMap<String, crate::bolt_v3_config::GateProviderBlock>,
+    provider_id: &str,
+    strategy_path: &str,
+) -> Result<(), BoltV3LiveNodeError> {
+    let Some(provider) = providers.get(provider_id) else {
+        return Err(BoltV3LiveNodeError::LiveTransportScope {
+            reason: format!(
+                "strategy `{strategy_path}` target.gate_subscriptions references provider_id `{provider_id}` but [gate_providers.{provider_id}] is not configured"
+            ),
+        });
+    };
+    if let Some(client_id) = &provider.client_id {
+        client_keys.insert(client_id.to_string());
+    }
+    Ok(())
+}
+
+fn insert_realized_volatility_surface_client_keys(
+    client_keys: &mut BTreeSet<String>,
+    loaded: &LoadedBoltV3Config,
+) {
+    let Some(surfaces) = loaded.root.realized_volatility_surfaces.as_ref() else {
+        return;
+    };
+    for strategy in &loaded.strategies {
+        let Some(surface_id) = strategy.config.realized_volatility_surface_id.as_ref() else {
+            continue;
+        };
+        if let Some(surface) = surfaces.get(surface_id) {
+            for source in &surface.sources {
+                if source.enabled {
+                    client_keys.insert(source.data_client_id.to_string());
+                }
+            }
+        }
+    }
 }
 
 fn data_client_probe_loaded_config(
@@ -3823,7 +4037,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             &mut node,
             loaded,
             resolved,
-            crate::bolt_v3_archetypes::runtime_bindings(),
+            crate::strategy_runtime_bindings::runtime_bindings(),
             strategy_execution_controls,
             decision_evidence.clone(),
             iv_runtime,
@@ -3833,7 +4047,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             &mut node,
             loaded,
             resolved,
-            crate::bolt_v3_archetypes::runtime_bindings(),
+            crate::strategy_runtime_bindings::runtime_bindings(),
             strategy_execution_controls,
             decision_evidence.clone(),
         )
@@ -7581,7 +7795,7 @@ configured_source_param = "configured-value"
     }
 
     #[test]
-    fn trade_transport_config_keeps_only_strategy_bound_clients() {
+    fn trade_transport_config_keeps_strategy_and_root_substrate_clients() {
         let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
             "tests/fixtures/bolt_v3/root.toml",
         ))
@@ -7603,24 +7817,128 @@ configured_source_param = "configured-value"
             .root
             .clients
             .insert("unrelated_data".to_string(), unrelated_client);
-        let strategy = loaded
-            .strategies
+        {
+            let strategy = loaded
+                .strategies
+                .first_mut()
+                .expect("fixture should include one strategy");
+            strategy.config.signal_data.insert(
+                "primary".to_string(),
+                DataInstrumentBlock {
+                    data_client_id: ClientId::from("signal_data"),
+                    instrument_id: InstrumentId::from("SIGNAL.SOURCE"),
+                },
+            );
+        }
+        let mut rv_client = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        rv_client.execution = None;
+        rv_client.secrets = None;
+        loaded.root.clients.insert("rv_data".to_string(), rv_client);
+        loaded
+            .root
+            .realized_volatility_surfaces
+            .as_mut()
+            .expect("fixture should include realized-volatility surfaces")
+            .get_mut("configured_rv_surface")
+            .expect("fixture should include configured RV surface")
+            .sources
             .first_mut()
-            .expect("fixture should include one strategy");
-        strategy.config.signal_data.insert(
-            "primary".to_string(),
-            DataInstrumentBlock {
-                data_client_id: ClientId::from("signal_data"),
-                instrument_id: InstrumentId::from("SIGNAL.SOURCE"),
+            .expect("fixture RV surface should include one source")
+            .data_client_id = ClientId::from("rv_data");
+        let mut gate_client = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        gate_client.execution = None;
+        gate_client.secrets = None;
+        loaded
+            .root
+            .clients
+            .insert("gate_data".to_string(), gate_client);
+        loaded
+            .root
+            .gate_providers
+            .as_mut()
+            .expect("fixture should include gate providers")
+            .get_mut("resolution_oracle_primary")
+            .expect("fixture should include target-referenced gate provider")
+            .client_id = Some(ClientId::from("gate_data"));
+        let mut outcome_group_client = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        outcome_group_client.execution = None;
+        outcome_group_client.secrets = None;
+        loaded
+            .root
+            .clients
+            .insert("outcome_group_data".to_string(), outcome_group_client);
+        loaded.root.outcome_group_sources = Some(vec![
+            crate::bolt_v3_outcome_group_sources::OutcomeGroupSourceConfig {
+                source_id: "configured_group_source".to_string(),
+                client_id: ClientId::from("outcome_group_data"),
+                kind: crate::bolt_v3_outcome_group_sources::OutcomeGroupSourceKind::GammaQuery,
+                event_slugs: None,
+                market_slugs: None,
+                sports_market_types: None,
+                gamma_query: Some(crate::bolt_v3_outcome_group_sources::GammaQueryBlock {
+                    search: None,
+                    event_query: None,
+                    market_query: Some("configured outcome group".to_string()),
+                    tag_id: None,
+                    sports_market_types: None,
+                    max_events: None,
+                    max_markets: 1,
+                }),
+                question: None,
+                expected_neg_risk_market_id: None,
+                terminal_state_labels: None,
+                max_markets: None,
+                max_groups: None,
+                enabled: true,
+                freshness: None,
+                order_constraints: None,
+                role_bindings: None,
+                settlement_rules: None,
             },
-        );
+        ]);
+        let mut outcome_group_strategy = loaded
+            .strategies
+            .first()
+            .expect("fixture should include one strategy")
+            .clone();
+        outcome_group_strategy.config.strategy_instance_id = "configured_outcome_group".to_string();
+        outcome_group_strategy.config.realized_volatility_surface_id = None;
+        outcome_group_strategy.config.signal_data.clear();
+        outcome_group_strategy.config.reference_current_price = None;
+        outcome_group_strategy.config.resolution_data = None;
+        outcome_group_strategy.config.target = toml::toml! {
+            configured_target_id = "configured_outcome_group_target"
+            kind = "static_outcome_group"
+            rotating_market_family = "outcome_group"
+            group_sources = ["configured_group_source"]
+        }
+        .into();
+        loaded.strategies.push(outcome_group_strategy);
 
         let scoped = trade_transport_loaded_config(&loaded)
             .expect("strategy-bound transport scope should be derived from config");
 
-        assert_eq!(scoped.root.clients.len(), 4);
+        assert_eq!(scoped.root.clients.len(), 7);
         assert!(scoped.root.clients.contains_key("polymarket_main"));
         assert!(scoped.root.clients.contains_key("signal_data"));
+        assert!(scoped.root.clients.contains_key("rv_data"));
+        assert!(scoped.root.clients.contains_key("gate_data"));
+        assert!(scoped.root.clients.contains_key("outcome_group_data"));
         assert!(scoped.root.clients.contains_key("chainlink_reference"));
         assert!(scoped.root.clients.contains_key("polyresearch_reference"));
         assert!(
@@ -7631,6 +7949,81 @@ configured_source_param = "configured-value"
         assert!(
             loaded.root.clients.contains_key("unrelated_data"),
             "helper must not mutate the caller's full client bundle"
+        );
+    }
+
+    #[test]
+    fn trade_transport_config_fails_closed_on_malformed_gate_subscription_target() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        let resolution = strategy
+            .config
+            .target
+            .as_table_mut()
+            .and_then(|target| target.get_mut("gate_subscriptions"))
+            .and_then(toml::Value::as_table_mut)
+            .and_then(|subscriptions| subscriptions.get_mut("resolution"))
+            .and_then(toml::Value::as_table_mut)
+            .expect("fixture strategy should include resolution gate subscriptions");
+        resolution.insert(
+            "required".to_string(),
+            toml::Value::String("not-a-bool".to_string()),
+        );
+
+        let error = trade_transport_loaded_config(&loaded)
+            .expect_err("malformed gate subscription target must fail closed");
+        let BoltV3LiveNodeError::LiveTransportScope { reason } = error else {
+            panic!("expected LiveTransportScope error for malformed target");
+        };
+        assert!(
+            reason.contains("gate_subscriptions") && reason.contains("not-a-bool"),
+            "malformed target error should identify the gate subscription field: {reason}"
+        );
+    }
+
+    #[test]
+    fn trade_transport_config_fails_closed_on_unknown_gate_provider_reference() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        let mapping = strategy
+            .config
+            .target
+            .as_table_mut()
+            .and_then(|target| target.get_mut("gate_subscriptions"))
+            .and_then(toml::Value::as_table_mut)
+            .and_then(|subscriptions| subscriptions.get_mut("resolution"))
+            .and_then(toml::Value::as_table_mut)
+            .and_then(|resolution| resolution.get_mut("market_mappings"))
+            .and_then(toml::Value::as_array_mut)
+            .and_then(|mappings| mappings.first_mut())
+            .and_then(toml::Value::as_table_mut)
+            .expect("fixture strategy should include a resolution gate mapping");
+        mapping.insert(
+            "provider_id".to_string(),
+            toml::Value::String("missing_gate_provider".to_string()),
+        );
+
+        let error = trade_transport_loaded_config(&loaded)
+            .expect_err("unknown gate provider reference must fail closed");
+        let BoltV3LiveNodeError::LiveTransportScope { reason } = error else {
+            panic!("expected LiveTransportScope error for missing gate provider");
+        };
+        assert!(
+            reason.contains("missing_gate_provider")
+                && reason.contains("[gate_providers.missing_gate_provider]"),
+            "missing provider error should identify the unresolved provider: {reason}"
         );
     }
 

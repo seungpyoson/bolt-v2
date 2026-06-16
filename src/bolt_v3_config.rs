@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_iv::config::IvRootConfig,
     bolt_v3_loss_halt_actions::{LossGovernorRecoveryMode, LossGovernorTradingStateAction},
+    bolt_v3_outcome_group_sources::{BasketExecutionRiskBlock, OutcomeGroupSourceConfig},
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolCoarserGridPolicy, RealizedVolEngineConfig,
         RealizedVolEstimatorConfig, RealizedVolJumpConfig, RealizedVolJumpPolicy,
@@ -81,6 +82,7 @@ pub struct BoltV3RootConfig {
     pub clients: BTreeMap<String, ClientBlock>,
     pub realized_volatility_surfaces: Option<BTreeMap<String, RealizedVolatilitySurfaceBlock>>,
     pub gate_providers: Option<BTreeMap<String, GateProviderBlock>>,
+    pub outcome_group_sources: Option<Vec<OutcomeGroupSourceConfig>>,
     pub iv: Option<IvRootConfig>,
 }
 
@@ -192,6 +194,7 @@ pub struct RiskBlock {
     pub capital_pools: Option<Vec<CapitalPoolBlock>>,
     pub nautilus: NautilusRiskBlock,
     pub kill_switch: Option<KillSwitchConfigBlock>,
+    pub basket_execution: Option<BasketExecutionRiskBlock>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -559,6 +562,7 @@ pub struct BoltV3StrategyConfig {
     pub manage_stop: bool,
     pub market_exit_interval_ms: u64,
     pub market_exit_max_attempts: u64,
+    pub market_exit_reduce_only: Option<bool>,
     pub log_events: bool,
     pub log_commands: bool,
     pub log_rejected_due_post_only_as_warning: bool,

@@ -157,6 +157,7 @@ mod tests {
     const QUERY_NOW_MS: u64 = 50_000;
     const TEST_STALE_WINDOW_MS: u64 = 60_000;
     const TEST_MU_FLOOR: f64 = 0.05;
+    const TEST_REQUOTE_MIN_INTERVAL_MS: u64 = 500;
 
     fn maker_config(
         trade_flow_window_secs: u64,
@@ -172,6 +173,7 @@ mod tests {
             mu_min_classified_samples,
             mu_stale_window_ms: TEST_STALE_WINDOW_MS,
             mu_min_floor: TEST_MU_FLOOR,
+            requote_min_interval_ms: TEST_REQUOTE_MIN_INTERVAL_MS,
         }
     }
 

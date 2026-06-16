@@ -20,6 +20,8 @@ The systemd unit refuses to start unless `/srv/bolt-v2` is mounted and the Rust 
 passes against `/opt/bolt-v2/config/live.toml`. That prestart check requires
 `persistence.catalog_directory` to stay under `/srv/bolt-v2` and requires the catalog filesystem to
 have at least the TOML-configured `persistence.min_free_bytes` available.
+For live EC2 operation, start Bolt through the systemd unit; direct `bolt-v2 run --config ...`
+does not execute the systemd prestart hook.
 
 Before a live run, inspect the instance storage state:
 

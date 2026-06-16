@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::{
+    fs::OpenOptions,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -185,13 +186,67 @@ fn run_prestart_check(
         )
         .into());
     }
+    let canonical_required_prefix =
+        std::fs::canonicalize(required_catalog_prefix).map_err(|source| {
+            std::io::Error::new(
+                source.kind(),
+                format!(
+                    "--required-catalog-prefix `{}` is not readable before service start: {source}",
+                    required_catalog_prefix.display()
+                ),
+            )
+        })?;
     let loaded = load_bolt_v3_config(config)?;
-    let catalog_directory = Path::new(&loaded.root.persistence.catalog_directory);
-    if !catalog_directory.starts_with(required_catalog_prefix) {
+    let configured_catalog_directory = Path::new(&loaded.root.persistence.catalog_directory);
+    let catalog_link_metadata = std::fs::symlink_metadata(configured_catalog_directory).map_err(
+        |source| {
+            std::io::Error::new(
+                source.kind(),
+                format!(
+                    "persistence.catalog_directory `{}` is not readable before service start: {source}",
+                    configured_catalog_directory.display()
+                ),
+            )
+        },
+    )?;
+    if catalog_link_metadata.file_type().is_symlink() {
+        return Err(format!(
+            "persistence.catalog_directory `{}` must not be a symlink",
+            configured_catalog_directory.display()
+        )
+        .into());
+    }
+    let catalog_metadata = std::fs::metadata(configured_catalog_directory).map_err(|source| {
+        std::io::Error::new(
+            source.kind(),
+            format!(
+                "persistence.catalog_directory `{}` is not readable before service start: {source}",
+                configured_catalog_directory.display()
+            ),
+        )
+    })?;
+    if !catalog_metadata.is_dir() {
+        return Err(format!(
+            "persistence.catalog_directory `{}` must be a directory before service start",
+            configured_catalog_directory.display()
+        )
+        .into());
+    }
+    let catalog_directory =
+        std::fs::canonicalize(configured_catalog_directory).map_err(|source| {
+            std::io::Error::new(
+                source.kind(),
+                format!(
+                    "persistence.catalog_directory `{}` cannot be canonicalized before service start: {source}",
+                    configured_catalog_directory.display()
+                ),
+            )
+        })?;
+    if !catalog_directory.starts_with(&canonical_required_prefix) {
         return Err(format!(
             "persistence.catalog_directory `{}` must be under `{}` for this service",
             catalog_directory.display(),
-            required_catalog_prefix.display()
+            canonical_required_prefix.display()
         )
         .into());
     }
@@ -201,23 +256,8 @@ fn run_prestart_check(
             "persistence.min_free_bytes must be configured for ops prestart-check",
         )
     })?;
-    let catalog_metadata = std::fs::metadata(catalog_directory).map_err(|source| {
-        std::io::Error::new(
-            source.kind(),
-            format!(
-                "persistence.catalog_directory `{}` is not readable before service start: {source}",
-                catalog_directory.display()
-            ),
-        )
-    })?;
-    if !catalog_metadata.is_dir() {
-        return Err(format!(
-            "persistence.catalog_directory `{}` must be a directory before service start",
-            catalog_directory.display()
-        )
-        .into());
-    }
-    let available_bytes = filesystem_available_bytes(catalog_directory)?;
+    verify_catalog_write_probe(&catalog_directory)?;
+    let available_bytes = filesystem_available_bytes(&catalog_directory)?;
     if available_bytes < min_free_bytes {
         return Err(format!(
             "persistence.catalog_directory `{}` has {available_bytes} free bytes, below configured persistence.min_free_bytes {min_free_bytes}",
@@ -231,6 +271,39 @@ fn run_prestart_check(
         available_bytes,
         min_free_bytes
     );
+    Ok(())
+}
+
+fn verify_catalog_write_probe(catalog_directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let probe_path = catalog_directory.join(format!(
+        ".bolt-v2-prestart-write-probe-{}",
+        std::process::id()
+    ));
+    let probe_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe_path)
+        .map_err(|source| {
+            std::io::Error::new(
+                source.kind(),
+                format!(
+                    "persistence.catalog_directory `{}` write probe failed at `{}`: {source}",
+                    catalog_directory.display(),
+                    probe_path.display()
+                ),
+            )
+        })?;
+    drop(probe_file);
+    std::fs::remove_file(&probe_path).map_err(|source| {
+        std::io::Error::new(
+            source.kind(),
+            format!(
+                "persistence.catalog_directory `{}` write probe cleanup failed at `{}`: {source}",
+                catalog_directory.display(),
+                probe_path.display()
+            ),
+        )
+    })?;
     Ok(())
 }
 
@@ -509,6 +582,7 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn prestart_check_rejects_catalog_outside_required_prefix_before_disk_probe() {
@@ -531,5 +605,139 @@ mod tests {
 
         assert!(message.contains("persistence.min_free_bytes"));
         assert!(message.contains("ops prestart-check"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prestart_check_rejects_symlinked_catalog_directory() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let required_prefix = temp.path().join("srv").join("bolt-v2");
+        let catalog_parent = required_prefix.join("var").join("bolt-v3-live");
+        let catalog_path = catalog_parent.join("catalog");
+        let outside_catalog = temp.path().join("outside-catalog");
+        fs::create_dir_all(&catalog_parent).expect("catalog parent should create");
+        fs::create_dir_all(&outside_catalog).expect("outside catalog should create");
+        std::os::unix::fs::symlink(&outside_catalog, &catalog_path)
+            .expect("catalog symlink should create");
+        let fixture = prestart_fixture_config(&catalog_path, Some(1));
+
+        let error = run_prestart_check(&fixture.config_path, &required_prefix)
+            .expect_err("symlinked catalog directory should fail prestart");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("must not be a symlink"),
+            "expected symlink rejection, got: {message}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prestart_check_rejects_unwritable_catalog_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let required_prefix = temp.path().join("srv").join("bolt-v2");
+        let catalog_path = required_prefix
+            .join("var")
+            .join("bolt-v3-live")
+            .join("catalog");
+        fs::create_dir_all(&catalog_path).expect("catalog directory should create");
+        let fixture = prestart_fixture_config(&catalog_path, Some(1));
+
+        fs::set_permissions(&catalog_path, fs::Permissions::from_mode(0o555))
+            .expect("catalog permissions should update");
+        let result = run_prestart_check(&fixture.config_path, &required_prefix);
+        fs::set_permissions(&catalog_path, fs::Permissions::from_mode(0o755))
+            .expect("catalog permissions should restore");
+        let error = result.expect_err("unwritable catalog directory should fail prestart");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("write probe failed"),
+            "expected write-probe rejection, got: {message}"
+        );
+    }
+
+    #[test]
+    fn prestart_check_rejects_free_space_below_configured_floor() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let required_prefix = temp.path().join("srv").join("bolt-v2");
+        let catalog_path = required_prefix
+            .join("var")
+            .join("bolt-v3-live")
+            .join("catalog");
+        fs::create_dir_all(&catalog_path).expect("catalog directory should create");
+        let fixture = prestart_fixture_config(&catalog_path, Some(u64::MAX));
+
+        let error = run_prestart_check(&fixture.config_path, &required_prefix)
+            .expect_err("impossible free-space floor should fail prestart");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("below configured persistence.min_free_bytes"),
+            "expected low-space rejection, got: {message}"
+        );
+    }
+
+    #[test]
+    fn prestart_check_accepts_writable_catalog_under_required_prefix() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let required_prefix = temp.path().join("srv").join("bolt-v2");
+        let catalog_path = required_prefix
+            .join("var")
+            .join("bolt-v3-live")
+            .join("catalog");
+        fs::create_dir_all(&catalog_path).expect("catalog directory should create");
+        let fixture = prestart_fixture_config(&catalog_path, Some(1));
+
+        run_prestart_check(&fixture.config_path, &required_prefix)
+            .expect("writable catalog under required prefix should pass prestart");
+    }
+
+    struct PrestartFixture {
+        _temp: tempfile::TempDir,
+        config_path: PathBuf,
+    }
+
+    fn prestart_fixture_config(
+        catalog_directory: &Path,
+        min_free_bytes: Option<u64>,
+    ) -> PrestartFixture {
+        let temp = tempfile::tempdir().expect("fixture tempdir should create");
+        let strategy_dir = temp.path().join("strategies");
+        fs::create_dir_all(&strategy_dir).expect("strategy dir should create");
+        fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+            strategy_dir.join("binary_oracle.toml"),
+        )
+        .expect("strategy fixture should copy");
+
+        let mut root = fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bolt_v3/root.toml"),
+        )
+        .expect("root fixture should read");
+        root = root.replace(
+            "catalog_directory = \"/var/lib/bolt/catalog\"",
+            &format!(
+                "catalog_directory = \"{}\"",
+                catalog_directory.to_string_lossy()
+            ),
+        );
+        if let Some(min_free_bytes) = min_free_bytes {
+            root = root.replace(
+                "runtime_capture_start_poll_interval_ms = 50",
+                &format!(
+                    "min_free_bytes = {min_free_bytes}\nruntime_capture_start_poll_interval_ms = 50"
+                ),
+            );
+        }
+        let config_path = temp.path().join("root.toml");
+        fs::write(&config_path, root).expect("root fixture should write");
+        PrestartFixture {
+            _temp: temp,
+            config_path,
+        }
     }
 }

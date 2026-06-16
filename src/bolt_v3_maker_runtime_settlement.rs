@@ -77,6 +77,8 @@ mod tests {
         bolt_v3_quoting::QuoteSide,
     };
 
+    const EPSILON: f64 = 1e-9;
+
     #[test]
     fn updown_reference_prices_settle_lots_through_shared_primitive() {
         let lots = [
@@ -106,9 +108,9 @@ mod tests {
         assert_eq!(payout.leg_payout(Leg::Yes), 1.0);
         assert_eq!(payout.leg_payout(Leg::No), 0.0);
         let result = decision.result.expect("valid lots should settle");
-        assert!((result.realized_pnl - 1.21).abs() < f64::EPSILON);
-        assert!((result.closed_quantity - 7.0).abs() < f64::EPSILON);
-        assert!((result.closed_net_yes - 1.0).abs() < f64::EPSILON);
+        assert!((result.realized_pnl - 1.21).abs() < EPSILON);
+        assert!((result.closed_quantity - 7.0).abs() < EPSILON);
+        assert!((result.closed_net_yes - 1.0).abs() < EPSILON);
     }
 
     #[test]

@@ -578,8 +578,19 @@ mod tests {
 
     #[test]
     fn prestart_check_rejects_catalog_outside_required_prefix_before_disk_probe() {
-        let config = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/root.toml");
-        let error = run_prestart_check(&config, Path::new("/tmp/bolt-v2"))
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let required_prefix = temp.path().join("srv").join("bolt-v2");
+        let outside_catalog_path = temp
+            .path()
+            .join("outside")
+            .join("var")
+            .join("bolt-v3-live")
+            .join("catalog");
+        fs::create_dir_all(&required_prefix).expect("required prefix should create");
+        fs::create_dir_all(&outside_catalog_path).expect("outside catalog should create");
+        let fixture = prestart_fixture_config(&outside_catalog_path, Some(1));
+
+        let error = run_prestart_check(&fixture.config_path, &required_prefix)
             .expect_err("wrong catalog prefix should fail prestart");
         let message = error.to_string();
 
@@ -589,9 +600,16 @@ mod tests {
 
     #[test]
     fn prestart_check_requires_configured_min_free_bytes() {
-        let config =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bolt_v3/root.toml");
-        let error = run_prestart_check(&config, Path::new("/var/lib/bolt"))
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let required_prefix = temp.path().join("srv").join("bolt-v2");
+        let catalog_path = required_prefix
+            .join("var")
+            .join("bolt-v3-live")
+            .join("catalog");
+        fs::create_dir_all(&catalog_path).expect("catalog directory should create");
+        let fixture = prestart_fixture_config(&catalog_path, None);
+
+        let error = run_prestart_check(&fixture.config_path, &required_prefix)
             .expect_err("missing free-space floor should fail prestart");
         let message = error.to_string();
 

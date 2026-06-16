@@ -8,7 +8,7 @@ fn valid_raw() -> toml::Value {
         strategy_id = "BINARY-ORACLE-MAKER-001"
         order_id_tag = "001"
         oms_type = "netting"
-        client_id = "polymarket_main"
+        client_id = "maker_execution_client"
         trade_flow_window_secs = 600
         trade_flow_max_samples = 1000
         mu_min_classified_samples = 4

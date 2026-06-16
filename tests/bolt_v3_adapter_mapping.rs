@@ -12,6 +12,7 @@ use bolt_v2::{
     bolt_v3_market_families::{
         MarketIdentityPlan,
         hyperliquid_instrument::{HyperliquidInstrumentTargetPlan, ProductSurface},
+        outcome_group::OutcomeGroupTargetPlan,
         updown::UpdownTargetPlan,
     },
     bolt_v3_providers::hyperliquid_artifacts::{
@@ -141,6 +142,17 @@ fn hyperliquid_updown_target_plan() -> MarketIdentityPlan {
         underlying_asset: "BTC".to_string(),
         cadence_secs: 300,
         cadence_slug_token: "window".to_string(),
+    });
+    plan
+}
+
+fn hyperliquid_outcome_group_target_plan() -> MarketIdentityPlan {
+    let mut plan = MarketIdentityPlan::empty();
+    plan.push_target(OutcomeGroupTargetPlan {
+        strategy_instance_id: "hyperliquid-complete-set-strategy".to_string(),
+        configured_target_id: "hyperliquid-outcome-group-target".to_string(),
+        execution_client_id: "hyperliquid_perps".to_string(),
+        group_sources: vec!["hl_world_cup".to_string()],
     });
     plan
 }
@@ -693,6 +705,73 @@ fn hyperliquid_non_hip4_execution_rejects_updown_market_family_target() {
             );
         }
         other => panic!("expected target-family validation error, got {other:?}"),
+    }
+}
+
+#[test]
+fn hyperliquid_hip4_execution_accepts_outcome_group_target_after_consumed_approval() {
+    let loaded = fixture_loaded_config_with_hyperliquid_hip4();
+    let resolved = fixture_resolved_hyperliquid_secrets();
+    let consumed = consumed_hyperliquid_hip4_approval();
+    let mut approvals = bolt_v2::bolt_v3_providers::ProviderLiveSubmitApprovals::empty();
+    approvals.insert(
+        "hyperliquid_perps".to_string(),
+        bolt_v2::bolt_v3_providers::ProviderLiveSubmitApproval::new(Box::new(consumed)),
+    );
+
+    let configs = bolt_v2::bolt_v3_adapters::map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+        &loaded,
+        &resolved,
+        &hyperliquid_outcome_group_target_plan(),
+        fixed_market_clock(1_800_000_000),
+        ProviderRuntimeApprovals {
+            live_submit: Some(&approvals),
+        },
+    )
+    .expect("configured outcome_group targets should map only through a consumed HIP-4 execution approval");
+
+    assert!(
+        configs
+            .clients
+            .get("hyperliquid_perps")
+            .and_then(|client| client.execution.as_ref())
+            .is_some(),
+        "outcome_group family support should allow the consumed HIP-4 execution adapter to map"
+    );
+}
+
+#[test]
+fn hyperliquid_non_hip4_execution_rejects_outcome_group_target() {
+    let loaded = fixture_loaded_config_with_hyperliquid_standard_perps();
+    let resolved = fixture_resolved_hyperliquid_secrets();
+    let consumed = consumed_hyperliquid_standard_perps_approval();
+    let mut approvals = bolt_v2::bolt_v3_providers::ProviderLiveSubmitApprovals::empty();
+    approvals.insert(
+        "hyperliquid_perps".to_string(),
+        bolt_v2::bolt_v3_providers::ProviderLiveSubmitApproval::new(Box::new(consumed)),
+    );
+
+    let error =
+        bolt_v2::bolt_v3_adapters::map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+            &loaded,
+            &resolved,
+            &hyperliquid_outcome_group_target_plan(),
+            fixed_market_clock(1_800_000_000),
+            ProviderRuntimeApprovals {
+                live_submit: Some(&approvals),
+            },
+        )
+        .expect_err("outcome_group targets must require a HIP-4 Hyperliquid execution surface");
+
+    match error {
+        BoltV3AdapterMappingError::ValidationInvariant { field, message, .. } => {
+            assert_eq!(field, "strategy.target.rotating_market_family");
+            assert!(
+                message.contains("outcome_group") && message.contains("hip4_outcomes"),
+                "failure should identify the family/surface mismatch: {message}"
+            );
+        }
+        other => panic!("expected outcome_group target-family validation error, got {other:?}"),
     }
 }
 

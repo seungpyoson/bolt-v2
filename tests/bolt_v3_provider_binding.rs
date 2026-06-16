@@ -42,7 +42,12 @@ use bolt_v2::{
         BoltV3AdapterMappingError, BoltV3MarketClockFn, map_bolt_v3_adapters_with_market_identity,
     },
     bolt_v3_config::{ClientBlock, LoadedStrategy, load_bolt_v3_config},
-    bolt_v3_market_families::{MarketIdentityPlan, updown::plan_market_identity},
+    bolt_v3_market_families::{
+        MarketIdentityPlan, market_identity_plan_from_config as plan_market_identity,
+    },
+    bolt_v3_outcome_group_sources::{
+        GammaQueryBlock, OutcomeGroupSourceConfig, OutcomeGroupSourceKind as SourceConfigKind,
+    },
     bolt_v3_providers::{
         ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
         ProviderProductSubmitProofArtifactRequest, binance::ResolvedBoltV3BinanceSecrets,
@@ -58,7 +63,7 @@ use bolt_v2::{
         check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets_with,
     },
 };
-use nautilus_model::identifiers::{InstrumentId, Venue};
+use nautilus_model::identifiers::{ClientId, InstrumentId, Venue};
 use nautilus_polymarket::config::PolymarketDataClientConfig;
 use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
@@ -1543,6 +1548,99 @@ fn empty_market_identity_plan_installs_no_provider_filter() {
 }
 
 #[test]
+fn provider_binding_projects_only_referenced_polymarket_outcome_group_sources() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    configure_outcome_group_strategy(
+        &mut loaded,
+        vec![
+            "poly_event_source".to_string(),
+            "poly_market_source".to_string(),
+        ],
+    );
+    loaded.root.outcome_group_sources = Some(vec![
+        outcome_event_source("poly_event_source", &["world-cup-final"], Some(3)),
+        outcome_market_slug_source("poly_market_source", &["home-market", "draw-market"]),
+        outcome_market_slug_source("unreferenced_poly_source", &["unreferenced-market"]),
+    ]);
+    let resolved = fixture_resolved_secrets();
+    let plan = plan_market_identity(&loaded).expect("outcome-group plan should derive cleanly");
+
+    let configs =
+        map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, fixed_clock(601))
+            .expect("Polymarket should support configured outcome_group targets");
+    let data = configs
+        .clients
+        .get("polymarket_main")
+        .expect("polymarket_main must be present")
+        .data
+        .as_ref()
+        .expect("polymarket data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast");
+
+    assert_eq!(
+        data.filters.len(),
+        2,
+        "only the two target.group_sources entries should project into NT filters"
+    );
+    let event_queries = data.filters[0]
+        .event_queries()
+        .expect("bounded event source should use NT EventQueryFilter");
+    assert_eq!(event_queries.len(), 1);
+    assert_eq!(event_queries[0].0, "world-cup-final");
+    assert_eq!(
+        event_queries[0].1.max_markets,
+        Some(3),
+        "configured cap must reach NT Gamma market query params"
+    );
+    assert_eq!(
+        data.filters[1].market_slugs(),
+        Some(vec!["home-market".to_string(), "draw-market".to_string()]),
+        "market-slug outcome sources should map to NT MarketSlugFilter in target order"
+    );
+    assert!(
+        data.new_market_filter.is_none(),
+        "outcome-group discovery must not enable broad new-market subscriptions"
+    );
+}
+
+#[test]
+fn provider_binding_projects_bounded_polymarket_gamma_query_source() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    configure_outcome_group_strategy(&mut loaded, vec!["poly_query_source".to_string()]);
+    loaded.root.outcome_group_sources = Some(vec![outcome_gamma_query_source("poly_query_source")]);
+    let resolved = fixture_resolved_secrets();
+    let plan = plan_market_identity(&loaded).expect("outcome-group plan should derive cleanly");
+
+    let configs =
+        map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, fixed_clock(601))
+            .expect("Polymarket should support configured outcome_group targets");
+    let data = configs
+        .clients
+        .get("polymarket_main")
+        .expect("polymarket_main must be present")
+        .data
+        .as_ref()
+        .expect("polymarket data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast");
+
+    assert_eq!(data.filters.len(), 1);
+    let params = data.filters[0]
+        .query_params()
+        .expect("Gamma query source should use NT GammaQueryFilter");
+    assert_eq!(params.tag_id, Some("sports-tag".to_string()));
+    assert_eq!(params.sports_market_types, Some("moneyline".to_string()));
+    assert_eq!(params.max_markets, Some(3));
+    assert!(
+        data.new_market_filter.is_none(),
+        "Gamma query sources must not use NT new_market_filter"
+    );
+}
+
+#[test]
 fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_clock() {
     // The pinned NT contract for `MarketSlugFilter::new` re-evaluates
     // the closure on every `load_all` cycle so the slug pair rolls
@@ -1677,5 +1775,76 @@ fn provider_binding_rejects_updown_target_bound_to_unknown_client() {
             );
         }
         other => panic!("expected ValidationInvariant, got {other}"),
+    }
+}
+
+fn configure_outcome_group_strategy(
+    loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    group_sources: Vec<String>,
+) {
+    let strategy = &mut loaded.strategies[0];
+    strategy.config.strategy_archetype = toml::Value::String("complete_set_arbitrage".to_string())
+        .try_into()
+        .expect("complete-set archetype key should parse");
+    strategy.config.execution_client_id = ClientId::from("polymarket_main");
+    strategy.config.target = toml::toml! {
+        configured_target_id = "complete_set_target"
+        kind = "static_outcome_group"
+        rotating_market_family = "outcome_group"
+        group_sources = group_sources
+    }
+    .into();
+}
+
+fn outcome_event_source(
+    source_id: &str,
+    event_slugs: &[&str],
+    max_markets: Option<usize>,
+) -> OutcomeGroupSourceConfig {
+    let mut source = outcome_source_base(source_id, SourceConfigKind::GammaEvent);
+    source.event_slugs = Some(event_slugs.iter().map(|value| value.to_string()).collect());
+    source.max_markets = max_markets;
+    source
+}
+
+fn outcome_market_slug_source(source_id: &str, market_slugs: &[&str]) -> OutcomeGroupSourceConfig {
+    let mut source = outcome_source_base(source_id, SourceConfigKind::GammaMarketSlug);
+    source.market_slugs = Some(market_slugs.iter().map(|value| value.to_string()).collect());
+    source
+}
+
+fn outcome_gamma_query_source(source_id: &str) -> OutcomeGroupSourceConfig {
+    let mut source = outcome_source_base(source_id, SourceConfigKind::GammaQuery);
+    source.gamma_query = Some(GammaQueryBlock {
+        search: None,
+        event_query: None,
+        market_query: None,
+        tag_id: Some("sports-tag".to_string()),
+        sports_market_types: Some(vec!["moneyline".to_string()]),
+        max_events: None,
+        max_markets: 3,
+    });
+    source
+}
+
+fn outcome_source_base(source_id: &str, kind: SourceConfigKind) -> OutcomeGroupSourceConfig {
+    OutcomeGroupSourceConfig {
+        source_id: source_id.to_string(),
+        client_id: ClientId::from("polymarket_main"),
+        kind,
+        event_slugs: None,
+        market_slugs: None,
+        sports_market_types: None,
+        gamma_query: None,
+        question: None,
+        expected_neg_risk_market_id: Some("neg-risk-123".to_string()),
+        terminal_state_labels: Some(vec!["home".to_string(), "draw".to_string()]),
+        max_markets: None,
+        max_groups: None,
+        enabled: true,
+        freshness: None,
+        order_constraints: None,
+        role_bindings: None,
+        settlement_rules: None,
     }
 }

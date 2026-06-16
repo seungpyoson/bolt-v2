@@ -270,6 +270,11 @@ pub fn validate_strategy(
     errors.extend(validate_reference_current_price_forced_flat_grace(
         context, root, strategy,
     ));
+    if strategy.realized_volatility_surface_id.is_none() {
+        errors.push(format!(
+            "{context}: realized_volatility_surface_id is required"
+        ));
+    }
 
     let parameters = match strategy.parameters.clone().try_into::<ParametersBlock>() {
         Ok(value) => value,

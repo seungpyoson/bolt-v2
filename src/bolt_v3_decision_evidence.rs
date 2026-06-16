@@ -29,6 +29,7 @@ pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID: &str = "bolt_v3.strategy_inpu
 pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";
 pub const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";
 pub const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
+const BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND: &str = "basket_admission_decision";
 const BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";
 const BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND: &str = "submit_reservation_metadata";
 const BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND: &str = "submit_reservation_fill";
@@ -47,6 +48,10 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
 
     fn record_order_intent(&self, intent: &BoltV3OrderIntentEvidence) -> Result<()>;
     fn record_admission_decision(&self, decision: &BoltV3AdmissionDecisionEvidence) -> Result<()>;
+    fn record_basket_admission_decision(
+        &self,
+        decision: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()>;
     fn record_position_sizer_rebuild_audit(
         &self,
         audit: &BoltV3PositionSizerRebuildAuditEvidence,
@@ -481,6 +486,35 @@ pub struct BoltV3SubmitReservationFillEvidence {
     pub source: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3BasketAdmissionOutcome {
+    Admitted,
+    RejectedBasketNotionalCapExceeded,
+    RejectedMaxOpenBasketCapExceeded,
+    RejectedStaleScannerEvidence,
+    RejectedStaleSubmitRecheck,
+    RejectedNonPositiveCandidateCost,
+    RejectedNonPositiveEdge,
+    RejectedEdgeThreshold,
+    RejectedMissingGroupingProof,
+    RejectedMissingSettlementRules,
+    RejectedRetryBudgetExceeded,
+    RejectedSubmitSlots,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3BasketAdmissionDecisionEvidence {
+    pub strategy_id: String,
+    pub execution_client_id: String,
+    pub basket_id: String,
+    pub group_id: String,
+    pub leg_instrument_ids: Vec<String>,
+    pub total_notional: String,
+    pub leg_order_count: u32,
+    pub outcome: BoltV3BasketAdmissionOutcome,
+}
+
 #[derive(Debug)]
 pub struct JsonlBoltV3DecisionEvidenceWriter {
     file: Mutex<std::fs::File>,
@@ -534,6 +568,14 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
 
     fn record_admission_decision(&self, decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
         let line = encode_admission_decision_line(decision)?;
+        self.append_line(&line)
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        decision: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()> {
+        let line = encode_basket_admission_decision_line(decision)?;
         self.append_line(&line)
     }
 
@@ -712,6 +754,24 @@ pub fn read_latest_entry_decision_evidence_chain(
                     }
                 }
             }
+            "basket_admission_decision" => {
+                header.validate(
+                    BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                let decoded: BasketAdmissionDecisionLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 basket admission decision line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+            }
             "position_sizer_rebuild" => {
                 header.validate(
                     BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND,
@@ -868,6 +928,24 @@ pub fn read_submit_reservation_recovery_evidence(
                     })?;
                 decoded.validate_header(
                     BOLT_V3_ADMISSION_DECISION_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+            }
+            "basket_admission_decision" => {
+                header.validate(
+                    BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                let decoded: BasketAdmissionDecisionLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 basket admission decision line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND,
                     BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
                     index,
                 )?;
@@ -1328,6 +1406,13 @@ struct AdmissionDecisionLineOwned {
 }
 
 #[derive(Deserialize)]
+struct BasketAdmissionDecisionLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    decision: BoltV3BasketAdmissionDecisionEvidence,
+}
+
+#[derive(Deserialize)]
 struct PositionSizerRebuildAuditLineOwned {
     #[serde(flatten)]
     header: DecisionEvidenceEnvelopeHeader,
@@ -1355,6 +1440,18 @@ impl AdmissionDecisionLineOwned {
         expected_gate_id: &str,
         index: usize,
     ) -> Result<()> {
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+impl BasketAdmissionDecisionLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.decision;
         self.header.validate(expected_kind, expected_gate_id, index)
     }
 }
@@ -1423,6 +1520,16 @@ struct AdmissionDecisionLine<'a> {
     gate_version: &'static str,
     kind: &'static str,
     decision: &'a BoltV3AdmissionDecisionEvidence,
+}
+
+#[derive(Serialize)]
+struct BasketAdmissionDecisionLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    decision: &'a BoltV3BasketAdmissionDecisionEvidence,
 }
 
 #[derive(Serialize)]
@@ -1504,6 +1611,23 @@ fn encode_admission_decision_line(decision: &BoltV3AdmissionDecisionEvidence) ->
     };
     let mut line =
         serde_json::to_vec(&envelope).context("failed to serialize admission decision evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+fn encode_basket_admission_decision_line(
+    decision: &BoltV3BasketAdmissionDecisionEvidence,
+) -> Result<Vec<u8>> {
+    let envelope = BasketAdmissionDecisionLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND,
+        decision,
+    };
+    let mut line = serde_json::to_vec(&envelope)
+        .context("failed to serialize basket admission decision evidence")?;
     line.extend_from_slice(b"\n");
     Ok(line)
 }

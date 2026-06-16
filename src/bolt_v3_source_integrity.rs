@@ -1,11 +1,11 @@
 //! Single owner of source-integrity canonicalization, hashing, and text access
 //! for the compile-time-embedded abort-plan gate sources.
 //!
-//! This module owns three things and is the ONLY place the two gated source
+//! This module owns three things and is the ONLY place the gated source
 //! roots are named (the registry):
 //!
-//! 1. **The registry** — [`STRATEGY_KEY`] / [`SUBMIT_ADMISSION_KEY`] mapped to
-//!    their repo-relative source root sets.
+//! 1. **The registry** — [`STRATEGY_KEY`] / [`SUBMIT_ADMISSION_KEY`] /
+//!    [`OUTCOME_GROUP_KEY`] mapped to their repo-relative source root sets.
 //! 2. The canonicalization + hash primitives, re-exported from the
 //!    `#[path]`-shared [`crate::source_canonicalization`] walk module so the
 //!    build-time emission (`build.rs`) and the runtime digest share exactly one
@@ -22,7 +22,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub use crate::source_canonicalization::{
-    GATED_SOURCE_ROOTS, GatedSourceRoot, STRATEGY_KEY, SUBMIT_ADMISSION_KEY,
+    GATED_SOURCE_ROOTS, GatedSourceRoot, OUTCOME_GROUP_KEY, STRATEGY_KEY, SUBMIT_ADMISSION_KEY,
     TEST_MODULE_SPLIT_MARKER, TEST_ONLY_INNER_CFG_MARKER, canonical_source_bytes,
     canonical_source_digest, canonical_source_set_bytes, canonical_source_set_digest,
     module_source_set_text as canonical_module_source_set_text,
@@ -146,9 +146,11 @@ mod tests {
     // registry-owned canonical source stream. The full re-derivation trail
     // belongs in git history, not in this invariant comment.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "6e9a1b59668f99715db6dc13c3f12e423d8adf5b37ba38ad5beb32d702a4f1d0";
+        "47304d7bb483b1d732df7869cf40f3f4cb0dd10bd019b2dd552cbe9314b9ebf4";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "88619771c32b874741b5396751cfd28ead044145d1e8d184374a38f7c23802ab";
+        "5cfefe7da1e4d9fb405543e861bb0f0f3a8a82836d7370504a9305a364f2121c";
+    const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
+        "f2b453cb898c99a20519188111e54cece67f7d3d1b01427e5a79c320d6350d1c";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -172,11 +174,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn value_stability_outcome_group_digest_equals_golden_constant() {
+        let digest = registry_source_digest(OUTCOME_GROUP_KEY, TEST_MAX_BYTES).unwrap();
+        assert_eq!(
+            digest, GOLDEN_OUTCOME_GROUP_DIGEST,
+            "outcome_group canonical digest must equal the recorded golden constant"
+        );
+    }
+
     /// The strategy source-set files, in strict repo-relative-path-byte order.
     /// Enumerated dynamically with the same fail-closed symlink/backslash policy
     /// as the production canonicalizer, so the invariant tracks accepted source
     /// moves without hardcoding a file list.
-    fn strategy_source_files_in_canonical_order() -> Vec<(String, std::path::PathBuf)> {
+    fn source_files_in_canonical_order(
+        key: &str,
+        label: &str,
+    ) -> Vec<(String, std::path::PathBuf)> {
         fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for entry in std::fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
@@ -222,12 +236,12 @@ mod tests {
 
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut files = Vec::new();
-        for relative_root in registry_relative_roots(STRATEGY_KEY) {
+        for relative_root in registry_relative_roots(key) {
             let root = manifest_dir.join(relative_root);
             let root_type = std::fs::symlink_metadata(&root).unwrap().file_type();
             assert!(
                 !root_type.is_symlink(),
-                "strategy source helper must reject symlink roots: {}",
+                "{label} source helper must reject symlink roots: {}",
                 root.display()
             );
             let root_label = normalized_path(std::path::Path::new(relative_root));
@@ -237,7 +251,7 @@ mod tests {
             }
             assert!(
                 root_type.is_dir(),
-                "strategy source root must be a file or directory: {}",
+                "{label} source root must be a file or directory: {}",
                 root.display()
             );
 
@@ -252,13 +266,23 @@ mod tests {
         files
     }
 
+    fn strategy_source_files_in_canonical_order() -> Vec<(String, std::path::PathBuf)> {
+        source_files_in_canonical_order(STRATEGY_KEY, "strategy")
+    }
+
+    fn outcome_group_source_files_in_canonical_order() -> Vec<(String, std::path::PathBuf)> {
+        source_files_in_canonical_order(OUTCOME_GROUP_KEY, "outcome_group")
+    }
+
     #[test]
     fn strategy_source_set_includes_wrapper_directory_and_shared_execution_modules() {
         assert_eq!(
             registry_relative_roots(STRATEGY_KEY),
             &[
                 "src/strategies/binary_oracle_edge_taker",
+                "src/strategies/complete_set_arbitrage",
                 "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+                "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
                 "src/bolt_v3_order_execution.rs",
                 "src/bolt_v3_book_sizing.rs",
                 "src/bolt_v3_binary_outcome_edge.rs",
@@ -266,6 +290,77 @@ mod tests {
                 "src/bolt_v3_sizing.rs",
                 "src/bolt_v3_taker_updown_signal.rs",
             ]
+        );
+    }
+
+    #[test]
+    fn outcome_group_source_set_includes_registered_outcome_group_roots() {
+        assert_eq!(
+            registry_relative_roots(OUTCOME_GROUP_KEY),
+            &[
+                "src/bolt_v3_atomic_io.rs",
+                "src/bolt_v3_outcome_groups.rs",
+                "src/bolt_v3_outcome_group_sources.rs",
+                "src/bolt_v3_outcome_group_polymarket.rs",
+                "src/bolt_v3_outcome_group_hyperliquid.rs",
+                "src/bolt_v3_outcome_group_scanner.rs",
+                "src/bolt_v3_basket_admission.rs",
+                "src/bolt_v3_basket_execution.rs",
+                "src/bolt_v3_basket_store.rs",
+                "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
+                "src/bolt_v3_market_families/outcome_group.rs",
+                "src/strategy_runtime_bindings.rs",
+                "src/strategies/complete_set_arbitrage",
+            ]
+        );
+    }
+
+    #[test]
+    fn complete_set_strategy_shell_overlap_is_intentional_and_pinned() {
+        let complete_set_root = "src/strategies/complete_set_arbitrage";
+        assert!(
+            registry_relative_roots(STRATEGY_KEY).contains(&complete_set_root),
+            "complete-set shell is a production-registered strategy and must stay under strategy source integrity"
+        );
+        assert!(
+            registry_relative_roots(OUTCOME_GROUP_KEY).contains(&complete_set_root),
+            "complete-set shell is the first outcome-group consumer and must stay under outcome-group source integrity"
+        );
+        let complete_set_archetype = "src/bolt_v3_archetypes/complete_set_arbitrage.rs";
+        assert!(
+            registry_relative_roots(STRATEGY_KEY).contains(&complete_set_archetype),
+            "complete-set archetype produces registered strategy runtime config and must stay under strategy source integrity"
+        );
+        assert!(
+            registry_relative_roots(OUTCOME_GROUP_KEY).contains(&complete_set_archetype),
+            "complete-set archetype owns outcome-group runtime parameters and must stay under outcome-group source integrity"
+        );
+    }
+
+    #[test]
+    fn outcome_group_source_set_has_exact_first_slice_file_membership() {
+        let files: Vec<String> = outcome_group_source_files_in_canonical_order()
+            .into_iter()
+            .map(|(relative, _path)| relative)
+            .collect();
+        assert_eq!(
+            files,
+            vec![
+                "src/bolt_v3_archetypes/complete_set_arbitrage.rs".to_string(),
+                "src/bolt_v3_atomic_io.rs".to_string(),
+                "src/bolt_v3_basket_admission.rs".to_string(),
+                "src/bolt_v3_basket_execution.rs".to_string(),
+                "src/bolt_v3_basket_store.rs".to_string(),
+                "src/bolt_v3_market_families/outcome_group.rs".to_string(),
+                "src/bolt_v3_outcome_group_hyperliquid.rs".to_string(),
+                "src/bolt_v3_outcome_group_polymarket.rs".to_string(),
+                "src/bolt_v3_outcome_group_scanner.rs".to_string(),
+                "src/bolt_v3_outcome_group_sources.rs".to_string(),
+                "src/bolt_v3_outcome_groups.rs".to_string(),
+                "src/strategies/complete_set_arbitrage/mod.rs".to_string(),
+                "src/strategy_runtime_bindings.rs".to_string(),
+            ],
+            "Task 11 covers the HIP-4 normalizer root alongside shared outcome-group roots"
         );
     }
 
@@ -288,6 +383,23 @@ mod tests {
             registry_source_digest(STRATEGY_KEY, TEST_MAX_BYTES).unwrap(),
             sha256_hex_lower(&expected),
             "strategy source-set digest must equal the hand-framed canonical stream"
+        );
+    }
+
+    #[test]
+    fn outcome_group_source_set_digest_equals_hand_framed_canonical_over_files() {
+        let mut expected: Vec<u8> = Vec::new();
+        for (relative, path) in outcome_group_source_files_in_canonical_order() {
+            let raw = std::fs::read(&path).unwrap();
+            expected.extend_from_slice(relative.as_bytes());
+            expected.push(0x00);
+            expected.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+            expected.extend_from_slice(&raw);
+        }
+        assert_eq!(
+            registry_source_digest(OUTCOME_GROUP_KEY, TEST_MAX_BYTES).unwrap(),
+            sha256_hex_lower(&expected),
+            "outcome_group source-set digest must equal the hand-framed canonical stream"
         );
     }
 
@@ -320,11 +432,49 @@ mod tests {
         assert_eq!(sha256_hex_lower(&framed), GOLDEN_STRATEGY_DIGEST);
 
         for (start, end) in spans {
+            if start == end {
+                continue;
+            }
             let mut tampered = framed.clone();
             tampered[start] ^= 0x01; // flip first byte of this file's content
             assert_ne!(
                 sha256_hex_lower(&tampered),
                 GOLDEN_STRATEGY_DIGEST,
+                "a 1-byte change in the file spanning [{start}, {end}) must change the digest"
+            );
+        }
+    }
+
+    #[test]
+    fn one_byte_change_anywhere_in_outcome_group_source_set_changes_digest() {
+        let files = outcome_group_source_files_in_canonical_order();
+        assert!(
+            files.len() >= registry_relative_roots(OUTCOME_GROUP_KEY).len(),
+            "expected every first-slice outcome-group source root to contribute"
+        );
+
+        let mut framed: Vec<u8> = Vec::new();
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        for (relative, path) in &files {
+            let raw = std::fs::read(path).unwrap();
+            framed.extend_from_slice(relative.as_bytes());
+            framed.push(0x00);
+            framed.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+            let start = framed.len();
+            framed.extend_from_slice(&raw);
+            spans.push((start, framed.len()));
+        }
+        assert_eq!(sha256_hex_lower(&framed), GOLDEN_OUTCOME_GROUP_DIGEST);
+
+        for (start, end) in spans {
+            if start == end {
+                continue;
+            }
+            let mut tampered = framed.clone();
+            tampered[start] ^= 0x01;
+            assert_ne!(
+                sha256_hex_lower(&tampered),
+                GOLDEN_OUTCOME_GROUP_DIGEST,
                 "a 1-byte change in the file spanning [{start}, {end}) must change the digest"
             );
         }

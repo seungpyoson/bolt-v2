@@ -106,6 +106,13 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn record_position_sizer_rebuild_audit(
         &self,
         _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,

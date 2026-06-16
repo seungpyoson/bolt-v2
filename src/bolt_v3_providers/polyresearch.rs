@@ -1316,11 +1316,6 @@ pub struct PolyResearchAuthConfig {
 pub fn polyresearch_websocket_url(config: &PolyResearchAuthConfig) -> Result<Url, String> {
     validate_secret_field("api_key", &config.api_key)?;
     let mut url = validate_websocket_endpoint(&config.websocket_endpoint)?;
-    if let Some(field) = polyresearch_credential_query_field(&url) {
-        return Err(format!(
-            "polyresearch websocket_endpoint must not contain credential query `{field}`; configure api_key separately"
-        ));
-    }
     url.query_pairs_mut()
         .append_pair(POLYRESEARCH_API_KEY_QUERY_FIELD, &config.api_key);
     Ok(url)
@@ -1363,13 +1358,6 @@ fn validate_data_bounds(key: &str, data: &PolyResearchReferencePriceDataConfig) 
     let mut errors = Vec::new();
     if let Err(message) = validate_websocket_endpoint(&data.websocket_endpoint) {
         errors.push(format!("clients.{key}.data.websocket_endpoint: {message}"));
-    }
-    if let Ok(url) = Url::parse(&data.websocket_endpoint)
-        && let Some(field) = polyresearch_credential_query_field(&url)
-    {
-        errors.push(format!(
-            "clients.{key}.data.websocket_endpoint must not contain credential query `{field}`; configure api_key separately"
-        ));
     }
     validate_positive_optional_u64(
         &format!("clients.{key}.data.heartbeat_secs"),
@@ -2902,6 +2890,21 @@ fn validate_websocket_endpoint(value: &str) -> Result<Url, String> {
         .map_err(|_| "polyresearch websocket_endpoint must be a valid wss URL".to_string())?;
     if url.scheme() != "wss" || !url.has_host() || !value[url.scheme().len()..].starts_with("://") {
         return Err("polyresearch websocket_endpoint must be a valid wss URL".to_string());
+    }
+    if url.username() != "" || url.password().is_some() || url.fragment().is_some() {
+        return Err(
+            "polyresearch websocket_endpoint must be a credential-free wss URL".to_string(),
+        );
+    }
+    if let Some(field) = polyresearch_credential_query_field(&url) {
+        return Err(format!(
+            "polyresearch websocket_endpoint must not contain credential query `{field}`; configure api_key separately"
+        ));
+    }
+    if url.query().is_some() {
+        return Err(
+            "polyresearch websocket_endpoint must be a credential-free wss URL".to_string(),
+        );
     }
     Ok(url)
 }

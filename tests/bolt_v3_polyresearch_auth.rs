@@ -37,3 +37,51 @@ fn rejects_polyresearch_endpoint_that_already_contains_api_key() {
         "error should identify the duplicated query key: {error}"
     );
 }
+
+#[test]
+fn rejects_polyresearch_endpoint_with_non_credential_query() {
+    let config = PolyResearchAuthConfig {
+        websocket_endpoint: "wss://stream.example.test/feed?route=reference".to_string(),
+        api_key: "test-prr-api-key".to_string(),
+    };
+
+    let error = polyresearch_websocket_url(&config)
+        .expect_err("endpoint query params must not bypass TOML-owned endpoint shape");
+
+    assert!(
+        error.contains("credential-free"),
+        "error should identify the credential-free endpoint requirement: {error}"
+    );
+}
+
+#[test]
+fn rejects_polyresearch_endpoint_with_url_userinfo() {
+    let config = PolyResearchAuthConfig {
+        websocket_endpoint: "wss://user:pass@stream.example.test/feed".to_string(),
+        api_key: "test-prr-api-key".to_string(),
+    };
+
+    let error = polyresearch_websocket_url(&config)
+        .expect_err("endpoint userinfo must not bypass SSM-owned api key config");
+
+    assert!(
+        error.contains("credential-free"),
+        "error should identify the credential-free endpoint requirement: {error}"
+    );
+}
+
+#[test]
+fn rejects_polyresearch_endpoint_with_fragment() {
+    let config = PolyResearchAuthConfig {
+        websocket_endpoint: "wss://stream.example.test/feed#test-prr-api-key".to_string(),
+        api_key: "test-prr-api-key".to_string(),
+    };
+
+    let error = polyresearch_websocket_url(&config)
+        .expect_err("endpoint fragment must not carry credential material");
+
+    assert!(
+        error.contains("credential-free"),
+        "error should identify the credential-free endpoint requirement: {error}"
+    );
+}

@@ -948,7 +948,7 @@ def assert_failed_job_diagnostics_retries_unavailable_and_reports_once() -> None
             [
                 {
                     "id": 11,
-                    "name": "nextest shard 1 of 4",
+                    "name": "nextest archive",
                     "status": "completed",
                     "conclusion": "failure",
                     "url": "https://example.invalid/job/11",
@@ -987,7 +987,7 @@ def assert_failed_job_diagnostics_retries_unavailable_and_reports_once() -> None
         owner.workflow_run_jobs = original_jobs
         owner.job_log_failed = original_log
 
-    if output.count("CI failed job: nextest shard 1 of 4") != 2:
+    if output.count("CI failed job: nextest archive") != 2:
         raise AssertionError(output)
     if output.count("job_log=unavailable yet") != 1:
         raise AssertionError(output)
@@ -1006,7 +1006,7 @@ def assert_failed_job_diagnostics_treats_empty_log_as_unavailable() -> None:
             [
                 {
                     "databaseId": 12,
-                    "name": "nextest shard 2 of 4",
+                    "name": "nextest archive",
                     "status": "completed",
                     "conclusion": "failure",
                     "url": "https://example.invalid/job/12",
@@ -1055,7 +1055,7 @@ def assert_failed_job_diagnostics_treats_ansi_whitespace_log_as_unavailable() ->
             [
                 {
                     "databaseId": 13,
-                    "name": "nextest shard 3 of 4",
+                    "name": "nextest archive",
                     "status": "completed",
                     "conclusion": "failure",
                     "url": "https://example.invalid/job/13",
@@ -1230,7 +1230,7 @@ def assert_verify_remote_reports_failed_job_while_run_is_in_progress() -> None:
 
             def fake_emit_failed_job_diagnostics(*, run: dict[str, object], **_kwargs: object) -> None:
                 emitted_states.append(str(run["status"]))
-                print("CI failed job: nextest shard 1 of 4", file=sys.stderr)
+                print("CI failed job: nextest archive", file=sys.stderr)
 
             owner.emit_failed_job_diagnostics = fake_emit_failed_job_diagnostics
             owner.time.sleep = lambda _seconds: None
@@ -1246,7 +1246,7 @@ def assert_verify_remote_reports_failed_job_while_run_is_in_progress() -> None:
 
     if "in_progress" not in emitted_states:
         raise AssertionError(emitted_states)
-    if "CI failed job: nextest shard 1 of 4" not in output:
+    if "CI failed job: nextest archive" not in output:
         raise AssertionError(output)
     if result != 1:
         raise AssertionError((result, output))

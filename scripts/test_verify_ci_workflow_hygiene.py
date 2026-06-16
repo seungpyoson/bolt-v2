@@ -5765,6 +5765,19 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, "              status=1\n", ""),
     )
     assert_error(
+        "test-archive must aggregate partition failures",
+        replace_once(
+            BASE_WORKFLOW,
+            """            if ! just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/4"; then
+              status=1
+            fi""",
+            """            just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/4"
+            if [[ "${shard}" == "never" ]]; then
+              status=1
+            fi""",
+        ),
+    )
+    assert_error(
         "test-archive must use only shared Cargo registry/git rust-cache blocks",
         replace_once(
             BASE_WORKFLOW,
@@ -6121,6 +6134,18 @@ def main() -> int:
             "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse]",
             "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector, nextest-fingerprint-reuse]",
         ),
+    )
+    assert_error(
+        "test-archive must require detector success",
+        replace_once(BASE_WORKFLOW, " && needs.detector.result == 'success'", ""),
+    )
+    assert_error(
+        "test-archive must require nextest-fingerprint success",
+        replace_once(BASE_WORKFLOW, " && needs.nextest-fingerprint.result == 'success'", ""),
+    )
+    assert_error(
+        "test-archive must skip on validated nextest fingerprint reuse",
+        replace_once(BASE_WORKFLOW, " && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true'", ""),
     )
     assert_error(
         "test needs nextest-fingerprint",

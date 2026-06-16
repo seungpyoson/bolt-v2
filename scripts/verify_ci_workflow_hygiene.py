@@ -435,6 +435,11 @@ TEST_ARCHIVE_PARTITION_GROUP = 'echo "::group::nextest archive partition ${shard
 TEST_ARCHIVE_PARTITION_STATUS_INIT = "status=0"
 TEST_ARCHIVE_PARTITION_STATUS_MARK = "status=1"
 TEST_ARCHIVE_PARTITION_STATUS_EXIT = 'exit "$status"'
+TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER = (
+    f"if ! {TEST_PARTITION_COMMAND}; then\n"
+    "              status=1\n"
+    "            fi"
+)
 TEST_ARCHIVE_KEY_INPUTS = (
     "'Cargo.lock'",
     "'Cargo.toml'",
@@ -8171,6 +8176,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             TEST_ARCHIVE_PARTITION_STATUS_INIT,
             TEST_ARCHIVE_PARTITION_STATUS_MARK,
             TEST_ARCHIVE_PARTITION_STATUS_EXIT,
+            TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER,
         ):
             if fragment not in archive_text:
                 errors.append("test-archive must aggregate partition failures")

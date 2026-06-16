@@ -202,6 +202,13 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn record_position_sizer_rebuild_audit(
         &self,
         _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
@@ -249,6 +256,13 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
     ) -> Result<()> {
         anyhow::bail!("admission decision write failed")
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("basket admission decision write failed")
     }
 
     fn record_position_sizer_rebuild_audit(
@@ -333,6 +347,13 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .push(RecordedDecisionEvidenceEvent::AdmissionDecision(
                 decision.clone(),
             ));
+        Ok(())
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()> {
         Ok(())
     }
 

@@ -1,7 +1,10 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use nautilus_core::{Params, UnixNanos};
-use nautilus_model::data::{CustomData, DataType};
+use nautilus_model::{
+    data::{CustomData, DataType},
+    identifiers::ClientId,
+};
 use nautilus_persistence_macros::custom_data;
 
 use crate::{
@@ -23,6 +26,69 @@ pub const REFERENCE_PRICE_SOURCE_KEY_PARAM: &str = REFERENCE_PRICE_SOURCE_KEY_ME
 pub const REFERENCE_PRICE_PROVIDER_PARAM: &str = REFERENCE_PRICE_PROVIDER_METADATA_FIELD;
 pub const REFERENCE_PRICE_INSTRUMENT_ID_PARAM: &str = "instrument_id";
 pub const REFERENCE_PRICE_SYMBOL_PARAM: &str = "symbol";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferencePriceSubscriptionRequest {
+    pub source_id: String,
+    pub provider: String,
+    pub client_id: ClientId,
+    pub data_type: DataType,
+    pub params: Params,
+}
+
+pub fn reference_price_subscription_requests(
+    reference_price: &ReferencePriceBlock,
+) -> Result<Vec<ReferencePriceSubscriptionRequest>, String> {
+    let mut subscriptions = Vec::new();
+    for source_id in &reference_price.source_order {
+        let Some(source) = reference_price.sources.get(source_id) else {
+            continue;
+        };
+        if !reference_price_source_is_runtime_available(reference_price, source) {
+            continue;
+        }
+
+        let provider = source.provider.as_str();
+        let data_type = ReferencePriceUpdate::data_type_for(
+            &reference_price.asset,
+            source_id.as_str(),
+            provider,
+        )?;
+        let mut params = Params::new();
+        params.insert(
+            REFERENCE_PRICE_ASSET_PARAM.to_string(),
+            serde_json::json!(reference_price.asset),
+        );
+        params.insert(
+            REFERENCE_PRICE_SOURCE_KEY_PARAM.to_string(),
+            serde_json::json!(source_id),
+        );
+        params.insert(
+            REFERENCE_PRICE_PROVIDER_PARAM.to_string(),
+            serde_json::json!(provider),
+        );
+        if let Some(instrument_id) = &source.instrument_id {
+            params.insert(
+                REFERENCE_PRICE_INSTRUMENT_ID_PARAM.to_string(),
+                serde_json::json!(instrument_id),
+            );
+        }
+        if let Some(symbol) = &source.symbol {
+            params.insert(
+                REFERENCE_PRICE_SYMBOL_PARAM.to_string(),
+                serde_json::json!(symbol),
+            );
+        }
+        subscriptions.push(ReferencePriceSubscriptionRequest {
+            source_id: source_id.clone(),
+            provider: provider.to_string(),
+            client_id: source.client_id,
+            data_type,
+            params,
+        });
+    }
+    Ok(subscriptions)
+}
 
 pub(crate) fn reference_price_source_is_runtime_available(
     reference_price: &ReferencePriceBlock,

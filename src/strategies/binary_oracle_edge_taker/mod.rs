@@ -70,12 +70,11 @@ use crate::{
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     },
     bolt_v3_reference_price::{
-        REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
-        REFERENCE_PRICE_PROVIDER_PARAM, REFERENCE_PRICE_SOURCE_KEY_PARAM,
-        REFERENCE_PRICE_SYMBOL_PARAM, ReferencePriceSelection, ReferencePriceSelector,
-        ReferencePriceSourceHealth, ReferencePriceSourceSpec, ReferencePriceSourceStatus,
+        ReferencePriceSelection, ReferencePriceSelector, ReferencePriceSourceHealth,
+        ReferencePriceSourceSpec, ReferencePriceSourceStatus, ReferencePriceSubscriptionRequest,
         ReferencePriceUpdate, ReferenceQuote, reference_price_source_is_runtime_available,
         reference_price_source_is_unsupported,
+        reference_price_subscription_requests as build_reference_price_subscription_requests,
     },
     bolt_v3_sizing::{RobustSizingInputs, choose_robust_size},
     bolt_v3_submit_admission::{
@@ -1429,63 +1428,16 @@ impl BinaryOracleEdgeTaker {
         let Some(reference_price) = &self.config.reference_current_price else {
             return Vec::new();
         };
-        let mut subscriptions = Vec::new();
-        for source_id in &reference_price.source_order {
-            let Some(source) = reference_price.sources.get(source_id) else {
-                continue;
-            };
-            if !reference_price_source_is_runtime_available(reference_price, source) {
-                continue;
-            }
-            let provider = source.provider.as_str();
-            let data_type = match ReferencePriceUpdate::data_type_for(
-                &reference_price.asset,
-                source_id,
-                provider,
-            ) {
-                Ok(data_type) => data_type,
-                Err(error) => {
-                    log::error!(
-                        "binary_oracle_edge_taker invalid reference price data type: {error}; source_id={source_id} strategy_id={}",
-                        self.config.strategy_id,
-                    );
-                    continue;
-                }
-            };
-            let mut params = Params::new();
-            params.insert(
-                REFERENCE_PRICE_ASSET_PARAM.to_string(),
-                serde_json::json!(reference_price.asset),
-            );
-            params.insert(
-                REFERENCE_PRICE_SOURCE_KEY_PARAM.to_string(),
-                serde_json::json!(source_id),
-            );
-            params.insert(
-                REFERENCE_PRICE_PROVIDER_PARAM.to_string(),
-                serde_json::json!(provider),
-            );
-            if let Some(instrument_id) = &source.instrument_id {
-                params.insert(
-                    REFERENCE_PRICE_INSTRUMENT_ID_PARAM.to_string(),
-                    serde_json::json!(instrument_id),
+        match build_reference_price_subscription_requests(reference_price) {
+            Ok(subscriptions) => subscriptions,
+            Err(error) => {
+                log::error!(
+                    "binary_oracle_edge_taker invalid reference price subscription request: {error}; strategy_id={}",
+                    self.config.strategy_id,
                 );
+                Vec::new()
             }
-            if let Some(symbol) = &source.symbol {
-                params.insert(
-                    REFERENCE_PRICE_SYMBOL_PARAM.to_string(),
-                    serde_json::json!(symbol),
-                );
-            }
-            subscriptions.push(ReferencePriceSubscriptionRequest {
-                source_id: source_id.clone(),
-                provider: provider.to_string(),
-                client_id: source.client_id,
-                data_type,
-                params,
-            });
         }
-        subscriptions
     }
 
     fn observe_reference_price_update(&mut self, update: &ReferencePriceUpdate) {
@@ -6006,15 +5958,6 @@ impl BinaryOracleEdgeTaker {
         #[cfg(not(test))]
         let _ = event;
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ReferencePriceSubscriptionRequest {
-    source_id: String,
-    provider: String,
-    client_id: ClientId,
-    data_type: DataType,
-    params: Params,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

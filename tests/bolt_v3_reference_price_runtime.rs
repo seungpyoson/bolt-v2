@@ -1,15 +1,61 @@
 use std::collections::BTreeMap;
 
-use bolt_v2::bolt_v3_config::{ReferencePriceDriftPolicy, ReferencePriceProvider};
+use bolt_v2::bolt_v3_config::{
+    ReferencePriceBlock, ReferencePriceDriftPolicy, ReferencePriceProvider,
+    ReferencePriceSelectionPolicy, ReferencePriceSourceBlock, ReferencePriceStalePolicy,
+};
 use bolt_v2::bolt_v3_reference_price::{
     ReferencePriceSelection, ReferencePriceSelector, ReferencePriceSourceSpec,
     ReferencePriceUpdate, ReferenceQuote, ReferenceQuoteProvenance,
+    reference_price_subscription_requests,
 };
+use nautilus_model::identifiers::ClientId;
 
 const CHAINLINK_REFERENCE_PROVIDER: &str = "chainlink_ws";
+const POLYRESEARCH_REFERENCE_PROVIDER: &str = "polyresearch_ws";
 
 fn reference_provider(key: &str) -> ReferencePriceProvider {
     ReferencePriceProvider::new(key).expect("test provider key should be valid")
+}
+
+fn reference_price_block() -> ReferencePriceBlock {
+    ReferencePriceBlock {
+        asset: "BTC".to_string(),
+        source_order: vec![
+            "chainlink_primary".to_string(),
+            "polyresearch_backup".to_string(),
+        ],
+        min_valid_sources: 1,
+        selection_policy: ReferencePriceSelectionPolicy::FirstValidPerInterval,
+        max_source_age_ms: 2_000,
+        max_source_drift_bps: 25,
+        drift_policy: ReferencePriceDriftPolicy::Observe,
+        stale_policy: ReferencePriceStalePolicy::Block,
+        sources: BTreeMap::from([
+            (
+                "chainlink_primary".to_string(),
+                ReferencePriceSourceBlock {
+                    provider: reference_provider(CHAINLINK_REFERENCE_PROVIDER),
+                    enabled: true,
+                    required: true,
+                    client_id: ClientId::from("chainlink_reference"),
+                    instrument_id: Some("BTC-USD.CHAINLINK_REFERENCE".to_string()),
+                    symbol: None,
+                },
+            ),
+            (
+                "polyresearch_backup".to_string(),
+                ReferencePriceSourceBlock {
+                    provider: reference_provider(POLYRESEARCH_REFERENCE_PROVIDER),
+                    enabled: true,
+                    required: false,
+                    client_id: ClientId::from("polyresearch_reference"),
+                    instrument_id: None,
+                    symbol: Some("BTCUSD".to_string()),
+                },
+            ),
+        ]),
+    }
 }
 
 fn quote(source_id: &str, price: f64, observed_ts_ms: u64, received_ts_ms: u64) -> ReferenceQuote {
@@ -25,6 +71,58 @@ fn quote(source_id: &str, price: f64, observed_ts_ms: u64, received_ts_ms: u64) 
         received_ts_ms,
     )
     .expect("test quote should be valid")
+}
+
+#[test]
+fn reference_price_subscription_requests_are_shared_and_source_scoped() {
+    let subscriptions = reference_price_subscription_requests(&reference_price_block())
+        .expect("shared reference price subscription request builder should accept valid config");
+
+    assert_eq!(subscriptions.len(), 2);
+    let chainlink = subscriptions
+        .iter()
+        .find(|subscription| subscription.source_id == "chainlink_primary")
+        .expect("chainlink source should produce a subscription");
+    assert_eq!(chainlink.provider, CHAINLINK_REFERENCE_PROVIDER);
+    assert_eq!(chainlink.client_id, ClientId::from("chainlink_reference"));
+    assert_eq!(
+        chainlink.data_type.type_name(),
+        "BoltV3ReferencePriceUpdate"
+    );
+    assert_eq!(chainlink.data_type.identifier(), Some("BTC"));
+    assert_eq!(chainlink.params.get_str("asset"), Some("BTC"));
+    assert_eq!(
+        chainlink.params.get_str("source_key"),
+        Some("chainlink_primary")
+    );
+    assert_eq!(
+        chainlink.params.get_str("provider"),
+        Some(CHAINLINK_REFERENCE_PROVIDER)
+    );
+    assert_eq!(
+        chainlink.params.get_str("instrument_id"),
+        Some("BTC-USD.CHAINLINK_REFERENCE")
+    );
+
+    let polyresearch = subscriptions
+        .iter()
+        .find(|subscription| subscription.source_id == "polyresearch_backup")
+        .expect("PolyResearch source should produce a subscription");
+    assert_eq!(polyresearch.provider, POLYRESEARCH_REFERENCE_PROVIDER);
+    assert_eq!(
+        polyresearch.client_id,
+        ClientId::from("polyresearch_reference")
+    );
+    assert_eq!(polyresearch.params.get_str("asset"), Some("BTC"));
+    assert_eq!(
+        polyresearch.params.get_str("source_key"),
+        Some("polyresearch_backup")
+    );
+    assert_eq!(
+        polyresearch.params.get_str("provider"),
+        Some(POLYRESEARCH_REFERENCE_PROVIDER)
+    );
+    assert_eq!(polyresearch.params.get_str("symbol"), Some("BTCUSD"));
 }
 
 #[test]

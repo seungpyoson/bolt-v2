@@ -639,6 +639,18 @@ pub fn raw_taker_config(
         "market_selection_rule",
         target.market_selection_rule,
     );
+    insert_optional_string(
+        &mut table,
+        "static_condition_id",
+        target.static_condition_id,
+    );
+    insert_optional_string(&mut table, "static_yes_outcome", target.static_yes_outcome);
+    insert_optional_string(&mut table, "static_no_outcome", target.static_no_outcome);
+    insert_optional_string(
+        &mut table,
+        "static_fair_probability_source",
+        target.static_fair_probability_source,
+    );
     insert_u64(
         &mut table,
         strategy_instance_id,
@@ -1098,6 +1110,16 @@ fn usize_to_u64(
 
 fn insert_string(table: &mut Map<String, Value>, key: &'static str, value: String) {
     table.insert(key.to_string(), Value::String(value));
+}
+
+fn insert_optional_string(
+    table: &mut Map<String, Value>,
+    key: &'static str,
+    value: Option<String>,
+) {
+    if let Some(value) = value {
+        insert_string(table, key, value);
+    }
 }
 
 fn insert_bool(table: &mut Map<String, Value>, key: &'static str, value: bool) {

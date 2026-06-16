@@ -67,6 +67,7 @@ use crate::{
     bolt_v3_config::{BoltV3RootConfig, ClientBlock},
     bolt_v3_market_families::{
         MarketIdentityPlan, outcome_group,
+        static_binary_event::{self, StaticBinaryEventTargetPlan},
         updown::{self, UpdownTargetPlan, updown_market_slug, updown_period_pair},
     },
     bolt_v3_outcome_group_sources::{
@@ -117,7 +118,8 @@ pub fn normalize_base_order_quantity(quantity: Decimal) -> Option<Decimal> {
 /// probes); the full shared REST budget is the venue egress-capability contract
 /// tracked in #501.
 pub const MAX_REST_REQUESTS_PER_ORDER_COMMAND: u32 = 2;
-pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY, outcome_group::KEY];
+pub const SUPPORTED_MARKET_FAMILIES: &[&str] =
+    &[updown::KEY, outcome_group::KEY, static_binary_event::KEY];
 const URL_SAFE_BASE64_BLOCK_WIDTH: usize = 4;
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,
@@ -824,6 +826,11 @@ fn build_instrument_filters_for_client(
     filters.extend(build_outcome_group_filters_for_client(
         root, plan, client_key,
     )?);
+    filters.extend(
+        static_binary_event::target_plans(plan)
+            .filter(|target| target.execution_client_id == client_key)
+            .map(build_static_market_slug_filter),
+    );
     Ok(filters)
 }
 
@@ -1098,6 +1105,14 @@ fn required_cap_to_u32(
     })
 }
 
+fn build_static_market_slug_filter(
+    target: &StaticBinaryEventTargetPlan,
+) -> Arc<dyn InstrumentFilter> {
+    Arc::new(MarketSlugFilter::from_slugs(vec![
+        target.market_slug.clone(),
+    ]))
+}
+
 fn map_execution(
     root: &crate::bolt_v3_config::BoltV3RootConfig,
     client_key: &str,
@@ -1140,6 +1155,48 @@ fn map_execution(
         ack_timeout_secs: cfg.ack_timeout_secs,
         transport_backend: cfg.transport_backend,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn market_slug_filters_include_static_binary_event_targets_for_matching_client() {
+        let mut plan = MarketIdentityPlan::empty();
+        plan.push_target(StaticBinaryEventTargetPlan {
+            strategy_instance_id: "sample-static-alpha".to_string(),
+            configured_target_id: "sample-static-alpha-target".to_string(),
+            execution_client_id: "polymarket_main".to_string(),
+            event_key: "sample_event_2026".to_string(),
+            market_slug: "will-sample-alpha-resolve-yes".to_string(),
+            condition_id: Some("condition-sample-alpha".to_string()),
+            yes_outcome: "Yes".to_string(),
+            no_outcome: "No".to_string(),
+        });
+        plan.push_target(StaticBinaryEventTargetPlan {
+            strategy_instance_id: "sample-static-beta".to_string(),
+            configured_target_id: "sample-static-beta-target".to_string(),
+            execution_client_id: "polymarket_secondary".to_string(),
+            event_key: "sample_event_2026".to_string(),
+            market_slug: "will-sample-beta-resolve-yes".to_string(),
+            condition_id: Some("condition-sample-beta".to_string()),
+            yes_outcome: "Yes".to_string(),
+            no_outcome: "No".to_string(),
+        });
+        let filters = build_market_slug_filters_for_client(
+            &plan,
+            "polymarket_main",
+            Arc::new(|| 1_746_000_000),
+        );
+
+        let slugs = filters
+            .iter()
+            .flat_map(|filter| filter.market_slugs().unwrap_or_default())
+            .collect::<Vec<_>>();
+
+        assert_eq!(slugs, vec!["will-sample-alpha-resolve-yes".to_string()]);
+    }
 }
 
 fn secrets_for<'a>(

@@ -27,7 +27,8 @@ use std::collections::BTreeSet;
 use rust_decimal::Decimal;
 
 use crate::{
-    bolt_v3_config::BoltV3StrategyConfig, bolt_v3_strategy_registration::StrategyRuntimeBinding,
+    bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig},
+    bolt_v3_strategy_registration::StrategyRuntimeBinding,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -54,7 +55,8 @@ pub struct ArchetypeGateRequirement {
 
 pub struct ArchetypeValidationBinding {
     pub key: &'static str,
-    pub validate_strategy: fn(&str, &BoltV3StrategyConfig, Option<&Decimal>) -> Vec<String>,
+    pub validate_strategy:
+        fn(&str, &BoltV3RootConfig, &BoltV3StrategyConfig, Option<&Decimal>) -> Vec<String>,
 }
 
 const VALIDATION_BINDINGS: &[ArchetypeValidationBinding] = &[ArchetypeValidationBinding {
@@ -74,11 +76,13 @@ pub fn runtime_bindings() -> &'static [StrategyRuntimeBinding] {
 
 pub fn validate_strategy_archetype(
     context: &str,
+    root: &BoltV3RootConfig,
     strategy: &BoltV3StrategyConfig,
     default_max_notional_decimal: Option<&Decimal>,
 ) -> Vec<String> {
     validate_strategy_archetype_with_bindings(
         context,
+        root,
         strategy,
         default_max_notional_decimal,
         validation_bindings(),
@@ -87,6 +91,7 @@ pub fn validate_strategy_archetype(
 
 pub fn validate_strategy_archetype_with_bindings(
     context: &str,
+    root: &BoltV3RootConfig,
     strategy: &BoltV3StrategyConfig,
     default_max_notional_decimal: Option<&Decimal>,
     bindings: &[ArchetypeValidationBinding],
@@ -96,7 +101,7 @@ pub fn validate_strategy_archetype_with_bindings(
         .find(|binding| binding.key == strategy.strategy_archetype.as_str())
     {
         Some(binding) => {
-            (binding.validate_strategy)(context, strategy, default_max_notional_decimal)
+            (binding.validate_strategy)(context, root, strategy, default_max_notional_decimal)
         }
         None => vec![format!(
             "{context}: strategy_archetype `{}` is not supported by this build",
@@ -111,6 +116,7 @@ mod tests {
 
     fn fake_validate_strategy(
         _context: &str,
+        _root: &BoltV3RootConfig,
         _strategy: &BoltV3StrategyConfig,
         _default_max_notional_decimal: Option<&Decimal>,
     ) -> Vec<String> {
@@ -144,10 +150,6 @@ log_commands = true
 log_rejected_due_post_only_as_warning = true
 execution_client_id = "fixture-venue"
 
-[reference_data.reference]
-data_client_id = "fixture-reference"
-instrument_id = "FIXTURE.REFERENCE"
-
 [signal_data]
 
 [target]
@@ -158,8 +160,12 @@ rotating_market_family = "fixture-family"
 "#,
         )
         .expect("fixture strategy parses");
+        let root: BoltV3RootConfig =
+            toml::from_str(include_str!("../../tests/fixtures/bolt_v3/root.toml"))
+                .expect("fixture root parses");
 
-        let production_errors = validate_strategy_archetype("strategy `fixture`", &strategy, None);
+        let production_errors =
+            validate_strategy_archetype("strategy `fixture`", &root, &strategy, None);
         assert!(
             production_errors
                 .iter()
@@ -169,6 +175,7 @@ rotating_market_family = "fixture-family"
 
         let injected_errors = validate_strategy_archetype_with_bindings(
             "strategy `fixture`",
+            &root,
             &strategy,
             None,
             FAKE_ARCHETYPE_BINDINGS,

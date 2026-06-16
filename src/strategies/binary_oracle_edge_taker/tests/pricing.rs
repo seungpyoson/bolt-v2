@@ -341,7 +341,7 @@ fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
 fn entry_evaluation_blocks_when_realized_vol_is_not_ready() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_101.0, 1_200));
-    strategy.pricing.latest_realized_vol_snapshot = None;
+    strategy.pricing.latest_realized_vol_snapshots.clear();
 
     let decision = strategy.entry_evaluation_at(1_200);
 
@@ -646,7 +646,7 @@ fn task5_exit_decision_uses_hysteresis_boundary_and_fails_closed() {
 fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_101.0, 1_200));
-    strategy.pricing.latest_realized_vol_snapshot = None;
+    strategy.pricing.latest_realized_vol_snapshots.clear();
 
     let decision = strategy.entry_evaluation_at(1_200);
 

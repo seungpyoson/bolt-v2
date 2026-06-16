@@ -109,7 +109,7 @@ pub struct TakerPricingState {
     pub(crate) last_reference_current_price_ts_ms: Option<u64>,
     pub(crate) fast_spot: Option<FastSpotObservation>,
     pub(crate) realized_volatility_surface_id: String,
-    pub(crate) latest_realized_vol_snapshot: Option<RealizedVolSnapshot>,
+    pub(crate) latest_realized_vol_snapshots: BTreeMap<String, RealizedVolSnapshot>,
     pub(crate) venue_timing: BTreeMap<String, VenueTimingState>,
     pub(crate) last_lead_gap_probability: Option<f64>,
     pub(crate) last_jitter_penalty_probability: Option<f64>,
@@ -131,7 +131,7 @@ impl TakerPricingState {
             last_reference_current_price_ts_ms: None,
             fast_spot: None,
             realized_volatility_surface_id: config.realized_volatility_surface_id.clone(),
-            latest_realized_vol_snapshot: None,
+            latest_realized_vol_snapshots: BTreeMap::new(),
             venue_timing: BTreeMap::new(),
             last_lead_gap_probability: None,
             last_jitter_penalty_probability: None,
@@ -256,13 +256,22 @@ impl TakerPricingState {
     }
 
     pub fn observe_realized_vol_snapshot(&mut self, snapshot: RealizedVolSnapshot) {
-        if self
-            .latest_realized_vol_snapshot
-            .as_ref()
-            .is_none_or(|current| current.as_of_ms <= snapshot.as_of_ms)
-        {
-            self.latest_realized_vol_snapshot = Some(snapshot);
+        let surface_id = snapshot.surface_id.as_str();
+        let current = self.latest_realized_vol_snapshots.get(surface_id);
+        if current.is_none_or(|current| current.as_of_ms <= snapshot.as_of_ms) {
+            self.latest_realized_vol_snapshots
+                .insert(snapshot.surface_id.clone(), snapshot);
         }
+    }
+
+    /// Raw (readiness-unfiltered) latest snapshot for a surface, for evidence/audit. Use
+    /// [`current_surfaced_realized_vol_snapshot_at`] for entry-readiness gating, which also
+    /// enforces `as_of_ms <= now_ms` and readiness.
+    pub(crate) fn latest_realized_vol_snapshot_for_surface(
+        &self,
+        surface_id: &str,
+    ) -> Option<&RealizedVolSnapshot> {
+        self.latest_realized_vol_snapshots.get(surface_id)
     }
 
     pub(crate) fn spot_price(&self) -> Option<f64> {
@@ -309,11 +318,8 @@ impl TakerPricingState {
         surface_id: &str,
         now_ms: u64,
     ) -> Option<&RealizedVolSnapshot> {
-        let snapshot = self.latest_realized_vol_snapshot.as_ref()?;
-        if snapshot.surface_id != surface_id
-            || snapshot.as_of_ms > now_ms
-            || snapshot.ready_realized_vol().is_none()
-        {
+        let snapshot = self.latest_realized_vol_snapshots.get(surface_id)?;
+        if snapshot.as_of_ms > now_ms || snapshot.ready_realized_vol().is_none() {
             return None;
         }
 

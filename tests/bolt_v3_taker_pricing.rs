@@ -392,3 +392,91 @@ fn taker_pricing_rejects_invalid_source_owned_realized_vol_seed() {
         (None, Some(1_000))
     );
 }
+
+fn realized_vol_snapshot_for_surface(
+    surface_id: &str,
+    realized_vol: f64,
+    ready_ts_ms: u64,
+) -> RealizedVolSnapshot {
+    RealizedVolSnapshot {
+        surface_id: surface_id.to_string(),
+        as_of_ms: ready_ts_ms,
+        annualized_realized_vol_decimal: Some(realized_vol),
+        measured_annualized_realized_vol_decimal: Some(realized_vol),
+        noise_robust_annualized_realized_vol_decimal: Some(realized_vol),
+        continuous_annualized_realized_vol_decimal: Some(realized_vol),
+        jump_annualized_realized_vol_decimal: Some(0.0),
+        forecast_annualized_realized_vol_decimal: None,
+        pricing_component: RealizedVolPricingComponent::Measured,
+        ready: true,
+        sources_used: Vec::new(),
+        source_diagnostics: Vec::new(),
+        horizon_estimates: Vec::new(),
+        unknown_source_rejections: BTreeMap::new(),
+        blocked_reasons: Vec::new(),
+        aggregate_method: RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
+        seconds_per_annum: 31_536_000.0,
+        config_fingerprint: String::new(),
+    }
+}
+
+/// Regression for the #770 clobber: a newer-timestamp snapshot from a *foreign* surface must
+/// NOT evict the configured surface's snapshot. The shared runtime routes ticks by
+/// instrument, and instrument overlap can publish foreign surfaces, so per-surface keying is
+/// required (subscription scoping alone cannot guarantee isolation).
+#[test]
+fn foreign_surface_snapshot_does_not_clobber_configured_surface_readiness() {
+    let config = pricing_config(); // configured surface "<surface_id>"
+    let mut pricing = TakerPricingState::from_config(&config);
+
+    // Configured surface publishes a ready snapshot.
+    pricing.observe_realized_vol_snapshot(realized_vol_snapshot_for_surface(
+        "<surface_id>",
+        1.5,
+        100,
+    ));
+    // A foreign surface publishes a NEWER snapshot (would have clobbered the single slot).
+    pricing.observe_realized_vol_snapshot(realized_vol_snapshot_for_surface(
+        "<foreign_surface>",
+        9.9,
+        200,
+    ));
+
+    // Configured surface readiness is intact; the foreign snapshot never displaced it.
+    // (A `pub(crate)` field probe isn't visible from this external integration test, so the
+    // behavior is asserted via the public read API — which is the actual contract.)
+    assert_eq!(pricing.current_realized_vol_at(201), Some(1.5));
+    assert_eq!(
+        pricing.current_realized_vol_source_at(201),
+        (None, Some(100))
+    );
+}
+
+/// Per-key monotonic guard: an equal-`as_of_ms` snapshot for the SAME surface replaces
+/// (last-writer-wins, matching the prior `<=` semantics); an older one is rejected.
+#[test]
+fn equal_timestamp_snapshot_replaces_and_older_snapshot_is_rejected_per_surface() {
+    let config = pricing_config();
+    let mut pricing = TakerPricingState::from_config(&config);
+
+    pricing.observe_realized_vol_snapshot(realized_vol_snapshot_for_surface(
+        "<surface_id>",
+        1.5,
+        100,
+    ));
+    // Equal timestamp: replaces (refresh vs event at the same `as_of_ms`).
+    pricing.observe_realized_vol_snapshot(realized_vol_snapshot_for_surface(
+        "<surface_id>",
+        2.0,
+        100,
+    ));
+    assert_eq!(pricing.current_realized_vol_at(100), Some(2.0));
+
+    // Older timestamp for the same surface: rejected, newer value preserved.
+    pricing.observe_realized_vol_snapshot(realized_vol_snapshot_for_surface(
+        "<surface_id>",
+        9.9,
+        50,
+    ));
+    assert_eq!(pricing.current_realized_vol_at(100), Some(2.0));
+}

@@ -1358,9 +1358,10 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn subscribe_realized_volatility_sources(&mut self) {
+        let surface_id = self.config.realized_volatility_surface_id.as_str();
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_quote_subscription_requests()
+            .realized_volatility_quote_subscription_requests_for_surface(surface_id)
         {
             #[cfg(not(test))]
             self.subscribe_quotes(instrument_id, client_id, None);
@@ -1369,7 +1370,7 @@ impl BinaryOracleEdgeTaker {
         }
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_trade_subscription_requests()
+            .realized_volatility_trade_subscription_requests_for_surface(surface_id)
         {
             #[cfg(not(test))]
             self.subscribe_trades(instrument_id, client_id, None);
@@ -1378,7 +1379,7 @@ impl BinaryOracleEdgeTaker {
         }
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_index_subscription_requests()
+            .realized_volatility_index_subscription_requests_for_surface(surface_id)
         {
             #[cfg(not(test))]
             self.subscribe_index_prices(instrument_id, client_id, None);
@@ -1817,9 +1818,10 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn unsubscribe_realized_volatility_sources(&mut self) {
+        let surface_id = self.config.realized_volatility_surface_id.as_str();
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_quote_subscription_requests()
+            .realized_volatility_quote_subscription_requests_for_surface(surface_id)
         {
             #[cfg(not(test))]
             self.unsubscribe_quotes(instrument_id, client_id, None);
@@ -1828,7 +1830,7 @@ impl BinaryOracleEdgeTaker {
         }
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_trade_subscription_requests()
+            .realized_volatility_trade_subscription_requests_for_surface(surface_id)
         {
             #[cfg(not(test))]
             self.unsubscribe_trades(instrument_id, client_id, None);
@@ -1837,7 +1839,7 @@ impl BinaryOracleEdgeTaker {
         }
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_index_subscription_requests()
+            .realized_volatility_index_subscription_requests_for_surface(surface_id)
         {
             #[cfg(not(test))]
             self.unsubscribe_index_prices(instrument_id, client_id, None);
@@ -4110,11 +4112,7 @@ impl BinaryOracleEdgeTaker {
     fn realized_volatility_evidence_fields(&self) -> RealizedVolatilityEvidenceFields {
         let realized_volatility_snapshot = self
             .pricing
-            .latest_realized_vol_snapshot
-            .as_ref()
-            .filter(|snapshot| {
-                self.config.realized_volatility_surface_id.as_str() == snapshot.surface_id.as_str()
-            });
+            .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id);
         match realized_volatility_snapshot {
             Some(snapshot) => RealizedVolatilityEvidenceFields {
                 surface_id: snapshot.surface_id.clone(),
@@ -4875,12 +4873,10 @@ impl BinaryOracleEdgeTaker {
                 .contains(&EntryPricingBlockReason::RealizedVolNotReady)
             && self
                 .pricing
-                .latest_realized_vol_snapshot
-                .as_ref()
-                .is_some_and(|snapshot| {
-                    snapshot.surface_id.as_str()
-                        == self.config.realized_volatility_surface_id.as_str()
-                })
+                .latest_realized_vol_snapshot_for_surface(
+                    &self.config.realized_volatility_surface_id,
+                )
+                .is_some()
         {
             let strategy_input_snapshot =
                 self.blocked_entry_strategy_input_evidence_snapshot_at(now_ms, &decision)?;

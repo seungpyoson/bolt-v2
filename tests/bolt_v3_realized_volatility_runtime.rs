@@ -246,3 +246,74 @@ fn runtime_rejects_mark_sources_until_subscription_routing_exists() {
 
     assert!(error.contains("mark"));
 }
+
+#[test]
+fn surface_scoped_subscription_requests_partition_by_configured_surface() {
+    let runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([
+        (
+            SURFACE_A.to_string(),
+            config(SURFACE_A, SOURCE_A, "<INSTRUMENT_A>.<DATA_CLIENT_ID>"),
+        ),
+        (
+            SURFACE_B.to_string(),
+            config(SURFACE_B, SOURCE_B, "<INSTRUMENT_B>.<DATA_CLIENT_ID>"),
+        ),
+    ]))
+    .expect("runtime should build both surfaces");
+
+    let surface_a_quote_ids = runtime
+        .quote_subscription_requests_for_surface(SURFACE_A)
+        .into_iter()
+        .map(|(instrument_id, _)| instrument_id)
+        .collect::<Vec<_>>();
+    let surface_b_quote_ids = runtime
+        .quote_subscription_requests_for_surface(SURFACE_B)
+        .into_iter()
+        .map(|(instrument_id, _)| instrument_id)
+        .collect::<Vec<_>>();
+
+    // Each surface exposes only its own source.
+    assert_eq!(surface_a_quote_ids.len(), 1);
+    assert_eq!(surface_b_quote_ids.len(), 1);
+    // Disjoint: a strategy on surface A must not subscribe surface B's instrument.
+    assert_ne!(surface_a_quote_ids[0], surface_b_quote_ids[0]);
+
+    // An unknown surface yields no subscriptions (fail-closed: pricing stays NotReady).
+    assert!(
+        runtime
+            .quote_subscription_requests_for_surface("<UNKNOWN_SURFACE>")
+            .is_empty()
+    );
+}
+
+#[test]
+fn global_subscription_requests_dedupe_across_surfaces_sharing_an_instrument() {
+    // Two surfaces share the same (instrument_id, data_client_id, kind). The per-surface
+    // accessors keep each surface's request; the global (audit) accessor must dedupe so the
+    // historical fanout count is unchanged.
+    let shared_instrument = "<SHARED_INSTRUMENT>.<DATA_CLIENT_ID>";
+    let runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([
+        (
+            SURFACE_A.to_string(),
+            config(SURFACE_A, SOURCE_A, shared_instrument),
+        ),
+        (
+            SURFACE_B.to_string(),
+            config(SURFACE_B, SOURCE_B, shared_instrument),
+        ),
+    ]))
+    .expect("runtime should build both surfaces");
+
+    // Per-surface: each surface owns one request.
+    assert_eq!(
+        runtime.subscription_requests_for_surface(SURFACE_A).len(),
+        1
+    );
+    assert_eq!(
+        runtime.subscription_requests_for_surface(SURFACE_B).len(),
+        1
+    );
+
+    // Global audit view: deduped union collapses the shared instrument to a single request.
+    assert_eq!(runtime.subscription_requests().len(), 1);
+}

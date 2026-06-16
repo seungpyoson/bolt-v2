@@ -46,7 +46,6 @@ label = "ubicloud-standard-2"
 [workflows.ci]
 detector = "github_hosted"
 test-archive = "managed_heavy"
-test-shards = "managed_heavy"
 gate = "github_hosted"
 
 [workflows.backtester_ci]
@@ -726,7 +725,7 @@ def assert_timeline_truncation_is_visible_in_report() -> None:
         jobs_payload_by_run_id={
             37: {
                 "jobs": [
-                    job_payload("nextest shard 1 of 4", "ubicloud-standard-4", "2026-06-12T00:00:00Z", "2026-06-12T00:01:00Z")
+                    job_payload("nextest archive", "ubicloud-standard-4", "2026-06-12T00:00:00Z", "2026-06-12T00:01:00Z")
                 ]
             }
         },
@@ -768,7 +767,7 @@ def assert_resolve_pr_states_handles_null_graphql_payloads() -> None:
         jobs_payload_by_run_id={
             38: {
                 "jobs": [
-                    job_payload("nextest shard 1 of 4", "ubicloud-standard-4", "2026-06-12T00:00:00Z", "2026-06-12T00:01:00Z")
+                    job_payload("nextest archive", "ubicloud-standard-4", "2026-06-12T00:00:00Z", "2026-06-12T00:01:00Z")
                 ]
             }
         },
@@ -793,7 +792,7 @@ def assert_cancelled_superseded_requires_pull_request_pr_match_and_overlap() -> 
         jobs_by_run_id = {
             run["id"]: {
                 "jobs": [
-                    job_payload("nextest shard 1 of 4", "ubicloud-standard-4", "2026-06-12T00:00:00Z", "2026-06-12T00:01:00Z")
+                    job_payload("nextest archive", "ubicloud-standard-4", "2026-06-12T00:00:00Z", "2026-06-12T00:01:00Z")
                 ]
             }
             for run in runs
@@ -926,7 +925,7 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
         10: {
             "jobs": [
                 job_payload(
-                    "nextest shard 1 of 4",
+                    "nextest archive",
                     "ubicloud-standard-4",
                     "2026-06-12T00:01:00Z",
                     "2026-06-12T00:03:00Z",
@@ -937,13 +936,13 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
         11: {
             "jobs": [
                 job_payload("fmt-check", "ubicloud-standard-2", "2026-06-12T00:05:00Z", "2026-06-12T00:07:00Z"),
-                job_payload("nextest shard 1 of 4", "ubicloud-standard-4", "2026-06-12T00:07:00Z", "2026-06-12T00:17:00Z"),
+                job_payload("nextest archive", "ubicloud-standard-4", "2026-06-12T00:07:00Z", "2026-06-12T00:17:00Z"),
             ]
         },
         12: {
             "jobs": [
                 job_payload("fmt-check", "ubicloud-standard-2", "2026-06-12T00:20:00Z", "2026-06-12T00:21:00Z"),
-                job_payload("nextest shard 1 of 4", "ubicloud-standard-4", "2026-06-12T00:21:00Z", "2026-06-12T00:26:00Z"),
+                job_payload("nextest archive", "ubicloud-standard-4", "2026-06-12T00:21:00Z", "2026-06-12T00:26:00Z"),
             ]
         },
         13: {
@@ -960,7 +959,7 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
         16: {"jobs": []},
         17: {
             "jobs": [
-                job_payload("nextest shard 1 of 4", "ubicloud-standard-4", "2026-06-12T01:50:00Z", "2026-06-12T01:53:00Z"),
+                job_payload("nextest archive", "ubicloud-standard-4", "2026-06-12T01:50:00Z", "2026-06-12T01:53:00Z"),
             ]
         },
     }

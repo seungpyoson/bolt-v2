@@ -1,7 +1,7 @@
 {
   "schema_version": "source-proof-pmxt-broad-backfill-efficiency-status.v1",
   "created_date": "2026-06-09",
-  "verified_at_utc": "2026-06-16T07:28:31Z",
+  "verified_at_utc": "2026-06-16T08:05:49Z",
   "source_binding": "polymarket-parquet-archive-index",
   "table_family": "order_book_snapshot_deltas",
   "status": "open_broad_backfill_efficiency_unproven_bounded_one_off_guardrails_present",
@@ -17,7 +17,7 @@
     },
     "dynamic_tick_size_replay_status": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-dynamic-tick-size-replay-status.2026-06-16.json",
-      "sha256": "c8c0ffffd9d9a0e67ba88c9feb84c4c4f5b898888546982e00034f24e16b1498"
+      "sha256": "f9a8024174e3fddd1795175e106491b1288ebc2ec62a8398d7f026324fa42abc"
     }
   },
   "guard_verification": {

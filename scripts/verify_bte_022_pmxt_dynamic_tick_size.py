@@ -8,6 +8,7 @@ import hashlib
 import json
 import sys
 import tomllib
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ PMXT_TICK_STATUS = REFERENCE_ROOT / "source-proof-pmxt-polymarket-tick-size-chan
 PMXT_TIMED_AUDIT = REFERENCE_ROOT / "source-proof-pmxt-polymarket-timed-instrument-replay-nt-audit.2026-06-09.json"
 PMXT_FIRST_UNIVERSE_POLICY = REFERENCE_ROOT / "source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json"
 PMXT_SOURCE_PROOF_SPEC = REFERENCE_ROOT / "backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml"
+PMXT_SOURCE_PROOF_FIXTURE = REFERENCE_ROOT / "source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
 PMXT_DYNAMIC_STATUS = REFERENCE_ROOT / "source-proof-pmxt-dynamic-tick-size-replay-status.2026-06-16.json"
 JUSTFILE = Path("justfile")
 FIRST_SELECTION_KEY = "_".join(("selected", "first", "proof", "policy"))
@@ -34,6 +36,7 @@ STATUS_HASH_TARGETS = (
     (("committed_input_hashes", "timed_instrument_replay_audit"), PMXT_TIMED_AUDIT),
     (("committed_input_hashes", "first_universe_policy"), PMXT_FIRST_UNIVERSE_POLICY),
     (("committed_input_hashes", "pmxt_source_proof_spec"), PMXT_SOURCE_PROOF_SPEC),
+    (("committed_input_hashes", "bounded_one_off_pending_fixture"), PMXT_SOURCE_PROOF_FIXTURE),
 )
 STATUS_KEYS = (
     "bounded_no_tick_size_change_first_proof_allowed",
@@ -53,6 +56,7 @@ STATUS_KEYS = (
 )
 STATUS_HASH_KEYS = (
     "first_universe_policy",
+    "bounded_one_off_pending_fixture",
     "pmxt_source_proof_spec",
     "tick_size_change_status",
     "timed_instrument_replay_audit",
@@ -62,6 +66,13 @@ GUARD_VERIFICATION_KEYS = ("script", "self_test", "source_fence_static")
 SOURCE_PROOF_PENDING_FORBIDDEN_L2_REFS = (
     "no_tick_size_change_universe_ref",
     "timed_instrument_epoch_replay_ref",
+)
+ONE_OFF_FIXTURE_PENDING_CHECKS = (
+    "coverage",
+    "retention_freshness",
+    "completeness",
+    "cost",
+    "storage",
 )
 REMAINING_BLOCKERS = (
     "dynamic_tick_size_replay_unproven",
@@ -169,6 +180,16 @@ def require_contains(rel_path: Path, field: str, actual: Any, expected: str, fin
         findings.append(f"{rel_path}: {field} must contain {expected!r}")
 
 
+def require_utc_timestamp(rel_path: Path, field: str, actual: Any, findings: list[str]) -> None:
+    if not isinstance(actual, str):
+        findings.append(f"{rel_path}: {field} must be a UTC timestamp string, got {actual!r}")
+        return
+    try:
+        datetime.strptime(actual, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        findings.append(f"{rel_path}: {field} must use UTC format YYYY-MM-DDTHH:MM:SSZ, got {actual!r}")
+
+
 def require_absent(rel_path: Path, field: str, actual: Any, forbidden: str, findings: list[str]) -> None:
     if isinstance(actual, str):
         haystack = actual
@@ -219,6 +240,7 @@ def check_status(status: dict[str, Any], root: Path, findings: list[str]) -> Non
     require_equal(PMXT_DYNAMIC_STATUS, "schema_version", status.get("schema_version"), "source-proof-pmxt-dynamic-tick-size-replay-status.v1", findings)
     require_equal(PMXT_DYNAMIC_STATUS, "task_id", status.get("task_id"), "BACKTESTING_ENGINE-022", findings)
     require_equal(PMXT_DYNAMIC_STATUS, "source_binding", status.get("source_binding"), "polymarket-parquet-archive-index", findings)
+    require_utc_timestamp(PMXT_DYNAMIC_STATUS, "observed_at_utc", status.get("observed_at_utc"), findings)
     require_equal(
         PMXT_DYNAMIC_STATUS,
         "dynamic_tick_size_replay_status",
@@ -347,6 +369,51 @@ def check_source_proof(spec: dict[str, Any], findings: list[str]) -> None:
     require_contains(PMXT_SOURCE_PROOF_SPEC, "claim_limit", claim_limits, "No dynamic tick-size replay claim until NT-native timed instrument-epoch replay", findings)
 
 
+def check_one_off_fixture(fixture: dict[str, Any], findings: list[str]) -> None:
+    require_equal(PMXT_SOURCE_PROOF_FIXTURE, "status", fixture.get("status"), "pending", findings)
+    require_equal(PMXT_SOURCE_PROOF_FIXTURE, "source_selection_status", fixture.get("source_selection_status"), "PENDING_MORE_PROOF", findings)
+    require_equal(PMXT_SOURCE_PROOF_FIXTURE, "usage_scope", fixture.get("usage_scope"), "one_off_backfill_data", findings)
+    require_equal(PMXT_SOURCE_PROOF_FIXTURE, "nt_mapping_status", fixture.get("nt_mapping_status"), "accepted", findings)
+    l2 = fixture.get("l2_replay_evidence")
+    if not isinstance(l2, dict):
+        findings.append(f"{PMXT_SOURCE_PROOF_FIXTURE}: l2_replay_evidence must be an object")
+    else:
+        no_tick_ref = l2.get("no_tick_size_change_universe_ref")
+        require_contains(
+            PMXT_SOURCE_PROOF_FIXTURE,
+            "l2_replay_evidence.no_tick_size_change_universe_ref",
+            no_tick_ref,
+            "source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json",
+            findings,
+        )
+        require_contains(
+            PMXT_SOURCE_PROOF_FIXTURE,
+            "l2_replay_evidence.no_tick_size_change_universe_ref",
+            no_tick_ref,
+            "selected_first_proof_policy.selector_predicate",
+            findings,
+        )
+        if "timed_instrument_epoch_replay_ref" in l2:
+            findings.append(f"{PMXT_SOURCE_PROOF_FIXTURE}: pending one-off fixture must not carry timed_instrument_epoch_replay_ref")
+    require_contains(
+        PMXT_SOURCE_PROOF_FIXTURE,
+        "claim_limits",
+        fixture.get("claim_limits"),
+        "No dynamic tick-size replay claim until NT-native instrument-epoch replay is proven.",
+        findings,
+    )
+    required_checks = fixture.get("required_checks")
+    if not isinstance(required_checks, dict):
+        findings.append(f"{PMXT_SOURCE_PROOF_FIXTURE}: required_checks must be an object")
+        return
+    for check in ONE_OFF_FIXTURE_PENDING_CHECKS:
+        entry = required_checks.get(check)
+        if not isinstance(entry, dict):
+            findings.append(f"{PMXT_SOURCE_PROOF_FIXTURE}: required_checks.{check} must be an object")
+            continue
+        require_equal(PMXT_SOURCE_PROOF_FIXTURE, f"required_checks.{check}.outcome", entry.get("outcome"), "pending", findings)
+
+
 def check_bte_status(bte_status: dict[str, Any], findings: list[str]) -> None:
     require_equal(BTE_022_STATUS, "task_id", bte_status.get("task_id"), "BACKTESTING_ENGINE-022", findings)
     require_equal(BTE_022_STATUS, "status", bte_status.get("status"), "open_pmxt_one_off_current_artifact_proven_broad_backfill_blocked", findings)
@@ -393,6 +460,7 @@ def scan_root(root: Path) -> list[str]:
     timed_audit = read_json(root, PMXT_TIMED_AUDIT, findings)
     first_policy = read_json(root, PMXT_FIRST_UNIVERSE_POLICY, findings)
     source_proof = read_toml(root, PMXT_SOURCE_PROOF_SPEC, findings)
+    source_fixture = read_json(root, PMXT_SOURCE_PROOF_FIXTURE, findings)
     bte_status = read_json(root, BTE_022_STATUS, findings)
 
     check_status(status, root, findings)
@@ -400,6 +468,7 @@ def scan_root(root: Path) -> list[str]:
     check_timed_audit(timed_audit, findings)
     check_first_universe_policy(first_policy, findings)
     check_source_proof(source_proof, findings)
+    check_one_off_fixture(source_fixture, findings)
     check_bte_status(bte_status, findings)
     check_justfile(root, findings)
     return findings

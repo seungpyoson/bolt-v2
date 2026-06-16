@@ -2,7 +2,7 @@
   "schema_version": "source-proof-pmxt-dynamic-tick-size-replay-status.v1",
   "task_id": "BACKTESTING_ENGINE-022",
   "source_binding": "polymarket-parquet-archive-index",
-  "observed_at_utc": "2026-06-16T00:00:00Z",
+  "observed_at_utc": "2026-06-16T08:05:49Z",
   "dynamic_tick_size_replay_status": "blocked_standard_backtestnode_no_timed_instrument_any",
   "standard_backtestnode_catalog_replay_supports_dynamic_instrument_any": false,
   "timed_instrument_epoch_replay_accepted": false,
@@ -21,6 +21,10 @@
     "first_universe_policy": {
       "path": "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json",
       "sha256": "36e2af98cae120d3b1320d2a99ee6bbfda326ca3f9c3154cf1c52e45824a84a4"
+    },
+    "bounded_one_off_pending_fixture": {
+      "path": "specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
+      "sha256": "c4220593b6fe58023561c61e10c58916c3251988ed613a37991e8ebcff4fa15f"
     },
     "pmxt_source_proof_spec": {
       "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml",

@@ -67,6 +67,48 @@ evidence_ref = "repo://specs/023-nt-research-analytics-platform/reference/source
 """
 
 
+def one_off_fixture(
+    *,
+    usage_scope: str = "one_off_backfill_data",
+    include_no_tick_ref: bool = True,
+    timed_ref: bool = False,
+) -> dict:
+    l2_replay_evidence = {
+        "order_book_delta_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json",
+        "sufficient_snapshot_cadence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json",
+    }
+    if include_no_tick_ref:
+        l2_replay_evidence["no_tick_size_change_universe_ref"] = (
+            "repo://specs/023-nt-research-analytics-platform/reference/"
+            "source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json "
+            "selected_first_proof_policy.selector_predicate"
+        )
+    if timed_ref:
+        l2_replay_evidence["timed_instrument_epoch_replay_ref"] = (
+            "repo://specs/023-nt-research-analytics-platform/reference/timed-replay.json"
+        )
+    return {
+        "status": "pending",
+        "source_selection_status": "PENDING_MORE_PROOF",
+        "usage_scope": usage_scope,
+        "nt_mapping_status": "accepted",
+        "l2_replay_evidence": l2_replay_evidence,
+        "claim_limits": [
+            {
+                "id": "binary-option-pmxt-source-proof-claim-limit-005",
+                "claim": "No dynamic tick-size replay claim until NT-native instrument-epoch replay is proven.",
+            }
+        ],
+        "required_checks": {
+            "coverage": {"outcome": "pending"},
+            "retention_freshness": {"outcome": "pending"},
+            "completeness": {"outcome": "pending"},
+            "cost": {"outcome": "pending"},
+            "storage": {"outcome": "pending"},
+        },
+    }
+
+
 def tick_status(*, supports_dynamic: bool = False) -> dict:
     return {
         "schema_version": "source-proof-pmxt-polymarket-tick-size-change-status.v1",
@@ -162,12 +204,18 @@ def bte_status(module, *, include_guard: bool = True) -> dict:
     return status
 
 
-def status_artifact(module, root: Path, *, bad_hash: bool = False, status_overrides: dict | None = None) -> dict:
+def status_artifact(
+    module,
+    root: Path,
+    *,
+    bad_hash_key: str | None = None,
+    status_overrides: dict | None = None,
+) -> dict:
     hashes = {}
     for path_tuple, target in module.STATUS_HASH_TARGETS:
         key = path_tuple[-1]
         digest = module.path_sha256(root, target, [])
-        hashes[key] = {"path": str(target), "sha256": "bad" if bad_hash and key == "tick_size_change_status" else digest}
+        hashes[key] = {"path": str(target), "sha256": "bad" if key == bad_hash_key else digest}
     status = {
         "schema_version": "source-proof-pmxt-dynamic-tick-size-replay-status.v1",
         "task_id": "BACKTESTING_ENGINE-022",
@@ -216,11 +264,19 @@ def populate(root: Path, module, **overrides) -> None:
     write_file(root, str(module.PMXT_TIMED_AUDIT), json_text(overrides.get("audit", timed_audit())))
     write_file(root, str(module.PMXT_FIRST_UNIVERSE_POLICY), json_text(overrides.get("first", first_universe_policy())))
     write_file(root, str(module.PMXT_SOURCE_PROOF_SPEC), overrides.get("source_proof", source_proof_text()))
+    write_file(root, str(module.PMXT_SOURCE_PROOF_FIXTURE), json_text(overrides.get("source_fixture", one_off_fixture())))
     write_file(root, str(module.BTE_022_STATUS), json_text(overrides.get("bte", bte_status(module))))
     write_file(
         root,
         str(module.PMXT_DYNAMIC_STATUS),
-        json_text(status_artifact(module, root, bad_hash=overrides.get("bad_hash", False), status_overrides=overrides.get("status_overrides"))),
+        json_text(
+            status_artifact(
+                module,
+                root,
+                bad_hash_key=overrides.get("bad_hash_key", "tick_size_change_status" if overrides.get("bad_hash", False) else None),
+                status_overrides=overrides.get("status_overrides"),
+            )
+        ),
     )
     write_file(root, "justfile", overrides.get("justfile", justfile_text()))
 
@@ -253,6 +309,36 @@ def assert_timed_ref_in_pending_source_proof_is_a_finding() -> None:
         findings = module.scan_root(root)
         if not any("timed_instrument_epoch_replay_ref" in finding for finding in findings):
             raise AssertionError(f"expected timed replay source-proof finding, got {findings}")
+
+
+def assert_bounded_fixture_scope_drift_is_a_finding() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        populate(root, module, source_fixture=one_off_fixture(usage_scope="canonical_backfill_input"))
+        findings = module.scan_root(root)
+        if not any("usage_scope" in finding for finding in findings):
+            raise AssertionError(f"expected one-off fixture usage-scope finding, got {findings}")
+
+
+def assert_bounded_fixture_timed_ref_is_a_finding() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        populate(root, module, source_fixture=one_off_fixture(timed_ref=True))
+        findings = module.scan_root(root)
+        if not any("timed_instrument_epoch_replay_ref" in finding for finding in findings):
+            raise AssertionError(f"expected one-off fixture timed replay finding, got {findings}")
+
+
+def assert_bounded_fixture_missing_no_tick_policy_is_a_finding() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        populate(root, module, source_fixture=one_off_fixture(include_no_tick_ref=False))
+        findings = module.scan_root(root)
+        if not any("no_tick_size_change_universe_ref" in finding for finding in findings):
+            raise AssertionError(f"expected one-off fixture no-tick policy finding, got {findings}")
 
 
 def assert_pending_source_ref_in_bte_narrative_is_a_finding() -> None:
@@ -296,12 +382,14 @@ def assert_missing_bte_guard_is_a_finding() -> None:
 
 def assert_status_hash_drift_is_a_finding() -> None:
     module = load_verifier()
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        populate(root, module, bad_hash=True)
-        findings = module.scan_root(root)
-        if not any("tick_size_change_status.sha256" in finding for finding in findings):
-            raise AssertionError(f"expected status hash drift finding, got {findings}")
+    for path_tuple, _target in module.STATUS_HASH_TARGETS:
+        key = path_tuple[-1]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            populate(root, module, bad_hash_key=key)
+            findings = module.scan_root(root)
+            if not any(f"{key}.sha256" in finding for finding in findings):
+                raise AssertionError(f"expected status hash drift finding for {key}, got {findings}")
 
 
 def assert_dynamic_status_flag_drift_is_a_finding() -> None:
@@ -321,6 +409,16 @@ def assert_dynamic_status_flag_drift_is_a_finding() -> None:
             findings = module.scan_root(root)
             if not any(field in finding for finding in findings):
                 raise AssertionError(f"expected dynamic status drift finding for {field}, got {findings}")
+
+
+def assert_dynamic_status_observed_at_format_is_a_finding() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        populate(root, module, status_overrides={"observed_at_utc": "2026-06-16 08:05:49"})
+        findings = module.scan_root(root)
+        if not any("observed_at_utc" in finding for finding in findings):
+            raise AssertionError(f"expected observed_at_utc format finding, got {findings}")
 
 
 def assert_justfile_wiring_is_a_finding() -> None:
@@ -356,11 +454,15 @@ def main() -> int:
         assert_clean_fixture_passes,
         assert_dynamic_tick_overclaim_is_a_finding,
         assert_timed_ref_in_pending_source_proof_is_a_finding,
+        assert_bounded_fixture_scope_drift_is_a_finding,
+        assert_bounded_fixture_timed_ref_is_a_finding,
+        assert_bounded_fixture_missing_no_tick_policy_is_a_finding,
         assert_pending_source_ref_in_bte_narrative_is_a_finding,
         assert_missing_bte_blocker_is_a_finding,
         assert_missing_bte_guard_is_a_finding,
         assert_status_hash_drift_is_a_finding,
         assert_dynamic_status_flag_drift_is_a_finding,
+        assert_dynamic_status_observed_at_format_is_a_finding,
         assert_justfile_wiring_is_a_finding,
         assert_script_cli_fails_closed_on_fixture_drift,
     )

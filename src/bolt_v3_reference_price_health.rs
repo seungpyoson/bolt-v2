@@ -606,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn reference_current_price_health_plan_skips_unsupported_optional_sources() {
+    fn reference_current_price_health_plan_includes_configured_polyresearch_assets() {
         let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
             .expect("fixture config should load");
         let reference = loaded.strategies[0]
@@ -629,14 +629,25 @@ mod tests {
         let plan = reference_current_price_health_plan(&loaded)
             .expect("reference_current_price health plan should build");
 
-        assert_eq!(plan.client_keys, vec!["chainlink_reference"]);
-        assert_eq!(plan.targets.len(), 1);
-        let target = &plan.targets[0];
-        assert_eq!(target.source_id, "chainlink_primary");
-        assert_eq!(target.asset, "BNB");
-        assert_eq!(target.provider, "chainlink_ws");
-        assert_eq!(target.client_key, "chainlink_reference");
-        assert_eq!(target.provider_instrument, "BNB-USD.CHAINLINK");
+        assert_eq!(
+            plan.client_keys,
+            vec!["chainlink_reference", "polyresearch_reference"]
+        );
+        assert_eq!(plan.targets.len(), 2);
+        assert!(plan.targets.iter().any(|target| {
+            target.source_id == "chainlink_primary"
+                && target.asset == "BNB"
+                && target.provider == "chainlink_ws"
+                && target.client_key == "chainlink_reference"
+                && target.provider_instrument == "BNB-USD.CHAINLINK"
+        }));
+        assert!(plan.targets.iter().any(|target| {
+            target.source_id == "polyresearch_backup"
+                && target.asset == "BNB"
+                && target.provider == "polyresearch_ws"
+                && target.client_key == "polyresearch_reference"
+                && target.provider_instrument == "BNB/USD"
+        }));
     }
 
     #[test]

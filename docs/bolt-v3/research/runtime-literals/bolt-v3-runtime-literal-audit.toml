@@ -12413,22 +12413,6 @@ reason = "PolyResearch reference-price provider protocol/config literal; operato
 [[allowed]]
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
-literal = '''"BTC"'''
-context = '''pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];'''
-classification = "polyresearch_reference_provider_contract"
-reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polyresearch.rs"
-kind = "string"
-literal = '''"ETH"'''
-context = '''pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];'''
-classification = "polyresearch_reference_provider_contract"
-reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polyresearch.rs"
-kind = "string"
 literal = '''"POLYRESEARCH_REFERENCE_PRICE"'''
 context = '''pub const KEY: &str = "POLYRESEARCH_REFERENCE_PRICE";'''
 classification = "polyresearch_reference_provider_contract"
@@ -12455,22 +12439,6 @@ path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
 literal = '''"PolyResearchReferencePriceClientConfig"'''
 context = '''const CONFIG_TYPE: &str = "PolyResearchReferencePriceClientConfig";'''
-classification = "polyresearch_reference_provider_contract"
-reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polyresearch.rs"
-kind = "string"
-literal = '''"SOL"'''
-context = '''pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];'''
-classification = "polyresearch_reference_provider_contract"
-reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polyresearch.rs"
-kind = "string"
-literal = '''"XRP"'''
-context = '''pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];'''
 classification = "polyresearch_reference_provider_contract"
 reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
 

@@ -1083,7 +1083,7 @@ instrument_id = "BTC-USD.CHAINLINK"
 }
 
 #[test]
-fn optional_enabled_unsupported_polyresearch_source_is_skipped_when_quorum_can_be_met() {
+fn polyresearch_source_for_unlisted_asset_is_supported_by_configured_symbol() {
     let messages = validate_reference_current_price_for_asset(
         r#"
 [reference_current_price]
@@ -1120,7 +1120,7 @@ symbol = "ADA/USD"
                 && message.contains("polyresearch_ws")
                 && message.contains("unsupported")
         }),
-        "optional enabled unsupported PRR source should not fail validation when quorum can be met, got: {messages:#?}"
+        "polyresearch_ws asset support should come from the configured symbol, got: {messages:#?}"
     );
     assert!(
         !messages.iter().any(|message| {
@@ -1132,7 +1132,7 @@ symbol = "ADA/USD"
 }
 
 #[test]
-fn required_unsupported_polyresearch_source_rejects() {
+fn required_polyresearch_source_for_unlisted_asset_validates_when_symbol_matches() {
     let messages = validate_reference_current_price_for_asset(
         r#"
 [reference_current_price]
@@ -1156,12 +1156,7 @@ symbol = "ADA/USD"
     );
 
     assert!(
-        messages.iter().any(|message| {
-            message.contains("reference_current_price.source.polyresearch_primary")
-                && message.contains("ADA")
-                && message.contains("polyresearch_ws")
-                && message.contains("unsupported")
-        }),
-        "required unsupported polyresearch_ws asset should fail validation, got: {messages:#?}"
+        messages.is_empty(),
+        "required polyresearch_ws source should validate when its symbol matches the configured asset, got: {messages:#?}"
     );
 }

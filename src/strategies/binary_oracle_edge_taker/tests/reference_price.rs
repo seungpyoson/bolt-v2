@@ -218,7 +218,7 @@ fn reference_price_sources_subscribe_as_custom_data_on_start_and_unsubscribe_on_
 }
 
 #[test]
-fn unsupported_optional_reference_price_source_does_not_subscribe() {
+fn configured_polyresearch_reference_price_source_subscribes_for_asset() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();
     reference_price.asset = "BNB".to_string();
@@ -237,7 +237,7 @@ fn unsupported_optional_reference_price_source_does_not_subscribe() {
 
     DataActor::on_start(&mut strategy).expect("strategy should start");
 
-    assert_eq!(strategy.reference_price_subscribe_events.len(), 1);
+    assert_eq!(strategy.reference_price_subscribe_events.len(), 2);
     assert_reference_price_subscription_for_asset(
         &strategy.reference_price_subscribe_events[0],
         "BNB",
@@ -248,12 +248,22 @@ fn unsupported_optional_reference_price_source_does_not_subscribe() {
         Some("BNB-USD.CHAINLINK_REFERENCE"),
         None,
     );
+    assert_reference_price_subscription_for_asset(
+        &strategy.reference_price_subscribe_events[1],
+        "BNB",
+        REFERENCE_PRICE_SUBSCRIBE_ACTION,
+        POLYRESEARCH_BACKUP_SOURCE_ID,
+        POLYRESEARCH_REFERENCE_PROVIDER,
+        "polyresearch_reference",
+        None,
+        Some("BNB"),
+    );
 
     DataActor::on_stop(&mut strategy).expect("strategy should stop");
 
-    assert_eq!(strategy.reference_price_subscribe_events.len(), 2);
+    assert_eq!(strategy.reference_price_subscribe_events.len(), 4);
     assert_reference_price_subscription_for_asset(
-        &strategy.reference_price_subscribe_events[1],
+        &strategy.reference_price_subscribe_events[2],
         "BNB",
         REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
         CHAINLINK_PRIMARY_SOURCE_ID,
@@ -261,6 +271,16 @@ fn unsupported_optional_reference_price_source_does_not_subscribe() {
         "chainlink_reference",
         Some("BNB-USD.CHAINLINK_REFERENCE"),
         None,
+    );
+    assert_reference_price_subscription_for_asset(
+        &strategy.reference_price_subscribe_events[3],
+        "BNB",
+        REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
+        POLYRESEARCH_BACKUP_SOURCE_ID,
+        POLYRESEARCH_REFERENCE_PROVIDER,
+        "polyresearch_reference",
+        None,
+        Some("BNB"),
     );
 }
 

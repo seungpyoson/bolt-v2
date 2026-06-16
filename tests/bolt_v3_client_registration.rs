@@ -196,10 +196,9 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
     // `execution_client_id`. The fixture strategy
     // (tests/fixtures/bolt_v3/strategies/binary_oracle.toml) sets
     // `execution_client_id = "polymarket_main"` and a strategy-bound signal
-    // feed at `okx_data`, plus the strategy-bound Chainlink reference-current-price
-    // source at `chainlink_reference`. The configured PolyResearch backup is
-    // optional and unsupported for the fixture's synthetic asset, so the scoped
-    // trade runner skips it along with the extra unbound `binance_reference`.
+    // feed at `okx_data`, plus the strategy-bound reference-current-price
+    // sources at `chainlink_reference` and `polyresearch_reference`. The extra
+    // `binance_reference` client is unbound and must still be excluded.
     //
     // We keep `fixture_loaded_config_with_binance_reference` so the exclusion is
     // meaningful: an unbound client is present in config yet must NOT register.
@@ -226,7 +225,7 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
     // clients.
     assert_eq!(
         summary.clients.len(),
-        3,
+        4,
         "scoped trade path registers only strategy-bound clients; got {:?}",
         summary.clients.keys().collect::<Vec<_>>()
     );
@@ -260,10 +259,17 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
         !chainlink.execution,
         "fixture chainlink_reference has no [execution] block"
     );
+    let polyresearch = summary
+        .clients
+        .get("polyresearch_reference")
+        .expect("polyresearch_reference (strategy reference_current_price source client) must appear in summary");
     assert!(
-        !summary.clients.contains_key("polyresearch_reference"),
-        "polyresearch_reference is an unsupported optional reference source for the fixture asset and must be skipped; got {:?}",
-        summary.clients.keys().collect::<Vec<_>>()
+        polyresearch.data,
+        "fixture polyresearch_reference has a [data] block"
+    );
+    assert!(
+        !polyresearch.execution,
+        "fixture polyresearch_reference has no [execution] block"
     );
     assert!(
         !summary.clients.contains_key("binance_reference"),
@@ -290,8 +296,8 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
         "data engine should expose strategy reference_current_price source client chainlink_reference; got {registered_data:?}"
     );
     assert!(
-        !registered_data.contains(&ClientId::from("polyresearch_reference")),
-        "data engine should skip unsupported optional reference_current_price source client polyresearch_reference; got {registered_data:?}"
+        registered_data.contains(&ClientId::from("polyresearch_reference")),
+        "data engine should expose strategy reference_current_price source client polyresearch_reference; got {registered_data:?}"
     );
     assert!(
         !registered_data.contains(&ClientId::from("binance_reference")),

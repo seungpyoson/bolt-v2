@@ -563,7 +563,7 @@ pub fn reference_price_provider_metadata(
             provider_key: polyresearch::REFERENCE_PRICE_PROVIDER_KEY,
             client_venue_key: polyresearch::KEY,
             identifier_kind: ReferencePriceIdentifierKind::Symbol,
-            supported_assets: polyresearch::POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS,
+            supported_assets: &[],
         });
     }
     None

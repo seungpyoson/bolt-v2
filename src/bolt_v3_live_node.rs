@@ -7618,11 +7618,11 @@ configured_source_param = "configured-value"
         let scoped = trade_transport_loaded_config(&loaded)
             .expect("strategy-bound transport scope should be derived from config");
 
-        assert_eq!(scoped.root.clients.len(), 3);
+        assert_eq!(scoped.root.clients.len(), 4);
         assert!(scoped.root.clients.contains_key("polymarket_main"));
         assert!(scoped.root.clients.contains_key("signal_data"));
         assert!(scoped.root.clients.contains_key("chainlink_reference"));
-        assert!(!scoped.root.clients.contains_key("polyresearch_reference"));
+        assert!(scoped.root.clients.contains_key("polyresearch_reference"));
         assert!(
             !scoped.root.clients.contains_key("unrelated_data"),
             "unrelated configured data clients must not block the selected trade path"

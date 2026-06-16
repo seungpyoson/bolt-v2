@@ -31,12 +31,17 @@ use crate::{
         MakerLegOrderPlan, MakerMarketActionOrderInput, MakerOrderPlan,
         maker_order_intent_from_market_action,
     },
+    bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
     bolt_v3_maker_runtime_order::{
         MakerRuntimeLegOrderDispatchOutcome, MakerRuntimeOrderDispatchInput,
         MakerRuntimeOrderDispatchOutcome, dispatch_maker_runtime_order_plan_with_command_router,
     },
     bolt_v3_maker_runtime_quote::{
-        MakerRuntimeQuoteDecision, MakerRuntimeQuoteInput, plan_maker_runtime_quote,
+        MakerRuntimeOrderPlanInput, MakerRuntimeQuoteBlockReason, MakerRuntimeQuoteDecision,
+        MakerRuntimeQuoteInput, MakerRuntimeQuoteSetInput,
+        MakerRuntimeReferenceFairValueBlockReason, MakerRuntimeReferenceFairValueDecision,
+        MakerRuntimeReferenceFairValueInput, maker_reference_current_price_fair_value_decision,
+        plan_maker_runtime_quote,
     },
     bolt_v3_order_execution::{
         BoltV3MakerOrderRoutingContext,
@@ -44,6 +49,7 @@ use crate::{
     },
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_quote_lifecycle::{Leg, MarketAction, MarketQuote},
+    bolt_v3_reference_price::ReferencePriceSelector,
     bolt_v3_requote_budget::RequoteBudgetPair,
     bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
@@ -91,6 +97,34 @@ pub struct BinaryOracleMakerRuntimeQuoteRouteInput<'a> {
 pub struct BinaryOracleMakerRuntimeQuoteRouteOutcome {
     pub quote: MakerRuntimeQuoteDecision,
     pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryOracleMakerRuntimeReferenceQuoteRouteInput<'a> {
+    pub reference_fair_value: MakerRuntimeReferenceFairValueInput<'a>,
+    pub quote_plan: MakerQuotePlanInputs<'a>,
+    pub quote_set: MakerRuntimeQuoteSetInput<'a>,
+    pub order_plan: MakerRuntimeOrderPlanInput,
+    pub submit_template: &'a NtOrderTemplate,
+    pub price_precision: u8,
+    pub quantity_precision: u8,
+    pub submit_order_prefix: &'a str,
+    pub max_fee_bps: Decimal,
+    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryOracleMakerRuntimeReferenceQuoteRouteOutcome {
+    pub fair_value: MakerRuntimeReferenceFairValueDecision,
+    pub quote: Option<MakerRuntimeQuoteDecision>,
+    pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
+    pub blocked_by: Option<BinaryOracleMakerRuntimeReferenceQuoteBlockReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOracleMakerRuntimeReferenceQuoteBlockReason {
+    FairValue(MakerRuntimeReferenceFairValueBlockReason),
+    Quote(MakerRuntimeQuoteBlockReason),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -219,6 +253,75 @@ impl BinaryOracleMaker {
         Ok(BinaryOracleMakerRuntimeQuoteRouteOutcome {
             quote: quote_decision,
             orders,
+        })
+    }
+
+    pub fn route_maker_runtime_reference_quote(
+        &mut self,
+        market: &mut MarketQuote,
+        budget: &mut RequoteBudgetPair,
+        reference_selector: &mut ReferencePriceSelector,
+        input: BinaryOracleMakerRuntimeReferenceQuoteRouteInput<'_>,
+    ) -> Result<BinaryOracleMakerRuntimeReferenceQuoteRouteOutcome> {
+        let BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+            reference_fair_value,
+            quote_plan,
+            quote_set,
+            order_plan,
+            submit_template,
+            price_precision,
+            quantity_precision,
+            submit_order_prefix,
+            max_fee_bps,
+            submit_lifecycle_policy,
+        } = input;
+
+        let fair_value = maker_reference_current_price_fair_value_decision(
+            reference_selector,
+            reference_fair_value,
+        );
+        let Some(reference_fair_value_result) = fair_value.fair_value.as_ref() else {
+            return Ok(BinaryOracleMakerRuntimeReferenceQuoteRouteOutcome {
+                blocked_by: fair_value
+                    .blocked_by
+                    .map(BinaryOracleMakerRuntimeReferenceQuoteBlockReason::FairValue),
+                fair_value,
+                quote: None,
+                orders: None,
+            });
+        };
+        let oracle_fair_probability_up = reference_fair_value_result.fair_probability_up;
+        let quote_route = self.route_maker_runtime_quote(
+            market,
+            budget,
+            BinaryOracleMakerRuntimeQuoteRouteInput {
+                quote: MakerRuntimeQuoteInput {
+                    quote_plan: MakerQuotePlanInputs {
+                        family_key: reference_fair_value.family_key,
+                        oracle_fair_probability_up,
+                        ..quote_plan
+                    },
+                    quote_set,
+                    order_plan,
+                },
+                submit_template,
+                price_precision,
+                quantity_precision,
+                submit_order_prefix,
+                max_fee_bps,
+                submit_lifecycle_policy,
+            },
+        )?;
+        let BinaryOracleMakerRuntimeQuoteRouteOutcome { quote, orders } = quote_route;
+        let blocked_by = quote
+            .blocked_by
+            .map(BinaryOracleMakerRuntimeReferenceQuoteBlockReason::Quote);
+
+        Ok(BinaryOracleMakerRuntimeReferenceQuoteRouteOutcome {
+            fair_value,
+            quote: Some(quote),
+            orders,
+            blocked_by,
         })
     }
 

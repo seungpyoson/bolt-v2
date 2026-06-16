@@ -94,8 +94,8 @@ fn selected_reference_current_price_feeds_entry_pricing_spot() {
     let mut strategy = ready_to_trade_strategy();
     strategy.config.reference_current_price = Some(reference_price_config());
     strategy.active.last_reference_ts_ms = None;
-    strategy.pricing.fast_spot = None;
-    strategy.pricing.last_reference_current_price = None;
+    strategy.pricing.set_selected_pricing_spot(None);
+    strategy.pricing.set_last_reference_observation(None, None);
     let _cache = register_test_strategy(&mut strategy);
 
     let update = reference_price_update(
@@ -115,7 +115,7 @@ fn selected_reference_current_price_feeds_entry_pricing_spot() {
         .expect("selected reference current price should supply entry spot");
     assert_eq!(inputs.spot_price, TEST_REFERENCE_CURRENT_PRICE);
     assert_eq!(
-        strategy.pricing.fast_spot,
+        strategy.pricing.selected_pricing_spot().cloned(),
         Some(fast_spot(
             CHAINLINK_PRIMARY_SOURCE_ID,
             TEST_REFERENCE_CURRENT_PRICE,
@@ -143,11 +143,11 @@ fn active_interval_rollover_clears_reference_current_price_pricing_state() {
         .expect("first interval reference current price should be handled");
 
     assert_eq!(
-        strategy.pricing.last_reference_current_price,
+        strategy.pricing.last_reference_current_price(),
         Some(TEST_REFERENCE_CURRENT_PRICE)
     );
     assert_eq!(
-        strategy.pricing.fast_spot,
+        strategy.pricing.selected_pricing_spot().cloned(),
         Some(fast_spot(
             CHAINLINK_PRIMARY_SOURCE_ID,
             TEST_REFERENCE_CURRENT_PRICE,
@@ -161,9 +161,9 @@ fn active_interval_rollover_clears_reference_current_price_pricing_state() {
     assert_eq!(strategy.active.reference_current_price_source_id, None);
     assert_eq!(strategy.active.reference_current_price_ts_ms, None);
     assert_eq!(strategy.active.last_reference_ts_ms, None);
-    assert_eq!(strategy.pricing.last_reference_current_price, None);
-    assert_eq!(strategy.pricing.last_reference_current_price_ts_ms, None);
-    assert_eq!(strategy.pricing.fast_spot, None);
+    assert_eq!(strategy.pricing.last_reference_current_price(), None);
+    assert_eq!(strategy.pricing.last_reference_current_price_ts_ms(), None);
+    assert_eq!(strategy.pricing.selected_pricing_spot().cloned(), None);
 }
 
 #[test]
@@ -424,16 +424,13 @@ fn selected_backup_with_older_timestamp_replaces_previous_source() {
     );
     assert_eq!(strategy.active.reference_current_price, Some(101.0));
     assert_eq!(strategy.active.reference_current_price_ts_ms, Some(1_150));
-    assert_eq!(strategy.pricing.last_reference_current_price, Some(101.0));
+    assert_eq!(strategy.pricing.last_reference_current_price(), Some(101.0));
     assert_eq!(
-        strategy
-            .pricing
-            .last_reference_current_price_source_id
-            .as_deref(),
+        strategy.pricing.last_reference_current_price_source_id(),
         Some(POLYRESEARCH_BACKUP_SOURCE_ID)
     );
     assert_eq!(
-        strategy.pricing.last_reference_current_price_ts_ms,
+        strategy.pricing.last_reference_current_price_ts_ms(),
         Some(1_150)
     );
 }
@@ -916,7 +913,7 @@ fn reference_price_update_with_wrong_provider_instrument_does_not_satisfy_source
         .expect("wrong-instrument custom data should be handled fail-closed");
 
     assert_eq!(strategy.active.reference_current_price, None);
-    assert_eq!(strategy.pricing.last_reference_current_price, None);
+    assert_eq!(strategy.pricing.last_reference_current_price(), None);
     assert_eq!(
         strategy
             .reference_price_source_health
@@ -1125,7 +1122,7 @@ fn selector_block_clears_accepted_reference_price_state() {
     );
     DataActor::on_data(&mut strategy, &primary).expect("primary quote should be handled");
     assert_eq!(strategy.active.reference_current_price, Some(100.0));
-    assert_eq!(strategy.pricing.last_reference_current_price, Some(100.0));
+    assert_eq!(strategy.pricing.last_reference_current_price(), Some(100.0));
 
     let drifting_backup = reference_price_update(
         POLYRESEARCH_BACKUP_SOURCE_ID,
@@ -1142,9 +1139,9 @@ fn selector_block_clears_accepted_reference_price_state() {
     assert_eq!(strategy.active.reference_current_price_source_id, None);
     assert_eq!(strategy.active.reference_current_price_ts_ms, None);
     assert_eq!(strategy.active.last_reference_ts_ms, Some(1_100));
-    assert_eq!(strategy.pricing.last_reference_current_price, None);
-    assert_eq!(strategy.pricing.last_reference_current_price_ts_ms, None);
-    assert_eq!(strategy.pricing.fast_spot, None);
+    assert_eq!(strategy.pricing.last_reference_current_price(), None);
+    assert_eq!(strategy.pricing.last_reference_current_price_ts_ms(), None);
+    assert_eq!(strategy.pricing.selected_pricing_spot().cloned(), None);
 }
 
 #[test]
@@ -1347,9 +1344,12 @@ fn stale_selected_source_update_clears_accepted_reference_price_state() {
     DataActor::on_data(&mut strategy, &fresh_primary)
         .expect("fresh primary quote should be handled");
     assert_eq!(strategy.active.reference_current_price, Some(100.0));
-    assert_eq!(strategy.pricing.last_reference_current_price, Some(100.0));
+    assert_eq!(strategy.pricing.last_reference_current_price(), Some(100.0));
     assert_eq!(
-        strategy.pricing.fast_spot.as_ref().map(|spot| spot.price),
+        strategy
+            .pricing
+            .selected_pricing_spot()
+            .map(|spot| spot.price),
         Some(100.0)
     );
 
@@ -1371,9 +1371,9 @@ fn stale_selected_source_update_clears_accepted_reference_price_state() {
     assert_eq!(strategy.active.reference_current_price_source_id, None);
     assert_eq!(strategy.active.reference_current_price_ts_ms, None);
     assert_eq!(strategy.active.last_reference_ts_ms, Some(1_140));
-    assert_eq!(strategy.pricing.last_reference_current_price, None);
-    assert_eq!(strategy.pricing.last_reference_current_price_ts_ms, None);
-    assert_eq!(strategy.pricing.fast_spot, None);
+    assert_eq!(strategy.pricing.last_reference_current_price(), None);
+    assert_eq!(strategy.pricing.last_reference_current_price_ts_ms(), None);
+    assert_eq!(strategy.pricing.selected_pricing_spot().cloned(), None);
     let primary_health = strategy
         .reference_price_source_health
         .get(CHAINLINK_PRIMARY_SOURCE_ID)

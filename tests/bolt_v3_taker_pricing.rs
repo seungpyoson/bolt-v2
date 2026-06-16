@@ -142,7 +142,10 @@ fn taker_pricing_consumes_realized_vol_snapshot_without_internal_estimator_warmu
         result.realized_vol_surface_id.as_deref(),
         Some("<surface_id>")
     );
-    assert_eq!(result.realized_vol_source_venue, None);
+    assert_eq!(
+        result.realized_vol_source_venue.as_deref(),
+        Some("<SOURCE_ID_A>")
+    );
     assert_eq!(result.realized_vol_source_ts_ms, Some(1_000));
 }
 
@@ -268,7 +271,10 @@ fn taker_pricing_returns_current_rv_source_theta_and_fair_probabilities() {
         result.realized_vol_surface_id.as_deref(),
         Some("<surface_id>")
     );
-    assert_eq!(result.realized_vol_source_venue, None);
+    assert_eq!(
+        result.realized_vol_source_venue.as_deref(),
+        Some("<SOURCE_ID_A>")
+    );
     assert_eq!(result.realized_vol_source_ts_ms, Some(4_000));
     assert_close(result.theta_scaled_min_edge_bps, 10.0);
     assert!(result.fair_probability_up.is_finite());
@@ -304,6 +310,67 @@ fn taker_pricing_reports_current_readiness_blockers_without_strategy_order_state
             TakerPricingBlockReason::RealizedVolNotReady,
             TakerPricingBlockReason::ThetaScalerUnavailable,
         ]
+    );
+}
+
+#[test]
+fn taker_pricing_reports_stale_signal_spot_with_other_fair_value_blockers() {
+    let config = pricing_config();
+    let mut pricing = TakerPricingState::from_config(&config);
+
+    observe_pair(&mut pricing, &config, 1_000, 3_100.0);
+    pricing.observe_reference_current_price(&FastSpotObservation {
+        venue: "reference".to_string(),
+        price: 3_101.0,
+        observed_ts_ms: 3_000,
+    });
+
+    let blocked = pricing
+        .entry_pricing_inputs_at(
+            &config,
+            TakerPricingRequest {
+                now_ms: 3_001,
+                strike_price: None,
+                seconds_to_market_end: Some(300),
+            },
+        )
+        .expect_err("stale signal spot must remain visible with shared FV blockers");
+
+    assert_eq!(
+        blocked,
+        vec![
+            TakerPricingBlockReason::SpotPriceMissing,
+            TakerPricingBlockReason::StrikePriceMissing,
+            TakerPricingBlockReason::RealizedVolNotReady,
+        ]
+    );
+}
+
+#[test]
+fn shared_fair_value_pricing_stays_available_when_taker_theta_is_unavailable() {
+    let mut config = pricing_config();
+    config.cadence_seconds = 0;
+    let mut pricing = TakerPricingState::from_config(&config);
+    observe_pair(&mut pricing, &config, 1_000, 100.0);
+    seed_ready_realized_vol(&mut pricing, Some("bybit".to_string()), 0.50, 1_000);
+    let request = TakerPricingRequest {
+        now_ms: 1_000,
+        strike_price: Some(100.0),
+        seconds_to_market_end: Some(300),
+    };
+
+    let fair_value = pricing
+        .fair_value_pricing_at(&config, request)
+        .expect("shared fair-value inputs should not depend on taker theta");
+
+    assert_eq!(fair_value.spot_price, 100.0);
+    assert_eq!(fair_value.strike_price, 100.0);
+    assert_eq!(fair_value.seconds_to_market_end, 300);
+    assert_eq!(fair_value.realized_vol, 0.50);
+    assert!(fair_value.fair_probability_up.is_finite());
+    assert_eq!(
+        pricing.entry_pricing_inputs_at(&config, request),
+        Err(vec![TakerPricingBlockReason::ThetaScalerUnavailable])
     );
 }
 
@@ -349,7 +416,7 @@ fn taker_pricing_accepts_source_owned_realized_vol_seed_without_strategy_estimat
     assert_eq!(pricing.current_realized_vol_at(1_000), Some(2.5));
     assert_eq!(
         pricing.current_realized_vol_source_at(1_000),
-        (None, Some(1_000))
+        (Some("reference".to_string()), Some(1_000))
     );
 
     seed_ready_realized_vol(&mut pricing, Some("older".to_string()), 3.0, 999);
@@ -357,7 +424,7 @@ fn taker_pricing_accepts_source_owned_realized_vol_seed_without_strategy_estimat
     assert_eq!(pricing.current_realized_vol_at(1_000), Some(2.5));
     assert_eq!(
         pricing.current_realized_vol_source_at(1_000),
-        (None, Some(1_000))
+        (Some("reference".to_string()), Some(1_000))
     );
 
     seed_ready_realized_vol(&mut pricing, None, 3.0, 1_001);
@@ -373,7 +440,7 @@ fn taker_pricing_accepts_source_owned_realized_vol_seed_without_strategy_estimat
     assert_eq!(pricing.current_realized_vol_at(1_002), Some(0.0));
     assert_eq!(
         pricing.current_realized_vol_source_at(1_002),
-        (None, Some(1_002))
+        (Some("zero".to_string()), Some(1_002))
     );
 }
 
@@ -389,6 +456,6 @@ fn taker_pricing_rejects_invalid_source_owned_realized_vol_seed() {
     assert_eq!(pricing.current_realized_vol_at(1_002), Some(2.5));
     assert_eq!(
         pricing.current_realized_vol_source_at(1_002),
-        (None, Some(1_000))
+        (Some("reference".to_string()), Some(1_000))
     );
 }

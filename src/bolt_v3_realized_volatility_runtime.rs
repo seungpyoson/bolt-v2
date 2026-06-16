@@ -201,21 +201,24 @@ impl RealizedVolSurfaceRuntime {
     }
 
     pub fn quote_subscription_requests(&self) -> Vec<(InstrumentId, Option<ClientId>)> {
-        quote_trade_index_requests(self.subscription_requests().iter(), |request| {
-            request.kind == RealizedVolSubscriptionKind::Quotes
-        })
+        quote_trade_index_requests(
+            &self.subscription_requests(),
+            RealizedVolSubscriptionKind::Quotes,
+        )
     }
 
     pub fn trade_subscription_requests(&self) -> Vec<(InstrumentId, Option<ClientId>)> {
-        quote_trade_index_requests(self.subscription_requests().iter(), |request| {
-            request.kind == RealizedVolSubscriptionKind::Trades
-        })
+        quote_trade_index_requests(
+            &self.subscription_requests(),
+            RealizedVolSubscriptionKind::Trades,
+        )
     }
 
     pub fn index_subscription_requests(&self) -> Vec<(InstrumentId, Option<ClientId>)> {
-        quote_trade_index_requests(self.subscription_requests().iter(), |request| {
-            request.kind == RealizedVolSubscriptionKind::IndexPrices
-        })
+        quote_trade_index_requests(
+            &self.subscription_requests(),
+            RealizedVolSubscriptionKind::IndexPrices,
+        )
     }
 
     /// Subscriptions belonging to a single configured surface. Returns an empty `Vec` for an
@@ -238,8 +241,8 @@ impl RealizedVolSurfaceRuntime {
         surface_id: &str,
     ) -> Vec<(InstrumentId, Option<ClientId>)> {
         quote_trade_index_requests(
-            self.subscription_requests_for_surface(surface_id).iter(),
-            |request| request.kind == RealizedVolSubscriptionKind::Quotes,
+            &self.subscription_requests_for_surface(surface_id),
+            RealizedVolSubscriptionKind::Quotes,
         )
     }
 
@@ -248,8 +251,8 @@ impl RealizedVolSurfaceRuntime {
         surface_id: &str,
     ) -> Vec<(InstrumentId, Option<ClientId>)> {
         quote_trade_index_requests(
-            self.subscription_requests_for_surface(surface_id).iter(),
-            |request| request.kind == RealizedVolSubscriptionKind::Trades,
+            &self.subscription_requests_for_surface(surface_id),
+            RealizedVolSubscriptionKind::Trades,
         )
     }
 
@@ -258,8 +261,8 @@ impl RealizedVolSurfaceRuntime {
         surface_id: &str,
     ) -> Vec<(InstrumentId, Option<ClientId>)> {
         quote_trade_index_requests(
-            self.subscription_requests_for_surface(surface_id).iter(),
-            |request| request.kind == RealizedVolSubscriptionKind::IndexPrices,
+            &self.subscription_requests_for_surface(surface_id),
+            RealizedVolSubscriptionKind::IndexPrices,
         )
     }
 
@@ -419,16 +422,13 @@ fn subscription_kind(
     }
 }
 
-fn quote_trade_index_requests<'a, I, F>(
-    requests: I,
-    matches: F,
-) -> Vec<(InstrumentId, Option<ClientId>)>
-where
-    I: Iterator<Item = &'a RealizedVolSubscriptionRequest>,
-    F: Fn(&RealizedVolSubscriptionRequest) -> bool,
-{
+fn quote_trade_index_requests(
+    requests: &[RealizedVolSubscriptionRequest],
+    kind: RealizedVolSubscriptionKind,
+) -> Vec<(InstrumentId, Option<ClientId>)> {
     requests
-        .filter(|request| matches(request))
+        .iter()
+        .filter(|request| request.kind == kind)
         .map(|request| (request.instrument_id, Some(request.data_client_id)))
         .collect()
 }

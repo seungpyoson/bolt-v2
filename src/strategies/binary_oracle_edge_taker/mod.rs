@@ -1358,10 +1358,10 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn subscribe_realized_volatility_sources(&mut self) {
-        let surface_id = self.config.realized_volatility_surface_id.as_str();
+        let surface_id = self.config.realized_volatility_surface_id.clone();
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_quote_subscription_requests_for_surface(surface_id)
+            .realized_volatility_quote_subscription_requests_for_surface(&surface_id)
         {
             #[cfg(not(test))]
             self.subscribe_quotes(instrument_id, client_id, None);
@@ -1818,10 +1818,10 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn unsubscribe_realized_volatility_sources(&mut self) {
-        let surface_id = self.config.realized_volatility_surface_id.as_str();
+        let surface_id = self.config.realized_volatility_surface_id.clone();
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_quote_subscription_requests_for_surface(surface_id)
+            .realized_volatility_quote_subscription_requests_for_surface(&surface_id)
         {
             #[cfg(not(test))]
             self.unsubscribe_quotes(instrument_id, client_id, None);

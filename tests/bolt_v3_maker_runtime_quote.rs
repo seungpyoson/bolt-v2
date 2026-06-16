@@ -5,7 +5,7 @@ use bolt_v2::{
     bolt_v3_maker_order_dispatch::{MakerOrderCommandSink, MakerOrderDispatchOutcome},
     bolt_v3_maker_order_plan::{
         MakerLegBinding, MakerMarketActionOrderInput, MakerOrderIntent,
-        maker_order_intent_from_market_action,
+        maker_order_intent_from_market_action, maker_order_plan_from_market_action,
     },
     bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
     bolt_v3_maker_rate_budget::build_requote_budget_pair,
@@ -28,7 +28,7 @@ use nautilus_common::{
     factories::OrderFactory,
 };
 use nautilus_model::{
-    enums::{OrderType, TimeInForce},
+    enums::{OrderSide, OrderType, TimeInForce},
     identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId},
     orders::{Order, OrderAny},
     types::{Price, Quantity},
@@ -474,6 +474,138 @@ fn canceled_requote_action_maps_to_prepaid_replacement_submit_without_budget_cha
     assert_eq!(replacement.blocked_by, None);
 }
 
+#[test]
+fn cancel_all_market_action_maps_to_each_bound_leg_instrument() {
+    let targets = quote_targets();
+
+    let order_plan = maker_order_plan_from_market_action(MakerMarketActionOrderInput {
+        action: MarketAction::CancelAllBothLegs,
+        targets,
+        yes_quantity: 2.0,
+        no_quantity: 3.0,
+        yes: MakerLegBinding {
+            instrument_id: InstrumentId::from("YES.RUNTIME"),
+            active_order: None,
+            next_order: None,
+        },
+        no: MakerLegBinding {
+            instrument_id: InstrumentId::from("NO.RUNTIME"),
+            active_order: None,
+            next_order: None,
+        },
+    });
+
+    assert_eq!(order_plan.yes.blocked_by, None);
+    assert_eq!(order_plan.no.blocked_by, None);
+    assert_eq!(
+        order_plan.yes.intent,
+        Some(MakerOrderIntent::CancelAll {
+            leg: Some(Leg::Yes),
+            instrument_id: InstrumentId::from("YES.RUNTIME"),
+            order_side: None,
+        })
+    );
+    assert_eq!(
+        order_plan.no.intent,
+        Some(MakerOrderIntent::CancelAll {
+            leg: Some(Leg::No),
+            instrument_id: InstrumentId::from("NO.RUNTIME"),
+            order_side: None,
+        })
+    );
+}
+
+#[test]
+fn one_side_cancel_all_market_action_scopes_to_leg_order_side() {
+    let targets = quote_targets();
+
+    let order_plan = maker_order_plan_from_market_action(MakerMarketActionOrderInput {
+        action: MarketAction::CancelAllOneSide { leg: Leg::No },
+        targets,
+        yes_quantity: 2.0,
+        no_quantity: 3.0,
+        yes: MakerLegBinding {
+            instrument_id: InstrumentId::from("YES.RUNTIME"),
+            active_order: None,
+            next_order: None,
+        },
+        no: MakerLegBinding {
+            instrument_id: InstrumentId::from("NO.RUNTIME"),
+            active_order: None,
+            next_order: None,
+        },
+    });
+
+    assert_eq!(order_plan.yes.intent, None);
+    assert_eq!(order_plan.yes.blocked_by, None);
+    assert_eq!(
+        order_plan.no.intent,
+        Some(MakerOrderIntent::CancelAll {
+            leg: Some(Leg::No),
+            instrument_id: InstrumentId::from("NO.RUNTIME"),
+            order_side: Some(OrderSide::Buy),
+        })
+    );
+}
+
+#[test]
+fn cancel_all_runtime_order_plan_dispatches_both_leg_instruments() {
+    let order_plan = maker_order_plan_from_market_action(MakerMarketActionOrderInput {
+        action: MarketAction::CancelAllBothLegs,
+        targets: quote_targets(),
+        yes_quantity: 2.0,
+        no_quantity: 3.0,
+        yes: MakerLegBinding {
+            instrument_id: InstrumentId::from("YES.RUNTIME"),
+            active_order: None,
+            next_order: None,
+        },
+        no: MakerLegBinding {
+            instrument_id: InstrumentId::from("NO.RUNTIME"),
+            active_order: None,
+            next_order: None,
+        },
+    });
+
+    let mut sink = RecordingMakerOrderSink::new();
+    let dispatched = dispatch_maker_runtime_order_plan(
+        MakerRuntimeOrderDispatchInput {
+            order_plan: &order_plan,
+            submit_template: &maker_limit_post_only_template(),
+            price_precision: 2,
+            quantity_precision: 2,
+            submit_order_prefix: "maker_submit",
+        },
+        &mut sink,
+    )
+    .expect("cancel-all order plan should dispatch");
+
+    assert_eq!(
+        dispatched.yes.dispatch,
+        Some(MakerOrderDispatchOutcome::CanceledAll {
+            leg: Some(Leg::Yes),
+            instrument_id: InstrumentId::from("YES.RUNTIME"),
+            order_side: None,
+        })
+    );
+    assert_eq!(
+        dispatched.no.dispatch,
+        Some(MakerOrderDispatchOutcome::CanceledAll {
+            leg: Some(Leg::No),
+            instrument_id: InstrumentId::from("NO.RUNTIME"),
+            order_side: None,
+        })
+    );
+    assert_eq!(
+        sink.canceled_all,
+        vec![
+            (Some(Leg::Yes), InstrumentId::from("YES.RUNTIME"), None),
+            (Some(Leg::No), InstrumentId::from("NO.RUNTIME"), None),
+        ]
+    );
+    assert!(sink.submitted.is_empty());
+}
+
 fn quote_plan_inputs(family_key: &str) -> MakerQuotePlanInputs<'_> {
     quote_plan_inputs_with_fair(family_key, 0.60)
 }
@@ -500,6 +632,24 @@ fn quote_plan_inputs_with_fair(
         order_notional_target: 10.0,
         maximum_position_notional: 20.0,
     }
+}
+
+fn quote_targets() -> bolt_v2::bolt_v3_quoting::QuoteTargets {
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+    plan_maker_runtime_quote(
+        &mut market,
+        &mut budget,
+        MakerRuntimeQuoteInput {
+            quote_plan: quote_plan_inputs(static_binary_event::KEY),
+            quote_set: quote_set_inputs(),
+            order_plan: order_plan_inputs(),
+        },
+    )
+    .quote_plan
+    .expect("supported family should produce quote targets")
+    .targets
 }
 
 fn reference_quote(
@@ -563,6 +713,7 @@ fn order_identity(client_order_id: &str, generation: u64) -> OrderIdentity {
 struct RecordingMakerOrderSink {
     order_factory: OrderFactory,
     submitted: Vec<OrderAny>,
+    canceled_all: Vec<(Option<Leg>, InstrumentId, Option<OrderSide>)>,
 }
 
 impl RecordingMakerOrderSink {
@@ -579,6 +730,7 @@ impl RecordingMakerOrderSink {
                 true,
             ),
             submitted: Vec::new(),
+            canceled_all: Vec::new(),
         }
     }
 
@@ -607,6 +759,16 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
         _client_order_id: ClientOrderId,
     ) -> Result<()> {
         anyhow::bail!("test sink should not receive cancel commands")
+    }
+
+    fn cancel_all_maker_orders(
+        &mut self,
+        leg: Option<Leg>,
+        instrument_id: InstrumentId,
+        order_side: Option<OrderSide>,
+    ) -> Result<()> {
+        self.canceled_all.push((leg, instrument_id, order_side));
+        Ok(())
     }
 
     fn modify_maker_order(

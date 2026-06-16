@@ -54,6 +54,11 @@ pub enum MakerOrderIntent {
         instrument_id: InstrumentId,
         order_identity: OrderIdentity,
     },
+    CancelAll {
+        leg: Option<Leg>,
+        instrument_id: InstrumentId,
+        order_side: Option<OrderSide>,
+    },
     Modify {
         leg: Leg,
         instrument_id: InstrumentId,
@@ -107,16 +112,29 @@ pub fn maker_order_intents_from_quote_set(input: MakerOrderPlanInput<'_>) -> Mak
 pub fn maker_order_intent_from_market_action(
     input: MakerMarketActionOrderInput,
 ) -> MakerLegOrderPlan {
+    let action = input.action;
+    let plan = maker_order_plan_from_market_action(input);
+    match action {
+        MarketAction::Leg { leg: Leg::Yes, .. } | MarketAction::CancelAllBothLegs => plan.yes,
+        MarketAction::Leg { leg: Leg::No, .. } => plan.no,
+        MarketAction::CancelAllOneSide { leg: Leg::Yes } => plan.yes,
+        MarketAction::CancelAllOneSide { leg: Leg::No } => plan.no,
+    }
+}
+
+pub fn maker_order_plan_from_market_action(input: MakerMarketActionOrderInput) -> MakerOrderPlan {
     match input.action {
-        MarketAction::Leg { leg: Leg::Yes, .. } => maker_leg_order_intent(MakerLegOrderInput {
-            expected_leg: Leg::Yes,
-            action: Some(input.action),
-            quote_side: input.targets.leg_a.side,
-            price: input.targets.leg_a.price,
-            quantity: input.yes_quantity,
-            binding: input.yes,
-        }),
-        MarketAction::Leg { leg: Leg::No, .. } => maker_leg_order_intent(MakerLegOrderInput {
+        MarketAction::Leg { leg: Leg::Yes, .. } => {
+            maker_market_leg_order_plan(MakerLegOrderInput {
+                expected_leg: Leg::Yes,
+                action: Some(input.action),
+                quote_side: input.targets.leg_a.side,
+                price: input.targets.leg_a.price,
+                quantity: input.yes_quantity,
+                binding: input.yes,
+            })
+        }
+        MarketAction::Leg { leg: Leg::No, .. } => maker_market_leg_order_plan(MakerLegOrderInput {
             expected_leg: Leg::No,
             action: Some(input.action),
             quote_side: input.targets.leg_b.side,
@@ -124,9 +142,68 @@ pub fn maker_order_intent_from_market_action(
             quantity: input.no_quantity,
             binding: input.no,
         }),
-        MarketAction::CancelAllBothLegs | MarketAction::CancelAllOneSide { .. } => {
-            blocked(MakerOrderPlanBlockReason::UnsupportedMarketAction)
-        }
+        MarketAction::CancelAllBothLegs => cancel_all_both_legs_intent(input.yes, input.no),
+        MarketAction::CancelAllOneSide { leg: Leg::Yes } => MakerOrderPlan {
+            yes: cancel_all_intent(
+                Some(Leg::Yes),
+                input.yes.instrument_id,
+                Some(order_side_from_quote_side(input.targets.leg_a.side)),
+            ),
+            no: no_order_intent(),
+        },
+        MarketAction::CancelAllOneSide { leg: Leg::No } => MakerOrderPlan {
+            yes: no_order_intent(),
+            no: cancel_all_intent(
+                Some(Leg::No),
+                input.no.instrument_id,
+                Some(order_side_from_quote_side(input.targets.leg_b.side)),
+            ),
+        },
+    }
+}
+
+fn cancel_all_both_legs_intent(yes: MakerLegBinding, no: MakerLegBinding) -> MakerOrderPlan {
+    let yes_instrument_id = yes.instrument_id;
+    let no_instrument_id = no.instrument_id;
+    let same_instrument = no_instrument_id == yes_instrument_id;
+    let yes_plan = cancel_all_intent(Some(Leg::Yes), yes_instrument_id, None);
+    let no_plan = if same_instrument {
+        no_order_intent()
+    } else {
+        cancel_all_intent(Some(Leg::No), no_instrument_id, None)
+    };
+
+    MakerOrderPlan {
+        yes: yes_plan,
+        no: no_plan,
+    }
+}
+
+fn cancel_all_intent(
+    leg: Option<Leg>,
+    instrument_id: InstrumentId,
+    order_side: Option<OrderSide>,
+) -> MakerLegOrderPlan {
+    MakerLegOrderPlan {
+        intent: Some(MakerOrderIntent::CancelAll {
+            leg,
+            instrument_id,
+            order_side,
+        }),
+        blocked_by: None,
+    }
+}
+
+fn maker_market_leg_order_plan(input: MakerLegOrderInput) -> MakerOrderPlan {
+    match input.expected_leg {
+        Leg::Yes => MakerOrderPlan {
+            yes: maker_leg_order_intent(input),
+            no: no_order_intent(),
+        },
+        Leg::No => MakerOrderPlan {
+            yes: no_order_intent(),
+            no: maker_leg_order_intent(input),
+        },
     }
 }
 

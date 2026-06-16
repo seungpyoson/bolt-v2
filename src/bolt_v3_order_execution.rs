@@ -9,7 +9,8 @@ use nautilus_common::{
 };
 use nautilus_core::Params;
 use nautilus_model::{
-    identifiers::{ClientId, ClientOrderId, PositionId},
+    enums::OrderSide,
+    identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId},
     orders::{Order, OrderAny, OrderList},
 };
 use nautilus_trading::Strategy;
@@ -171,6 +172,46 @@ impl BoltV3OrderExecutionPolicy {
             }
         }
     }
+
+    pub fn route_cancel_all<S>(
+        self,
+        strategy: &mut S,
+        instrument_id: InstrumentId,
+        order_side: Option<OrderSide>,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) -> Result<BoltV3CancelAllRoutingOutcome>
+    where
+        S: Strategy + ?Sized,
+    {
+        let mut sink = NtStrategyVenueMutationSink { strategy };
+        self.route_cancel_all_with_sink(&mut sink, instrument_id, order_side, client_id, params)
+    }
+
+    fn route_cancel_all_with_sink<S>(
+        self,
+        sink: &mut S,
+        instrument_id: InstrumentId,
+        order_side: Option<OrderSide>,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) -> Result<BoltV3CancelAllRoutingOutcome>
+    where
+        S: BoltV3NtVenueMutationSink + ?Sized,
+    {
+        match self.mode {
+            BoltV3OrderExecutionMode::Live => {
+                sink.cancel_all_orders_via_nt(instrument_id, order_side, client_id, params)?;
+                Ok(BoltV3CancelAllRoutingOutcome::CanceledAll)
+            }
+            BoltV3OrderExecutionMode::Shadow => {
+                log::info!(
+                    "bolt-v3 cancel-all skipped by execution policy: mode=shadow instrument_id={instrument_id}"
+                );
+                Ok(BoltV3CancelAllRoutingOutcome::SkippedByPolicy)
+            }
+        }
+    }
 }
 
 pub struct BoltV3SubmitRoutingRequest<'a> {
@@ -238,6 +279,12 @@ pub enum BoltV3CancelRoutingOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3CancelAllRoutingOutcome {
+    CanceledAll,
+    SkippedByPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoltV3MakerOrderRoutingContext<'a> {
     pub strategy_id: &'a str,
     pub execution_client_id: &'a str,
@@ -276,6 +323,14 @@ trait BoltV3NtVenueMutationSink {
         client_id: Option<ClientId>,
         params: Option<Params>,
     ) -> Result<()>;
+
+    fn cancel_all_orders_via_nt(
+        &mut self,
+        instrument_id: InstrumentId,
+        order_side: Option<OrderSide>,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) -> Result<()>;
 }
 
 struct NtStrategyVenueMutationSink<'a, S>
@@ -306,6 +361,17 @@ where
     ) -> Result<()> {
         self.strategy
             .cancel_order(client_order_id, client_id, params)
+    }
+
+    fn cancel_all_orders_via_nt(
+        &mut self,
+        instrument_id: InstrumentId,
+        order_side: Option<OrderSide>,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) -> Result<()> {
+        self.strategy
+            .cancel_all_orders(instrument_id, order_side, client_id, params)
     }
 }
 
@@ -341,6 +407,17 @@ where
     ) -> Result<()> {
         self.strategy
             .cancel_order(client_order_id, client_id, params)
+    }
+
+    fn cancel_all_orders_via_nt(
+        &mut self,
+        instrument_id: InstrumentId,
+        order_side: Option<OrderSide>,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) -> Result<()> {
+        self.strategy
+            .cancel_all_orders(instrument_id, order_side, client_id, params)
     }
 }
 
@@ -441,7 +518,7 @@ where
     fn cancel_maker_order(
         &mut self,
         _leg: Leg,
-        _instrument_id: nautilus_model::identifiers::InstrumentId,
+        _instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
     ) -> Result<()> {
         self.policy.route_cancel_with_sink(
@@ -453,10 +530,26 @@ where
         Ok(())
     }
 
+    fn cancel_all_maker_orders(
+        &mut self,
+        _leg: Option<Leg>,
+        instrument_id: InstrumentId,
+        order_side: Option<OrderSide>,
+    ) -> Result<()> {
+        self.policy.route_cancel_all_with_sink(
+            self.runtime,
+            instrument_id,
+            order_side,
+            Some(ClientId::from(self.context.execution_client_id)),
+            None,
+        )?;
+        Ok(())
+    }
+
     fn modify_maker_order(
         &mut self,
         _leg: Leg,
-        _instrument_id: nautilus_model::identifiers::InstrumentId,
+        _instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
         _price: nautilus_model::types::Price,
         _quantity: nautilus_model::types::Quantity,
@@ -581,6 +674,17 @@ mod tests {
             self.venue_sink
                 .cancel_order_via_nt(client_order_id, client_id, params)
         }
+
+        fn cancel_all_orders_via_nt(
+            &mut self,
+            instrument_id: InstrumentId,
+            order_side: Option<OrderSide>,
+            client_id: Option<ClientId>,
+            params: Option<Params>,
+        ) -> Result<()> {
+            self.venue_sink
+                .cancel_all_orders_via_nt(instrument_id, order_side, client_id, params)
+        }
     }
 
     impl BoltV3MakerOrderRuntime for RecordingMakerRuntime {
@@ -685,6 +789,52 @@ mod tests {
         assert!(writer.admission_decisions().is_empty());
     }
 
+    #[test]
+    fn maker_cancel_all_routes_through_shared_execution_policy_with_configured_client() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+        let mut runtime = RecordingMakerRuntime::new();
+        let command = MakerCompiledOrderCommand::CancelAll {
+            leg: Some(Leg::No),
+            instrument_id: InstrumentId::from("NO.INSTRUMENT"),
+            order_side: Some(OrderSide::Buy),
+        };
+
+        let outcome = route_maker_order_command_with_runtime(
+            BoltV3OrderExecutionPolicy::live(),
+            &mut runtime,
+            writer.as_ref(),
+            admission.as_ref(),
+            maker_routing_context(),
+            MakerOrderDispatchInput {
+                command: &command,
+                submit_order_prefix: "maker_submit",
+            },
+        )
+        .expect("maker cancel-all should route through shared execution policy");
+
+        assert_eq!(
+            outcome,
+            MakerOrderDispatchOutcome::CanceledAll {
+                leg: Some(Leg::No),
+                instrument_id: InstrumentId::from("NO.INSTRUMENT"),
+                order_side: Some(OrderSide::Buy),
+            }
+        );
+        assert_eq!(runtime.venue_sink.cancel_all_calls, 1);
+        assert_eq!(
+            runtime.venue_sink.cancel_all_requests,
+            vec![(
+                InstrumentId::from("NO.INSTRUMENT"),
+                Some(OrderSide::Buy),
+                Some(ClientId::from("maker_execution_client")),
+            )]
+        );
+        assert_eq!(runtime.venue_sink.cancel_calls, 0);
+        assert!(writer.records().is_empty());
+        assert!(writer.admission_decisions().is_empty());
+    }
+
     impl BoltV3DecisionEvidenceWriter for RecordingDecisionEvidenceWriter {
         fn record_strategy_input_snapshot(
             &self,
@@ -745,6 +895,8 @@ mod tests {
     struct RecordingVenueMutationSink {
         submit_calls: usize,
         cancel_calls: usize,
+        cancel_all_calls: usize,
+        cancel_all_requests: Vec<(InstrumentId, Option<OrderSide>, Option<ClientId>)>,
         fail_submits: bool,
     }
 
@@ -768,6 +920,19 @@ mod tests {
             _params: Option<Params>,
         ) -> Result<()> {
             self.cancel_calls += 1;
+            Ok(())
+        }
+
+        fn cancel_all_orders_via_nt(
+            &mut self,
+            instrument_id: InstrumentId,
+            order_side: Option<OrderSide>,
+            client_id: Option<ClientId>,
+            _params: Option<Params>,
+        ) -> Result<()> {
+            self.cancel_all_calls += 1;
+            self.cancel_all_requests
+                .push((instrument_id, order_side, client_id));
             Ok(())
         }
     }

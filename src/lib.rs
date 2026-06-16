@@ -38,6 +38,7 @@ pub mod bolt_v3_maker_reservation;
 pub mod bolt_v3_maker_risk;
 pub mod bolt_v3_maker_runtime_order;
 pub mod bolt_v3_maker_runtime_quote;
+pub mod bolt_v3_maker_runtime_settlement;
 pub mod bolt_v3_maker_settlement;
 pub mod bolt_v3_market_families;
 pub mod bolt_v3_numeric;

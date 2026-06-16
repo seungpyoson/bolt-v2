@@ -387,6 +387,7 @@
       "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json records that standard BacktestNode catalog replay cannot schedule timed InstrumentAny instrument-definition epochs.",
       "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-timed-instrument-replay-nt-audit.2026-06-09.json records the pinned NT audit: InstrumentAny storage exists, but BacktestDataConfig/Data replay has no timed InstrumentAny stream.",
       "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json permits only the bounded no-tick-size-change first proof and keeps full PMXT L2 acceptance open.",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-source-slice.2026-06-08.json and the committed selected-source selector/report artifacts are source-fenced as one-off no-tick selected-source evidence, not dynamic tick-size replay evidence.",
       "repo://specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml keeps the PMXT source proof pending and blocks dynamic tick-size replay acceptance through claim_limit pmxt-source-proof-claim-limit-002.",
       "STATIC-GATED scripts/verify_bte_022_pmxt_dynamic_tick_size.py rejects drift from the blocked dynamic tick-size replay decision, missing BTE-022 blocker text, source-proof overclaiming, and source-fence wiring gaps."
     ],
@@ -448,7 +449,7 @@
     },
     {
       "blocker": "dynamic_tick_size_replay_unproven",
-      "required_evidence": "A separate NT BacktestNode/catalog proof that tick_size_change epochs can be represented without custom simulation behavior before full PMXT Polymarket L2 acceptance. The pending bounded one-off PMXT source proof must not attach a no-tick-change universe or timed instrument epoch replay reference while status remains pending; the selected first-proof universe policy only supports selected unaffected assets/windows and does not prove dynamic tick-size replay. InstrumentStatus/InstrumentClose replay support is not InstrumentAny replay; current guards only prove auxiliary status/close data-config mapping and that the one-off selected-source projection cannot silently ignore configured non-ignorable tick_size_change rows."
+      "required_evidence": "A separate NT BacktestNode/catalog proof that tick_size_change epochs can be represented without custom simulation behavior before full PMXT Polymarket L2 acceptance. The pending bounded one-off PMXT source proof must not attach a no-tick-change universe or timed instrument epoch replay reference while status remains pending; the selected first-proof universe policy does not prove dynamic tick-size replay, and the committed selected-source selector/report/slice artifacts only support selected unaffected assets/windows. InstrumentStatus/InstrumentClose replay support is not InstrumentAny replay; current guards only prove auxiliary status/close data-config mapping and that the one-off selected-source projection cannot silently ignore configured non-ignorable tick_size_change rows."
     },
     {
       "blocker": "durable_source_selection_unproven",

@@ -182,6 +182,133 @@ def first_universe_policy(*, can_close: bool = False) -> dict:
     }
 
 
+def selected_selector_report(module, *, excluded_event_families: list[str] | None = None) -> dict:
+    return {
+        "schema_version": "first-proof-selector-report.v1",
+        "selector_id": "pmxt-polymarket-first-proof-2026-05-20T22-gamma-backed",
+        "status": "selected",
+        "selection": {
+            "required_event_families": list(module.SELECTED_REQUIRED_EVENT_FAMILIES),
+            "excluded_event_families": list(module.SELECTED_EXCLUDED_EVENT_FAMILIES)
+            if excluded_event_families is None
+            else excluded_event_families,
+            "candidate_asset_ids": [module.SELECTED_ASSET_ID],
+            "row_budget": 1000,
+            "max_selected_assets": 1,
+        },
+        "event_count_ledger_hash": "985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a",
+        "total_assets": 71593,
+        "eligible_assets": 6,
+        "selected_assets": [
+            {
+                "asset_id": module.SELECTED_ASSET_ID,
+                "replay_rows": 5,
+                "source_row_groups": list(module.SELECTED_ASSET_SOURCE_ROW_GROUPS),
+            }
+        ],
+        "selected_asset_ids_hash": module.SELECTED_ASSET_IDS_HASH,
+        "excluded_event_asset_count": 0,
+        "excluded_event_row_count": 0,
+        "blocking_issues": [],
+    }
+
+
+def selected_source_report(module, selector_hash: str, *, usage_scope: str = "one_off_backfill_data") -> dict:
+    return {
+        "schema_version": "selected-source-slice-report.v1",
+        "source_parquet_sha256": module.SELECTED_SOURCE_PARQUET_SHA256,
+        "selector_report_sha256": selector_hash,
+        "usage_scope": usage_scope,
+        "source_rows": 64877467,
+        "source_row_groups": 62,
+        "projected_row_groups": 1,
+        "selected_rows": 5,
+        "selected_asset_count": 1,
+        "selected_asset_ids_hash": module.SELECTED_ASSET_IDS_HASH,
+        "output_parquet_sha256": module.SELECTED_OUTPUT_PARQUET_SHA256,
+    }
+
+
+def selected_source_slice(module, selector_hash: str) -> dict:
+    return {
+        "schema_version": "source-proof-pmxt-selected-source-slice.v3",
+        "usage_scope": "one_off_backfill_data",
+        "source": {
+            "sha256": module.SELECTED_SOURCE_PARQUET_SHA256,
+            "source_rows": 64877467,
+            "source_row_groups": 62,
+        },
+        "metadata_candidate_probe": {
+            "selected_asset_id": module.SELECTED_ASSET_ID,
+            "gamma_backed_candidate_count": 6,
+        },
+        "selector": {
+            "report_sha256": selector_hash,
+            "status": "selected",
+            "eligible_assets": 6,
+            "selected_asset_count": 1,
+            "selected_asset_ids_hash": module.SELECTED_ASSET_IDS_HASH,
+            "selected_assets": [
+                {
+                    "asset_id": module.SELECTED_ASSET_ID,
+                    "replay_rows": 5,
+                    "source_row_groups": list(module.SELECTED_ASSET_SOURCE_ROW_GROUPS),
+                }
+            ],
+            "selection": {
+                "required_event_families": list(module.SELECTED_REQUIRED_EVENT_FAMILIES),
+                "excluded_event_families": list(module.SELECTED_EXCLUDED_EVENT_FAMILIES),
+            },
+        },
+        "selected_source_slice": {
+            "usage_scope": "one_off_backfill_data",
+            "output_parquet_sha256": module.SELECTED_OUTPUT_PARQUET_SHA256,
+            "source_rows": 64877467,
+            "source_row_groups": 62,
+            "projected_row_groups": 1,
+            "selected_rows": 5,
+            "selected_asset_count": 1,
+            "event_types": list(module.SELECTED_EVENT_TYPES),
+            "event_type_rows": {
+                "book": 1,
+                "last_trade_price": 1,
+                "price_change": 3,
+            },
+        },
+    }
+
+
+def selected_artifact_status(module, root: Path) -> dict:
+    return {
+        "status": module.SELECTED_SOURCE_ARTIFACT_STATUS,
+        "selector_report": {
+            "path": str(module.PMXT_SELECTED_SELECTOR_REPORT),
+            "sha256": module.path_sha256(root, module.PMXT_SELECTED_SELECTOR_REPORT, []),
+        },
+        "selected_source_report": {
+            "path": str(module.PMXT_SELECTED_SOURCE_REPORT),
+            "sha256": module.path_sha256(root, module.PMXT_SELECTED_SOURCE_REPORT, []),
+        },
+        "selected_source_slice_status": {
+            "path": str(module.PMXT_SELECTED_SOURCE_SLICE_STATUS),
+            "sha256": module.path_sha256(root, module.PMXT_SELECTED_SOURCE_SLICE_STATUS, []),
+        },
+        "usage_scope": "one_off_backfill_data",
+        "selected_asset_count": 1,
+        "selected_rows": 5,
+        "source_row_groups": 62,
+        "projected_row_groups": 1,
+        "selected_asset_id": module.SELECTED_ASSET_ID,
+        "selected_asset_ids_hash": module.SELECTED_ASSET_IDS_HASH,
+        "selected_asset_source_row_groups": list(module.SELECTED_ASSET_SOURCE_ROW_GROUPS),
+        "event_types": list(module.SELECTED_EVENT_TYPES),
+        "excluded_event_families": list(module.SELECTED_EXCLUDED_EVENT_FAMILIES),
+        "dynamic_tick_size_replay_proven": False,
+        "broad_backfill_allowed": False,
+        "bte_022_can_close": False,
+    }
+
+
 def bte_status(module, *, include_guard: bool = True) -> dict:
     blockers = []
     for blocker in module.BTE_REMAINING_BLOCKERS:
@@ -228,6 +355,7 @@ def status_artifact(
         "bounded_no_tick_size_change_first_proof_allowed": True,
         "pmxt_full_l2_with_tick_size_change_can_be_accepted_now": False,
         "bte_022_can_close": False,
+        "bounded_selected_source_artifact_status": selected_artifact_status(module, root),
         "committed_input_hashes": hashes,
         "guard_verification": {
             "script": "repo://scripts/verify_bte_022_pmxt_dynamic_tick_size.py",
@@ -267,6 +395,18 @@ def populate(root: Path, module, **overrides) -> None:
     write_file(root, str(module.PMXT_SOURCE_PROOF_SPEC), overrides.get("source_proof", source_proof_text()))
     write_file(root, str(module.PMXT_SOURCE_PROOF_FIXTURE), json_text(overrides.get("source_fixture", one_off_fixture())))
     write_file(root, str(module.BTE_022_STATUS), json_text(overrides.get("bte", bte_status(module))))
+    write_file(root, str(module.PMXT_SELECTED_SELECTOR_REPORT), json_text(overrides.get("selected_selector", selected_selector_report(module))))
+    selector_hash = module.path_sha256(root, module.PMXT_SELECTED_SELECTOR_REPORT, [])
+    write_file(
+        root,
+        str(module.PMXT_SELECTED_SOURCE_REPORT),
+        json_text(overrides.get("selected_report", selected_source_report(module, selector_hash))),
+    )
+    write_file(
+        root,
+        str(module.PMXT_SELECTED_SOURCE_SLICE_STATUS),
+        json_text(overrides.get("selected_slice", selected_source_slice(module, selector_hash))),
+    )
     write_file(
         root,
         str(module.PMXT_DYNAMIC_STATUS),
@@ -342,6 +482,96 @@ def assert_bounded_fixture_missing_no_tick_policy_is_a_finding() -> None:
             raise AssertionError(f"expected one-off fixture no-tick policy finding, got {findings}")
 
 
+def assert_selected_source_status_overclaim_is_a_finding() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        populate(root, module)
+        status_path = root / module.PMXT_DYNAMIC_STATUS
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        status["bounded_selected_source_artifact_status"]["dynamic_tick_size_replay_proven"] = True
+        status_path.write_text(json_text(status), encoding="utf-8")
+        findings = module.scan_root(root)
+        if not any("dynamic_tick_size_replay_proven" in finding for finding in findings):
+            raise AssertionError(f"expected selected-source overclaim finding, got {findings}")
+
+
+def assert_selected_source_missing_tick_exclusion_is_a_finding() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        populate(root, module, selected_selector=selected_selector_report(module, excluded_event_families=[]))
+        findings = module.scan_root(root)
+        if not any("selection.excluded_event_families" in finding for finding in findings):
+            raise AssertionError(f"expected selected-source tick exclusion finding, got {findings}")
+
+
+def assert_selected_source_selector_hash_drift_is_a_finding() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        populate(root, module, selected_report=selected_source_report(module, "bad"))
+        findings = module.scan_root(root)
+        if not any("selector_report_sha256" in finding for finding in findings):
+            raise AssertionError(f"expected selected-source selector hash finding, got {findings}")
+
+
+def assert_selected_source_event_row_total_drift_is_a_finding() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        populate(root, module)
+        slice_path = root / module.PMXT_SELECTED_SOURCE_SLICE_STATUS
+        selected_slice = json.loads(slice_path.read_text(encoding="utf-8"))
+        selected_slice["selected_source_slice"]["event_type_rows"]["price_change"] = 4
+        slice_path.write_text(json_text(selected_slice), encoding="utf-8")
+        findings = module.scan_root(root)
+        if not any("selected_source_slice.event_type_rows.total" in finding for finding in findings):
+            raise AssertionError(f"expected selected-source event row total finding, got {findings}")
+
+
+def assert_selected_source_status_hash_drift_is_a_finding() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        populate(root, module)
+        status_path = root / module.PMXT_DYNAMIC_STATUS
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        status["bounded_selected_source_artifact_status"]["selected_source_report"]["sha256"] = "bad"
+        status_path.write_text(json_text(status), encoding="utf-8")
+        findings = module.scan_root(root)
+        if not any("bounded_selected_source_artifact_status.selected_source_report.sha256" in finding for finding in findings):
+            raise AssertionError(f"expected selected-source status hash drift finding, got {findings}")
+
+
+def assert_selected_source_status_path_drift_is_a_finding() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        populate(root, module)
+        status_path = root / module.PMXT_DYNAMIC_STATUS
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        status["bounded_selected_source_artifact_status"]["selected_source_report"]["path"] = "wrong/path.json"
+        status_path.write_text(json_text(status), encoding="utf-8")
+        findings = module.scan_root(root)
+        if not any("bounded_selected_source_artifact_status.selected_source_report.path" in finding for finding in findings):
+            raise AssertionError(f"expected selected-source status path drift finding, got {findings}")
+
+
+def assert_status_hash_path_drift_is_a_finding() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        populate(root, module)
+        status_path = root / module.PMXT_DYNAMIC_STATUS
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        status["committed_input_hashes"]["selected_source_report"]["path"] = "wrong/path.json"
+        status_path.write_text(json_text(status), encoding="utf-8")
+        findings = module.scan_root(root)
+        if not any("committed_input_hashes.selected_source_report.path" in finding for finding in findings):
+            raise AssertionError(f"expected committed-input path drift finding, got {findings}")
+
+
 def assert_pending_source_ref_in_bte_narrative_is_a_finding() -> None:
     module = load_verifier()
     for forbidden_ref in module.SOURCE_PROOF_PENDING_FORBIDDEN_L2_REFS:
@@ -379,6 +609,24 @@ def assert_missing_bte_guard_is_a_finding() -> None:
         findings = module.scan_root(root)
         if not any("dynamic_tick_size_replay_guardrail_status" in finding for finding in findings):
             raise AssertionError(f"expected missing BTE guard finding, got {findings}")
+
+
+def assert_bte_guard_content_drift_is_a_finding() -> None:
+    module = load_verifier()
+    cases = (
+        ("status", "accepted_dynamic_tick_size_replay"),
+        ("evidence", ["drift"]),
+        ("claim_limits", ["drift"]),
+    )
+    for field, value in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bte = bte_status(module)
+            bte["dynamic_tick_size_replay_guardrail_status"][field] = value
+            populate(root, module, bte=bte)
+            findings = module.scan_root(root)
+            if not any(f"dynamic_tick_size_replay_guardrail_status.{field}" in finding for finding in findings):
+                raise AssertionError(f"expected BTE guard {field} drift finding, got {findings}")
 
 
 def assert_status_hash_drift_is_a_finding() -> None:
@@ -458,9 +706,17 @@ def main() -> int:
         assert_bounded_fixture_scope_drift_is_a_finding,
         assert_bounded_fixture_timed_ref_is_a_finding,
         assert_bounded_fixture_missing_no_tick_policy_is_a_finding,
+        assert_selected_source_status_overclaim_is_a_finding,
+        assert_selected_source_missing_tick_exclusion_is_a_finding,
+        assert_selected_source_selector_hash_drift_is_a_finding,
+        assert_selected_source_event_row_total_drift_is_a_finding,
+        assert_selected_source_status_hash_drift_is_a_finding,
+        assert_selected_source_status_path_drift_is_a_finding,
+        assert_status_hash_path_drift_is_a_finding,
         assert_pending_source_ref_in_bte_narrative_is_a_finding,
         assert_missing_bte_blocker_is_a_finding,
         assert_missing_bte_guard_is_a_finding,
+        assert_bte_guard_content_drift_is_a_finding,
         assert_status_hash_drift_is_a_finding,
         assert_dynamic_status_flag_drift_is_a_finding,
         assert_dynamic_status_observed_at_format_is_a_finding,

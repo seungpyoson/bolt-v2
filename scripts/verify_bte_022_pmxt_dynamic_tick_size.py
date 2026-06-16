@@ -22,11 +22,29 @@ PMXT_FIRST_UNIVERSE_POLICY = REFERENCE_ROOT / "source-proof-pmxt-polymarket-firs
 PMXT_SOURCE_PROOF_SPEC = REFERENCE_ROOT / "backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml"
 PMXT_SOURCE_PROOF_FIXTURE = REFERENCE_ROOT / "source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
 PMXT_DYNAMIC_STATUS = REFERENCE_ROOT / "source-proof-pmxt-dynamic-tick-size-replay-status.2026-06-16.json"
+PMXT_SELECTED_SOURCE_SLICE_STATUS = REFERENCE_ROOT / "source-proof-pmxt-selected-source-slice.2026-06-08.json"
+PMXT_SELECTED_SELECTOR_REPORT = (
+    REFERENCE_ROOT
+    / "pmxt-polymarket-selected-source-conversion/selector-gamma-candidates/first-proof-selector-report.json"
+)
+PMXT_SELECTED_SOURCE_REPORT = (
+    REFERENCE_ROOT
+    / "pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json"
+)
 JUSTFILE = Path("justfile")
 FIRST_SELECTION_KEY = "_".join(("selected", "first", "proof", "policy"))
 FIRST_SELECTION_PREDICATE_REF = f"{FIRST_SELECTION_KEY}.selector_predicate"
 
 NT_REVISION = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+SELECTED_SOURCE_ARTIFACT_STATUS = "source_fenced_one_off_no_tick_selected_artifact"
+SELECTED_ASSET_ID = "73895424095742155573626958367283533358717984717096075221396743226794070701077"
+SELECTED_ASSET_IDS_HASH = "1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110"
+SELECTED_SOURCE_PARQUET_SHA256 = "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567"
+SELECTED_OUTPUT_PARQUET_SHA256 = "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e"
+SELECTED_EVENT_TYPES = ("book", "last_trade_price", "price_change")
+SELECTED_REQUIRED_EVENT_FAMILIES = ("book", "price_change", "last_trade_price")
+SELECTED_EXCLUDED_EVENT_FAMILIES = ("tick_size_change",)
+SELECTED_ASSET_SOURCE_ROW_GROUPS = (35,)
 JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py",
     "python3 scripts/verify_bte_022_pmxt_dynamic_tick_size.py",
@@ -38,8 +56,12 @@ STATUS_HASH_TARGETS = (
     (("committed_input_hashes", "first_universe_policy"), PMXT_FIRST_UNIVERSE_POLICY),
     (("committed_input_hashes", "pmxt_source_proof_spec"), PMXT_SOURCE_PROOF_SPEC),
     (("committed_input_hashes", "bounded_one_off_pending_fixture"), PMXT_SOURCE_PROOF_FIXTURE),
+    (("committed_input_hashes", "selected_source_slice_status"), PMXT_SELECTED_SOURCE_SLICE_STATUS),
+    (("committed_input_hashes", "selected_source_selector_report"), PMXT_SELECTED_SELECTOR_REPORT),
+    (("committed_input_hashes", "selected_source_report"), PMXT_SELECTED_SOURCE_REPORT),
 )
 STATUS_KEYS = (
+    "bounded_selected_source_artifact_status",
     "bounded_no_tick_size_change_first_proof_allowed",
     "bte_022_can_close",
     "claim_limits",
@@ -56,14 +78,36 @@ STATUS_KEYS = (
     "timed_instrument_epoch_replay_accepted",
 )
 STATUS_HASH_KEYS = (
-    "first_universe_policy",
     "bounded_one_off_pending_fixture",
+    "first_universe_policy",
     "pmxt_source_proof_spec",
+    "selected_source_report",
+    "selected_source_selector_report",
+    "selected_source_slice_status",
     "tick_size_change_status",
     "timed_instrument_replay_audit",
 )
 HASH_ENTRY_KEYS = ("path", "sha256")
 GUARD_VERIFICATION_KEYS = ("script", "self_test", "source_fence_static")
+SELECTED_SOURCE_ARTIFACT_KEYS = (
+    "broad_backfill_allowed",
+    "bte_022_can_close",
+    "dynamic_tick_size_replay_proven",
+    "event_types",
+    "excluded_event_families",
+    "projected_row_groups",
+    "selected_asset_count",
+    "selected_asset_id",
+    "selected_asset_ids_hash",
+    "selected_asset_source_row_groups",
+    "selected_rows",
+    "selected_source_report",
+    "selected_source_slice_status",
+    "selector_report",
+    "source_row_groups",
+    "status",
+    "usage_scope",
+)
 SOURCE_PROOF_PENDING_FORBIDDEN_L2_REFS = (
     "no_tick_size_change_universe_ref",
     "timed_instrument_epoch_replay_ref",
@@ -99,6 +143,7 @@ BTE_DYNAMIC_GUARD_EVIDENCE = (
     "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json records that standard BacktestNode catalog replay cannot schedule timed InstrumentAny instrument-definition epochs.",
     "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-timed-instrument-replay-nt-audit.2026-06-09.json records the pinned NT audit: InstrumentAny storage exists, but BacktestDataConfig/Data replay has no timed InstrumentAny stream.",
     "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json permits only the bounded no-tick-size-change first proof and keeps full PMXT L2 acceptance open.",
+    "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-source-slice.2026-06-08.json and the committed selected-source selector/report artifacts are source-fenced as one-off no-tick selected-source evidence, not dynamic tick-size replay evidence.",
     "repo://specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml keeps the PMXT source proof pending and blocks dynamic tick-size replay acceptance through claim_limit pmxt-source-proof-claim-limit-002.",
     "STATIC-GATED scripts/verify_bte_022_pmxt_dynamic_tick_size.py rejects drift from the blocked dynamic tick-size replay decision, missing BTE-022 blocker text, source-proof overclaiming, and source-fence wiring gaps.",
 )
@@ -273,6 +318,142 @@ def check_status(status: dict[str, Any], root: Path, findings: list[str]) -> Non
         require_equal(PMXT_DYNAMIC_STATUS, "guard_verification.script", guard.get("script"), "repo://scripts/verify_bte_022_pmxt_dynamic_tick_size.py", findings)
         require_equal(PMXT_DYNAMIC_STATUS, "guard_verification.self_test", guard.get("self_test"), "repo://scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py", findings)
         require_equal(PMXT_DYNAMIC_STATUS, "guard_verification.source_fence_static", guard.get("source_fence_static"), True, findings)
+
+
+def require_hash_ref(status_path: Path, field: str, actual: Any, target: Path, root: Path, findings: list[str]) -> None:
+    require_keys(status_path, field, actual, HASH_ENTRY_KEYS, findings)
+    if isinstance(actual, dict):
+        require_equal(status_path, f"{field}.path", actual.get("path"), str(target), findings)
+        require_equal(status_path, f"{field}.sha256", actual.get("sha256"), path_sha256(root, target, findings), findings)
+
+
+def single_mapping(rel_path: Path, field: str, actual: Any, findings: list[str]) -> dict[str, Any]:
+    if not isinstance(actual, list) or len(actual) != 1 or not isinstance(actual[0], dict):
+        findings.append(f"{rel_path}: {field} must contain exactly one object")
+        return {}
+    return actual[0]
+
+
+def check_selected_source_artifacts(
+    dynamic_status: dict[str, Any],
+    selector_report: dict[str, Any],
+    selected_source_report: dict[str, Any],
+    selected_source_slice: dict[str, Any],
+    root: Path,
+    findings: list[str],
+) -> None:
+    artifact_status = dynamic_status.get("bounded_selected_source_artifact_status")
+    require_keys(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status", artifact_status, SELECTED_SOURCE_ARTIFACT_KEYS, findings)
+    if isinstance(artifact_status, dict):
+        require_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.status", artifact_status.get("status"), SELECTED_SOURCE_ARTIFACT_STATUS, findings)
+        require_hash_ref(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.selector_report", artifact_status.get("selector_report"), PMXT_SELECTED_SELECTOR_REPORT, root, findings)
+        require_hash_ref(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.selected_source_report", artifact_status.get("selected_source_report"), PMXT_SELECTED_SOURCE_REPORT, root, findings)
+        require_hash_ref(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.selected_source_slice_status", artifact_status.get("selected_source_slice_status"), PMXT_SELECTED_SOURCE_SLICE_STATUS, root, findings)
+        require_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.usage_scope", artifact_status.get("usage_scope"), "one_off_backfill_data", findings)
+        require_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.selected_asset_count", artifact_status.get("selected_asset_count"), 1, findings)
+        require_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.selected_rows", artifact_status.get("selected_rows"), 5, findings)
+        require_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.source_row_groups", artifact_status.get("source_row_groups"), 62, findings)
+        require_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.projected_row_groups", artifact_status.get("projected_row_groups"), 1, findings)
+        require_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.selected_asset_id", artifact_status.get("selected_asset_id"), SELECTED_ASSET_ID, findings)
+        require_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.selected_asset_ids_hash", artifact_status.get("selected_asset_ids_hash"), SELECTED_ASSET_IDS_HASH, findings)
+        require_list_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.selected_asset_source_row_groups", artifact_status.get("selected_asset_source_row_groups"), SELECTED_ASSET_SOURCE_ROW_GROUPS, findings)
+        require_list_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.event_types", artifact_status.get("event_types"), SELECTED_EVENT_TYPES, findings)
+        require_list_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.excluded_event_families", artifact_status.get("excluded_event_families"), SELECTED_EXCLUDED_EVENT_FAMILIES, findings)
+        require_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.dynamic_tick_size_replay_proven", artifact_status.get("dynamic_tick_size_replay_proven"), False, findings)
+        require_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.broad_backfill_allowed", artifact_status.get("broad_backfill_allowed"), False, findings)
+        require_equal(PMXT_DYNAMIC_STATUS, "bounded_selected_source_artifact_status.bte_022_can_close", artifact_status.get("bte_022_can_close"), False, findings)
+
+    selector_hash = path_sha256(root, PMXT_SELECTED_SELECTOR_REPORT, findings)
+    require_equal(PMXT_SELECTED_SELECTOR_REPORT, "schema_version", selector_report.get("schema_version"), "first-proof-selector-report.v1", findings)
+    require_equal(PMXT_SELECTED_SELECTOR_REPORT, "selector_id", selector_report.get("selector_id"), "pmxt-polymarket-first-proof-2026-05-20T22-gamma-backed", findings)
+    require_equal(PMXT_SELECTED_SELECTOR_REPORT, "status", selector_report.get("status"), "selected", findings)
+    selection = selector_report.get("selection")
+    if not isinstance(selection, dict):
+        findings.append(f"{PMXT_SELECTED_SELECTOR_REPORT}: selection must be an object")
+    else:
+        require_list_equal(PMXT_SELECTED_SELECTOR_REPORT, "selection.required_event_families", selection.get("required_event_families"), SELECTED_REQUIRED_EVENT_FAMILIES, findings)
+        require_list_equal(PMXT_SELECTED_SELECTOR_REPORT, "selection.excluded_event_families", selection.get("excluded_event_families"), SELECTED_EXCLUDED_EVENT_FAMILIES, findings)
+        require_equal(PMXT_SELECTED_SELECTOR_REPORT, "selection.row_budget", selection.get("row_budget"), 1000, findings)
+        require_equal(PMXT_SELECTED_SELECTOR_REPORT, "selection.max_selected_assets", selection.get("max_selected_assets"), 1, findings)
+    require_equal(PMXT_SELECTED_SELECTOR_REPORT, "eligible_assets", selector_report.get("eligible_assets"), 6, findings)
+    require_equal(PMXT_SELECTED_SELECTOR_REPORT, "selected_asset_ids_hash", selector_report.get("selected_asset_ids_hash"), SELECTED_ASSET_IDS_HASH, findings)
+    require_equal(PMXT_SELECTED_SELECTOR_REPORT, "excluded_event_asset_count", selector_report.get("excluded_event_asset_count"), 0, findings)
+    require_equal(PMXT_SELECTED_SELECTOR_REPORT, "excluded_event_row_count", selector_report.get("excluded_event_row_count"), 0, findings)
+    require_equal(PMXT_SELECTED_SELECTOR_REPORT, "blocking_issues", selector_report.get("blocking_issues"), [], findings)
+    selected_asset = single_mapping(PMXT_SELECTED_SELECTOR_REPORT, "selected_assets", selector_report.get("selected_assets"), findings)
+    if selected_asset:
+        require_equal(PMXT_SELECTED_SELECTOR_REPORT, "selected_assets[0].asset_id", selected_asset.get("asset_id"), SELECTED_ASSET_ID, findings)
+        require_equal(PMXT_SELECTED_SELECTOR_REPORT, "selected_assets[0].replay_rows", selected_asset.get("replay_rows"), 5, findings)
+        require_list_equal(PMXT_SELECTED_SELECTOR_REPORT, "selected_assets[0].source_row_groups", selected_asset.get("source_row_groups"), SELECTED_ASSET_SOURCE_ROW_GROUPS, findings)
+
+    require_equal(PMXT_SELECTED_SOURCE_REPORT, "schema_version", selected_source_report.get("schema_version"), "selected-source-slice-report.v1", findings)
+    require_equal(PMXT_SELECTED_SOURCE_REPORT, "source_parquet_sha256", selected_source_report.get("source_parquet_sha256"), SELECTED_SOURCE_PARQUET_SHA256, findings)
+    require_equal(PMXT_SELECTED_SOURCE_REPORT, "selector_report_sha256", selected_source_report.get("selector_report_sha256"), selector_hash, findings)
+    require_equal(PMXT_SELECTED_SOURCE_REPORT, "usage_scope", selected_source_report.get("usage_scope"), "one_off_backfill_data", findings)
+    require_equal(PMXT_SELECTED_SOURCE_REPORT, "source_rows", selected_source_report.get("source_rows"), 64877467, findings)
+    require_equal(PMXT_SELECTED_SOURCE_REPORT, "source_row_groups", selected_source_report.get("source_row_groups"), 62, findings)
+    require_equal(PMXT_SELECTED_SOURCE_REPORT, "projected_row_groups", selected_source_report.get("projected_row_groups"), 1, findings)
+    require_equal(PMXT_SELECTED_SOURCE_REPORT, "selected_rows", selected_source_report.get("selected_rows"), 5, findings)
+    require_equal(PMXT_SELECTED_SOURCE_REPORT, "selected_asset_count", selected_source_report.get("selected_asset_count"), 1, findings)
+    require_equal(PMXT_SELECTED_SOURCE_REPORT, "selected_asset_ids_hash", selected_source_report.get("selected_asset_ids_hash"), SELECTED_ASSET_IDS_HASH, findings)
+    require_equal(PMXT_SELECTED_SOURCE_REPORT, "output_parquet_sha256", selected_source_report.get("output_parquet_sha256"), SELECTED_OUTPUT_PARQUET_SHA256, findings)
+
+    require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "schema_version", selected_source_slice.get("schema_version"), "source-proof-pmxt-selected-source-slice.v3", findings)
+    require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "usage_scope", selected_source_slice.get("usage_scope"), "one_off_backfill_data", findings)
+    source = selected_source_slice.get("source")
+    if not isinstance(source, dict):
+        findings.append(f"{PMXT_SELECTED_SOURCE_SLICE_STATUS}: source must be an object")
+    else:
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "source.sha256", source.get("sha256"), SELECTED_SOURCE_PARQUET_SHA256, findings)
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "source.source_rows", source.get("source_rows"), selected_source_report.get("source_rows"), findings)
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "source.source_row_groups", source.get("source_row_groups"), selected_source_report.get("source_row_groups"), findings)
+    metadata = selected_source_slice.get("metadata_candidate_probe")
+    if not isinstance(metadata, dict):
+        findings.append(f"{PMXT_SELECTED_SOURCE_SLICE_STATUS}: metadata_candidate_probe must be an object")
+    else:
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "metadata_candidate_probe.selected_asset_id", metadata.get("selected_asset_id"), SELECTED_ASSET_ID, findings)
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "metadata_candidate_probe.gamma_backed_candidate_count", metadata.get("gamma_backed_candidate_count"), 6, findings)
+    slice_selector = selected_source_slice.get("selector")
+    if not isinstance(slice_selector, dict):
+        findings.append(f"{PMXT_SELECTED_SOURCE_SLICE_STATUS}: selector must be an object")
+    else:
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selector.report_sha256", slice_selector.get("report_sha256"), selector_hash, findings)
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selector.status", slice_selector.get("status"), "selected", findings)
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selector.eligible_assets", slice_selector.get("eligible_assets"), selector_report.get("eligible_assets"), findings)
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selector.selected_asset_count", slice_selector.get("selected_asset_count"), 1, findings)
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selector.selected_asset_ids_hash", slice_selector.get("selected_asset_ids_hash"), SELECTED_ASSET_IDS_HASH, findings)
+        slice_asset = single_mapping(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selector.selected_assets", slice_selector.get("selected_assets"), findings)
+        if slice_asset:
+            require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selector.selected_assets[0].asset_id", slice_asset.get("asset_id"), SELECTED_ASSET_ID, findings)
+            require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selector.selected_assets[0].replay_rows", slice_asset.get("replay_rows"), 5, findings)
+            require_list_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selector.selected_assets[0].source_row_groups", slice_asset.get("source_row_groups"), SELECTED_ASSET_SOURCE_ROW_GROUPS, findings)
+        slice_selection = slice_selector.get("selection")
+        if not isinstance(slice_selection, dict):
+            findings.append(f"{PMXT_SELECTED_SOURCE_SLICE_STATUS}: selector.selection must be an object")
+        else:
+            require_list_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selector.selection.required_event_families", slice_selection.get("required_event_families"), SELECTED_REQUIRED_EVENT_FAMILIES, findings)
+            require_list_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selector.selection.excluded_event_families", slice_selection.get("excluded_event_families"), SELECTED_EXCLUDED_EVENT_FAMILIES, findings)
+    slice_report = selected_source_slice.get("selected_source_slice")
+    if not isinstance(slice_report, dict):
+        findings.append(f"{PMXT_SELECTED_SOURCE_SLICE_STATUS}: selected_source_slice must be an object")
+    else:
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selected_source_slice.usage_scope", slice_report.get("usage_scope"), selected_source_report.get("usage_scope"), findings)
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selected_source_slice.output_parquet_sha256", slice_report.get("output_parquet_sha256"), selected_source_report.get("output_parquet_sha256"), findings)
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selected_source_slice.source_rows", slice_report.get("source_rows"), selected_source_report.get("source_rows"), findings)
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selected_source_slice.source_row_groups", slice_report.get("source_row_groups"), selected_source_report.get("source_row_groups"), findings)
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selected_source_slice.projected_row_groups", slice_report.get("projected_row_groups"), selected_source_report.get("projected_row_groups"), findings)
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selected_source_slice.selected_rows", slice_report.get("selected_rows"), selected_source_report.get("selected_rows"), findings)
+        require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selected_source_slice.selected_asset_count", slice_report.get("selected_asset_count"), selected_source_report.get("selected_asset_count"), findings)
+        require_list_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selected_source_slice.event_types", slice_report.get("event_types"), SELECTED_EVENT_TYPES, findings)
+        event_rows = slice_report.get("event_type_rows")
+        if not isinstance(event_rows, dict):
+            findings.append(f"{PMXT_SELECTED_SOURCE_SLICE_STATUS}: selected_source_slice.event_type_rows must be an object")
+        else:
+            require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selected_source_slice.event_type_rows.book", event_rows.get("book"), 1, findings)
+            require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selected_source_slice.event_type_rows.last_trade_price", event_rows.get("last_trade_price"), 1, findings)
+            require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selected_source_slice.event_type_rows.price_change", event_rows.get("price_change"), 3, findings)
+            selected_row_total = sum(value for value in event_rows.values() if isinstance(value, int))
+            require_equal(PMXT_SELECTED_SOURCE_SLICE_STATUS, "selected_source_slice.event_type_rows.total", selected_row_total, slice_report.get("selected_rows"), findings)
 
 
 def check_tick_status(tick_status: dict[str, Any], findings: list[str]) -> None:
@@ -463,8 +644,12 @@ def scan_root(root: Path) -> list[str]:
     source_proof = read_toml(root, PMXT_SOURCE_PROOF_SPEC, findings)
     source_fixture = read_json(root, PMXT_SOURCE_PROOF_FIXTURE, findings)
     bte_status = read_json(root, BTE_022_STATUS, findings)
+    selected_source_slice = read_json(root, PMXT_SELECTED_SOURCE_SLICE_STATUS, findings)
+    selected_selector_report = read_json(root, PMXT_SELECTED_SELECTOR_REPORT, findings)
+    selected_source_report = read_json(root, PMXT_SELECTED_SOURCE_REPORT, findings)
 
     check_status(status, root, findings)
+    check_selected_source_artifacts(status, selected_selector_report, selected_source_report, selected_source_slice, root, findings)
     check_tick_status(tick_status, findings)
     check_timed_audit(timed_audit, findings)
     check_first_universe_policy(first_policy, findings)

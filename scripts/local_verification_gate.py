@@ -34,7 +34,7 @@ def run_gate(
         print("local-verification-gate: missing command after --", file=sys.stderr)
         return 2
     try:
-        lane_governor.acquire(
+        held_handle = lane_governor.acquire(
             f"local-gate:{gate}",
             lock_dir=lock_dir,
             honor_ci_env=honor_ci_env,
@@ -47,7 +47,11 @@ def run_gate(
     print(f"local-verification-gate: running {gate}: {rendered}", file=sys.stderr)
     env = dict(os.environ)
     env[GATE_ENV] = "1"
-    return subprocess.run(list(command), env=env, check=False).returncode
+    try:
+        return subprocess.run(list(command), env=env, check=False).returncode
+    finally:
+        if held_handle is not None:
+            held_handle.close()
 
 
 def main(argv: Sequence[str]) -> int:

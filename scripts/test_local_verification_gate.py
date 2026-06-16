@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gc
 import importlib.util
 import subprocess
 import sys
@@ -112,10 +113,44 @@ Path(sys.argv[3]).write_text("ok", encoding="utf-8")
         assert marker.read_text(encoding="utf-8") == "ok"
 
 
+def test_gate_keeps_acquired_handle_alive_until_child_exits() -> None:
+    closed: list[str] = []
+    released: list[str] = []
+
+    class Handle:
+        def close(self) -> None:
+            closed.append("closed")
+
+        def __del__(self) -> None:
+            released.append("released")
+
+    def fake_acquire(*args, **kwargs):
+        return Handle()
+
+    def fake_run(command, env, check):
+        gc.collect()
+        assert not released, "gate must retain lane lock handle while child runs"
+        assert not closed, "gate must close lane lock handle after child exits"
+        return subprocess.CompletedProcess(command, 0)
+
+    original_acquire = GATE.lane_governor.acquire
+    original_run = GATE.subprocess.run
+    try:
+        GATE.lane_governor.acquire = fake_acquire
+        GATE.subprocess.run = fake_run
+        rc = GATE.run_gate("source-fence-static", ["child"], honor_ci_env=False)
+    finally:
+        GATE.subprocess.run = original_run
+        GATE.lane_governor.acquire = original_acquire
+    assert rc == 0
+    assert closed == ["closed"]
+
+
 def main() -> int:
     tests = [
         test_busy_gate_refuses_without_running_child,
         test_child_verifier_reenters_under_parent_gate,
+        test_gate_keeps_acquired_handle_alive_until_child_exits,
     ]
     for test in tests:
         test()

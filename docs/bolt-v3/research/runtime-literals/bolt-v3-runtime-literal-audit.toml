@@ -1917,6 +1917,14 @@ classification = "config_validation_zero_rejection"
 reason = "Zero is the invalid lower-bound sentinel for the TOML-owned active position PnL entry cap; runtime capacity is still provided by config and must be positive."
 
 [[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''0'''
+context = '''.is_some_and(|min_free_bytes| min_free_bytes == 0)'''
+classification = "config_validation_zero_rejection"
+reason = "Zero is the invalid lower-bound sentinel for the TOML-owned live storage free-space floor; runtime capacity is still provided by config and must be positive."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "number"
 literal = '''2'''

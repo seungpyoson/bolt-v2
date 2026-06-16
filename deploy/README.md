@@ -18,10 +18,11 @@ with mode `0640`.
 
 The systemd unit refuses to start unless `/srv/bolt-v2` is mounted and the Rust prestart check
 passes against `/opt/bolt-v2/config/live.toml`. That prestart check requires
-`persistence.catalog_directory` to stay under `/srv/bolt-v2` and requires the catalog filesystem to
-have at least the TOML-configured `persistence.min_free_bytes` available.
+`persistence.catalog_directory` to stay under the TOML-configured
+`persistence.required_catalog_prefix` and requires the catalog filesystem to have at least the
+TOML-configured `persistence.min_free_bytes` available.
 For live EC2 operation, start Bolt through the systemd unit; direct `bolt-v2 run --config ...`
-does not execute the systemd prestart hook.
+executes the same storage prestart check before constructing the live node.
 
 Before a live run, inspect the instance storage state:
 
@@ -29,7 +30,7 @@ Before a live run, inspect the instance storage state:
 df -h / /srv/bolt-v2 /var/log /run
 sudo journalctl --disk-usage
 sudo du -sh /srv/bolt-v2/var/* 2>/dev/null
-grep -n 'catalog_directory\|min_free_bytes' /opt/bolt-v2/config/live.toml
+grep -n 'catalog_directory\|required_catalog_prefix\|min_free_bytes' /opt/bolt-v2/config/live.toml
 ```
 
 The journald drop-in caps journald storage only. Runtime catalog, raw, audit, report, and decision

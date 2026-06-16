@@ -1856,6 +1856,16 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
             block.catalog_directory
         ));
     }
+    if let Some(required_catalog_prefix) = block.required_catalog_prefix.as_deref() {
+        if !Path::new(required_catalog_prefix).is_absolute() {
+            errors.push(format!(
+                "{}.{} must be an absolute path: `{}`",
+                stringify!(persistence),
+                stringify!(required_catalog_prefix),
+                required_catalog_prefix
+            ));
+        }
+    }
     if block.runtime_capture_start_poll_interval_ms == 0 {
         errors.push(
             "persistence.runtime_capture_start_poll_interval_ms must be a positive integer"
@@ -1864,7 +1874,7 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
     }
     if block
         .min_free_bytes
-        .is_some_and(|min_free_bytes| min_free_bytes == u64::MIN)
+        .is_some_and(|min_free_bytes| min_free_bytes == 0)
     {
         errors.push(format!(
             "{}.{} must be a positive integer",

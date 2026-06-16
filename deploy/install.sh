@@ -3,8 +3,8 @@ set -euo pipefail
 
 BOLT_USER="${BOLT_USER:-bolt}"
 BOLT_GROUP="${BOLT_GROUP:-$BOLT_USER}"
-BOLT_HOME="${BOLT_HOME:-/srv/bolt-v2}"
-BOLT_INSTALL_ROOT="${BOLT_INSTALL_ROOT:-/opt/bolt-v2}"
+BOLT_HOME="/srv/bolt-v2"
+BOLT_INSTALL_ROOT="/opt/bolt-v2"
 BOLT_DATA_DEVICE="${BOLT_DATA_DEVICE:?set BOLT_DATA_DEVICE=/dev/<data-volume-device>}"
 BOLT_DATA_FS_TYPE="${BOLT_DATA_FS_TYPE:-ext4}"
 

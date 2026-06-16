@@ -1,15 +1,19 @@
 use clap::Parser;
 use std::{
     fs::OpenOptions,
+    io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(unix)]
-use std::{ffi::CString, os::unix::ffi::OsStrExt};
+use std::{
+    ffi::CString,
+    os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+};
 
 use bolt_v2::{
-    bolt_v3_config::load_bolt_v3_config,
+    bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{build_bolt_v3_live_node, current_build_head_sha, run_bolt_v3_live_node},
     bolt_v3_operator_artifacts::WrittenOperatorArtifact,
     bolt_v3_providers::{
@@ -76,7 +80,7 @@ enum OpsCommand {
         #[arg(short, long)]
         config: PathBuf,
         #[arg(long)]
-        required_catalog_prefix: PathBuf,
+        required_catalog_prefix: Option<PathBuf>,
     },
 }
 
@@ -154,6 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_live_node(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let loaded = load_bolt_v3_config(&config)?;
+    run_loaded_prestart_check(&loaded, None)?;
     let mut node = build_bolt_v3_live_node(&loaded)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -171,14 +176,24 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
         OpsCommand::PrestartCheck {
             config,
             required_catalog_prefix,
-        } => run_prestart_check(&config, &required_catalog_prefix),
+        } => run_prestart_check(&config, required_catalog_prefix.as_deref()),
     }
 }
 
 fn run_prestart_check(
     config: &Path,
-    required_catalog_prefix: &Path,
+    required_catalog_prefix_override: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_bolt_v3_config(config)?;
+    run_loaded_prestart_check(&loaded, required_catalog_prefix_override)
+}
+
+fn run_loaded_prestart_check(
+    loaded: &LoadedBoltV3Config,
+    required_catalog_prefix_override: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let required_catalog_prefix =
+        resolve_required_catalog_prefix(loaded, required_catalog_prefix_override)?;
     if !required_catalog_prefix.is_absolute() {
         return Err(format!(
             "--required-catalog-prefix must be an absolute path: `{}`",
@@ -187,7 +202,7 @@ fn run_prestart_check(
         .into());
     }
     let canonical_required_prefix =
-        std::fs::canonicalize(required_catalog_prefix).map_err(|source| {
+        std::fs::canonicalize(&required_catalog_prefix).map_err(|source| {
             std::io::Error::new(
                 source.kind(),
                 format!(
@@ -196,7 +211,6 @@ fn run_prestart_check(
                 ),
             )
         })?;
-    let loaded = load_bolt_v3_config(config)?;
     let configured_catalog_directory = Path::new(&loaded.root.persistence.catalog_directory);
     let catalog_link_metadata = std::fs::symlink_metadata(configured_catalog_directory).map_err(
         |source| {
@@ -265,26 +279,81 @@ fn run_prestart_check(
     Ok(())
 }
 
+fn resolve_required_catalog_prefix(
+    loaded: &LoadedBoltV3Config,
+    required_catalog_prefix_override: Option<&Path>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(required_catalog_prefix) = required_catalog_prefix_override {
+        return Ok(required_catalog_prefix.to_path_buf());
+    }
+    let configured = loaded
+        .root
+        .persistence
+        .required_catalog_prefix
+        .as_deref()
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "persistence.required_catalog_prefix must be configured for live storage prestart checks",
+            )
+        })?;
+    Ok(PathBuf::from(configured))
+}
+
 fn verify_catalog_write_probe(catalog_directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let probe_path = catalog_directory.join(format!(
         ".bolt-v2-prestart-write-probe-{}",
         std::process::id()
     ));
-    let _ = std::fs::remove_file(&probe_path);
-    let probe_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&probe_path)
-        .map_err(|source| {
-            std::io::Error::new(
+    match std::fs::remove_file(&probe_path) {
+        Ok(()) => {}
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(std::io::Error::new(
                 source.kind(),
                 format!(
-                    "persistence.catalog_directory `{}` write probe failed at `{}`: {source}",
+                    "persistence.catalog_directory `{}` stale write probe cleanup failed at `{}`: {source}",
                     catalog_directory.display(),
                     probe_path.display()
                 ),
             )
-        })?;
+            .into());
+        }
+    }
+    let mut probe_options = OpenOptions::new();
+    probe_options.write(true).create_new(true);
+    #[cfg(unix)]
+    probe_options.custom_flags(libc::O_NOFOLLOW);
+    let mut probe_file = probe_options.open(&probe_path).map_err(|source| {
+        std::io::Error::new(
+            source.kind(),
+            format!(
+                "persistence.catalog_directory `{}` write probe failed at `{}`: {source}",
+                catalog_directory.display(),
+                probe_path.display()
+            ),
+        )
+    })?;
+    probe_file.write_all(b"\n").map_err(|source| {
+        std::io::Error::new(
+            source.kind(),
+            format!(
+                "persistence.catalog_directory `{}` write probe byte write failed at `{}`: {source}",
+                catalog_directory.display(),
+                probe_path.display()
+            ),
+        )
+    })?;
+    probe_file.sync_all().map_err(|source| {
+        std::io::Error::new(
+            source.kind(),
+            format!(
+                "persistence.catalog_directory `{}` write probe sync failed at `{}`: {source}",
+                catalog_directory.display(),
+                probe_path.display()
+            ),
+        )
+    })?;
     drop(probe_file);
     std::fs::remove_file(&probe_path).map_err(|source| {
         std::io::Error::new(
@@ -590,7 +659,7 @@ mod tests {
         fs::create_dir_all(&outside_catalog_path).expect("outside catalog should create");
         let fixture = prestart_fixture_config(&outside_catalog_path, Some(1));
 
-        let error = run_prestart_check(&fixture.config_path, &required_prefix)
+        let error = run_prestart_check(&fixture.config_path, Some(&required_prefix))
             .expect_err("wrong catalog prefix should fail prestart");
         let message = error.to_string();
 
@@ -609,7 +678,7 @@ mod tests {
         fs::create_dir_all(&catalog_path).expect("catalog directory should create");
         let fixture = prestart_fixture_config(&catalog_path, None);
 
-        let error = run_prestart_check(&fixture.config_path, &required_prefix)
+        let error = run_prestart_check(&fixture.config_path, Some(&required_prefix))
             .expect_err("missing free-space floor should fail prestart");
         let message = error.to_string();
 
@@ -631,7 +700,7 @@ mod tests {
             .expect("catalog symlink should create");
         let fixture = prestart_fixture_config(&catalog_path, Some(1));
 
-        let error = run_prestart_check(&fixture.config_path, &required_prefix)
+        let error = run_prestart_check(&fixture.config_path, Some(&required_prefix))
             .expect_err("symlinked catalog directory should fail prestart");
         let message = error.to_string();
 
@@ -646,6 +715,10 @@ mod tests {
     fn prestart_check_rejects_unwritable_catalog_directory() {
         use std::os::unix::fs::PermissionsExt;
 
+        if running_as_root() {
+            return;
+        }
+
         let temp = tempfile::tempdir().expect("tempdir should create");
         let required_prefix = temp.path().join("srv").join("bolt-v2");
         let catalog_path = required_prefix
@@ -657,7 +730,7 @@ mod tests {
 
         fs::set_permissions(&catalog_path, fs::Permissions::from_mode(0o555))
             .expect("catalog permissions should update");
-        let result = run_prestart_check(&fixture.config_path, &required_prefix);
+        let result = run_prestart_check(&fixture.config_path, Some(&required_prefix));
         fs::set_permissions(&catalog_path, fs::Permissions::from_mode(0o755))
             .expect("catalog permissions should restore");
         let error = result.expect_err("unwritable catalog directory should fail prestart");
@@ -680,7 +753,7 @@ mod tests {
         fs::create_dir_all(&catalog_path).expect("catalog directory should create");
         let fixture = prestart_fixture_config(&catalog_path, Some(u64::MAX));
 
-        let error = run_prestart_check(&fixture.config_path, &required_prefix)
+        let error = run_prestart_check(&fixture.config_path, Some(&required_prefix))
             .expect_err("impossible free-space floor should fail prestart");
         let message = error.to_string();
 
@@ -701,7 +774,7 @@ mod tests {
         fs::create_dir_all(&catalog_path).expect("catalog directory should create");
         let fixture = prestart_fixture_config(&catalog_path, Some(1));
 
-        run_prestart_check(&fixture.config_path, &required_prefix)
+        run_prestart_check(&fixture.config_path, Some(&required_prefix))
             .expect("writable catalog under required prefix should pass prestart");
     }
 
@@ -721,13 +794,58 @@ mod tests {
         fs::write(&stale_probe_path, "stale").expect("stale probe file should create");
         let fixture = prestart_fixture_config(&catalog_path, Some(1));
 
-        run_prestart_check(&fixture.config_path, &required_prefix)
+        run_prestart_check(&fixture.config_path, Some(&required_prefix))
             .expect("stale write-probe file should not block prestart");
 
         assert!(
             !stale_probe_path.exists(),
             "prestart should clean up the stale probe path"
         );
+    }
+
+    #[test]
+    fn prestart_check_uses_configured_required_catalog_prefix() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let required_prefix = temp.path().join("srv").join("bolt-v2");
+        let catalog_path = required_prefix
+            .join("var")
+            .join("bolt-v3-live")
+            .join("catalog");
+        fs::create_dir_all(&catalog_path).expect("catalog directory should create");
+        let fixture = prestart_fixture_config_with_required_prefix(
+            &catalog_path,
+            Some(&required_prefix),
+            Some(1),
+        );
+
+        run_prestart_check(&fixture.config_path, None)
+            .expect("configured required catalog prefix should pass prestart");
+    }
+
+    #[test]
+    fn prestart_check_requires_required_catalog_prefix_without_override() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let required_prefix = temp.path().join("srv").join("bolt-v2");
+        let catalog_path = required_prefix
+            .join("var")
+            .join("bolt-v3-live")
+            .join("catalog");
+        fs::create_dir_all(&catalog_path).expect("catalog directory should create");
+        let fixture = prestart_fixture_config(&catalog_path, Some(1));
+
+        let error = run_prestart_check(&fixture.config_path, None)
+            .expect_err("missing required catalog prefix should fail prestart");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("persistence.required_catalog_prefix"),
+            "expected missing required-prefix rejection, got: {message}"
+        );
+    }
+
+    #[cfg(unix)]
+    fn running_as_root() -> bool {
+        unsafe { libc::geteuid() == 0 }
     }
 
     struct PrestartFixture {
@@ -737,6 +855,14 @@ mod tests {
 
     fn prestart_fixture_config(
         catalog_directory: &Path,
+        min_free_bytes: Option<u64>,
+    ) -> PrestartFixture {
+        prestart_fixture_config_with_required_prefix(catalog_directory, None, min_free_bytes)
+    }
+
+    fn prestart_fixture_config_with_required_prefix(
+        catalog_directory: &Path,
+        required_catalog_prefix: Option<&Path>,
         min_free_bytes: Option<u64>,
     ) -> PrestartFixture {
         let temp = tempfile::tempdir().expect("fixture tempdir should create");
@@ -753,6 +879,7 @@ mod tests {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bolt_v3/root.toml"),
         )
         .expect("root fixture should read");
+        let before_catalog_replace = root.clone();
         root = root.replace(
             "catalog_directory = \"/var/lib/bolt/catalog\"",
             &format!(
@@ -760,12 +887,35 @@ mod tests {
                 catalog_directory.to_string_lossy()
             ),
         );
+        assert_ne!(
+            root, before_catalog_replace,
+            "catalog_directory fixture replacement should update root fixture"
+        );
+        if let Some(required_catalog_prefix) = required_catalog_prefix {
+            let before_required_prefix_replace = root.clone();
+            root = root.replace(
+                "runtime_capture_start_poll_interval_ms = 50",
+                &format!(
+                    "required_catalog_prefix = \"{}\"\nruntime_capture_start_poll_interval_ms = 50",
+                    required_catalog_prefix.to_string_lossy()
+                ),
+            );
+            assert_ne!(
+                root, before_required_prefix_replace,
+                "required_catalog_prefix fixture replacement should update root fixture"
+            );
+        }
         if let Some(min_free_bytes) = min_free_bytes {
+            let before_min_free_replace = root.clone();
             root = root.replace(
                 "runtime_capture_start_poll_interval_ms = 50",
                 &format!(
                     "min_free_bytes = {min_free_bytes}\nruntime_capture_start_poll_interval_ms = 50"
                 ),
+            );
+            assert_ne!(
+                root, before_min_free_replace,
+                "min_free_bytes fixture replacement should update root fixture"
             );
         }
         let config_path = temp.path().join("root.toml");

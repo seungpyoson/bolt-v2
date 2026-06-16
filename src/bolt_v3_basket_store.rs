@@ -79,6 +79,28 @@ impl BoltV3BasketStore {
     }
 
     pub fn load_recovery_state(&self) -> Result<BoltV3BasketRecoveryState, BoltV3BasketStoreError> {
+        match fs::metadata(&self.path) {
+            Ok(metadata) if metadata.len() > self.max_state_file_bytes => {
+                return Ok(BoltV3BasketRecoveryState::FailClosed {
+                    reason: BoltV3BasketRecoveryReason::StateFileTooLarge,
+                    state: None,
+                });
+            }
+            Ok(_) => {}
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                return Ok(BoltV3BasketRecoveryState::FailClosed {
+                    reason: BoltV3BasketRecoveryReason::MissingEvidence,
+                    state: None,
+                });
+            }
+            Err(source) => {
+                return Err(BoltV3BasketStoreError::Io {
+                    path: self.path.clone(),
+                    source,
+                });
+            }
+        }
+
         let bytes = match fs::read(&self.path) {
             Ok(bytes) => bytes,
             Err(source) if source.kind() == io::ErrorKind::NotFound => {

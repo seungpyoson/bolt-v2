@@ -1285,14 +1285,47 @@ impl BoltV3SubmitAdmissionState {
                 let admitted_order_count_before = inner.admitted_order_count;
                 let forced_reduction_order_count_before =
                     inner.live_kill_switch_forced_reduction_order_count;
-                inner.admitted_order_count += 1;
-                *inner
+                let Some(next_admitted_order_count) = inner.admitted_order_count.checked_add(1)
+                else {
+                    if let Some(rollback) = evaluation.rollback.as_ref() {
+                        rollback_position_sizer_reservation(&mut inner, rollback);
+                    }
+                    return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
+                };
+                let current_execution_client_count = inner
                     .admitted_order_count_by_execution_client
-                    .entry(request.execution_client_id.clone())
-                    .or_insert(0) += 1;
-                if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
-                    inner.live_kill_switch_forced_reduction_order_count += 1;
-                }
+                    .get(&request.execution_client_id)
+                    .copied()
+                    .unwrap_or(0);
+                let Some(next_execution_client_count) =
+                    current_execution_client_count.checked_add(1)
+                else {
+                    if let Some(rollback) = evaluation.rollback.as_ref() {
+                        rollback_position_sizer_reservation(&mut inner, rollback);
+                    }
+                    return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
+                };
+                let next_forced_reduction_count =
+                    if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
+                        let Some(next) = inner
+                            .live_kill_switch_forced_reduction_order_count
+                            .checked_add(1)
+                        else {
+                            if let Some(rollback) = evaluation.rollback.as_ref() {
+                                rollback_position_sizer_reservation(&mut inner, rollback);
+                            }
+                            return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
+                        };
+                        next
+                    } else {
+                        inner.live_kill_switch_forced_reduction_order_count
+                    };
+                inner.admitted_order_count = next_admitted_order_count;
+                inner.admitted_order_count_by_execution_client.insert(
+                    request.execution_client_id.clone(),
+                    next_execution_client_count,
+                );
+                inner.live_kill_switch_forced_reduction_order_count = next_forced_reduction_count;
                 let counter_rollback = Some(BoltV3SubmitAdmissionCounterRollback {
                     execution_client_id: request.execution_client_id.clone(),
                     order_count: inner
@@ -2635,6 +2668,7 @@ pub enum BoltV3PositionSizerRejectReason {
     OutcomeInstrumentMismatch,
     ReplaceSubmitUnsupported,
     DuplicateClientOrderId,
+    OrderShapeMismatch,
     MissingNtState,
     StaleNtState,
     UnattributedNtState,
@@ -2791,6 +2825,11 @@ fn evaluate_position_sizer_submit(
     }
     if product_kind != ProductKind::PredictionMarketBinary {
         return rejected_position_sizer(BoltV3PositionSizerRejectReason::UnsupportedProductKind);
+    }
+    if !compiled_order_side_matches_request(evidence.side, request.order_side)
+        || evidence.quantity != request.order_quantity
+    {
+        return rejected_position_sizer(BoltV3PositionSizerRejectReason::OrderShapeMismatch);
     }
     if position_sizer
         .client_order_reservations
@@ -2949,6 +2988,17 @@ fn evaluate_position_sizer_submit(
         }),
         reservation_metadata: Some(reservation_metadata),
     }
+}
+
+fn compiled_order_side_matches_request(
+    evidence_side: BoltV3CompiledOrderSide,
+    request_side: OrderSide,
+) -> bool {
+    matches!(
+        (evidence_side, request_side),
+        (BoltV3CompiledOrderSide::Buy, OrderSide::Buy)
+            | (BoltV3CompiledOrderSide::Sell, OrderSide::Sell)
+    )
 }
 
 fn checked_additive_liability(policy: &SizingPolicy) -> Option<Decimal> {

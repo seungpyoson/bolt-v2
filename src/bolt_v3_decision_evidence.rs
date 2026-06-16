@@ -50,10 +50,8 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
     fn record_admission_decision(&self, decision: &BoltV3AdmissionDecisionEvidence) -> Result<()>;
     fn record_basket_admission_decision(
         &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
+        decision: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()>;
     fn record_position_sizer_rebuild_audit(
         &self,
         audit: &BoltV3PositionSizerRebuildAuditEvidence,

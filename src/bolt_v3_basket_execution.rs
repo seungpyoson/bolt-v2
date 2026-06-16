@@ -16,7 +16,9 @@ use crate::{
         KillSwitchEvent, KillSwitchHaltTrigger, KillSwitchState, KillSwitchTransitionContext,
         transition_kill_switch_state,
     },
-    bolt_v3_kill_switch_store::{KillSwitchStore, KillSwitchStoreError},
+    bolt_v3_kill_switch_store::{
+        KillSwitchRecoveryReason, KillSwitchRecoveryState, KillSwitchStore, KillSwitchStoreError,
+    },
     bolt_v3_outcome_group_sources::outcome_group_observation_is_fresh,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
@@ -381,16 +383,25 @@ impl BoltV3BasketExecutionState {
         reports: &[BoltV3BasketRestartReport],
     ) -> Result<(), BoltV3BasketExecutionError> {
         for report in reports {
+            if report.report_class != BoltV3ExternalReportClass::StrategyOwned {
+                self.mark_stuck_exposure();
+                return Ok(());
+            }
             let Some(index) = self.leg_index_for_report(report) else {
-                self.status = BoltV3BasketExecutionStatus::Stuck;
-                self.unresolved_real_exposure = true;
-                self.reservation_held = true;
+                self.mark_stuck_exposure();
                 return Ok(());
             };
             let leg = self
                 .legs
                 .get_mut(index)
                 .ok_or(BoltV3BasketExecutionError::LegShapeMismatch)?;
+            if leg.instrument_id != report.instrument_id
+                || report.filled_quantity < leg.filled_quantity
+                || report.filled_cost < leg.filled_cost
+            {
+                self.mark_stuck_exposure();
+                return Ok(());
+            }
             leg.filled_quantity = report.filled_quantity;
             leg.filled_cost = report.filled_cost;
             if leg.venue_order_id.is_none() {
@@ -427,6 +438,12 @@ impl BoltV3BasketExecutionState {
                 .position(|leg| leg.venue_order_id.as_deref() == Some(venue_order_id));
         }
         None
+    }
+
+    fn mark_stuck_exposure(&mut self) {
+        self.status = BoltV3BasketExecutionStatus::Stuck;
+        self.unresolved_real_exposure = true;
+        self.reservation_held = true;
     }
 
     fn refresh_fill_status(&mut self) {
@@ -531,8 +548,20 @@ impl BoltV3BasketRepairInput {
                 reason: "fresh executable repair books are required".to_string(),
             };
         }
+        if has_duplicate_leg_ids(&self.admitted_target_quantities)
+            || has_duplicate_leg_ids(&self.filled_quantities)
+            || has_duplicate_executable_leg_ids(&self.executable_repair_legs)
+        {
+            return BoltV3BasketRepairOutcome::Stuck {
+                reason: "basket repair leg identifiers must be unique".to_string(),
+            };
+        }
 
-        let filled = quantity_map(&self.filled_quantities);
+        let Some(filled) = quantity_map(&self.filled_quantities) else {
+            return BoltV3BasketRepairOutcome::Stuck {
+                reason: "basket repair leg identifiers must be unique".to_string(),
+            };
+        };
         let mut repair = BTreeMap::new();
         let mut residuals = Vec::new();
         let mut repair_cost = Decimal::ZERO;
@@ -541,7 +570,11 @@ impl BoltV3BasketRepairInput {
             if filled_quantity >= *target_quantity {
                 continue;
             }
-            let residual_quantity = *target_quantity - filled_quantity;
+            let Some(residual_quantity) = target_quantity.checked_sub(filled_quantity) else {
+                return BoltV3BasketRepairOutcome::Stuck {
+                    reason: "basket repair quantity arithmetic overflowed".to_string(),
+                };
+            };
             let Some(executable_leg) = self
                 .executable_repair_legs
                 .iter()
@@ -562,15 +595,42 @@ impl BoltV3BasketRepairInput {
                     reason: "fresh executable repair books are required".to_string(),
                 };
             };
-            repair_cost += residual_cost;
+            let Some(next_repair_cost) = repair_cost.checked_add(residual_cost) else {
+                return BoltV3BasketRepairOutcome::Stuck {
+                    reason: "basket repair cost arithmetic overflowed".to_string(),
+                };
+            };
+            repair_cost = next_repair_cost;
         }
 
-        let projected_quantities =
-            projected_quantities(&self.admitted_target_quantities, &filled, &repair);
-        let guaranteed_payout = guaranteed_payout(&self.payout_matrix, &projected_quantities);
-        let total_cost = self.filled_cost + repair_cost;
-        let projected_absolute_edge = guaranteed_payout - total_cost;
-        let projected_edge_bps = edge_bps(projected_absolute_edge, total_cost);
+        let Some(projected_quantities) =
+            projected_quantities(&self.admitted_target_quantities, &filled, &repair)
+        else {
+            return BoltV3BasketRepairOutcome::Stuck {
+                reason: "basket repair quantity arithmetic overflowed".to_string(),
+            };
+        };
+        let Some(guaranteed_payout) = guaranteed_payout(&self.payout_matrix, &projected_quantities)
+        else {
+            return BoltV3BasketRepairOutcome::Stuck {
+                reason: "basket repair payout arithmetic overflowed".to_string(),
+            };
+        };
+        let Some(total_cost) = self.filled_cost.checked_add(repair_cost) else {
+            return BoltV3BasketRepairOutcome::Stuck {
+                reason: "basket repair cost arithmetic overflowed".to_string(),
+            };
+        };
+        let Some(projected_absolute_edge) = guaranteed_payout.checked_sub(total_cost) else {
+            return BoltV3BasketRepairOutcome::Stuck {
+                reason: "basket repair edge arithmetic overflowed".to_string(),
+            };
+        };
+        let Some(projected_edge_bps) = edge_bps(projected_absolute_edge, total_cost) else {
+            return BoltV3BasketRepairOutcome::Stuck {
+                reason: "basket repair edge arithmetic overflowed".to_string(),
+            };
+        };
 
         if projected_absolute_edge >= self.admitted_absolute_edge_floor
             && projected_edge_bps >= self.admitted_edge_bps_floor
@@ -649,13 +709,24 @@ impl BoltV3BasketUnwindInput {
                 reason: "fresh executable unwind books are required".to_string(),
             };
         }
-        let executable = quantity_map(
+        if has_duplicate_leg_ids(&self.filled_quantities)
+            || has_duplicate_executable_leg_ids(&self.executable_unwind_legs)
+        {
+            return BoltV3BasketUnwindOutcome::Stuck {
+                reason: "basket unwind leg identifiers must be unique".to_string(),
+            };
+        }
+        let Some(executable) = quantity_map(
             &self
                 .executable_unwind_legs
                 .iter()
                 .map(|leg| (leg.leg_id.clone(), leg.quantity))
                 .collect::<Vec<_>>(),
-        );
+        ) else {
+            return BoltV3BasketUnwindOutcome::Stuck {
+                reason: "basket unwind leg identifiers must be unique".to_string(),
+            };
+        };
         let mut reductions = Vec::new();
         for (leg_id, filled_quantity) in &self.filled_quantities {
             if *filled_quantity <= Decimal::ZERO {
@@ -731,6 +802,28 @@ pub fn trip_stuck_basket_kill_switch(
     if basket.status != BoltV3BasketExecutionStatus::Stuck || !basket.unresolved_real_exposure {
         return Err(BoltV3BasketExecutionError::NoStuckExposure);
     }
+    let current = match kill_switch_store.load_recovery_state()? {
+        KillSwitchRecoveryState::Recovered(state) => state,
+        KillSwitchRecoveryState::FailClosed {
+            reason: KillSwitchRecoveryReason::MissingEvidence,
+            state: None,
+        } => KillSwitchState::Armed,
+        KillSwitchRecoveryState::FailClosed {
+            state: Some(state), ..
+        } => state,
+        KillSwitchRecoveryState::FailClosed {
+            reason,
+            state: None,
+        } => {
+            return Err(BoltV3BasketExecutionError::KillSwitchStore(format!(
+                "fail-closed kill-switch recovery without state: {reason:?}"
+            )));
+        }
+    };
+    if current.kind() != crate::bolt_v3_kill_switch::KillSwitchStateKind::Armed {
+        submit_admission.replace_kill_switch_state(current.clone());
+        return Ok(current);
+    }
 
     let trigger = KillSwitchHaltTrigger::basket_execution_stuck(
         basket.strategy_id.clone(),
@@ -738,12 +831,25 @@ pub fn trip_stuck_basket_kill_switch(
         basket.basket_id.clone(),
     );
     let halting = transition_kill_switch_state(
-        KillSwitchState::Armed,
+        current,
         KillSwitchEvent::HaltTriggered(trigger),
         kill_switch_transition_context(false, false),
     )?;
-    let durable_halting_evidence_recorded =
-        kill_switch_store.write_state(&halting).map(|()| true)?;
+    let durable_halting_evidence_recorded = match kill_switch_store.write_state(&halting) {
+        Ok(()) => true,
+        Err(err) => {
+            let failed = transition_kill_switch_state(
+                halting,
+                KillSwitchEvent::DurableHaltEvidenceWriteFailed {
+                    reason: format!("{err:?}"),
+                },
+                kill_switch_transition_context(false, false),
+            )?;
+            let _ = kill_switch_store.write_state(&failed);
+            submit_admission.replace_kill_switch_state(failed.clone());
+            return Ok(failed);
+        }
+    };
     let halted = transition_kill_switch_state(
         halting,
         KillSwitchEvent::DurableHaltEvidenceRecorded,
@@ -752,7 +858,20 @@ pub fn trip_stuck_basket_kill_switch(
             durable_halting_evidence_recorded,
         ),
     )?;
-    kill_switch_store.write_state(&halted)?;
+    if let Err(err) = kill_switch_store.write_state(&halted) {
+        let KillSwitchState::Halted { halt_id, .. } = halted else {
+            return Err(BoltV3BasketExecutionError::KillSwitchTransition(
+                "expected halted state before terminal durable write".to_string(),
+            ));
+        };
+        let failed = KillSwitchState::FailedManualIntervention {
+            halt_id,
+            reason: format!("{err:?}"),
+        };
+        let _ = kill_switch_store.write_state(&failed);
+        submit_admission.replace_kill_switch_state(failed.clone());
+        return Ok(failed);
+    }
     submit_admission.replace_kill_switch_state(halted.clone());
     Ok(halted)
 }
@@ -801,8 +920,26 @@ fn executable_unwind_leg_is_fresh_and_bounded(
         && leg.depth_levels <= policy.max_depth_levels
 }
 
-fn quantity_map(values: &[(String, Decimal)]) -> BTreeMap<String, Decimal> {
-    values.iter().cloned().collect()
+fn has_duplicate_leg_ids(values: &[(String, Decimal)]) -> bool {
+    let mut seen = BTreeSet::new();
+    values
+        .iter()
+        .any(|(leg_id, _)| !seen.insert(leg_id.as_str()))
+}
+
+fn has_duplicate_executable_leg_ids(values: &[BoltV3ExecutableRepairLeg]) -> bool {
+    let mut seen = BTreeSet::new();
+    values.iter().any(|leg| !seen.insert(leg.leg_id.as_str()))
+}
+
+fn quantity_map(values: &[(String, Decimal)]) -> Option<BTreeMap<String, Decimal>> {
+    let mut out = BTreeMap::new();
+    for (leg_id, quantity) in values {
+        if out.insert(leg_id.clone(), *quantity).is_some() {
+            return None;
+        }
+    }
+    Some(out)
 }
 
 fn proportional_cost(
@@ -826,35 +963,43 @@ fn projected_quantities(
     targets: &[(String, Decimal)],
     filled: &BTreeMap<String, Decimal>,
     repair: &BTreeMap<String, Decimal>,
-) -> Vec<Decimal> {
+) -> Option<Vec<Decimal>> {
     targets
         .iter()
         .map(|(leg_id, _)| {
-            filled.get(leg_id).copied().unwrap_or(Decimal::ZERO)
-                + repair.get(leg_id).copied().unwrap_or(Decimal::ZERO)
+            filled
+                .get(leg_id)
+                .copied()
+                .unwrap_or(Decimal::ZERO)
+                .checked_add(repair.get(leg_id).copied().unwrap_or(Decimal::ZERO))
         })
         .collect()
 }
 
-fn guaranteed_payout(payout_matrix: &[Vec<Decimal>], quantities: &[Decimal]) -> Decimal {
-    payout_matrix
-        .iter()
-        .map(|row| {
-            row.iter()
-                .zip(quantities.iter())
-                .fold(Decimal::ZERO, |total, (payout, quantity)| {
-                    total + (*payout * *quantity)
-                })
-        })
-        .min()
-        .unwrap_or(Decimal::ZERO)
+fn guaranteed_payout(payout_matrix: &[Vec<Decimal>], quantities: &[Decimal]) -> Option<Decimal> {
+    let mut minimum = None;
+    for row in payout_matrix {
+        let mut row_total = Decimal::ZERO;
+        for (payout, quantity) in row.iter().zip(quantities.iter()) {
+            row_total = row_total.checked_add(payout.checked_mul(*quantity)?)?;
+        }
+        minimum = Some(match minimum {
+            Some(current) => current.min(row_total),
+            None => row_total,
+        });
+    }
+    Some(minimum.unwrap_or(Decimal::ZERO))
 }
 
-fn edge_bps(edge: Decimal, total_cost: Decimal) -> Decimal {
+fn edge_bps(edge: Decimal, total_cost: Decimal) -> Option<Decimal> {
     if total_cost <= Decimal::ZERO {
-        return Decimal::ZERO;
+        return Some(Decimal::ZERO);
     }
-    ((edge / total_cost) * Decimal::from(10_000u32)).trunc()
+    Some(
+        edge.checked_div(total_cost)?
+            .checked_mul(Decimal::from(10_000u32))?
+            .trunc(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

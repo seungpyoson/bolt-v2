@@ -1864,25 +1864,25 @@ reason = "The submit admission counter starts empty for each fresh submit-admiss
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''1'''
-context = '''inner.admitted_order_count += 1;'''
+context = '''let Some(next_admitted_order_count) = inner.admitted_order_count.checked_add(1)'''
 classification = "submit_admission_counter_increment"
 reason = "Each admitted live submit consumes exactly one order-count slot from the operator-provided gate cap."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
-literal = '''0'''
-context = '''.or_insert(0) += 1;'''
-classification = "submit_admission_counter_identity"
-reason = "The per-client live-submit approval counter starts empty on first admitted order for that execution client; the cap remains artifact-owned."
+literal = '''1'''
+context = '''current_execution_client_count.checked_add(1)'''
+classification = "submit_admission_counter_increment"
+reason = "Each admitted order for an approved execution client consumes exactly one slot from that client's consumed live-submit approval artifact."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''1'''
-context = '''.or_insert(0) += 1;'''
+context = '''.checked_add(1)'''
 classification = "submit_admission_counter_increment"
-reason = "Each admitted order for an approved execution client consumes exactly one slot from that client's consumed live-submit approval artifact."
+reason = "Each admitted forced-reduction order consumes exactly one live forced-reduction counter slot from the kill-switch policy cap."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -6830,11 +6830,43 @@ reason = "Durable state-file schema version for forward-compatible recovery; not
 
 [[allowed]]
 path = "src/bolt_v3_atomic_io.rs"
+kind = "number"
+literal = '''0'''
+context = '''static PRIVATE_ATOMIC_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);'''
+classification = "shared_atomic_io_temp_counter_identity"
+reason = "Internal same-directory temporary file uniqueness counter starts empty; durable paths remain TOML-owned by callers."
+
+[[allowed]]
+path = "src/bolt_v3_atomic_io.rs"
+kind = "number"
+literal = '''1'''
+context = '''let counter = PRIVATE_ATOMIC_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);'''
+classification = "shared_atomic_io_temp_counter_increment"
+reason = "Internal same-directory temporary file uniqueness counter increments by one per atomic write attempt; durable paths remain TOML-owned by callers."
+
+[[allowed]]
+path = "src/bolt_v3_atomic_io.rs"
+kind = "number"
+literal = '''0'''
+context = '''.unwrap_or(0);'''
+classification = "shared_atomic_io_temp_timestamp_fallback"
+reason = "Internal temporary file uniqueness falls back to zero only when system time is before the Unix epoch; durable paths remain TOML-owned by callers."
+
+[[allowed]]
+path = "src/bolt_v3_atomic_io.rs"
 kind = "string"
-literal = '''".tmp"'''
-context = '''temp_path.push(".tmp");'''
+literal = '''"tmp"'''
+context = '''private_atomic_temp_path_with_suffix(path, "tmp")'''
 classification = "shared_atomic_io_temp_suffix"
 reason = "Internal same-directory temporary file suffix appended before atomic rename; durable paths remain TOML-owned by callers."
+
+[[allowed]]
+path = "src/bolt_v3_atomic_io.rs"
+kind = "string"
+literal = '''"."'''
+context = '''temp_path.push(".");'''
+classification = "shared_atomic_io_temp_suffix"
+reason = "Internal same-directory temporary path separator inserted before the unique temporary suffix; durable paths remain TOML-owned by callers."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
@@ -13213,9 +13245,49 @@ reason = "Validation diagnostic for disabled TOML source references from outcome
 path = "src/bolt_v3_basket_execution.rs"
 kind = "number"
 literal = '''10_000u32'''
-context = '''((edge / total_cost) * Decimal::from(10_000u32)).trunc()'''
+context = '''.checked_mul(Decimal::from(10_000u32))?'''
 classification = "algorithmic_constant"
 reason = "Basis-point denominator for normalized repair edge math; not a runtime-configured value."
+
+[[allowed]]
+path = "src/bolt_v3_basket_execution.rs"
+kind = "string"
+literal = '''"basket repair quantity arithmetic overflowed"'''
+context = '''reason: "basket repair quantity arithmetic overflowed".to_string(),'''
+classification = "executor_contract_diagnostic"
+reason = "Fail-closed repair diagnostic emitted when checked quantity arithmetic cannot produce a safe repair plan."
+
+[[allowed]]
+path = "src/bolt_v3_basket_execution.rs"
+kind = "string"
+literal = '''"basket repair cost arithmetic overflowed"'''
+context = '''reason: "basket repair cost arithmetic overflowed".to_string(),'''
+classification = "executor_contract_diagnostic"
+reason = "Fail-closed repair diagnostic emitted when checked cost arithmetic cannot produce a safe repair plan."
+
+[[allowed]]
+path = "src/bolt_v3_basket_execution.rs"
+kind = "string"
+literal = '''"basket repair payout arithmetic overflowed"'''
+context = '''reason: "basket repair payout arithmetic overflowed".to_string(),'''
+classification = "executor_contract_diagnostic"
+reason = "Fail-closed repair diagnostic emitted when checked payout arithmetic cannot produce a safe repair plan."
+
+[[allowed]]
+path = "src/bolt_v3_basket_execution.rs"
+kind = "string"
+literal = '''"basket repair edge arithmetic overflowed"'''
+context = '''reason: "basket repair edge arithmetic overflowed".to_string(),'''
+classification = "executor_contract_diagnostic"
+reason = "Fail-closed repair diagnostic emitted when checked edge arithmetic cannot produce a safe repair plan."
+
+[[allowed]]
+path = "src/bolt_v3_basket_execution.rs"
+kind = "string"
+literal = '''"fail-closed kill-switch recovery without state: {reason:?}"'''
+context = '''"fail-closed kill-switch recovery without state: {reason:?}"'''
+classification = "executor_contract_diagnostic"
+reason = "Fail-closed kill-switch diagnostic for a corrupt durable recovery result that reports failure without terminal state."
 
 [[allowed]]
 path = "src/bolt_v3_basket_execution.rs"

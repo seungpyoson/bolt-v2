@@ -2,6 +2,8 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
@@ -14,6 +16,8 @@ pub struct AtomicIoError {
     pub source: io::Error,
 }
 
+static PRIVATE_ATOMIC_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 pub fn write_private_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), AtomicIoError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| AtomicIoError {
@@ -22,7 +26,7 @@ pub fn write_private_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), Atomic
         })?;
     }
 
-    let temp_path = private_atomic_temp_path(path);
+    let temp_path = private_atomic_temp_path_for_write(path);
     let result = write_private_synced_temp_file(&temp_path, bytes).and_then(|()| {
         fs::rename(&temp_path, path)
             .map_err(|source| AtomicIoError {
@@ -40,14 +44,31 @@ pub fn write_private_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), Atomic
 }
 
 pub fn private_atomic_temp_path(path: &Path) -> PathBuf {
+    private_atomic_temp_path_with_suffix(path, "tmp")
+}
+
+fn private_atomic_temp_path_for_write(path: &Path) -> PathBuf {
+    let counter = PRIVATE_ATOMIC_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let timestamp_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    private_atomic_temp_path_with_suffix(
+        path,
+        &format!("tmp.{}.{}.{}", std::process::id(), timestamp_ns, counter),
+    )
+}
+
+fn private_atomic_temp_path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut temp_path = path.as_os_str().to_os_string();
-    temp_path.push(".tmp");
+    temp_path.push(".");
+    temp_path.push(suffix);
     PathBuf::from(temp_path)
 }
 
 fn write_private_synced_temp_file(path: &Path, bytes: &[u8]) -> Result<(), AtomicIoError> {
     let mut options = OpenOptions::new();
-    options.create(true).truncate(true).write(true);
+    options.create_new(true).write(true);
     configure_private_file_options(&mut options);
 
     let mut file = options.open(path).map_err(|source| AtomicIoError {

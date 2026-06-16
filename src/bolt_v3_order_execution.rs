@@ -289,7 +289,8 @@ mod tests {
     use crate::{
         bolt_v3_capital_reservation::CapitalPoolSnapshot,
         bolt_v3_decision_evidence::{
-            BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
+            BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
+            BoltV3BasketAdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
             BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
             BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
             BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
@@ -357,6 +358,13 @@ mod tests {
                 .lock()
                 .expect("recording admission mutex should not be poisoned")
                 .push(decision.clone());
+            Ok(())
+        }
+
+        fn record_basket_admission_decision(
+            &self,
+            _decision: &BoltV3BasketAdmissionDecisionEvidence,
+        ) -> Result<()> {
             Ok(())
         }
 

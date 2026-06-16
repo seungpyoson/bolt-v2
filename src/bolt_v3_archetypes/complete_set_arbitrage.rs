@@ -94,7 +94,7 @@ pub fn submit_mode_contract(mode: CompleteSetSubmitMode) -> CompleteSetSubmitMod
 pub fn validate_strategy(
     context: &str,
     strategy: &BoltV3StrategyConfig,
-    _default_max_notional_decimal: Option<&Decimal>,
+    default_max_notional_decimal: Option<&Decimal>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
     if strategy.strategy_archetype.as_str() != KEY {
@@ -158,7 +158,15 @@ pub fn validate_strategy(
         ));
     }
     match runtime.max_basket_notional.parse::<Decimal>() {
-        Ok(value) if value > Decimal::ZERO => {}
+        Ok(value) if value > Decimal::ZERO => {
+            if let Some(default_max_notional) = default_max_notional_decimal
+                && value > *default_max_notional
+            {
+                errors.push(format!(
+                    "{context}: parameters.runtime.max_basket_notional must not exceed risk.default_max_notional_per_order"
+                ));
+            }
+        }
         Ok(_) | Err(_) => errors.push(format!(
             "{context}: parameters.runtime.max_basket_notional must be a positive decimal"
         )),

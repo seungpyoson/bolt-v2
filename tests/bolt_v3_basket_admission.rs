@@ -302,6 +302,37 @@ fn basket_admission_rejects_stale_or_non_admissible_scanner_and_group_evidence()
         BoltV3BasketAdmissionError::MissingGroupingProof,
     );
 
+    let mut mismatched_group_scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
+    mismatched_group_scan.group_id = "other-group".to_string();
+    assert_basket_rejects(
+        "scanner group id must bind to requested group",
+        basket_request(
+            "basket-mismatched-group-id",
+            &group,
+            &mismatched_group_scan,
+            entry_claims(&group, dec!(0.9)),
+        ),
+        BoltV3BasketAdmissionError::GroupingProofMismatch,
+    );
+
+    let mut mismatched_proof_scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
+    mismatched_proof_scan.grouping_proof = Some(GroupingProof::HyperliquidOutcome {
+        question: 42,
+        outcome_indices: vec![0, 1],
+        proof_fingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
+    });
+    assert_basket_rejects(
+        "scanner grouping proof must bind to requested group",
+        basket_request(
+            "basket-mismatched-grouping-proof",
+            &group,
+            &mismatched_proof_scan,
+            entry_claims(&group, dec!(0.9)),
+        ),
+        BoltV3BasketAdmissionError::GroupingProofMismatch,
+    );
+
     let no_settlement = group_without_settlement_rules(&group);
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
     assert_basket_rejects(
@@ -412,6 +443,48 @@ fn basket_submit_slots_carry_position_sizing_evidence_into_shared_gate() {
         2,
         "basket legs must record submit reservation metadata before commit"
     );
+}
+
+#[test]
+fn basket_submit_slots_reject_position_sizing_that_does_not_match_order_shape() {
+    let writer = Arc::new(RecordingBasketDecisionWriter::default());
+    let submit_gate = position_sized_submit_state(writer);
+    let group = fixture_group();
+    let mut claims = entry_claims(&group, dec!(0.9));
+    attach_position_sizing(&mut claims);
+    seed_position_sizer_for_claims(&submit_gate, &claims);
+    claims[0]
+        .position_sizing
+        .as_mut()
+        .expect("fixture should carry position sizing")
+        .quantity = dec!(0.5);
+
+    let rejected = submit_gate
+        .reserve_basket_submit_slots(
+            "polymarket_main",
+            &claims,
+            &basket_slot_evidence("shape-mismatch", &group),
+        )
+        .expect_err("position-sizing evidence must bind to submitted order shape");
+
+    assert_eq!(
+        rejected,
+        BoltV3SubmitAdmissionError::PositionSizingRejected {
+            reason: bolt_v2::bolt_v3_submit_admission::BoltV3PositionSizerRejectReason::OrderShapeMismatch,
+        }
+    );
+    assert_eq!(submit_gate.admitted_order_count(), 0);
+    assert_eq!(
+        submit_gate.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    for claim in &claims {
+        assert!(
+            !submit_gate.position_sizer_has_live_reservation(&claim.client_order_id),
+            "rejected basket leg {} must not retain a reservation",
+            claim.client_order_id
+        );
+    }
 }
 
 #[test]

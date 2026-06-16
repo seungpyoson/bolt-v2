@@ -47,6 +47,7 @@ pub enum BoltV3BasketAdmissionError {
     EdgeThreshold,
     SubmitClaimsMismatch,
     MissingGroupingProof,
+    GroupingProofMismatch,
     MissingSettlementRules,
     RetryBudgetExceeded,
     BasketAlreadyOpen,
@@ -74,6 +75,12 @@ impl std::fmt::Display for BoltV3BasketAdmissionError {
                 write!(f, "basket admission submit claims must match scanned legs")
             }
             Self::MissingGroupingProof => write!(f, "basket admission missing grouping proof"),
+            Self::GroupingProofMismatch => {
+                write!(
+                    f,
+                    "basket admission scanner grouping proof does not match group"
+                )
+            }
             Self::MissingSettlementRules => write!(f, "basket admission missing settlement rules"),
             Self::RetryBudgetExceeded => write!(f, "basket admission retry budget exceeded"),
             Self::BasketAlreadyOpen => write!(f, "basket admission basket id is already open"),
@@ -146,12 +153,12 @@ impl BoltV3BasketAdmissionState {
             self.record_basket_decision(request, basket_outcome_from_error(&error))?;
             return Err(error);
         }
+        let evidence = basket_decision_evidence(request, BoltV3BasketAdmissionOutcome::Admitted)?;
         if let Err(error) = self.reserve_open_basket(request) {
             self.record_basket_decision(request, basket_outcome_from_error(&error))?;
             return Err(error);
         }
 
-        let evidence = basket_decision_evidence(request, BoltV3BasketAdmissionOutcome::Admitted)?;
         let submit_permit = match submit_admission.reserve_basket_submit_slots(
             request.execution_client_id,
             &request.submit_claims,
@@ -192,10 +199,16 @@ impl BoltV3BasketAdmissionState {
         &self,
         request: &BoltV3BasketAdmissionRequest<'_>,
     ) -> Result<(), BoltV3BasketAdmissionError> {
-        if request.group.grouping_proof.is_none()
-            || request.scanner_evidence.grouping_proof.is_none()
-        {
+        let Some(grouping_proof) = request.group.grouping_proof.as_ref() else {
             return Err(BoltV3BasketAdmissionError::MissingGroupingProof);
+        };
+        let Some(scanner_grouping_proof) = request.scanner_evidence.grouping_proof.as_ref() else {
+            return Err(BoltV3BasketAdmissionError::MissingGroupingProof);
+        };
+        if request.scanner_evidence.group_id != request.group.group_id
+            || scanner_grouping_proof != grouping_proof
+        {
+            return Err(BoltV3BasketAdmissionError::GroupingProofMismatch);
         }
         if ValidatedOutcomeGroup::validate(request.group).is_err() {
             return Err(BoltV3BasketAdmissionError::MissingSettlementRules);
@@ -253,6 +266,14 @@ impl BoltV3BasketAdmissionState {
 
         let mut scanned_notional_by_instrument = BTreeMap::new();
         for leg in &request.scanner_evidence.leg_costs {
+            if !request
+                .group
+                .tradable_legs
+                .values()
+                .any(|group_leg| group_leg.instrument_id.to_string() == leg.instrument_id)
+            {
+                return Err(BoltV3BasketAdmissionError::SubmitClaimsMismatch);
+            }
             if scanned_notional_by_instrument
                 .insert(leg.instrument_id.to_string(), leg.total_adjusted_cost)
                 .is_some()
@@ -388,6 +409,9 @@ fn basket_outcome_from_error(error: &BoltV3BasketAdmissionError) -> BoltV3Basket
         }
         BoltV3BasketAdmissionError::MissingGroupingProof => {
             BoltV3BasketAdmissionOutcome::RejectedMissingGroupingProof
+        }
+        BoltV3BasketAdmissionError::GroupingProofMismatch => {
+            BoltV3BasketAdmissionOutcome::RejectedSubmitSlots
         }
         BoltV3BasketAdmissionError::MissingSettlementRules => {
             BoltV3BasketAdmissionOutcome::RejectedMissingSettlementRules

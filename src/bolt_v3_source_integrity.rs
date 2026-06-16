@@ -146,46 +146,11 @@ mod tests {
     // registry-owned canonical source stream. The full re-derivation trail
     // belongs in git history, not in this invariant comment.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "546d637cc2daa7c5936f5ef86dc737ae39791489ce9b9c12643c2e208111c292";
+        "a86a67156c5b1b9f82915ef8eaa27c62e5dd5eb1cb2d783d95d7f6a70899e7b3";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "caec8f1796e021430fe93a90668135e00f132f8c99349bdbd8304308f23df794";
-    // GOLDEN_OUTCOME_GROUP_DIGEST is introduced by the shared outcome-group
-    // substrate source-integrity task after every first-slice source root exists
-    // on disk. Re-derived after Task 10 activated the complete-set runtime
-    // binding and production strategy shell, then after Task 11 added the HIP-4
-    // outcome-group normalizer root. Re-derived after PR review tightened
-    // non-standard payout and positive-side binding validation. Re-derived
-    // after merging main into the shared outcome-group substrate branch.
-    // Re-derived after the NT order-management contract moved to the shared
-    // order-execution boundary while basket execution and complete-set shell
-    // delegate to it.
-    // Re-derived after fixing complete-set registration for main's shared
-    // order-execution policy context.
-    // Re-derived after shared outcome freshness and basket submit validation
-    // moved into shared execution/source modules.
-    // Re-derived after basket execution repair/unwind planning tightened partial
-    // quantity handling.
-    // Re-derived after adversarial review fixes tightened basket execution,
-    // admission, source validation, atomic I/O, and price-scale invariants.
-    // Re-derived again after binding Polymarket discovery scope to the
-    // injectively framed native cache key fingerprint.
-    // Re-derived again after threading basket-stuck kill-switch transition
-    // evidence from the actual halting-state write result.
-    // Re-derived again after submit-time freshness, submit-claim binding,
-    // printable operator strings, activation guard, and submit-mode/venue
-    // single-owner fixes.
-    // Re-derived again after moving printable operator-string validation ahead
-    // of attestation and metadata hashing.
-    // Re-derived again after routing outcome-group venue keys through
-    // provider-neutral exports for the provider-leak fence.
-    // Re-derived again after exposing indexed canonical fields to sibling
-    // outcome-group normalizers without changing the fingerprint framing.
-    // Re-derived after resolving current main conflicts in the shared
-    // outcome-group substrate.
-    // Re-derived after committing basket submit-slot permits on successful
-    // shared basket admission.
+        "1272c25f08c1f3ca8359b0f06e1be187e7e67e5ba1da8d2836022dc50e70e752";
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "9484632e0a2caf91074ddea1286860404076bff140db52b5b36c6d610cc3cd36";
+        "2c1ea8435f53f30efbb85e60b30171ca05b4f8f51daeae63873988d2101a9ab7";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

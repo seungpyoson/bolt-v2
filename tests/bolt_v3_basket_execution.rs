@@ -396,6 +396,49 @@ fn repair_denial_transitions_to_unwind_or_stuck_without_live_submit() {
 }
 
 #[test]
+fn repair_and_unwind_reject_duplicate_leg_identifiers_instead_of_deduping() {
+    let duplicate_targets = BoltV3BasketRepairInput {
+        admitted_target_quantities: vec![
+            ("YES".to_string(), dec("1.0")),
+            ("YES".to_string(), dec("1.0")),
+        ],
+        filled_quantities: vec![("YES".to_string(), dec("0.5"))],
+        filled_cost: dec("0.20"),
+        payout_matrix: vec![vec![dec("1.0"), dec("1.0")]],
+        executable_repair_legs: vec![repair_leg("YES", dec("1.0"), dec("0.43"), 1_000)],
+        admitted_absolute_edge_floor: dec("0.01"),
+        admitted_edge_bps_floor: dec("1"),
+        remaining_retry_budget: 1,
+        now_unix_ms: 1_100,
+    };
+
+    assert_eq!(
+        duplicate_targets.plan_repair(&repair_policy()),
+        BoltV3BasketRepairOutcome::Stuck {
+            reason: "basket repair leg identifiers must be unique".to_string()
+        }
+    );
+
+    let duplicate_unwind = BoltV3BasketUnwindInput {
+        filled_quantities: vec![
+            ("YES".to_string(), dec("1.0")),
+            ("YES".to_string(), dec("1.0")),
+        ],
+        executable_unwind_legs: vec![repair_leg("YES", dec("1.0"), dec("0.43"), 1_000)],
+        now_unix_ms: 1_100,
+        settled: false,
+        remaining_retry_budget: 1,
+    };
+
+    assert_eq!(
+        duplicate_unwind.plan_unwind(&unwind_policy()),
+        BoltV3BasketUnwindOutcome::Stuck {
+            reason: "basket unwind leg identifiers must be unique".to_string()
+        }
+    );
+}
+
+#[test]
 fn unwind_requires_fresh_executable_reductions_for_every_filled_leg() {
     let input = BoltV3BasketUnwindInput {
         filled_quantities: vec![
@@ -697,7 +740,7 @@ fn restart_reconciliation_joins_client_id_then_venue_id_and_stucks_orphans() {
                 venue_order_id: Some("VOID-NO".to_string()),
                 filled_quantity: dec("1.0"),
                 filled_cost: dec("0.46"),
-                report_class: BoltV3ExternalReportClass::EngineClassifiedExternal,
+                report_class: BoltV3ExternalReportClass::StrategyOwned,
             },
         ])
         .expect("deterministic reports should adopt");
@@ -719,6 +762,58 @@ fn restart_reconciliation_joins_client_id_then_venue_id_and_stucks_orphans() {
 
     assert_eq!(orphan.status(), BoltV3BasketExecutionStatus::Stuck);
     assert!(orphan.unresolved_real_exposure());
+}
+
+#[test]
+fn restart_reconciliation_rejects_non_strategy_or_cross_instrument_reports() {
+    let mut external = reserved_basket();
+    external
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-EXTERNAL",
+            leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
+        )
+        .expect("command should build");
+    external
+        .apply_event(BoltV3BasketExecutionEvent::VenueOrderId {
+            client_order_id: "COID-NO".to_string(),
+            venue_order_id: "VOID-NO".to_string(),
+        })
+        .expect("venue order id should persist");
+
+    external
+        .reconcile_restart(&[BoltV3BasketRestartReport {
+            instrument_id: "NO.POLYMARKET".to_string(),
+            client_order_id: None,
+            venue_order_id: Some("VOID-NO".to_string()),
+            filled_quantity: dec("1.0"),
+            filled_cost: dec("0.46"),
+            report_class: BoltV3ExternalReportClass::EngineClassifiedExternal,
+        }])
+        .expect("external report should classify without panicking");
+
+    assert_eq!(external.status(), BoltV3BasketExecutionStatus::Stuck);
+    assert!(external.unresolved_real_exposure());
+
+    let mut wrong_instrument = reserved_basket();
+    wrong_instrument
+        .reconcile_restart(&[BoltV3BasketRestartReport {
+            instrument_id: "NO.POLYMARKET".to_string(),
+            client_order_id: Some("COID-YES".to_string()),
+            venue_order_id: None,
+            filled_quantity: dec("1.0"),
+            filled_cost: dec("0.44"),
+            report_class: BoltV3ExternalReportClass::StrategyOwned,
+        }])
+        .expect("cross-instrument report should classify without panicking");
+
+    assert_eq!(
+        wrong_instrument.status(),
+        BoltV3BasketExecutionStatus::Stuck
+    );
+    assert!(wrong_instrument.unresolved_real_exposure());
 }
 
 #[test]
@@ -754,6 +849,79 @@ fn stuck_basket_trips_dedicated_kill_switch_and_blocks_new_admission() {
         blocked.to_string(),
         "bolt-v3 submit admission is blocked by kill-switch state Halted"
     );
+}
+
+#[test]
+fn stuck_basket_kill_switch_preserves_existing_non_armed_state() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let kill_store = KillSwitchStore::new(temp.path().join("kill-switch.json"));
+    let existing = KillSwitchState::FailedManualIntervention {
+        halt_id: "existing-halt".to_string(),
+        reason: "operator intervention required".to_string(),
+    };
+    kill_store
+        .write_state(&existing)
+        .expect("existing state should persist");
+    let writer = Arc::new(NoopDecisionEvidenceWriter);
+    let submit_admission = BoltV3SubmitAdmissionState::new(writer);
+    let mut basket = reserved_basket();
+    basket
+        .apply_event(BoltV3BasketExecutionEvent::CancelRejected {
+            reason: "unresolved real exposure".to_string(),
+        })
+        .expect("stuck should apply");
+
+    let kill_state =
+        trip_stuck_basket_kill_switch(&basket, &kill_store, &submit_admission, 1_717_200_000)
+            .expect("existing fail-closed state should be preserved");
+
+    assert_eq!(kill_state, existing);
+    let blocked = submit_admission
+        .admit(&sample_submit_request())
+        .expect_err("preserved failed-manual-intervention state must block entry admission");
+    assert_eq!(
+        blocked.to_string(),
+        "bolt-v3 submit admission is blocked by kill-switch state FailedManualIntervention"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn stuck_basket_kill_switch_latches_failed_manual_intervention_on_store_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let blocked_dir = temp.path().join("blocked");
+    fs::create_dir(&blocked_dir).expect("blocked directory should create");
+    fs::set_permissions(&blocked_dir, fs::Permissions::from_mode(0o500))
+        .expect("blocked directory should become read-only");
+    let kill_store = KillSwitchStore::new(blocked_dir.join("kill-switch.json"));
+    let writer = Arc::new(NoopDecisionEvidenceWriter);
+    let submit_admission = BoltV3SubmitAdmissionState::new(writer);
+    let mut basket = reserved_basket();
+    basket
+        .apply_event(BoltV3BasketExecutionEvent::CancelRejected {
+            reason: "unresolved real exposure".to_string(),
+        })
+        .expect("stuck should apply");
+
+    let kill_state =
+        trip_stuck_basket_kill_switch(&basket, &kill_store, &submit_admission, 1_717_200_000)
+            .expect("store failure should still produce an in-memory fail-closed state");
+
+    assert_eq!(
+        kill_state.kind(),
+        KillSwitchStateKind::FailedManualIntervention
+    );
+    let blocked = submit_admission
+        .admit(&sample_submit_request())
+        .expect_err("failed-manual-intervention state must block entry admission");
+    assert_eq!(
+        blocked.to_string(),
+        "bolt-v3 submit admission is blocked by kill-switch state FailedManualIntervention"
+    );
+    fs::set_permissions(&blocked_dir, fs::Permissions::from_mode(0o700))
+        .expect("blocked directory permissions should restore for cleanup");
 }
 
 #[test]

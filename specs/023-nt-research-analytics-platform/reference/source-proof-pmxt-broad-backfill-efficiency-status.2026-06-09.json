@@ -9,15 +9,15 @@
   "committed_input_hashes": {
     "coverage_ledger_status": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-coverage-ledger-status.2026-06-09.json",
-      "sha256": "dc126e89446164e9603db390d7b0e3e8c5d5803605d31a659988b8e0d2a2a34b"
+      "sha256": "9341276468e652fa0aa35e8492764a6df81c59d13184671d9a7ac8a03391b4f9"
     },
     "durable_source_selection_status": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json",
-      "sha256": "04fe7cd3988beded4f4054e35f6ad9558ee03a0e27d7849d5b55febdae25656e"
+      "sha256": "95da7272a5655ca9835210d597c016d867874b2ec2bb14663616a73bb7566e9d"
     },
     "dynamic_tick_size_replay_status": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-dynamic-tick-size-replay-status.2026-06-16.json",
-      "sha256": "1d1d10f035b3182d5e2d3febf7ef7f9087bb48c5a5e5f6f0f2e1a05b1dc29c18"
+      "sha256": "bf4658e0fea6b5678e1dad0f2d24c8751cb2920375f1f305cfdea3e557efe229"
     }
   },
   "guard_verification": {

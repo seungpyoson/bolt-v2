@@ -237,7 +237,7 @@ BTE_DURABLE_GUARD_EVIDENCE = (
     "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml explicitly lists missing_accepted_source_proof on pmxt-polymarket-full-current-data while source_accepted_proof_count remains 0.",
     "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml keeps pmxt-polymarket-full-current-data blocked while repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json pins source_accepted_proof_count=0.",
     "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json records the source-controlled PMXT durable-source guard: one pending proof in the committed TOML spec, zero accepted proofs, generated bulk JSON evicted by policy, and source-fence static coverage via scripts/verify_bte_022_pmxt_durable_source.py.",
-    "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json source-fences the PMXT pending fixture against crates/backtesting-vertical-slice/src/source_proof_admissibility.rs and crates/backtesting-vertical-slice/src/source_proof.rs as current_contract_rejected with missing_current_contract_field=acceptance_scope and acceptance_failed because one_off_backfill_data source proofs cannot be accepted as canonical source proof input.",
+    "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json source-fences the PMXT pending fixture against crates/backtesting-vertical-slice/src/source_proof_admissibility.rs and crates/backtesting-vertical-slice/src/source_proof.rs as current_contract_rejected with current contract fields present, acceptance_failed because raw_sample_uri must be staged to s3:// before canonical acceptance, and explicit one_off_backfill_data usage that cannot be promoted to canonical source proof input.",
     "STATIC-GATED scripts/verify_bte_022_pmxt_durable_source.py rejects drift from pending/one_off_backfill_data PMXT source proof state, missing pmxt-polymarket-full-current-data blocking issues, BTE-022 close claims, and source-fence wiring gaps.",
 )
 BTE_DURABLE_GUARD_CLAIM_LIMITS = (
@@ -284,6 +284,8 @@ BTE_STATUS_DECISION = (
     "and bound to a result contract."
 )
 SOURCE_PROOF_ACCEPTANCE_SNIPPETS = (
+    'ensure_staged_s3_uri("raw_sample_uri", &self.raw_sample_uri)?',
+    'uri.starts_with("s3://")',
     "fn validate_source_selection(proof: &SourceProofReport) -> Result<(), AcceptanceError>",
     "proof.usage_scope == SourceProofUsageScope::OneOffBackfillData",
     "return Err(AcceptanceError::OneOffBackfillDataNotCanonical);",
@@ -602,21 +604,21 @@ def check_durable_status_artifact(durable_status: dict, findings: list[str]) -> 
         PMXT_DURABLE_STATUS,
         "source_proof_admissibility_status.blocking_issues",
         admissibility_status.get("blocking_issues"),
-        ("missing_current_contract_field", "acceptance_failed"),
+        ("acceptance_failed",),
         findings,
     )
     require_list_equal(
         PMXT_DURABLE_STATUS,
         "source_proof_admissibility_status.missing_current_contract_fields",
         admissibility_status.get("missing_current_contract_fields"),
-        ("acceptance_scope",),
+        (),
         findings,
     )
     require_equal(
         PMXT_DURABLE_STATUS,
         "source_proof_admissibility_status.acceptance_error",
         admissibility_status.get("acceptance_error"),
-        "one_off_backfill_data source proofs cannot be accepted as canonical source proof input",
+        'raw_sample_uri must be a staged s3:// URI, got "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet"',
         findings,
     )
     require_equal(
@@ -871,6 +873,13 @@ def scan_root(root: Path) -> list[str]:
         findings,
     )
     require_equal(PMXT_SOURCE_PROOF_FIXTURE, "usage_scope", fixture.get("usage_scope"), "one_off_backfill_data", findings)
+    acceptance_scope = nested_mapping(fixture, ("acceptance_scope",), PMXT_SOURCE_PROOF_FIXTURE, findings)
+    require_equal(PMXT_SOURCE_PROOF_FIXTURE, "acceptance_scope.planned_objects", acceptance_scope.get("planned_objects"), 1, findings)
+    require_equal(PMXT_SOURCE_PROOF_FIXTURE, "acceptance_scope.completed_objects", acceptance_scope.get("completed_objects"), 1, findings)
+    require_equal(PMXT_SOURCE_PROOF_FIXTURE, "acceptance_scope.failed_objects", acceptance_scope.get("failed_objects"), 0, findings)
+    require_equal(PMXT_SOURCE_PROOF_FIXTURE, "acceptance_scope.skipped_objects", acceptance_scope.get("skipped_objects"), 0, findings)
+    require_equal(PMXT_SOURCE_PROOF_FIXTURE, "acceptance_scope.accepted_bytes", acceptance_scope.get("accepted_bytes"), 361_365_244, findings)
+    require_equal(PMXT_SOURCE_PROOF_FIXTURE, "acceptance_scope.selector_scope_violations", acceptance_scope.get("selector_scope_violations"), 0, findings)
     check_required_checks(
         PMXT_SOURCE_PROOF_FIXTURE,
         fixture.get("required_checks", {}),

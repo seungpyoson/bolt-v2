@@ -21,7 +21,7 @@
   "committed_input_hashes": {
     "pending_source_fixture": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
-      "sha256": "c4220593b6fe58023561c61e10c58916c3251988ed613a37991e8ebcff4fa15f"
+      "sha256": "0ce36fc546f7da91a8b174e54bce7ec81dbc94e6f8459d49cf20483dd2732ce0"
     },
     "source_universe_manifest": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",

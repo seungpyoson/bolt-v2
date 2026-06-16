@@ -164,9 +164,18 @@ def source_fixture_json(*, usage_scope: str = "one_off_backfill_data") -> str:
     return f"""{{
   "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
   "source_binding": "polymarket-parquet-archive-index",
+  "raw_sample_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
   "status": "pending",
   "source_selection_status": "PENDING_MORE_PROOF",
   "usage_scope": "{usage_scope}",
+  "acceptance_scope": {{
+    "planned_objects": 1,
+    "completed_objects": 1,
+    "failed_objects": 0,
+    "skipped_objects": 0,
+    "accepted_bytes": 361365244,
+    "selector_scope_violations": 0
+  }},
   "required_checks": {{
 {required_checks}
   }}
@@ -204,7 +213,7 @@ def bte_status_json(*, can_close: bool = False) -> str:
             "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml explicitly lists missing_accepted_source_proof on pmxt-polymarket-full-current-data while source_accepted_proof_count remains 0.",
             "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml keeps pmxt-polymarket-full-current-data blocked while repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json pins source_accepted_proof_count=0.",
             "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json records the source-controlled PMXT durable-source guard: one pending proof in the committed TOML spec, zero accepted proofs, generated bulk JSON evicted by policy, and source-fence static coverage via scripts/verify_bte_022_pmxt_durable_source.py.",
-            "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json source-fences the PMXT pending fixture against crates/backtesting-vertical-slice/src/source_proof_admissibility.rs and crates/backtesting-vertical-slice/src/source_proof.rs as current_contract_rejected with missing_current_contract_field=acceptance_scope and acceptance_failed because one_off_backfill_data source proofs cannot be accepted as canonical source proof input.",
+            "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json source-fences the PMXT pending fixture against crates/backtesting-vertical-slice/src/source_proof_admissibility.rs and crates/backtesting-vertical-slice/src/source_proof.rs as current_contract_rejected with current contract fields present, acceptance_failed because raw_sample_uri must be staged to s3:// before canonical acceptance, and explicit one_off_backfill_data usage that cannot be promoted to canonical source proof input.",
             "STATIC-GATED scripts/verify_bte_022_pmxt_durable_source.py rejects drift from pending/one_off_backfill_data PMXT source proof state, missing pmxt-polymarket-full-current-data blocking issues, BTE-022 close claims, and source-fence wiring gaps.",
         ],
         "claim_limits": [
@@ -319,14 +328,11 @@ def durable_status_json(root: Path) -> str:
     }},
     "current_contract_deserializes": true,
     "expected_record_status": "current_contract_rejected",
-    "missing_current_contract_fields": [
-      "acceptance_scope"
-    ],
+    "missing_current_contract_fields": [],
     "blocking_issues": [
-      "missing_current_contract_field",
       "acceptance_failed"
     ],
-    "acceptance_error": "one_off_backfill_data source proofs cannot be accepted as canonical source proof input",
+    "acceptance_error": "raw_sample_uri must be a staged s3:// URI, got \\"https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet\\"",
     "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
     "source_binding": "polymarket-parquet-archive-index",
     "usage_scope": "one_off_backfill_data",
@@ -481,6 +487,8 @@ def write_complete_fixture(root: Path) -> None:
         "crates/backtesting-vertical-slice/src/source_proof.rs",
         (
             "fn validate_source_selection(proof: &SourceProofReport) -> Result<(), AcceptanceError> {\n"
+            "    ensure_staged_s3_uri(\"raw_sample_uri\", &self.raw_sample_uri)?;\n"
+            "    uri.starts_with(\"s3://\");\n"
             "    if proof.usage_scope == SourceProofUsageScope::OneOffBackfillData {\n"
             "        return Err(AcceptanceError::OneOffBackfillDataNotCanonical);\n"
             "    }\n"
@@ -812,7 +820,7 @@ def test_durable_status_admissibility_drift_is_a_finding() -> None:
         durable_status = json.loads(durable_status_json(root))
         admissibility_status = durable_status["source_proof_admissibility_status"]
         admissibility_status["expected_record_status"] = "accept_ready"
-        admissibility_status["missing_current_contract_fields"] = []
+        admissibility_status["missing_current_contract_fields"] = ["acceptance_scope"]
         admissibility_status["blocking_issues"] = []
         admissibility_status["acceptance_error"] = None
         write_file(root, str(verifier.PMXT_DURABLE_STATUS), json.dumps(durable_status, indent=2) + "\n")

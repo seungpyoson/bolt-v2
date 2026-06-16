@@ -240,30 +240,36 @@ impl RealizedVolSurfaceRuntime {
         &self,
         surface_id: &str,
     ) -> Vec<(InstrumentId, Option<ClientId>)> {
-        quote_trade_index_requests(
-            &self.subscription_requests_for_surface(surface_id),
-            RealizedVolSubscriptionKind::Quotes,
-        )
+        match self.subscription_requests_by_surface.get(surface_id) {
+            Some(requests) => {
+                quote_trade_index_requests(requests, RealizedVolSubscriptionKind::Quotes)
+            }
+            None => Vec::new(),
+        }
     }
 
     pub fn trade_subscription_requests_for_surface(
         &self,
         surface_id: &str,
     ) -> Vec<(InstrumentId, Option<ClientId>)> {
-        quote_trade_index_requests(
-            &self.subscription_requests_for_surface(surface_id),
-            RealizedVolSubscriptionKind::Trades,
-        )
+        match self.subscription_requests_by_surface.get(surface_id) {
+            Some(requests) => {
+                quote_trade_index_requests(requests, RealizedVolSubscriptionKind::Trades)
+            }
+            None => Vec::new(),
+        }
     }
 
     pub fn index_subscription_requests_for_surface(
         &self,
         surface_id: &str,
     ) -> Vec<(InstrumentId, Option<ClientId>)> {
-        quote_trade_index_requests(
-            &self.subscription_requests_for_surface(surface_id),
-            RealizedVolSubscriptionKind::IndexPrices,
-        )
+        match self.subscription_requests_by_surface.get(surface_id) {
+            Some(requests) => {
+                quote_trade_index_requests(requests, RealizedVolSubscriptionKind::IndexPrices)
+            }
+            None => Vec::new(),
+        }
     }
 
     pub fn observe(&mut self, observation: RealizedVolObservation) -> bool {

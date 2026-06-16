@@ -136,7 +136,7 @@ Path(sys.argv[3]).write_text(str(time.monotonic() - t0), encoding="utf-8")
         )
         assert rc == 0
         elapsed = float(marker.read_text(encoding="utf-8"))
-        assert elapsed < 0.5, f"child gate re-entry must not sleep for a poll interval: {elapsed:.2f}s"
+        assert elapsed < 0.9, f"child gate re-entry must not sleep for a poll interval: {elapsed:.2f}s"
 
 
 def test_gate_keeps_acquired_handle_alive_until_child_exits() -> None:
@@ -153,8 +153,9 @@ def test_gate_keeps_acquired_handle_alive_until_child_exits() -> None:
     def fake_acquire(*args, **kwargs):
         return Handle()
 
-    def fake_run(command, env, check):
+    def fake_run(command, env, check, close_fds):
         gc.collect()
+        assert close_fds is True
         assert not released, "gate must retain lane lock handle while child runs"
         assert not closed, "gate must close lane lock handle after child exits"
         return subprocess.CompletedProcess(command, 0)

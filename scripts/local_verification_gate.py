@@ -48,7 +48,7 @@ def run_gate(
     env = dict(os.environ)
     env[GATE_ENV] = "1"
     try:
-        return subprocess.run(list(command), env=env, check=False).returncode
+        return subprocess.run(list(command), env=env, check=False, close_fds=True).returncode
     finally:
         lane_governor.release(held_handle)
 

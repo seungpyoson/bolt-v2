@@ -4483,6 +4483,9 @@ def local_verification_inner_errors(
     if inner_name not in recipes:
         return []
     errors: list[str] = []
+    dependencies, _body = recipes[inner_name]
+    if any(dependency in LOCAL_VERIFICATION_GATE_RECIPES for dependency in dependencies):
+        errors.append(f"justfile {inner_name} must not depend on local verification gate recipes")
     for line in active_recipe_lines(recipes, inner_name):
         if "scripts/local_verification_gate.py" in line:
             errors.append(f"justfile {inner_name} must not invoke local verification gate recipes")

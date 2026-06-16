@@ -154,6 +154,35 @@ lane_governor.acquire(
 print("unexpected-acquired", time.monotonic() - t0)
 """
 
+LOCAL_GATE_HOLD_RUNNER = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+lock_dir, sentinel, hold = sys.argv[2], sys.argv[3], float(sys.argv[4])
+handle = lane_governor.acquire(
+    "local-gate:external", lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=30, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+Path(sentinel).write_text(str(time.time()), encoding="utf-8")
+time.sleep(hold)
+print("released", time.time())
+"""
+
+FORGED_GATE_ENV_RUNNER = """
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+lock_dir = sys.argv[2]
+os.environ[lane_governor.LOCAL_VERIFICATION_GATE_ENV] = "1"
+t0 = time.monotonic()
+lane_governor.acquire(
+    "forged-gate-env-runner", lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=1, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+print("unexpected-acquired", time.monotonic() - t0)
+"""
+
 # Parent: acquire, then spawn a child runner WITH A SCRUBBED ENV that attempts
 # acquire on the same lock dir. The child must pass through (ancestor holds).
 PARENT_CHILD_RUNNER = """
@@ -408,6 +437,20 @@ def test_unrelated_holder_does_not_reenter() -> None:
         assert "FAILED to acquire" in err
 
 
+def test_forged_gate_env_does_not_reenter_unrelated_local_gate_holder() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(LOCAL_GATE_HOLD_RUNNER, tmp, str(sentinel), "10")
+        _wait_for(sentinel)
+        waiter = _spawn(FORGED_GATE_ENV_RUNNER, tmp)
+        out, err = waiter.communicate(timeout=10)
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert waiter.returncode == 1, f"unrelated local gate holder must not pass through: {out}"
+        assert "FAILED to acquire" in err
+        assert "local-gate:external" in err
+
+
 def test_unexpected_flock_error_fails_immediately() -> None:
     lane_governor = _load("lane_governor")
     with tempfile.TemporaryDirectory() as tmp:
@@ -553,6 +596,7 @@ def main() -> int:
         test_fail_fast_refuses_busy_lane_without_queueing,
         test_release_closes_and_unregisters_held_handle,
         test_unrelated_holder_does_not_reenter,
+        test_forged_gate_env_does_not_reenter_unrelated_local_gate_holder,
         test_unexpected_flock_error_fails_immediately,
         test_scrubbed_env_child_reenters_while_parent_holds,
         test_scrubbed_env_grandchild_reenters_while_grandparent_holds,

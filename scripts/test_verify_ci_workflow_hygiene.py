@@ -1979,6 +1979,14 @@ source-fence: source-fence-static
     if not any("source-fence-static-inner must not invoke local verification gate recipes" in error for error in nested_public_errors):
         raise AssertionError(f"source-fence-static nested gate call was silent, got: {nested_public_errors}")
 
+    nested_public_dependency = justfile_text.replace(
+        "source-fence-static-inner: require-local-verification-gate",
+        "source-fence-static-inner: require-local-verification-gate fmt-check",
+    )
+    nested_dependency_errors = verifier.verify_source_fence_static_recipe(nested_public_dependency)
+    if not any("source-fence-static-inner must not depend on local verification gate recipes" in error for error in nested_dependency_errors):
+        raise AssertionError(f"source-fence-static nested gate dependency was silent, got: {nested_dependency_errors}")
+
     missing_lane_check = justfile_text.replace("    python3 scripts/verify_lane_governance.py\n", "")
     missing_errors = verifier.verify_source_fence_static_recipe(missing_lane_check)
     if not any("must run python3 scripts/verify_lane_governance.py" in error for error in missing_errors):
@@ -2036,6 +2044,14 @@ ci-lint-workflow-inner: require-local-verification-gate
     nested_public_errors = verifier.verify_local_verification_gate_recipes(nested_public_gate)
     if not any("justfile ci-lint-workflow-inner must not invoke local verification gate recipes" in error for error in nested_public_errors):
         raise AssertionError(f"ci-lint-workflow nested public gate call was silent, got: {nested_public_errors}")
+
+    nested_public_dependency = justfile_text.replace(
+        "ci-lint-workflow-inner: require-local-verification-gate",
+        "ci-lint-workflow-inner: require-local-verification-gate fmt-check",
+    )
+    nested_dependency_errors = verifier.verify_local_verification_gate_recipes(nested_public_dependency)
+    if not any("justfile ci-lint-workflow-inner must not depend on local verification gate recipes" in error for error in nested_dependency_errors):
+        raise AssertionError(f"ci-lint-workflow nested public gate dependency was silent, got: {nested_dependency_errors}")
 
     missing_guard = justfile_text.replace(
         "fmt-check-inner: require-local-verification-gate check-workspace",

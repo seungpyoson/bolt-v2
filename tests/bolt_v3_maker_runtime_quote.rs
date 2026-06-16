@@ -2,7 +2,10 @@ use anyhow::Result;
 use bolt_v2::{
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
     bolt_v3_maker_order_dispatch::{MakerOrderCommandSink, MakerOrderDispatchOutcome},
-    bolt_v3_maker_order_plan::{MakerLegBinding, MakerOrderIntent},
+    bolt_v3_maker_order_plan::{
+        MakerLegBinding, MakerMarketActionOrderInput, MakerOrderIntent,
+        maker_order_intent_from_market_action,
+    },
     bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
     bolt_v3_maker_rate_budget::build_requote_budget_pair,
     bolt_v3_maker_runtime_order::{
@@ -14,7 +17,7 @@ use bolt_v2::{
     },
     bolt_v3_market_families::static_binary_event,
     bolt_v3_order_intent::NtOrderTemplate,
-    bolt_v3_quote_lifecycle::{Leg, MarketState},
+    bolt_v3_quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketState},
 };
 use nautilus_common::{
     clock::{Clock, TestClock},
@@ -195,6 +198,120 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
             ClientOrderId::from("MAKER-NO-1"),
         ]
     );
+}
+
+#[test]
+fn canceled_requote_action_maps_to_prepaid_replacement_submit_without_budget_charge() {
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    assert_eq!(
+        market.on_leg_event(
+            Leg::Yes,
+            LegEvent::QuoteTrigger {
+                requote_needed: false
+            }
+        ),
+        Some(MarketAction::Leg {
+            leg: Leg::Yes,
+            action: LifecycleAction::Submit,
+        })
+    );
+    assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Accepted), None);
+
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+    let mut quote_set = quote_set_inputs();
+    quote_set.yes_resting_price = Some(0.40);
+    let decision = plan_maker_runtime_quote(
+        &mut market,
+        &mut budget,
+        MakerRuntimeQuoteInput {
+            quote_plan: quote_plan_inputs(static_binary_event::KEY),
+            quote_set,
+            order_plan: MakerRuntimeOrderPlanInput {
+                yes: MakerLegBinding {
+                    instrument_id: InstrumentId::from("YES.RUNTIME"),
+                    active_order: Some(order_identity("MAKER-YES-1", 1)),
+                    next_order: Some(order_identity("MAKER-YES-2", 2)),
+                },
+                no: MakerLegBinding {
+                    instrument_id: InstrumentId::from("NO.RUNTIME"),
+                    active_order: None,
+                    next_order: Some(order_identity("MAKER-NO-1", 1)),
+                },
+            },
+        },
+    );
+    let order_plan = decision
+        .order_plan
+        .as_ref()
+        .expect("requote tick should produce maker order intents");
+    assert!(matches!(
+        order_plan.yes.intent,
+        Some(MakerOrderIntent::Cancel { .. })
+    ));
+    let submit_commands_before_cancel_confirm = budget.submit_commands_in_window();
+    let rest_cost_before_cancel_confirm = budget.rest_cost_in_window();
+
+    let action = market
+        .on_leg_event(Leg::Yes, LegEvent::Canceled)
+        .expect("cancel confirmation should drive prepaid replacement submit");
+    assert_eq!(
+        budget.submit_commands_in_window(),
+        submit_commands_before_cancel_confirm
+    );
+    assert_eq!(
+        budget.rest_cost_in_window(),
+        rest_cost_before_cancel_confirm
+    );
+
+    let replacement = maker_order_intent_from_market_action(MakerMarketActionOrderInput {
+        action,
+        targets: decision
+            .quote_plan
+            .as_ref()
+            .expect("quote plan should exist")
+            .targets,
+        yes_quantity: quote_set.yes_quantity,
+        no_quantity: quote_set.no_quantity,
+        yes: MakerLegBinding {
+            instrument_id: InstrumentId::from("YES.RUNTIME"),
+            active_order: None,
+            next_order: Some(order_identity("MAKER-YES-2", 2)),
+        },
+        no: MakerLegBinding {
+            instrument_id: InstrumentId::from("NO.RUNTIME"),
+            active_order: None,
+            next_order: Some(order_identity("MAKER-NO-1", 1)),
+        },
+    });
+
+    match replacement.intent {
+        Some(MakerOrderIntent::Submit {
+            leg,
+            instrument_id,
+            order_identity,
+            price,
+            quantity,
+            ..
+        }) => {
+            assert_eq!(leg, Leg::Yes);
+            assert_eq!(instrument_id, InstrumentId::from("YES.RUNTIME"));
+            assert_eq!(order_identity, order_identity("MAKER-YES-2", 2));
+            assert_eq!(
+                price,
+                decision
+                    .quote_plan
+                    .as_ref()
+                    .expect("quote plan should exist")
+                    .targets
+                    .leg_a
+                    .price
+            );
+            assert_eq!(quantity, quote_set.yes_quantity);
+        }
+        other => panic!("expected prepaid replacement submit intent, got {other:?}"),
+    }
+    assert_eq!(replacement.blocked_by, None);
 }
 
 fn quote_plan_inputs(family_key: &str) -> MakerQuotePlanInputs<'_> {

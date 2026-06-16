@@ -98,7 +98,7 @@ fn runtime_quote_tick_uses_family_quote_plan_and_produces_order_intents() {
 
 #[test]
 fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
-    let mut selector = ReferencePriceSelector::new("BTC", vec!["primary"], 1, 500, 25)
+    let mut selector = ReferencePriceSelector::new("BTC", vec!["primary".to_string()], 1, 500, 25)
         .expect("selector fixture should be valid");
     let quotes = vec![reference_quote("BTC", "primary", 0.63, 1_000)];
 

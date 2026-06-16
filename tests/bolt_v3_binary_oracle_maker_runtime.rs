@@ -2,6 +2,7 @@ mod support;
 
 use anyhow::Result;
 use bolt_v2::{
+    bolt_v3_config::ReferencePriceProvider,
     bolt_v3_decision_evidence::BoltV3AdmissionOutcome,
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
@@ -11,17 +12,21 @@ use bolt_v2::{
     bolt_v3_maker_rate_budget::build_requote_budget_pair,
     bolt_v3_maker_runtime_quote::{
         MakerRuntimeOrderPlanInput, MakerRuntimeQuoteInput, MakerRuntimeQuoteSetInput,
+        MakerRuntimeReferenceFairValueBlockReason, MakerRuntimeReferenceFairValueInput,
         plan_maker_runtime_quote,
     },
-    bolt_v3_market_families::static_binary_event,
+    bolt_v3_market_families::{FairProbabilityInputs, static_binary_event, updown},
     bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
     bolt_v3_quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketState},
+    bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
     bolt_v3_submit_admission::{BoltV3SubmitAdmissionState, BoltV3SubmitLifecyclePolicy},
     strategies::{
         binary_oracle_maker::{
             BinaryOracleMaker, BinaryOracleMakerConfig, BinaryOracleMakerMarketActionRouteInput,
             BinaryOracleMakerRuntimeQuoteRouteInput,
+            BinaryOracleMakerRuntimeReferenceQuoteBlockReason,
+            BinaryOracleMakerRuntimeReferenceQuoteRouteInput,
         },
         registry::{FeeProvider, StrategyBuildContext},
     },
@@ -164,6 +169,157 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
     assert_eq!(records[1].strategy_id, "maker-strategy");
     assert_eq!(records[1].instrument_id, "NO.RUNTIME");
     assert_eq!(writer.admission_decisions().len(), 2);
+}
+
+#[test]
+fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_before_quote() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config(),
+        maker_context(writer.clone(), admission.clone()),
+    );
+    register_maker_for_order_factory(&mut maker);
+    let quotes = vec![
+        reference_quote("BTC", "primary", 99.0, 1_000),
+        reference_quote("BTC", "backup", 101.0, 1_490),
+    ];
+    let mut selector = ReferencePriceSelector::new(
+        "BTC",
+        vec!["primary".to_string(), "backup".to_string()],
+        1,
+        100,
+        25,
+    )
+    .expect("selector fixture should be valid");
+    let fair_input = MakerRuntimeReferenceFairValueInput {
+        family_key: updown::KEY,
+        interval_start_ms: 1_000,
+        interval_end_ms: 2_000,
+        now_ms: 1_500,
+        reference_quotes: &quotes,
+        strike_price: 100.0,
+        seconds_to_market_end: 300,
+        realized_vol: 1.5,
+        pricing_kurtosis: 0.25,
+    };
+    let expected_fair_probability_up = updown::fair_probability_up(&FairProbabilityInputs {
+        spot_price: 101.0,
+        strike_price: fair_input.strike_price,
+        seconds_to_market_end: fair_input.seconds_to_market_end,
+        realized_vol: fair_input.realized_vol,
+        pricing_kurtosis: fair_input.pricing_kurtosis,
+    })
+    .expect("updown fixture should price");
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+
+    let outcome = maker
+        .route_maker_runtime_reference_quote(
+            &mut market,
+            &mut budget,
+            &mut selector,
+            BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+                reference_fair_value: fair_input,
+                quote_plan: quote_plan_inputs(updown::KEY),
+                quote_set: quote_set_inputs(),
+                order_plan: order_plan_inputs(),
+                submit_template: &maker_limit_post_only_template(),
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+                max_fee_bps: Decimal::ZERO,
+                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            },
+        )
+        .expect("maker reference quote tick should route through shared context");
+
+    assert_eq!(outcome.blocked_by, None);
+    assert_eq!(outcome.fair_value.blocked_by, None);
+    let fair = outcome
+        .fair_value
+        .fair_value
+        .as_ref()
+        .expect("fresh backup reference current price should price");
+    assert_eq!(fair.spot_price, 101.0);
+    assert_eq!(fair.strike_price, fair_input.strike_price);
+    assert_eq!(fair.seconds_to_market_end, fair_input.seconds_to_market_end);
+    assert_eq!(fair.realized_vol, fair_input.realized_vol);
+    assert_eq!(fair.pricing_kurtosis, fair_input.pricing_kurtosis);
+    assert_eq!(fair.reference_current_price, 101.0);
+    assert_eq!(fair.reference_current_price_source_id, "backup");
+    assert!(fair.reference_current_price_failed_over);
+    assert_eq!(fair.fair_probability_up, expected_fair_probability_up);
+    let quote_plan = outcome
+        .quote
+        .as_ref()
+        .and_then(|decision| decision.quote_plan.as_ref())
+        .expect("reference fair value should feed a maker quote plan");
+    assert_eq!(quote_plan.fair_probability_up, expected_fair_probability_up);
+    assert!(
+        outcome.orders.is_some(),
+        "reference-priced quote should dispatch maker orders"
+    );
+    assert_eq!(market.market_state(), MarketState::Quoting);
+    assert_eq!(writer.records().len(), 2);
+
+    let blocked_writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let blocked_admission = Arc::new(BoltV3SubmitAdmissionState::new(blocked_writer.clone()));
+    let mut blocked_maker = BinaryOracleMaker::new(
+        maker_config(),
+        maker_context(blocked_writer.clone(), blocked_admission),
+    );
+    register_maker_for_order_factory(&mut blocked_maker);
+    let mut blocked_selector =
+        ReferencePriceSelector::new("BTC", vec!["primary".to_string()], 1, 100, 25)
+            .expect("selector fixture should be valid");
+    let mut blocked_market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut blocked_budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+
+    let blocked = blocked_maker
+        .route_maker_runtime_reference_quote(
+            &mut blocked_market,
+            &mut blocked_budget,
+            &mut blocked_selector,
+            BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+                reference_fair_value: MakerRuntimeReferenceFairValueInput {
+                    reference_quotes: &[],
+                    ..fair_input
+                },
+                quote_plan: quote_plan_inputs(updown::KEY),
+                quote_set: quote_set_inputs(),
+                order_plan: order_plan_inputs(),
+                submit_template: &maker_limit_post_only_template(),
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+                max_fee_bps: Decimal::ZERO,
+                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            },
+        )
+        .expect("maker reference quote blocker should be a route outcome");
+
+    assert_eq!(blocked.fair_value.fair_value, None);
+    assert_eq!(
+        blocked.fair_value.blocked_by,
+        Some(MakerRuntimeReferenceFairValueBlockReason::ReferenceCurrentPriceUnavailable)
+    );
+    assert_eq!(
+        blocked.blocked_by,
+        Some(
+            BinaryOracleMakerRuntimeReferenceQuoteBlockReason::FairValue(
+                MakerRuntimeReferenceFairValueBlockReason::ReferenceCurrentPriceUnavailable
+            )
+        )
+    );
+    assert_eq!(blocked.quote, None);
+    assert_eq!(blocked.orders, None);
+    assert_eq!(blocked_market.market_state(), MarketState::Idle);
+    assert_eq!(blocked_budget.submit_commands_in_window(), 0);
+    assert_eq!(blocked_budget.rest_cost_in_window(), 0);
+    assert_eq!(blocked_writer.records().len(), 0);
 }
 
 #[test]
@@ -418,4 +574,25 @@ fn maker_limit_post_only_template() -> NtOrderTemplate {
         is_reduce_only: false,
         is_quote_quantity: false,
     }
+}
+
+fn reference_quote(
+    asset: &str,
+    source_id: &str,
+    price: f64,
+    observed_ts_ms: u64,
+) -> ReferenceQuote {
+    ReferenceQuote::try_new(
+        asset,
+        source_id,
+        ReferencePriceProvider::new("fixture_provider")
+            .expect("fixture provider identifier should be valid"),
+        "fixture_feed",
+        price,
+        None,
+        None,
+        observed_ts_ms,
+        observed_ts_ms,
+    )
+    .expect("reference quote fixture should be valid")
 }

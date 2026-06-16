@@ -182,7 +182,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
     register_maker_for_order_factory(&mut maker);
     let quotes = vec![
         reference_quote("BTC", "primary", 99.0, 1_000),
-        reference_quote("BTC", "backup", 101.0, 1_490),
+        reference_quote("BTC", "backup", 100.05, 1_490),
     ];
     let mut selector = ReferencePriceSelector::new(
         "BTC",
@@ -204,7 +204,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         pricing_kurtosis: 0.25,
     };
     let expected_fair_probability_up = updown::fair_probability_up(&FairProbabilityInputs {
-        spot_price: 101.0,
+        spot_price: 100.05,
         strike_price: fair_input.strike_price,
         seconds_to_market_end: fair_input.seconds_to_market_end,
         realized_vol: fair_input.realized_vol,
@@ -242,12 +242,12 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         .fair_value
         .as_ref()
         .expect("fresh backup reference current price should price");
-    assert_eq!(fair.spot_price, 101.0);
+    assert_eq!(fair.spot_price, 100.05);
     assert_eq!(fair.strike_price, fair_input.strike_price);
     assert_eq!(fair.seconds_to_market_end, fair_input.seconds_to_market_end);
     assert_eq!(fair.realized_vol, fair_input.realized_vol);
     assert_eq!(fair.pricing_kurtosis, fair_input.pricing_kurtosis);
-    assert_eq!(fair.reference_current_price, 101.0);
+    assert_eq!(fair.reference_current_price, 100.05);
     assert_eq!(fair.reference_current_price_source_id, "backup");
     assert!(fair.reference_current_price_failed_over);
     assert_eq!(fair.fair_probability_up, expected_fair_probability_up);

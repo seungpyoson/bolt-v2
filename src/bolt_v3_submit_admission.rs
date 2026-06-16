@@ -2,8 +2,9 @@ use crate::bolt_v3_capital_reservation::{
     CapitalPoolSnapshot, ReservationRejectionReason, ReservationRequest,
 };
 use crate::bolt_v3_decision_evidence::{
-    BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
-    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3PositionSizerRebuildAuditEvidence,
+    BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
+    BoltV3BasketAdmissionOutcome, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+    BoltV3OrderIntentKind, BoltV3PositionSizerRebuildAuditEvidence,
     BoltV3RecoveredSubmitReservationEvidence, BoltV3SubmitReservationFillEvidence,
     BoltV3SubmitReservationMetadataEvidence, compiled_order_price_source,
 };
@@ -86,6 +87,17 @@ pub fn validate_no_exchange_mutations(
 pub struct BoltV3LiveSubmitApprovalLimits {
     pub max_order_count: u32,
     pub max_order_notional: Decimal,
+}
+
+pub fn live_submit_count_cap_outcome(
+    current_count: u32,
+    claim_count: u32,
+    max_order_count: u32,
+) -> BoltV3AdmissionOutcome {
+    match current_count.checked_add(claim_count) {
+        Some(total) if total <= max_order_count => BoltV3AdmissionOutcome::Admitted,
+        Some(_) | None => BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+    }
 }
 
 #[derive(Debug)]
@@ -1246,7 +1258,76 @@ impl BoltV3SubmitAdmissionState {
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        let evaluation = Self::evaluate(&mut inner, request, now_ns);
+        let mut evaluation = Self::evaluate(&mut inner, request, now_ns);
+        let mut admitted_counter_update = None;
+        if evaluation.outcome == BoltV3AdmissionOutcome::Admitted {
+            let admitted_order_count_before = inner.admitted_order_count;
+            let forced_reduction_order_count_before =
+                inner.live_kill_switch_forced_reduction_order_count;
+            let Some(next_admitted_order_count) = inner.admitted_order_count.checked_add(1) else {
+                if let Some(rollback) = evaluation.rollback.as_ref() {
+                    rollback_position_sizer_reservation(&mut inner, rollback);
+                }
+                evaluation.outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                if let Err(err) = self.record_admission_decision(request, &evaluation) {
+                    return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                        reason: format!("{err:#}"),
+                    });
+                }
+                return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
+            };
+            let current_execution_client_count = inner
+                .admitted_order_count_by_execution_client
+                .get(&request.execution_client_id)
+                .copied()
+                .unwrap_or(0);
+            let Some(next_execution_client_count) = current_execution_client_count.checked_add(1)
+            else {
+                if let Some(rollback) = evaluation.rollback.as_ref() {
+                    rollback_position_sizer_reservation(&mut inner, rollback);
+                }
+                evaluation.outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                if let Err(err) = self.record_admission_decision(request, &evaluation) {
+                    return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                        reason: format!("{err:#}"),
+                    });
+                }
+                return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
+            };
+            let next_forced_reduction_count =
+                if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
+                    let Some(next) = inner
+                        .live_kill_switch_forced_reduction_order_count
+                        .checked_add(1)
+                    else {
+                        if let Some(rollback) = evaluation.rollback.as_ref() {
+                            rollback_position_sizer_reservation(&mut inner, rollback);
+                        }
+                        evaluation.outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                        if let Err(err) = self.record_admission_decision(request, &evaluation) {
+                            return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                                reason: format!("{err:#}"),
+                            });
+                        }
+                        return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
+                    };
+                    next
+                } else {
+                    inner.live_kill_switch_forced_reduction_order_count
+                };
+            let counter_rollback = BoltV3SubmitAdmissionCounterRollback {
+                execution_client_id: request.execution_client_id.clone(),
+                order_count: next_admitted_order_count.saturating_sub(admitted_order_count_before),
+                forced_reduction_count: next_forced_reduction_count
+                    .saturating_sub(forced_reduction_order_count_before),
+            };
+            admitted_counter_update = Some((
+                next_admitted_order_count,
+                next_execution_client_count,
+                next_forced_reduction_count,
+                counter_rollback,
+            ));
+        }
         if evaluation.outcome == BoltV3AdmissionOutcome::Admitted
             && let Some(metadata) = evaluation.reservation_metadata.as_ref()
             && let Err(err) = self
@@ -1270,22 +1351,25 @@ impl BoltV3SubmitAdmissionState {
         }
         match evaluation.outcome {
             BoltV3AdmissionOutcome::Admitted => {
-                inner.admitted_order_count += 1;
-                *inner
-                    .admitted_order_count_by_execution_client
-                    .entry(request.execution_client_id.clone())
-                    .or_insert(0) += 1;
-                if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
-                    inner.live_kill_switch_forced_reduction_order_count += 1;
-                }
-                let counter_rollback = Some(BoltV3SubmitAdmissionCounterRollback {
-                    execution_client_id: request.execution_client_id.clone(),
-                    intent_kind: request.intent_kind,
-                });
+                let Some((
+                    next_admitted_order_count,
+                    next_execution_client_count,
+                    next_forced_reduction_count,
+                    counter_rollback,
+                )) = admitted_counter_update
+                else {
+                    return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
+                };
+                inner.admitted_order_count = next_admitted_order_count;
+                inner.admitted_order_count_by_execution_client.insert(
+                    request.execution_client_id.clone(),
+                    next_execution_client_count,
+                );
+                inner.live_kill_switch_forced_reduction_order_count = next_forced_reduction_count;
                 Ok(BoltV3SubmitAdmissionPermit {
                     inner: self.inner.clone(),
-                    rollback: evaluation.rollback,
-                    counter_rollback,
+                    rollbacks: evaluation.rollback.into_iter().collect(),
+                    counter_rollback: Some(counter_rollback),
                     committed: false,
                 })
             }
@@ -1425,6 +1509,217 @@ impl BoltV3SubmitAdmissionState {
         }
     }
 
+    pub fn reserve_basket_submit_slots(
+        &self,
+        execution_client_id: &str,
+        claims: &[BoltV3BasketSubmitSlotClaim],
+        evidence: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
+        let now_ns = current_unix_ns()?;
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+
+        let mut outcome = if claims.is_empty() {
+            BoltV3AdmissionOutcome::RejectedNonPositiveNotional
+        } else {
+            BoltV3AdmissionOutcome::Admitted
+        };
+        let mut rejected_intent = claims
+            .first()
+            .map(|claim| claim.intent_kind)
+            .unwrap_or(BoltV3SubmitIntentKind::Entry);
+        let mut rejected_request: Option<BoltV3SubmitAdmissionRequest> = None;
+        let mut rejected_evaluation: Option<BoltV3SubmitAdmissionEvaluation> = None;
+        let mut rollbacks = Vec::new();
+        let mut reservation_metadata = Vec::new();
+
+        for claim in claims {
+            let request = basket_submit_request(&evidence.strategy_id, execution_client_id, claim);
+            let evaluation = Self::evaluate(&mut inner, &request, now_ns);
+            outcome = evaluation.outcome.clone();
+            if outcome != BoltV3AdmissionOutcome::Admitted {
+                rejected_intent = claim.intent_kind;
+                rejected_request = Some(request);
+                rejected_evaluation = Some(evaluation);
+                break;
+            }
+            if let Some(rollback) = evaluation.rollback {
+                rollbacks.push(rollback);
+            }
+            if let Some(metadata) = evaluation.reservation_metadata {
+                reservation_metadata.push(metadata);
+            }
+        }
+
+        let claim_count = match u32::try_from(claims.len()) {
+            Ok(value) => value,
+            Err(_) => {
+                outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                u32::MAX
+            }
+        };
+        let forced_reduction_count = match claims
+            .iter()
+            .filter(|claim| claim.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction)
+            .count()
+            .try_into()
+        {
+            Ok(value) => value,
+            Err(_) => {
+                outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                u32::MAX
+            }
+        };
+
+        if outcome == BoltV3AdmissionOutcome::Admitted
+            && inner
+                .admitted_order_count
+                .checked_add(claim_count)
+                .is_none()
+        {
+            outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+        }
+
+        if outcome == BoltV3AdmissionOutcome::Admitted
+            && let Some(limits) = inner.live_submit_approval_limits.get(execution_client_id)
+        {
+            let current_count = inner
+                .admitted_order_count_by_execution_client
+                .get(execution_client_id)
+                .copied()
+                .unwrap_or(0);
+            outcome =
+                live_submit_count_cap_outcome(current_count, claim_count, limits.max_order_count);
+        }
+
+        let mut evidence = evidence.clone();
+        evidence.outcome = basket_outcome_from_submit_outcome(outcome.clone());
+
+        if outcome != BoltV3AdmissionOutcome::Admitted {
+            if let Err(err) = self
+                .decision_evidence
+                .record_basket_admission_decision(&evidence)
+            {
+                rollback_position_sizer_reservations(&mut inner, &rollbacks);
+                return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                    reason: format!("{err:#}"),
+                });
+            }
+            rollback_position_sizer_reservations(&mut inner, &rollbacks);
+            if let (Some(request), Some(evaluation)) =
+                (rejected_request.as_ref(), rejected_evaluation.as_ref())
+            {
+                Self::admission_result(&inner, request, evaluation)?;
+            }
+            return Err(submit_admission_error_from_outcome(
+                outcome,
+                inner.kill_switch_state.kind(),
+                rejected_intent,
+            ));
+        }
+
+        let Some(next_admitted_order_count) = inner.admitted_order_count.checked_add(claim_count)
+        else {
+            evidence.outcome = basket_outcome_from_submit_outcome(
+                BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+            );
+            if let Err(err) = self
+                .decision_evidence
+                .record_basket_admission_decision(&evidence)
+            {
+                rollback_position_sizer_reservations(&mut inner, &rollbacks);
+                return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                    reason: format!("{err:#}"),
+                });
+            }
+            rollback_position_sizer_reservations(&mut inner, &rollbacks);
+            return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
+        };
+        let current_client_count = inner
+            .admitted_order_count_by_execution_client
+            .get(execution_client_id)
+            .copied()
+            .unwrap_or(0);
+        let Some(next_client_count) = current_client_count.checked_add(claim_count) else {
+            evidence.outcome = basket_outcome_from_submit_outcome(
+                BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+            );
+            if let Err(err) = self
+                .decision_evidence
+                .record_basket_admission_decision(&evidence)
+            {
+                rollback_position_sizer_reservations(&mut inner, &rollbacks);
+                return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                    reason: format!("{err:#}"),
+                });
+            }
+            rollback_position_sizer_reservations(&mut inner, &rollbacks);
+            return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
+        };
+        let Some(next_forced_reduction_order_count) = inner
+            .live_kill_switch_forced_reduction_order_count
+            .checked_add(forced_reduction_count)
+        else {
+            evidence.outcome = basket_outcome_from_submit_outcome(
+                BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+            );
+            if let Err(err) = self
+                .decision_evidence
+                .record_basket_admission_decision(&evidence)
+            {
+                rollback_position_sizer_reservations(&mut inner, &rollbacks);
+                return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                    reason: format!("{err:#}"),
+                });
+            }
+            rollback_position_sizer_reservations(&mut inner, &rollbacks);
+            return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
+        };
+
+        let counter_rollback = BoltV3SubmitAdmissionCounterRollback {
+            execution_client_id: execution_client_id.to_string(),
+            order_count: claim_count,
+            forced_reduction_count,
+        };
+
+        for metadata in &reservation_metadata {
+            if let Err(err) = self
+                .decision_evidence
+                .record_submit_reservation_metadata(metadata)
+            {
+                rollback_position_sizer_reservations(&mut inner, &rollbacks);
+                return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                    reason: format!("{err:#}"),
+                });
+            }
+        }
+
+        if let Err(err) = self
+            .decision_evidence
+            .record_basket_admission_decision(&evidence)
+        {
+            rollback_position_sizer_reservations(&mut inner, &rollbacks);
+            return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                reason: format!("{err:#}"),
+            });
+        }
+
+        inner.admitted_order_count = next_admitted_order_count;
+        inner
+            .admitted_order_count_by_execution_client
+            .insert(execution_client_id.to_string(), next_client_count);
+        inner.live_kill_switch_forced_reduction_order_count = next_forced_reduction_order_count;
+
+        Ok(BoltV3SubmitAdmissionPermit {
+            inner: self.inner.clone(),
+            rollbacks,
+            counter_rollback: Some(counter_rollback),
+            committed: false,
+        })
+    }
+
     fn evaluate(
         inner: &mut BoltV3SubmitAdmissionInner,
         request: &BoltV3SubmitAdmissionRequest,
@@ -1475,12 +1770,13 @@ impl BoltV3SubmitAdmissionState {
                     BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
                 );
             }
-            if inner
+            let current_count = inner
                 .admitted_order_count_by_execution_client
                 .get(&request.execution_client_id)
                 .copied()
-                .unwrap_or(0)
-                >= limits.max_order_count
+                .unwrap_or(0);
+            if live_submit_count_cap_outcome(current_count, 1, limits.max_order_count)
+                == BoltV3AdmissionOutcome::RejectedCountCapExhausted
             {
                 return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                     BoltV3AdmissionOutcome::RejectedCountCapExhausted,
@@ -1495,7 +1791,11 @@ impl BoltV3SubmitAdmissionState {
                         BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
                     );
                 };
-                if !proof.is_valid_for(request) {
+                if !proof.is_valid_for_shape(
+                    &request.instrument_id,
+                    request.order_side,
+                    request.order_quantity,
+                ) {
                     return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                         BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
                     );
@@ -1562,10 +1862,78 @@ impl BoltV3SubmitAdmissionState {
     }
 }
 
+fn basket_outcome_from_submit_outcome(
+    outcome: BoltV3AdmissionOutcome,
+) -> BoltV3BasketAdmissionOutcome {
+    match outcome {
+        BoltV3AdmissionOutcome::Admitted => BoltV3BasketAdmissionOutcome::Admitted,
+        BoltV3AdmissionOutcome::RejectedKillSwitchLatched
+        | BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed
+        | BoltV3AdmissionOutcome::RejectedLossGovernorHalted
+        | BoltV3AdmissionOutcome::RejectedNonPositiveNotional
+        | BoltV3AdmissionOutcome::RejectedNotionalCapExceeded
+        | BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof
+        | BoltV3AdmissionOutcome::RejectedCountCapExhausted
+        | BoltV3AdmissionOutcome::RejectedPositionSizing
+        | BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid
+        | BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
+            BoltV3BasketAdmissionOutcome::RejectedSubmitSlots
+        }
+    }
+}
+
+fn submit_admission_error_from_outcome(
+    outcome: BoltV3AdmissionOutcome,
+    kill_switch_state: KillSwitchStateKind,
+    intent: BoltV3SubmitIntentKind,
+) -> BoltV3SubmitAdmissionError {
+    match outcome {
+        BoltV3AdmissionOutcome::Admitted => {
+            unreachable!("admitted outcome does not convert to a submit admission error")
+        }
+        BoltV3AdmissionOutcome::RejectedKillSwitchLatched => {
+            BoltV3SubmitAdmissionError::KillSwitchLatched {
+                state: kill_switch_state,
+            }
+        }
+        BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
+            BoltV3SubmitAdmissionError::SubmitLifecycleDisallowed { intent }
+        }
+        BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
+            BoltV3SubmitAdmissionError::LossGovernorHalted {
+                reasons: Vec::new(),
+            }
+        }
+        BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
+            BoltV3SubmitAdmissionError::NonPositiveNotional
+        }
+        BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => {
+            BoltV3SubmitAdmissionError::NotionalCapExceeded
+        }
+        BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof => {
+            BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof
+        }
+        BoltV3AdmissionOutcome::RejectedCountCapExhausted => {
+            BoltV3SubmitAdmissionError::CountCapExhausted
+        }
+        BoltV3AdmissionOutcome::RejectedPositionSizing => {
+            BoltV3SubmitAdmissionError::PositionSizingRejected {
+                reason: BoltV3PositionSizerRejectReason::Rejected,
+            }
+        }
+        BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
+            BoltV3SubmitAdmissionError::KillSwitchForcedReductionProofInvalid
+        }
+        BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
+            BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionPermit {
     inner: Arc<Mutex<BoltV3SubmitAdmissionInner>>,
-    rollback: Option<BoltV3PositionSizerReservationRollback>,
+    rollbacks: Vec<BoltV3PositionSizerReservationRollback>,
     counter_rollback: Option<BoltV3SubmitAdmissionCounterRollback>,
     committed: bool,
 }
@@ -1573,7 +1941,7 @@ pub struct BoltV3SubmitAdmissionPermit {
 impl BoltV3SubmitAdmissionPermit {
     pub fn commit_submitted(mut self) {
         self.committed = true;
-        self.rollback = None;
+        self.rollbacks.clear();
         self.counter_rollback = None;
     }
 }
@@ -1590,16 +1958,15 @@ impl Drop for BoltV3SubmitAdmissionPermit {
         if let Some(counter_rollback) = self.counter_rollback.as_ref() {
             rollback_admission_counters(&mut inner, counter_rollback);
         }
-        if let Some(rollback) = self.rollback.as_ref() {
-            rollback_position_sizer_reservation(&mut inner, rollback);
-        }
+        rollback_position_sizer_reservations(&mut inner, &self.rollbacks);
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BoltV3SubmitAdmissionCounterRollback {
     execution_client_id: String,
-    intent_kind: BoltV3SubmitIntentKind,
+    order_count: u32,
+    forced_reduction_count: u32,
 }
 
 #[derive(Debug)]
@@ -1782,15 +2149,20 @@ pub struct BoltV3RiskReducingExitPositionInput<'a> {
 }
 
 impl BoltV3RiskReducingExitProof {
-    fn is_valid_for(&self, request: &BoltV3SubmitAdmissionRequest) -> bool {
-        self.instrument_id == request.instrument_id
-            && self.exit_order_side == request.order_side
-            && self.exit_quantity == request.order_quantity
+    fn is_valid_for_shape(
+        &self,
+        instrument_id: &str,
+        order_side: OrderSide,
+        order_quantity: Decimal,
+    ) -> bool {
+        self.instrument_id == instrument_id
+            && self.exit_order_side == order_side
+            && self.exit_quantity == order_quantity
             && self.position_quantity > Decimal::ZERO
             && self.exit_quantity > Decimal::ZERO
             && self.exit_quantity <= self.position_quantity
             && matches!(
-                (self.position_side, self.exit_order_side),
+                (self.position_side, order_side),
                 (PositionSide::Long, OrderSide::Sell) | (PositionSide::Short, OrderSide::Buy)
             )
     }
@@ -1956,6 +2328,40 @@ struct BoltV3PositionSizerSubmitDecision {
     reason: BoltV3PositionSizerRejectReason,
     rollback: Option<BoltV3PositionSizerReservationRollback>,
     reservation_metadata: Option<BoltV3SubmitReservationMetadataEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3BasketSubmitSlotClaim {
+    pub client_order_id: String,
+    pub instrument_id: String,
+    pub notional: Decimal,
+    pub order_side: OrderSide,
+    pub order_quantity: Decimal,
+    pub intent_kind: BoltV3SubmitIntentKind,
+    pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+    pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
+    pub position_sizing: Option<BoltV3CompiledOrderSizingEvidence>,
+}
+
+fn basket_submit_request(
+    strategy_id: &str,
+    execution_client_id: &str,
+    claim: &BoltV3BasketSubmitSlotClaim,
+) -> BoltV3SubmitAdmissionRequest {
+    BoltV3SubmitAdmissionRequest {
+        strategy_id: strategy_id.to_string(),
+        execution_client_id: execution_client_id.to_string(),
+        client_order_id: claim.client_order_id.clone(),
+        instrument_id: claim.instrument_id.clone(),
+        notional: claim.notional,
+        order_side: claim.order_side,
+        order_quantity: claim.order_quantity,
+        intent_kind: claim.intent_kind,
+        lifecycle_policy: claim.lifecycle_policy,
+        risk_reducing_exit_proof: claim.risk_reducing_exit_proof.clone(),
+        kill_switch_forced_reduction: None,
+        position_sizing: claim.position_sizing.clone(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2351,6 +2757,7 @@ pub enum BoltV3PositionSizerRejectReason {
     OutcomeInstrumentMismatch,
     ReplaceSubmitUnsupported,
     DuplicateClientOrderId,
+    OrderShapeMismatch,
     MissingNtState,
     StaleNtState,
     UnattributedNtState,
@@ -2360,7 +2767,7 @@ pub enum BoltV3PositionSizerRejectReason {
     SizedQuantityMismatch,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum BoltV3SubmitAdmissionError {
     KillSwitchLatched {
         state: KillSwitchStateKind,
@@ -2507,6 +2914,11 @@ fn evaluate_position_sizer_submit(
     }
     if product_kind != ProductKind::PredictionMarketBinary {
         return rejected_position_sizer(BoltV3PositionSizerRejectReason::UnsupportedProductKind);
+    }
+    if !compiled_order_side_matches_request(evidence.side, request.order_side)
+        || evidence.quantity != request.order_quantity
+    {
+        return rejected_position_sizer(BoltV3PositionSizerRejectReason::OrderShapeMismatch);
     }
     if position_sizer
         .client_order_reservations
@@ -2665,6 +3077,17 @@ fn evaluate_position_sizer_submit(
         }),
         reservation_metadata: Some(reservation_metadata),
     }
+}
+
+fn compiled_order_side_matches_request(
+    evidence_side: BoltV3CompiledOrderSide,
+    request_side: OrderSide,
+) -> bool {
+    matches!(
+        (evidence_side, request_side),
+        (BoltV3CompiledOrderSide::Buy, OrderSide::Buy)
+            | (BoltV3CompiledOrderSide::Sell, OrderSide::Sell)
+    )
 }
 
 fn checked_additive_liability(policy: &SizingPolicy) -> Option<Decimal> {
@@ -2891,17 +3314,28 @@ fn rollback_position_sizer_reservation(
     refresh_position_sizer_reservation_snapshot(position_sizer, rollback.observed_at_ns);
 }
 
+fn rollback_position_sizer_reservations(
+    inner: &mut BoltV3SubmitAdmissionInner,
+    rollbacks: &[BoltV3PositionSizerReservationRollback],
+) {
+    for rollback in rollbacks.iter().rev() {
+        rollback_position_sizer_reservation(inner, rollback);
+    }
+}
+
 fn rollback_admission_counters(
     inner: &mut BoltV3SubmitAdmissionInner,
     rollback: &BoltV3SubmitAdmissionCounterRollback,
 ) {
-    inner.admitted_order_count = inner.admitted_order_count.saturating_sub(1);
+    inner.admitted_order_count = inner
+        .admitted_order_count
+        .saturating_sub(rollback.order_count);
     let mut remove_execution_client = false;
     if let Some(count) = inner
         .admitted_order_count_by_execution_client
         .get_mut(&rollback.execution_client_id)
     {
-        *count = count.saturating_sub(1);
+        *count = count.saturating_sub(rollback.order_count);
         remove_execution_client = *count == 0;
     }
     if remove_execution_client {
@@ -2909,16 +3343,9 @@ fn rollback_admission_counters(
             .admitted_order_count_by_execution_client
             .remove(&rollback.execution_client_id);
     }
-    match rollback.intent_kind {
-        BoltV3SubmitIntentKind::Entry
-        | BoltV3SubmitIntentKind::RiskReducingExit
-        | BoltV3SubmitIntentKind::ReplaceSubmit => {}
-        BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
-            inner.live_kill_switch_forced_reduction_order_count = inner
-                .live_kill_switch_forced_reduction_order_count
-                .saturating_sub(1);
-        }
-    }
+    inner.live_kill_switch_forced_reduction_order_count = inner
+        .live_kill_switch_forced_reduction_order_count
+        .saturating_sub(rollback.forced_reduction_count);
 }
 
 fn map_sized_rejection(

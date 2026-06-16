@@ -45,9 +45,93 @@ class FindingAllowance:
     exact_excerpt: str
 
 
-# Keep this tuple empty unless an active, reviewed Phase 9 exception exists.
+# Keep this tuple narrowly scoped unless an active, reviewed exception exists.
 # `exact_excerpt` must match the stripped source line produced by `excerpt_for`.
-FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = ()
+FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = (
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "Polymarket,",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "Hyperliquid,",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "PolymarketNegRisk {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "discovery_scope: PolymarketDiscoveryScopeEvidence,",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "HyperliquidOutcome {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "Self::PolymarketNegRisk {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        'Self::HyperliquidOutcome { question, .. } => format!("hyperliquid:{question}"),',
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "Self::HyperliquidOutcome {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "pub struct PolymarketDiscoveryScopeEvidence {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        'OutcomeGroupSourceKind::Polymarket => "polymarket",',
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        'OutcomeGroupSourceKind::Hyperliquid => "hyperliquid",',
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "GroupingProof::PolymarketNegRisk {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "concrete provider type name in core production code",
+        "GroupingProof::HyperliquidOutcome {",
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "provider-key string literal in core production code",
+        'OutcomeGroupSourceKind::Polymarket => "polymarket",',
+    ),
+    FindingAllowance(
+        "src/bolt_v3_outcome_groups.rs",
+        "provider-key string literal in core production code",
+        'OutcomeGroupSourceKind::Hyperliquid => "hyperliquid",',
+    ),
+)
+
+SHARED_MARKET_FAMILY_NAMES: frozenset[str] = frozenset({"outcome_group"})
+PROVIDER_SPECIFIC_ROOT_MODULES: frozenset[str] = frozenset(
+    {
+        "src/bolt_v3_outcome_group_hyperliquid.rs",
+        "src/bolt_v3_outcome_group_polymarket.rs",
+    }
+)
 
 
 def rules_for(
@@ -72,6 +156,8 @@ def discovered_core_files(root: Path) -> tuple[str, ...]:
 
 def is_concrete_binding_module(root: Path, path: Path) -> bool:
     rel = path.relative_to(root).as_posix()
+    if rel in PROVIDER_SPECIFIC_ROOT_MODULES:
+        return True
     concrete_roots = ("src/bolt_v3_providers/", "src/bolt_v3_market_families/")
     if not rel.startswith(concrete_roots):
         return False
@@ -171,7 +257,11 @@ def alternation(names: tuple[str, ...]) -> str:
 def rules_for_root(root: Path) -> list[Rule]:
     core_files = discovered_core_files(root)
     provider_names = discovered_binding_names(root, "bolt_v3_providers")
-    family_names = discovered_binding_names(root, "bolt_v3_market_families")
+    family_names = tuple(
+        name
+        for name in discovered_binding_names(root, "bolt_v3_market_families")
+        if name not in SHARED_MARKET_FAMILY_NAMES
+    )
     provider_alt = alternation(provider_names)
     provider_type_alt = alternation(tuple(snake_to_pascal(name) for name in provider_names))
     family_alt = alternation(family_names)

@@ -5480,6 +5480,544 @@ fn shipped_binary_oracle_config_rejects_legacy_price_to_beat_feed_id_under_runti
     );
 }
 
+#[test]
+fn outcome_group_root_parses_polymarket_event_source() {
+    use bolt_v2::{
+        bolt_v3_config::BoltV3RootConfig, bolt_v3_outcome_group_sources::OutcomeGroupSourceKind,
+    };
+
+    let root: BoltV3RootConfig = toml::from_str(&outcome_group_root_toml(
+        &valid_polymarket_event_source_toml(),
+        true,
+    ))
+    .expect("root with outcome_group_sources should parse");
+
+    let sources = root
+        .outcome_group_sources
+        .as_ref()
+        .expect("configured outcome_group_sources should be present");
+    assert_eq!(sources.len(), 1);
+    let source = &sources[0];
+    assert_eq!(source.source_id, "poly_world_cup");
+    assert_eq!(source.kind, OutcomeGroupSourceKind::GammaEvent);
+    let expected_event_slugs = ["world-cup-final".to_owned()];
+    assert_eq!(
+        source.event_slugs.as_deref(),
+        Some(expected_event_slugs.as_slice())
+    );
+    assert!(root.risk.basket_execution.is_some());
+}
+
+#[test]
+fn outcome_group_sources_reject_unknown_fields_at_root_parse_time() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+
+    let source = valid_polymarket_event_source_toml().replace(
+        "enabled = true",
+        "enabled = true\nmisspelled_selector = true",
+    );
+    let error = toml::from_str::<BoltV3RootConfig>(&outcome_group_root_toml(&source, true))
+        .expect_err("unknown outcome_group_sources field should fail serde closure");
+
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("unknown field") && rendered.contains("misspelled_selector"),
+        "unexpected parse error: {rendered}"
+    );
+}
+
+#[test]
+fn binary_oracle_roots_remain_backward_compatible_without_outcome_groups() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+
+    let root: BoltV3RootConfig =
+        toml::from_str(&support::repo_text("tests/fixtures/bolt_v3/root.toml"))
+            .expect("existing binary-oracle fixture should still parse");
+
+    assert!(root.outcome_group_sources.is_none());
+    assert!(root.risk.basket_execution.is_none());
+}
+
+#[test]
+fn complete_set_outcome_group_strategy_target_parses_without_runtime_activation() {
+    use bolt_v2::{bolt_v3_config::BoltV3StrategyConfig, bolt_v3_market_families::outcome_group};
+
+    let strategy: BoltV3StrategyConfig = toml::from_str(&complete_set_strategy_toml())
+        .expect("complete-set strategy envelope should parse before runtime registration");
+    let target = outcome_group::deserialize_target_block(&strategy.target)
+        .expect("outcome_group target should parse through family binding");
+
+    assert_eq!(target.configured_target_id, "complete_set_arb_target");
+    assert_eq!(target.group_sources, vec!["poly_world_cup".to_string()]);
+}
+
+#[test]
+fn outcome_group_root_parses_polymarket_market_slug_source() {
+    use bolt_v2::{
+        bolt_v3_config::BoltV3RootConfig, bolt_v3_outcome_group_sources::OutcomeGroupSourceKind,
+    };
+
+    let root: BoltV3RootConfig = toml::from_str(&outcome_group_root_toml(
+        &valid_polymarket_market_slug_source_toml(),
+        true,
+    ))
+    .expect("market-slug-only source should parse");
+
+    let sources = root
+        .outcome_group_sources
+        .as_ref()
+        .expect("configured outcome_group_sources should be present");
+    let source = &sources[0];
+    assert_eq!(source.kind, OutcomeGroupSourceKind::GammaMarketSlug);
+    let expected_market_slugs = ["winner-market".to_owned()];
+    assert_eq!(
+        source.market_slugs.as_deref(),
+        Some(expected_market_slugs.as_slice())
+    );
+}
+
+#[test]
+fn outcome_group_root_parses_bounded_polymarket_gamma_query_source() {
+    use bolt_v2::{
+        bolt_v3_config::BoltV3RootConfig, bolt_v3_outcome_group_sources::OutcomeGroupSourceKind,
+    };
+
+    let root: BoltV3RootConfig = toml::from_str(&outcome_group_root_toml(
+        &valid_polymarket_gamma_query_source_toml(),
+        true,
+    ))
+    .expect("bounded Gamma-query source should parse");
+
+    let sources = root
+        .outcome_group_sources
+        .as_ref()
+        .expect("configured outcome_group_sources should be present");
+    let source = &sources[0];
+    assert_eq!(source.kind, OutcomeGroupSourceKind::GammaQuery);
+    assert_eq!(
+        source.gamma_query.as_ref().map(|query| query.max_markets),
+        Some(20)
+    );
+}
+
+#[test]
+fn outcome_group_root_parses_hyperliquid_hip4_question_source() {
+    use bolt_v2::{
+        bolt_v3_config::BoltV3RootConfig, bolt_v3_outcome_group_sources::OutcomeGroupSourceKind,
+    };
+
+    let root: BoltV3RootConfig = toml::from_str(&outcome_group_root_toml(
+        &valid_hyperliquid_hip4_source_toml(),
+        true,
+    ))
+    .expect("HIP-4 outcome question source should parse");
+
+    let sources = root
+        .outcome_group_sources
+        .as_ref()
+        .expect("configured outcome_group_sources should be present");
+    let source = &sources[0];
+    assert_eq!(source.kind, OutcomeGroupSourceKind::Hip4);
+    assert_eq!(source.question, Some(42));
+}
+
+#[test]
+fn outcome_group_root_validation_fails_closed_on_source_shape_errors() {
+    let duplicate_sources = format!(
+        "{}\n{}",
+        valid_polymarket_event_source_toml(),
+        valid_polymarket_market_slug_source_toml().replace(
+            "source_id = \"poly_market_slug\"",
+            "source_id = \"poly_world_cup\""
+        )
+    );
+    let missing_freshness = without_toml_sections(
+        &valid_polymarket_event_source_toml(),
+        &["outcome_group_sources.freshness"],
+    );
+    let missing_constraints = without_toml_sections(
+        &valid_polymarket_event_source_toml(),
+        &["outcome_group_sources.order_constraints"],
+    );
+    let missing_settlement = without_toml_sections(
+        &valid_polymarket_event_source_toml(),
+        &["outcome_group_sources.settlement_rules"],
+    );
+    let missing_role_bindings = without_toml_sections(
+        &valid_polymarket_event_source_toml(),
+        &["outcome_group_sources.role_bindings"],
+    );
+    let missing_payouts = without_toml_sections(
+        &valid_polymarket_event_source_toml(),
+        &["outcome_group_sources.settlement_rules.non_standard_terminal_payouts"],
+    );
+    let unbounded_query = valid_polymarket_gamma_query_source_toml().replace(
+        "search = \"world cup\"\nmax_markets = 20",
+        "max_markets = 20",
+    );
+    let non_positive_min_quantity = valid_polymarket_event_source_toml().replace(
+        "default_min_quantity = \"5\"",
+        "default_min_quantity = \"0\"",
+    );
+    let non_positive_min_notional = valid_polymarket_event_source_toml().replace(
+        "default_min_notional = \"1\"",
+        "default_min_notional = \"0\"",
+    );
+    let missing_terminal_states = valid_polymarket_event_source_toml().replace(
+        "terminal_state_labels = [\"home\", \"draw\", \"away\"]",
+        "terminal_state_labels = []",
+    );
+    let missing_neg_risk = valid_polymarket_event_source_toml()
+        .replace("expected_neg_risk_market_id = \"neg-risk-123\"\n", "");
+    let unknown_client = valid_polymarket_event_source_toml().replace(
+        "client_id = \"polymarket_main\"",
+        "client_id = \"unknown_client\"",
+    );
+    let missing_freshness_max_age =
+        valid_polymarket_event_source_toml().replace("max_age_ms = 500\n", "");
+    let missing_freshness_max_clock_skew =
+        valid_polymarket_event_source_toml().replace("max_clock_skew_ms = 250\n", "");
+    let excessive_freshness_clock_skew = valid_polymarket_event_source_toml()
+        .replace("max_clock_skew_ms = 250", "max_clock_skew_ms = 501");
+    let parent_dir_state_path = outcome_group_basket_execution_toml().replace(
+        "state_path = \"bolt-v3/baskets/state.json\"",
+        "state_path = \"../state.json\"",
+    );
+
+    for (case, source, expected) in [
+        (
+            "duplicate source_id",
+            duplicate_sources.as_str(),
+            "outcome_group_sources source_id `poly_world_cup` is duplicated",
+        ),
+        (
+            "unbounded query",
+            unbounded_query.as_str(),
+            "outcome_group_sources.poly_gamma_query.gamma_query must include at least one bounded selector",
+        ),
+        (
+            "missing freshness",
+            missing_freshness.as_str(),
+            "outcome_group_sources.poly_world_cup.freshness is required",
+        ),
+        (
+            "missing order constraints",
+            missing_constraints.as_str(),
+            "outcome_group_sources.poly_world_cup.order_constraints is required",
+        ),
+        (
+            "non-positive min quantity",
+            non_positive_min_quantity.as_str(),
+            "outcome_group_sources.poly_world_cup.order_constraints.default_min_quantity must be positive",
+        ),
+        (
+            "non-positive min notional",
+            non_positive_min_notional.as_str(),
+            "outcome_group_sources.poly_world_cup.order_constraints.default_min_notional must be positive",
+        ),
+        (
+            "missing settlement rules",
+            missing_settlement.as_str(),
+            "outcome_group_sources.poly_world_cup.settlement_rules is required",
+        ),
+        (
+            "missing terminal states",
+            missing_terminal_states.as_str(),
+            "outcome_group_sources.poly_world_cup.terminal_state_labels must not be empty",
+        ),
+        (
+            "missing role bindings",
+            missing_role_bindings.as_str(),
+            "outcome_group_sources.poly_world_cup.role_bindings is required for polymarket_gamma_event",
+        ),
+        (
+            "missing non-standard payout vectors",
+            missing_payouts.as_str(),
+            "outcome_group_sources.poly_world_cup.settlement_rules.non_standard_terminal_payouts must not be empty",
+        ),
+        (
+            "missing neg risk expectation",
+            missing_neg_risk.as_str(),
+            "outcome_group_sources.poly_world_cup.expected_neg_risk_market_id is required for polymarket_gamma_event",
+        ),
+        (
+            "unknown client",
+            unknown_client.as_str(),
+            "outcome_group_sources.poly_world_cup.client_id `unknown_client` does not match any [clients.<id>] block",
+        ),
+        (
+            "missing freshness max age",
+            missing_freshness_max_age.as_str(),
+            "outcome_group_sources.poly_world_cup.freshness.max_age_ms is required",
+        ),
+        (
+            "missing freshness max clock skew",
+            missing_freshness_max_clock_skew.as_str(),
+            "outcome_group_sources.poly_world_cup.freshness.max_clock_skew_ms is required",
+        ),
+        (
+            "freshness clock skew exceeds max age",
+            excessive_freshness_clock_skew.as_str(),
+            "outcome_group_sources.poly_world_cup.freshness.max_clock_skew_ms must be less than or equal to outcome_group_sources.poly_world_cup.freshness.max_age_ms",
+        ),
+    ] {
+        let messages = outcome_group_root_validation_messages(source);
+        assert!(
+            messages.iter().any(|message| message.contains(expected)),
+            "{case} should contain `{expected}`, got: {messages:#?}"
+        );
+    }
+
+    let root_toml = outcome_group_root_toml(&valid_polymarket_event_source_toml(), true).replace(
+        &outcome_group_basket_execution_toml(),
+        &parent_dir_state_path,
+    );
+    let root: bolt_v2::bolt_v3_config::BoltV3RootConfig =
+        toml::from_str(&root_toml).expect("root with parent-dir basket path should parse");
+    let messages = bolt_v2::bolt_v3_validate::validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| message.contains(
+            "risk.basket_execution.state_path must be a non-empty relative path under the configured root"
+        )),
+        "parent-dir basket state path should reject, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn outcome_group_cross_config_validation_fails_closed_for_live_baskets() {
+    let missing_basket_root = outcome_group_root_toml(&valid_polymarket_event_source_toml(), false);
+    let mismatch_source = valid_polymarket_event_source_toml().replace(
+        "client_id = \"polymarket_main\"",
+        "client_id = \"polymarket_data\"",
+    );
+    let mismatch_root = format!(
+        "{}\n{}",
+        outcome_group_root_toml(&mismatch_source, true),
+        polymarket_data_client_toml()
+    );
+    let unknown_source_strategy = complete_set_strategy_toml().replace(
+        "group_sources = [\"poly_world_cup\"]",
+        "group_sources = [\"missing\"]",
+    );
+    let missing_min_notional_source =
+        valid_polymarket_event_source_toml().replace("default_min_notional = \"1\"\n", "");
+    let missing_min_notional_root = outcome_group_root_toml(&missing_min_notional_source, true);
+    let missing_evidence_root =
+        outcome_group_root_toml(&valid_polymarket_event_source_toml(), true).replace(
+            "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
+            "order_intents_relative_path = \"\"",
+        );
+    let valid_root = outcome_group_root_toml(&valid_polymarket_event_source_toml(), true);
+    let complete_set_strategy = complete_set_strategy_toml();
+
+    for (case, root, strategy, expected) in [
+        (
+            "missing basket execution",
+            missing_basket_root.as_str(),
+            complete_set_strategy.as_str(),
+            "risk.basket_execution is required when strategy `strategies/complete_set.toml` uses outcome_group basket execution",
+        ),
+        (
+            "source execution mismatch",
+            mismatch_root.as_str(),
+            complete_set_strategy.as_str(),
+            "target.group_sources[`poly_world_cup`] client_id `polymarket_data` must match execution_client_id `polymarket_main`",
+        ),
+        (
+            "unknown source reference",
+            valid_root.as_str(),
+            unknown_source_strategy.as_str(),
+            "target.group_sources references unknown outcome_group_sources source_id `missing`",
+        ),
+        (
+            "missing min notional for ioc",
+            missing_min_notional_root.as_str(),
+            complete_set_strategy.as_str(),
+            "order_constraints.default_min_notional is required for submit_mode `ioc`",
+        ),
+        (
+            "missing decision evidence path",
+            missing_evidence_root.as_str(),
+            complete_set_strategy.as_str(),
+            "persistence.decision_evidence.order_intents_relative_path",
+        ),
+    ] {
+        let messages = outcome_group_strategy_validation_messages(root, strategy);
+        assert!(
+            messages.iter().any(|message| message.contains(expected)),
+            "{case} should contain `{expected}`, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn outcome_group_strategy_runtime_validation_rejects_missing_or_unsupported_submit_controls() {
+    let missing_depth = complete_set_strategy_toml().replace("vwap_depth_limit_bps = 2000\n", "");
+    let missing_slippage = complete_set_strategy_toml().replace("slippage_buffer_bps = 100\n", "");
+    let unsupported_submit =
+        complete_set_strategy_toml().replace("submit_mode = \"ioc\"", "submit_mode = \"scan_all\"");
+    let root = outcome_group_root_toml(&valid_polymarket_event_source_toml(), true);
+
+    for (case, strategy, expected) in [
+        (
+            "missing scanner depth",
+            missing_depth.as_str(),
+            "parameters.runtime.vwap_depth_limit_bps is required",
+        ),
+        (
+            "missing slippage",
+            missing_slippage.as_str(),
+            "parameters.runtime.slippage_buffer_bps is required",
+        ),
+        (
+            "unsupported submit mode",
+            unsupported_submit.as_str(),
+            "parameters.runtime.submit_mode `scan_all` is not supported",
+        ),
+    ] {
+        let messages = outcome_group_strategy_validation_messages(&root, strategy);
+        assert!(
+            messages.iter().any(|message| message.contains(expected)),
+            "{case} should contain `{expected}`, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn outcome_group_strategy_envelope_rejects_legacy_reference_data_and_requires_signal_data_blocks() {
+    let legacy_reference_data = complete_set_strategy_toml()
+        .replace("[signal_data]\n\n", "[reference_data]\n\n[signal_data]\n\n");
+    for (case, strategy, expected) in [
+        (
+            "legacy reference_data",
+            legacy_reference_data,
+            "reference_data",
+        ),
+        (
+            "missing signal_data",
+            complete_set_strategy_toml().replace("[signal_data]\n\n", ""),
+            "signal_data",
+        ),
+    ] {
+        let error = toml::from_str::<bolt_v2::bolt_v3_config::BoltV3StrategyConfig>(&strategy)
+            .expect_err("strategy envelope should fail closed on missing required maps");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains(expected),
+            "{case} should mention `{expected}`, got: {rendered}"
+        );
+    }
+}
+
+#[test]
+fn outcome_group_strategy_does_not_require_dummy_realized_volatility_or_target_runtime_fields() {
+    let root = outcome_group_root_toml(&valid_polymarket_event_source_toml(), true);
+    let messages = outcome_group_strategy_validation_messages(&root, &complete_set_strategy_toml());
+
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.contains("realized_volatility_surface_id is required")),
+        "outcome-group strategy must not need a dummy RV surface: {messages:#?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.contains("target_runtime_fields")),
+        "outcome-group validation must not call the updown runtime-field contract: {messages:#?}"
+    );
+}
+
+#[test]
+fn complete_set_live_order_execution_mode_rejects_registration_only_activation() {
+    let live_root = outcome_group_root_toml(&valid_polymarket_event_source_toml(), true).replace(
+        "order_execution_mode = \"shadow\"",
+        "order_execution_mode = \"live\"",
+    );
+    let messages =
+        outcome_group_strategy_validation_messages(&live_root, &complete_set_strategy_toml());
+
+    let rendered = messages.join("\n");
+    assert!(
+        rendered.contains("complete_set_arbitrage runtime activation is registration-only")
+            && rendered.contains("runtime.order_execution_mode must be shadow"),
+        "live complete-set activation should fail closed until NT event forwarding is wired: {messages:#?}"
+    );
+}
+
+#[test]
+fn binary_oracle_archetype_still_requires_realized_volatility_surface() {
+    let strategy = support::repo_text("tests/fixtures/bolt_v3/strategies/binary_oracle.toml")
+        .replace(
+            "realized_volatility_surface_id = \"configured_rv_surface\"\n",
+            "",
+        );
+    let messages = strategy_validation_messages_for_toml(&strategy);
+
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("realized_volatility_surface_id is required")),
+        "binary oracle must retain its archetype-owned RV requirement: {messages:#?}"
+    );
+}
+
+#[test]
+fn outcome_group_target_rejects_unknown_fields() {
+    let strategy = complete_set_strategy_toml().replace(
+        "group_sources = [\"poly_world_cup\"]",
+        "group_sources = [\"poly_world_cup\"]\nunderlying_asset = \"CONFIGURED_ASSET\"",
+    );
+    let strategy: bolt_v2::bolt_v3_config::BoltV3StrategyConfig =
+        toml::from_str(&strategy).expect("strategy envelope should parse raw target");
+    let (_, errors) = bolt_v2::bolt_v3_market_families::validate_strategy_target(
+        "strategy `complete_set`",
+        &strategy.target,
+    );
+    let messages: Vec<String> = errors.into_iter().map(|error| error.to_string()).collect();
+
+    assert!(
+        messages.iter().any(
+            |message| message.contains("unknown field") && message.contains("underlying_asset")
+        ),
+        "outcome_group target must reject updown target fields: {messages:#?}"
+    );
+}
+
+#[test]
+fn outcome_group_market_identity_plan_keeps_strategy_group_source_subset() {
+    use std::path::PathBuf;
+
+    use bolt_v2::{
+        bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
+        bolt_v3_market_families::{market_identity_plan_from_config, outcome_group},
+    };
+
+    let root = parse_outcome_group_root(&format!(
+        "{}\n{}",
+        valid_polymarket_event_source_toml(),
+        valid_polymarket_market_slug_source_toml()
+    ));
+    let strategy = parse_complete_set_strategy(&complete_set_strategy_toml());
+    let loaded = LoadedBoltV3Config {
+        root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+        config_bundle_checksum: "test-checksum".to_string(),
+        root,
+        strategies: vec![LoadedStrategy {
+            config_path: PathBuf::from("tests/fixtures/bolt_v3/strategies/complete_set.toml"),
+            relative_path: "strategies/complete_set.toml".to_string(),
+            config: strategy,
+        }],
+    };
+
+    let plan = market_identity_plan_from_config(&loaded)
+        .expect("outcome_group target should project through market-family dispatch");
+    let targets = outcome_group::target_plans(&plan).collect::<Vec<_>>();
+
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].group_sources, vec!["poly_world_cup".to_string()]);
+}
+
 fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
@@ -6196,6 +6734,278 @@ fn without_toml_sections(source: &str, section_prefixes: &[&str]) -> String {
     let mut filtered = lines.join("\n");
     filtered.push('\n');
     filtered
+}
+
+fn outcome_group_root_toml(source_toml: &str, include_basket_execution: bool) -> String {
+    let fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml").replace(
+        "order_execution_mode = \"live\"",
+        "order_execution_mode = \"shadow\"",
+    );
+    let basket = if include_basket_execution {
+        outcome_group_basket_execution_toml()
+    } else {
+        String::new()
+    };
+    format!("{fixture}\n{basket}\n{source_toml}")
+}
+
+fn outcome_group_basket_execution_toml() -> String {
+    r#"
+[risk.basket_execution]
+enabled = true
+state_path = "bolt-v3/baskets/state.json"
+schema_version = 1
+max_state_file_bytes = 1048576
+recovery_policy = "fail_closed_reconcile_before_new_baskets"
+max_recovery_age_ms = 300000
+max_metadata_age_ms = 7200000
+
+[risk.basket_execution.repair]
+max_retries = 2
+max_book_age_ms = 250
+max_slippage_bps = 50
+max_depth_levels = 4
+
+[risk.basket_execution.unwind]
+max_retries = 2
+max_book_age_ms = 250
+max_slippage_bps = 50
+max_depth_levels = 4
+"#
+    .to_string()
+}
+
+fn outcome_group_root_validation_messages(source_toml: &str) -> Vec<String> {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&outcome_group_root_toml(source_toml, true))
+        .expect("outcome-group root should parse before validation");
+    validate_root_only(&root)
+}
+
+fn outcome_group_strategy_validation_messages(root_toml: &str, strategy_toml: &str) -> Vec<String> {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::{validate_root_only, validate_strategies},
+    };
+
+    let root: BoltV3RootConfig =
+        toml::from_str(root_toml).expect("outcome-group root should parse");
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(strategy_toml).expect("outcome-group strategy should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/complete_set.toml"),
+        relative_path: "strategies/complete_set.toml".to_string(),
+        config: strategy,
+    }];
+    let mut messages = validate_root_only(&root);
+    messages.extend(validate_strategies(&root, &loaded));
+    messages
+}
+
+fn parse_outcome_group_root(source_toml: &str) -> bolt_v2::bolt_v3_config::BoltV3RootConfig {
+    toml::from_str(&outcome_group_root_toml(source_toml, true))
+        .expect("outcome-group root should parse")
+}
+
+fn parse_complete_set_strategy(source: &str) -> bolt_v2::bolt_v3_config::BoltV3StrategyConfig {
+    toml::from_str(source).expect("complete-set strategy should parse")
+}
+
+fn complete_set_strategy_toml() -> String {
+    r#"
+schema_version = 2
+strategy_instance_id = "complete_set_arb_main"
+strategy_archetype = "complete_set_arbitrage"
+order_id_tag = "901"
+oms_type = "netting"
+use_uuid_client_order_ids = true
+use_hyphens_in_client_order_ids = false
+external_order_claims = []
+manage_contingent_orders = false
+manage_gtd_expiry = false
+manage_stop = false
+market_exit_interval_ms = 100
+market_exit_max_attempts = 100
+market_exit_reduce_only = true
+log_events = true
+log_commands = true
+log_rejected_due_post_only_as_warning = true
+execution_client_id = "polymarket_main"
+
+[target]
+configured_target_id = "complete_set_arb_target"
+kind = "static_outcome_group"
+rotating_market_family = "outcome_group"
+group_sources = ["poly_world_cup"]
+
+[signal_data]
+
+[parameters.runtime]
+min_edge_bps = 25
+max_basket_notional = "10"
+max_open_baskets = 1
+submit_mode = "ioc"
+vwap_depth_limit_bps = 2000
+slippage_buffer_bps = 100
+max_repair_attempts = 1
+max_unwind_attempts = 1
+"#
+    .to_string()
+}
+
+fn valid_polymarket_event_source_toml() -> String {
+    let digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    format!(
+        r#"
+[[outcome_group_sources]]
+source_id = "poly_world_cup"
+client_id = "polymarket_main"
+kind = "polymarket_gamma_event"
+event_slugs = ["world-cup-final"]
+sports_market_types = ["moneyline"]
+expected_neg_risk_market_id = "neg-risk-123"
+terminal_state_labels = ["home", "draw", "away"]
+max_markets = 20
+enabled = true
+
+[outcome_group_sources.freshness]
+max_age_ms = 500
+max_clock_skew_ms = 250
+
+[outcome_group_sources.order_constraints]
+default_min_quantity = "5"
+default_min_notional = "1"
+
+[outcome_group_sources.role_bindings]
+kind = "operator_attested_positive_side"
+attestation_sha256 = "{digest}"
+legs = [
+  {{ terminal_state_label = "home", pays_on_terminal_state_native_leg_id = "home-positive", pays_unless_terminal_state_native_leg_id = "home-inverse" }},
+  {{ terminal_state_label = "draw", pays_on_terminal_state_native_leg_id = "draw-positive", pays_unless_terminal_state_native_leg_id = "draw-inverse" }},
+  {{ terminal_state_label = "away", pays_on_terminal_state_native_leg_id = "away-positive", pays_unless_terminal_state_native_leg_id = "away-inverse" }},
+]
+
+[outcome_group_sources.settlement_rules]
+settlement_contract_id = "ctf-world-cup-final"
+settlement_source_kind = "polymarket_ctf_uma"
+terminal_state_convention = "exactly_one_winner"
+void_policy = "refund_all_legs"
+rounding_policy = "decimal_exact"
+timing_policy = "venue_final_resolution"
+attestation_sha256 = "{digest}"
+
+[outcome_group_sources.settlement_rules.non_standard_terminal_payouts.void_refund]
+convention = "operator_attested_static_payout_per_unit"
+terminal_state_label = "void_refund"
+legs = [
+  {{ outcome_label = "home", side_label = "operator-positive", payout_per_unit = "1" }},
+  {{ outcome_label = "home", side_label = "operator-inverse", payout_per_unit = "1" }},
+  {{ outcome_label = "draw", side_label = "operator-positive", payout_per_unit = "1" }},
+  {{ outcome_label = "draw", side_label = "operator-inverse", payout_per_unit = "1" }},
+  {{ outcome_label = "away", side_label = "operator-positive", payout_per_unit = "1" }},
+  {{ outcome_label = "away", side_label = "operator-inverse", payout_per_unit = "1" }},
+]
+attestation_sha256 = "{digest}"
+"#
+    )
+}
+
+fn valid_polymarket_market_slug_source_toml() -> String {
+    valid_polymarket_event_source_toml()
+        .replace(
+            "source_id = \"poly_world_cup\"",
+            "source_id = \"poly_market_slug\"",
+        )
+        .replace(
+            "kind = \"polymarket_gamma_event\"",
+            "kind = \"polymarket_gamma_market_slug\"",
+        )
+        .replace(
+            "event_slugs = [\"world-cup-final\"]\nsports_market_types = [\"moneyline\"]\n",
+            "market_slugs = [\"winner-market\"]\n",
+        )
+}
+
+fn valid_polymarket_gamma_query_source_toml() -> String {
+    valid_polymarket_event_source_toml()
+        .replace("source_id = \"poly_world_cup\"", "source_id = \"poly_gamma_query\"")
+        .replace("kind = \"polymarket_gamma_event\"", "kind = \"polymarket_gamma_query\"")
+        .replace(
+            "event_slugs = [\"world-cup-final\"]\nsports_market_types = [\"moneyline\"]\n",
+            "",
+        )
+        .replace(
+            "max_markets = 20\nenabled = true\n\n[outcome_group_sources.freshness]",
+            "enabled = true\n\n[outcome_group_sources.gamma_query]\nsearch = \"world cup\"\nmax_markets = 20\n\n[outcome_group_sources.freshness]",
+        )
+}
+
+fn valid_hyperliquid_hip4_source_toml() -> String {
+    let digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    format!(
+        r#"
+[[outcome_group_sources]]
+source_id = "hyperliquid_question"
+client_id = "hyperliquid_main"
+kind = "hyperliquid_hip4"
+question = 42
+terminal_state_labels = ["home", "draw", "away"]
+max_groups = 10
+enabled = false
+
+[outcome_group_sources.freshness]
+max_age_ms = 500
+max_clock_skew_ms = 250
+
+[outcome_group_sources.order_constraints]
+default_min_quantity = "1"
+default_min_notional = "1"
+
+[outcome_group_sources.settlement_rules]
+settlement_contract_id = "hip4-question-42"
+settlement_source_kind = "hyperliquid_outcome_question"
+terminal_state_convention = "exactly_one_winner"
+void_policy = "operator_attested_fallback"
+rounding_policy = "decimal_exact"
+timing_policy = "venue_final_resolution"
+attestation_sha256 = "{digest}"
+
+[outcome_group_sources.settlement_rules.non_standard_terminal_payouts.fallback]
+convention = "operator_attested_static_payout_per_unit"
+terminal_state_label = "fallback"
+legs = [
+  {{ outcome_label = "home", side_label = "structured-positive", payout_per_unit = "0" }},
+  {{ outcome_label = "draw", side_label = "structured-positive", payout_per_unit = "0" }},
+  {{ outcome_label = "away", side_label = "structured-positive", payout_per_unit = "0" }},
+]
+attestation_sha256 = "{digest}"
+"#
+    )
+}
+
+fn polymarket_data_client_toml() -> &'static str {
+    r#"
+[clients.polymarket_data]
+venue = "POLYMARKET"
+
+[clients.polymarket_data.data]
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+base_url_gamma = "https://gamma-api.polymarket.com"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_secs = 60
+ws_timeout_secs = 30
+subscribe_new_markets = false
+auto_load_missing_instruments = false
+auto_load_debounce_ms = 250
+auto_load_max_retries = 12
+auto_load_retry_delay_initial_secs = 5
+auto_load_retry_delay_max_secs = 15
+update_instruments_interval_mins = 60
+ws_max_subscriptions = 200
+transport_backend = "sockudo"
+"#
 }
 
 fn target_gate_subscription_messages(gate_subscriptions_toml: &str) -> Vec<String> {

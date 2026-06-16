@@ -62,7 +62,6 @@ external review history, or decision reconstruction.
   run manifests, extension-surface classification, result contracts, and
   fidelity claim limits.
 - `2-research-analytics`: owns research datasets, notebooks, point-in-time
-  feature joins, experiment metadata, leakage checks, and the RA-owned GO/NO-GO
-  verdict and promotion gate (see `reference/data-model.md`).
+  feature joins, experiment metadata, leakage checks, and promotion packages.
 - `3-dashboard`: owns field-source matrix, freshness behavior, read-only product
   gate, no-mutation controls, and dashboard/PnL dependencies.

@@ -541,6 +541,8 @@ const LF_LINE_ENDING: &str = "\n";
 pub const STRATEGY_KEY: &str = "strategy";
 /// Stable registry key for the submit-admission source root.
 pub const SUBMIT_ADMISSION_KEY: &str = "submit_admission";
+/// Stable registry key for the shared outcome-group substrate source set.
+pub const OUTCOME_GROUP_KEY: &str = "outcome_group";
 
 /// One registry entry: a stable key + its repo-relative source roots. A
 /// one-element set preserves the old single-root semantics; a multi-root set is
@@ -561,11 +563,16 @@ pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
         key: STRATEGY_KEY,
         relative_roots: &[
             "src/strategies/binary_oracle_edge_taker",
+            // The first outcome-group strategy shell is production-registered,
+            // so it is also covered by the strategy policy fence even though
+            // its shared outcome-group mechanics stay in OUTCOME_GROUP roots.
+            "src/strategies/complete_set_arbitrage",
             // The archetype translates operator TOML into the runtime config
             // table that carries the NautilusTrader-managed venue-action knobs.
             // It is the sole producer of that table, so it belongs under the same
             // tamper-evidence as the consumer (`config.rs`) that validates them.
             "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
+            "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
             // The shared policy is the only approved Bolt-v3 strategy-originated
             // NT submit/cancel mutation boundary.
             "src/bolt_v3_order_execution.rs",
@@ -579,6 +586,24 @@ pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
     GatedSourceRoot {
         key: SUBMIT_ADMISSION_KEY,
         relative_roots: &["src/bolt_v3_submit_admission.rs"],
+    },
+    GatedSourceRoot {
+        key: OUTCOME_GROUP_KEY,
+        relative_roots: &[
+            "src/bolt_v3_atomic_io.rs",
+            "src/bolt_v3_outcome_groups.rs",
+            "src/bolt_v3_outcome_group_sources.rs",
+            "src/bolt_v3_outcome_group_polymarket.rs",
+            "src/bolt_v3_outcome_group_hyperliquid.rs",
+            "src/bolt_v3_outcome_group_scanner.rs",
+            "src/bolt_v3_basket_admission.rs",
+            "src/bolt_v3_basket_execution.rs",
+            "src/bolt_v3_basket_store.rs",
+            "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
+            "src/bolt_v3_market_families/outcome_group.rs",
+            "src/strategy_runtime_bindings.rs",
+            "src/strategies/complete_set_arbitrage",
+        ],
     },
 ];
 

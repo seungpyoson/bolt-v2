@@ -29,11 +29,10 @@ independent PnL/account truth.
   considered only after explicit artifact kind/schema/owner/audit rules exist.
   Trading, runtime config, credential, and funds/order mutations remain outside
   this package unless a separate future scope explicitly approves them.
-- Every displayed field must map to NT report, NT event, NT snapshot, NT catalog
-  Arrow output (read via duckdb/polars), or explicit unavailable/gap label.
+- Every displayed field must map to NT report, NT event, NT snapshot, derived
+  analytics table, or explicit unavailable/gap label.
 - PnL, positions, orders, fills, exposure, and account state must come from
-  NT-derived sources. #409 `PortfolioSnapshot` is the single PnL read source;
-  dashboard must not compute independent account or MTM truth.
+  NT-derived sources.
 - Freshness/staleness must be visible for live/current fields.
 - Dashboard PnL completeness requires #409 or equivalent `PortfolioSnapshot`
   capture proof, #77 durable PnL/history path, and #36 redemption-PnL inclusion
@@ -53,6 +52,36 @@ independent PnL/account truth.
   only as exploratory/non-trading-truth.
 - Venue/provider identity must remain TOML/registry-selected data; dashboard
   field-source resolution must not branch on hardcoded venue/provider names.
+- Backtest/source-proof artifact links displayed by dashboard must reference
+  the configured S3 `artifact_root`; dashboard must not create a second canonical
+  artifact root.
+- Dashboard may display explicit artifact-local handles passed by upstream
+  producers; cross-run and bulk artifact lists must come from committed
+  Artifact Index snapshots, not recursive S3 listing.
+- Dashboard is read-only for Artifact Index records and must not publish,
+  repair, invent, or mutate upstream artifact truth.
+- Dashboard may display `SourceProofReport` ids, fidelity classes, claim
+  limits, and warnings, but must not reclassify source/backtest proof strength.
+- Dashboard must not mark upstream `SourceProofReport` records accepted or
+  weaken forbidden claims.
+- Dashboard must preserve source proof version/supersession metadata and must
+  not mutate accepted proof records.
+- Dashboard must display historical results against the proof version they used;
+  supersession may be surfaced as metadata but must not relabel old results as
+  if they used the newer proof.
+- Dashboard may display `proof_pin_reason_code` and `proof_pin_reason_detail`
+  for non-latest proof pins when present.
+- Dashboard may display `run_purpose` and must not present reproduction,
+  audit, regression, or migration results as normal current results.
+- Dashboard may display Research Analytics strategy-review or promotion status
+  only from `PromotionPackage` or later RA-owned review artifacts. It must not
+  infer "use/escalate this strategy" from `BacktestResultContract` metrics or
+  mutate promotion state.
+- Dashboard must preserve artifact lifecycle status and must not add delete or
+  expiration behavior for canonical artifacts.
+- Dashboard user-facing labels, status names, and legends must be finalized in a
+  cross-project terminology/legend pass before UI implementation. Internal semantics
+  must distinguish source role from data status/gap reason.
 
 ## Evidence And Decisions
 
@@ -68,6 +97,13 @@ independent PnL/account truth.
 | E-028 | SOURCE_PROVEN + DECISION_NEEDED | Grafana, Metabase, Superset/Preset, Retool, Plotly/Dash, and custom UI are candidates; product choice requires proof. |
 | E-029 | SOURCE_PROVEN | Live credentials must remain AWS SSM-only; dashboard must never display, mutate, or bypass the live secret path. |
 | E-031 | SOURCE_PROVEN | Mature systems separate research/backtest/live and analysis views; dashboard is not a trading control plane. |
+| E-034 | USER_ASSUMPTION + DECISION_NEEDED | Dashboard may display artifact pointers from Backtesting Engine or Research Analytics, but canonical artifacts stay under the configured S3 `artifact_root`. |
+| E-035 | USER_ASSUMPTION + DECISION_NEEDED | Dashboard may show lifecycle/restore status, but it must not delete, expire, or mutate canonical artifacts. |
+| E-036 | USER_ASSUMPTION + DECISION_NEEDED | Dashboard may display lifecycle state, but lifecycle remains the cross-project simple rule: active, configured quiet window, inactive. |
+| E-038 | SOURCE_PROVEN + DECISION_NEEDED | Dashboard may display explicit artifact-local handles, but cross-run/bulk artifact lists must consume committed Artifact Index snapshots; dashboard must not scan S3 prefixes as the normal discovery path. |
+| E-039 | USER_ASSUMPTION + DECISION_NEEDED | Dashboard is a read-only Artifact Index consumer; it must not publish, repair, invent, or mutate upstream artifact records. |
+| E-040 | USER_ASSUMPTION + DECISION_NEEDED | Dashboard may display source proof ids, fidelity classes, claim limits, and warnings, but it must not accept upstream proof, weaken forbidden claims, or upgrade proof strength. |
+| E-041 | SOURCE_PROVEN + DECISION_NEEDED | Dashboard may display RA-owned strategy review status, but must not infer promotion from BTE result metrics or mutate promotion state. |
 
 ## Product Gate
 
@@ -82,13 +118,14 @@ independent PnL/account truth.
 
 ## Data Model
 
-- `DashboardFieldSource`: field name, source type, source ref (NT report/event/
-  snapshot, catalog Arrow URI via duckdb/polars, or `PortfolioSnapshot` id),
-  fidelity class, freshness rule, source role, data status/gap reason, and
-  user-facing legend key.
+- `DashboardFieldSource`: field name, source type, source ref or cross-project
+  `artifact_root` URI, source proof id if applicable, fidelity class, claim
+  limits, run purpose, proof pin reason code/detail when present, lifecycle
+  status, promotion/status source if applicable, freshness rule, source role,
+  data status/gap reason, and user-facing legend key.
 - `TradeExplanationField`: trade/order/fill id, source binding, strategy id,
-  signal/reason evidence refs, and PnL source stance and freshness/gap labels
-  for drilldown.
+  signal/reason evidence refs, source proof id/version, artifact refs, PnL
+  source stance, and freshness/gap labels for drilldown.
 - `FreshnessRule`: max age, display behavior, alert behavior, and source ref.
 - `DashboardReadModel`: read-only projection derived from NT/report/analytics
   sources.

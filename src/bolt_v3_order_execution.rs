@@ -1,8 +1,13 @@
+use std::any::type_name;
+
 use anyhow::Result;
+use nautilus_common::messages::execution::{
+    BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, SubmitOrderList,
+};
 use nautilus_core::Params;
 use nautilus_model::{
     identifiers::{ClientId, ClientOrderId, PositionId},
-    orders::OrderAny,
+    orders::{OrderAny, OrderList},
 };
 use nautilus_trading::Strategy;
 use serde::{Deserialize, Serialize};
@@ -22,6 +27,27 @@ pub enum BoltV3OrderExecutionMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoltV3OrderExecutionPolicy {
     mode: BoltV3OrderExecutionMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3NtOrderManagementContract {
+    pub order_list_type: &'static str,
+    pub submit_order_list_type: &'static str,
+    pub cancel_order_type: &'static str,
+    pub batch_cancel_orders_type: &'static str,
+    pub cancel_all_orders_type: &'static str,
+    pub modify_order_type: &'static str,
+}
+
+pub fn nt_order_management_contract() -> BoltV3NtOrderManagementContract {
+    BoltV3NtOrderManagementContract {
+        order_list_type: type_name::<OrderList>(),
+        submit_order_list_type: type_name::<SubmitOrderList>(),
+        cancel_order_type: type_name::<CancelOrder>(),
+        batch_cancel_orders_type: type_name::<BatchCancelOrders>(),
+        cancel_all_orders_type: type_name::<CancelAllOrders>(),
+        modify_order_type: type_name::<ModifyOrder>(),
+    }
 }
 
 impl BoltV3OrderExecutionPolicy {
@@ -263,7 +289,8 @@ mod tests {
     use crate::{
         bolt_v3_capital_reservation::CapitalPoolSnapshot,
         bolt_v3_decision_evidence::{
-            BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
+            BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
+            BoltV3BasketAdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
             BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
             BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
             BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
@@ -331,6 +358,13 @@ mod tests {
                 .lock()
                 .expect("recording admission mutex should not be poisoned")
                 .push(decision.clone());
+            Ok(())
+        }
+
+        fn record_basket_admission_decision(
+            &self,
+            _decision: &BoltV3BasketAdmissionDecisionEvidence,
+        ) -> Result<()> {
             Ok(())
         }
 
@@ -573,7 +607,7 @@ mod tests {
             venue_id: "VENUE-A".to_string(),
             product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
             side: BoltV3CompiledOrderSide::Buy,
-            quantity: Decimal::new(10, 0),
+            quantity: Decimal::new(1, 0),
             effective_price: Decimal::new(40, 2),
             order_kind: BoltV3CompiledOrderKind::Limit,
             liquidity: BoltV3CompiledOrderLiquidity::Taker,

@@ -119,8 +119,8 @@ data models are defined inside the numbered project specs/plans:
 - `artifact_kind`: Top-level kind: raw, nt_catalog, source_proofs, backtests,
   artifact_index, or research_analytics.
 - `artifact_subfamily`: Optional subfamily inside the top-level kind. Required
-  for Research Analytics artifacts: datasets, feature_tables, or
-  experiment_results.
+  for Research Analytics artifacts: datasets, feature_tables,
+  experiment_results, or promotion_packages.
 - `producer_project`: Project or job family that produced the artifact and owns
   its index record.
 - `manifest_uri`: Artifact-local structured manifest URI under `artifact_root`.
@@ -148,30 +148,12 @@ Research Analytics may write only these derived families under the
 - `datasets`: point-in-time research datasets.
 - `feature-tables`: point-in-time feature tables.
 - `experiment-results`: experiment metadata, metrics pointers, consumed BTE
-  result ids, leakage reports, the RA-owned GO / NO-GO / conditional-GO
-  verdict (scope, evidence/fidelity refs, re-measurement cadence), and — only
-  when a GO finding is promoted — a typed promotion-config field/URI (the
-  TOML/NT-compatible config produced for later implementation/review).
-
-There is no standing `promotion-packages` family: there is no standing
-PromotionPackage machine, and promotion introduces no separate promotion-only
-Artifact Index layer and no separate promotion-only lifecycle layer. The typed
-promotion-config produced when a real GO finding is promoted is not a standalone
-artifact family but the field/URI on the verdict-bearing `experiment-results`
-artifact named above, so it is committed, indexed, and lifecycle-tracked with
-that artifact and needs no separate subfamily, index, or lifecycle layer (see
-`contracts.md` Result And Promotion Boundary and `evidence.md` E-041).
+  result ids, and leakage reports.
+- `promotion-packages`: promotion package states and typed config artifacts.
 
 Every RA-owned artifact records owner, schema version, source refs, source
-hashes, content hash, and lifecycle state, and commits into the
-`research-analytics` kind snapshot per the Artifact Index Contract in
-`contracts.md`, with lifecycle behavior governed by that file's Artifact
-Lifecycle Contract (the verdict-bearing `experiment-results` artifact included).
-This
-file and `contracts.md` are the single home for the verdict field set and the
-index/lifecycle mechanics; the project specs/plans/tasks reference them rather
-than restate them. RA does not write upstream raw, NT catalog, source-proof, or
-backtest records.
+hashes, content hash, lifecycle state, and Artifact Index event behavior. RA
+does not write upstream raw, NT catalog, source-proof, or backtest records.
 
 ## IssueSlice
 

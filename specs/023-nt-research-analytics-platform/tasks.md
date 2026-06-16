@@ -30,10 +30,9 @@ ROOT-009 is intentionally deferred; see Future Cross-Project Tasks below.
   implementation or UI work. It must define each internal enum/status, plain
   display label, tooltip/legend meaning, owner/source of truth, which vertical
   may set it, and which vertical may only display it. Covered concepts include
-  fidelity classes, source roles, data status/gap reasons, lifecycle states
-  (owner: `reference/contracts.md` Artifact Lifecycle Contract), run
-  purposes, artifact kinds, proof statuses, warning labels, and product-gate
-  outcomes.
+  fidelity classes, source roles, data status/gap reasons, lifecycle states,
+  run purposes, promotion statuses, artifact kinds, proof statuses, warning
+  labels, and product-gate outcomes.
 
 ## Cross-Project Issue Summaries
 

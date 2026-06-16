@@ -397,6 +397,13 @@ mod tests {
             Ok(())
         }
 
+        fn record_basket_admission_decision(
+            &self,
+            _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
         fn record_position_sizer_rebuild_audit(
             &self,
             _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,

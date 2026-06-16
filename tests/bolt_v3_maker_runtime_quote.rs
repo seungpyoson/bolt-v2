@@ -1,5 +1,6 @@
 use anyhow::Result;
 use bolt_v2::{
+    bolt_v3_config::ReferencePriceProvider,
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
     bolt_v3_maker_order_dispatch::{MakerOrderCommandSink, MakerOrderDispatchOutcome},
     bolt_v3_maker_order_plan::{
@@ -13,11 +14,13 @@ use bolt_v2::{
     },
     bolt_v3_maker_runtime_quote::{
         MakerRuntimeOrderPlanInput, MakerRuntimeQuoteBlockReason, MakerRuntimeQuoteInput,
-        MakerRuntimeQuoteSetInput, plan_maker_runtime_quote,
+        MakerRuntimeQuoteSetInput, MakerRuntimeReferenceFairValueInput,
+        maker_reference_current_price_fair_value, plan_maker_runtime_quote,
     },
     bolt_v3_market_families::static_binary_event,
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketState},
+    bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
 };
 use nautilus_common::{
     clock::{Clock, TestClock},
@@ -91,6 +94,67 @@ fn runtime_quote_tick_uses_family_quote_plan_and_produces_order_intents() {
     assert_eq!(market.market_state(), MarketState::Quoting);
     assert_eq!(budget.submit_commands_in_window(), 2);
     assert_eq!(budget.rest_cost_in_window(), 2);
+}
+
+#[test]
+fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
+    let mut selector = ReferencePriceSelector::new("BTC", vec!["primary"], 1, 500, 25)
+        .expect("selector fixture should be valid");
+    let quotes = vec![reference_quote("BTC", "primary", 0.63, 1_000)];
+
+    let fair = maker_reference_current_price_fair_value(
+        &mut selector,
+        MakerRuntimeReferenceFairValueInput {
+            family_key: static_binary_event::KEY,
+            interval_start_ms: 1_000,
+            interval_end_ms: 2_000,
+            now_ms: 1_000,
+            reference_quotes: &quotes,
+            strike_price: f64::NAN,
+            seconds_to_market_end: 0,
+            realized_vol: f64::NAN,
+            pricing_kurtosis: f64::NAN,
+        },
+    )
+    .expect("reference-current-price fair value should be available");
+
+    assert_eq!(fair.source_id, "primary");
+    assert_eq!(fair.reference_current_price, 0.63);
+    assert_eq!(fair.fair_probability_up, 0.63);
+    assert!(!fair.failed_over);
+
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+    let decision = plan_maker_runtime_quote(
+        &mut market,
+        &mut budget,
+        MakerRuntimeQuoteInput {
+            quote_plan: quote_plan_inputs_with_fair(
+                static_binary_event::KEY,
+                fair.fair_probability_up,
+            ),
+            quote_set: quote_set_inputs(),
+            order_plan: order_plan_inputs(),
+        },
+    );
+
+    assert_eq!(decision.blocked_by, None);
+    assert_eq!(
+        decision
+            .quote_plan
+            .expect("reference fair value should feed a quote plan")
+            .fair_probability_up,
+        0.63
+    );
+    assert!(
+        decision
+            .order_plan
+            .expect("reference fair value should feed maker orders")
+            .yes
+            .intent
+            .is_some()
+    );
 }
 
 #[test]
@@ -315,9 +379,16 @@ fn canceled_requote_action_maps_to_prepaid_replacement_submit_without_budget_cha
 }
 
 fn quote_plan_inputs(family_key: &str) -> MakerQuotePlanInputs<'_> {
+    quote_plan_inputs_with_fair(family_key, 0.60)
+}
+
+fn quote_plan_inputs_with_fair(
+    family_key: &str,
+    oracle_fair_probability_up: f64,
+) -> MakerQuotePlanInputs<'_> {
     MakerQuotePlanInputs {
         family_key,
-        oracle_fair_probability_up: 0.60,
+        oracle_fair_probability_up,
         informed_fraction: 0.10,
         top_of_book: None,
         microprice_weight: 0.0,
@@ -333,6 +404,27 @@ fn quote_plan_inputs(family_key: &str) -> MakerQuotePlanInputs<'_> {
         order_notional_target: 10.0,
         maximum_position_notional: 20.0,
     }
+}
+
+fn reference_quote(
+    asset: &str,
+    source_id: &str,
+    price: f64,
+    observed_ts_ms: u64,
+) -> ReferenceQuote {
+    ReferenceQuote::try_new(
+        asset,
+        source_id,
+        ReferencePriceProvider::new("fixture_provider")
+            .expect("fixture provider identifier should be valid"),
+        "fixture_feed",
+        price,
+        None,
+        None,
+        observed_ts_ms,
+        observed_ts_ms,
+    )
+    .expect("reference quote fixture should be valid")
 }
 
 fn quote_set_inputs() -> MakerRuntimeQuoteSetInput<'static> {

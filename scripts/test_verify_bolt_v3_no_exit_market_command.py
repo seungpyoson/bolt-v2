@@ -111,6 +111,19 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
 
         self.assertEqual({violation.line for violation in violations}, {2, 3, 4, 5})
 
+    def test_policy_module_allows_only_cancel_all_chokepoint(self) -> None:
+        violations = VERIFIER.find_violations_in_text(
+            "src/bolt_v3_order_execution.rs",
+            """
+            self.cancel_all_orders(instrument_id, None, Some(client_id), None)?;
+            self.close_position(position_id, Some(client_id), None)?;
+            """,
+        )
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].line, 3)
+        self.assertEqual(violations[0].label, "NT venue-mutating lifecycle API")
+
     def test_identifier_rules_do_not_match_substrings_or_comments(self) -> None:
         violations = VERIFIER.find_violations_in_text(
             "src/probe.rs",

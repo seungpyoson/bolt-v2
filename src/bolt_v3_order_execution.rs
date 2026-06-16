@@ -960,7 +960,7 @@ mod tests {
                 ),
                 &mut sink,
                 order,
-                BoltV3SubmitContext::with_client_id(ClientId::from("polymarket_main")),
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
             )
             .expect("live submit should route through NT");
 
@@ -999,7 +999,7 @@ mod tests {
             BoltV3SubmitRoutingRequest::new(writer.as_ref(), admission.as_ref(), intent, request),
             &mut sink,
             order,
-            BoltV3SubmitContext::with_client_id(ClientId::from("polymarket_main")),
+            BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
         );
 
         assert!(result.is_err());
@@ -1035,7 +1035,7 @@ mod tests {
                 ),
                 &mut sink,
                 order,
-                BoltV3SubmitContext::with_client_id(ClientId::from("polymarket_main")),
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
             )
             .expect("shadow submit should still evaluate admission");
 
@@ -1060,7 +1060,7 @@ mod tests {
             .route_cancel_with_sink(
                 &mut sink,
                 ClientOrderId::from("O-19700101-000000-001-CANCEL-1"),
-                Some(ClientId::from("polymarket_main")),
+                Some(ClientId::from("execution_client")),
                 None,
             )
             .expect("live cancel should call NT");
@@ -1068,7 +1068,7 @@ mod tests {
             .route_cancel_with_sink(
                 &mut sink,
                 ClientOrderId::from("O-19700101-000000-001-CANCEL-2"),
-                Some(ClientId::from("polymarket_main")),
+                Some(ClientId::from("execution_client")),
                 None,
             )
             .expect("shadow cancel should be suppressed by policy");
@@ -1080,7 +1080,7 @@ mod tests {
 
     fn live_submit_cap() -> BTreeMap<String, BoltV3LiveSubmitApprovalLimits> {
         BTreeMap::from([(
-            "polymarket_main".to_string(),
+            "execution_client".to_string(),
             BoltV3LiveSubmitApprovalLimits {
                 max_order_count: 1,
                 max_order_notional: Decimal::new(100, 0),
@@ -1115,7 +1115,7 @@ mod tests {
     ) -> BoltV3SubmitAdmissionRequest {
         BoltV3SubmitAdmissionRequest {
             strategy_id: "strategy-a".to_string(),
-            execution_client_id: "polymarket_main".to_string(),
+            execution_client_id: "execution_client".to_string(),
             client_order_id: order.client_order_id().to_string(),
             instrument_id: order.instrument_id().to_string(),
             notional,

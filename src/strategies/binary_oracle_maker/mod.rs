@@ -4,13 +4,13 @@
 //! key, registers through the shared `production_strategy_registry()`, and
 //! validates. Slice 2 adds the μ (informed-fraction) runtime state ([`mu`]): the
 //! maker overrides `on_trade` to feed each instrument's signed trade-flow buffer,
-//! from which the shared estimator and fail-closed health gate derive μ. It
-//! subscribes to nothing yet (so the handler is dormant) and **submits no
-//! orders** — the no-orders guarantee is preserved until later slices add
-//! subscription, quoting, pricing, exposure, and settlement. The NautilusTrader
-//! surface (`core: StrategyCore`, `nautilus_strategy!`, the `StrategyBuilder`
-//! impl) mirrors `binary_oracle_edge_taker` *structurally* — it does not copy
-//! taker behaviour.
+//! from which the shared estimator and fail-closed health gate derive μ. Slice
+//! 6c adds the strategy-owned shell method that routes compiled maker commands
+//! through the shared execution/admission policy; the strategy still has no
+//! autonomous subscription or quote loop until later runtime slices. The
+//! NautilusTrader surface (`core: StrategyCore`, `nautilus_strategy!`, the
+//! `StrategyBuilder` impl) mirrors `binary_oracle_edge_taker` *structurally* —
+//! it does not copy taker behaviour.
 
 use std::{cell::RefCell, rc::Rc};
 
@@ -19,13 +19,21 @@ use nautilus_common::{actor::DataActor, component::Component};
 use nautilus_model::{data::TradeTick, enums::OmsType, identifiers::StrategyId};
 use nautilus_system::trader::Trader;
 use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
+use rust_decimal::Decimal;
 use toml::Value;
 
-use crate::bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig};
-use crate::bolt_v3_trade_flow::SignedTradeFlowConfig;
-use crate::strategies::binary_oracle_maker::mu::MakerMuState;
-use crate::strategies::registry::{
-    BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError,
+use crate::{
+    bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig},
+    bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
+    bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
+    bolt_v3_order_execution::{
+        BoltV3MakerOrderRoutingContext,
+        route_maker_order_command as route_maker_order_command_through_policy,
+    },
+    bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy,
+    bolt_v3_trade_flow::SignedTradeFlowConfig,
+    strategies::binary_oracle_maker::mu::MakerMuState,
+    strategies::registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError},
 };
 
 pub mod archetype;
@@ -43,17 +51,19 @@ pub const KEY: &str = "binary_oracle_maker";
 
 /// Binary-oracle market-making strategy. Carries the NautilusTrader envelope
 /// (`core`), its parsed config, and the per-instrument μ (informed-fraction)
-/// runtime state. It emits no orders yet: Slice 2 wires trade observation into
-/// the μ buffer; quoting, pricing, and exposure arrive in later slices.
+/// runtime state. Compiled maker order commands route through the shared
+/// execution policy using the retained build context; pricing/exposure loops
+/// arrive in later slices.
 #[derive(Debug)]
 pub struct BinaryOracleMaker {
     core: StrategyCore,
     config: BinaryOracleMakerConfig,
+    context: StrategyBuildContext,
     mu: MakerMuState,
 }
 
 impl BinaryOracleMaker {
-    pub fn new(config: BinaryOracleMakerConfig) -> Self {
+    pub fn new(config: BinaryOracleMakerConfig, context: StrategyBuildContext) -> Self {
         let oms_type = config
             .oms_type
             .parse::<OmsType>()
@@ -68,6 +78,7 @@ impl BinaryOracleMaker {
                     .build(),
             ),
             config,
+            context,
             mu,
         }
     }
@@ -75,6 +86,36 @@ impl BinaryOracleMaker {
     /// The parsed maker config (read by later slices once they add behaviour).
     pub fn config(&self) -> &BinaryOracleMakerConfig {
         &self.config
+    }
+
+    pub fn route_maker_order_command(
+        &mut self,
+        command: &MakerCompiledOrderCommand,
+        submit_order_prefix: &str,
+        max_fee_bps: Decimal,
+        submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+    ) -> Result<MakerOrderDispatchOutcome> {
+        let policy = self.context.order_execution_policy();
+        let decision_evidence = self.context.decision_evidence_arc();
+        let submit_admission = self.context.submit_admission_arc();
+        let strategy_id = self.config.strategy_id.clone();
+        let execution_client_id = self.config.client_id.clone();
+        route_maker_order_command_through_policy(
+            policy,
+            self,
+            decision_evidence.as_ref(),
+            submit_admission.as_ref(),
+            BoltV3MakerOrderRoutingContext {
+                strategy_id: strategy_id.as_str(),
+                execution_client_id: execution_client_id.as_str(),
+                max_fee_bps,
+                submit_lifecycle_policy,
+            },
+            MakerOrderDispatchInput {
+                command,
+                submit_order_prefix,
+            },
+        )
     }
 }
 
@@ -100,8 +141,7 @@ fn build_mu_state(config: &BinaryOracleMakerConfig) -> MakerMuState {
 
 // The maker overrides only `on_trade`, to feed the per-instrument μ buffer; every
 // other `DataActor` handler defaults to a no-op. The maker subscribes to nothing
-// yet, so this handler is dormant until a later slice subscribes — and it submits
-// no orders, so the no-orders inert guarantee still holds.
+// yet, so this handler is dormant until a later slice subscribes.
 impl DataActor for BinaryOracleMaker {
     fn on_trade(&mut self, trade: &TradeTick) -> anyhow::Result<()> {
         self.mu.observe(trade);
@@ -120,16 +160,19 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
         validate_config(raw, field_prefix, errors);
     }
 
-    fn build(raw: &Value, _context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-        Ok(Box::new(BinaryOracleMaker::new(parse_config(raw)?)))
+    fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
+        Ok(Box::new(BinaryOracleMaker::new(
+            parse_config(raw)?,
+            context.clone(),
+        )))
     }
 
     fn register(
         raw: &Value,
-        _context: &StrategyBuildContext,
+        context: &StrategyBuildContext,
         trader: &Rc<RefCell<Trader>>,
     ) -> Result<StrategyId> {
-        let strategy = BinaryOracleMaker::new(parse_config(raw)?);
+        let strategy = BinaryOracleMaker::new(parse_config(raw)?, context.clone());
         let strategy_id = StrategyId::from(strategy.component_id().inner().as_str());
         trader.borrow_mut().add_strategy(strategy)?;
         Ok(strategy_id)
@@ -139,14 +182,27 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bolt_v3_maker_mu_estimator::MuHealthReason;
-    use crate::bolt_v3_numeric::NANOS_PER_MILLI_U64;
+    use crate::{
+        bolt_v3_decision_evidence::{
+            BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
+            BoltV3OrderIntentEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
+            BoltV3SubmitReservationMetadataEvidence,
+        },
+        bolt_v3_maker_mu_estimator::MuHealthReason,
+        bolt_v3_numeric::NANOS_PER_MILLI_U64,
+        bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
+        bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+        strategies::registry::FeeProvider,
+    };
+    use futures_util::{FutureExt, future::BoxFuture};
     use nautilus_core::UnixNanos;
     use nautilus_model::{
         enums::AggressorSide,
-        identifiers::{InstrumentId, TradeId},
+        identifiers::{InstrumentId, TradeId, Venue},
         types::{Price, Quantity},
     };
+    use std::sync::Arc;
 
     #[test]
     fn builder_kind_is_archetype_key() {
@@ -158,6 +214,74 @@ mod tests {
     const TEST_STALE_WINDOW_MS: u64 = 60_000;
     const TEST_MU_FLOOR: f64 = 0.05;
     const TEST_REQUOTE_MIN_INTERVAL_MS: u64 = 500;
+
+    #[derive(Debug)]
+    struct NoopFeeProvider;
+
+    impl FeeProvider for NoopFeeProvider {
+        fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
+            None
+        }
+
+        fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
+            async { Ok(()) }.boxed()
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoopDecisionEvidenceWriter;
+
+    impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
+        fn record_strategy_input_snapshot(
+            &self,
+            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_admission_decision(
+            &self,
+            _decision: &BoltV3AdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &BoltV3SubmitReservationMetadataEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &BoltV3SubmitReservationFillEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_context() -> StrategyBuildContext {
+        let writer = Arc::new(NoopDecisionEvidenceWriter);
+        StrategyBuildContext::new(
+            Arc::new(NoopFeeProvider),
+            writer.clone(),
+            Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+            BoltV3OrderExecutionPolicy::shadow(),
+            Venue::from("MAKER.TEST"),
+        )
+    }
 
     fn maker_config(
         trade_flow_window_secs: u64,
@@ -260,7 +384,7 @@ mod tests {
         // and the gate `Err(Absent)`, so the post-flow `Ok(1.0)` assertion fails on
         // that buggy variant. Asserts through the μ side-effect channel the handler
         // is supposed to drive.
-        let mut maker = BinaryOracleMaker::new(maker_config(600, 1000, 4));
+        let mut maker = BinaryOracleMaker::new(maker_config(600, 1000, 4), test_context());
         let instrument = InstrumentId::from("MAKER.SIM");
         assert_eq!(
             maker.mu.usable_mu_for(&instrument, QUERY_NOW_MS),

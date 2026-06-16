@@ -1,0 +1,73 @@
+//! Shared maker primitives for binary-outcome market families.
+
+use crate::{
+    bolt_v3_numeric::{UNIT_F64, ZERO_F64, sanitize_probability},
+    bolt_v3_quote_lifecycle::Leg,
+    bolt_v3_quoting::{
+        FamilyQuoteInputs, QuoteSide, QuoteTargetLeg, QuoteTargets, compose_binary_legs,
+    },
+    bolt_v3_sizing::maker_robust_size,
+};
+
+use super::OutcomeSide;
+
+pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
+    // The band carries an already-sanitized fair (`gm_binary_quote` is the sole
+    // producer and sanitizes `p_up` at mint), so the layout consumes it directly.
+    let legs = compose_binary_legs(
+        inputs.band,
+        inputs.half_spread_floor,
+        inputs.max_half_spread,
+        inputs.tau,
+        inputs.reference_tau,
+        inputs.time_widen_cap,
+        inputs.inventory_skew,
+        inputs.eps,
+    )?;
+    // Size the legs off the protective half-spread the maker captures, NOT off
+    // directional EV (the GM/CG maker is break-even, so the taker EV-gated sizer
+    // would force perpetual zero-size quotes). A non-positive edge sizes to zero,
+    // which is a fail-closed no-quote: a priced leg with zero notional is not a
+    // real maker quote.
+    let size_notional = maker_robust_size(
+        inputs.band.half_spread(),
+        inputs.max_half_spread,
+        inputs.order_notional_target,
+        inputs.maximum_position_notional,
+    );
+    if size_notional <= ZERO_F64 {
+        return None;
+    }
+    Some(QuoteTargets {
+        leg_a: QuoteTargetLeg {
+            side: QuoteSide::Buy,
+            price: legs.yes_price,
+            size_notional,
+        },
+        leg_b: QuoteTargetLeg {
+            side: QuoteSide::Buy,
+            price: legs.no_price,
+            size_notional,
+        },
+    })
+}
+
+pub fn maker_settlement_payout(outcome: OutcomeSide, leg: Leg) -> Option<f64> {
+    Some(match (outcome, leg) {
+        (OutcomeSide::Up, Leg::Yes) | (OutcomeSide::Down, Leg::No) => UNIT_F64,
+        (OutcomeSide::Up, Leg::No) | (OutcomeSide::Down, Leg::Yes) => ZERO_F64,
+    })
+}
+
+pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
+    if !fee_rate.is_finite() || fee_rate < ZERO_F64 {
+        return None;
+    }
+    let price = sanitize_probability(price)?;
+    let fee = fee_rate * price * (UNIT_F64 - price);
+    if fee.is_finite() && fee >= ZERO_F64 {
+        Some(fee)
+    } else {
+        None
+    }
+}

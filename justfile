@@ -196,6 +196,10 @@ verify-bolt-v3-requote-construction: check-workspace
     python3 scripts/test_verify_bolt_v3_requote_construction.py
     python3 scripts/verify_bolt_v3_requote_construction.py
 
+verify-bolt-v3-market-family-coupling: check-workspace
+    python3 scripts/test_verify_bolt_v3_market_family_coupling.py
+    python3 scripts/verify_bolt_v3_market_family_coupling.py
+
 verify-bolt-v3-dependency-direction: check-workspace
     python3 scripts/test_verify_bolt_v3_dependency_direction.py
     python3 scripts/verify_bolt_v3_dependency_direction.py
@@ -373,6 +377,8 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_bolt_v3_no_venue_name_branch.py
     python3 scripts/test_verify_bolt_v3_requote_construction.py
     python3 scripts/verify_bolt_v3_requote_construction.py
+    python3 scripts/test_verify_bolt_v3_market_family_coupling.py
+    python3 scripts/verify_bolt_v3_market_family_coupling.py
     python3 scripts/test_verify_runtime_capture_yaml.py
     python3 scripts/test_local_verification_gate.py
     python3 scripts/test_lane_governor.py

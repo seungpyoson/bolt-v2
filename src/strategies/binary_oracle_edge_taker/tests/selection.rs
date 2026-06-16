@@ -370,7 +370,7 @@ fn strategy_selects_configured_static_binary_event_from_nt_binary_option_metadat
     strategy.config.cadence_seconds = 1;
     strategy.config.cadence_slug_token = "will-sample-event-resolve-yes".to_string();
     strategy.config.market_selection_rule = "configured_static".to_string();
-    strategy.config.static_condition_id = Some("condition-sample-event".to_string());
+    strategy.config.static_condition_id = Some("condition-sample-event-yes-no".to_string());
     strategy.config.static_yes_outcome = Some("Yes".to_string());
     strategy.config.static_no_outcome = Some("No".to_string());
     let instruments = vec![
@@ -402,7 +402,7 @@ fn strategy_selects_configured_static_binary_event_from_nt_binary_option_metadat
     assert_eq!(market.down.instrument_id, "sample-event-no.POLYMARKET");
     assert_eq!(
         market.source_identity.condition_id,
-        "condition-sample-event"
+        "condition-sample-event-yes-no"
     );
 }
 

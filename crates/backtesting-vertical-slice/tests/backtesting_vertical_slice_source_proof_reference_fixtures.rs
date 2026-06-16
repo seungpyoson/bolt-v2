@@ -82,10 +82,9 @@ fn assert_unselected_official_free_candidate(path: &PathBuf, report: &SourceProo
         "pending fixture report {path:?} must not carry acceptance provenance"
     );
     if report.usage_scope == SourceProofUsageScope::OneOffBackfillData {
-        let acceptance_scope = report
-            .acceptance_scope
-            .as_ref()
-            .unwrap_or_else(|| panic!("one-off fixture report {path:?} must carry bounded source scope"));
+        let acceptance_scope = report.acceptance_scope.as_ref().unwrap_or_else(|| {
+            panic!("one-off fixture report {path:?} must carry bounded source scope")
+        });
         assert_eq!(
             acceptance_scope.planned_objects, 1,
             "one-off fixture report {path:?} must bind exactly one planned source object"

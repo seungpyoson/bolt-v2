@@ -6,7 +6,7 @@ use bolt_v2::{
         BoltV3BasketExecutionSubmitDisposition, BoltV3BasketFillSource, BoltV3BasketRepairPolicy,
         BoltV3BasketUnwindPolicy,
     },
-    bolt_v3_config::BoltV3StrategyConfig,
+    bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig},
     strategies::{complete_set_arbitrage as complete_set_strategy, production_strategy_registry},
     strategy_runtime_bindings::runtime_bindings,
 };
@@ -57,8 +57,10 @@ fn complete_set_archetype_declares_no_rv_or_required_reference_roles() {
 
 #[test]
 fn complete_set_archetype_validates_runtime_schema_scanner_bounds_and_submit_mode() {
+    let root = root_config();
     let valid = complete_set_strategy_config(&complete_set_strategy_toml());
-    let errors = complete_set_arbitrage::validate_strategy("strategy `complete-set`", &valid, None);
+    let errors =
+        complete_set_arbitrage::validate_strategy("strategy `complete-set`", &root, &valid, None);
     assert!(
         errors.is_empty(),
         "valid complete-set config failed: {errors:#?}"
@@ -84,8 +86,12 @@ fn complete_set_archetype_validates_runtime_schema_scanner_bounds_and_submit_mod
         ),
     ] {
         let strategy = complete_set_strategy_config(&strategy_toml);
-        let errors =
-            complete_set_arbitrage::validate_strategy("strategy `complete-set`", &strategy, None);
+        let errors = complete_set_arbitrage::validate_strategy(
+            "strategy `complete-set`",
+            &root,
+            &strategy,
+            None,
+        );
         assert!(
             errors.iter().any(|message| message.contains(expected)),
             "{case} should contain `{expected}`, got {errors:#?}"
@@ -242,6 +248,11 @@ fn complete_set_parameters() -> toml::Value {
 
 fn complete_set_strategy_config(toml_source: &str) -> BoltV3StrategyConfig {
     toml::from_str(toml_source).expect("complete-set strategy config should parse")
+}
+
+fn root_config() -> BoltV3RootConfig {
+    toml::from_str(include_str!("fixtures/bolt_v3/root.toml"))
+        .expect("fixture root config should parse")
 }
 
 fn complete_set_strategy_toml() -> String {

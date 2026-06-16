@@ -154,6 +154,7 @@ CI_PROVENANCE_POLICY_ROWS = (
     "draft_pr_synchronize",
     "draft_pr_opened",
     "draft_pr_reopened",
+    "draft_pr_edited",
     "converted_to_draft",
     "ready_pr",
     "ready_for_review",
@@ -166,6 +167,7 @@ CI_PROVENANCE_POLICY_EXPECTED = {
     "draft_pr_synchronize": "defer",
     "draft_pr_opened": "defer",
     "draft_pr_reopened": "defer",
+    "draft_pr_edited": "defer",
     "converted_to_draft": "defer",
     "ready_pr": "full",
     "ready_for_review": "full",
@@ -761,6 +763,9 @@ def evaluate_ci_policy(
         elif action == "reopened":
             path = str(policy["draft_pr_reopened"])
             reason = "draft_pr_reopened"
+        elif action == "edited":
+            path = str(policy["draft_pr_edited"])
+            reason = "draft_pr_edited"
         elif action == "converted_to_draft":
             path = str(policy["converted_to_draft"])
             reason = "converted_to_draft"
@@ -8638,6 +8643,17 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
                 ),
             )
         if file_name == "backtester-ci.yml" or file_name.endswith("/backtester-ci.yml"):
+            add_unique_errors(
+                errors,
+                (
+                    f"{file_name}: {error}"
+                    for error in workflow_pull_request_type_errors(
+                        text,
+                        required_types=("ready_for_review", "edited"),
+                    )
+                ),
+            )
+        if file_name == "ci-docs-pass-stub.yml" or file_name.endswith("/ci-docs-pass-stub.yml"):
             add_unique_errors(
                 errors,
                 (

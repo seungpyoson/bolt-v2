@@ -123,6 +123,7 @@ retention_days = 30
 draft_pr_synchronize = "defer"
 draft_pr_opened = "defer"
 draft_pr_reopened = "defer"
+draft_pr_edited = "defer"
 converted_to_draft = "defer"
 ready_pr = "full"
 ready_for_review = "full"
@@ -1208,6 +1209,10 @@ check_name = "test"
             valid.replace('draft_pr_reopened = "defer"', 'draft_pr_reopened = "full"'),
         ),
         (
+            "ci_provenance.policy.draft_pr_edited must be defer",
+            valid.replace('draft_pr_edited = "defer"', 'draft_pr_edited = "full"'),
+        ),
+        (
             "ci_provenance.policy.converted_to_draft must be defer",
             valid.replace('converted_to_draft = "defer"', 'converted_to_draft = "full"'),
         ),
@@ -1968,6 +1973,25 @@ def assert_actionlint_requires_pr_event_types() -> None:
         if not any(f"pull_request types must include {missing_type}" in error for error in bad_errors):
             raise AssertionError(
                 f"actionlint workflow must require {missing_type} in pull_request types, got: {bad_errors}"
+            )
+
+
+def assert_ci_docs_pass_stub_requires_pr_event_types() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/ci-docs-pass-stub.yml"
+    workflow = repo_workflow_text(workflow_name)
+    errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
+    if any("pull_request types must include" in error for error in errors):
+        raise AssertionError(f"ci-docs-pass-stub workflow must satisfy PR type policy, got: {errors}")
+    for missing_type, fragment in (
+        ("ready_for_review", "types: [opened, synchronize, reopened, edited]"),
+        ("edited", "types: [opened, synchronize, reopened, ready_for_review]"),
+    ):
+        bad = replace_once(workflow, "types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
+        bad_errors = verifier.verify_repo_automation_texts({workflow_name: bad})
+        if not any(f"pull_request types must include {missing_type}" in error for error in bad_errors):
+            raise AssertionError(
+                f"ci-docs-pass-stub workflow must require {missing_type} in pull_request types, got: {bad_errors}"
             )
 
 
@@ -7584,6 +7608,7 @@ def main() -> int:
     assert_backtester_ci_requires_pr_event_types()
     assert_actionlint_rejects_stale_config_variables()
     assert_actionlint_requires_pr_event_types()
+    assert_ci_docs_pass_stub_requires_pr_event_types()
     assert_source_fence_static_ignores_comments()
     assert_rust_verification_policy_parse_errors_are_domain_specific()
     assert_ci_policy_matrix()

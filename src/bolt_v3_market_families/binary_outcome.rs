@@ -1,6 +1,7 @@
 //! Shared maker primitives for binary-outcome market families.
 
 use crate::{
+    bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_numeric::{UNIT_F64, ZERO_F64, sanitize_probability},
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{
@@ -8,8 +9,6 @@ use crate::{
     },
     bolt_v3_sizing::maker_robust_size,
 };
-
-use super::OutcomeSide;
 
 pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
     // The band carries an already-sanitized fair (`gm_binary_quote` is the sole
@@ -52,11 +51,8 @@ pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
     })
 }
 
-pub fn maker_settlement_payout(outcome: OutcomeSide, leg: Leg) -> Option<f64> {
-    Some(match (outcome, leg) {
-        (OutcomeSide::Up, Leg::Yes) | (OutcomeSide::Down, Leg::No) => UNIT_F64,
-        (OutcomeSide::Up, Leg::No) | (OutcomeSide::Down, Leg::Yes) => ZERO_F64,
-    })
+pub fn maker_settlement_payout(payout: BinarySettlementPayout, leg: Leg) -> Option<f64> {
+    Some(payout.leg_payout(leg))
 }
 
 pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {

@@ -52,6 +52,7 @@ use crate::{
         RESOLUTION_GATE_ROLE,
     },
     bolt_v3_instrument_filters::{InstrumentFilterError, format_target_prefix},
+    bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_market_families::{
         FairProbabilityInputs, MarketIdentityPlan, MarketIdentityTarget,
         MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget,
@@ -88,8 +89,8 @@ pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
     super::binary_outcome::maker_quote_targets(inputs)
 }
 
-pub fn maker_settlement_payout(outcome: OutcomeSide, leg: Leg) -> Option<f64> {
-    super::binary_outcome::maker_settlement_payout(outcome, leg)
+pub fn maker_settlement_payout(payout: BinarySettlementPayout, leg: Leg) -> Option<f64> {
+    super::binary_outcome::maker_settlement_payout(payout, leg)
 }
 
 pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {

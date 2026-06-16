@@ -267,14 +267,20 @@ where
 #[cfg(test)]
 mod tests {
     use std::{
+        cell::RefCell,
         collections::BTreeMap,
+        rc::Rc,
         sync::{Arc, Mutex},
     };
 
     use anyhow::Result;
+    use nautilus_common::{
+        clock::{Clock, TestClock},
+        factories::OrderFactory,
+    };
     use nautilus_core::Params;
     use nautilus_model::{
-        enums::{OrderSide, TimeInForce},
+        enums::{OrderSide, OrderType, TimeInForce},
         identifiers::{ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId},
         orders::{LimitOrder, Order, OrderAny},
         types::{Price, Quantity},
@@ -295,10 +301,14 @@ mod tests {
             BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
             BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         },
+        bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
+        bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
+        bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
         bolt_v3_position_sizer::{
             FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
             SizingPolicy,
         },
+        bolt_v3_quote_lifecycle::Leg,
         bolt_v3_sizing_state::{
             OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot, VenueSpendabilitySnapshot,
         },
@@ -332,6 +342,137 @@ mod tests {
                 .expect("recording admission mutex should not be poisoned")
                 .clone()
         }
+    }
+
+    #[derive(Debug)]
+    struct RecordingMakerRuntime {
+        order_factory: OrderFactory,
+        venue_sink: RecordingVenueMutationSink,
+    }
+
+    impl RecordingMakerRuntime {
+        fn new() -> Self {
+            Self {
+                order_factory: generic_order_factory(),
+                venue_sink: RecordingVenueMutationSink::default(),
+            }
+        }
+    }
+
+    impl BoltV3NtVenueMutationSink for RecordingMakerRuntime {
+        fn submit_order_via_nt(
+            &mut self,
+            order: OrderAny,
+            context: BoltV3SubmitContext,
+        ) -> Result<()> {
+            self.venue_sink.submit_order_via_nt(order, context)
+        }
+
+        fn cancel_order_via_nt(
+            &mut self,
+            client_order_id: ClientOrderId,
+            client_id: Option<ClientId>,
+            params: Option<Params>,
+        ) -> Result<()> {
+            self.venue_sink
+                .cancel_order_via_nt(client_order_id, client_id, params)
+        }
+    }
+
+    #[test]
+    fn maker_submit_routes_through_shared_execution_policy_and_admission() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+            writer.clone(),
+            live_submit_cap_for_client("maker_execution_client"),
+        ));
+        let mut runtime = RecordingMakerRuntime::new();
+        let command = MakerCompiledOrderCommand::Submit {
+            leg: Leg::Yes,
+            template: Box::new(maker_limit_post_only_template()),
+            inputs: NtOrderBuildInputs {
+                instrument_id: InstrumentId::from("YES.INSTRUMENT"),
+                order_side: OrderSide::Buy,
+                quantity: Quantity::new(2.0, 2),
+                price: Some(Price::new(0.40, 2)),
+                client_order_id: ClientOrderId::from("MAKER-YES-1"),
+            },
+            fallback_price: Price::new(0.40, 2),
+        };
+
+        let outcome = route_maker_order_command_with_runtime(
+            BoltV3OrderExecutionPolicy::live(),
+            &mut runtime,
+            writer.as_ref(),
+            admission.as_ref(),
+            maker_routing_context(),
+            MakerOrderDispatchInput {
+                command: &command,
+                submit_order_prefix: "maker_submit",
+            },
+        )
+        .expect("maker submit should route through shared execution policy");
+
+        assert_eq!(
+            outcome,
+            MakerOrderDispatchOutcome::Submitted {
+                leg: Leg::Yes,
+                instrument_id: InstrumentId::from("YES.INSTRUMENT"),
+                client_order_id: ClientOrderId::from("MAKER-YES-1"),
+                price: Price::new(0.40, 2),
+                quantity: Quantity::new(2.0, 2),
+            }
+        );
+        assert_eq!(runtime.venue_sink.submit_calls, 1);
+        assert_eq!(writer.records().len(), 1);
+        assert_eq!(writer.records()[0].strategy_id, "maker-strategy");
+        assert_eq!(
+            writer.records()[0].instrument_id,
+            InstrumentId::from("YES.INSTRUMENT").to_string()
+        );
+        assert_eq!(writer.admission_decisions().len(), 1);
+        assert_eq!(
+            writer.admission_decisions()[0].outcome,
+            BoltV3AdmissionOutcome::Admitted
+        );
+        assert_eq!(admission.admitted_order_count(), 1);
+    }
+
+    #[test]
+    fn maker_cancel_routes_through_shared_execution_policy_with_configured_client() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+        let mut runtime = RecordingMakerRuntime::new();
+        let command = MakerCompiledOrderCommand::Cancel {
+            leg: Leg::No,
+            instrument_id: InstrumentId::from("NO.INSTRUMENT"),
+            client_order_id: ClientOrderId::from("MAKER-NO-1"),
+        };
+
+        let outcome = route_maker_order_command_with_runtime(
+            BoltV3OrderExecutionPolicy::live(),
+            &mut runtime,
+            writer.as_ref(),
+            admission.as_ref(),
+            maker_routing_context(),
+            MakerOrderDispatchInput {
+                command: &command,
+                submit_order_prefix: "maker_submit",
+            },
+        )
+        .expect("maker cancel should route through shared execution policy");
+
+        assert_eq!(
+            outcome,
+            MakerOrderDispatchOutcome::Canceled {
+                leg: Leg::No,
+                instrument_id: InstrumentId::from("NO.INSTRUMENT"),
+                client_order_id: ClientOrderId::from("MAKER-NO-1"),
+            }
+        );
+        assert_eq!(runtime.venue_sink.cancel_calls, 1);
+        assert!(writer.records().is_empty());
+        assert!(writer.admission_decisions().is_empty());
     }
 
     impl BoltV3DecisionEvidenceWriter for RecordingDecisionEvidenceWriter {
@@ -572,6 +713,18 @@ mod tests {
         )])
     }
 
+    fn live_submit_cap_for_client(
+        client_id: &str,
+    ) -> BTreeMap<String, BoltV3LiveSubmitApprovalLimits> {
+        BTreeMap::from([(
+            client_id.to_string(),
+            BoltV3LiveSubmitApprovalLimits {
+                max_order_count: 1,
+                max_order_notional: Decimal::new(100, 0),
+            },
+        )])
+    }
+
     fn intent_for_order(order: &OrderAny) -> BoltV3OrderIntentEvidence {
         BoltV3OrderIntentEvidence::from_compiled_order(
             "strategy-a".to_string(),
@@ -617,6 +770,45 @@ mod tests {
         request.instrument_id = "instrument-yes.VENUE-A".to_string();
         request.execution_client_id = "execution-client-a".to_string();
         request
+    }
+
+    fn generic_order_factory() -> OrderFactory {
+        let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+        OrderFactory::new(
+            TraderId::new("TRADER-001"),
+            StrategyId::new("maker-strategy"),
+            None,
+            None,
+            clock,
+            false,
+            true,
+        )
+    }
+
+    fn maker_limit_post_only_template() -> NtOrderTemplate {
+        NtOrderTemplate {
+            order_type: OrderType::Limit,
+            time_in_force: TimeInForce::Gtc,
+            expire_time: None,
+            trigger_price: None,
+            activation_price: None,
+            trigger_type: None,
+            trigger_instrument_id: None,
+            trailing_offset: None,
+            trailing_offset_type: None,
+            is_post_only: true,
+            is_reduce_only: false,
+            is_quote_quantity: false,
+        }
+    }
+
+    fn maker_routing_context() -> BoltV3MakerOrderRoutingContext<'static> {
+        BoltV3MakerOrderRoutingContext {
+            strategy_id: "maker-strategy",
+            execution_client_id: "maker_execution_client",
+            max_fee_bps: Decimal::ZERO,
+            submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+        }
     }
 
     fn position_sizer_config() -> BoltV3SubmitPositionSizerConfig {

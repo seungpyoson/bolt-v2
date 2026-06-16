@@ -1,20 +1,35 @@
 use std::any::type_name;
 
 use anyhow::Result;
-use nautilus_common::messages::execution::{
-    BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, SubmitOrderList,
+use nautilus_common::{
+    factories::OrderFactory,
+    messages::execution::{
+        BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, SubmitOrderList,
+    },
 };
 use nautilus_core::Params;
 use nautilus_model::{
     identifiers::{ClientId, ClientOrderId, PositionId},
-    orders::{OrderAny, OrderList},
+    orders::{Order, OrderAny, OrderList},
 };
 use nautilus_trading::Strategy;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bolt_v3_decision_evidence::{BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence},
-    bolt_v3_submit_admission::{BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState},
+    bolt_v3_decision_evidence::{
+        BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+    },
+    bolt_v3_maker_order_dispatch::{
+        MakerOrderCommandSink, MakerOrderDispatchInput, MakerOrderDispatchOutcome,
+        dispatch_maker_order_command,
+    },
+    bolt_v3_quote_lifecycle::Leg,
+    bolt_v3_submit_admission::{
+        BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput,
+        BoltV3SubmitAdmissionState, BoltV3SubmitLifecyclePolicy,
+        build_submit_admission_request_from_order,
+    },
 };
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -222,6 +237,36 @@ pub enum BoltV3CancelRoutingOutcome {
     SkippedByPolicy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoltV3MakerOrderRoutingContext<'a> {
+    pub strategy_id: &'a str,
+    pub execution_client_id: &'a str,
+    pub max_fee_bps: Decimal,
+    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+}
+
+pub fn route_maker_order_command<S>(
+    policy: BoltV3OrderExecutionPolicy,
+    strategy: &mut S,
+    decision_evidence: &dyn BoltV3DecisionEvidenceWriter,
+    submit_admission: &BoltV3SubmitAdmissionState,
+    context: BoltV3MakerOrderRoutingContext<'_>,
+    input: MakerOrderDispatchInput<'_>,
+) -> Result<MakerOrderDispatchOutcome>
+where
+    S: Strategy + ?Sized,
+{
+    let mut runtime = NtStrategyMakerOrderRuntime { strategy };
+    route_maker_order_command_with_runtime(
+        policy,
+        &mut runtime,
+        decision_evidence,
+        submit_admission,
+        context,
+        input,
+    )
+}
+
 trait BoltV3NtVenueMutationSink {
     fn submit_order_via_nt(&mut self, order: OrderAny, context: BoltV3SubmitContext) -> Result<()>;
 
@@ -264,6 +309,164 @@ where
     }
 }
 
+trait BoltV3MakerOrderRuntime: BoltV3NtVenueMutationSink {
+    fn order_factory(&mut self) -> &mut OrderFactory;
+}
+
+struct NtStrategyMakerOrderRuntime<'a, S>
+where
+    S: Strategy + ?Sized,
+{
+    strategy: &'a mut S,
+}
+
+impl<S> BoltV3NtVenueMutationSink for NtStrategyMakerOrderRuntime<'_, S>
+where
+    S: Strategy + ?Sized,
+{
+    fn submit_order_via_nt(&mut self, order: OrderAny, context: BoltV3SubmitContext) -> Result<()> {
+        self.strategy.submit_order(
+            order,
+            context.position_id,
+            context.client_id,
+            context.params,
+        )
+    }
+
+    fn cancel_order_via_nt(
+        &mut self,
+        client_order_id: ClientOrderId,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) -> Result<()> {
+        self.strategy
+            .cancel_order(client_order_id, client_id, params)
+    }
+}
+
+impl<S> BoltV3MakerOrderRuntime for NtStrategyMakerOrderRuntime<'_, S>
+where
+    S: Strategy + ?Sized,
+{
+    fn order_factory(&mut self) -> &mut OrderFactory {
+        self.strategy.core_mut().order_factory()
+    }
+}
+
+fn route_maker_order_command_with_runtime<R>(
+    policy: BoltV3OrderExecutionPolicy,
+    runtime: &mut R,
+    decision_evidence: &dyn BoltV3DecisionEvidenceWriter,
+    submit_admission: &BoltV3SubmitAdmissionState,
+    context: BoltV3MakerOrderRoutingContext<'_>,
+    input: MakerOrderDispatchInput<'_>,
+) -> Result<MakerOrderDispatchOutcome>
+where
+    R: BoltV3MakerOrderRuntime + ?Sized,
+{
+    let mut sink = BoltV3MakerOrderPolicySink {
+        policy,
+        runtime,
+        decision_evidence,
+        submit_admission,
+        context,
+    };
+    dispatch_maker_order_command(input, &mut sink)
+}
+
+struct BoltV3MakerOrderPolicySink<'a, R>
+where
+    R: BoltV3MakerOrderRuntime + ?Sized,
+{
+    policy: BoltV3OrderExecutionPolicy,
+    runtime: &'a mut R,
+    decision_evidence: &'a dyn BoltV3DecisionEvidenceWriter,
+    submit_admission: &'a BoltV3SubmitAdmissionState,
+    context: BoltV3MakerOrderRoutingContext<'a>,
+}
+
+impl<R> MakerOrderCommandSink for BoltV3MakerOrderPolicySink<'_, R>
+where
+    R: BoltV3MakerOrderRuntime + ?Sized,
+{
+    fn order_factory(&mut self) -> &mut OrderFactory {
+        self.runtime.order_factory()
+    }
+
+    fn submit_maker_order(&mut self, order: OrderAny) -> Result<()> {
+        let fallback_price = order
+            .price()
+            .map(|price| price.to_string())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "bolt-v3 maker submit requires a limit price for client_order_id={}",
+                    order.client_order_id()
+                )
+            })?;
+        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+            self.context.strategy_id.to_string(),
+            BoltV3OrderIntentKind::Entry,
+            fallback_price,
+            &order,
+        );
+        let request = build_submit_admission_request_from_order(
+            BoltV3SubmitAdmissionRequestInput {
+                execution_client_id: self.context.execution_client_id,
+                intent: &intent,
+                order: &order,
+                instrument: None,
+                quote_quantity_last_price: None,
+                quote_quantity_reference_price: None,
+                lifecycle_policy: self.context.submit_lifecycle_policy,
+                risk_reducing_exit_position: None,
+            },
+            |_| Ok(self.context.max_fee_bps),
+        )?;
+        let submit_context =
+            BoltV3SubmitContext::with_client_id(ClientId::from(self.context.execution_client_id));
+        self.policy.route_submit_with_sink(
+            BoltV3SubmitRoutingRequest::new(
+                self.decision_evidence,
+                self.submit_admission,
+                intent,
+                request,
+            ),
+            self.runtime,
+            order,
+            submit_context,
+        )?;
+        Ok(())
+    }
+
+    fn cancel_maker_order(
+        &mut self,
+        _leg: Leg,
+        _instrument_id: nautilus_model::identifiers::InstrumentId,
+        client_order_id: ClientOrderId,
+    ) -> Result<()> {
+        self.policy.route_cancel_with_sink(
+            self.runtime,
+            client_order_id,
+            Some(ClientId::from(self.context.execution_client_id)),
+            None,
+        )?;
+        Ok(())
+    }
+
+    fn modify_maker_order(
+        &mut self,
+        _leg: Leg,
+        _instrument_id: nautilus_model::identifiers::InstrumentId,
+        client_order_id: ClientOrderId,
+        _price: nautilus_model::types::Price,
+        _quantity: nautilus_model::types::Quantity,
+    ) -> Result<()> {
+        anyhow::bail!(
+            "bolt-v3 maker in-place modify routing is not supported by the shared execution policy for client_order_id={client_order_id}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -288,9 +491,9 @@ mod tests {
     use rust_decimal::Decimal;
 
     use super::{
-        BoltV3CancelRoutingOutcome, BoltV3NtVenueMutationSink, BoltV3OrderExecutionMode,
-        BoltV3OrderExecutionPolicy, BoltV3SubmitContext, BoltV3SubmitRoutingOutcome,
-        BoltV3SubmitRoutingRequest,
+        BoltV3CancelRoutingOutcome, BoltV3MakerOrderRuntime, BoltV3NtVenueMutationSink,
+        BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy, BoltV3SubmitContext,
+        BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
     };
     use crate::{
         bolt_v3_capital_reservation::CapitalPoolSnapshot,
@@ -376,6 +579,12 @@ mod tests {
         ) -> Result<()> {
             self.venue_sink
                 .cancel_order_via_nt(client_order_id, client_id, params)
+        }
+    }
+
+    impl BoltV3MakerOrderRuntime for RecordingMakerRuntime {
+        fn order_factory(&mut self) -> &mut OrderFactory {
+            &mut self.order_factory
         }
     }
 

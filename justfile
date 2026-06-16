@@ -166,6 +166,9 @@ check-aarch64: check-workspace require-rust-verification-owner
 verify-remote: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" verify-remote --repo "{{repo_root}}"
 
+rust-probe *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" rust-probe --repo "{{repo_root}}" {{args}}
+
 # Print failed-job diagnostics for the matching exact-head full-CI run; not a pass/fail gate.
 ci-logs: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" ci-logs --repo "{{repo_root}}"
@@ -274,6 +277,9 @@ ci-lint-workflow:
         failed=1
     fi
     if ! python3 scripts/test_run_rust_probe.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_rust_probe_wrapper.py; then
         failed=1
     fi
     if ! python3 scripts/test_ci_provenance.py; then

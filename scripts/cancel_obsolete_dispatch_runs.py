@@ -70,7 +70,7 @@ class GitHubClient:
 
     def cancel_run(self, run_id: int) -> str:
         try:
-            self._request_json("POST", f"actions/runs/{run_id}/cancel", params={})
+            self._request_json("POST", f"actions/runs/{run_id}/force-cancel", params={})
         except GitHubApiError as exc:
             if exc.code in (409, 404, 422):
                 return "conflict"

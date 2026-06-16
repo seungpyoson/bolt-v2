@@ -33,8 +33,6 @@ pub(super) fn valid_raw_config() -> Value {
         market_selection_rule = "active_or_next"
         retry_interval_seconds = 5
         blocked_after_seconds = 60
-        reference_venue = "reference_data_client"
-        reference_instrument_id = "REFERENCE.SOURCE"
         signal_venue = "signal_data_client"
         signal_instrument_id = "SIGNAL.SOURCE"
         use_uuid_client_order_ids = true
@@ -374,12 +372,20 @@ pub(super) fn test_strategy() -> BinaryOracleEdgeTaker {
 }
 
 pub(super) fn register_test_strategy(strategy: &mut BinaryOracleEdgeTaker) -> Rc<RefCell<Cache>> {
+    let (cache, _clock) = register_test_strategy_with_clock(strategy);
+    cache
+}
+
+pub(super) fn register_test_strategy_with_clock(
+    strategy: &mut BinaryOracleEdgeTaker,
+) -> (Rc<RefCell<Cache>>, Rc<RefCell<TestClock>>) {
     let clock = Rc::new(RefCell::new(TestClock::new()));
     clock
         .borrow_mut()
         .set_time(UnixNanos::from(1_200_u64 * NANOS_PER_MILLI_U64));
     let cache = Rc::new(RefCell::new(Cache::default()));
     let cache_handle = cache.clone();
+    let clock_handle = clock.clone();
     let portfolio = Rc::new(RefCell::new(Portfolio::new(
         cache.clone(),
         clock.clone(),
@@ -389,7 +395,7 @@ pub(super) fn register_test_strategy(strategy: &mut BinaryOracleEdgeTaker) -> Rc
         .core
         .register(TraderId::from("TRADER-001"), clock, cache, portfolio)
         .expect("test strategy should register with NT core");
-    cache_handle
+    (cache_handle, clock_handle)
 }
 
 pub(super) fn register_test_strategy_with_active_instruments(strategy: &mut BinaryOracleEdgeTaker) {
@@ -505,8 +511,6 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             market_selection_rule: "active_or_next".to_string(),
             retry_interval_seconds: 5,
             blocked_after_seconds: 60,
-            reference_venue: Some("reference_data_client".to_string()),
-            reference_instrument_id: Some("REFERENCE.SOURCE".to_string()),
             signal_venue: Some("signal_data_client".to_string()),
             signal_instrument_id: Some("SIGNAL.SOURCE".to_string()),
             resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
@@ -593,6 +597,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             forced_flat_thin_book_min_liquidity: 100.0,
             lead_agreement_min_corr: 0.8,
             lead_jitter_max_ms: 250,
+            reference_current_price: None,
         },
         StrategyBuildContext::new(
             fee_provider,

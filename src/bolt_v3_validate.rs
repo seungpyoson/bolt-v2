@@ -60,6 +60,11 @@ use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
 use crate::bolt_v3_loss_halt_actions::LossGovernorTradingStateAction;
 use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionMode;
+use crate::bolt_v3_providers::{
+    ReferencePriceIdentifierKind, reference_price_provider_identifier_is_configured,
+    reference_price_provider_metadata,
+};
+use crate::bolt_v3_reference_price::reference_price_source_is_unsupported;
 
 #[derive(Debug)]
 pub struct BoltV3ValidationError {
@@ -176,7 +181,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_position_sizer_recovery_evidence(root));
     errors.extend(validate_aws_block(&root.aws));
-    errors.extend(validate_clients_block(&root.clients));
+    errors.extend(validate_clients_block(root));
     errors.extend(validate_realized_volatility_surfaces(root));
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
@@ -1926,18 +1931,77 @@ fn validate_aws_block(block: &AwsBlock) -> Vec<String> {
     errors
 }
 
-fn validate_clients_block(clients: &BTreeMap<String, ClientBlock>) -> Vec<String> {
+fn validate_clients_block(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();
+    let clients = &root.clients;
     if clients.is_empty() {
         errors.push("clients must define at least one client block".to_string());
         return errors;
     }
     for (key, client) in clients {
+        errors.extend(validate_root_owned_chainlink_feed_catalog(
+            root, key, client,
+        ));
+        let validation_client = client_with_root_chainlink_feed_catalog(root, client);
+        let client = validation_client.as_ref().unwrap_or(client);
         errors.extend(crate::bolt_v3_providers::validate_client_block(key, client));
         errors.extend(validate_client_readiness_probe(key, client));
     }
     errors.extend(validate_unique_client_readiness_probe_instruments(clients));
     errors
+}
+
+fn validate_root_owned_chainlink_feed_catalog(
+    root: &BoltV3RootConfig,
+    key: &str,
+    client: &ClientBlock,
+) -> Vec<String> {
+    if !uses_root_owned_chainlink_feed_catalog(client) || client.data.is_none() {
+        return Vec::new();
+    }
+    let has_client_feed_bindings = client
+        .data
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .is_some_and(|data| data.contains_key(CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD));
+    let mut errors = Vec::new();
+    if has_client_feed_bindings {
+        errors.push(format!(
+            "chainlink_data_streams.feed_bindings is root-owned; clients.{key}.data.feed_bindings must be removed so feed bindings have one configured path"
+        ));
+    }
+    if root.chainlink_data_streams.is_none() {
+        errors.push(format!(
+            "chainlink_data_streams.feed_bindings must be configured for clients.{key}; clients.{key}.data.feed_bindings is not supported"
+        ));
+    }
+    errors
+}
+
+fn uses_root_owned_chainlink_feed_catalog(client: &ClientBlock) -> bool {
+    client.venue.as_str() == crate::bolt_v3_providers::RESOLUTION_ORACLE_VENUE_KEY
+}
+
+pub(crate) fn client_with_root_chainlink_feed_catalog(
+    root: &BoltV3RootConfig,
+    client: &ClientBlock,
+) -> Option<ClientBlock> {
+    let catalog = root.chainlink_data_streams.as_ref()?;
+    if client.venue.as_str() != crate::bolt_v3_providers::RESOLUTION_ORACLE_VENUE_KEY {
+        return None;
+    }
+    let data = client.data.as_ref()?.as_table()?;
+    if data.contains_key(CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD) {
+        return None;
+    }
+
+    let mut client = client.clone();
+    let data = client.data.as_mut()?.as_table_mut()?;
+    data.insert(
+        CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD.to_string(),
+        toml::Value::Array(catalog.feed_bindings.clone()),
+    );
+    Some(client)
 }
 
 fn validate_client_readiness_probe(key: &str, client: &ClientBlock) -> Vec<String> {
@@ -2265,14 +2329,14 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
         }
         errors.extend(target_errors.into_iter().map(|error| error.to_string()));
 
-        errors.extend(validate_reference_data(&context, root, strategy));
+        errors.extend(validate_reference_current_price(&context, root, strategy));
         errors.extend(crate::bolt_v3_archetypes::validate_strategy_archetype(
             &context,
+            root,
             strategy,
             default_max_notional_decimal.as_ref(),
         ));
     }
-    errors.extend(validate_reference_quote_probe_sources(strategies));
     errors.extend(validate_target_gate_provider_references(root, strategies));
     errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));
 
@@ -2652,63 +2716,292 @@ fn single_string_array_value(
         .map(str::to_string)
 }
 
-fn validate_reference_quote_probe_sources(strategies: &[LoadedStrategy]) -> Vec<String> {
-    let mut errors = Vec::new();
-    let mut by_instrument: BTreeMap<String, (&str, String, String)> = BTreeMap::new();
+fn validate_reference_current_price(
+    context: &str,
+    root: &BoltV3RootConfig,
+    strategy: &BoltV3StrategyConfig,
+) -> Vec<String> {
+    let Some(reference_current_price) = &strategy.reference_current_price else {
+        return Vec::new();
+    };
 
-    for loaded in strategies {
-        let context = format!("strategy `{}`", loaded.relative_path);
-        for (role, block) in &loaded.config.reference_data {
-            let instrument_id = block.instrument_id.to_string();
-            let data_client_id = block.data_client_id.as_str();
-            match by_instrument.get(&instrument_id) {
-                Some((existing_data_client_id, existing_context, existing_role))
-                    if *existing_data_client_id != data_client_id =>
+    let mut errors = Vec::new();
+    let configured: BTreeSet<&str> = reference_current_price
+        .source_order
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let declared: BTreeSet<&str> = reference_current_price
+        .sources
+        .keys()
+        .map(String::as_str)
+        .collect();
+
+    if reference_current_price.asset.is_empty()
+        || !reference_current_price
+            .asset
+            .chars()
+            .all(|char| char.is_ascii_uppercase() || char.is_ascii_digit() || char == '_')
+    {
+        errors.push(format!(
+            "{context}: reference_current_price.asset must be a normalized non-empty uppercase ASCII asset symbol containing only letters, digits, and underscores"
+        ));
+    }
+    if let Ok(target) =
+        crate::bolt_v3_market_families::target_runtime_fields_from_target(&strategy.target)
+        && reference_current_price.asset != target.underlying_asset
+    {
+        errors.push(format!(
+            "{context}: reference_current_price.asset `{}` must match target.underlying_asset `{}`",
+            reference_current_price.asset, target.underlying_asset,
+        ));
+    }
+
+    if reference_current_price.source_order.is_empty() {
+        errors.push(format!(
+            "{context}: reference_current_price.sources must be non-empty"
+        ));
+    }
+
+    let mut seen_sources = HashSet::new();
+    for source_id in &reference_current_price.source_order {
+        if !seen_sources.insert(source_id.as_str()) {
+            errors.push(format!(
+                "{context}: reference_current_price.sources contains duplicate source key `{source_id}`"
+            ));
+        }
+    }
+
+    if reference_current_price.min_valid_sources == 0 {
+        errors.push(format!(
+            "{context}: reference_current_price.min_valid_sources must be at least 1"
+        ));
+    }
+
+    let enabled_source_count = reference_current_price
+        .source_order
+        .iter()
+        .filter(|source_id| {
+            reference_current_price
+                .sources
+                .get(source_id.as_str())
+                .is_some_and(|source| source.enabled)
+        })
+        .count();
+    if reference_current_price.min_valid_sources > enabled_source_count {
+        errors.push(format!(
+            "{context}: reference_current_price.min_valid_sources {} exceeds enabled source count {}",
+            reference_current_price.min_valid_sources, enabled_source_count
+        ));
+    }
+
+    if reference_current_price.max_source_age_ms == 0 {
+        errors.push(format!(
+            "{context}: reference_current_price.max_source_age_ms must be positive"
+        ));
+    }
+
+    if reference_current_price.max_source_drift_bps == 0 {
+        errors.push(format!(
+            "{context}: reference_current_price.max_source_drift_bps must be positive"
+        ));
+    }
+
+    for source_id in configured.difference(&declared) {
+        errors.push(format!(
+            "{context}: reference_current_price.sources contains `{source_id}` but missing [reference_current_price.source.{source_id}]"
+        ));
+    }
+
+    for source_id in declared.difference(&configured) {
+        errors.push(format!(
+            "{context}: [reference_current_price.source.{source_id}] is declared but not listed in reference_current_price.sources"
+        ));
+    }
+
+    let mut valid_enabled_sources = enabled_source_count;
+    let mut physical_source_keys: BTreeMap<(String, String, String), &str> = BTreeMap::new();
+    for source_id in &reference_current_price.source_order {
+        let Some(source) = reference_current_price.sources.get(source_id.as_str()) else {
+            continue;
+        };
+        if !source.enabled {
+            continue;
+        }
+        let Some(provider_metadata) = reference_price_provider_metadata(source.provider.as_str())
+        else {
+            continue;
+        };
+        let identifier = match provider_metadata.identifier_kind {
+            ReferencePriceIdentifierKind::InstrumentId => source.instrument_id.as_deref(),
+            ReferencePriceIdentifierKind::Symbol => source.symbol.as_deref(),
+        };
+        let Some(identifier) = identifier.filter(|value| !reference_price_field_is_blank(value))
+        else {
+            continue;
+        };
+        let key = (
+            source.provider.as_str().to_string(),
+            source.client_id.to_string(),
+            identifier.to_string(),
+        );
+        if let Some(existing_source_id) = physical_source_keys.insert(key, source_id.as_str()) {
+            errors.push(format!(
+                "{context}: reference_current_price.source.{source_id} uses the same physical reference feed as reference_current_price.source.{existing_source_id}: provider `{}`, client_id `{}`, identifier `{identifier}`",
+                source.provider.as_str(),
+                source.client_id,
+            ));
+        }
+    }
+
+    for (source_id, source) in &reference_current_price.sources {
+        let provider_metadata = reference_price_provider_metadata(source.provider.as_str());
+        match root.clients.get(source.client_id.as_str()) {
+            None => errors.push(format!(
+                "{context}: reference_current_price.source.{source_id}.client_id `{}` does not match any [clients.<id>] block",
+                source.client_id
+            )),
+            Some(client) => {
+                if let Some(provider_metadata) = provider_metadata
+                    && client.venue.as_str() != provider_metadata.client_venue_key
                 {
                     errors.push(format!(
-                        "{context}: reference_data.{role}.instrument_id `{instrument_id}` with data_client_id `{data_client_id}` is also used by {existing_context}: reference_data.{existing_role}.instrument_id with data_client_id `{existing_data_client_id}`; QuoteTick does not carry data_client_id, so strategy-free reference quote evidence cannot distinguish data clients for the same instrument"
+                        "{context}: reference_current_price.source.{source_id}.client_id `{}` must reference a {} client for provider `{}`; got `{}`",
+                        source.client_id,
+                        provider_metadata.client_venue_key,
+                        provider_metadata.provider_key,
+                        client.venue.as_str()
                     ));
                 }
-                None => {
-                    by_instrument.insert(
-                        instrument_id,
-                        (data_client_id, context.clone(), role.clone()),
-                    );
+                if client.data.is_none() {
+                    errors.push(format!(
+                        "{context}: reference_current_price.source.{source_id}.client_id `{}` must reference a data-capable client",
+                        source.client_id
+                    ));
                 }
-                _ => {}
             }
         }
+        if source.required && !source.enabled {
+            errors.push(format!(
+                "{context}: reference_current_price.source.{source_id} is required but disabled"
+            ));
+        }
+
+        let Some(provider_metadata) = provider_metadata else {
+            errors.push(format!(
+                "{context}: reference_current_price.source.{source_id}.provider `{}` is unsupported",
+                source.provider.as_str()
+            ));
+            continue;
+        };
+
+        match provider_metadata.identifier_kind {
+            ReferencePriceIdentifierKind::InstrumentId => {
+                let provider_key = source.provider.as_str();
+                if source
+                    .instrument_id
+                    .as_deref()
+                    .is_none_or(reference_price_field_is_blank)
+                {
+                    errors.push(format!(
+                        "{context}: reference_current_price.source.{source_id}.instrument_id is required for provider `{provider_key}`"
+                    ));
+                }
+                if source.symbol.is_some() {
+                    errors.push(format!(
+                        "{context}: reference_current_price.source.{source_id}.symbol is unsupported for provider `{provider_key}`"
+                    ));
+                }
+                if let Some(instrument_id) = source.instrument_id.as_deref()
+                    && !reference_price_identifier_matches_asset(
+                        instrument_id,
+                        &reference_current_price.asset,
+                    )
+                {
+                    errors.push(format!(
+                        "{context}: reference_current_price.source.{source_id}.instrument_id `{instrument_id}` must map to reference_current_price.asset `{}`",
+                        reference_current_price.asset
+                    ));
+                }
+                if let Some(instrument_id) = source.instrument_id.as_deref() {
+                    match reference_price_provider_identifier_is_configured(
+                        root,
+                        source.provider.as_str(),
+                        instrument_id,
+                    ) {
+                        Ok(true) => {}
+                        Ok(false) => errors.push(format!(
+                            "{context}: reference_current_price.source.{source_id}.instrument_id `{instrument_id}` is not present in provider catalog for provider `{provider_key}`"
+                        )),
+                        Err(message) => errors.push(format!(
+                            "{context}: reference_current_price.source.{source_id}.instrument_id `{instrument_id}` could not be checked against provider catalog: {message}"
+                        )),
+                    }
+                }
+            }
+            ReferencePriceIdentifierKind::Symbol => {
+                let provider_key = source.provider.as_str();
+                if source
+                    .symbol
+                    .as_deref()
+                    .is_none_or(reference_price_field_is_blank)
+                {
+                    errors.push(format!(
+                        "{context}: reference_current_price.source.{source_id}.symbol is required for provider `{provider_key}`"
+                    ));
+                }
+                if source.instrument_id.is_some() {
+                    errors.push(format!(
+                        "{context}: reference_current_price.source.{source_id}.instrument_id is unsupported for provider `{provider_key}`"
+                    ));
+                }
+                if let Some(symbol) = source.symbol.as_deref()
+                    && !reference_price_identifier_matches_asset(
+                        symbol,
+                        &reference_current_price.asset,
+                    )
+                {
+                    errors.push(format!(
+                        "{context}: reference_current_price.source.{source_id}.symbol `{symbol}` must map to reference_current_price.asset `{}`",
+                        reference_current_price.asset
+                    ));
+                }
+            }
+        }
+
+        let unsupported_asset = source.enabled
+            && reference_price_source_is_unsupported(reference_current_price, source);
+        if unsupported_asset && configured.contains(source_id.as_str()) {
+            valid_enabled_sources = valid_enabled_sources.saturating_sub(1);
+        }
+        if unsupported_asset && (source.required || !configured.contains(source_id.as_str())) {
+            errors.push(format!(
+                "{context}: reference_current_price.source.{source_id} {} asset `{}` is unsupported",
+                source.provider.as_str(),
+                reference_current_price.asset
+            ));
+        }
+    }
+
+    if reference_current_price.min_valid_sources > valid_enabled_sources {
+        errors.push(format!(
+            "{context}: reference_current_price.min_valid_sources {} cannot be met by {} enabled supported source(s)",
+            reference_current_price.min_valid_sources, valid_enabled_sources
+        ));
     }
 
     errors
 }
 
-fn validate_reference_data(
-    context: &str,
-    root: &BoltV3RootConfig,
-    strategy: &BoltV3StrategyConfig,
-) -> Vec<String> {
-    let mut errors = Vec::new();
+fn reference_price_field_is_blank(value: &str) -> bool {
+    value.trim().is_empty() || value.trim() != value
+}
 
-    for (role, block) in &strategy.reference_data {
-        match root.clients.get(block.data_client_id.as_str()) {
-            None => errors.push(format!(
-                "{context}: reference_data.{role}.data_client_id `{}` does not match any [clients.<id>] block",
-                block.data_client_id
-            )),
-            Some(client) => {
-                if client.data.is_none() {
-                    errors.push(format!(
-                        "{context}: reference_data.{role}.data_client_id `{}` must reference a data-capable client \
-                         (the referenced client has no [data] block)",
-                        block.data_client_id
-                    ));
-                }
-            }
-        }
-    }
-
-    errors
+fn reference_price_identifier_matches_asset(identifier: &str, asset: &str) -> bool {
+    identifier
+        .split(['-', '.', '/'])
+        .next()
+        .is_some_and(|prefix| prefix == asset)
 }
 
 pub(crate) fn parse_decimal_string(value: &str) -> Result<Decimal, String> {

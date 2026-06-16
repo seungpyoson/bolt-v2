@@ -62,8 +62,8 @@ required_jobs = [
   "clippy",
   "check-aarch64",
   "source-fence",
+  "nextest-fingerprint",
   "test-archive",
-  "test-shards",
   "test",
 ]
 conditional_jobs = ["build"]
@@ -87,12 +87,11 @@ check_name = "check-aarch64"
 [ci_provenance.full_ci.jobs.source-fence]
 check_name = "source-fence"
 
+[ci_provenance.full_ci.jobs.nextest-fingerprint]
+check_name = "nextest fingerprint"
+
 [ci_provenance.full_ci.jobs.test-archive]
 check_name = "nextest archive"
-
-[ci_provenance.full_ci.jobs.test-shards]
-check_name_template = "nextest shard {shard} of {shard_count}"
-shard_count = 4
 
 [ci_provenance.full_ci.jobs.test]
 check_name = "test"
@@ -427,15 +426,13 @@ jobs:
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-
       - run: just source-fence
 
-  test-archive:
-    name: nextest archive
+  nextest-fingerprint:
+    name: nextest fingerprint
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     outputs:
       nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}
-    env:
-      NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
     steps:
       - name: Publish nextest archive fingerprint
         id: nextest-fingerprint
@@ -451,6 +448,38 @@ jobs:
           path: .nextest-archive-fingerprint/cache-key.txt
           if-no-files-found: error
           retention-days: 30
+
+  nextest-fingerprint-reuse:
+    name: nextest fingerprint reuse
+    needs: [ci-policy, detector, nextest-fingerprint]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    outputs:
+      reuse_found: ${{ steps.reuse.outputs.reuse_found }}
+      source_run_id: ${{ steps.reuse.outputs.source_run_id }}
+      source_sha: ${{ steps.reuse.outputs.source_sha }}
+      source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}
+      reason: ${{ steps.reuse.outputs.reason }}
+    steps:
+      - name: Resolve nextest fingerprint reuse
+        id: reuse
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >
+          python3 scripts/ci_provenance.py resolve-fingerprint
+          --current-run-id "${{ github.run_id }}"
+          --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
+          | tee -a "$GITHUB_OUTPUT"
+
+  test-archive:
+    name: nextest archive
+    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.result == 'success' && needs.nextest-fingerprint.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
+    steps:
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
@@ -470,7 +499,6 @@ jobs:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
       - name: Install cargo-nextest
-        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
@@ -486,80 +514,29 @@ jobs:
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
-      - name: Upload nextest archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: nextest-archive
-          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          if-no-files-found: error
-          retention-days: 1
-  nextest-fingerprint-reuse:
-    name: nextest fingerprint reuse
-    needs: [ci-policy, detector, test-archive]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && github.event_name == 'pull_request' && needs.detector.outputs.fingerprint_reuse_allowed == 'true' && github.ref != 'refs/heads/main' }}
-    runs-on: ubuntu-latest
-    outputs:
-      reuse_found: ${{ steps.reuse.outputs.reuse_found }}
-      source_run_id: ${{ steps.reuse.outputs.source_run_id }}
-      source_sha: ${{ steps.reuse.outputs.source_sha }}
-      source_artifact_id: ${{ steps.reuse.outputs.source_artifact_id }}
-      reason: ${{ steps.reuse.outputs.reason }}
-    steps:
-      - name: Resolve nextest fingerprint reuse
-        id: reuse
+      - name: Run nextest archive partitions
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: >
-          python3 scripts/ci_provenance.py resolve-fingerprint
-          --current-run-id "${{ github.run_id }}"
-          --current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
-          | tee -a "$GITHUB_OUTPUT"
-
-  test-shards:
-    name: nextest shard ${{ matrix.shard }} of 4
-    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    steps:
-      - uses: ./.github/actions/setup-environment
-        id: setup
-        with:
-          just-version: ${{ env.JUST_VERSION }}
-          include-nextest-version: "true"
-          include-managed-target-dir: "true"
-      - name: Download nextest archive
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: nextest-archive
-          path: ${{ runner.temp }}/nextest-archive
-      - name: Resolve archive extraction root
-        id: archive-root
         run: |
-          archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"
-          echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"
-      - name: Show shard reproduction command
-        run: |
-          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
-        with:
-          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
-          fallback: none
-      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4
+          mkdir -p "$RUNNER_TEMP/nextest-archive-extract"
+          status=0
+          for shard in 1 2 3 4; do
+            echo "::group::nextest archive partition ${shard}/4"
+            echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <extract-root> --partition count:${shard}/4"
+            if ! just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/4"; then
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"
 
   test:
     name: test
-    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]
+    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - run: |
-          if [[ "${{ needs.test-archive.result }}" != "success" ]]; then
+          if [[ "${{ needs.nextest-fingerprint.result }}" != "success" ]]; then
             exit 1
           fi
           reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
@@ -579,10 +556,10 @@ jobs:
               echo "nextest fingerprint reuse did not expose source_artifact_id"
               exit 1
             fi
-            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}"
+            echo "nextest archive reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }}"
             exit 0
           fi
-          if [[ "${{ needs.test-shards.result }}" != "success" ]]; then
+          if [[ "${{ needs.test-archive.result }}" != "success" ]]; then
             exit 1
           fi
 
@@ -643,7 +620,7 @@ jobs:
 
   ci-provenance-emit:
     name: ci-provenance-emit
-    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]
+    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -657,12 +634,12 @@ jobs:
           --required-job clippy=${{ needs.clippy.result }}
           --required-job check-aarch64=${{ needs.check-aarch64.result }}
           --required-job source-fence=${{ needs.source-fence.result }}
+          --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }}
           --required-job test-archive=${{ needs.test-archive.result }}
-          --required-job test-shards=${{ needs.test-shards.result }}
           --required-job test=${{ needs.test.result }}
           --conditional-job build.required=${{ needs.detector.outputs.build_required }}
           --conditional-job build.result=${{ needs.build.result }}
-          --nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"
+          --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
       - name: Upload CI provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -767,7 +744,7 @@ jobs:
               echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
               exit 1
             fi
-            echo "nextest shards reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
+            echo "nextest archive reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
           else
             if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
               if [[ "$ignore_emit_failure" == "true" ]]; then
@@ -1026,6 +1003,9 @@ target_namespace = "bolt-v2"
 poll_interval_seconds = 15
 checks_appear_timeout_seconds = 300
 overall_timeout_seconds = 3600
+diagnostic_log_max_lines = 160
+diagnostic_log_max_bytes = 20000
+diagnostic_unavailable_notice_interval_polls = 4
 """
 
 BASE_BVS_RUST_VERIFICATION_POLICY = f"""
@@ -1182,17 +1162,6 @@ def assert_ci_provenance_config_contract() -> None:
 check_name = "test"
 """,
                 "",
-            ),
-        ),
-        (
-            "ci_provenance.full_ci.jobs.test-shards shard_count",
-            valid.replace("shard_count = 4", "shard_count = 3"),
-        ),
-        (
-            "ci_provenance.full_ci.jobs.test-shards template count",
-            valid.replace(
-                'check_name_template = "nextest shard {shard} of {shard_count}"',
-                'check_name_template = "nextest shard {shard} of 3"',
             ),
         ),
         (
@@ -1404,24 +1373,24 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             "test-archive needs ci-policy",
             replace_once(
                 workflow,
-                "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector]",
-                "  test-archive:\n    name: nextest archive\n    needs: detector",
+                "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse]",
+                "  test-archive:\n    name: nextest archive\n    needs: [detector, nextest-fingerprint, nextest-fingerprint-reuse]",
             ),
         ),
         (
-            "test-shards needs ci-policy",
+            "nextest-fingerprint needs ci-policy",
             replace_once(
                 workflow,
-                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]",
-                "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [test-archive, nextest-fingerprint-reuse]",
+                "  nextest-fingerprint:\n    name: nextest fingerprint\n    needs: [ci-policy, detector]",
+                "  nextest-fingerprint:\n    name: nextest fingerprint\n    needs: detector",
             ),
         ),
         (
             "test needs ci-policy",
             replace_once(
                 workflow,
-                "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]",
-                "  test:\n    name: test\n    needs: [test-archive, nextest-fingerprint-reuse, test-shards]",
+                "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
+                "  test:\n    name: test\n    needs: [nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
             ),
         ),
         (
@@ -1436,16 +1405,16 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             "ci-provenance-emit needs ci-policy",
             replace_once(
                 workflow,
-                "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
-                "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
+                "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]",
+                "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]",
             ),
         ),
         (
             "ci-provenance-emit must gate on full_ci_required",
             replace_once(
                 workflow,
-                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
-                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
             ),
         ),
         (
@@ -4761,7 +4730,7 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         "'specs/023-nt-research-analytics-platform/reference/**'",
     ):
         assert_error(
-            "test-archive fingerprint must include Rust and test graph inputs",
+            "nextest-fingerprint must include Rust and test graph inputs",
             remove_all_fragments_if_present(BASE_WORKFLOW, f", {cache_input}"),
         )
 
@@ -4970,7 +4939,7 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     stale_fingerprint_with_decoy = replace_once_after(
         BASE_WORKFLOW,
         "  nextest-fingerprint-reuse:",
-        '          --current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
+        '          --current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"',
         '          --current-fingerprint "stale-fingerprint"',
     )
     stale_fingerprint_with_decoy = replace_once_after(
@@ -4979,7 +4948,7 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         "      - name: Resolve nextest fingerprint reuse",
         f"""      - name: Decoy resolver command
         run: |
-          echo 'python3 scripts/ci_provenance.py resolve-fingerprint --current-run-id "${{{{ github.run_id }}}}" --current-fingerprint "${{{{ needs.test-archive.outputs.nextest_fingerprint }}}}" | tee -a "$GITHUB_OUTPUT"'
+          echo 'python3 scripts/ci_provenance.py resolve-fingerprint --current-run-id "${{{{ github.run_id }}}}" --current-fingerprint "${{{{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}}}" | tee -a "$GITHUB_OUTPUT"'
 
       - name: Resolve nextest fingerprint reuse""",
     )
@@ -5535,8 +5504,8 @@ def main() -> int:
         "clippy",
         "check-aarch64",
         "source-fence",
+        "nextest-fingerprint",
         "test-archive",
-        "test-shards",
         "test",
         "build",
         "same-sha-main-evidence",
@@ -5752,67 +5721,61 @@ def main() -> int:
         )
     )
     assert_error(
-        "test-shards matrix must set fail-fast false",
-        replace_once(BASE_WORKFLOW, "      fail-fast: false", "      fail-fast: true"),
-    )
-    assert_error(
-        "test-shards matrix shard must be [1, 2, 3, 4]",
-        replace_once(BASE_WORKFLOW, "        shard: [1, 2, 3, 4]", "        shard: [1, 2, 3]"),
-    )
-    assert_error(
-        "test-shards name must describe nextest shard",
+        "test-shards job must not reintroduce nextest archive artifact fan-out",
         replace_once(
             BASE_WORKFLOW,
-            "    name: nextest shard ${{ matrix.shard }} of 4",
-            "    name: test (${{ matrix.shard }})",
+            "  test:\n    name: test",
+            """  test-shards:
+    name: nextest shard ${{ matrix.shard }} of 4
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download nextest archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+
+  test:
+    name: test""",
         ),
     )
     assert_error(
-        "test-shards must run partitioned nextest from archive",
+        "test-archive must run all nextest archive partitions",
+        replace_once(BASE_WORKFLOW, "          for shard in 1 2 3 4; do", "          for shard in 1 2 3; do"),
+    )
+    assert_error(
+        "test-archive must run partitioned nextest from local archive",
         replace_once(
             BASE_WORKFLOW,
-            '      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4',
-            "      - run: just test",
+            'just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/4"',
+            "just test",
         ),
     )
     assert_error(
-        "test-shards must resolve managed target dir",
-        replace_once(
-            BASE_WORKFLOW,
-            '          include-nextest-version: "true"\n          include-managed-target-dir: "true"\n      - name: Download nextest archive',
-            '          include-nextest-version: "true"\n      - name: Download nextest archive',
-        ),
+        "test-archive must create nextest archive extract root",
+        replace_once(BASE_WORKFLOW, '          mkdir -p "$RUNNER_TEMP/nextest-archive-extract"\n', ""),
     )
     assert_error(
-        "test-shards must extract archive to managed target parent",
+        "test-archive must log partition diagnostics",
         replace_once(
             BASE_WORKFLOW,
-            '          archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"',
-            '          archive_extract_root="$RUNNER_TEMP/nextest-archive-extract"',
-        ),
-    )
-    assert_error(
-        "test-shards must log shard reproduction command",
-        replace_once(
-            BASE_WORKFLOW,
-            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"\n',
+            '            echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <extract-root> --partition count:${shard}/4"\n',
             "",
         ),
     )
     assert_error(
-        "test-shards reproduction command must use YAML block scalar",
-        replace_once(
-            BASE_WORKFLOW,
-            '        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"',
-            '        run: echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"',
-        ),
+        "test-archive must aggregate partition failures",
+        replace_once(BASE_WORKFLOW, "              status=1\n", ""),
     )
-    assert_clean(
+    assert_error(
+        "test-archive must aggregate partition failures",
         replace_once(
             BASE_WORKFLOW,
-            '      - name: Show shard reproduction command\n        run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"',
-            '      - run: |\n          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"',
-        )
+            """            if ! just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/4"; then
+              status=1
+            fi""",
+            """            just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/4"
+            if [[ "${shard}" == "never" ]]; then
+              status=1
+            fi""",
+        ),
     )
     assert_error(
         "test-archive must use only shared Cargo registry/git rust-cache blocks",
@@ -5989,11 +5952,11 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-archive must upload nextest archive artifact",
+        "test-archive must not upload nextest archive artifact",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Upload nextest archive\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n",
-            "",
+            "      - name: Run nextest archive partitions",
+            "      - name: Upload nextest archive\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: nextest-archive\n          path: ${{ env.NEXTEST_ARCHIVE_PATH }}\n      - name: Run nextest archive partitions",
         ),
     )
     assert_error(
@@ -6036,7 +5999,7 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-archive must publish nextest archive fingerprint",
+        "nextest-fingerprint must publish nextest archive fingerprint",
         replace_once(
             BASE_WORKFLOW,
             """      - name: Publish nextest archive fingerprint
@@ -6058,7 +6021,7 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-archive must expose secure nextest fingerprint output",
+        "nextest-fingerprint must expose secure nextest fingerprint output",
         replace_once(
             BASE_WORKFLOW,
             "    outputs:\n      nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}\n",
@@ -6066,7 +6029,7 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-archive must expose exactly one secure nextest fingerprint output",
+        "nextest-fingerprint must expose exactly one secure nextest fingerprint output",
         replace_once(
             BASE_WORKFLOW,
             '          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"',
@@ -6075,7 +6038,7 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-archive must publish nextest fingerprint before repo-controlled steps",
+        "nextest-fingerprint must publish nextest fingerprint before repo-controlled steps",
         replace_once(
             BASE_WORKFLOW,
             "    steps:\n      - name: Publish nextest archive fingerprint",
@@ -6083,42 +6046,34 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-archive cache and fingerprint keys must match",
+        "nextest archive cache and fingerprint keys must match",
         BASE_WORKFLOW.replace(
             "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock'",
             "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('extra-input.txt', 'Cargo.lock'",
         ),
     )
     assert_error(
-        "test-shards must download nextest archive artifact",
+        "test-archive must not download nextest archive artifact",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Download nextest archive\n        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n",
-            "",
-        ),
-    )
-    assert_error(
-        "test-shards must not restore a per-shard Rust target cache",
-        replace_once(
-            BASE_WORKFLOW,
-            "      - name: Download nextest archive",
-            "      - uses: Swatinem/rust-cache@example\n        with:\n          key: nextest-v3-shard-${{ matrix.shard }}-of-4\n      - name: Download nextest archive",
+            "      - name: Run nextest archive partitions",
+            "      - name: Download nextest archive\n        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n      - name: Run nextest archive partitions",
         ),
     )
     assert_error(
         "test-archive needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector]",
-            "  test-archive:\n    name: nextest archive\n    needs: ci-policy",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse]",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse]",
         ),
     )
     assert_error(
         "test-archive must not need source-fence",
         replace_once(
             BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector]",
-            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector, source-fence]",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse]",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse, source-fence]",
         ),
     )
     assert_error(
@@ -6164,8 +6119,8 @@ def main() -> int:
         "nextest-fingerprint-reuse needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  nextest-fingerprint-reuse:\n    name: nextest fingerprint reuse\n    needs: [ci-policy, detector, test-archive]",
-            "  nextest-fingerprint-reuse:\n    name: nextest fingerprint reuse\n    needs: [ci-policy, test-archive]",
+            "  nextest-fingerprint-reuse:\n    name: nextest fingerprint reuse\n    needs: [ci-policy, detector, nextest-fingerprint]",
+            "  nextest-fingerprint-reuse:\n    name: nextest fingerprint reuse\n    needs: [ci-policy, nextest-fingerprint]",
         ),
     )
     assert_error(
@@ -6173,18 +6128,30 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, " && needs.detector.outputs.fingerprint_reuse_allowed == 'true'", ""),
     )
     assert_error(
-        "test-shards needs test-archive",
+        "test-archive needs nextest-fingerprint",
         replace_once(
             BASE_WORKFLOW,
-            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse]",
-            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: ci-policy",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse]",
+            "  test-archive:\n    name: nextest archive\n    needs: [ci-policy, detector, nextest-fingerprint-reuse]",
         ),
     )
     assert_error(
-        "test needs test-shards",
+        "test-archive must require detector success",
+        replace_once(BASE_WORKFLOW, " && needs.detector.result == 'success'", ""),
+    )
+    assert_error(
+        "test-archive must require nextest-fingerprint success",
+        replace_once(BASE_WORKFLOW, " && needs.nextest-fingerprint.result == 'success'", ""),
+    )
+    assert_error(
+        "test-archive must skip on validated nextest fingerprint reuse",
+        replace_once(BASE_WORKFLOW, " && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true'", ""),
+    )
+    assert_error(
+        "test needs nextest-fingerprint",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]",
+            "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
             "  test:\n    name: test\n    needs: ci-policy",
         ),
     )
@@ -6197,15 +6164,15 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test must check needs.test-shards.result",
-        replace_once(BASE_WORKFLOW, "needs.test-shards.result", "omitted.test-shards.result"),
+        "test must check needs.test-archive.result",
+        replace_once(BASE_WORKFLOW, "needs.test-archive.result", "omitted.test-archive.result"),
     )
     assert_error(
         "test must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
-            "  test:\n    name: test\n    needs: [ci-policy, test-archive, nextest-fingerprint-reuse, test-shards]",
+            "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  test:\n    name: test\n    needs: [ci-policy, nextest-fingerprint, nextest-fingerprint-reuse, test-archive]",
         ),
     )
     assert_error(
@@ -6240,7 +6207,7 @@ def main() -> int:
         "source-fence must run just source-fence",
         replace_once(BASE_WORKFLOW, "- run: just source-fence", "- run: echo source-fence"),
     )
-    for job in ("fmt-check", "deny", "clippy", "source-fence", "test-archive", "nextest-fingerprint-reuse", "test-shards", "test"):
+    for job in ("fmt-check", "deny", "clippy", "source-fence", "nextest-fingerprint", "test-archive", "nextest-fingerprint-reuse", "test"):
         assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))
     assert_error(
         "nextest-fingerprint-reuse must skip main branch",
@@ -6250,7 +6217,7 @@ def main() -> int:
         "nextest-fingerprint-reuse must use secure current nextest fingerprint output",
         replace_once(
             BASE_WORKFLOW,
-            '--current-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
+            '--current-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"',
             "--current-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
         ),
     )
@@ -6334,16 +6301,16 @@ def main() -> int:
         "ci-provenance-emit needs source-fence",
         replace_once(
             BASE_WORKFLOW,
-            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
-            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, test-archive, nextest-fingerprint-reuse, test-shards, test, build]",
+            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]",
+            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]",
         ),
     )
     assert_error(
         "ci-provenance-emit must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
-            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test-archive, nextest-fingerprint-reuse, test-shards, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
         ),
     )
     assert_error(
@@ -6374,7 +6341,7 @@ def main() -> int:
         "ci-provenance-emit must record nextest fingerprint when present",
         replace_once(
             BASE_WORKFLOW,
-            '--nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
+            '--nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"',
             '--nextest-fingerprint ""',
         ),
     )
@@ -6382,7 +6349,7 @@ def main() -> int:
         "ci-provenance-emit must use secure nextest fingerprint output",
         replace_once(
             BASE_WORKFLOW,
-            '--nextest-fingerprint "${{ needs.test-archive.outputs.nextest_fingerprint }}"',
+            '--nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"',
             "--nextest-fingerprint-path .ci-provenance/fingerprint/cache-key.txt",
         ),
     )
@@ -7014,13 +6981,11 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-nextest
-        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none""",
             """      - name: Install cargo-nextest
-        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         run: |
           cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked""",
         ),
@@ -7035,39 +7000,15 @@ def main() -> int:
         ),
     )
     assert_error(
-        "ci.yml test-shards must install cargo-nextest with pinned taiki-e/install-action",
+        "ci.yml test-archive install-action fallback must be none",
         replace_once(
             BASE_WORKFLOW,
-            """      - name: Install cargo-nextest
-        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
-        with:
-          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
-          fallback: none""",
-            """      - name: Install cargo-nextest
-        run: |
-          cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked""",
+            '          fallback: none\n      - name: Build nextest archive',
+            '          fallback: cargo-install\n      - name: Build nextest archive',
         ),
     )
     assert_error(
-        "ci.yml test-shards must not compile cargo-nextest from source",
-        replace_once(
-            BASE_WORKFLOW,
-            '      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4',
-            """      - run: |
-          cargo install --git https://github.com/nextest-rs/nextest --package cargo-nextest --locked
-          just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4""",
-        ),
-    )
-    assert_error(
-        "ci.yml test-shards install-action fallback must be none",
-        replace_once(
-            BASE_WORKFLOW,
-            '          fallback: none\n      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4',
-            '          fallback: cargo-install\n      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4',
-        ),
-    )
-    assert_error(
-        "ci.yml test-shards must install cargo-nextest before just test-archive-run",
+        'ci.yml test-archive must install cargo-nextest before just test-archive "$NEXTEST_ARCHIVE_PATH"',
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-nextest
@@ -7075,8 +7016,8 @@ def main() -> int:
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
-      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4""",
-            """      - run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4
+      - name: Build nextest archive""",
+            """      - name: Build nextest archive
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:

@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 from typing import Any
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -49,6 +50,24 @@ POLICY_RELATIVE_PATH = pathlib.Path("ci/rust-verification.toml")
 CI_RUNNERS_RELATIVE_PATH = pathlib.Path("ci/github-actions-runners.toml")
 MAX_POLICY_BYTES = 1024 * 1024
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+RUST_PROBE_MODES = (
+    "check-lib",
+    "check-test-target",
+    "nextest-no-run-test-target",
+    "nextest-test-target",
+    "nextest-test-target-name",
+)
+RUST_PROBE_INPUT_KEYS = (
+    "runner_tier",
+    "job_timeout_minutes",
+    "ref",
+    "expected_sha",
+    "probe_id",
+    "mode",
+    "test_target",
+    "test_name",
+)
 SCRUB_ENV_KEYS = (
     "BOLT_ALLOW_LOCAL_RUST",
     "BOLT_MANAGED_JUST",
@@ -232,6 +251,8 @@ def validate_policy_data(data: dict[str, Any]) -> None:
     validate_local_lane_policy(data)
     if "remote_verification" in data:
         validate_remote_verification_policy(data)
+    if "remote_probe" in data:
+        validate_remote_probe_policy(data)
     if "cache" in data:
         validate_cache_policy(data)
 
@@ -305,13 +326,85 @@ def validate_remote_verification_policy(data: dict[str, Any]) -> None:
     if not isinstance(policy, dict):
         raise PolicyError("remote_verification table must be a table")
     values: dict[str, int] = {}
-    for key in ("poll_interval_seconds", "checks_appear_timeout_seconds", "overall_timeout_seconds"):
+    for key in (
+        "poll_interval_seconds",
+        "checks_appear_timeout_seconds",
+        "overall_timeout_seconds",
+        "diagnostic_log_max_lines",
+        "diagnostic_log_max_bytes",
+        "diagnostic_unavailable_notice_interval_polls",
+    ):
         value = policy.get(key)
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
             raise PolicyError(f"remote_verification.{key} must be a positive integer")
         values[key] = value
     if values["checks_appear_timeout_seconds"] >= values["overall_timeout_seconds"]:
         raise PolicyError("remote_verification.checks_appear_timeout_seconds must be less than overall_timeout_seconds")
+
+
+def require_positive_int(table: dict[str, Any], key: str, prefix: str) -> int:
+    value = table.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise PolicyError(f"{prefix}.{key} must be a positive integer")
+    return value
+
+
+def require_non_empty_string(table: dict[str, Any], key: str, prefix: str) -> str:
+    value = table.get(key)
+    if not isinstance(value, str) or not value:
+        raise PolicyError(f"{prefix}.{key} must be a non-empty string")
+    return value
+
+
+def validate_workflow_path(value: str, key: str) -> None:
+    path = pathlib.PurePosixPath(value)
+    if value.startswith("/") or ".." in path.parts or not value.endswith(".yml"):
+        raise PolicyError(f"remote_probe.{key} must be a relative .yml workflow path")
+
+
+def validate_remote_probe_policy(data: dict[str, Any]) -> None:
+    policy = data.get("remote_probe")
+    if not isinstance(policy, dict):
+        raise PolicyError("remote_probe table must be a table")
+    workflow_name = require_non_empty_string(policy, "workflow_name", "remote_probe")
+    if workflow_name != "Rust Probe":
+        raise PolicyError("remote_probe.workflow_name must be 'Rust Probe'")
+    validate_workflow_path(require_non_empty_string(policy, "workflow_path", "remote_probe"), "workflow_path")
+    values: dict[str, int] = {}
+    for key in (
+        "poll_interval_seconds",
+        "appearance_timeout_seconds",
+        "overall_timeout_seconds",
+        "active_run_limit",
+        "workflow_runs_per_page",
+        "guard_timeout_minutes",
+    ):
+        values[key] = require_positive_int(policy, key, "remote_probe")
+    if values["appearance_timeout_seconds"] >= values["overall_timeout_seconds"]:
+        raise PolicyError("remote_probe.appearance_timeout_seconds must be less than overall_timeout_seconds")
+    allowed = string_array_policy_value(policy, "allowed_runner_tiers")
+    if len(set(allowed)) != len(allowed):
+        raise PolicyError("remote_probe.allowed_runner_tiers must not contain duplicates")
+    mode_tiers = policy.get("mode_runner_tiers")
+    if not isinstance(mode_tiers, dict):
+        raise PolicyError("remote_probe.mode_runner_tiers table is required")
+    if set(mode_tiers) != set(RUST_PROBE_MODES):
+        raise PolicyError("remote_probe.mode_runner_tiers must declare every Rust Probe mode")
+    for mode, tier in mode_tiers.items():
+        if tier not in allowed:
+            raise PolicyError(f"remote_probe.mode_runner_tiers.{mode} must be an allowed runner tier")
+    timeouts = policy.get("workflow_timeouts")
+    if not isinstance(timeouts, dict):
+        raise PolicyError("remote_probe.workflow_timeouts table is required")
+    expected_timeout_keys = {f"probe-{tier}" for tier in allowed}
+    if set(timeouts) != expected_timeout_keys:
+        expected = ", ".join(sorted(expected_timeout_keys))
+        raise PolicyError(f"remote_probe.workflow_timeouts must declare {expected}")
+    for job in sorted(expected_timeout_keys):
+        require_positive_int(timeouts, job, "remote_probe.workflow_timeouts")
+    max_workflow_timeout_seconds = max(int(timeouts[job]) for job in expected_timeout_keys) * 60
+    if values["overall_timeout_seconds"] <= max_workflow_timeout_seconds:
+        raise PolicyError("remote_probe.overall_timeout_seconds must exceed remote_probe.workflow_timeouts")
 
 
 def status_for_repo(repo: pathlib.Path) -> str:
@@ -2244,10 +2337,11 @@ def local_compile_refusal_payload(
         "command_name": command_name,
         "dry_run": False,
         "next_steps": [
-            "commit local changes",
-            "push the branch",
-            "ensure a draft or open pull request exists",
-            "run: just verify-remote",
+            "for targeted Rust debugging after cheap local checks: push the branch and run the smallest just rust-probe ... command",
+            "for merge proof: commit local changes",
+            "for merge proof: push the branch",
+            "for merge proof: ensure a draft or open pull request exists",
+            "for merge proof: run: just verify-remote",
         ],
         "reclaimable_bytes": 0,
         "refusal_code": "local_compile_disabled",
@@ -2460,6 +2554,8 @@ def load_json_command(argv: list[str], *, repo: pathlib.Path) -> tuple[Any | Non
         result = run_capture(argv, repo=repo)
     except FileNotFoundError:
         return None, f"{pathlib.Path(argv[0]).name} is required for remote verification"
+    except OSError as exc:
+        return None, f"{pathlib.Path(argv[0]).name} could not run: {exc}"
     if result.returncode != 0:
         return None, command_error(argv, result)
     try:
@@ -2477,6 +2573,31 @@ def remote_verification_policy(policy: dict[str, Any]) -> dict[str, int]:
         "poll_interval_seconds": int(raw["poll_interval_seconds"]),
         "checks_appear_timeout_seconds": int(raw["checks_appear_timeout_seconds"]),
         "overall_timeout_seconds": int(raw["overall_timeout_seconds"]),
+        "diagnostic_log_max_lines": int(raw["diagnostic_log_max_lines"]),
+        "diagnostic_log_max_bytes": int(raw["diagnostic_log_max_bytes"]),
+        "diagnostic_unavailable_notice_interval_polls": int(
+            raw["diagnostic_unavailable_notice_interval_polls"]
+        ),
+    }
+
+
+def remote_probe_policy(policy: dict[str, Any]) -> dict[str, Any]:
+    raw = policy.get("remote_probe")
+    if not isinstance(raw, dict):
+        raise PolicyError("remote_probe table is required for rust-probe")
+    validate_remote_probe_policy(policy)
+    return {
+        "workflow_name": str(raw["workflow_name"]),
+        "workflow_path": str(raw["workflow_path"]),
+        "poll_interval_seconds": int(raw["poll_interval_seconds"]),
+        "appearance_timeout_seconds": int(raw["appearance_timeout_seconds"]),
+        "overall_timeout_seconds": int(raw["overall_timeout_seconds"]),
+        "active_run_limit": int(raw["active_run_limit"]),
+        "workflow_runs_per_page": int(raw["workflow_runs_per_page"]),
+        "guard_timeout_minutes": int(raw["guard_timeout_minutes"]),
+        "allowed_runner_tiers": list(raw["allowed_runner_tiers"]),
+        "mode_runner_tiers": dict(raw["mode_runner_tiers"]),
+        "workflow_timeouts": dict(raw["workflow_timeouts"]),
     }
 
 
@@ -2500,7 +2621,7 @@ def current_branch(repo: pathlib.Path) -> tuple[str | None, str | None]:
     return git_output(repo, "branch", "--show-current")
 
 
-def live_upstream_head(repo: pathlib.Path, branch: str) -> tuple[str | None, str | None]:
+def live_upstream_head(repo: pathlib.Path, branch: str, *, command_name: str = "verify-remote") -> tuple[str | None, str | None]:
     remote, error = git_output(repo, "config", f"branch.{branch}.remote")
     if error is not None or not remote:
         return None, None
@@ -2508,7 +2629,7 @@ def live_upstream_head(repo: pathlib.Path, branch: str) -> tuple[str | None, str
     if error is not None or not merge_ref:
         return None, None
     if not merge_ref.startswith("refs/heads/"):
-        return None, f"verify-remote requires upstream to be a branch, got {merge_ref}"
+        return None, f"{command_name} requires upstream to be a branch, got {merge_ref}"
     upstream_branch = merge_ref.removeprefix("refs/heads/")
     refs, error = git_output(repo, "ls-remote", "--heads", remote, upstream_branch)
     if error is not None:
@@ -2520,12 +2641,25 @@ def live_upstream_head(repo: pathlib.Path, branch: str) -> tuple[str | None, str
     return None, None
 
 
-def ensure_verify_remote_preconditions(repo: pathlib.Path) -> tuple[str | None, str | None, str | None]:
+def upstream_branch_name(repo: pathlib.Path, branch: str, *, command_name: str) -> tuple[str | None, str | None]:
+    merge_ref, error = git_output(repo, "config", f"branch.{branch}.merge")
+    if error is not None or not merge_ref:
+        return None, f"{command_name} requires pushed HEAD with an upstream"
+    if not merge_ref.startswith("refs/heads/"):
+        return None, f"{command_name} requires upstream to be a branch, got {merge_ref}"
+    return merge_ref.removeprefix("refs/heads/"), None
+
+
+def ensure_clean_pushed_head_preconditions(
+    repo: pathlib.Path,
+    *,
+    command_name: str,
+) -> tuple[str | None, str | None, str | None]:
     status, error = git_output(repo, "status", "--porcelain", "--untracked-files=normal")
     if error is not None:
         return None, None, error
     if status:
-        return None, None, "verify-remote requires a clean worktree, including untracked files"
+        return None, None, f"{command_name} requires a clean worktree, including untracked files"
     head, error = git_output(repo, "rev-parse", "HEAD")
     if error is not None:
         return None, None, error
@@ -2533,16 +2667,30 @@ def ensure_verify_remote_preconditions(repo: pathlib.Path) -> tuple[str | None, 
     if error is not None:
         return None, None, error
     if not branch:
-        return None, None, "verify-remote requires a named branch"
-    upstream, error = live_upstream_head(repo, branch)
+        return None, None, f"{command_name} requires a named branch"
+    upstream, error = live_upstream_head(repo, branch, command_name=command_name)
     if error is not None:
         return None, None, error
     if upstream is None:
-        hint = "git push -u origin HEAD" if branch else "push this branch and set an upstream"
-        return None, None, f"verify-remote requires pushed HEAD with an upstream; run: {hint}"
+        hint = "git push -u origin HEAD"
+        return None, None, f"{command_name} requires pushed HEAD with an upstream; run: {hint}"
     if upstream != head:
-        return None, None, "verify-remote requires HEAD to be pushed to the upstream branch"
+        return None, None, f"{command_name} requires HEAD to be pushed to the upstream branch"
     return head, branch, None
+
+
+def ensure_verify_remote_preconditions(repo: pathlib.Path) -> tuple[str | None, str | None, str | None]:
+    return ensure_clean_pushed_head_preconditions(repo, command_name="verify-remote")
+
+
+def ensure_rust_probe_preconditions(repo: pathlib.Path) -> tuple[str | None, str | None, str | None]:
+    head, branch, error = ensure_clean_pushed_head_preconditions(repo, command_name="rust-probe")
+    if error is not None or head is None or branch is None:
+        return head, branch, error
+    upstream_branch, error = upstream_branch_name(repo, branch, command_name="rust-probe")
+    if error is not None or upstream_branch is None:
+        return None, None, error or "rust-probe requires pushed HEAD with an upstream"
+    return head, upstream_branch, None
 
 
 def pr_create_hint(branch: str) -> str:
@@ -2715,9 +2863,23 @@ def draft_pr_is_fork(repo: pathlib.Path, pr: dict[str, Any]) -> tuple[bool | Non
     return (head_owner, head_repo) != (current_owner, current_name), None
 
 
-WORKFLOW_RUN_FIELDS = "databaseId,event,headSha,status,conclusion,createdAt,url"
+WORKFLOW_RUN_FIELDS = "attempt,databaseId,event,headSha,status,conclusion,createdAt,url,displayTitle"
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b("
+    r"[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|SESSION_TOKEN|PRIVATE_KEY|MNEMONIC|SEED_PHRASE|WALLET_KEY|SIGNING_KEY|PASSPHRASE|CREDENTIAL)[A-Z0-9_]*"
+    r")\b(\s*[:=]\s*)\S.*"
+)
+BEARER_RE = re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+\S+")
 FULL_CI_READY_EVENTS = {"pull_request"}
 FULL_CI_DRAFT_EVENTS = {"workflow_dispatch"}
+
+
+class RemoteFailureDiagnosticsState:
+    def __init__(self) -> None:
+        self.reported_job_ids: set[int] = set()
+        self.unavailable_notice_polls: dict[int, int] = {}
+        self.jobs_unavailable_notice_polls: dict[int, int] = {}
 
 
 def workflow_run_list(
@@ -2747,16 +2909,53 @@ def workflow_run_list(
     return payload, None
 
 
-def workflow_run_view(repo: pathlib.Path, run_id: int) -> tuple[dict[str, Any] | None, str | None]:
+def workflow_run_view(
+    repo: pathlib.Path,
+    run_id: int,
+    *,
+    command_name: str = "verify-remote",
+) -> tuple[dict[str, Any] | None, str | None]:
     payload, error = load_json_command(
         ["gh", "run", "view", str(run_id), "--json", WORKFLOW_RUN_FIELDS],
         repo=repo,
     )
     if error is not None:
-        return None, f"verify-remote could not inspect workflow run {run_id}: {error}"
+        return None, f"{command_name} could not inspect workflow run {run_id}: {error}"
     if not isinstance(payload, dict):
         return None, "gh run view returned an unexpected payload"
     return payload, None
+
+
+def workflow_run_jobs(
+    repo: pathlib.Path,
+    run_id: int,
+    attempt: int | None,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    argv = ["gh", "run", "view", str(run_id), "--json", "jobs"]
+    if attempt is not None:
+        argv.extend(["--attempt", str(attempt)])
+    payload, error = load_json_command(argv, repo=repo)
+    if error is not None:
+        return None, f"verify-remote could not inspect workflow run {run_id} jobs: {error}"
+    if not isinstance(payload, dict):
+        return None, "gh run view returned an unexpected jobs payload"
+    jobs = payload.get("jobs")
+    if not isinstance(jobs, list) or not all(isinstance(item, dict) for item in jobs):
+        return None, "gh run view returned an unexpected jobs payload"
+    return jobs, None
+
+
+def job_log_failed(repo: pathlib.Path, job_id: int) -> tuple[str | None, str | None]:
+    argv = ["gh", "run", "view", "--job", str(job_id), "--log-failed"]
+    try:
+        result = run_capture(argv, repo=repo)
+    except FileNotFoundError:
+        return None, "gh is required for remote verification"
+    if result.returncode != 0:
+        return None, command_error(argv, result)
+    if not ANSI_ESCAPE_RE.sub("", result.stdout).strip():
+        return None, "failed job log is not available yet"
+    return result.stdout, None
 
 
 def run_created_at(run: dict[str, Any]) -> str:
@@ -2771,6 +2970,114 @@ def run_database_id(run: dict[str, Any]) -> int | None:
     if isinstance(database_id, str) and database_id.isdigit():
         return int(database_id)
     return None
+
+
+def run_attempt(run: dict[str, Any]) -> int | None:
+    attempt = run.get("attempt")
+    if isinstance(attempt, int) and not isinstance(attempt, bool) and attempt > 0:
+        return attempt
+    if isinstance(attempt, str) and attempt.isdecimal():
+        value = int(attempt)
+        if value > 0:
+            return value
+    return None
+
+
+def job_database_id(job: dict[str, Any]) -> int | None:
+    database_id = job.get("databaseId")
+    if database_id is None:
+        database_id = job.get("id")
+    if isinstance(database_id, int) and not isinstance(database_id, bool):
+        return database_id
+    if isinstance(database_id, str) and database_id.isdecimal():
+        return int(database_id)
+    return None
+
+
+def job_text(job: dict[str, Any], key: str) -> str | None:
+    value = job.get(key)
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def failed_job_summary(job: dict[str, Any], job_id: int) -> str:
+    name = job_text(job, "name") or f"job {job_id}"
+    status = job_text(job, "status") or "unknown"
+    conclusion = job_text(job, "conclusion") or "unknown"
+    url = job_text(job, "url")
+    summary = f"{name} [{status}/{conclusion}]"
+    return summary + (f" {url}" if url else "")
+
+
+def mask_obvious_secrets(line: str) -> str:
+    line = SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}<redacted>", line)
+    return BEARER_RE.sub("Authorization: Bearer <redacted>", line)
+
+
+def diagnostic_log_excerpt(text: str, *, max_lines: int, max_bytes: int) -> str:
+    cleaned = ANSI_ESCAPE_RE.sub("", text)
+    lines = [mask_obvious_secrets(line) for line in cleaned.splitlines()]
+    excerpt = "\n".join(lines[-max_lines:])
+    encoded = excerpt.encode("utf-8")
+    if len(encoded) > max_bytes:
+        excerpt = encoded[-max_bytes:].decode("utf-8", errors="replace")
+    return excerpt.strip()
+
+
+def emit_failed_job_diagnostics(
+    *,
+    repo: pathlib.Path,
+    run: dict[str, Any],
+    state: RemoteFailureDiagnosticsState,
+    remote_policy: dict[str, int],
+) -> bool:
+    run_id = run_database_id(run)
+    if run_id is None:
+        print("CI failed-job diagnostics unavailable: workflow run databaseId missing", file=sys.stderr)
+        return False
+    attempt = run_attempt(run)
+    if attempt is None:
+        print("CI failed-job diagnostics unavailable: workflow run attempt missing", file=sys.stderr)
+        return False
+    jobs, error = workflow_run_jobs(repo, run_id, attempt)
+    if error is not None or jobs is None:
+        notice_interval = remote_policy["diagnostic_unavailable_notice_interval_polls"]
+        poll_count = state.jobs_unavailable_notice_polls.get(run_id, 0) + 1
+        state.jobs_unavailable_notice_polls[run_id] = poll_count
+        if poll_count == 1 or poll_count % notice_interval == 0:
+            print(f"CI failed-job diagnostics unavailable: {error or 'unable to inspect workflow run jobs'}", file=sys.stderr)
+        return False
+    state.jobs_unavailable_notice_polls.pop(run_id, None)
+    notice_interval = remote_policy["diagnostic_unavailable_notice_interval_polls"]
+    for job in jobs:
+        if job_text(job, "status") != "completed" or job_text(job, "conclusion") != "failure":
+            continue
+        job_id = job_database_id(job)
+        if job_id is None or job_id in state.reported_job_ids:
+            continue
+        log_text, log_error = job_log_failed(repo, job_id)
+        excerpt = (
+            diagnostic_log_excerpt(
+                log_text,
+                max_lines=remote_policy["diagnostic_log_max_lines"],
+                max_bytes=remote_policy["diagnostic_log_max_bytes"],
+            )
+            if log_text is not None
+            else ""
+        )
+        if not excerpt:
+            poll_count = state.unavailable_notice_polls.get(job_id, 0) + 1
+            state.unavailable_notice_polls[job_id] = poll_count
+            if poll_count == 1 or poll_count % notice_interval == 0:
+                print(f"CI failed job: {failed_job_summary(job, job_id)}", file=sys.stderr)
+                print(f"  job_log=unavailable yet: {log_error or 'not available'}", file=sys.stderr)
+            continue
+        state.reported_job_ids.add(job_id)
+        state.unavailable_notice_polls.pop(job_id, None)
+        print(f"CI failed job: {failed_job_summary(job, job_id)}", file=sys.stderr)
+        print(excerpt, file=sys.stderr)
+    return True
 
 
 def matching_full_ci_runs(
@@ -2842,6 +3149,200 @@ def dispatch_full_ci(
     return None, None
 
 
+def rust_probe_run_list(
+    repo: pathlib.Path,
+    remote_policy: dict[str, Any],
+    *,
+    branch: str | None = None,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    argv = [
+        "gh",
+        "run",
+        "list",
+        "--workflow",
+        str(remote_policy["workflow_name"]),
+        "--json",
+        WORKFLOW_RUN_FIELDS,
+        "--limit",
+        str(remote_policy["workflow_runs_per_page"]),
+    ]
+    if branch is not None:
+        argv.extend(["--branch", branch])
+    payload, error = load_json_command(argv, repo=repo)
+    if error is not None:
+        return None, f"rust-probe could not inspect workflow runs: {error}"
+    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+        return None, "gh run list returned an unexpected payload"
+    return payload, None
+
+
+def rust_probe_active_run_count(repo: pathlib.Path, remote_policy: dict[str, Any]) -> tuple[int | None, str | None]:
+    runs, error = rust_probe_run_list(repo, remote_policy)
+    if error is not None or runs is None:
+        return None, error or "unable to inspect Rust Probe workflow runs"
+    return sum(1 for run in runs if str(run.get("status") or "") != "completed"), None
+
+
+def dispatch_rust_probe(
+    repo: pathlib.Path,
+    remote_policy: dict[str, Any],
+    *,
+    branch: str,
+    head: str,
+    mode: str,
+    test_target: str,
+    test_name: str,
+    runner_tier: str,
+    job_timeout_minutes: int,
+    probe_id: str,
+) -> str | None:
+    fields = {
+        "runner_tier": runner_tier,
+        "job_timeout_minutes": str(job_timeout_minutes),
+        "ref": head,
+        "expected_sha": head,
+        "probe_id": probe_id,
+        "mode": mode,
+        "test_target": test_target,
+        "test_name": test_name,
+    }
+    argv = [
+        "gh",
+        "workflow",
+        "run",
+        str(remote_policy["workflow_path"]),
+        "--ref",
+        branch,
+    ]
+    for key in RUST_PROBE_INPUT_KEYS:
+        argv.extend(["-f", f"{key}={fields[key]}"])
+    try:
+        result = run_capture(argv, repo=repo)
+    except FileNotFoundError:
+        return "gh is required for rust-probe"
+    if result.returncode != 0:
+        return f"rust-probe could not dispatch workflow: {command_error(argv, result)}"
+    return None
+
+
+def new_probe_id() -> str:
+    return f"rust-probe-{uuid.uuid4().hex}"
+
+
+def validate_rust_probe_selection(mode: str, test_target: str, test_name: str) -> str | None:
+    target_regex = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+    name_regex = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_:.@/-]*$")
+    if mode == "check-lib":
+        if test_target:
+            return "test_target is forbidden for mode check-lib"
+        if test_name:
+            return "test_name is forbidden for mode check-lib"
+        return None
+    if mode in {"check-test-target", "nextest-no-run-test-target", "nextest-test-target"}:
+        if not test_target:
+            return f"test_target is required for mode {mode}"
+        if test_name:
+            return f"test_name is forbidden for mode {mode}"
+    elif mode == "nextest-test-target-name":
+        if not test_target:
+            return "test_target is required for mode nextest-test-target-name"
+        if not test_name:
+            return "test_name is required for mode nextest-test-target-name"
+    else:
+        return f"unsupported mode: {mode}"
+    if not target_regex.match(test_target):
+        return "test_target must be a safe Rust test target name"
+    if test_name and not name_regex.match(test_name):
+        return "test_name must be a safe nextest test name"
+    return None
+
+
+def run_display_title(run: dict[str, Any]) -> str:
+    title = run.get("displayTitle")
+    return title if isinstance(title, str) else ""
+
+
+def matching_rust_probe_runs(runs: list[dict[str, Any]], *, head: str, probe_id: str) -> list[dict[str, Any]]:
+    expected_prefix = f"Rust Probe {probe_id} "
+    matching = [run for run in runs if run.get("headSha") == head and run_display_title(run).startswith(expected_prefix)]
+    return sorted(matching, key=run_created_at, reverse=True)
+
+
+def evaluate_rust_probe_run(
+    run: dict[str, Any],
+    *,
+    head: str,
+    probe_id: str,
+) -> int | None:
+    summary = workflow_run_summary(run)
+    run_head = str(run.get("headSha") or "")
+    if run_head != head:
+        print(
+            f"Rust Probe {probe_id} ended without exact-head evidence for {head}: "
+            f"matched {run_head or '<missing>'}; {summary}",
+            file=sys.stderr,
+        )
+        return 2
+    state = workflow_run_state(run)
+    if state == "pending":
+        return None
+    if state == "pass":
+        print(f"OK: Rust Probe {probe_id} passed for {head}: {summary}")
+        print("NOT MERGE PROOF -- run just verify-remote for proof")
+        return 0
+    conclusion = str(run.get("conclusion") or "")
+    if conclusion == "cancelled":
+        print(f"Rust Probe {probe_id} was superseded or cancelled, not reported as a code failure: {summary}", file=sys.stderr)
+        return 2
+    if conclusion in {"timed_out", "action_required", "startup_failure", "stale", "skipped"}:
+        print(f"Rust Probe {probe_id} ended without code-failure evidence: {summary}", file=sys.stderr)
+        return 2
+    print(f"Rust Probe {probe_id} failed for {head}; this is debugging feedback only:", file=sys.stderr)
+    print(f"- {summary}", file=sys.stderr)
+    print("NOT MERGE PROOF -- run just verify-remote for proof", file=sys.stderr)
+    return 1
+
+
+def wait_for_rust_probe_run(
+    *,
+    repo: pathlib.Path,
+    remote_policy: dict[str, Any],
+    branch: str,
+    head: str,
+    probe_id: str,
+) -> int:
+    appear_deadline = time.monotonic() + remote_policy["appearance_timeout_seconds"]
+    overall_deadline = time.monotonic() + remote_policy["overall_timeout_seconds"]
+    interval = remote_policy["poll_interval_seconds"]
+    tracked_run_id: int | None = None
+    while True:
+        now = time.monotonic()
+        if now >= overall_deadline:
+            return verify_remote_fail(f"timed out waiting for Rust Probe {probe_id} on {branch}")
+        run: dict[str, Any] | None = None
+        if tracked_run_id is not None:
+            run, error = workflow_run_view(repo, tracked_run_id, command_name="rust-probe")
+            if error is not None or run is None:
+                return verify_remote_fail(error or f"unable to inspect Rust Probe run {tracked_run_id}")
+        else:
+            runs, error = rust_probe_run_list(repo, remote_policy, branch=branch)
+            if error is not None or runs is None:
+                return verify_remote_fail(error or "unable to inspect Rust Probe workflow runs")
+            matching = matching_rust_probe_runs(runs, head=head, probe_id=probe_id)
+            if matching:
+                run = matching[0]
+                tracked_run_id = run_database_id(run)
+        if run is None:
+            if now >= appear_deadline:
+                return verify_remote_fail(f"no matching Rust Probe workflow run appeared for probe_id {probe_id}")
+            time.sleep(interval)
+            continue
+        result = evaluate_rust_probe_run(run, head=head, probe_id=probe_id)
+        if result is not None:
+            return result
+        time.sleep(interval)
+
+
 def evaluate_full_ci_run(
     run: dict[str, Any],
     *,
@@ -2878,6 +3379,7 @@ def wait_for_full_ci_run(
     overall_deadline = time.monotonic() + remote_policy["overall_timeout_seconds"]
     interval = remote_policy["poll_interval_seconds"]
     tracked_run_id: int | None = initial_tracked_run_id
+    diagnostics_state = RemoteFailureDiagnosticsState()
     if tracked_run_id is not None and sleep_before_initial_tracked_poll:
         time.sleep(interval)
     while True:
@@ -2915,6 +3417,15 @@ def wait_for_full_ci_run(
                 return verify_remote_fail(f"no matching full-CI workflow run appeared for {head} on {pr_url}")
             time.sleep(interval)
             continue
+        head_result = verify_remote_head_current_or_fail(repo, branch, head)
+        if head_result is not None:
+            return head_result
+        emit_failed_job_diagnostics(
+            repo=repo,
+            run=run,
+            state=diagnostics_state,
+            remote_policy=remote_policy,
+        )
         if workflow_run_state(run) != "pending":
             head_result = verify_remote_head_current_or_fail(repo, branch, head)
             if head_result is not None:
@@ -2926,6 +3437,108 @@ def wait_for_full_ci_run(
                 return head_result
             return result
         time.sleep(interval)
+
+
+def cmd_rust_probe(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    try:
+        policy = load_policy(repo)
+        probe_policy = remote_probe_policy(policy)
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        return verify_remote_fail(str(exc))
+    test_target = args.test_target or ""
+    test_name = args.test_name or ""
+    selection_error = validate_rust_probe_selection(args.mode, test_target, test_name)
+    if selection_error is not None:
+        return verify_remote_fail(selection_error)
+    head, branch, error = ensure_rust_probe_preconditions(repo)
+    if error is not None or head is None or branch is None:
+        return verify_remote_fail(error or "unable to inspect git state")
+    active_count, error = rust_probe_active_run_count(repo, probe_policy)
+    if error is not None or active_count is None:
+        return verify_remote_fail(error or "unable to inspect active Rust Probe runs")
+    if active_count >= probe_policy["active_run_limit"]:
+        return verify_remote_fail(
+            f"rust-probe active-run cap reached: {active_count} active runs, "
+            f"limit {probe_policy['active_run_limit']}"
+        )
+    runner_tier = args.runner_tier or probe_policy["mode_runner_tiers"][args.mode]
+    if runner_tier not in probe_policy["allowed_runner_tiers"]:
+        return verify_remote_fail(f"rust-probe runner tier {runner_tier!r} is not allowed by policy")
+    timeout_key = f"probe-{runner_tier}"
+    job_timeout_minutes = probe_policy["workflow_timeouts"].get(timeout_key)
+    if not isinstance(job_timeout_minutes, int):
+        return verify_remote_fail(f"rust-probe runner tier {runner_tier!r} has no workflow timeout in policy")
+    probe_id = new_probe_id()
+    error = dispatch_rust_probe(
+        repo,
+        probe_policy,
+        branch=branch,
+        head=head,
+        mode=args.mode,
+        test_target=test_target,
+        test_name=test_name,
+        runner_tier=runner_tier,
+        job_timeout_minutes=job_timeout_minutes,
+        probe_id=probe_id,
+    )
+    if error is not None:
+        return verify_remote_fail(error)
+    scope = args.mode
+    if test_target:
+        scope += f" {test_target}"
+    if test_name:
+        scope += f" {test_name}"
+    print(f"Dispatched Rust Probe {probe_id}")
+    print(f"branch: {branch}")
+    print(f"sha: {head}")
+    print(f"scope: {scope}")
+    print(f"runner_tier: {runner_tier}")
+    print("NOT MERGE PROOF -- run just verify-remote for proof")
+    return wait_for_rust_probe_run(
+        repo=repo,
+        remote_policy=probe_policy,
+        branch=branch,
+        head=head,
+        probe_id=probe_id,
+    )
+
+
+def cmd_ci_logs(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    try:
+        policy = load_policy(repo)
+        remote_policy = remote_verification_policy(policy)
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        return verify_remote_fail(str(exc))
+    head, branch, error = ensure_verify_remote_preconditions(repo)
+    if error is not None or head is None or branch is None:
+        return verify_remote_fail(error or "unable to inspect git state")
+    pr, error = pr_for_exact_head(repo, branch, head, during_watch=False)
+    if error is not None or pr is None:
+        return verify_remote_fail(error or "unable to inspect pull request")
+    pr_url = pr.get("url") or f"PR #{pr.get('number')}"
+    dispatch_config, error = ci_provenance_dispatch_config(repo)
+    if error is not None or dispatch_config is None:
+        return verify_remote_fail(error or "unable to inspect CI dispatch config")
+    runs, error = workflow_run_list(repo, dispatch_config, branch)
+    if error is not None or runs is None:
+        return verify_remote_fail(error or "unable to inspect workflow runs")
+    events = FULL_CI_DRAFT_EVENTS if bool(pr.get("isDraft")) else FULL_CI_READY_EVENTS
+    matching = matching_full_ci_runs(
+        runs,
+        head=head,
+        events=events,
+    )
+    if not matching:
+        return verify_remote_fail(f"no matching full-CI workflow run found for {head} on {pr_url}")
+    diagnostics_available = emit_failed_job_diagnostics(
+        repo=repo,
+        run=matching[0],
+        state=RemoteFailureDiagnosticsState(),
+        remote_policy=remote_policy,
+    )
+    return 2 if diagnostics_available is False else 0
 
 
 def cmd_verify_remote(args: argparse.Namespace) -> int:
@@ -3293,6 +3906,24 @@ def build_parser() -> argparse.ArgumentParser:
     verify_remote = subparsers.add_parser("verify-remote")
     verify_remote.add_argument("--repo", required=True)
     verify_remote.set_defaults(func=cmd_verify_remote)
+
+    rust_probe = subparsers.add_parser(
+        "rust-probe",
+        description="Dispatch a bounded remote Rust Probe for debugging feedback; not merge proof.",
+    )
+    rust_probe.add_argument("--repo", required=True)
+    rust_probe.add_argument("--runner-tier")
+    rust_probe.add_argument("mode", choices=RUST_PROBE_MODES)
+    rust_probe.add_argument("test_target", nargs="?")
+    rust_probe.add_argument("test_name", nargs="?")
+    rust_probe.set_defaults(func=cmd_rust_probe)
+
+    ci_logs = subparsers.add_parser(
+        "ci-logs",
+        description="Print failed-job diagnostics for the matching exact-head full-CI run; not a CI pass/fail gate.",
+    )
+    ci_logs.add_argument("--repo", required=True)
+    ci_logs.set_defaults(func=cmd_ci_logs)
 
     scrub = subparsers.add_parser("scrub-env-keys")
     scrub.set_defaults(func=cmd_scrub_env_keys)

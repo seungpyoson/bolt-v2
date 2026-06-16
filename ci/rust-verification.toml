@@ -35,6 +35,31 @@ poll_interval_seconds = 1
 poll_interval_seconds = 15
 checks_appear_timeout_seconds = 300
 overall_timeout_seconds = 3600
+diagnostic_log_max_lines = 160
+diagnostic_log_max_bytes = 20000
+diagnostic_unavailable_notice_interval_polls = 4
+
+[remote_probe]
+workflow_name = "Rust Probe"
+workflow_path = ".github/workflows/rust-probe.yml"
+poll_interval_seconds = 15
+appearance_timeout_seconds = 180
+overall_timeout_seconds = 3900
+active_run_limit = 4
+workflow_runs_per_page = 20
+guard_timeout_minutes = 1
+allowed_runner_tiers = ["heavy", "light"]
+
+[remote_probe.mode_runner_tiers]
+check-lib = "heavy"
+check-test-target = "heavy"
+nextest-no-run-test-target = "heavy"
+nextest-test-target = "heavy"
+nextest-test-target-name = "heavy"
+
+[remote_probe.workflow_timeouts]
+probe-heavy = 60
+probe-light = 60
 
 [cache]
 min_free_bytes = 10737418240

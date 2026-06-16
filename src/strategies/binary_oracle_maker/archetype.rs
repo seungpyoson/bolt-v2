@@ -71,6 +71,7 @@ struct RuntimeParametersBlock {
     mu_min_classified_samples: u64,
     mu_stale_window_ms: u64,
     mu_min_floor: f64,
+    requote_min_interval_ms: u64,
 }
 
 /// Bolt-v3 startup validation and **go-live gate** for the maker.
@@ -166,6 +167,11 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
         errors.push(format!(
             "{context}: parameters.runtime.mu_min_floor ({}) must be finite and in the open interval (0, 1) (a floor of 0 admits the degenerate constant-0 μ the health gate rejects; a floor >= 1 blocks every non-degenerate μ)",
             runtime.mu_min_floor
+        ));
+    }
+    if runtime.requote_min_interval_ms == 0 {
+        errors.push(format!(
+            "{context}: parameters.runtime.requote_min_interval_ms must be > 0 (a zero requote interval disables the same-tick throttle the requote budget relies on, so the budget rejects construction)"
         ));
     }
     errors
@@ -296,6 +302,11 @@ fn insert_runtime_knobs(
         "mu_min_floor".to_string(),
         Value::Float(runtime.mu_min_floor),
     );
+    insert_u64_field(
+        table,
+        "requote_min_interval_ms",
+        runtime.requote_min_interval_ms,
+    )?;
     Ok(())
 }
 
@@ -342,6 +353,7 @@ mod tests {
             mu_min_classified_samples: 4,
             mu_stale_window_ms: 60_000,
             mu_min_floor: 0.05,
+            requote_min_interval_ms: 500,
         }
     }
 
@@ -511,6 +523,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn validate_parameter_bounds_rejects_zero_requote_interval() {
+        // A zero requote interval disables the same-tick throttle the requote
+        // budget relies on; `build_requote_budget_pair` rejects it, so the go-live
+        // gate must reject it loud at load rather than at first quote.
+        let errors = bounds_errors(RuntimeParametersBlock {
+            requote_min_interval_ms: 0,
+            ..valid_runtime()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("requote_min_interval_ms")),
+            "{errors:?}"
+        );
+    }
+
     fn parameters_from_str(toml: &str) -> Result<ParametersBlock, toml::de::Error> {
         toml::from_str(toml)
     }
@@ -525,6 +554,7 @@ mod tests {
             mu_min_classified_samples = 4
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
+            requote_min_interval_ms = 500
             "#,
         )
         .expect("valid block deserializes");
@@ -542,6 +572,7 @@ mod tests {
                 mu_min_classified_samples = 4
                 mu_stale_window_ms = 60000
                 mu_min_floor = 0.05
+                requote_min_interval_ms = 500
                 surprise = 1
                 "#,
             )
@@ -597,6 +628,7 @@ mod tests {
         assert_eq!(config.mu_min_classified_samples, 4);
         assert_eq!(config.mu_stale_window_ms, 60_000);
         assert_eq!(config.mu_min_floor, 0.05);
+        assert_eq!(config.requote_min_interval_ms, 500);
     }
 
     #[test]

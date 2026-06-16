@@ -15834,6 +15834,14 @@ classification = "reference_price_data_contract"
 reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"requote_min_interval_ms"'''
+context = '''const REQUOTE_MIN_INTERVAL_MS_FIELD: &str = "requote_min_interval_ms";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the requote min-interval (the requote budget's same-tick throttle) used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
+
+[[allowed]]
 path = "src/bolt_v3_reference_price.rs"
 kind = "string"
 literal = '''"source_id"'''
@@ -16799,6 +16807,14 @@ literal = '''"/gated_source_roots.rs"'''
 context = '''include!(concat!(env!("OUT_DIR"), "/gated_source_roots.rs"));'''
 classification = "source_canonicalization_codegen_include"
 reason = "Build-time include path literal: the build.rs-generated GATED_SOURCE_ROOTS file name under OUT_DIR; a compile-time codegen reference, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"requote_min_interval_ms"'''
+context = '''"requote_min_interval_ms",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name written into the flat NT config table from the operator [parameters.runtime] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_requote_budget.rs"

@@ -47,6 +47,11 @@ pub struct BinaryOracleMakerConfig {
     pub mu_stale_window_ms: u64,
     /// Lower bound μ must reach to be healthy (the degenerate-flow floor).
     pub mu_min_floor: f64,
+    /// Minimum interval (ms) between requote actions on a leg. Sourced into the
+    /// requote budget's same-tick throttle via `build_requote_budget_pair`; the
+    /// submit-rate and venue REST caps are NOT config knobs — they come from
+    /// `risk.nautilus.max_order_submit_rate` and the venue egress model.
+    pub requote_min_interval_ms: u64,
 }
 
 /// Zero-sized factory the `StrategyBuilder` trait is implemented for (in
@@ -69,6 +74,7 @@ const TRADE_FLOW_MAX_SAMPLES_FIELD: &str = "trade_flow_max_samples";
 const MU_MIN_CLASSIFIED_SAMPLES_FIELD: &str = "mu_min_classified_samples";
 const MU_STALE_WINDOW_MS_FIELD: &str = "mu_stale_window_ms";
 const MU_MIN_FLOOR_FIELD: &str = "mu_min_floor";
+const REQUOTE_MIN_INTERVAL_MS_FIELD: &str = "requote_min_interval_ms";
 
 /// Deserialize the maker config from its TOML table. Fails loud if the table is
 /// missing required envelope fields or carries unknown keys (via
@@ -108,6 +114,7 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
                 | MU_MIN_CLASSIFIED_SAMPLES_FIELD
                 | MU_STALE_WINDOW_MS_FIELD
                 | MU_MIN_FLOOR_FIELD
+                | REQUOTE_MIN_INTERVAL_MS_FIELD
         ) {
             errors.push(ValidationError {
                 field: format!("{field_prefix}.{key}"),
@@ -203,6 +210,7 @@ mod tests {
             mu_min_classified_samples = 4
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
+            requote_min_interval_ms = 500
         }
         .into()
     }
@@ -218,6 +226,7 @@ mod tests {
         assert_eq!(config.mu_min_classified_samples, 4);
         assert_eq!(config.mu_stale_window_ms, 60_000);
         assert_eq!(config.mu_min_floor, 0.05);
+        assert_eq!(config.requote_min_interval_ms, 500);
     }
 
     #[test]

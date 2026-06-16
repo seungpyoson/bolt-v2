@@ -27,20 +27,23 @@ pub fn write_private_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), Atomic
     }
 
     let temp_path = private_atomic_temp_path_for_write(path);
-    let result = write_private_synced_temp_file(&temp_path, bytes).and_then(|()| {
-        fs::rename(&temp_path, path)
-            .map_err(|source| AtomicIoError {
-                path: path.to_path_buf(),
-                source,
-            })
-            .and_then(|()| sync_parent_dir(path))
-    });
-
-    if result.is_err() {
+    if let Err(error) = write_private_synced_temp_file(&temp_path, bytes) {
         let _ = fs::remove_file(&temp_path);
+        return Err(error);
     }
 
-    result
+    if let Err(source) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(AtomicIoError {
+            path: path.to_path_buf(),
+            source,
+        });
+    }
+
+    // The target path now contains the new bytes. Parent fsync is a durability
+    // best effort; reporting this as a failed write would lie to callers.
+    let _ = sync_parent_dir(path);
+    Ok(())
 }
 
 pub fn private_atomic_temp_path(path: &Path) -> PathBuf {

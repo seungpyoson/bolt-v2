@@ -324,6 +324,9 @@ impl BoltV3BasketExecutionState {
                 cost,
                 source,
             } => {
+                if self.settled {
+                    return Err(BoltV3BasketExecutionError::InvalidStateTransition);
+                }
                 let Some(index) = self.legs.iter().position(|leg| {
                     leg.client_order_id.as_deref() == Some(client_order_id.as_str())
                 }) else {
@@ -347,6 +350,12 @@ impl BoltV3BasketExecutionState {
             }
             BoltV3BasketExecutionEvent::CancelRejected { .. }
             | BoltV3BasketExecutionEvent::RetryBudgetExhausted { .. } => {
+                if matches!(
+                    self.status,
+                    BoltV3BasketExecutionStatus::Complete | BoltV3BasketExecutionStatus::Closed
+                ) {
+                    return Ok(());
+                }
                 self.status = BoltV3BasketExecutionStatus::Stuck;
                 self.unresolved_real_exposure = true;
                 self.reservation_held = true;
@@ -363,6 +372,8 @@ impl BoltV3BasketExecutionState {
                 if self.unresolved_real_exposure {
                     self.status = BoltV3BasketExecutionStatus::Stuck;
                     self.reservation_held = true;
+                } else if self.status != BoltV3BasketExecutionStatus::Closed {
+                    self.status = BoltV3BasketExecutionStatus::Complete;
                 }
             }
             BoltV3BasketExecutionEvent::TerminalClose => {

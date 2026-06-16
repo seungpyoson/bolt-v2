@@ -586,6 +586,99 @@ fn cancel_rejection_retry_exhaustion_and_stuck_hold_reservation() {
 }
 
 #[test]
+fn reachable_nt_close_completes_no_exposure_and_rejects_late_strategy_fill() {
+    let mut basket = reserved_basket();
+    basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-SETTLED",
+            leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
+        )
+        .expect("same venue command should build");
+
+    basket
+        .apply_event(BoltV3BasketExecutionEvent::SettlementSignal(
+            BoltV3BasketSettlementSignal::ReachableNtClose,
+        ))
+        .expect("reachable NT close should settle a no-exposure basket");
+
+    assert!(basket.settled());
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Complete);
+    assert!(!basket.unresolved_real_exposure());
+
+    let late_fill = basket
+        .apply_event(BoltV3BasketExecutionEvent::LegFill {
+            client_order_id: "COID-YES".to_string(),
+            venue_order_id: Some("VOID-YES".to_string()),
+            quantity: dec("1.0"),
+            cost: dec("0.44"),
+            source: BoltV3BasketFillSource::Strategy,
+        })
+        .expect_err("ordinary fills after settlement must not mutate state");
+
+    assert_eq!(
+        late_fill,
+        BoltV3BasketExecutionError::InvalidStateTransition
+    );
+    let persisted = serde_json::to_value(&basket).expect("basket should serialize");
+    assert_eq!(persisted["legs"][0]["filled_quantity"], "0");
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Complete);
+}
+
+#[test]
+fn late_cancel_and_retry_events_do_not_overwrite_terminal_basket_states() {
+    let mut basket = reserved_basket();
+    basket
+        .build_same_venue_submit_command(
+            BoltV3BasketExecutionSubmitDisposition::ReuseNtSubmitOrderList,
+            "OL-TERMINAL",
+            leg_intents(),
+            SUBMIT_NOW_UNIX_MS,
+            SUBMIT_MAX_OBSERVATION_AGE_MS,
+        )
+        .expect("same venue command should build");
+
+    for (client_order_id, venue_order_id, cost) in [
+        ("COID-YES", "VOID-YES", dec("0.44")),
+        ("COID-NO", "VOID-NO", dec("0.46")),
+    ] {
+        basket
+            .apply_event(BoltV3BasketExecutionEvent::LegFill {
+                client_order_id: client_order_id.to_string(),
+                venue_order_id: Some(venue_order_id.to_string()),
+                quantity: dec("1.0"),
+                cost,
+                source: BoltV3BasketFillSource::Strategy,
+            })
+            .expect("fill should apply");
+    }
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Complete);
+
+    basket
+        .apply_event(BoltV3BasketExecutionEvent::CancelRejected {
+            reason: "late cancel reject".to_string(),
+        })
+        .expect("late cancel rejection should no-op for complete basket");
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Complete);
+    assert!(!basket.unresolved_real_exposure());
+
+    basket
+        .apply_event(BoltV3BasketExecutionEvent::TerminalClose)
+        .expect("terminal close should release a complete basket");
+    basket
+        .apply_event(BoltV3BasketExecutionEvent::RetryBudgetExhausted {
+            reason: "late retry exhaustion".to_string(),
+        })
+        .expect("late retry exhaustion should no-op for closed basket");
+
+    assert_eq!(basket.status(), BoltV3BasketExecutionStatus::Closed);
+    assert!(!basket.reservation_held());
+    assert!(!basket.unresolved_real_exposure());
+}
+
+#[test]
 fn strategy_fill_after_stuck_does_not_clear_unresolved_exposure_or_release_reservation() {
     let mut basket = reserved_basket();
     basket

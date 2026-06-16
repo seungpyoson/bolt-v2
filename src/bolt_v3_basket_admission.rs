@@ -111,7 +111,7 @@ pub enum BoltV3BasketAdmissionReleaseReason {
 #[derive(Debug)]
 pub struct BoltV3BasketAdmissionState {
     limits: BoltV3BasketAdmissionLimits,
-    inner: Mutex<BoltV3BasketAdmissionInner>,
+    inner: Arc<Mutex<BoltV3BasketAdmissionInner>>,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 }
 
@@ -125,10 +125,30 @@ struct BoltV3BasketReservation {
     strategy_id: String,
     group_id: String,
     total_notional: Decimal,
+    release_on_drop: bool,
 }
 
 #[derive(Debug)]
-pub struct BoltV3BasketAdmissionPermit(());
+pub struct BoltV3BasketAdmissionPermit {
+    inner: Arc<Mutex<BoltV3BasketAdmissionInner>>,
+    basket_id: String,
+}
+
+impl Drop for BoltV3BasketAdmissionPermit {
+    fn drop(&mut self) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("basket admission state mutex should not be poisoned");
+        let should_release = inner
+            .open_baskets
+            .get(self.basket_id.as_str())
+            .is_some_and(|reservation| reservation.release_on_drop);
+        if should_release {
+            inner.open_baskets.remove(self.basket_id.as_str());
+        }
+    }
+}
 
 impl BoltV3BasketAdmissionState {
     pub fn new(
@@ -137,9 +157,9 @@ impl BoltV3BasketAdmissionState {
     ) -> Self {
         Self {
             limits,
-            inner: Mutex::new(BoltV3BasketAdmissionInner {
+            inner: Arc::new(Mutex::new(BoltV3BasketAdmissionInner {
                 open_baskets: BTreeMap::new(),
-            }),
+            })),
             decision_evidence,
         }
     }
@@ -171,7 +191,10 @@ impl BoltV3BasketAdmissionState {
             }
         };
         submit_permit.commit_submitted();
-        Ok(BoltV3BasketAdmissionPermit(()))
+        Ok(BoltV3BasketAdmissionPermit {
+            inner: Arc::clone(&self.inner),
+            basket_id: request.basket_id.to_string(),
+        })
     }
 
     pub fn release_basket(
@@ -186,6 +209,9 @@ impl BoltV3BasketAdmissionState {
         if reason == BoltV3BasketAdmissionReleaseReason::Stuck
             && inner.open_baskets.contains_key(basket_id)
         {
+            if let Some(reservation) = inner.open_baskets.get_mut(basket_id) {
+                reservation.release_on_drop = false;
+            }
             return Err(BoltV3BasketAdmissionError::StuckReservationHeld);
         }
         if inner.open_baskets.remove(basket_id).is_some() {
@@ -329,6 +355,7 @@ impl BoltV3BasketAdmissionState {
                 strategy_id: request.strategy_id.to_string(),
                 group_id: request.group.group_id.clone(),
                 total_notional: request.scanner_evidence.total_adjusted_cost,
+                release_on_drop: true,
             },
         );
         Ok(())

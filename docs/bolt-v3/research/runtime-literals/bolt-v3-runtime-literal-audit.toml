@@ -1856,14 +1856,6 @@ reason = "A missing per-client live-submit approval counter means no orders have
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''0'''
-context = '''.or_insert(0);'''
-classification = "submit_admission_counter_identity"
-reason = "The per-client live-submit approval counter starts empty on first admitted basket for that execution client; the cap remains artifact-owned."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''0'''
 context = '''remove_execution_client = *count == 0;'''
 classification = "submit_admission_counter_identity"
 reason = "A per-client counter at zero has no remaining consumed approvals and is removed from the sparse counter map."
@@ -6848,14 +6840,6 @@ reason = "Initial identity value for the in-memory forced-reduction live-order c
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''1'''
-context = '''inner.live_kill_switch_forced_reduction_order_count += 1;'''
-classification = "kill_switch_forced_reduction_counter_increment"
-reason = "Unit increment after a forced-reduction admission decision is durably recorded; the maximum live order count remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "number"
-literal = '''1'''
 context = '''.saturating_sub(1);'''
 classification = "kill_switch_forced_reduction_counter_decrement"
 reason = "Unit decrement when NT lifecycle integration reports a forced-reduction order terminal; the maximum live order count remains TOML-owned."
@@ -11669,8 +11653,8 @@ reason = "Stable SHA-256 lowercase-hex length check for evidence fingerprints; n
 [[allowed]]
 path = "src/bolt_v3_outcome_groups.rs"
 kind = "string"
-literal = '''b"bolt-v3-outcome-group-canonical-v1\0"'''
-context = '''bytes.extend_from_slice(b"bolt-v3-outcome-group-canonical-v1\0");'''
+literal = '''b"bolt-v3-outcome-group-canonical-v2\0"'''
+context = '''bytes.extend_from_slice(b"bolt-v3-outcome-group-canonical-v2\0");'''
 classification = "outcome_group_model_evidence_schema_label"
 reason = "Stable outcome-group model canonical evidence label or enum tag; runtime values remain supplied by TOML, NT instruments, or operator attestations."
 
@@ -12332,22 +12316,6 @@ reason = "Stable separator for canonical Polymarket outcome-group evidence hashi
 [[allowed]]
 path = "src/bolt_v3_outcome_group_polymarket.rs"
 kind = "string"
-literal = '''","'''
-context = '''CanonicalField::new(["grouping", "condition_ids"], condition_ids.join(",")),'''
-classification = "outcome_group_normalizer_evidence_separator"
-reason = "Stable separator for canonical Polymarket grouping evidence hashing; condition IDs come from Gamma metadata."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_polymarket.rs"
-kind = "string"
-literal = '''","'''
-context = '''CanonicalField::new(["grouping", "market_slugs"], market_slugs.join(",")),'''
-classification = "outcome_group_normalizer_evidence_separator"
-reason = "Stable separator for canonical Polymarket grouping evidence hashing; market slugs come from Gamma metadata."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_polymarket.rs"
-kind = "string"
 literal = '''"attestation_sha256"'''
 context = '''["role_binding", "attestation_sha256"],'''
 classification = "outcome_group_normalizer_evidence_schema_label"
@@ -12358,14 +12326,6 @@ path = "src/bolt_v3_outcome_group_polymarket.rs"
 kind = "string"
 literal = '''"binding_count"'''
 context = '''CanonicalField::new(["role_binding", "binding_count"], role_bindings.legs.len()),'''
-classification = "outcome_group_normalizer_evidence_schema_label"
-reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_polymarket.rs"
-kind = "string"
-literal = '''"condition_ids"'''
-context = '''CanonicalField::new(["grouping", "condition_ids"], condition_ids.join(",")),'''
 classification = "outcome_group_normalizer_evidence_schema_label"
 reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
 
@@ -12437,31 +12397,7 @@ reason = "Stable Polymarket normalizer canonical evidence label; runtime values 
 path = "src/bolt_v3_outcome_group_polymarket.rs"
 kind = "string"
 literal = '''"grouping"'''
-context = '''CanonicalField::new(["grouping", "condition_ids"], condition_ids.join(",")),'''
-classification = "outcome_group_normalizer_evidence_schema_label"
-reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_polymarket.rs"
-kind = "string"
-literal = '''"grouping"'''
-context = '''CanonicalField::new(["grouping", "market_slugs"], market_slugs.join(",")),'''
-classification = "outcome_group_normalizer_evidence_schema_label"
-reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_polymarket.rs"
-kind = "string"
-literal = '''"grouping"'''
 context = '''CanonicalField::new(["grouping", "neg_risk_market_id"], neg_risk_market_id),'''
-classification = "outcome_group_normalizer_evidence_schema_label"
-reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_polymarket.rs"
-kind = "string"
-literal = '''"grouping"'''
-context = '''CanonicalField::new(["grouping", "source_id"], &source.source_id),'''
 classification = "outcome_group_normalizer_evidence_schema_label"
 reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
 
@@ -12526,14 +12462,6 @@ path = "src/bolt_v3_outcome_group_polymarket.rs"
 kind = "string"
 literal = '''"market_query"'''
 context = '''["gamma_query", "market_query"],'''
-classification = "outcome_group_normalizer_evidence_schema_label"
-reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_polymarket.rs"
-kind = "string"
-literal = '''"market_slugs"'''
-context = '''CanonicalField::new(["grouping", "market_slugs"], market_slugs.join(",")),'''
 classification = "outcome_group_normalizer_evidence_schema_label"
 reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
 
@@ -12702,14 +12630,6 @@ path = "src/bolt_v3_outcome_group_polymarket.rs"
 kind = "string"
 literal = '''"settlement_asset_id"'''
 context = '''["price_scale", "settlement_asset_id"],'''
-classification = "outcome_group_normalizer_evidence_schema_label"
-reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
-
-[[allowed]]
-path = "src/bolt_v3_outcome_group_polymarket.rs"
-kind = "string"
-literal = '''"source_id"'''
-context = '''CanonicalField::new(["grouping", "source_id"], &source.source_id),'''
 classification = "outcome_group_normalizer_evidence_schema_label"
 reason = "Stable Polymarket normalizer canonical evidence label; runtime values remain supplied by TOML, Gamma metadata, or operator attestations."
 
@@ -15712,3 +15632,219 @@ literal = '''"source_id"'''
 context = '''validate_reference_identity_field(source_id, "source_id")?;'''
 classification = "reference_price_data_contract"
 reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''"grouping".to_string(),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket grouping-proof canonical evidence label; runtime values remain supplied by TOML or Gamma metadata."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"grouping"'''
+context = '''CanonicalField::new(["grouping", "source_id"], source_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket grouping-proof canonical evidence label; runtime values remain supplied by TOML or Gamma metadata."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_polymarket.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''CanonicalField::new(["grouping", "source_id"], source_id),'''
+classification = "outcome_group_normalizer_evidence_schema_label"
+reason = "Stable Polymarket grouping-proof canonical evidence label; runtime values remain supplied by TOML or Gamma metadata."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"attestation_id"'''
+context = '''prefixed_path(&prefix, "attestation_id"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"attestation_sha256"'''
+context = '''prefixed_path(&prefix, "attestation_sha256"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"cols"'''
+context = '''append_string_list_fields(fields, prefixed_path(&prefix, "cols"), &payout_matrix.cols);'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"cols"'''
+context = '''[prefix.clone(), vec!["cols".to_string(), index.to_string()]].concat(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"exactly_one_winner"'''
+context = '''"exactly_one_winner",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group settlement convention label in canonical evidence; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"label"'''
+context = '''prefixed_path(&prefix, "label"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"non_standard_terminal_payouts"'''
+context = '''"non_standard_terminal_payouts".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"operator_attested"'''
+context = '''SettlementSourceKind::OperatorAttested => "operator_attested",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group settlement-source label in canonical evidence; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"outcome_indices"'''
+context = '''vec!["outcome_indices".to_string(), index.to_string()],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"payout_matrix"'''
+context = '''vec!["payout_matrix".to_string()],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"payout_per_unit_by_state"'''
+context = '''"payout_per_unit_by_state".to_string(),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"positive_side_bindings"'''
+context = '''vec!["positive_side_bindings".to_string(), index.to_string()],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"proof_fingerprint"'''
+context = '''prefixed_path(&prefix, "proof_fingerprint"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"question"'''
+context = '''prefixed_path(&prefix, "question"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"refund_convention"'''
+context = '''prefixed_path(&prefix, "refund_convention"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"role_binding_proof"'''
+context = '''vec!["role_binding_proof".to_string()],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"settlement_rules"'''
+context = '''vec!["settlement_rules".to_string()],'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"settlement_source_kind"'''
+context = '''prefixed_path(&prefix, "settlement_source_kind"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''prefixed_path(&prefix, "source_id"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"standard_rows_plus_attested_vectors"'''
+context = '''"standard_rows_plus_attested_vectors"'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group settlement derivation label in canonical evidence; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"terminal_payout_derivation"'''
+context = '''prefixed_path(&prefix, "terminal_payout_derivation"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"terminal_state_convention"'''
+context = '''prefixed_path(&prefix, "terminal_state_convention"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"terminal_state_convention_value"'''
+context = '''prefixed_path(&prefix, "terminal_state_convention_value"),'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group model canonical evidence label; runtime values remain supplied by TOML, NT instruments, or operator attestations."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_groups.rs"
+kind = "string"
+literal = '''"venue_structured_fields"'''
+context = '''SettlementSourceKind::VenueStructuredFields => "venue_structured_fields",'''
+classification = "outcome_group_model_evidence_schema_label"
+reason = "Stable outcome-group settlement-source label in canonical evidence; runtime values remain supplied by TOML, NT instruments, or operator attestations."

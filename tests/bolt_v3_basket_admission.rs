@@ -72,7 +72,7 @@ fn basket_admission_reserves_whole_basket_records_keyed_evidence_and_releases_ex
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1111.111111), 1_000);
     let claims = entry_claims(&group, dec!(0.9));
 
-    basket_state
+    let permit = basket_state
         .admit(
             &basket_request("basket-1", &group, &scan, claims.clone()),
             &submit_state,
@@ -105,7 +105,8 @@ fn basket_admission_reserves_whole_basket_records_keyed_evidence_and_releases_ex
     basket_state
         .release_basket("basket-1", BoltV3BasketAdmissionReleaseReason::Terminal)
         .expect("terminal release should free basket exposure reservation");
-    basket_state
+    drop(permit);
+    let _second_permit = basket_state
         .admit(
             &basket_request("basket-2", &group, &scan, claims),
             &submit_state,
@@ -120,6 +121,31 @@ fn basket_admission_reserves_whole_basket_records_keyed_evidence_and_releases_ex
 }
 
 #[test]
+fn dropped_basket_admission_permit_releases_open_reservation() {
+    let writer = Arc::new(RecordingBasketDecisionWriter::default());
+    let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
+    let submit_state = submit_state(writer, 4, dec!(10));
+    let group = fixture_group();
+    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1111.111111), 1_000);
+    let claims = entry_claims(&group, dec!(0.9));
+
+    let permit = basket_state
+        .admit(
+            &basket_request("basket-1", &group, &scan, claims.clone()),
+            &submit_state,
+        )
+        .expect("basket should admit");
+    drop(permit);
+
+    basket_state
+        .admit(
+            &basket_request("basket-2", &group, &scan, claims),
+            &submit_state,
+        )
+        .expect("dropped permit should release the open basket reservation");
+}
+
+#[test]
 fn stuck_reason_cannot_release_basket_exposure_reservation() {
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
     let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
@@ -128,7 +154,7 @@ fn stuck_reason_cannot_release_basket_exposure_reservation() {
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1111.111111), 1_000);
     let claims = entry_claims(&group, dec!(0.9));
 
-    basket_state
+    let permit = basket_state
         .admit(
             &basket_request("basket-1", &group, &scan, claims.clone()),
             &submit_state,
@@ -141,6 +167,7 @@ fn stuck_reason_cannot_release_basket_exposure_reservation() {
             .is_err(),
         "stuck exposure must stay reserved"
     );
+    drop(permit);
     assert_eq!(
         basket_state
             .admit(

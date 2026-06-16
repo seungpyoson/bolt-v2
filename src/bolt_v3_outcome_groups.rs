@@ -609,6 +609,23 @@ pub fn expected_metadata_fingerprint(group: &OutcomeGroup) -> String {
             &leg.price_scale,
         );
     }
+    append_payout_matrix_fields(
+        &mut fields,
+        vec!["payout_matrix".to_string()],
+        &group.payout_matrix,
+    );
+    append_settlement_rules_fields(
+        &mut fields,
+        vec!["settlement_rules".to_string()],
+        &group.settlement_rules,
+    );
+    if let Some(role_binding_proof) = group.role_binding_proof.as_ref() {
+        append_role_binding_proof_fields(
+            &mut fields,
+            vec!["role_binding_proof".to_string()],
+            role_binding_proof,
+        );
+    }
 
     canonical_fingerprint(fields)
 }
@@ -683,10 +700,10 @@ fn canonical_bytes(fields: impl IntoIterator<Item = CanonicalField>) -> Vec<u8> 
     });
 
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"bolt-v3-outcome-group-canonical-v1\0");
-    push_u32(&mut bytes, fields.len());
+    bytes.extend_from_slice(b"bolt-v3-outcome-group-canonical-v2\0");
+    push_len(&mut bytes, fields.len());
     for field in fields {
-        push_u32(&mut bytes, field.path.len());
+        push_len(&mut bytes, field.path.len());
         for segment in field.path {
             push_bytes(&mut bytes, segment.as_bytes());
         }
@@ -696,12 +713,12 @@ fn canonical_bytes(fields: impl IntoIterator<Item = CanonicalField>) -> Vec<u8> 
 }
 
 fn push_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
-    push_u32(bytes, value.len());
+    push_len(bytes, value.len());
     bytes.extend_from_slice(value);
 }
 
-fn push_u32(bytes: &mut Vec<u8>, value: usize) {
-    let value = u32::try_from(value).expect("canonical field length should fit u32");
+fn push_len(bytes: &mut Vec<u8>, value: usize) {
+    let value = value as u64;
     bytes.extend_from_slice(&value.to_be_bytes());
 }
 
@@ -1262,6 +1279,21 @@ fn terminal_state_kind_label(kind: TerminalStateKind) -> &'static str {
     }
 }
 
+fn settlement_source_kind_label(kind: &SettlementSourceKind) -> &'static str {
+    match kind {
+        SettlementSourceKind::VenueStructuredFields => "venue_structured_fields",
+        SettlementSourceKind::OperatorAttested => "operator_attested",
+    }
+}
+
+fn terminal_payout_derivation_label(derivation: &TerminalPayoutDerivation) -> &'static str {
+    match derivation {
+        TerminalPayoutDerivation::StandardRowsPlusAttestedVectors => {
+            "standard_rows_plus_attested_vectors"
+        }
+    }
+}
+
 fn append_grouping_identity_fields(
     fields: &mut Vec<CanonicalField>,
     grouping_proof: &GroupingProof,
@@ -1434,6 +1466,214 @@ fn append_price_scale_metadata_fields(
     }
 }
 
+fn append_payout_matrix_fields(
+    fields: &mut Vec<CanonicalField>,
+    prefix: Vec<String>,
+    payout_matrix: &PayoutMatrix,
+) {
+    append_string_list_fields(fields, prefixed_path(&prefix, "cols"), &payout_matrix.cols);
+    for (terminal_state_id, payouts) in &payout_matrix.payout_per_unit_by_state {
+        for (index, payout) in payouts.iter().enumerate() {
+            fields.push(CanonicalField::owned(
+                [
+                    prefix.clone(),
+                    vec![
+                        "payout_per_unit_by_state".to_string(),
+                        terminal_state_id.clone(),
+                        index.to_string(),
+                    ],
+                ]
+                .concat(),
+                normalize_decimal(*payout),
+            ));
+        }
+    }
+}
+
+fn append_settlement_rules_fields(
+    fields: &mut Vec<CanonicalField>,
+    prefix: Vec<String>,
+    rules: &SettlementRules,
+) {
+    match &rules.terminal_state_convention {
+        TerminalStateConvention::ExactlyOneWinner => {
+            fields.push(CanonicalField::owned(
+                prefixed_path(&prefix, "terminal_state_convention"),
+                "exactly_one_winner",
+            ));
+        }
+        TerminalStateConvention::Unsupported(value) => {
+            fields.push(CanonicalField::owned(
+                prefixed_path(&prefix, "terminal_state_convention"),
+                "unsupported",
+            ));
+            fields.push(CanonicalField::owned(
+                prefixed_path(&prefix, "terminal_state_convention_value"),
+                value,
+            ));
+        }
+    }
+    fields.push(CanonicalField::owned(
+        prefixed_path(&prefix, "settlement_source_kind"),
+        settlement_source_kind_label(&rules.settlement_source_kind),
+    ));
+    fields.push(CanonicalField::owned(
+        prefixed_path(&prefix, "terminal_payout_derivation"),
+        terminal_payout_derivation_label(&rules.terminal_payout_derivation),
+    ));
+    for (index, vector) in rules.non_standard_terminal_payouts.iter().enumerate() {
+        append_attested_payout_vector_fields(
+            fields,
+            [
+                prefix.clone(),
+                vec![
+                    "non_standard_terminal_payouts".to_string(),
+                    index.to_string(),
+                ],
+            ]
+            .concat(),
+            vector,
+        );
+    }
+}
+
+fn append_role_binding_proof_fields(
+    fields: &mut Vec<CanonicalField>,
+    prefix: Vec<String>,
+    proof: &RoleBindingProof,
+) {
+    match proof {
+        RoleBindingProof::OperatorAttested {
+            attestation_id,
+            positive_side_bindings,
+            attestation_sha256,
+            proof_fingerprint,
+        } => {
+            fields.push(CanonicalField::owned(
+                prefixed_path(&prefix, "kind"),
+                "operator_attested",
+            ));
+            fields.push(CanonicalField::owned(
+                prefixed_path(&prefix, "attestation_id"),
+                attestation_id,
+            ));
+            fields.push(CanonicalField::owned(
+                prefixed_path(&prefix, "attestation_sha256"),
+                attestation_sha256,
+            ));
+            fields.push(CanonicalField::owned(
+                prefixed_path(&prefix, "proof_fingerprint"),
+                proof_fingerprint,
+            ));
+            for (index, binding) in positive_side_bindings.iter().enumerate() {
+                append_positive_side_binding_fields(
+                    fields,
+                    [
+                        prefix.clone(),
+                        vec!["positive_side_bindings".to_string(), index.to_string()],
+                    ]
+                    .concat(),
+                    binding,
+                );
+            }
+        }
+        RoleBindingProof::VenueStructuredFields {
+            source_id,
+            question,
+            outcome_indices,
+            proof_fingerprint,
+        } => {
+            fields.push(CanonicalField::owned(
+                prefixed_path(&prefix, "kind"),
+                "venue_structured_fields",
+            ));
+            fields.push(CanonicalField::owned(
+                prefixed_path(&prefix, "source_id"),
+                source_id,
+            ));
+            fields.push(CanonicalField::owned(
+                prefixed_path(&prefix, "question"),
+                question.to_string(),
+            ));
+            for (index, outcome_index) in outcome_indices.iter().enumerate() {
+                fields.push(CanonicalField::owned(
+                    [
+                        prefix.clone(),
+                        vec!["outcome_indices".to_string(), index.to_string()],
+                    ]
+                    .concat(),
+                    outcome_index.to_string(),
+                ));
+            }
+            fields.push(CanonicalField::owned(
+                prefixed_path(&prefix, "proof_fingerprint"),
+                proof_fingerprint,
+            ));
+        }
+    }
+}
+
+fn append_positive_side_binding_fields(
+    fields: &mut Vec<CanonicalField>,
+    prefix: Vec<String>,
+    binding: &PositiveSideBinding,
+) {
+    fields.push(CanonicalField::owned(
+        prefixed_path(&prefix, "terminal_state_label"),
+        &binding.terminal_state_label,
+    ));
+    append_attested_leg_ref_fields(
+        fields,
+        prefixed_path(&prefix, "pays_on_leg"),
+        &binding.pays_on_leg,
+    );
+    append_attested_leg_ref_fields(
+        fields,
+        prefixed_path(&prefix, "pays_unless_leg"),
+        &binding.pays_unless_leg,
+    );
+}
+
+fn append_attested_payout_vector_fields(
+    fields: &mut Vec<CanonicalField>,
+    prefix: Vec<String>,
+    vector: &AttestedPayoutVector,
+) {
+    fields.push(CanonicalField::owned(
+        prefixed_path(&prefix, "terminal_state_id"),
+        &vector.terminal_state_id,
+    ));
+    fields.push(CanonicalField::owned(
+        prefixed_path(&prefix, "label"),
+        &vector.label,
+    ));
+    fields.push(CanonicalField::owned(
+        prefixed_path(&prefix, "refund_convention"),
+        &vector.refund_convention,
+    ));
+    fields.push(CanonicalField::owned(
+        prefixed_path(&prefix, "attestation_sha256"),
+        &vector.attestation_sha256,
+    ));
+    for (index, col) in vector.cols.iter().enumerate() {
+        append_attested_leg_ref_fields(
+            fields,
+            [prefix.clone(), vec!["cols".to_string(), index.to_string()]].concat(),
+            col,
+        );
+    }
+    for (index, payout) in vector.payouts.iter().enumerate() {
+        fields.push(CanonicalField::owned(
+            [
+                prefix.clone(),
+                vec!["payouts".to_string(), index.to_string()],
+            ]
+            .concat(),
+            normalize_decimal(*payout),
+        ));
+    }
+}
+
 fn append_attested_leg_ref_fields(
     fields: &mut Vec<CanonicalField>,
     prefix: Vec<String>,
@@ -1510,5 +1750,15 @@ fn settlement_identity_fingerprint(group: &OutcomeGroup) -> String {
             terminal_state_kind_label(terminal_state.kind),
         ));
     }
+    append_payout_matrix_fields(
+        &mut fields,
+        vec!["payout_matrix".to_string()],
+        &group.payout_matrix,
+    );
+    append_settlement_rules_fields(
+        &mut fields,
+        vec!["settlement_rules".to_string()],
+        &group.settlement_rules,
+    );
     canonical_fingerprint(fields)
 }

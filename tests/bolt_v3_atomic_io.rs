@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use bolt_v2::{
     bolt_v3_atomic_io::{
@@ -8,11 +8,26 @@ use bolt_v2::{
     bolt_v3_kill_switch_store::{KillSwitchRecoveryState, KillSwitchStore},
 };
 
+fn atomic_temp_leftovers(path: &Path) -> Vec<String> {
+    let Some(parent) = path.parent() else {
+        return Vec::new();
+    };
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Vec::new();
+    };
+    let prefix = format!("{file_name}.tmp.");
+    fs::read_dir(parent)
+        .expect("temp parent should read")
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with(prefix.as_str()))
+        .collect()
+}
+
 #[test]
 fn atomic_write_creates_parent_writes_exact_bytes_and_renames_temp() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let path = temp.path().join("nested").join("state.json");
-    let temp_path = private_atomic_temp_path(&path);
 
     write_private_atomic_file(&path, b"{\"ok\":true}\n").expect("atomic write should succeed");
 
@@ -20,7 +35,10 @@ fn atomic_write_creates_parent_writes_exact_bytes_and_renames_temp() {
         fs::read(&path).expect("final file should read"),
         b"{\"ok\":true}\n"
     );
-    assert!(!temp_path.exists(), "temp file should be renamed away");
+    assert!(
+        atomic_temp_leftovers(&path).is_empty(),
+        "temp file should be renamed away"
+    );
 }
 
 #[test]
@@ -57,7 +75,6 @@ fn atomic_write_uses_private_file_mode() {
 fn atomic_write_cleans_temp_file_when_rename_fails() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let path = temp.path().join("state.json");
-    let temp_path = private_atomic_temp_path(&path);
     fs::create_dir(&path).expect("directory target should create");
 
     let result = write_private_atomic_file(&path, b"state\n");
@@ -67,7 +84,10 @@ fn atomic_write_cleans_temp_file_when_rename_fails() {
         path.is_dir(),
         "failed rename must not replace target directory"
     );
-    assert!(!temp_path.exists(), "failed rename should remove temp file");
+    assert!(
+        atomic_temp_leftovers(&path).is_empty(),
+        "failed rename should remove temp file"
+    );
 }
 
 #[test]
@@ -76,19 +96,20 @@ fn atomic_write_fails_before_temp_when_parent_is_file() {
     let parent = temp.path().join("not-a-dir");
     fs::write(&parent, b"file").expect("parent fixture should write");
     let path = parent.join("state.json");
-    let temp_path = private_atomic_temp_path(&path);
 
     let result = write_private_atomic_file(&path, b"state\n");
 
     assert!(result.is_err());
-    assert!(!temp_path.exists(), "no temp file should be left behind");
+    assert!(
+        !private_atomic_temp_path(&path).exists(),
+        "no static temp file should be left behind"
+    );
 }
 
 #[test]
 fn kill_switch_store_round_trips_through_shared_atomic_writer() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let path = temp.path().join("kill-switch-state.json");
-    let temp_path = private_atomic_temp_path(&path);
     let store = KillSwitchStore::new(path.clone());
     let state = KillSwitchState::Flat {
         halt_id: "halt-atomic".to_string(),
@@ -101,7 +122,7 @@ fn kill_switch_store_round_trips_through_shared_atomic_writer() {
         KillSwitchRecoveryState::Recovered(state)
     );
     assert!(
-        !temp_path.exists(),
+        atomic_temp_leftovers(&path).is_empty(),
         "kill-switch write should not leave temp file"
     );
     assert!(

@@ -338,6 +338,21 @@ fn duplicate_source_native_grouping_identity_with_conflicting_settlement_rejects
 }
 
 #[test]
+fn duplicate_source_native_grouping_identity_with_conflicting_payouts_rejects() {
+    let first = valid_group();
+    let mut second = valid_group();
+    second
+        .payout_matrix
+        .payout_per_unit_by_state
+        .insert("home".to_string(), vec![dec(0), dec(1), dec(1), dec(0)]);
+    second.metadata_fingerprint = expected_metadata_fingerprint(&second);
+
+    let result = validate_grouping_identity_set([first, second].iter());
+
+    assert!(result.is_err_and(|err| err.is_grouping_identity_conflict()));
+}
+
+#[test]
 fn duplicate_leg_ids_reject_before_map_construction() {
     let duplicate = leg(
         "same-leg",
@@ -741,6 +756,37 @@ fn metadata_fingerprint_excludes_operator_policy_but_covers_grouping_identity() 
     assert_ne!(
         expected_metadata_fingerprint(&base),
         expected_metadata_fingerprint(&policy_only)
+    );
+}
+
+#[test]
+fn metadata_fingerprint_covers_settlement_rules_and_role_binding_proof() {
+    let base = valid_group();
+    let mut payout_changed = base.clone();
+    payout_changed
+        .settlement_rules
+        .non_standard_terminal_payouts[0]
+        .refund_convention = "full-refund".to_string();
+    payout_changed.metadata_fingerprint = expected_metadata_fingerprint(&payout_changed);
+
+    assert_ne!(
+        expected_metadata_fingerprint(&base),
+        expected_metadata_fingerprint(&payout_changed)
+    );
+
+    let mut role_binding_changed = base.clone();
+    if let Some(RoleBindingProof::OperatorAttested {
+        proof_fingerprint, ..
+    }) = role_binding_changed.role_binding_proof.as_mut()
+    {
+        *proof_fingerprint = hash('c');
+    }
+    role_binding_changed.metadata_fingerprint =
+        expected_metadata_fingerprint(&role_binding_changed);
+
+    assert_ne!(
+        expected_metadata_fingerprint(&base),
+        expected_metadata_fingerprint(&role_binding_changed)
     );
 }
 

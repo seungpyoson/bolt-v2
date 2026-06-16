@@ -626,13 +626,46 @@ fn grouping_proof(
             ),
         },
         market_slugs: market_slugs.clone(),
-        proof_fingerprint: canonical_fingerprint(vec![
-            CanonicalField::new(["grouping", "source_id"], &source.source_id),
-            CanonicalField::new(["grouping", "neg_risk_market_id"], neg_risk_market_id),
-            CanonicalField::new(["grouping", "market_slugs"], market_slugs.join(",")),
-            CanonicalField::new(["grouping", "condition_ids"], condition_ids.join(",")),
-        ]),
+        proof_fingerprint: polymarket_grouping_proof_fingerprint(
+            &source.source_id,
+            neg_risk_market_id,
+            &market_slugs,
+            &condition_ids,
+        ),
     })
+}
+
+fn polymarket_grouping_proof_fingerprint(
+    source_id: &str,
+    neg_risk_market_id: &str,
+    market_slugs: &[String],
+    condition_ids: &[String],
+) -> String {
+    let mut fields = vec![
+        CanonicalField::new(["grouping", "source_id"], source_id),
+        CanonicalField::new(["grouping", "neg_risk_market_id"], neg_risk_market_id),
+    ];
+    for (index, market_slug) in market_slugs.iter().enumerate() {
+        fields.push(CanonicalField::owned(
+            vec![
+                "grouping".to_string(),
+                "market_slugs".to_string(),
+                index.to_string(),
+            ],
+            market_slug,
+        ));
+    }
+    for (index, condition_id) in condition_ids.iter().enumerate() {
+        fields.push(CanonicalField::owned(
+            vec![
+                "grouping".to_string(),
+                "condition_ids".to_string(),
+                index.to_string(),
+            ],
+            condition_id,
+        ));
+    }
+    canonical_fingerprint(fields)
 }
 
 fn polymarket_cache_key_fingerprint(

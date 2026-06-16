@@ -18,6 +18,17 @@ PMXT_COVERAGE_STATUS = REFERENCE_ROOT / "source-proof-pmxt-coverage-ledger-statu
 PMXT_SOURCE_PROOF_FIXTURE = (
     REFERENCE_ROOT / "source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
 )
+PMXT_SOURCE_UNIVERSE_MANIFEST = (
+    REFERENCE_ROOT
+    / "backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json"
+)
+PMXT_CATEGORY_MANIFEST = (
+    REFERENCE_ROOT
+    / "backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/category-manifests/pmxt-polymarket-v2-object-manifest-orderbook.json"
+)
+PMXT_ARCHIVE_INDEX_MANIFEST = (
+    REFERENCE_ROOT / "source-archive-index-manifests/pmxt-polymarket-v2-current/manifest/source-archive-index-manifest.json"
+)
 JUSTFILE = Path("justfile")
 
 JUSTFILE_COMMANDS = (
@@ -30,6 +41,7 @@ COVERAGE_STATUS_KEYS = (
     "claim_limits",
     "committed_input_hashes",
     "coverage_summary",
+    "expanded_manifest_snapshot",
     "guard_verification",
     "ledger_run",
     "next_required_evidence",
@@ -56,8 +68,30 @@ COVERAGE_SOURCE_PROOF_KEYS = (
     "source_proof_version",
     "table_family",
 )
-COVERAGE_HASHES_KEYS = ("pending_source_fixture",)
+COVERAGE_HASHES_KEYS = (
+    "archive_index_manifest",
+    "category_manifest",
+    "pending_source_fixture",
+    "source_universe_manifest",
+)
 COVERAGE_HASH_ENTRY_KEYS = ("path", "sha256")
+COVERAGE_EXPANDED_MANIFEST_KEYS = (
+    "blocking_issue",
+    "canonical_ready",
+    "category_manifest_id",
+    "first_archive_hour_utc",
+    "indexed_compressed_bytes",
+    "last_archive_hour_utc",
+    "object_count",
+    "payload_downloaded",
+    "payload_records",
+    "source_archive_index_manifest_id",
+    "source_archive_index_snapshot_id",
+    "source_binding",
+    "source_universe_manifest_id",
+    "table_family",
+    "verified_head_count",
+)
 COVERAGE_LEDGER_RUN_KEYS = (
     "command",
     "ledger_file_sha256",
@@ -90,7 +124,7 @@ COVERAGE_GUARD_KEYS = ("script", "self_test", "source_fence_static")
 COVERAGE_CLAIM_LIMITS = (
     "This artifact does not accept PMXT as a durable source.",
     "This artifact does not authorize canonical-ready PMXT backfill.",
-    "This artifact does not prove one-year or expanded coverage.",
+    "This artifact source-fences indexed PMXT manifest coverage/cost shape, but does not prove accepted one-year or canonical expanded coverage.",
     "This artifact does not prove dynamic tick-size replay or an accepted bounded-exclusion policy.",
 )
 COVERAGE_NEXT_REQUIRED_EVIDENCE = (
@@ -195,6 +229,26 @@ def nested_mapping(data: dict[str, Any], keys: tuple[str, ...], rel_path: Path, 
     return current
 
 
+def require_hash_entry(
+    rel_path: Path,
+    hashes: dict[str, Any],
+    key: str,
+    target: Path,
+    root: Path,
+    findings: list[str],
+) -> None:
+    entry = nested_mapping(hashes, (key,), rel_path, findings)
+    require_keys(rel_path, f"committed_input_hashes.{key}", entry, COVERAGE_HASH_ENTRY_KEYS, findings)
+    require_equal(rel_path, f"committed_input_hashes.{key}.path", entry.get("path"), repo_uri(target), findings)
+    require_equal(
+        rel_path,
+        f"committed_input_hashes.{key}.sha256",
+        entry.get("sha256"),
+        file_sha256(root, target, findings),
+        findings,
+    )
+
+
 def just_recipe_commands(text: str, recipe: str) -> set[str]:
     commands: set[str] = set()
     in_recipe = False
@@ -240,14 +294,19 @@ def check_coverage_status(status: dict[str, Any], root: Path, findings: list[str
 
     hashes = nested_mapping(status, ("committed_input_hashes",), PMXT_COVERAGE_STATUS, findings)
     require_keys(PMXT_COVERAGE_STATUS, "committed_input_hashes", hashes, COVERAGE_HASHES_KEYS, findings)
-    pending_fixture = nested_mapping(status, ("committed_input_hashes", "pending_source_fixture"), PMXT_COVERAGE_STATUS, findings)
-    require_keys(PMXT_COVERAGE_STATUS, "committed_input_hashes.pending_source_fixture", pending_fixture, COVERAGE_HASH_ENTRY_KEYS, findings)
-    require_equal(PMXT_COVERAGE_STATUS, "committed_input_hashes.pending_source_fixture.path", pending_fixture.get("path"), repo_uri(PMXT_SOURCE_PROOF_FIXTURE), findings)
-    require_equal(
-        PMXT_COVERAGE_STATUS,
-        "committed_input_hashes.pending_source_fixture.sha256",
-        pending_fixture.get("sha256"),
-        file_sha256(root, PMXT_SOURCE_PROOF_FIXTURE, findings),
+    for key, target in (
+        ("pending_source_fixture", PMXT_SOURCE_PROOF_FIXTURE),
+        ("source_universe_manifest", PMXT_SOURCE_UNIVERSE_MANIFEST),
+        ("category_manifest", PMXT_CATEGORY_MANIFEST),
+        ("archive_index_manifest", PMXT_ARCHIVE_INDEX_MANIFEST),
+    ):
+        require_hash_entry(PMXT_COVERAGE_STATUS, hashes, key, target, root, findings)
+
+    check_expanded_manifest_snapshot(
+        nested_mapping(status, ("expanded_manifest_snapshot",), PMXT_COVERAGE_STATUS, findings),
+        read_json(root, PMXT_SOURCE_UNIVERSE_MANIFEST, findings),
+        read_json(root, PMXT_CATEGORY_MANIFEST, findings),
+        read_json(root, PMXT_ARCHIVE_INDEX_MANIFEST, findings),
         findings,
     )
 
@@ -291,6 +350,56 @@ def check_coverage_status(status: dict[str, Any], root: Path, findings: list[str
     require_equal(PMXT_COVERAGE_STATUS, "guard_verification.script", guard.get("script"), "repo://scripts/verify_bte_022_pmxt_coverage_ledger.py", findings)
     require_equal(PMXT_COVERAGE_STATUS, "guard_verification.self_test", guard.get("self_test"), "repo://scripts/test_verify_bte_022_pmxt_coverage_ledger.py", findings)
     require_equal(PMXT_COVERAGE_STATUS, "guard_verification.source_fence_static", guard.get("source_fence_static"), True, findings)
+
+
+def check_expanded_manifest_snapshot(
+    snapshot: dict[str, Any],
+    source_universe: dict[str, Any],
+    category_manifest: dict[str, Any],
+    archive_index: dict[str, Any],
+    findings: list[str],
+) -> None:
+    require_keys(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot", snapshot, COVERAGE_EXPANDED_MANIFEST_KEYS, findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.source_binding", snapshot.get("source_binding"), "polymarket-parquet-archive-index", findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.table_family", snapshot.get("table_family"), "order_book_snapshot_deltas", findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.source_universe_manifest_id", snapshot.get("source_universe_manifest_id"), source_universe.get("manifest_id"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.category_manifest_id", snapshot.get("category_manifest_id"), category_manifest.get("manifest_id"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.source_archive_index_manifest_id", snapshot.get("source_archive_index_manifest_id"), archive_index.get("manifest_id"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.source_archive_index_snapshot_id", snapshot.get("source_archive_index_snapshot_id"), archive_index.get("snapshot_id"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.object_count", snapshot.get("object_count"), category_manifest.get("object_count"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.object_count.index", snapshot.get("object_count"), archive_index.get("object_count"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.verified_head_count", snapshot.get("verified_head_count"), archive_index.get("verified_head_count"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.verified_head_count", snapshot.get("verified_head_count"), snapshot.get("object_count"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.indexed_compressed_bytes", snapshot.get("indexed_compressed_bytes"), category_manifest.get("accepted_bytes"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.indexed_compressed_bytes.index", snapshot.get("indexed_compressed_bytes"), archive_index.get("total_content_length_bytes"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.first_archive_hour_utc", snapshot.get("first_archive_hour_utc"), category_manifest.get("first_archive_date"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.first_archive_hour_utc.index", snapshot.get("first_archive_hour_utc"), archive_index.get("first_archive_hour_utc"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.last_archive_hour_utc", snapshot.get("last_archive_hour_utc"), category_manifest.get("last_archive_date"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.last_archive_hour_utc.index", snapshot.get("last_archive_hour_utc"), archive_index.get("last_archive_hour_utc"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.payload_records", snapshot.get("payload_records"), len(category_manifest.get("payload_records", [])), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.payload_records", snapshot.get("payload_records"), snapshot.get("object_count"), findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.payload_downloaded", snapshot.get("payload_downloaded"), False, findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.canonical_ready", snapshot.get("canonical_ready"), False, findings)
+    require_equal(PMXT_COVERAGE_STATUS, "expanded_manifest_snapshot.blocking_issue", snapshot.get("blocking_issue"), "source_proof_not_accepted", findings)
+
+    require_equal(PMXT_CATEGORY_MANIFEST, "source_binding", category_manifest.get("source_binding"), snapshot.get("source_binding"), findings)
+    require_equal(PMXT_CATEGORY_MANIFEST, "table_family", category_manifest.get("table_family"), snapshot.get("table_family"), findings)
+    require_equal(PMXT_ARCHIVE_INDEX_MANIFEST, "status", archive_index.get("status"), "ready", findings)
+    require_equal(PMXT_SOURCE_UNIVERSE_MANIFEST, "source_archive_index_manifest_id", source_universe.get("source_archive_index_manifest_id"), archive_index.get("manifest_id"), findings)
+    require_equal(PMXT_SOURCE_UNIVERSE_MANIFEST, "source_archive_index_snapshot_id", source_universe.get("source_archive_index_snapshot_id"), archive_index.get("snapshot_id"), findings)
+    require_equal(PMXT_SOURCE_UNIVERSE_MANIFEST, "object_count", source_universe.get("object_count"), snapshot.get("object_count"), findings)
+    require_equal(PMXT_SOURCE_UNIVERSE_MANIFEST, "accepted_bytes", source_universe.get("accepted_bytes"), snapshot.get("indexed_compressed_bytes"), findings)
+
+    category_summaries = source_universe.get("category_summaries")
+    if not isinstance(category_summaries, list) or len(category_summaries) != 1 or not isinstance(category_summaries[0], dict):
+        findings.append(f"{PMXT_SOURCE_UNIVERSE_MANIFEST}: category_summaries must contain one object")
+        return
+    summary = category_summaries[0]
+    require_equal(PMXT_SOURCE_UNIVERSE_MANIFEST, "category_summaries[0].source_binding", summary.get("source_binding"), snapshot.get("source_binding"), findings)
+    require_equal(PMXT_SOURCE_UNIVERSE_MANIFEST, "category_summaries[0].object_count", summary.get("object_count"), snapshot.get("object_count"), findings)
+    require_equal(PMXT_SOURCE_UNIVERSE_MANIFEST, "category_summaries[0].compressed_bytes", summary.get("compressed_bytes"), snapshot.get("indexed_compressed_bytes"), findings)
+    require_equal(PMXT_SOURCE_UNIVERSE_MANIFEST, "category_summaries[0].first_archive_date", summary.get("first_archive_date"), snapshot.get("first_archive_hour_utc"), findings)
+    require_equal(PMXT_SOURCE_UNIVERSE_MANIFEST, "category_summaries[0].last_archive_date", summary.get("last_archive_date"), snapshot.get("last_archive_hour_utc"), findings)
 
 
 def check_pending_source_fixture(source_fixture: dict[str, Any], findings: list[str]) -> None:

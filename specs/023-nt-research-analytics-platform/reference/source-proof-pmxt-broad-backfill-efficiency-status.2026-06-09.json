@@ -9,7 +9,7 @@
   "committed_input_hashes": {
     "coverage_ledger_status": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-coverage-ledger-status.2026-06-09.json",
-      "sha256": "21bee010d0cbb10bd8ea433468585776e107a34367b7060149d8eea9be8a8e3f"
+      "sha256": "dc126e89446164e9603db390d7b0e3e8c5d5803605d31a659988b8e0d2a2a34b"
     },
     "durable_source_selection_status": {
       "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json",
@@ -135,7 +135,7 @@
     "no_download_coverage_gate": [
       {
         "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-coverage-ledger-status.2026-06-09.json",
-        "evidence": "The committed coverage ledger status proves source-proof metadata and coverage_axis can be derived without payload download, but both PMXT records remain rejected because source_proof_status is pending."
+        "evidence": "The committed coverage ledger status proves source-proof metadata and coverage_axis can be derived without payload download, and now source-fences the indexed PMXT manifest/index snapshot: 1,351 order_book_snapshot_deltas objects, 1,351 verified HEADs, 557,815,904,970 compressed bytes, and the 2026-04-13T19:00:00Z to 2026-06-10T15:00:00Z archive window. Both PMXT ledger records remain rejected because source_proof_status is pending."
       }
     ],
     "accepted_tranche_budget_gate": [

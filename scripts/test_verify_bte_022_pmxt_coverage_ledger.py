@@ -60,8 +60,59 @@ def source_fixture(*, status: str = "pending", usage_scope: str = "one_off_backf
     }
 
 
+def source_universe_manifest() -> dict:
+    return {
+        "manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current",
+        "source_archive_index_manifest_id": "source-archive-index-manifest-pmxt-polymarket-v2-current",
+        "source_archive_index_snapshot_id": "source-archive-index-snapshot-pmxt-polymarket-v2-current-2026-06-10T15",
+        "universe_id": "backfill-source-universe-pmxt-polymarket-v2-current",
+        "object_count": 1351,
+        "accepted_bytes": 557815904970,
+        "category_summaries": [
+            {
+                "category": "orderbook",
+                "source_binding": "polymarket-parquet-archive-index",
+                "instrument_count": 1,
+                "object_count": 1351,
+                "compressed_bytes": 557815904970,
+                "first_archive_date": "2026-04-13T19:00:00Z",
+                "last_archive_date": "2026-06-10T15:00:00Z",
+            }
+        ],
+    }
+
+
+def category_manifest() -> dict:
+    return {
+        "manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current-category-orderbook",
+        "source_binding": "polymarket-parquet-archive-index",
+        "table_family": "order_book_snapshot_deltas",
+        "object_count": 1351,
+        "accepted_bytes": 557815904970,
+        "first_archive_date": "2026-04-13T19:00:00Z",
+        "last_archive_date": "2026-06-10T15:00:00Z",
+        "payload_records": [{} for _ in range(1351)],
+    }
+
+
+def archive_index_manifest() -> dict:
+    return {
+        "manifest_id": "source-archive-index-manifest-pmxt-polymarket-v2-current",
+        "snapshot_id": "source-archive-index-snapshot-pmxt-polymarket-v2-current-2026-06-10T15",
+        "status": "ready",
+        "object_count": 1351,
+        "verified_head_count": 1351,
+        "total_content_length_bytes": 557815904970,
+        "first_archive_hour_utc": "2026-04-13T19:00:00Z",
+        "last_archive_hour_utc": "2026-06-10T15:00:00Z",
+    }
+
+
 def coverage_status(module, root: Path, *, overrides: dict | None = None, bad_hash: bool = False) -> dict:
     fixture_hash = file_sha256(root, module.PMXT_SOURCE_PROOF_FIXTURE)
+    source_universe_hash = file_sha256(root, module.PMXT_SOURCE_UNIVERSE_MANIFEST)
+    category_manifest_hash = file_sha256(root, module.PMXT_CATEGORY_MANIFEST)
+    archive_index_hash = file_sha256(root, module.PMXT_ARCHIVE_INDEX_MANIFEST)
     status = {
         "schema_version": "source-proof-pmxt-coverage-ledger-status.v1",
         "task_id": "BACKTESTING_ENGINE-022",
@@ -86,7 +137,36 @@ def coverage_status(module, root: Path, *, overrides: dict | None = None, bad_ha
             "pending_source_fixture": {
                 "path": module.repo_uri(module.PMXT_SOURCE_PROOF_FIXTURE),
                 "sha256": "bad" if bad_hash else fixture_hash,
-            }
+            },
+            "source_universe_manifest": {
+                "path": module.repo_uri(module.PMXT_SOURCE_UNIVERSE_MANIFEST),
+                "sha256": source_universe_hash,
+            },
+            "category_manifest": {
+                "path": module.repo_uri(module.PMXT_CATEGORY_MANIFEST),
+                "sha256": category_manifest_hash,
+            },
+            "archive_index_manifest": {
+                "path": module.repo_uri(module.PMXT_ARCHIVE_INDEX_MANIFEST),
+                "sha256": archive_index_hash,
+            },
+        },
+        "expanded_manifest_snapshot": {
+            "source_binding": "polymarket-parquet-archive-index",
+            "table_family": "order_book_snapshot_deltas",
+            "source_universe_manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current",
+            "category_manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current-category-orderbook",
+            "source_archive_index_manifest_id": "source-archive-index-manifest-pmxt-polymarket-v2-current",
+            "source_archive_index_snapshot_id": "source-archive-index-snapshot-pmxt-polymarket-v2-current-2026-06-10T15",
+            "object_count": 1351,
+            "verified_head_count": 1351,
+            "indexed_compressed_bytes": 557815904970,
+            "first_archive_hour_utc": "2026-04-13T19:00:00Z",
+            "last_archive_hour_utc": "2026-06-10T15:00:00Z",
+            "payload_records": 1351,
+            "payload_downloaded": False,
+            "canonical_ready": False,
+            "blocking_issue": "source_proof_not_accepted",
         },
         "ledger_run": {
             "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin backfill_coverage_ledger -- --spec /private/tmp/bte-pmxt-coverage-ledger-source-proof-20260609/pmxt-coverage-ledger.toml",
@@ -177,6 +257,21 @@ def populate(root: Path, module, **overrides) -> None:
     write_file(root, str(module.PMXT_SOURCE_PROOF_FIXTURE), json_text(overrides.get("fixture", source_fixture())))
     write_file(
         root,
+        str(module.PMXT_SOURCE_UNIVERSE_MANIFEST),
+        json_text(overrides.get("source_universe_manifest", source_universe_manifest())),
+    )
+    write_file(
+        root,
+        str(module.PMXT_CATEGORY_MANIFEST),
+        json_text(overrides.get("category_manifest", category_manifest())),
+    )
+    write_file(
+        root,
+        str(module.PMXT_ARCHIVE_INDEX_MANIFEST),
+        json_text(overrides.get("archive_index_manifest", archive_index_manifest())),
+    )
+    write_file(
+        root,
         str(module.PMXT_COVERAGE_STATUS),
         json_text(
             coverage_status(
@@ -244,6 +339,45 @@ def assert_source_fixture_hash_drift_is_a_finding() -> None:
             raise AssertionError(f"expected source fixture hash finding, got {findings}")
 
 
+def assert_manifest_snapshot_drift_is_a_finding() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        drifted_snapshot = {
+            "source_binding": "polymarket-parquet-archive-index",
+            "table_family": "order_book_snapshot_deltas",
+            "source_universe_manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current",
+            "category_manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current-category-orderbook",
+            "source_archive_index_manifest_id": "source-archive-index-manifest-pmxt-polymarket-v2-current",
+            "source_archive_index_snapshot_id": "source-archive-index-snapshot-pmxt-polymarket-v2-current-2026-06-10T15",
+            "object_count": 1350,
+            "verified_head_count": 1350,
+            "indexed_compressed_bytes": 557815904970,
+            "first_archive_hour_utc": "2026-04-13T19:00:00Z",
+            "last_archive_hour_utc": "2026-06-10T15:00:00Z",
+            "payload_records": 1350,
+            "payload_downloaded": False,
+            "canonical_ready": False,
+            "blocking_issue": "source_proof_not_accepted",
+        }
+        populate(root, module, coverage_overrides={"expanded_manifest_snapshot": drifted_snapshot})
+        findings = module.scan_root(root)
+        if not any("expanded_manifest_snapshot.object_count" in finding for finding in findings):
+            raise AssertionError(f"expected manifest snapshot finding, got {findings}")
+
+
+def assert_source_universe_archive_mismatch_is_a_finding() -> None:
+    module = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        manifest = source_universe_manifest()
+        manifest["source_archive_index_snapshot_id"] = "source-archive-index-snapshot-drifted"
+        populate(root, module, source_universe_manifest=manifest)
+        findings = module.scan_root(root)
+        if not any("source_archive_index_snapshot_id" in finding for finding in findings):
+            raise AssertionError(f"expected source universe archive mismatch finding, got {findings}")
+
+
 def assert_missing_bte_static_gate_text_is_a_finding() -> None:
     module = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -298,6 +432,8 @@ def main() -> int:
         assert_accepted_coverage_status_is_a_finding,
         assert_accepted_source_fixture_is_a_finding,
         assert_source_fixture_hash_drift_is_a_finding,
+        assert_manifest_snapshot_drift_is_a_finding,
+        assert_source_universe_archive_mismatch_is_a_finding,
         assert_missing_bte_static_gate_text_is_a_finding,
         assert_bte_close_claim_is_a_finding,
         assert_justfile_wiring_is_a_finding,

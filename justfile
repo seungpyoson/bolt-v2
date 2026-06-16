@@ -156,6 +156,10 @@ verify-bte-022-pmxt-durable-source: check-workspace
     python3 scripts/test_verify_bte_022_pmxt_durable_source.py
     python3 scripts/verify_bte_022_pmxt_durable_source.py
 
+verify-bte-022-pmxt-storage-proof: check-workspace
+    python3 scripts/test_verify_bte_022_pmxt_storage_proof.py
+    python3 scripts/verify_bte_022_pmxt_storage_proof.py
+
 verify-bte-022-pmxt-coverage-ledger: check-workspace
     python3 scripts/test_verify_bte_022_pmxt_coverage_ledger.py
     python3 scripts/verify_bte_022_pmxt_coverage_ledger.py
@@ -333,6 +337,8 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_023_status_legend_registry.py
     python3 scripts/test_verify_bte_022_pmxt_durable_source.py
     python3 scripts/verify_bte_022_pmxt_durable_source.py
+    python3 scripts/test_verify_bte_022_pmxt_storage_proof.py
+    python3 scripts/verify_bte_022_pmxt_storage_proof.py
     python3 scripts/test_verify_bte_022_pmxt_coverage_ledger.py
     python3 scripts/verify_bte_022_pmxt_coverage_ledger.py
     python3 scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py

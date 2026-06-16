@@ -1,17 +1,18 @@
 //! Shared taker pricing state extracted from `binary_oracle_edge_taker`.
 //!
-//! This module mirrors the current surfaced-RV taker pricing path: reference and
-//! lead-venue observations establish spot context, then a shared realized-vol
-//! snapshot plus current strike/expiry/config are assembled into the existing
-//! market-family fair probability.
+//! This module mirrors the current surfaced-RV taker entry path: reference and
+//! lead-venue observations establish shared spot context, then the shared
+//! fair-value layer assembles realized-vol, strike, expiry, and family fair
+//! probability before taker-only theta/edge policy is applied.
 //! It deliberately does not introduce IV, maker spread logic, or submit policy.
 
 use std::collections::BTreeMap;
 
-#[cfg(test)]
-use crate::bolt_v3_realized_volatility::RealizedVolAggregation;
 use crate::{
-    bolt_v3_market_families::{self, FairProbabilityInputs},
+    bolt_v3_fair_value_pricing::{
+        FairValuePricingBlockReason, FairValuePricingConfig, FairValuePricingInputs,
+        FairValuePricingRequest, FairValuePricingResult, FairValuePricingState,
+    },
     bolt_v3_numeric::{
         MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64, clamp_probability, is_positive_finite,
         sanitize_probability,
@@ -22,14 +23,9 @@ use crate::{
     },
 };
 
-const INITIAL_COUNTER_U64: u64 = u64::MIN;
+pub use crate::bolt_v3_fair_value_pricing::FastSpotObservation;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct FastSpotObservation {
-    pub venue: String,
-    pub price: f64,
-    pub observed_ts_ms: u64,
-}
+const INITIAL_COUNTER_U64: u64 = u64::MIN;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TakerPricingConfig<'a> {
@@ -104,16 +100,7 @@ impl VenueTimingState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TakerPricingState {
-    pub(crate) last_reference_current_price: Option<f64>,
-    pub(crate) last_reference_current_price_source_id: Option<String>,
-    pub(crate) last_reference_current_price_ts_ms: Option<u64>,
-    pub(crate) fast_spot: Option<FastSpotObservation>,
-    pub(crate) realized_volatility_surface_id: String,
-    // Latest RV snapshot per `surface_id`. The shared runtime routes ticks by instrument, so a
-    // strategy may observe (and store here) snapshots for surfaces it does not price; those
-    // entries are never read by this strategy and are bounded by the number of configured
-    // surfaces. Intentional until #775 lands surface-scoped engine routing.
-    pub(crate) latest_realized_vol_snapshots: BTreeMap<String, RealizedVolSnapshot>,
+    fair_value: FairValuePricingState,
     pub(crate) venue_timing: BTreeMap<String, VenueTimingState>,
     pub(crate) last_lead_gap_probability: Option<f64>,
     pub(crate) last_jitter_penalty_probability: Option<f64>,
@@ -130,12 +117,9 @@ pub struct TakerPricingState {
 impl TakerPricingState {
     pub fn from_config(config: &TakerPricingConfig<'_>) -> Self {
         Self {
-            last_reference_current_price: None,
-            last_reference_current_price_source_id: None,
-            last_reference_current_price_ts_ms: None,
-            fast_spot: None,
-            realized_volatility_surface_id: config.realized_volatility_surface_id.clone(),
-            latest_realized_vol_snapshots: BTreeMap::new(),
+            fair_value: FairValuePricingState::from_realized_volatility_surface_id(
+                config.realized_volatility_surface_id.clone(),
+            ),
             venue_timing: BTreeMap::new(),
             last_lead_gap_probability: None,
             last_jitter_penalty_probability: None,
@@ -149,40 +133,23 @@ impl TakerPricingState {
     }
 
     pub fn observe_reference_current_price(&mut self, quote: &FastSpotObservation) {
-        if !is_positive_finite(quote.price) {
-            return;
-        }
-        let same_reference_source = self
-            .last_reference_current_price_source_id
-            .as_deref()
-            .is_some_and(|source_id| source_id == quote.venue);
-        if same_reference_source
-            && self
-                .last_reference_current_price_ts_ms
-                .is_some_and(|last_ts_ms| quote.observed_ts_ms <= last_ts_ms)
+        if self.fair_value.observe_reference_current_price(quote)
+            && !self.lead_quality_policy_applied
         {
-            return;
-        }
-
-        self.last_reference_current_price_source_id = Some(quote.venue.clone());
-        self.last_reference_current_price_ts_ms = Some(quote.observed_ts_ms);
-        self.last_reference_current_price = Some(quote.price);
-        if !self.lead_quality_policy_applied {
-            self.fast_spot = Some(quote.clone());
+            self.fair_value.observe_pricing_spot(quote);
         }
     }
 
     pub(crate) fn clear_reference_current_price_state(&mut self) {
-        let reference_owned_fast_spot = self.fast_spot.as_ref().is_some_and(|spot| {
-            self.last_reference_current_price_source_id
-                .as_deref()
-                .is_some_and(|source_id| source_id == spot.venue.as_str())
-        });
-        self.last_reference_current_price = None;
-        self.last_reference_current_price_source_id = None;
-        self.last_reference_current_price_ts_ms = None;
+        let reference_owned_fast_spot =
+            self.fair_value.selected_pricing_spot().is_some_and(|spot| {
+                self.fair_value
+                    .last_reference_source_id()
+                    .is_some_and(|source_id| source_id == spot.venue.as_str())
+            });
+        self.fair_value.clear_reference_current_price();
         if reference_owned_fast_spot {
-            self.fast_spot = None;
+            self.fair_value.clear_pricing_spot();
             self.last_lead_gap_probability = None;
             self.last_jitter_penalty_probability = None;
             self.last_lead_agreement_corr = None;
@@ -211,11 +178,12 @@ impl TakerPricingState {
         self.lead_quality_policy_applied = true;
 
         let jitter_ms = self.record_signal_quote_timing(&quote.venue, quote.observed_ts_ms);
-        let Some(reference_current_price) = self
-            .last_reference_current_price
+        let Some(reference_fair_value) = self
+            .fair_value
+            .last_reference_fair_value()
             .filter(|value| is_positive_finite(*value))
         else {
-            self.fast_spot = None;
+            self.fair_value.clear_pricing_spot();
             self.last_lead_gap_probability = None;
             self.last_jitter_penalty_probability = None;
             self.last_lead_agreement_corr = None;
@@ -224,16 +192,16 @@ impl TakerPricingState {
             self.fast_venue_incoherent = true;
             return;
         };
-        let agreement_corr = price_agreement_corr(quote.price, reference_current_price)
+        let agreement_corr = price_agreement_corr(quote.price, reference_fair_value)
             .expect("validated signal/reference current prices should yield agreement");
-        let lead_gap_probability = price_gap_probability(quote.price, reference_current_price)
+        let lead_gap_probability = price_gap_probability(quote.price, reference_fair_value)
             .expect("validated signal/reference current prices should yield a gap");
         let eligible = agreement_corr >= config.lead_agreement_min_corr
             && jitter_ms <= config.lead_jitter_max_ms
             && sanitize_probability(lead_gap_probability).is_some();
 
         if eligible {
-            self.fast_spot = Some(quote.clone());
+            self.fair_value.observe_pricing_spot(quote);
             self.last_lead_gap_probability = Some(lead_gap_probability);
             self.last_jitter_penalty_probability = Some(if config.lead_jitter_max_ms == 0 {
                 ZERO_F64
@@ -245,7 +213,7 @@ impl TakerPricingState {
             self.last_fast_venue_jitter_ms = Some(jitter_ms);
             self.fast_venue_incoherent = false;
         } else {
-            self.fast_spot = None;
+            self.fair_value.clear_pricing_spot();
             self.last_lead_gap_probability = Some(lead_gap_probability);
             self.last_jitter_penalty_probability = Some(if config.lead_jitter_max_ms == 0 {
                 ZERO_F64
@@ -260,74 +228,94 @@ impl TakerPricingState {
     }
 
     pub fn observe_realized_vol_snapshot(&mut self, snapshot: RealizedVolSnapshot) {
-        let surface_id = snapshot.surface_id.as_str();
-        let current = self.latest_realized_vol_snapshots.get(surface_id);
-        if current.is_none_or(|current| current.as_of_ms <= snapshot.as_of_ms) {
-            self.latest_realized_vol_snapshots
-                .insert(snapshot.surface_id.clone(), snapshot);
-        }
+        self.fair_value.observe_realized_vol_snapshot(snapshot);
     }
 
-    /// Raw (readiness-unfiltered) latest snapshot for a surface, for evidence/audit. Use
-    /// [`current_surfaced_realized_vol_snapshot_at`] for entry-readiness gating, which also
-    /// enforces `as_of_ms <= now_ms` and readiness.
+    pub(crate) fn last_reference_current_price(&self) -> Option<f64> {
+        self.fair_value.last_reference_fair_value()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_reference_current_price_source_id(&self) -> Option<&str> {
+        self.fair_value.last_reference_source_id()
+    }
+
+    pub(crate) fn last_reference_current_price_ts_ms(&self) -> Option<u64> {
+        self.fair_value.last_reference_observed_ts_ms()
+    }
+
+    pub(crate) fn selected_pricing_spot(&self) -> Option<&FastSpotObservation> {
+        self.fair_value.selected_pricing_spot()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_selected_pricing_spot(&mut self, spot: Option<FastSpotObservation>) {
+        self.fair_value.set_selected_pricing_spot(spot);
+    }
+
+    pub(crate) fn spot_price(&self) -> Option<f64> {
+        self.fair_value.spot_price()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_last_reference_fair_value(&mut self, fair_value: Option<f64>) {
+        self.fair_value.set_last_reference_fair_value(fair_value);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_last_reference_observation(
+        &mut self,
+        observed_ts_ms: Option<u64>,
+        fair_value: Option<f64>,
+    ) {
+        self.fair_value
+            .set_last_reference_observation(observed_ts_ms, fair_value);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_realized_volatility_surface_id(&mut self, surface_id: String) {
+        self.fair_value
+            .set_realized_volatility_surface_id(surface_id);
+    }
+
+    fn reference_current_price_stale_at(
+        &self,
+        observed_ts_ms: u64,
+        config: &TakerPricingConfig<'_>,
+        now_ms: u64,
+    ) -> bool {
+        config
+            .max_reference_current_price_age_ms
+            .is_some_and(|max_age_ms| {
+                observed_ts_ms > now_ms || now_ms - observed_ts_ms > max_age_ms
+            })
+    }
+
+    pub fn current_realized_vol_at(&self, now_ms: u64) -> Option<f64> {
+        self.fair_value.current_realized_vol_at(now_ms)
+    }
+
+    pub fn current_realized_vol_source_at(&self, now_ms: u64) -> (Option<String>, Option<u64>) {
+        self.fair_value.current_realized_vol_source_at(now_ms)
+    }
+
+    pub(crate) fn latest_realized_vol_snapshot(&self) -> Option<&RealizedVolSnapshot> {
+        self.fair_value.latest_realized_vol_snapshot()
+    }
+
+    /// Raw (readiness-unfiltered) latest snapshot for a surface, for evidence/audit. Use the
+    /// readiness-gating path for entry decisions, which also enforces `as_of_ms <= now_ms`.
     pub(crate) fn latest_realized_vol_snapshot_for_surface(
         &self,
         surface_id: &str,
     ) -> Option<&RealizedVolSnapshot> {
-        self.latest_realized_vol_snapshots.get(surface_id)
+        self.fair_value
+            .latest_realized_vol_snapshot_for_surface(surface_id)
     }
 
-    pub(crate) fn spot_price(&self) -> Option<f64> {
-        self.fast_spot.as_ref().map(|spot| spot.price)
-    }
-
-    pub fn current_realized_vol_at(&self, now_ms: u64) -> Option<f64> {
-        self.current_surfaced_realized_vol_at(&self.realized_volatility_surface_id, now_ms)
-    }
-
-    pub fn current_realized_vol_source_at(&self, now_ms: u64) -> (Option<String>, Option<u64>) {
-        self.current_surfaced_realized_vol_snapshot_at(&self.realized_volatility_surface_id, now_ms)
-            .map_or((None, None), |snapshot| (None, Some(snapshot.as_of_ms)))
-    }
-
-    fn current_realized_vol_for_config_at(
-        &self,
-        config: &TakerPricingConfig<'_>,
-        now_ms: u64,
-    ) -> Option<f64> {
-        self.current_surfaced_realized_vol_at(&config.realized_volatility_surface_id, now_ms)
-    }
-
-    fn current_realized_vol_evidence_for_config_at(
-        &self,
-        config: &TakerPricingConfig<'_>,
-        now_ms: u64,
-    ) -> (Option<String>, Option<String>, Option<u64>) {
-        let surface_id = config.realized_volatility_surface_id.as_str();
-        self.current_surfaced_realized_vol_snapshot_at(surface_id, now_ms)
-            .map_or((None, None, None), |snapshot| {
-                (Some(surface_id.to_string()), None, Some(snapshot.as_of_ms))
-            })
-    }
-
-    fn current_surfaced_realized_vol_at(&self, surface_id: &str, now_ms: u64) -> Option<f64> {
-        self.current_surfaced_realized_vol_snapshot_at(surface_id, now_ms)
-            .and_then(|snapshot| snapshot.ready_realized_vol())
-            .map(|realized_vol| realized_vol.get())
-    }
-
-    fn current_surfaced_realized_vol_snapshot_at(
-        &self,
-        surface_id: &str,
-        now_ms: u64,
-    ) -> Option<&RealizedVolSnapshot> {
-        let snapshot = self.latest_realized_vol_snapshots.get(surface_id)?;
-        if snapshot.as_of_ms > now_ms || snapshot.ready_realized_vol().is_none() {
-            return None;
-        }
-
-        Some(snapshot)
+    #[cfg(test)]
+    pub(crate) fn clear_latest_realized_vol_snapshot(&mut self) {
+        self.fair_value.clear_latest_realized_vol_snapshot();
     }
 
     #[cfg(test)]
@@ -337,30 +325,8 @@ impl TakerPricingState {
         realized_vol: f64,
         ready_ts_ms: u64,
     ) {
-        if crate::bolt_v3_realized_volatility::ValidRealizedVol::new(realized_vol).is_none() {
-            return;
-        }
-        self.observe_realized_vol_snapshot(RealizedVolSnapshot {
-            surface_id: self.realized_volatility_surface_id.clone(),
-            as_of_ms: ready_ts_ms,
-            annualized_realized_vol_decimal: Some(realized_vol),
-            measured_annualized_realized_vol_decimal: Some(realized_vol),
-            noise_robust_annualized_realized_vol_decimal: Some(realized_vol),
-            continuous_annualized_realized_vol_decimal: Some(realized_vol),
-            jump_annualized_realized_vol_decimal: Some(0.0),
-            forecast_annualized_realized_vol_decimal: None,
-            pricing_component:
-                crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
-            ready: true,
-            sources_used: source_venue.into_iter().collect(),
-            source_diagnostics: Vec::new(),
-            horizon_estimates: Vec::new(),
-            unknown_source_rejections: BTreeMap::new(),
-            blocked_reasons: Vec::new(),
-            aggregate_method: RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
-            seconds_per_annum: 31_536_000.0,
-            config_fingerprint: String::new(),
-        });
+        self.fair_value
+            .seed_ready_realized_vol(source_venue, realized_vol, ready_ts_ms);
     }
 
     pub(crate) fn theta_scaled_min_edge_bps_for(
@@ -385,50 +351,46 @@ impl TakerPricingState {
     ) -> Result<TakerPricingInputs, Vec<TakerPricingBlockReason>> {
         let mut blocked_by = Vec::new();
 
-        let spot_price = self
-            .fast_spot
-            .as_ref()
-            .filter(|spot| is_positive_finite(spot.price))
-            .filter(|spot| {
-                !(self.lead_quality_policy_applied
-                    && config
-                        .max_reference_current_price_age_ms
-                        .is_some_and(|max_age_ms| {
-                            spot.observed_ts_ms > request.now_ms
-                                || request.now_ms - spot.observed_ts_ms > max_age_ms
-                        }))
-            })
-            .map(|spot| spot.price);
-        if spot_price.is_none() {
+        let stale_pricing_spot = self.lead_quality_policy_applied
+            && self.selected_pricing_spot().is_some_and(|spot| {
+                self.reference_current_price_stale_at(spot.observed_ts_ms, config, request.now_ms)
+            });
+
+        let reference_current_price_stale =
+            config.max_reference_current_price_age_ms.is_some_and(|_| {
+                self.last_reference_current_price_ts_ms()
+                    .is_none_or(|ts_ms| {
+                        self.reference_current_price_stale_at(ts_ms, config, request.now_ms)
+                    })
+            });
+
+        let mut fair_value_tail_blockers = Vec::new();
+
+        if stale_pricing_spot {
             blocked_by.push(TakerPricingBlockReason::SpotPriceMissing);
         }
 
-        if config
-            .max_reference_current_price_age_ms
-            .is_some_and(|max_age_ms| {
-                self.last_reference_current_price_ts_ms.is_none_or(|ts_ms| {
-                    ts_ms > request.now_ms || request.now_ms - ts_ms > max_age_ms
-                })
-            })
-        {
+        let fair_value_inputs = match self.fair_value_inputs_at(config, request) {
+            Ok(inputs) if !stale_pricing_spot => Some(inputs),
+            Ok(_) => None,
+            Err(reasons) => {
+                for reason in reasons.into_iter().map(TakerPricingBlockReason::from) {
+                    if matches!(reason, TakerPricingBlockReason::SpotPriceMissing) {
+                        if !stale_pricing_spot {
+                            blocked_by.push(reason);
+                        }
+                    } else {
+                        fair_value_tail_blockers.push(reason);
+                    }
+                }
+                None
+            }
+        };
+
+        if reference_current_price_stale {
             blocked_by.push(TakerPricingBlockReason::ReferenceCurrentPriceStale);
         }
-
-        let strike_price = request
-            .strike_price
-            .filter(|value| is_positive_finite(*value));
-        if strike_price.is_none() {
-            blocked_by.push(TakerPricingBlockReason::StrikePriceMissing);
-        }
-
-        if request.seconds_to_market_end.is_none() {
-            blocked_by.push(TakerPricingBlockReason::SecondsToExpiryMissing);
-        }
-
-        let realized_vol = self.current_realized_vol_for_config_at(config, request.now_ms);
-        if realized_vol.is_none() {
-            blocked_by.push(TakerPricingBlockReason::RealizedVolNotReady);
-        }
+        blocked_by.extend(fair_value_tail_blockers);
 
         let theta_scaled_min_edge_bps =
             self.theta_scaled_min_edge_bps_for(config, request.seconds_to_market_end);
@@ -440,11 +402,12 @@ impl TakerPricingState {
             return Err(blocked_by);
         }
 
+        let fair_value_inputs = fair_value_inputs.expect("validated above");
         Ok(TakerPricingInputs {
-            spot_price: spot_price.expect("validated above"),
-            strike_price: strike_price.expect("validated above"),
-            seconds_to_market_end: request.seconds_to_market_end.expect("validated above"),
-            realized_vol: realized_vol.expect("validated above"),
+            spot_price: fair_value_inputs.spot_price,
+            strike_price: fair_value_inputs.strike_price,
+            seconds_to_market_end: fair_value_inputs.seconds_to_market_end,
+            realized_vol: fair_value_inputs.realized_vol,
             theta_scaled_min_edge_bps: theta_scaled_min_edge_bps.expect("validated above"),
         })
     }
@@ -464,33 +427,76 @@ impl TakerPricingState {
         now_ms: u64,
         inputs: TakerPricingInputs,
     ) -> Result<TakerPricingResult, Vec<TakerPricingBlockReason>> {
-        let Some(fair_probability_up) = bolt_v3_market_families::fair_probability_up_for_family(
-            config.rotating_market_family,
-            &FairProbabilityInputs {
-                spot_price: inputs.spot_price,
-                strike_price: inputs.strike_price,
-                seconds_to_market_end: inputs.seconds_to_market_end,
-                realized_vol: inputs.realized_vol,
-                pricing_kurtosis: config.pricing_kurtosis,
-            },
-        ) else {
-            return Err(vec![TakerPricingBlockReason::FairProbabilityUnavailable]);
-        };
-        let (realized_vol_surface_id, realized_vol_source_venue, realized_vol_source_ts_ms) =
-            self.current_realized_vol_evidence_for_config_at(config, now_ms);
+        let fair_value = self
+            .fair_value_pricing_from_inputs(
+                config,
+                now_ms,
+                FairValuePricingInputs {
+                    spot_price: inputs.spot_price,
+                    strike_price: inputs.strike_price,
+                    seconds_to_market_end: inputs.seconds_to_market_end,
+                    realized_vol: inputs.realized_vol,
+                },
+            )
+            .map_err(|blocked_by| {
+                blocked_by
+                    .into_iter()
+                    .map(TakerPricingBlockReason::from)
+                    .collect::<Vec<_>>()
+            })?;
 
         Ok(TakerPricingResult {
             spot_price: inputs.spot_price,
             strike_price: inputs.strike_price,
             seconds_to_market_end: inputs.seconds_to_market_end,
             realized_vol: inputs.realized_vol,
-            realized_vol_surface_id,
-            realized_vol_source_venue,
-            realized_vol_source_ts_ms,
+            realized_vol_surface_id: fair_value.realized_vol_surface_id,
+            realized_vol_source_venue: fair_value.realized_vol_source_venue,
+            realized_vol_source_ts_ms: fair_value.realized_vol_source_ts_ms,
             theta_scaled_min_edge_bps: inputs.theta_scaled_min_edge_bps,
-            fair_probability_up,
-            fair_probability_down: UNIT_F64 - fair_probability_up,
+            fair_probability_up: fair_value.fair_probability_up,
+            fair_probability_down: fair_value.fair_probability_down,
         })
+    }
+
+    fn fair_value_inputs_at(
+        &self,
+        config: &TakerPricingConfig<'_>,
+        request: TakerPricingRequest,
+    ) -> Result<FairValuePricingInputs, Vec<FairValuePricingBlockReason>> {
+        self.fair_value.fair_value_inputs_at(
+            &fair_value_config(config),
+            FairValuePricingRequest {
+                now_ms: request.now_ms,
+                strike_price: request.strike_price,
+                seconds_to_market_end: request.seconds_to_market_end,
+            },
+        )
+    }
+
+    pub fn fair_value_pricing_at(
+        &self,
+        config: &TakerPricingConfig<'_>,
+        request: TakerPricingRequest,
+    ) -> Result<FairValuePricingResult, Vec<FairValuePricingBlockReason>> {
+        self.fair_value.fair_value_pricing_at(
+            &fair_value_config(config),
+            FairValuePricingRequest {
+                now_ms: request.now_ms,
+                strike_price: request.strike_price,
+                seconds_to_market_end: request.seconds_to_market_end,
+            },
+        )
+    }
+
+    fn fair_value_pricing_from_inputs(
+        &self,
+        config: &TakerPricingConfig<'_>,
+        now_ms: u64,
+        inputs: FairValuePricingInputs,
+    ) -> Result<FairValuePricingResult, Vec<FairValuePricingBlockReason>> {
+        self.fair_value
+            .fair_value_pricing_from_inputs(&fair_value_config(config), now_ms, inputs)
     }
 
     /// Arm the spike cooldown when a new signal-price observation jumps past
@@ -501,7 +507,7 @@ impl TakerPricingState {
         spike_return_threshold: f64,
         spike_cooldown_secs: u64,
     ) {
-        let Some(previous) = self.fast_spot.as_ref() else {
+        let Some(previous) = self.fair_value.selected_pricing_spot() else {
             return;
         };
         if !is_positive_finite(previous.price) || !is_positive_finite(quote.price) {
@@ -536,6 +542,33 @@ impl TakerPricingState {
         timing.last_observed_ts_ms = Some(observed_ts_ms);
         timing.last_interval_ms = current_interval_ms;
         jitter_ms
+    }
+}
+
+fn fair_value_config<'config, 'family>(
+    config: &'config TakerPricingConfig<'family>,
+) -> FairValuePricingConfig<'config>
+where
+    'family: 'config,
+{
+    FairValuePricingConfig {
+        realized_volatility_surface_id: config.realized_volatility_surface_id.as_str(),
+        pricing_kurtosis: config.pricing_kurtosis,
+        market_family: config.rotating_market_family,
+    }
+}
+
+impl From<FairValuePricingBlockReason> for TakerPricingBlockReason {
+    fn from(reason: FairValuePricingBlockReason) -> Self {
+        match reason {
+            FairValuePricingBlockReason::SpotPriceMissing => Self::SpotPriceMissing,
+            FairValuePricingBlockReason::StrikePriceMissing => Self::StrikePriceMissing,
+            FairValuePricingBlockReason::SecondsToExpiryMissing => Self::SecondsToExpiryMissing,
+            FairValuePricingBlockReason::RealizedVolNotReady => Self::RealizedVolNotReady,
+            FairValuePricingBlockReason::FairProbabilityUnavailable => {
+                Self::FairProbabilityUnavailable
+            }
+        }
     }
 }
 
@@ -584,7 +617,7 @@ mod tests {
             theta_decay_factor: TEST_THETA_DECAY_FACTOR,
             edge_threshold_basis_points: TEST_EDGE_THRESHOLD_BASIS_POINTS,
             pricing_kurtosis: TEST_PRICING_KURTOSIS,
-            rotating_market_family: bolt_v3_market_families::updown::KEY,
+            rotating_market_family: crate::bolt_v3_market_families::updown::KEY,
             max_reference_current_price_age_ms: Some(2_000),
         }
     }
@@ -612,10 +645,11 @@ mod tests {
         price: f64,
         observed_ts_ms: u64,
     ) {
-        pricing.last_reference_current_price = Some(price);
-        pricing.last_reference_current_price_source_id =
-            Some(reference_current_price_source().to_string());
-        pricing.last_reference_current_price_ts_ms = Some(observed_ts_ms);
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            price,
+            observed_ts_ms,
+        ));
         pricing.observe_signal_quote(&quote(venue, price, observed_ts_ms), config);
     }
 
@@ -626,7 +660,7 @@ mod tests {
 
         pricing.observe_signal_quote(&quote("bybit", 3_100.0, 1_000), &config);
 
-        assert_eq!(pricing.fast_spot, None);
+        assert_eq!(pricing.selected_pricing_spot(), None);
         assert!(pricing.fast_venue_incoherent);
         assert!(pricing.lead_quality_policy_applied);
         assert_eq!(pricing.last_lead_gap_probability, None);
@@ -649,7 +683,7 @@ mod tests {
         ));
         pricing.observe_signal_quote(&quote(signal_venue(), 120.0, 1_050), &config);
         assert!(pricing.fast_venue_incoherent);
-        assert_eq!(pricing.fast_spot, None);
+        assert_eq!(pricing.selected_pricing_spot(), None);
 
         pricing.observe_reference_current_price(&quote(
             reference_current_price_source(),
@@ -658,9 +692,9 @@ mod tests {
         ));
 
         assert!(pricing.fast_venue_incoherent);
-        assert_eq!(pricing.fast_spot, None);
-        assert_eq!(pricing.last_reference_current_price, Some(101.0));
-        assert_eq!(pricing.last_reference_current_price_ts_ms, Some(1_100));
+        assert_eq!(pricing.selected_pricing_spot(), None);
+        assert_eq!(pricing.last_reference_current_price(), Some(101.0));
+        assert_eq!(pricing.last_reference_current_price_ts_ms(), Some(1_100));
     }
 
     #[test]
@@ -674,7 +708,7 @@ mod tests {
             1_000,
         ));
         assert_eq!(
-            pricing.fast_spot.as_ref().map(|spot| spot.price),
+            pricing.selected_pricing_spot().map(|spot| spot.price),
             Some(100.0)
         );
 
@@ -682,7 +716,7 @@ mod tests {
         assert!(!pricing.fast_venue_incoherent);
         assert!(pricing.lead_quality_policy_applied);
         assert_eq!(
-            pricing.fast_spot.as_ref().map(|spot| spot.price),
+            pricing.selected_pricing_spot().map(|spot| spot.price),
             Some(100.1)
         );
 
@@ -692,14 +726,16 @@ mod tests {
             1_100,
         ));
 
-        assert_eq!(pricing.last_reference_current_price, Some(99.9));
-        assert_eq!(pricing.last_reference_current_price_ts_ms, Some(1_100));
+        assert_eq!(pricing.last_reference_current_price(), Some(99.9));
+        assert_eq!(pricing.last_reference_current_price_ts_ms(), Some(1_100));
         assert_eq!(
-            pricing.fast_spot.as_ref().map(|spot| spot.price),
+            pricing.selected_pricing_spot().map(|spot| spot.price),
             Some(100.1)
         );
         assert_eq!(
-            pricing.fast_spot.as_ref().map(|spot| spot.venue.as_str()),
+            pricing
+                .selected_pricing_spot()
+                .map(|spot| spot.venue.as_str()),
             Some(signal_venue())
         );
     }
@@ -793,15 +829,15 @@ mod tests {
         );
 
         assert_eq!(
-            pricing.last_reference_current_price,
+            pricing.last_reference_current_price(),
             Some(TEST_NEWER_REFERENCE_CURRENT_PRICE)
         );
         assert_eq!(
-            pricing.last_reference_current_price_ts_ms,
+            pricing.last_reference_current_price_ts_ms(),
             Some(TEST_NEWER_REFERENCE_TS_MS)
         );
         assert_eq!(
-            pricing.fast_spot.as_ref().map(|spot| spot.price),
+            pricing.selected_pricing_spot().map(|spot| spot.price),
             Some(TEST_NEWER_REFERENCE_CURRENT_PRICE)
         );
         assert!(!pricing.fast_venue_incoherent);
@@ -833,15 +869,15 @@ mod tests {
         ));
 
         assert_eq!(
-            pricing.last_reference_current_price,
+            pricing.last_reference_current_price(),
             Some(TEST_STALE_REFERENCE_CURRENT_PRICE)
         );
         assert_eq!(
-            pricing.last_reference_current_price_source_id.as_deref(),
+            pricing.last_reference_current_price_source_id(),
             Some("backup_reference_current_price")
         );
         assert_eq!(
-            pricing.last_reference_current_price_ts_ms,
+            pricing.last_reference_current_price_ts_ms(),
             Some(TEST_STALE_REFERENCE_TS_MS)
         );
     }
@@ -875,15 +911,15 @@ mod tests {
         );
 
         assert_eq!(
-            pricing.last_reference_current_price,
+            pricing.last_reference_current_price(),
             Some(TEST_REPLACEMENT_REFERENCE_CURRENT_PRICE)
         );
         assert_eq!(
-            pricing.last_reference_current_price_ts_ms,
+            pricing.last_reference_current_price_ts_ms(),
             Some(TEST_REPLACEMENT_REFERENCE_TS_MS)
         );
         assert_eq!(
-            pricing.fast_spot.as_ref().map(|spot| spot.price),
+            pricing.selected_pricing_spot().map(|spot| spot.price),
             Some(TEST_REPLACEMENT_REFERENCE_CURRENT_PRICE)
         );
         assert!(!pricing.fast_venue_incoherent);

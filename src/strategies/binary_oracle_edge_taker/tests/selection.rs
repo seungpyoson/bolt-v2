@@ -14,7 +14,9 @@ fn switch_resets_only_active_market_state() {
         },
     );
     set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.5, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
@@ -41,13 +43,13 @@ fn switch_resets_only_active_market_state() {
     assert!(!active.outcome_fees.up_ready);
     assert!(!active.outcome_fees.down_ready);
     assert_eq!(
-        strategy.pricing.fast_spot,
+        strategy.pricing.selected_pricing_spot().cloned(),
         Some(fast_spot("bybit", 3_100.5, 1_200))
     );
     assert_eq!(strategy.pricing.current_realized_vol_at(1_200), Some(1.5));
     assert_eq!(
         strategy.pricing.current_realized_vol_source_at(1_200),
-        (None, Some(1_200))
+        (Some("<SOURCE_ID>".to_string()), Some(1_200))
     );
 }
 

@@ -2909,13 +2909,18 @@ def workflow_run_list(
     return payload, None
 
 
-def workflow_run_view(repo: pathlib.Path, run_id: int) -> tuple[dict[str, Any] | None, str | None]:
+def workflow_run_view(
+    repo: pathlib.Path,
+    run_id: int,
+    *,
+    command_name: str = "verify-remote",
+) -> tuple[dict[str, Any] | None, str | None]:
     payload, error = load_json_command(
         ["gh", "run", "view", str(run_id), "--json", WORKFLOW_RUN_FIELDS],
         repo=repo,
     )
     if error is not None:
-        return None, f"verify-remote could not inspect workflow run {run_id}: {error}"
+        return None, f"{command_name} could not inspect workflow run {run_id}: {error}"
     if not isinstance(payload, dict):
         return None, "gh run view returned an unexpected payload"
     return payload, None
@@ -3257,9 +3262,9 @@ def run_display_title(run: dict[str, Any]) -> str:
     return title if isinstance(title, str) else ""
 
 
-def matching_rust_probe_runs(runs: list[dict[str, Any]], *, probe_id: str) -> list[dict[str, Any]]:
+def matching_rust_probe_runs(runs: list[dict[str, Any]], *, head: str, probe_id: str) -> list[dict[str, Any]]:
     expected_prefix = f"Rust Probe {probe_id} "
-    matching = [run for run in runs if run_display_title(run).startswith(expected_prefix)]
+    matching = [run for run in runs if run.get("headSha") == head and run_display_title(run).startswith(expected_prefix)]
     return sorted(matching, key=run_created_at, reverse=True)
 
 
@@ -3269,10 +3274,18 @@ def evaluate_rust_probe_run(
     head: str,
     probe_id: str,
 ) -> int | None:
+    summary = workflow_run_summary(run)
+    run_head = str(run.get("headSha") or "")
+    if run_head != head:
+        print(
+            f"Rust Probe {probe_id} ended without exact-head evidence for {head}: "
+            f"matched {run_head or '<missing>'}; {summary}",
+            file=sys.stderr,
+        )
+        return 2
     state = workflow_run_state(run)
     if state == "pending":
         return None
-    summary = workflow_run_summary(run)
     if state == "pass":
         print(f"OK: Rust Probe {probe_id} passed for {head}: {summary}")
         print("NOT MERGE PROOF -- run just verify-remote for proof")
@@ -3308,14 +3321,14 @@ def wait_for_rust_probe_run(
             return verify_remote_fail(f"timed out waiting for Rust Probe {probe_id} on {branch}")
         run: dict[str, Any] | None = None
         if tracked_run_id is not None:
-            run, error = workflow_run_view(repo, tracked_run_id)
+            run, error = workflow_run_view(repo, tracked_run_id, command_name="rust-probe")
             if error is not None or run is None:
                 return verify_remote_fail(error or f"unable to inspect Rust Probe run {tracked_run_id}")
         else:
             runs, error = rust_probe_run_list(repo, remote_policy, branch=branch)
             if error is not None or runs is None:
                 return verify_remote_fail(error or "unable to inspect Rust Probe workflow runs")
-            matching = matching_rust_probe_runs(runs, probe_id=probe_id)
+            matching = matching_rust_probe_runs(runs, head=head, probe_id=probe_id)
             if matching:
                 run = matching[0]
                 tracked_run_id = run_database_id(run)

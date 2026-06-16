@@ -400,6 +400,7 @@ def assert_cancelled_probe_is_superseded_not_code_failure() -> None:
     owner = load_owner_module()
     run = {
         "databaseId": 42,
+        "headSha": HEAD,
         "status": "completed",
         "conclusion": "cancelled",
         "displayTitle": "Rust Probe probe-123 check-lib",
@@ -412,6 +413,26 @@ def assert_cancelled_probe_is_superseded_not_code_failure() -> None:
         raise AssertionError((result, stderr.getvalue()))
     output = stderr.getvalue()
     if "superseded" not in output or "failed for" in output:
+        raise AssertionError(output)
+
+
+def assert_wrong_head_probe_is_not_success() -> None:
+    owner = load_owner_module()
+    run = {
+        "databaseId": 42,
+        "headSha": "b" * 40,
+        "status": "completed",
+        "conclusion": "success",
+        "displayTitle": "Rust Probe probe-123 check-lib",
+        "url": "https://example.invalid/runs/42",
+    }
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        result = owner.evaluate_rust_probe_run(run, head=HEAD, probe_id="probe-123")
+    if result != 2:
+        raise AssertionError((result, stderr.getvalue()))
+    output = stderr.getvalue()
+    if "exact-head evidence" not in output or "passed for" in output:
         raise AssertionError(output)
 
 
@@ -431,16 +452,16 @@ def assert_rust_probe_polling_errors_fail_closed() -> None:
         runs, error = owner.rust_probe_run_list(REPO_ROOT, policy, branch=BRANCH)
         if runs is not None or error is None or "returned invalid JSON" not in error:
             raise AssertionError((runs, error))
-        run, error = owner.workflow_run_view(REPO_ROOT, 123)
-        if run is not None or error is None or "returned invalid JSON" not in error:
+        run, error = owner.workflow_run_view(REPO_ROOT, 123, command_name="rust-probe")
+        if run is not None or error is None or "rust-probe could not inspect" not in error or "returned invalid JSON" not in error:
             raise AssertionError((run, error))
 
         owner.run_capture = os_error
         runs, error = owner.rust_probe_run_list(REPO_ROOT, policy, branch=BRANCH)
         if runs is not None or error is None or "could not run" not in error:
             raise AssertionError((runs, error))
-        run, error = owner.workflow_run_view(REPO_ROOT, 123)
-        if run is not None or error is None or "could not run" not in error:
+        run, error = owner.workflow_run_view(REPO_ROOT, 123, command_name="rust-probe")
+        if run is not None or error is None or "rust-probe could not inspect" not in error or "could not run" not in error:
             raise AssertionError((run, error))
     finally:
         owner.run_capture = original_run_capture
@@ -451,19 +472,27 @@ def assert_probe_run_matching_is_prefix_anchored() -> None:
     runs = [
         {
             "displayTitle": "Other Rust Probe probe-123 check-lib",
+            "headSha": HEAD,
             "createdAt": "2026-06-15T00:00:03Z",
         },
         {
             "displayTitle": "Rust Probe xprobe-123 check-lib",
+            "headSha": HEAD,
             "createdAt": "2026-06-15T00:00:02Z",
         },
         {
+            "displayTitle": "Rust Probe probe-123 check-lib @ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "headSha": "b" * 40,
+            "createdAt": "2026-06-15T00:00:04Z",
+        },
+        {
             "displayTitle": "Rust Probe probe-123 check-lib @ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "headSha": HEAD,
             "createdAt": "2026-06-15T00:00:01Z",
         },
     ]
-    matching = owner.matching_rust_probe_runs(runs, probe_id="probe-123")
-    if matching != [runs[2]]:
+    matching = owner.matching_rust_probe_runs(runs, head=HEAD, probe_id="probe-123")
+    if matching != [runs[3]]:
         raise AssertionError(matching)
 
 
@@ -538,6 +567,7 @@ def main() -> int:
     assert_preconditions_are_pr_free_and_exact_upstream()
     assert_dispatch_uses_declared_workflow_inputs()
     assert_cancelled_probe_is_superseded_not_code_failure()
+    assert_wrong_head_probe_is_not_success()
     assert_rust_probe_polling_errors_fail_closed()
     assert_probe_run_matching_is_prefix_anchored()
     assert_cmd_rust_probe_dispatches_and_reports_not_proof()

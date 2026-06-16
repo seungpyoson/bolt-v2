@@ -289,14 +289,14 @@ fn canceled_requote_action_maps_to_prepaid_replacement_submit_without_budget_cha
         Some(MakerOrderIntent::Submit {
             leg,
             instrument_id,
-            order_identity,
+            order_identity: submitted_identity,
             price,
             quantity,
             ..
         }) => {
             assert_eq!(leg, Leg::Yes);
             assert_eq!(instrument_id, InstrumentId::from("YES.RUNTIME"));
-            assert_eq!(order_identity, order_identity("MAKER-YES-2", 2));
+            assert_eq!(submitted_identity, order_identity("MAKER-YES-2", 2));
             assert_eq!(
                 price,
                 decision

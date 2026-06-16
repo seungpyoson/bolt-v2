@@ -1,6 +1,9 @@
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -487,7 +490,7 @@ fn basket_submit_slots_carry_position_sizing_evidence_into_shared_gate() {
 #[test]
 fn basket_admission_rolls_back_submit_slots_when_metadata_evidence_fails() {
     let writer = Arc::new(RecordingBasketDecisionWriter {
-        fail_submit_reservation_metadata: true,
+        fail_submit_reservation_metadata: AtomicBool::new(true),
         ..Default::default()
     });
     let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
@@ -528,14 +531,15 @@ fn basket_admission_rolls_back_submit_slots_when_metadata_evidence_fails() {
         );
     }
 
+    writer
+        .fail_submit_reservation_metadata
+        .store(false, Ordering::SeqCst);
+    let mut retry_claims = entry_claims(&group, dec!(0.9));
+    attach_position_sizing(&mut retry_claims);
+    seed_position_sizer_for_claims(&submit_gate, &retry_claims);
     let mut plain_permit = basket_state
         .admit(
-            &basket_request(
-                "metadata-failure-basket",
-                &group,
-                &scan,
-                entry_claims(&group, dec!(0.9)),
-            ),
+            &basket_request("metadata-failure-basket", &group, &scan, retry_claims),
             &submit_gate,
         )
         .expect("failed submit reservation must release the open basket");
@@ -726,7 +730,7 @@ struct RecordingBasketDecisionWriter {
     admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
     basket_admission_decisions: Mutex<Vec<BoltV3BasketAdmissionDecisionEvidence>>,
     submit_reservation_metadata: Mutex<Vec<BoltV3SubmitReservationMetadataEvidence>>,
-    fail_submit_reservation_metadata: bool,
+    fail_submit_reservation_metadata: AtomicBool,
 }
 
 impl RecordingBasketDecisionWriter {
@@ -790,7 +794,7 @@ impl BoltV3DecisionEvidenceWriter for RecordingBasketDecisionWriter {
         &self,
         metadata: &BoltV3SubmitReservationMetadataEvidence,
     ) -> anyhow::Result<()> {
-        if self.fail_submit_reservation_metadata {
+        if self.fail_submit_reservation_metadata.load(Ordering::SeqCst) {
             anyhow::bail!("submit reservation metadata write failed");
         }
         self.submit_reservation_metadata

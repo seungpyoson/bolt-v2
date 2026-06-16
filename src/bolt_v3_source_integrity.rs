@@ -148,9 +148,9 @@ mod tests {
     const GOLDEN_STRATEGY_DIGEST: &str =
         "ea5bab18e7668d260014795e002fda5b6aa7f50cf4ec5c594edbdf95a6f5c7c6";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "6dc3fbab1f3d2580788858d8bfd6c9814e3d41b3254e91f4a03878dee3293c5d";
+        "5cfefe7da1e4d9fb405543e861bb0f0f3a8a82836d7370504a9305a364f2121c";
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "844cb0ba4d5ed45d976ba70c60bcc03980c4011635daa648329398e9fd7ff192";
+        "f2b453cb898c99a20519188111e54cece67f7d3d1b01427e5a79c320d6350d1c";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

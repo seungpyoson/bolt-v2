@@ -23,7 +23,7 @@ use crate::{
     },
     bolt_v3_outcome_group_sources::outcome_group_observation_is_fresh,
     bolt_v3_outcome_groups::{
-        GroupingProof, OutcomeGroup, OutcomeGroupValidationError, PayoutMatrix,
+        GroupingProof, OutcomeGroup, OutcomeGroupValidationError, PayoutMatrix, TerminalStateKind,
         ValidatedOutcomeGroup,
     },
 };
@@ -324,10 +324,8 @@ fn scan_outcome_group_candidate_inner(
             };
         evidence.leg_costs.push(priced_leg);
     }
-    for leg_id in input.group.tradable_legs.keys() {
-        if !quantities_by_leg.contains_key(leg_id) {
-            return Err((OutcomeGroupScanBlockReason::IncompleteCandidate, evidence));
-        }
+    if !candidate_covers_standard_outcomes(input.group, &quantities_by_leg) {
+        return Err((OutcomeGroupScanBlockReason::IncompleteCandidate, evidence));
     }
 
     evidence.state_payouts =
@@ -437,6 +435,24 @@ fn settlement_total_from_cents(
         .checked_mul(quantity)
         .map(|value| value.round_dp(DECIMAL_F64_ROUND_DP))
         .ok_or(OutcomeGroupScanBlockReason::InvalidCost)
+}
+
+fn candidate_covers_standard_outcomes(
+    group: &OutcomeGroup,
+    quantities_by_leg: &BTreeMap<String, Decimal>,
+) -> bool {
+    group
+        .terminal_states
+        .values()
+        .filter(|state| state.kind == TerminalStateKind::Standard)
+        .all(|state| {
+            quantities_by_leg.keys().any(|leg_id| {
+                group
+                    .tradable_legs
+                    .get(leg_id)
+                    .is_some_and(|leg| leg.outcome_label == state.label)
+            })
+        })
 }
 
 fn evaluate_state_payouts(

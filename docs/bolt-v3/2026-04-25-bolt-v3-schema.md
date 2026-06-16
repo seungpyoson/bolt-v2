@@ -174,7 +174,9 @@ stdout_level = "INFO"
 fileout_level = "INFO"
 
 [persistence]
-catalog_directory = "/var/lib/bolt/catalog"
+catalog_directory = "/srv/bolt-v2/var/bolt-v3-live/catalog"
+required_catalog_prefix = "/srv/bolt-v2"
+min_free_bytes = 10737418240
 runtime_capture_start_poll_interval_ms = 50
 
 [persistence.decision_evidence]
@@ -558,6 +560,18 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - required: yes
 - local Nautilus catalog root for structured decision events and raw NautilusTrader capture
 - persistence behavior and local-evidence requirements are defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 9.6, 9.7, and 10
+
+#### `required_catalog_prefix`
+
+- type: absolute path string
+- required: yes for live startup and storage prestart checks
+- canonical parent path that `catalog_directory` must stay under before a live node starts
+
+#### `min_free_bytes`
+
+- type: positive integer
+- required: yes for live startup and storage prestart checks
+- free-space floor for the filesystem that contains `catalog_directory`; the production root config uses `10737418240` bytes, or 10 GiB
 
 #### `runtime_capture_start_poll_interval_ms`
 
@@ -1619,7 +1633,9 @@ stdout_level = "INFO"
 fileout_level = "INFO"
 
 [persistence]
-catalog_directory = "/var/lib/bolt/catalog"
+catalog_directory = "/srv/bolt-v2/var/bolt-v3-live/catalog"
+required_catalog_prefix = "/srv/bolt-v2"
+min_free_bytes = 10737418240
 runtime_capture_start_poll_interval_ms = 50
 
 [persistence.decision_evidence]

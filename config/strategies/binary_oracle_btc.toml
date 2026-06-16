@@ -59,8 +59,8 @@ value_kind = "price"
 provider_id = "resolution_oracle_primary"
 
 [signal_data.primary]
-data_client_id = "okx_data"
-instrument_id = "BTC-USDT.OKX"
+data_client_id = "binance_spot_data"
+instrument_id = "BTC-USDT.BINANCE"
 
 [reference_current_price]
 asset = "BTC"
@@ -139,5 +139,5 @@ is_quote_quantity = false
 
 [parameters]
 edge_threshold_basis_points = 100
-order_notional_target = "5.00"
+order_notional_target = "2.50"
 maximum_position_notional = "10.00"

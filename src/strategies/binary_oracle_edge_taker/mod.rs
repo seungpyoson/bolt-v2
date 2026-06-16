@@ -548,11 +548,13 @@ impl PricingState {
                 reference_current_price.is_finite() && *reference_current_price > 0.0
             })
             && self
-                .last_reference_current_price_ts_ms
+                .last_reference_current_price_ts_ms()
                 .is_none_or(|last| snapshot.ts_ms > last)
         {
-            self.last_reference_current_price_ts_ms = Some(snapshot.ts_ms);
-            self.last_reference_current_price = Some(reference_current_price);
+            self.set_last_reference_observation(
+                Some(snapshot.ts_ms),
+                Some(reference_current_price),
+            );
         }
 
         let candidates = self.build_lead_venue_signals(snapshot);
@@ -569,7 +571,7 @@ impl PricingState {
                     .observed_ts_ms
                     .expect("selected lead venue should carry timestamp"),
             };
-            self.fast_spot = Some(fast_spot);
+            self.set_selected_pricing_spot(Some(fast_spot));
             self.last_lead_gap_probability = Some(candidate.lead_gap_probability);
             self.last_jitter_penalty_probability = Some(if max_jitter_ms == 0 {
                 0.0
@@ -581,7 +583,7 @@ impl PricingState {
             self.last_fast_venue_jitter_ms = Some(candidate.jitter_ms);
             self.fast_venue_incoherent = false;
         } else {
-            self.fast_spot = None;
+            self.set_selected_pricing_spot(None);
             self.last_lead_gap_probability = None;
             self.last_jitter_penalty_probability = None;
             self.last_lead_agreement_corr = None;
@@ -593,7 +595,7 @@ impl PricingState {
 
     #[cfg(test)]
     fn build_lead_venue_signals(&mut self, snapshot: &ReferenceSnapshot) -> Vec<LeadVenueSignal> {
-        let reference_anchor = self.last_reference_current_price;
+        let reference_anchor = self.last_reference_current_price();
         let agreement_anchor = best_healthy_oracle_price(snapshot).or(reference_anchor);
 
         snapshot
@@ -2440,7 +2442,7 @@ impl BinaryOracleEdgeTaker {
         if open_position.market_id.as_deref() != self.active.market_id.as_deref() {
             return None;
         }
-        self.pricing.fast_spot.as_ref()
+        self.pricing.selected_pricing_spot()
     }
 
     fn current_position_spot_price(&self) -> Option<f64> {
@@ -2500,8 +2502,7 @@ impl BinaryOracleEdgeTaker {
         let evaluation = &submission.evaluation;
         let spot_venue_name = self
             .pricing
-            .fast_spot
-            .as_ref()
+            .selected_pricing_spot()
             .map(|spot| spot.venue.clone());
         let fast_venue_available = spot_venue_name.is_some();
         let (realized_vol_source_venue, realized_vol_source_ts_ms) =
@@ -2514,7 +2515,7 @@ impl BinaryOracleEdgeTaker {
             pricing_blocked_by: evaluation.pricing_blocked_by.clone(),
             spot_price: self.pricing.spot_price(),
             spot_venue_name,
-            reference_current_price: self.pricing.last_reference_current_price,
+            reference_current_price: self.pricing.last_reference_current_price(),
             interval_open: self.active.interval_open,
             seconds_to_expiry: self.current_seconds_to_expiry_at(now_ms),
             realized_vol: self.current_realized_vol_at(now_ms),
@@ -2615,7 +2616,7 @@ impl BinaryOracleEdgeTaker {
             selected_side: evaluation.selected_side,
             fast_venue_available,
             reference_current_price_available_without_fast_venue: !fast_venue_available
-                && self.pricing.last_reference_current_price.is_some(),
+                && self.pricing.last_reference_current_price().is_some(),
             lead_quality_policy_applied: self.pricing.lead_quality_policy_applied,
             lead_quality_reason: if self.pricing.fast_venue_incoherent {
                 EVIDENCE_REASON_NO_FAST_VENUE_CLEARED_LEAD_QUALITY_THRESHOLDS
@@ -3769,7 +3770,7 @@ impl BinaryOracleEdgeTaker {
             spot_venue_name: self
                 .current_position_fast_spot()
                 .map(|spot| spot.venue.clone()),
-            reference_current_price: self.pricing.last_reference_current_price,
+            reference_current_price: self.pricing.last_reference_current_price(),
             interval_open: open_position.and_then(|position| position.interval_open),
             seconds_to_expiry: self.current_position_seconds_to_expiry_at(now_ms),
             realized_vol: self.current_realized_vol_at(now_ms),
@@ -4108,13 +4109,13 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn realized_volatility_evidence_fields(&self) -> RealizedVolatilityEvidenceFields {
-        let realized_volatility_snapshot = self
-            .pricing
-            .latest_realized_vol_snapshot
-            .as_ref()
-            .filter(|snapshot| {
-                self.config.realized_volatility_surface_id.as_str() == snapshot.surface_id.as_str()
-            });
+        let realized_volatility_snapshot =
+            self.pricing
+                .latest_realized_vol_snapshot()
+                .filter(|snapshot| {
+                    self.config.realized_volatility_surface_id.as_str()
+                        == snapshot.surface_id.as_str()
+                });
         match realized_volatility_snapshot {
             Some(snapshot) => RealizedVolatilityEvidenceFields {
                 surface_id: snapshot.surface_id.clone(),
@@ -4261,7 +4262,7 @@ impl BinaryOracleEdgeTaker {
                 .map_or_else(String::new, evidence_number),
             reference_current_price: self
                 .pricing
-                .last_reference_current_price
+                .last_reference_current_price()
                 .map(evidence_number),
             reference_current_price_source_id: self
                 .active
@@ -4478,7 +4479,7 @@ impl BinaryOracleEdgeTaker {
             spot_price: evidence_number(spot_price),
             reference_current_price: self
                 .pricing
-                .last_reference_current_price
+                .last_reference_current_price()
                 .map(evidence_number),
             reference_current_price_source_id: self
                 .active
@@ -4875,8 +4876,7 @@ impl BinaryOracleEdgeTaker {
                 .contains(&EntryPricingBlockReason::RealizedVolNotReady)
             && self
                 .pricing
-                .latest_realized_vol_snapshot
-                .as_ref()
+                .latest_realized_vol_snapshot()
                 .is_some_and(|snapshot| {
                     snapshot.surface_id.as_str()
                         == self.config.realized_volatility_surface_id.as_str()

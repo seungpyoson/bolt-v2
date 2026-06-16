@@ -1464,7 +1464,9 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
     strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
     strategy.config.exit_order.is_post_only = true;
     set_active_books_best_prices(&mut strategy, 0.43, 0.51);
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1495,7 +1497,9 @@ fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used()
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.config.exit_order.is_quote_quantity = true;
     strategy.config.exit_hysteresis_bps = 1_000_000;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -2920,7 +2924,9 @@ fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
         open_position,
         ManagedPositionOrigin::StrategyEntry,
     );
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);

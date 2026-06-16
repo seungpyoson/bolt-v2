@@ -1359,10 +1359,12 @@ impl BinaryOracleEdgeTaker {
 
     fn subscribe_realized_volatility_sources(&mut self) {
         let surface_id = self.config.realized_volatility_surface_id.clone();
+        let mut subscribed = 0usize;
         for (instrument_id, client_id) in self
             .context
             .realized_volatility_quote_subscription_requests_for_surface(&surface_id)
         {
+            subscribed += 1;
             #[cfg(not(test))]
             self.subscribe_quotes(instrument_id, client_id, None);
             #[cfg(test)]
@@ -1372,6 +1374,7 @@ impl BinaryOracleEdgeTaker {
             .context
             .realized_volatility_trade_subscription_requests_for_surface(&surface_id)
         {
+            subscribed += 1;
             #[cfg(not(test))]
             self.subscribe_trades(instrument_id, client_id, None);
             #[cfg(test)]
@@ -1381,10 +1384,21 @@ impl BinaryOracleEdgeTaker {
             .context
             .realized_volatility_index_subscription_requests_for_surface(&surface_id)
         {
+            subscribed += 1;
             #[cfg(not(test))]
             self.subscribe_index_prices(instrument_id, client_id, None);
             #[cfg(test)]
             let _ = (instrument_id, client_id);
+        }
+        // Config validation rejects a *missing* surface, but a KNOWN surface with zero enabled
+        // sources is not rejected and would leave pricing silently `RealizedVolNotReady` forever.
+        // Surface that once per startup so an operator sees the misconfiguration directly.
+        if subscribed == 0 {
+            log::warn!(
+                "binary_oracle_edge_taker configured RV surface `{}` has no enabled subscribable sources; pricing will stay RealizedVolNotReady (strategy_id={})",
+                surface_id,
+                self.config.strategy_id
+            );
         }
     }
 

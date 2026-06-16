@@ -455,7 +455,7 @@
     },
     {
       "blocker": "broad_backfill_efficiency_unproven",
-      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-broad-backfill-efficiency-status.2026-06-09.json records the systematic slow-backfill root cause and current guardrail: code now carries source_row_groups/predicate_ref through source-proof scope, accepted tranche, and execution plan, and can block plans that require this metadata before payload fetch. Broad payload work still must not start until source acceptance, manifest/index-only coverage and cost, accepted object hashes, actual PMXT row-group/predicate metadata, byte/row/time budgets, and tick-size replay or bounded-exclusion policy are proven."
+      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-broad-backfill-efficiency-status.2026-06-09.json records the systematic slow-backfill root cause and current guardrail: code now carries source_row_groups/predicate_ref through source-proof scope, accepted tranche, and execution plan, and can block plans that require this metadata before payload fetch. Broad payload work still must not start until source acceptance, manifest/index-only coverage and cost, accepted object hashes, actual PMXT row-group/predicate metadata, byte/row/time budgets, and tick-size replay or bounded-exclusion policy are proven. STATIC-GATED scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py rejects drift from blocked broad-backfill status, dependency status hashes, accepted-source/coverage/dynamic overclaims, BTE-022 close claims, and source-fence wiring gaps."
     }
   ],
   "next_required_evidence": [

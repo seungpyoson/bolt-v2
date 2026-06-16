@@ -1,11 +1,30 @@
 {
   "schema_version": "source-proof-pmxt-broad-backfill-efficiency-status.v1",
   "created_date": "2026-06-09",
-  "verified_at_utc": "2026-06-09T12:13:04Z",
+  "verified_at_utc": "2026-06-16T07:28:31Z",
   "source_binding": "polymarket-parquet-archive-index",
   "table_family": "order_book_snapshot_deltas",
   "status": "open_broad_backfill_efficiency_unproven_bounded_one_off_guardrails_present",
   "decision": "Do not start broad PMXT/Polymarket L2 backfill. The current code proves a bounded one-off selected-source path and records several fail-fast guardrails, but broad backfill still lacks accepted source proof, accepted expanded coverage/cost/storage evidence, and an L2 source-proof tick-size policy: either dynamic timed instrument-epoch replay or a source-proof-bound no-tick-size-change universe.",
+  "committed_input_hashes": {
+    "coverage_ledger_status": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-coverage-ledger-status.2026-06-09.json",
+      "sha256": "21bee010d0cbb10bd8ea433468585776e107a34367b7060149d8eea9be8a8e3f"
+    },
+    "durable_source_selection_status": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json",
+      "sha256": "7201f58aac2855ac3dbd0438595c24a8b89d83a632c53fcbb223b543964d7b9d"
+    },
+    "dynamic_tick_size_replay_status": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-dynamic-tick-size-replay-status.2026-06-16.json",
+      "sha256": "c8c0ffffd9d9a0e67ba88c9feb84c4c4f5b898888546982e00034f24e16b1498"
+    }
+  },
+  "guard_verification": {
+    "script": "repo://scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py",
+    "self_test": "repo://scripts/test_verify_bte_022_pmxt_broad_backfill_efficiency.py",
+    "source_fence_static": true
+  },
   "root_cause": {
     "previous_slow_backfill_failure_mode": "Large hourly PMXT Parquet objects were treated as payloads to scan, hash, or stage before the acceptance gates proved a bounded source/window/instrument scope.",
     "why_repeating_it_is_unsafe": [

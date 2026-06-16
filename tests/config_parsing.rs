@@ -5884,11 +5884,13 @@ fn outcome_group_strategy_runtime_validation_rejects_missing_or_unsupported_subm
 }
 
 #[test]
-fn outcome_group_strategy_envelope_requires_reference_and_signal_data_blocks() {
+fn outcome_group_strategy_envelope_rejects_legacy_reference_data_and_requires_signal_data_blocks() {
+    let legacy_reference_data = complete_set_strategy_toml()
+        .replace("[signal_data]\n\n", "[reference_data]\n\n[signal_data]\n\n");
     for (case, strategy, expected) in [
         (
-            "missing reference_data",
-            complete_set_strategy_toml().replace("[reference_data]\n\n", ""),
+            "legacy reference_data",
+            legacy_reference_data,
             "reference_data",
         ),
         (
@@ -6836,8 +6838,6 @@ configured_target_id = "complete_set_arb_target"
 kind = "static_outcome_group"
 rotating_market_family = "outcome_group"
 group_sources = ["poly_world_cup"]
-
-[reference_data]
 
 [signal_data]
 

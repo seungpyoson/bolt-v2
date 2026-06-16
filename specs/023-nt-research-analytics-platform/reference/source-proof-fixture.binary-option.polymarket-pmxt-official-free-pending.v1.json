@@ -90,14 +90,6 @@
       "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json sha256=109db55890bc17a06963cf415b9f9dc6c14982a5e624cd6e7fc8f93e97817965"
     }
   ],
-  "acceptance_scope": {
-    "planned_objects": 1,
-    "completed_objects": 1,
-    "failed_objects": 0,
-    "skipped_objects": 0,
-    "accepted_bytes": 361365244,
-    "selector_scope_violations": 0
-  },
   "gap_policy_id": "",
   "required_checks": {
     "source_access": {

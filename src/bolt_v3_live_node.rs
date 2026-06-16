@@ -7752,13 +7752,6 @@ configured_source_param = "configured-value"
                 .strategies
                 .first_mut()
                 .expect("fixture should include one strategy");
-            strategy.config.reference_data.insert(
-                "primary".to_string(),
-                DataInstrumentBlock {
-                    data_client_id: ClientId::from("reference_data"),
-                    instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
-                },
-            );
             strategy.config.signal_data.insert(
                 "primary".to_string(),
                 DataInstrumentBlock {
@@ -7855,7 +7848,6 @@ configured_source_param = "configured-value"
             .clone();
         outcome_group_strategy.config.strategy_instance_id = "configured_outcome_group".to_string();
         outcome_group_strategy.config.realized_volatility_surface_id = None;
-        outcome_group_strategy.config.reference_data.clear();
         outcome_group_strategy.config.signal_data.clear();
         outcome_group_strategy.config.reference_current_price = None;
         outcome_group_strategy.config.resolution_data = None;

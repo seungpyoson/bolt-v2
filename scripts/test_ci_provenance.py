@@ -113,6 +113,7 @@ retention_days = 30
 draft_pr_synchronize = "defer"
 draft_pr_opened = "defer"
 draft_pr_reopened = "defer"
+draft_pr_edited = "defer"
 converted_to_draft = "defer"
 ready_pr = "full"
 ready_for_review = "full"
@@ -144,6 +145,7 @@ workflow_dispatch = "full"
 ready_for_review = "full"
 ready_pr = "full"
 converted_to_draft = "defer"
+draft_pr_edited = "defer"
 draft_pr_reopened = "defer"
 draft_pr_opened = "defer"
 draft_pr_synchronize = "defer"
@@ -940,6 +942,7 @@ def assert_ci_policy_outputs_matrix() -> None:
             ("pull_request", "opened", "true", "refs/pull/1/merge", "defer"),
             ("pull_request", "synchronize", "true", "refs/pull/1/merge", "defer"),
             ("pull_request", "reopened", "true", "refs/pull/1/merge", "defer"),
+            ("pull_request", "edited", "true", "refs/pull/1/merge", "defer"),
             ("pull_request", "converted_to_draft", "true", "refs/pull/1/merge", "defer"),
             ("pull_request", "opened", "false", "refs/pull/1/merge", "full"),
             ("pull_request", "ready_for_review", "true", "refs/pull/1/merge", "full"),

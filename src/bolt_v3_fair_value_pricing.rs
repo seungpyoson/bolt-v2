@@ -85,22 +85,6 @@ impl FairValuePricingState {
         }
     }
 
-    pub fn observe_reference_quote(&mut self, quote: &FastSpotObservation) {
-        if !is_positive_finite(quote.price) {
-            return;
-        }
-        if self
-            .last_reference_observed_ts_ms
-            .is_some_and(|last_ts_ms| quote.observed_ts_ms <= last_ts_ms)
-        {
-            return;
-        }
-
-        self.last_reference_observed_ts_ms = Some(quote.observed_ts_ms);
-        self.last_reference_source_id = Some(quote.venue.clone());
-        self.last_reference_fair_value = Some(quote.price);
-    }
-
     pub fn observe_reference_current_price(&mut self, quote: &FastSpotObservation) -> bool {
         if !is_positive_finite(quote.price) {
             return false;

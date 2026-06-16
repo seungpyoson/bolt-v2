@@ -299,46 +299,6 @@ fn surfaced_realized_volatility_quote_and_trade_sources_can_share_instrument_for
 }
 
 #[test]
-fn source_owned_reference_identity_does_not_panic_nt_quote_filter() {
-    let mut strategy = test_strategy();
-    let source_id = "source_owned_reference";
-    let mut sources = std::collections::BTreeMap::new();
-    sources.insert(
-        source_id.to_string(),
-        crate::bolt_v3_config::ReferencePriceSourceBlock {
-            provider: crate::bolt_v3_config::ReferencePriceProvider::new(
-                "resolution_oracle_primary",
-            )
-            .expect("test provider should be valid"),
-            enabled: true,
-            required: true,
-            client_id: ClientId::from("resolution_oracle_primary"),
-            instrument_id: None,
-            symbol: Some("configured-reference-price".to_string()),
-        },
-    );
-    strategy.config.reference_current_price = Some(crate::bolt_v3_config::ReferencePriceBlock {
-        asset: "BTC".to_string(),
-        source_order: vec![source_id.to_string()],
-        min_valid_sources: 1,
-        selection_policy:
-            crate::bolt_v3_config::ReferencePriceSelectionPolicy::FirstValidPerInterval,
-        max_source_age_ms: 1_000,
-        max_source_drift_bps: 50,
-        drift_policy: crate::bolt_v3_config::ReferencePriceDriftPolicy::Observe,
-        stale_policy: crate::bolt_v3_config::ReferencePriceStalePolicy::Block,
-        sources,
-    });
-
-    strategy
-        .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_200))
-        .expect("source-owned reference identity should not be parsed as an NT instrument");
-
-    assert_eq!(strategy.pricing.last_reference_current_price(), None);
-    assert_eq!(strategy.pricing.selected_pricing_spot().cloned(), None);
-}
-
-#[test]
 fn interval_open_captures_source_bound_price_to_beat_at_or_after_market_start() {
     let mut strategy = test_strategy();
     let mut snapshot = active_snapshot_with_start("MKT-1", 1_000);

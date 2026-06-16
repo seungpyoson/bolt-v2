@@ -160,10 +160,6 @@ impl TakerPricingState {
         }
     }
 
-    pub fn observe_reference_quote(&mut self, quote: &FastSpotObservation) {
-        self.observe_reference_current_price(quote);
-    }
-
     pub fn observe_signal_quote(
         &mut self,
         quote: &FastSpotObservation,
@@ -245,11 +241,6 @@ impl TakerPricingState {
     }
 
     pub(crate) fn last_reference_current_price_ts_ms(&self) -> Option<u64> {
-        self.fair_value.last_reference_observed_ts_ms()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn last_reference_observed_ts_ms(&self) -> Option<u64> {
         self.fair_value.last_reference_observed_ts_ms()
     }
 
@@ -458,7 +449,7 @@ impl TakerPricingState {
         })
     }
 
-    pub fn fair_value_inputs_at(
+    fn fair_value_inputs_at(
         &self,
         config: &TakerPricingConfig<'_>,
         request: TakerPricingRequest,

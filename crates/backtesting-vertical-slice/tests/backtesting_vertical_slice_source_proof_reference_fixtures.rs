@@ -81,10 +81,41 @@ fn assert_unselected_official_free_candidate(path: &PathBuf, report: &SourceProo
             && report.accepted_at.is_none(),
         "pending fixture report {path:?} must not carry acceptance provenance"
     );
-    assert!(
-        report.acceptance_scope.is_none(),
-        "pending fixture report {path:?} must not carry accepted object scope"
-    );
+    if report.usage_scope == SourceProofUsageScope::OneOffBackfillData {
+        let acceptance_scope = report
+            .acceptance_scope
+            .as_ref()
+            .unwrap_or_else(|| panic!("one-off fixture report {path:?} must carry bounded source scope"));
+        assert_eq!(
+            acceptance_scope.planned_objects, 1,
+            "one-off fixture report {path:?} must bind exactly one planned source object"
+        );
+        assert_eq!(
+            acceptance_scope.completed_objects, 1,
+            "one-off fixture report {path:?} must bind exactly one completed source object"
+        );
+        assert_eq!(
+            acceptance_scope.failed_objects, 0,
+            "one-off fixture report {path:?} must not carry failed source objects"
+        );
+        assert_eq!(
+            acceptance_scope.skipped_objects, 0,
+            "one-off fixture report {path:?} must not carry skipped source objects"
+        );
+        assert!(
+            acceptance_scope.accepted_bytes > 0,
+            "one-off fixture report {path:?} must bind non-empty accepted source bytes"
+        );
+        assert_eq!(
+            acceptance_scope.selector_scope_violations, 0,
+            "one-off fixture report {path:?} must not carry selector scope violations"
+        );
+    } else {
+        assert!(
+            report.acceptance_scope.is_none(),
+            "pending fixture report {path:?} must not carry accepted object scope outside one-off backfill evidence"
+        );
+    }
     assert!(
         report
             .forbidden_claims

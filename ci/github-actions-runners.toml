@@ -23,9 +23,9 @@ deny = "github_hosted"
 clippy = "managed_light"
 check-aarch64 = "managed_heavy"
 source-fence = "managed_heavy"
+nextest-fingerprint = "github_hosted"
 test-archive = "managed_heavy"
 nextest-fingerprint-reuse = "github_hosted"
-test-shards = "managed_heavy"
 test = "github_hosted"
 build = "managed_heavy"
 ci-provenance-emit = "github_hosted"
@@ -49,6 +49,8 @@ debug-heavy = "managed_heavy"
 debug-light = "managed_light"
 
 [workflows.rust_probe]
+probe-unsupported-runner-tier = "managed_light"
+probe-unsupported-job-timeout = "managed_light"
 probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 
@@ -102,8 +104,8 @@ required_jobs = [
   "clippy",
   "check-aarch64",
   "source-fence",
+  "nextest-fingerprint",
   "test-archive",
-  "test-shards",
   "test",
 ]
 conditional_jobs = ["build"]
@@ -127,12 +129,11 @@ check_name = "check-aarch64"
 [ci_provenance.full_ci.jobs.source-fence]
 check_name = "source-fence"
 
+[ci_provenance.full_ci.jobs.nextest-fingerprint]
+check_name = "nextest fingerprint"
+
 [ci_provenance.full_ci.jobs.test-archive]
 check_name = "nextest archive"
-
-[ci_provenance.full_ci.jobs.test-shards]
-check_name_template = "nextest shard {shard} of {shard_count}"
-shard_count = 4
 
 [ci_provenance.full_ci.jobs.test]
 check_name = "test"

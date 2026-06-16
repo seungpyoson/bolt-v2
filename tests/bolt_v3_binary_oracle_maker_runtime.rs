@@ -44,6 +44,8 @@ use nautilus_trading::Strategy;
 use rust_decimal::Decimal;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
+const TEST_REFERENCE_ASSET: &str = "reference_asset";
+
 #[test]
 fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
@@ -181,11 +183,11 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
     );
     register_maker_for_order_factory(&mut maker);
     let quotes = vec![
-        reference_quote("BTC", "primary", 99.0, 1_000),
-        reference_quote("BTC", "backup", 100.05, 1_490),
+        reference_quote(TEST_REFERENCE_ASSET, "primary", 99.0, 1_000),
+        reference_quote(TEST_REFERENCE_ASSET, "backup", 100.05, 1_490),
     ];
     let mut selector = ReferencePriceSelector::new(
-        "BTC",
+        TEST_REFERENCE_ASSET,
         vec!["primary".to_string(), "backup".to_string()],
         1,
         100,
@@ -273,9 +275,14 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         maker_context(blocked_writer.clone(), blocked_admission),
     );
     register_maker_for_order_factory(&mut blocked_maker);
-    let mut blocked_selector =
-        ReferencePriceSelector::new("BTC", vec!["primary".to_string()], 1, 100, 25)
-            .expect("selector fixture should be valid");
+    let mut blocked_selector = ReferencePriceSelector::new(
+        TEST_REFERENCE_ASSET,
+        vec!["primary".to_string()],
+        1,
+        100,
+        25,
+    )
+    .expect("selector fixture should be valid");
     let mut blocked_market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
     let mut blocked_budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
@@ -332,7 +339,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
     );
     register_maker_for_order_factory(&mut unsupported_maker);
     let mut unsupported_selector = ReferencePriceSelector::new(
-        "BTC",
+        TEST_REFERENCE_ASSET,
         vec!["primary".to_string(), "backup".to_string()],
         1,
         100,

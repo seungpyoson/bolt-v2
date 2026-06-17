@@ -28,7 +28,9 @@ use crate::{
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig},
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
     bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
-    bolt_v3_maker_order_plan::{MakerMarketActionOrderInput, maker_order_plan_from_market_action},
+    bolt_v3_maker_order_plan::{
+        MakerLegBinding, MakerMarketActionOrderInput, maker_order_plan_from_market_action,
+    },
     bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
     bolt_v3_maker_risk::{
         MakerLossRiskPolicy, MakerRiskDecision, apply_maker_risk_mode,

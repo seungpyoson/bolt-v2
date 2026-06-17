@@ -115,6 +115,12 @@ def scan_root(root: Path) -> list[str]:
         ("run_backtest_sweep", r"\bpub\s+fn\s+run_backtest_sweep\b"),
         ("run_backtest_sweep_with_executor", r"\bpub\s+fn\s+run_backtest_sweep_with_executor\b"),
         ("typed run-spec TOML serialization", r"\btoml\s*::\s*to_string_pretty\s*\(\s*&\s*run\s*\.\s*run_spec\s*\)"),
+        ("run-spec path freshness check", r"\brun_spec_path\s*\.\s*try_exists\s*\(\s*\)"),
+        ("output-dir freshness check", r"\boutput_dir\s*\.\s*try_exists\s*\(\s*\)"),
+        ("run-spec create-only write", r"\bOpenOptions\s*::\s*new\s*\(\s*\)\s*\.\s*write\s*\(\s*true\s*\)\s*\.\s*create_new\s*\(\s*true\s*\)\s*\.\s*open\s*\(\s*&\s*run_spec_path\s*\)"),
+        ("fresh per-run output-dir create", r"\bfs\s*::\s*create_dir\s*\(\s*&\s*output_dir\s*\)"),
+        ("duplicate run-spec preflight", r"\bseen_run_spec_file_names\b.*?\binsert\s*\(\s*run\s*\.\s*run_spec_file_name\s*\.\s*clone\s*\(\s*\)\s*\)"),
+        ("duplicate output-dir preflight", r"\bseen_output_dir_names\b.*?\binsert\s*\(\s*run\s*\.\s*output_dir_name\s*\.\s*clone\s*\(\s*\)\s*\)"),
         ("existing BTE operator invocation", r"\brun_operator_from_run_spec\s*\("),
         ("accepted object bytes passed to executor", r"\baccepted_object_bytes\b"),
         ("result contract filename", r"\bRESULT_CONTRACT_FILE\b"),
@@ -126,6 +132,13 @@ def scan_root(root: Path) -> list[str]:
     for forbidden in ("nautilus_backtest", "BacktestEngine", "BacktestNode"):
         if re.search(rf"\b{re.escape(forbidden)}\b", ra_code):
             findings.append(f"{RA_PATH}: RA sweep orchestration must not own runner code via {forbidden}")
+
+    for label, pattern in (
+        ("overwrite-prone run-spec write", r"\bfs\s*::\s*write\s*\(\s*&\s*run_spec_path\b"),
+        ("reuse-prone per-run output-dir mkdir", r"\bfs\s*::\s*create_dir_all\s*\(\s*&\s*output_dir\b"),
+    ):
+        if re.search(pattern, ra_code):
+            findings.append(f"{RA_PATH}: RA sweep orchestration must not use {label}")
 
     require_pattern(
         OPERATOR_PATH,
@@ -141,6 +154,21 @@ def scan_root(root: Path) -> list[str]:
         r"\bsweep_orchestration_writes_typed_run_specs_invokes_bte_and_reads_contracts\b",
         findings,
     )
+    for label, pattern in (
+        (
+            "existing run-spec regression test",
+            r"\bsweep_orchestration_rejects_existing_run_spec_file_before_executor\b",
+        ),
+        (
+            "existing output-dir regression test",
+            r"\bsweep_orchestration_rejects_existing_output_dir_before_executor\b",
+        ),
+        (
+            "duplicate materialization path regression test",
+            r"\bsweep_orchestration_rejects_duplicate_materialization_paths_before_executor\b",
+        ),
+    ):
+        require_pattern(TEST_PATH, test_code, label, pattern, findings)
     require_pattern(
         TEST_PATH,
         test_code,

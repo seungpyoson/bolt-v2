@@ -8,7 +8,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
-    fmt, fs,
+    fmt,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Component, Path, PathBuf},
 };
 
@@ -281,12 +283,9 @@ where
     F: FnMut(&RunSpec, &[u8], &Path) -> Result<()>,
 {
     ensure!(!plan.runs.is_empty(), "sweep must include at least one run");
-    fs::create_dir_all(&plan.run_spec_dir)
-        .with_context(|| format!("create run-spec dir {}", plan.run_spec_dir.display()))?;
-    fs::create_dir_all(&plan.run_output_dir)
-        .with_context(|| format!("create run-output dir {}", plan.run_output_dir.display()))?;
 
-    let mut reports = Vec::with_capacity(plan.runs.len());
+    let mut seen_run_spec_file_names = BTreeSet::new();
+    let mut seen_output_dir_names = BTreeSet::new();
     for run in &plan.runs {
         validate_run_spec_file_name(&run.run_spec_file_name)?;
         validate_leaf_path("output_dir_name", &run.output_dir_name)?;
@@ -295,15 +294,56 @@ where
             "accepted_object_bytes for run {} must not be empty",
             run.run_spec.manifest.run_id
         );
+        ensure!(
+            seen_run_spec_file_names.insert(run.run_spec_file_name.clone()),
+            "duplicate run_spec_file_name {:?}",
+            run.run_spec_file_name
+        );
+        ensure!(
+            seen_output_dir_names.insert(run.output_dir_name.clone()),
+            "duplicate output_dir_name {:?}",
+            run.output_dir_name
+        );
 
         let run_spec_path = plan.run_spec_dir.join(&run.run_spec_file_name);
         let output_dir = plan.run_output_dir.join(&run.output_dir_name);
-        fs::create_dir_all(&output_dir)
+        ensure!(
+            !run_spec_path
+                .try_exists()
+                .with_context(|| format!("check run-spec path {}", run_spec_path.display()))?,
+            "run-spec path already exists: {}",
+            run_spec_path.display()
+        );
+        ensure!(
+            !output_dir
+                .try_exists()
+                .with_context(|| format!("check output_dir {}", output_dir.display()))?,
+            "output_dir already exists: {}",
+            output_dir.display()
+        );
+    }
+
+    fs::create_dir_all(&plan.run_spec_dir)
+        .with_context(|| format!("create run-spec dir {}", plan.run_spec_dir.display()))?;
+    fs::create_dir_all(&plan.run_output_dir)
+        .with_context(|| format!("create run-output dir {}", plan.run_output_dir.display()))?;
+
+    let mut reports = Vec::with_capacity(plan.runs.len());
+    for run in &plan.runs {
+        let run_spec_path = plan.run_spec_dir.join(&run.run_spec_file_name);
+        let output_dir = plan.run_output_dir.join(&run.output_dir_name);
+        fs::create_dir(&output_dir)
             .with_context(|| format!("create run output dir {}", output_dir.display()))?;
 
         let run_spec_toml =
             toml::to_string_pretty(&run.run_spec).context("serialize typed run-spec TOML")?;
-        fs::write(&run_spec_path, run_spec_toml)
+        let mut run_spec_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&run_spec_path)
+            .with_context(|| format!("create run-spec {}", run_spec_path.display()))?;
+        run_spec_file
+            .write_all(run_spec_toml.as_bytes())
             .with_context(|| format!("write run-spec {}", run_spec_path.display()))?;
 
         executor(&run.run_spec, &run.accepted_object_bytes, &output_dir)

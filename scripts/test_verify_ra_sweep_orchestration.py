@@ -56,7 +56,12 @@ def write_common(
         "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_research_analytics.rs",
         test_source
         if test_source is not None
-        else "fn sweep_orchestration_writes_typed_run_specs_invokes_bte_and_reads_contracts() { run_backtest_sweep_with_executor(); }\n",
+        else """
+fn sweep_orchestration_writes_typed_run_specs_invokes_bte_and_reads_contracts() { run_backtest_sweep_with_executor(); }
+fn sweep_orchestration_rejects_existing_run_spec_file_before_executor() {}
+fn sweep_orchestration_rejects_existing_output_dir_before_executor() {}
+fn sweep_orchestration_rejects_duplicate_materialization_paths_before_executor() {}
+""",
     )
     write_file(
         root,
@@ -89,6 +94,16 @@ pub fn run_backtest_sweep() {
 
 pub fn run_backtest_sweep_with_executor() {
     let run = BacktestSweepRun { accepted_object_bytes: Vec::new() };
+    let mut seen_run_spec_file_names = BTreeSet::new();
+    let mut seen_output_dir_names = BTreeSet::new();
+    seen_run_spec_file_names.insert(run.run_spec_file_name.clone());
+    seen_output_dir_names.insert(run.output_dir_name.clone());
+    let run_spec_path = PathBuf::from("first-run.toml");
+    let output_dir = PathBuf::from("first-run");
+    run_spec_path.try_exists().unwrap();
+    output_dir.try_exists().unwrap();
+    fs::create_dir(&output_dir).unwrap();
+    OpenOptions::new().write(true).create_new(true).open(&run_spec_path).unwrap();
     let _ = toml::to_string_pretty(&run.run_spec);
     let _ = accepted_object_bytes;
     let _path = RESULT_CONTRACT_FILE;
@@ -157,6 +172,24 @@ def test_rejects_missing_contract_readback() -> None:
     assert any("persisted result-contract JSON read" in finding for finding in findings)
 
 
+def test_rejects_overwrite_prone_materialization() -> None:
+    verifier = load_verifier()
+    unsafe_source = compliant_ra_source().replace(
+        "run_spec_path.try_exists().unwrap();\n    output_dir.try_exists().unwrap();\n    fs::create_dir(&output_dir).unwrap();\n    OpenOptions::new().write(true).create_new(true).open(&run_spec_path).unwrap();",
+        "fs::create_dir_all(&output_dir).unwrap();\n    fs::write(&run_spec_path, \"stale\").unwrap();",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_common(root, ra_source=unsafe_source)
+
+        findings = verifier.scan_root(root)
+
+    assert any("run-spec create-only write" in finding for finding in findings)
+    assert any("fresh per-run output-dir create" in finding for finding in findings)
+    assert any("overwrite-prone run-spec write" in finding for finding in findings)
+    assert any("reuse-prone per-run output-dir mkdir" in finding for finding in findings)
+
+
 def test_rejects_missing_source_fence_wiring() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -181,6 +214,7 @@ def main() -> int:
         test_comments_and_strings_do_not_satisfy_shape,
         test_rejects_second_runner_owned_by_ra,
         test_rejects_missing_contract_readback,
+        test_rejects_overwrite_prone_materialization,
         test_rejects_missing_source_fence_wiring,
         test_script_entrypoint_reports_success,
     ]

@@ -292,6 +292,96 @@ fn sweep_orchestration_writes_typed_run_specs_invokes_bte_and_reads_contracts() 
 }
 
 #[test]
+fn sweep_orchestration_rejects_existing_run_spec_file_before_executor() {
+    let temp = TempDir::new().expect("temp dir");
+    let run_spec_dir = temp.path().join("run-spec-output");
+    fs::create_dir_all(&run_spec_dir).expect("create run-spec dir");
+    fs::write(run_spec_dir.join("first-run.toml"), "stale").expect("write stale run-spec");
+    let plan = BacktestSweepPlan {
+        run_spec_dir,
+        run_output_dir: temp.path().join("run-output"),
+        runs: vec![BacktestSweepRun {
+            run_spec_file_name: "first-run.toml".to_string(),
+            output_dir_name: "first-run".to_string(),
+            run_spec: run_spec("ra-sweep-first"),
+            accepted_object_bytes: b"accepted-object-one".to_vec(),
+        }],
+    };
+    let mut calls = 0;
+
+    let err = run_backtest_sweep_with_executor(&plan, |_, _, _| {
+        calls += 1;
+        Ok(())
+    })
+    .expect_err("preexisting run-spec path must fail before executor");
+
+    assert_eq!(calls, 0, "executor must not run after stale run-spec");
+    assert!(err.to_string().contains("run-spec"), "{err}");
+    assert!(err.to_string().contains("already exists"), "{err}");
+}
+
+#[test]
+fn sweep_orchestration_rejects_existing_output_dir_before_executor() {
+    let temp = TempDir::new().expect("temp dir");
+    let output_dir = temp.path().join("run-output").join("first-run");
+    write_contract(&output_dir, "ra-sweep-first");
+    let plan = BacktestSweepPlan {
+        run_spec_dir: temp.path().join("run-spec-output"),
+        run_output_dir: temp.path().join("run-output"),
+        runs: vec![BacktestSweepRun {
+            run_spec_file_name: "first-run.toml".to_string(),
+            output_dir_name: "first-run".to_string(),
+            run_spec: run_spec("ra-sweep-first"),
+            accepted_object_bytes: b"accepted-object-one".to_vec(),
+        }],
+    };
+    let mut calls = 0;
+
+    let err = run_backtest_sweep_with_executor(&plan, |_, _, _| {
+        calls += 1;
+        Ok(())
+    })
+    .expect_err("preexisting run output dir must fail before executor");
+
+    assert_eq!(calls, 0, "executor must not run against stale output dir");
+    assert!(err.to_string().contains("output_dir"), "{err}");
+    assert!(err.to_string().contains("already exists"), "{err}");
+}
+
+#[test]
+fn sweep_orchestration_rejects_duplicate_materialization_paths_before_executor() {
+    let temp = TempDir::new().expect("temp dir");
+    let plan = BacktestSweepPlan {
+        run_spec_dir: temp.path().join("run-spec-output"),
+        run_output_dir: temp.path().join("run-output"),
+        runs: vec![
+            BacktestSweepRun {
+                run_spec_file_name: "shared-run.toml".to_string(),
+                output_dir_name: "shared-run".to_string(),
+                run_spec: run_spec("ra-sweep-first"),
+                accepted_object_bytes: b"accepted-object-one".to_vec(),
+            },
+            BacktestSweepRun {
+                run_spec_file_name: "shared-run.toml".to_string(),
+                output_dir_name: "shared-run".to_string(),
+                run_spec: run_spec("ra-sweep-second"),
+                accepted_object_bytes: b"accepted-object-two".to_vec(),
+            },
+        ],
+    };
+    let mut calls = 0;
+
+    let err = run_backtest_sweep_with_executor(&plan, |_, _, _| {
+        calls += 1;
+        Ok(())
+    })
+    .expect_err("duplicate materialization paths must fail before executor");
+
+    assert_eq!(calls, 0, "executor must not run after duplicate path preflight");
+    assert!(err.to_string().contains("duplicate"), "{err}");
+}
+
+#[test]
 fn run_pointer_index_covers_catalog_runs_with_hash_and_no_lifecycle_or_promotion_state() {
     let artifact_root = "s3://example-bucket/nt-research-analytics";
     let catalog = FakeBacktestRunCatalog {

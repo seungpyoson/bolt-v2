@@ -125,13 +125,23 @@ fn different_surface_snapshot_does_not_evict_active_realized_volatility() {
 
     assert_eq!(
         state
-            .latest_realized_vol_snapshot()
+            .latest_realized_vol_snapshot_for_surface(TARGET_SURFACE_ID)
             .map(|snapshot| snapshot.surface_id.as_str()),
         Some(TARGET_SURFACE_ID)
     );
     assert_eq!(
         state.current_realized_vol_at(OTHER_NEWER_TS_MS),
         Some(TARGET_REALIZED_VOL)
+    );
+    // Differential vs #755 filter-at-observe: the foreign snapshot is RETAINED under its own
+    // key — the map behavior #770 prescribes. A filter-at-observe impl would have dropped it
+    // at write time, so this assertion fails under the filter and proves the map is
+    // load-bearing here, not just an equivalent reformulation.
+    assert_eq!(
+        state
+            .latest_realized_vol_snapshot_for_surface(OTHER_SURFACE_ID)
+            .map(|snapshot| snapshot.surface_id.as_str()),
+        Some(OTHER_SURFACE_ID)
     );
 }
 
@@ -229,11 +239,13 @@ fn newer_same_surface_unready_snapshot_blocks_pricing_fail_closed() {
     ));
 
     assert_eq!(
-        state.latest_realized_vol_snapshot().map(|snapshot| (
-            snapshot.surface_id.as_str(),
-            snapshot.as_of_ms,
-            snapshot.ready
-        )),
+        state
+            .latest_realized_vol_snapshot_for_surface(TARGET_SURFACE_ID)
+            .map(|snapshot| (
+                snapshot.surface_id.as_str(),
+                snapshot.as_of_ms,
+                snapshot.ready
+            )),
         Some((TARGET_SURFACE_ID, OTHER_NEWER_TS_MS, false))
     );
     assert_eq!(state.current_realized_vol_at(OTHER_NEWER_TS_MS), None);

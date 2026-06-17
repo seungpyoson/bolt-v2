@@ -72,10 +72,10 @@ pub struct FairValuePricingState {
     last_reference_observed_ts_ms: Option<u64>,
     selected_pricing_spot: Option<FastSpotObservation>,
     realized_volatility_surface_id: String,
-    // Latest RV snapshot per `surface_id` (#770). The shared runtime routes ticks by
-    // instrument, so a strategy may observe (and store here) snapshots for surfaces it does
-    // not price; those entries are never read and are bounded by the number of configured
-    // surfaces. Intentional until #775 lands surface-scoped engine routing.
+    // Latest RV snapshot per `surface_id`, as prescribed by issue #770. The shared runtime
+    // routes ticks by instrument, so a strategy may observe snapshots for surfaces it does
+    // not price; those foreign entries are never read by this strategy and are bounded by
+    // the configured-surface count.
     latest_realized_vol_snapshots: BTreeMap<String, RealizedVolSnapshot>,
 }
 
@@ -181,11 +181,6 @@ impl FairValuePricingState {
             self.latest_realized_vol_snapshots
                 .insert(snapshot.surface_id.clone(), snapshot);
         }
-    }
-
-    pub fn latest_realized_vol_snapshot(&self) -> Option<&RealizedVolSnapshot> {
-        self.latest_realized_vol_snapshots
-            .get(&self.realized_volatility_surface_id)
     }
 
     /// Raw (readiness-unfiltered) latest snapshot for a surface, for evidence/audit.

@@ -1372,9 +1372,9 @@ impl BinaryOracleEdgeTaker {
             .realized_volatility_index_subscription_requests_for_surface(&surface_id);
 
         // Defense-in-depth: make a zero-subscription configured surface observable. For a
-        // validated config this is typically unreachable (policy requires at least one enabled
-        // quorum source), but it catches a surface whose sources are all disabled, or a
-        // validation regression, which would otherwise leave pricing silently
+        // validated config this is typically unreachable because policy requires at least one
+        // enabled quorum source, but it still catches a validation regression or
+        // no-ready-source edge that would otherwise leave pricing silently
         // `RealizedVolNotReady`. Pricing fails closed regardless; this warning is the only
         // operator signal.
         if quote_requests.is_empty() && trade_requests.is_empty() && index_requests.is_empty() {

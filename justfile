@@ -562,11 +562,35 @@ worktree-remove branch:
     git worktree prune
     echo "Removed worktree at $dest"
 
+# clean-merged: auto-cleanup of merged branches and worktrees.
+# See docs/ops/clean-merged-design.md. Default = dry-run; pass --apply to execute.
+clean-merged *args:
+    python3 scripts/clean_merged_artifacts.py {{args}}
+
+# clean-merged: print install/heartbeat/quarantine/gh health.
+clean-merged-doctor:
+    python3 scripts/clean_merged_artifacts.py --doctor
+
+# clean-merged: one-time bulk reclaim of the worktree backlog.
+# Prints a dry-run first; pass --apply to actually archive+remove.
+clean-merged-backlog *args:
+    python3 scripts/clean_merged_artifacts.py --include-worktrees {{args}}
+
+# clean-merged: prune quarantine archives and backup refs older than DAYS (default 30).
+clean-merged-purge days='30':
+    python3 scripts/clean_merged_artifacts.py --purge-quarantine {{days}}
+    python3 scripts/clean_merged_artifacts.py --prune-backups {{days}}
+
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "Setting git hooks path..."
     git config core.hooksPath .githooks
+    # Ensure managed hooks are executable (git warns + skips otherwise).
+    chmod +x .githooks/post-merge .githooks/post-checkout .githooks/post-rewrite 2>/dev/null || true
+
+    echo "Enabling remote.origin.prune (auto-prune deleted upstreams on fetch)..."
+    git config remote.origin.prune true
 
     echo "Adding {{target}} target..."
     rustup target add {{target}}

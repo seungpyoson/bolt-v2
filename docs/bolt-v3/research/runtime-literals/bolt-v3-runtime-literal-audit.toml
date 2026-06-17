@@ -7960,17 +7960,9 @@ reason = '''Compile-time Cargo env var naming the crate manifest dir; passed to 
 path = "src/source_canonicalization.rs"
 kind = "number"
 literal = '''0'''
-context = '''let mut total: u64 = 0;'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "number"
-literal = '''0'''
 context = '''out.sort_by(|a, b| a.0.cmp(&b.0));'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
+classification = "source_canonicalization_sort_tuple_index"
+reason = "Tuple-field index selecting the relative-path key when the canonical source walk sorts files into deterministic order; a structural constant, not an operator runtime value."
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
@@ -7989,36 +7981,12 @@ classification = '''source_canonicalization_single_root_index'''
 reason = '''Fixed first-element index used only after a registry source set is proven to contain exactly one root, preserving historical single-root bytes/text by returning the one validated root; not an operator runtime value.'''
 
 [[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''number'''
-literal = '''0x00'''
-context = '''out.push(0x00);'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
-
-[[allowed]]
 path = "src/source_canonicalization.rs"
 kind = "number"
 literal = '''1'''
 context = '''file.take(max_bytes.saturating_add(1))'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "number"
-literal = '''1'''
-context = '''total = total.saturating_add(1);'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "number"
-literal = '''8'''
-context = '''total = total.saturating_add(8);'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
+classification = "source_canonicalization_read_bound_increment"
+reason = "Read-bound increment: the walk reads one byte past `max_bytes` so an over-cap source file is detected and rejected; a structural constant, not an operator runtime value."
 
 [[allowed]]
 path = "src/source_canonicalization.rs"
@@ -8026,7 +7994,7 @@ kind = "string"
 literal = '''"/"'''
 context = '''Ok(parts.join("/").into_bytes())'''
 classification = '''source_canonicalization_path_separator'''
-reason = '''Canonical forward-slash path separator normalizing relative paths for OS-independent framing/ordering; a fixed structural constant, not an operator runtime value.'''
+reason = '''Canonical forward-slash path separator normalizing relative paths for OS-independent ordering; a fixed structural constant, not an operator runtime value.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
@@ -8034,7 +8002,7 @@ kind = '''string'''
 literal = '''"/"'''
 context = '''Ok(components.join("/").into_bytes())'''
 classification = '''source_canonicalization_path_separator'''
-reason = '''Canonical forward-slash path separator normalizing directory-root relative paths for OS-independent framing/ordering; a fixed structural constant, not an operator runtime value.'''
+reason = '''Canonical forward-slash path separator normalizing directory-root relative paths for OS-independent ordering; a fixed structural constant, not an operator runtime value.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
@@ -8079,90 +8047,10 @@ reason = "Rust source file extension selecting which files the canonical source 
 [[allowed]]
 path = "src/source_canonicalization.rs"
 kind = "string"
-literal = '''"source directory canonical stream exceeds max_source_bytes={max_bytes} bytes"'''
-context = '''"source directory canonical stream exceeds max_source_bytes={max_bytes} bytes"'''
-classification = "source_canonicalization_diagnostic_template"
-reason = "Fail-closed diagnostic when the framed directory stream exceeds the caller-supplied byte cap; the interpolated value is that cap, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
 literal = '''"source root is neither a regular file nor a directory: {}"'''
 context = '''"source root is neither a regular file nor a directory: {}",'''
 classification = "source_canonicalization_diagnostic_template"
 reason = "Fail-closed diagnostic for a source root that is neither a file nor a directory; the interpolated value is the offending path, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_submit_admission.rs"'''
-context = '''relative_roots: &["src/bolt_v3_submit_admission.rs"],'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the submit-admission gated source file; the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/strategies/binary_oracle_edge_taker"'''
-context = '''"src/strategies/binary_oracle_edge_taker",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the binary-oracle strategy source module (a directory after the A3 split); the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"'''
-context = '''"src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the archetype config translator, brought into the binary-oracle strategy source set so the TOML->runtime-table mapping for NautilusTrader-managed venue-action knobs is tamper-evidenced alongside its validating consumer; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_order_execution.rs"'''
-context = '''"src/bolt_v3_order_execution.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared order-execution policy module, brought into the binary-oracle strategy source set so the live/shadow NT submit/cancel mutation boundary is tamper-evidenced alongside strategy code; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_book_sizing.rs"'''
-context = '''"src/bolt_v3_book_sizing.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared book-sizing source included in the binary-oracle strategy source set after A4; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_binary_outcome_edge.rs"'''
-context = '''"src/bolt_v3_binary_outcome_edge.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared binary outcome edge source included in the binary-oracle strategy source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_executable_cost.rs"'''
-context = '''"src/bolt_v3_executable_cost.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared executable-cost source included in the binary-oracle strategy source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_sizing.rs"'''
-context = '''"src/bolt_v3_sizing.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared strategy-agnostic sizing source included in the binary-oracle strategy source set by the #623 review round; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_taker_updown_signal.rs"'''
-context = '''"src/bolt_v3_taker_updown_signal.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the taker up/down signal source included in the binary-oracle strategy source set by the #623 review round; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
@@ -8187,102 +8075,6 @@ literal = '''"outcome_group"'''
 context = '''pub const OUTCOME_GROUP_KEY: &str = "outcome_group";'''
 classification = "gated_source_registry_key"
 reason = "Stable registry key for the shared outcome-group substrate source set; an internal registry identifier owned here, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_outcome_groups.rs"'''
-context = '''"src/bolt_v3_outcome_groups.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared outcome-group model source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_atomic_io.rs"'''
-context = '''"src/bolt_v3_atomic_io.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared atomic-IO source included in the outcome-group source set because basket and kill-switch durable writes are part of the substrate safety boundary; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_outcome_group_sources.rs"'''
-context = '''"src/bolt_v3_outcome_group_sources.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared outcome-group source configuration and validation source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_outcome_group_polymarket.rs"'''
-context = '''"src/bolt_v3_outcome_group_polymarket.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the first-slice Polymarket outcome-group normalizer source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_outcome_group_scanner.rs"'''
-context = '''"src/bolt_v3_outcome_group_scanner.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared outcome-group scanner source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_basket_admission.rs"'''
-context = '''"src/bolt_v3_basket_admission.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared basket-admission source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_basket_execution.rs"'''
-context = '''"src/bolt_v3_basket_execution.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared basket-execution source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_basket_store.rs"'''
-context = '''"src/bolt_v3_basket_store.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared basket-store source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_archetypes/complete_set_arbitrage.rs"'''
-context = '''"src/bolt_v3_archetypes/complete_set_arbitrage.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the first-consumer complete-set archetype source included in the outcome-group source set for runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_market_families/outcome_group.rs"'''
-context = '''"src/bolt_v3_market_families/outcome_group.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the outcome-group market-family registration source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/strategy_runtime_bindings.rs"'''
-context = '''"src/strategy_runtime_bindings.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the production strategy runtime binding aggregation source included in the outcome-group source set for runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/strategies/complete_set_arbitrage"'''
-context = '''"src/strategies/complete_set_arbitrage",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the first-consumer complete-set strategy shell directory included in the outcome-group source set for runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
@@ -13442,14 +13234,6 @@ classification = "strategy_loop_constant"
 reason = "Increment-by-one step in a saturating strategy event-forwarding counter; not an operator runtime value."
 
 [[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_outcome_group_hyperliquid.rs"'''
-context = '''"src/bolt_v3_outcome_group_hyperliquid.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the Task 11 Hyperliquid HIP-4 outcome-group normalizer source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
 literal = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}` and this client selects `{}`"'''
@@ -16823,3 +16607,19 @@ literal = '''"settlement signal remains gated by Task 0 disposition"'''
 context = '''.expect_err("settlement signal remains gated by Task 0 disposition");'''
 classification = "strategy_test_diagnostic"
 reason = "Strategy-local shell unit-test assertion message; not runtime behavior."
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"OUT_DIR"'''
+context = '''include!(concat!(env!("OUT_DIR"), "/gated_source_roots.rs"));'''
+classification = "source_canonicalization_codegen_include"
+reason = "Build-time include path literal locating the build.rs-generated GATED_SOURCE_ROOTS under OUT_DIR; a compile-time codegen reference, not an operator runtime value."
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"/gated_source_roots.rs"'''
+context = '''include!(concat!(env!("OUT_DIR"), "/gated_source_roots.rs"));'''
+classification = "source_canonicalization_codegen_include"
+reason = "Build-time include path literal: the build.rs-generated GATED_SOURCE_ROOTS file name under OUT_DIR; a compile-time codegen reference, not an operator runtime value."
+

@@ -38,7 +38,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, BTreeSet, HashMap, btree_map::Entry},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
     rc::Rc,
     str::FromStr,
@@ -4417,13 +4417,11 @@ fn validate_trade_transport_execution_venue_cardinality(
     let mut execution_clients_by_venue: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (client_key, client) in &loaded.root.clients {
         if client.execution.is_some() {
-            match execution_clients_by_venue.entry(client.venue.as_str().to_string()) {
-                Entry::Vacant(entry) => {
-                    entry.insert(vec![client_key.clone()]);
-                }
-                Entry::Occupied(mut entry) => {
-                    entry.get_mut().push(client_key.clone());
-                }
+            if let Some(client_keys) = execution_clients_by_venue.get_mut(client.venue.as_str()) {
+                client_keys.push(client_key.clone());
+            } else {
+                execution_clients_by_venue
+                    .insert(client.venue.as_str().to_string(), vec![client_key.clone()]);
             }
         }
     }

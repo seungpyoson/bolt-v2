@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Shared resolution of the Bolt-v3 gated source roots for Python gates.
 
-This module is the SINGLE Python-side owner of the gated source root paths and
-the canonical `.rs` walk order. It mirrors the Rust registry in
-`src/source_canonicalization.rs` (`GATED_SOURCE_ROOTS`): each gated source set
-contains one or more roots. Each root may resolve to a single `.rs` file OR a
-directory of `.rs` files, and the canonical order is lexicographic by the
-repo-relative path's raw POSIX bytes (locale/OS independent, with backslash path
-components rejected to match the Rust canonicalizer).
+This module is the Python reader of the gated source roots. The list itself
+lives in ONE place — the repo-root ``gated_source_roots.manifest`` — which is
+also parsed by ``build.rs`` to generate the Rust ``GATED_SOURCE_ROOTS``
+constant. There is no hand-maintained Python copy of the list; this module
+parses the same manifest, so the Rust registry and the Python gates can never
+drift.
+
+Each gated source set contains one or more roots. Each root may resolve to a
+single ``.rs`` file OR a directory of ``.rs`` files, and the canonical order is
+lexicographic by the repo-relative path's raw POSIX bytes (locale/OS
+independent, with backslash path components rejected to match the Rust
+canonicalizer).
 
 Python gates that read a gated source must resolve its files through this module
-so they follow file moves (e.g. the A3 strategy split from a single file to the
-strategy directory module) without hardcoding a layout. There is exactly ONE
-place each root path lives on the Python side, pointing at the same paths the
-Rust registry owns.
+so they follow file moves (e.g. a strategy split from a single file to a
+directory module) without hardcoding a layout.
 """
 
 from __future__ import annotations
@@ -22,48 +25,80 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Repo-relative roots, mirroring `GATED_SOURCE_ROOTS` in
-# `src/source_canonicalization.rs`. A root may be a file or a directory; the
-# walk below resolves whichever it is at runtime.
-STRATEGY_SOURCE_ROOTS = (
-    "src/strategies/binary_oracle_edge_taker",
-    # The first outcome-group strategy shell is production-registered, so it is
-    # also covered by the strategy policy fence even though its shared
-    # outcome-group mechanics stay in OUTCOME_GROUP_SOURCE_ROOTS.
-    "src/strategies/complete_set_arbitrage",
-    # The archetype translates operator TOML into the runtime config table that
-    # carries the NautilusTrader-managed venue-action knobs. It is the sole
-    # producer of that table, so it belongs under the same tamper-evidence as
-    # the consumer (`config.rs`) that validates them.
-    "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
-    "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
-    # The shared policy is the only approved Bolt-v3 strategy-originated NT
-    # submit/cancel mutation boundary.
-    "src/bolt_v3_order_execution.rs",
-    "src/bolt_v3_book_sizing.rs",
-    "src/bolt_v3_binary_outcome_edge.rs",
-    "src/bolt_v3_executable_cost.rs",
-    "src/bolt_v3_sizing.rs",
-    "src/bolt_v3_taker_updown_signal.rs",
-)
+# The single owner of the gated source-root list, shared with build.rs.
+GATED_SOURCE_ROOTS_MANIFEST = REPO_ROOT / "gated_source_roots.manifest"
+
+# Registry keys; must match STRATEGY_KEY / SUBMIT_ADMISSION_KEY /
+# OUTCOME_GROUP_KEY in src/source_canonicalization.rs and the ``[section]``
+# headers in the manifest.
+STRATEGY_KEY = "strategy"
+SUBMIT_ADMISSION_KEY = "submit_admission"
+OUTCOME_GROUP_KEY = "outcome_group"
+
+
+def _load_gated_source_roots() -> dict[str, tuple[str, ...]]:
+    """Parse ``gated_source_roots.manifest`` into ``{key: (roots...)}``.
+
+    Mirrors the build.rs parser: ``#`` comments and blank lines are ignored;
+    ``[key]`` starts a section; every other line is a repo-relative root.
+    Invalid roots (absolute, backslash, or ``.``/``..``/empty components) and
+    structural errors raise ``ValueError`` with a file:line location, so a
+    malformed manifest fails loudly on both the Rust and Python sides.
+    """
+    text = GATED_SOURCE_ROOTS_MANIFEST.read_text(encoding="utf-8")
+    sections: dict[str, list[str]] = {}
+    order: list[str] = []
+    current: str | None = None
+    for index, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        location = f"{GATED_SOURCE_ROOTS_MANIFEST}:{index}"
+        if line.startswith("["):
+            if not line.endswith("]"):
+                raise ValueError(f"{location}: malformed section header {line!r}")
+            key = line[1:-1].strip()
+            if not key:
+                raise ValueError(f"{location}: empty section key")
+            if key in sections:
+                raise ValueError(f"{location}: duplicate section [{key}]")
+            sections[key] = []
+            order.append(key)
+            current = key
+            continue
+        components = line.split("/")
+        if (
+            line.startswith("/")
+            or "\\" in line
+            or any(component in ("", ".", "..") for component in components)
+        ):
+            raise ValueError(f"{location}: invalid repo-relative root {line!r}")
+        if current is None:
+            raise ValueError(f"{location}: root {line!r} precedes any [section] header")
+        sections[current].append(line)
+
+    if not order:
+        raise ValueError(f"{GATED_SOURCE_ROOTS_MANIFEST}: no gated source roots defined")
+    for key in order:
+        if not sections[key]:
+            raise ValueError(f"{GATED_SOURCE_ROOTS_MANIFEST}: section [{key}] has no roots")
+    for required in (STRATEGY_KEY, SUBMIT_ADMISSION_KEY, OUTCOME_GROUP_KEY):
+        if required not in sections:
+            raise ValueError(
+                f"{GATED_SOURCE_ROOTS_MANIFEST}: required section [{required}] is missing"
+            )
+    return {key: tuple(sections[key]) for key in order}
+
+
+_GATED_SOURCE_ROOTS = _load_gated_source_roots()
+
+# Repo-relative roots, parsed from the manifest (the single owner). A root may be
+# a file or a directory; the walk below resolves whichever it is at runtime.
+STRATEGY_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[STRATEGY_KEY]
 STRATEGY_SOURCE_ROOT = STRATEGY_SOURCE_ROOTS[0]
-SUBMIT_ADMISSION_SOURCE_ROOTS = ("src/bolt_v3_submit_admission.rs",)
+SUBMIT_ADMISSION_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[SUBMIT_ADMISSION_KEY]
 SUBMIT_ADMISSION_SOURCE_ROOT = SUBMIT_ADMISSION_SOURCE_ROOTS[0]
-OUTCOME_GROUP_SOURCE_ROOTS = (
-    "src/bolt_v3_atomic_io.rs",
-    "src/bolt_v3_outcome_groups.rs",
-    "src/bolt_v3_outcome_group_sources.rs",
-    "src/bolt_v3_outcome_group_polymarket.rs",
-    "src/bolt_v3_outcome_group_hyperliquid.rs",
-    "src/bolt_v3_outcome_group_scanner.rs",
-    "src/bolt_v3_basket_admission.rs",
-    "src/bolt_v3_basket_execution.rs",
-    "src/bolt_v3_basket_store.rs",
-    "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
-    "src/bolt_v3_market_families/outcome_group.rs",
-    "src/strategy_runtime_bindings.rs",
-    "src/strategies/complete_set_arbitrage",
-)
+OUTCOME_GROUP_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[OUTCOME_GROUP_KEY]
 MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024
 
 

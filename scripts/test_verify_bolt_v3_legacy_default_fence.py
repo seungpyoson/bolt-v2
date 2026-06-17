@@ -21,15 +21,6 @@ STRATEGY_SOURCE_FILE = source_files(STRATEGY_SOURCE_ROOT)[0].relative_to(
 ).as_posix()
 
 
-def rust_registry_relative_roots(registry_source: str) -> set[str]:
-    roots: set[str] = set()
-    for block in re.findall(
-        r"\brelative_roots\s*:\s*&\[(.*?)\]", registry_source, flags=re.DOTALL
-    ):
-        roots.update(re.findall(r'"([^"]+)"', block))
-    return roots
-
-
 def rust_text_accessor_max_bytes(source: str) -> int:
     match = re.search(r"\bconst\s+TEXT_ACCESSOR_MAX_BYTES:\s*u64\s*=\s*([^;]+);", source)
     if not match:
@@ -238,63 +229,27 @@ class LegacyDefaultFenceTests(unittest.TestCase):
             finally:
                 source_roots.REPO_ROOT = original_root
 
-    def test_python_source_roots_match_rust_registry_relative_roots(self) -> None:
-        registry = (
-            source_roots.REPO_ROOT / "src/source_canonicalization.rs"
+    def test_python_source_roots_match_manifest(self) -> None:
+        # The gated root list lives in one place: gated_source_roots.manifest,
+        # read by both build.rs (Rust) and bolt_v3_source_roots.py (Python). This
+        # asserts the Python module's exposed roots equal an INDEPENDENT parse of
+        # that manifest, so a Python-side parser regression fails loudly. The Rust
+        # side is pinned by the registry-membership tests in
+        # bolt_v3_source_integrity.rs, which assert the generated constant equals
+        # the same expected list.
+        manifest = (
+            source_roots.REPO_ROOT / "gated_source_roots.manifest"
         ).read_text(encoding="utf-8")
-        rust_roots = rust_registry_relative_roots(registry)
+        manifest_roots = {
+            line.strip()
+            for line in manifest.splitlines()
+            if line.strip()
+            and not line.strip().startswith("#")
+            and not line.strip().startswith("[")
+        }
 
         self.assertEqual(
-            rust_roots,
-            {
-                *source_roots.STRATEGY_SOURCE_ROOTS,
-                source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,
-                *source_roots.OUTCOME_GROUP_SOURCE_ROOTS,
-            },
-        )
-
-    def test_rust_registry_relative_root_parser_accepts_wrapped_fields(self) -> None:
-        registry = """
-            GatedSourceRoot {
-                key: STRATEGY_KEY,
-                relative_roots: &[
-                    "src/strategies/binary_oracle_edge_taker",
-                    // The archetype is the sole TOML->runtime-table translator.
-                    "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
-                    "src/bolt_v3_order_execution.rs",
-                    "src/bolt_v3_book_sizing.rs",
-                    "src/bolt_v3_binary_outcome_edge.rs",
-                    "src/bolt_v3_executable_cost.rs",
-                    "src/bolt_v3_sizing.rs",
-                    "src/bolt_v3_taker_updown_signal.rs",
-                ],
-            },
-            GatedSourceRoot {
-                key: SUBMIT_ADMISSION_KEY,
-                relative_roots: &["src/bolt_v3_submit_admission.rs"],
-            },
-            GatedSourceRoot {
-                key: OUTCOME_GROUP_KEY,
-                relative_roots: &[
-                    "src/bolt_v3_atomic_io.rs",
-                    "src/bolt_v3_outcome_groups.rs",
-                    "src/bolt_v3_outcome_group_sources.rs",
-                    "src/bolt_v3_outcome_group_polymarket.rs",
-                    "src/bolt_v3_outcome_group_hyperliquid.rs",
-                    "src/bolt_v3_outcome_group_scanner.rs",
-                    "src/bolt_v3_basket_admission.rs",
-                    "src/bolt_v3_basket_execution.rs",
-                    "src/bolt_v3_basket_store.rs",
-                    "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
-                    "src/bolt_v3_market_families/outcome_group.rs",
-                    "src/strategy_runtime_bindings.rs",
-                    "src/strategies/complete_set_arbitrage",
-                ],
-            },
-        """
-
-        self.assertEqual(
-            rust_registry_relative_roots(registry),
+            manifest_roots,
             {
                 *source_roots.STRATEGY_SOURCE_ROOTS,
                 source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,

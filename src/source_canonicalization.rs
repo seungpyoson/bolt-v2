@@ -438,57 +438,14 @@ pub struct GatedSourceRoot {
     pub relative_roots: &'static [&'static str],
 }
 
-/// THE registry — the ONLY place gated source roots are named. The runtime
-/// integrity owner, the producer, and tests all resolve roots through this one
-/// list, so there is no duplicated file list anywhere in the crate.
-pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
-    GatedSourceRoot {
-        key: STRATEGY_KEY,
-        relative_roots: &[
-            "src/strategies/binary_oracle_edge_taker",
-            // The first outcome-group strategy shell is production-registered,
-            // so it is also covered by the strategy policy fence even though
-            // its shared outcome-group mechanics stay in OUTCOME_GROUP roots.
-            "src/strategies/complete_set_arbitrage",
-            // The archetype translates operator TOML into the runtime config
-            // table that carries the NautilusTrader-managed venue-action knobs.
-            // It is the sole producer of that table, so it belongs under the same
-            // tamper-evidence as the consumer (`config.rs`) that validates them.
-            "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
-            "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
-            // The shared policy is the only approved Bolt-v3 strategy-originated
-            // NT submit/cancel mutation boundary.
-            "src/bolt_v3_order_execution.rs",
-            "src/bolt_v3_book_sizing.rs",
-            "src/bolt_v3_binary_outcome_edge.rs",
-            "src/bolt_v3_executable_cost.rs",
-            "src/bolt_v3_sizing.rs",
-            "src/bolt_v3_taker_updown_signal.rs",
-        ],
-    },
-    GatedSourceRoot {
-        key: SUBMIT_ADMISSION_KEY,
-        relative_roots: &["src/bolt_v3_submit_admission.rs"],
-    },
-    GatedSourceRoot {
-        key: OUTCOME_GROUP_KEY,
-        relative_roots: &[
-            "src/bolt_v3_atomic_io.rs",
-            "src/bolt_v3_outcome_groups.rs",
-            "src/bolt_v3_outcome_group_sources.rs",
-            "src/bolt_v3_outcome_group_polymarket.rs",
-            "src/bolt_v3_outcome_group_hyperliquid.rs",
-            "src/bolt_v3_outcome_group_scanner.rs",
-            "src/bolt_v3_basket_admission.rs",
-            "src/bolt_v3_basket_execution.rs",
-            "src/bolt_v3_basket_store.rs",
-            "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
-            "src/bolt_v3_market_families/outcome_group.rs",
-            "src/strategy_runtime_bindings.rs",
-            "src/strategies/complete_set_arbitrage",
-        ],
-    },
-];
+/// THE registry — generated at build time from the repo-root
+/// `gated_source_roots.manifest` (the ONLY place gated source roots are named).
+/// `build.rs` parses that manifest and emits this `GATED_SOURCE_ROOTS`
+/// constant; `scripts/bolt_v3_source_roots.py` reads the same manifest, so the
+/// gated file list lives in exactly one place shared across both languages. The
+/// runtime integrity owner, the producer, and tests all resolve roots through
+/// this list.
+include!(concat!(env!("OUT_DIR"), "/gated_source_roots.rs"));
 
 /// Look up a registry entry by key, panicking on an unknown key.
 pub fn registry_entry(key: &str) -> &'static GatedSourceRoot {

@@ -15570,6 +15570,230 @@ classification = "strategy_free_custom_data_diagnostic"
 reason = "Strategy-free reference health diagnostic for a custom-data subscription whose client id was not registered; the client id comes from validated TOML."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''0'''
+context = '''(0..max_targets)'''
+classification = "strategy_free_probe_sampling_index"
+reason = "Deterministic metadata sampling index arithmetic; source-owned target counts and limits remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''0'''
+context = '''.unwrap_or(0);'''
+classification = "strategy_free_probe_required_count_default"
+reason = "Diagnostic default for a probe with no installed fixed targets yet; subscription limits and required observations remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''0'''
+context = '''Some(0) => Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup('''
+classification = "strategy_free_probe_fail_closed_boundary"
+reason = "Fail-closed validation boundary rejecting a zero metadata-response target cap; the cap itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''0'''
+context = '''cursor: Cell::new(0),'''
+classification = "strategy_free_probe_chunk_walk_index"
+reason = "Initial cursor for deterministic chunk-walk observation bookkeeping; target counts and subscriptions remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''1'''
+context = '''Some(min_observed) => min_observed.clamp(1, sampled_len.max(1)),'''
+classification = "strategy_free_probe_minimum_observation_floor"
+reason = "Lower bound for a non-zero readiness observation requirement after TOML validation rejects zero metadata target caps."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''1'''
+context = '''let last_index = targets.len() - 1;'''
+classification = "strategy_free_probe_sampling_index"
+reason = "Last-index arithmetic for deterministic metadata sampling; source-owned target counts and limits remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''1'''
+context = '''let last_sample = max_targets - 1;'''
+classification = "strategy_free_probe_sampling_index"
+reason = "Last-sample arithmetic for deterministic metadata sampling; source-owned target counts and limits remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''1'''
+context = '''required_live_markets >= 1 && distinct_fired >= required_live_markets'''
+classification = "strategy_free_probe_minimum_observation_floor"
+reason = "Readiness succeeds only after at least one configured or sampled market fires; required counts remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''2'''
+context = '''return vec![targets[targets.len() / 2].clone()];'''
+classification = "strategy_free_probe_sampling_index"
+reason = "Median index arithmetic for deterministic metadata sampling; source-owned target counts and limits remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"book"'''
+context = '''DataClientReadinessProbeMarketDataKind::Book => "book",'''
+classification = "strategy_free_probe_market_data_label"
+reason = "Stable display label for an already parsed readiness probe enum variant; it does not configure a runtime subscription."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"book"'''
+context = '''self.ensure_strategy_free_data_client_registered(client_id, "book")?;'''
+classification = "strategy_free_probe_market_data_label"
+reason = "Diagnostic label for an already selected book subscription branch; the selected client and probe kind remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} configured readiness_probe.quote_targets"'''
+context = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} configured readiness_probe.quote_targets",'''
+classification = "strategy_free_probe_fail_closed_diagnostic"
+reason = "Fail-closed diagnostic comparing two TOML-owned readiness probe fields; it does not provide a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} source-owned metadata_response target(s) sampled this run"'''
+context = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} source-owned metadata_response target(s) sampled this run",'''
+classification = "strategy_free_probe_fail_closed_diagnostic"
+reason = "Fail-closed diagnostic comparing a TOML-owned minimum with source-owned metadata targets observed during the probe."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters or set clients.<id>.readiness_probe.allow_metadata_target_sampling=true before using this client for production readiness"'''
+context = '''"metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters or set clients.<id>.readiness_probe.allow_metadata_target_sampling=true before using this client for production readiness"'''
+classification = "strategy_free_probe_fail_closed_diagnostic"
+reason = "Fail-closed diagnostic for metadata-response fanout beyond the TOML-owned cap; it instructs the operator to tighten TOML policy."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"metadata_response readiness probe produced no source-owned instrument targets"'''
+context = '''"metadata_response readiness probe produced no source-owned instrument targets"'''
+classification = "strategy_free_probe_fail_closed_diagnostic"
+reason = "Fail-closed readiness probe diagnostic when the data client returns no owned targets; it does not configure behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"quote"'''
+context = '''DataClientReadinessProbeMarketDataKind::Quote => "quote",'''
+classification = "strategy_free_probe_market_data_label"
+reason = "Stable display label for an already parsed readiness probe enum variant; it does not configure a runtime subscription."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"quote"'''
+context = '''self.ensure_strategy_free_data_client_registered(client_id, "quote")?;'''
+classification = "strategy_free_probe_market_data_label"
+reason = "Diagnostic label for an already selected quote subscription branch; the selected client and probe kind remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"trade"'''
+context = '''DataClientReadinessProbeMarketDataKind::Trade => "trade",'''
+classification = "strategy_free_probe_market_data_label"
+reason = "Stable display label for an already parsed readiness probe enum variant; it does not configure a runtime subscription."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"trade"'''
+context = '''self.ensure_strategy_free_data_client_registered(client_id, "trade")?;'''
+classification = "strategy_free_probe_market_data_label"
+reason = "Diagnostic label for an already selected trade subscription branch; the selected client and probe kind remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"{market_data_kind} subscription references unregistered data client {client_id}"'''
+context = '''"{market_data_kind} subscription references unregistered data client {client_id}"'''
+classification = "strategy_free_probe_fail_closed_diagnostic"
+reason = "Fail-closed readiness probe diagnostic for a selected TOML client missing from the registered transport."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"; "'''
+context = '''errors.join("; ")'''
+classification = "rv_registration_validation_diagnostic_separator"
+reason = "Validation diagnostic separator for realized-volatility source-client errors; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"; "'''
+context = '''missing.into_iter().collect::<Vec<_>>().join("; ")'''
+classification = "rv_registration_validation_diagnostic_separator"
+reason = "Validation diagnostic separator for realized-volatility transport membership errors; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"realized_volatility_surfaces.{surface_id}.sources.{}.data_client_id `{}`"'''
+context = '''"realized_volatility_surfaces.{surface_id}.sources.{}.data_client_id `{}`",'''
+classification = "rv_registration_validation_diagnostic_context"
+reason = "Diagnostic context naming the TOML-owned realized-volatility source client field that failed node transport membership."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"realized_volatility_surfaces.{surface_id}.sources.{}"'''
+context = '''"realized_volatility_surfaces.{surface_id}.sources.{}",'''
+classification = "rv_config_validation_diagnostic_context"
+reason = "Validation diagnostic context naming the TOML-owned realized-volatility source field being checked."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"{}"'''
+context = '''println!("{}", serde_json::to_string_pretty(&report)?);'''
+classification = "ops_probe_json_stdout_template"
+reason = "CLI output format template for printing the structured readiness probe report; report values come from runtime observation and TOML."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"instrument census"'''
+context = '''"instrument census",'''
+classification = "ops_census_registration_diagnostic_label"
+reason = "Diagnostic label used when validating that the selected strategy-free data client is registered for the census command; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"data-client census observed zero cached instruments"'''
+context = '''reason: "data-client census observed zero cached instruments".to_string(),'''
+classification = "ops_census_fail_closed_diagnostic"
+reason = "Fail-closed diagnostic emitted when the strategy-free data-client census reaches NT Running without any cached instruments; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''b"\0"'''
+context = '''hasher.update(b"\0");'''
+classification = "ops_census_hash_delimiter"
+reason = "NUL byte delimiter for the deterministic SHA-256 framing of sorted instrument IDs in the ops census report; it is not a runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_providers/chainlink/report.rs"
 kind = "number"
 literal = '''7'''
